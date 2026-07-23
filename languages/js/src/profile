@@ -256,7 +256,7 @@ BigInt              = { emit = "host:ecma:bigint:BigInt",         min_args = 1, 
 "Object.preventExtensions"         = { emit = "common:reflection.prevent_extensions", min_args = 1, max_args = 1 }
 "Object.isExtensible"              = { emit = "common:reflection.is_extensible", min_args = 1, max_args = 1 }
 "Object.setPrototypeOf"            = { emit = "common:reflection.set_prototype_of", min_args = 2, max_args = 2 }
-"Object.groupBy"                   = { emit = "common:reflection.group_by", min_args = 2, max_args = 2 }
+"Object.groupBy"                   = { emit = "host:ecma:object:groupBy", min_args = 2, max_args = 2 }
 "Map.groupBy"                      = { emit = "host:ecma:map:groupBy",                        min_args = 2, max_args = 2 }
 
 # ── Reflect static methods ──────────────────────────────────────────────────
@@ -419,7 +419,7 @@ toString      = { emit = "invoke:toString",      min_args = 0, max_args = 1 }
 toFixed         = { emit = "host:ecma:number:toFixed",         min_args = 0, max_args = 1 }
 toExponential   = { emit = "host:ecma:number:toExponential",   min_args = 0, max_args = 1 }
 toPrecision     = { emit = "host:ecma:number:toPrecision",     min_args = 0, max_args = 1 }
-toLocaleString  = { emit = "host:ecma:number:toLocaleString",  min_args = 0, max_args = 2 }
+toLocaleString  = { emit = "invoke:toLocaleString",  min_args = 0, max_args = 2 }
 
 # Array instance methods — mutators only; polymorphic methods go through
 # `invoke:*` above. push/pop are handled by runtime type dispatch
@@ -814,6 +814,7 @@ module = "ecma:promise"
 "URIError"      = ["ecma:error", "URIError"]
 "EvalError"     = ["ecma:error", "EvalError"]
 "AggregateError" = ["ecma:error", "AggregateError"]
+"SuppressedError" = ["ecma:error", "SuppressedError"]
 "RegExp"        = ["ecma:regexp", "new"]
 "Date"          = ["ecma:date", "new"]
 "Promise"       = ["ecma:promise", "new"]

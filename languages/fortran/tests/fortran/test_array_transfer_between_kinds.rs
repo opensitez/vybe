@@ -119,7 +119,9 @@ end program array_transfer_between_kinds_default_scalar_target_kind_matches_shap
 
 #[test]
 fn array_transfer_between_kinds_prohibited_shape_expansion_should_not_compile() {
-    let src = "program array_transfer_between_kinds_prohibited_shape_expansion_should_not_compile\n".to_string();
+    let src =
+        "program array_transfer_between_kinds_prohibited_shape_expansion_should_not_compile\n"
+            .to_string();
     let body = "  integer :: a(2)\n  integer :: b\n  b = transfer(a, b, kind(a))\nend program";
     compile_ok(&(src + body).as_str());
 }

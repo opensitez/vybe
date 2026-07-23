@@ -4,8 +4,8 @@
 //! Keep Python-specific call shapes here instead of sending them through
 //! the old runtime-helper function table.
 
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 use vybe_emitter::{collections, reflection, target::Target};
 
 /// Python value-equality fallback for `==`/`!=` when no user `__eq__` is found.

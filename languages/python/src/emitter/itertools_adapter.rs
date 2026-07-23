@@ -187,7 +187,11 @@ fn emit_pred_filter(chunks: &mut [Chunk], current: usize, spec: Filter, line: u3
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
-    core_wasm::i32_const(&mut chunks[current], line, if spec.skip_leading { 1 } else { 0 });
+    core_wasm::i32_const(
+        &mut chunks[current],
+        line,
+        if spec.skip_leading { 1 } else { 0 },
+    );
     chunks[current].emit_op_u16(Op::LOCAL_SET, latch, line);
 
     let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
@@ -271,7 +275,11 @@ pub fn emit_filterfalse(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     emit_pred_filter(
         chunks,
         current,
-        Filter { keep_when: false, stop_at_first_false: false, skip_leading: false },
+        Filter {
+            keep_when: false,
+            stop_at_first_false: false,
+            skip_leading: false,
+        },
         line,
     );
 }
@@ -281,7 +289,11 @@ pub fn emit_takewhile(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     emit_pred_filter(
         chunks,
         current,
-        Filter { keep_when: true, stop_at_first_false: true, skip_leading: false },
+        Filter {
+            keep_when: true,
+            stop_at_first_false: true,
+            skip_leading: false,
+        },
         line,
     );
 }
@@ -291,7 +303,11 @@ pub fn emit_dropwhile(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     emit_pred_filter(
         chunks,
         current,
-        Filter { keep_when: true, stop_at_first_false: false, skip_leading: true },
+        Filter {
+            keep_when: true,
+            stop_at_first_false: false,
+            skip_leading: true,
+        },
         line,
     );
 }

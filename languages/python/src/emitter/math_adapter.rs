@@ -5,15 +5,22 @@
 //! functions (`factorial`, `gcd`, …) leave a raw `i32` so they repr as `120`,
 //! not `120.0`; the rest produce boxed f64 (Python floats).
 
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 use vybe_emitter::{collections, ops, tuples};
 
 const DEG_PER_RAD: f64 = 57.295_779_513_082_32; // 180 / π
 const RAD_PER_DEG: f64 = 0.017_453_292_519_943_295; // π / 180
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
     // Register on the CURRENT chunk (not chunks[0]) so `normalize_import_table`
     // remaps this CALL_IMPORT via the emitting chunk's own local table. A
     // chunks[0] index inside a non-root chunk collides with per-chunk imports

@@ -20,7 +20,16 @@ pub enum Side {
 /// Standard binary search: `Left` stops before an equal run, `Right` after it —
 /// the single comparison below is the only difference between them.
 /// Stack: `[]` → `[index]`, reading `a`/`x`/`lo`/`hi` from locals.
-fn emit_search(chunks: &mut [Chunk], current: usize, a: u16, x: u16, lo: u16, hi: u16, side: Side, line: u32) {
+fn emit_search(
+    chunks: &mut [Chunk],
+    current: usize,
+    a: u16,
+    x: u16,
+    lo: u16,
+    hi: u16,
+    side: Side,
+    line: u32,
+) {
     let mid = chunks[current].alloc_scratch(1);
 
     let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);

@@ -1,7 +1,7 @@
 use super::{LuaParser, Rule};
-use vybe_ast::*;
 use pest::Parser;
 use pest::iterators::Pair;
+use vybe_ast::*;
 
 fn to_span(pair: &Pair<Rule>) -> Span {
     let (start_line, start_col) = pair.as_span().start_pos().line_col();
@@ -126,7 +126,9 @@ fn expr_contains_float(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Lit(Literal::Float(_)) => true,
         ExprKind::Unary { expr, .. } => expr_contains_float(expr),
-        ExprKind::Binary { left, right, .. } => expr_contains_float(left) || expr_contains_float(right),
+        ExprKind::Binary { left, right, .. } => {
+            expr_contains_float(left) || expr_contains_float(right)
+        }
         ExprKind::Call { args, .. } => args.iter().any(|arg| expr_contains_float(&arg.value)),
         _ => false,
     }
@@ -354,10 +356,7 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
                             names
                                 .into_iter()
                                 .map(|name| {
-                                    ArrayPatternElem::Pattern(
-                                        BindingPattern::Ident(name),
-                                        None,
-                                    )
+                                    ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
                                 })
                                 .collect(),
                         ),
@@ -657,7 +656,9 @@ fn walk_return_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
     if values.len() > 1 {
-        Ok(StmtKind::Return(Some(Expression::new(ExprKind::Tuple(values)))))
+        Ok(StmtKind::Return(Some(Expression::new(ExprKind::Tuple(
+            values,
+        )))))
     } else {
         Ok(StmtKind::Return(values.into_iter().next()))
     }

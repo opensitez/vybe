@@ -239,13 +239,13 @@ pub fn emit_wrap_timedelta(chunk: &mut Chunk, line: u32) {
 /// How many microseconds each `timedelta` parameter contributes, in the
 /// order of CPython's signature (the walker hands us that exact order).
 const TIMEDELTA_SCALE: [f64; 7] = [
-    US_PER_DAY,          // days
-    US_PER_SECOND,       // seconds
-    1.0,                 // microseconds
-    1_000.0,             // milliseconds
+    US_PER_DAY,             // days
+    US_PER_SECOND,          // seconds
+    1.0,                    // microseconds
+    1_000.0,                // milliseconds
     60.0 * US_PER_SECOND,   // minutes
     3600.0 * US_PER_SECOND, // hours
-    7.0 * US_PER_DAY,    // weeks
+    7.0 * US_PER_DAY,       // weeks
 ];
 
 /// `datetime.timedelta(days=…, seconds=…, …)`. Stack: `[args…]` → `[obj]`.

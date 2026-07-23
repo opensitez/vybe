@@ -39,8 +39,8 @@
 //!   Appended to `parents` list after the `extends` parent.
 
 use super::{DartParser, Rule};
-use pest::iterators::Pair;
 use pest::Parser;
+use pest::iterators::Pair;
 use std::collections::{HashMap, HashSet};
 use vybe_ast::*;
 

@@ -84,11 +84,6 @@ uses_normalize_class = true
 "console.readline"    = { emit = "host:wasi:cli:readLine",   min_args = 0, max_args = 0 }
 "msgbox"              = { emit = "host:vybe:gui:msgBox",     min_args = 1, max_args = 3 }
 "inputbox"            = { emit = "host:vybe:gui:msgBox",     min_args = 1, max_args = 3 }
-"messagebox.show"     = { emit = "host:vybe:gui:msgBox",     min_args = 1, max_args = 3 }
-"application.run"     = { emit = "host:vybe:gui:runApplication", min_args = 1, max_args = 1 }
-"application.exit"    = { emit = "host:vybe:gui:appExit",         min_args = 0, max_args = 0 }
-"application.enablevisualstyles" = { emit = "host:vybe:gui:noop", min_args = 0, max_args = 0 }
-"application.setcompatibletextrenderingdefault" = { emit = "host:vybe:gui:noop", min_args = 1, max_args = 1 }
 "debug.print"         = { emit = "host:wasi:cli:log",        min_args = 0, max_args = 255 }
 
 # ── Type Conversions ─────────────────────────────────────────────────────────
@@ -630,29 +625,11 @@ extra_imports = [
 # ────────────────────────────────────────────────────────────────────────────
 
 [namespace_constants]
-"math.pi" = 3.141592653589793
-"math.e"  = 2.718281828459045
 "comparemethod.binary" = 0.0
 "comparemethod.text" = 1.0
 "vbtab" = "\t"
 "vbcrlf" = "\r\n"
 "vbnewline" = "\r\n"
-"commandtype.text" = 1.0
-"commandtype.storedprocedure" = 4.0
-"connectionstate.closed" = 0.0
-"connectionstate.open" = 1.0
-
-# System.Text.RegularExpressions.RegexOptions enum values
-"regexoptions.none"                    = 0.0
-"regexoptions.ignorecase"              = 1.0
-"regexoptions.multiline"               = 2.0
-"regexoptions.explicitcapture"         = 4.0
-"regexoptions.compiled"                = 8.0
-"regexoptions.singleline"              = 16.0
-"regexoptions.ignorepatternwhitespace" = 32.0
-"regexoptions.righttoleft"             = 64.0
-"regexoptions.ecmascript"              = 256.0
-"regexoptions.cultureinvariant"        = 512.0
 
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS (namespaceplan.md, dotnet phase): `System.*` qualified chains

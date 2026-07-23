@@ -567,7 +567,13 @@ fn normalize_pascal_free_function_overloads(body: &mut Vec<Statement>) {
         grouped.into_iter().collect();
     let mut scope = std::collections::HashMap::new();
     for stmt in body.iter_mut() {
-        rewrite_pascal_overload_stmt(stmt, &all_candidates, &return_types, &enum_members, &mut scope);
+        rewrite_pascal_overload_stmt(
+            stmt,
+            &all_candidates,
+            &return_types,
+            &enum_members,
+            &mut scope,
+        );
     }
 }
 
@@ -623,24 +629,30 @@ fn rewrite_pascal_overload_stmt(
                 if let (BindingPattern::Ident(name), Some(type_hint)) =
                     (&decl.pattern, &decl.type_hint)
                 {
-                    scope.insert(name.to_lowercase(), bare_type_name(type_hint).to_lowercase());
+                    scope.insert(
+                        name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
                 }
                 if *kind == VarDeclKind::Const {
                     if let BindingPattern::Ident(name) = &decl.pattern {
                         if let Some(init) = &decl.init {
-                            if let Some(type_name) = pascal_overload_expr_type(
-                                init,
-                                return_types,
-                                enum_members,
-                                scope,
-                            ) {
+                            if let Some(type_name) =
+                                pascal_overload_expr_type(init, return_types, enum_members, scope)
+                            {
                                 scope.insert(name.to_lowercase(), type_name);
                             }
                         }
                     }
                 }
                 if let Some(init) = &mut decl.init {
-                    rewrite_pascal_overload_expr(init, overloads, return_types, enum_members, scope);
+                    rewrite_pascal_overload_expr(
+                        init,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        scope,
+                    );
                 }
             }
         }
@@ -648,20 +660,39 @@ fn rewrite_pascal_overload_stmt(
             let mut scoped = scope.clone();
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
-                    scoped.insert(param.name.to_lowercase(), bare_type_name(type_hint).to_lowercase());
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
                 }
             }
             for stmt in body {
-                rewrite_pascal_overload_stmt(stmt, overloads, return_types, enum_members, &mut scoped);
+                rewrite_pascal_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
             }
         }
         StmtKind::Block(body) => {
             let mut scoped = scope.clone();
             for stmt in body {
-                rewrite_pascal_overload_stmt(stmt, overloads, return_types, enum_members, &mut scoped);
+                rewrite_pascal_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
             }
         }
-        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Throw { expr: Some(expr), .. } => {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr), ..
+        } => {
             rewrite_pascal_overload_expr(expr, overloads, return_types, enum_members, scope);
         }
         StmtKind::Assign { targets, value } => {
@@ -674,23 +705,46 @@ fn rewrite_pascal_overload_stmt(
             rewrite_pascal_overload_expr(target, overloads, return_types, enum_members, scope);
             rewrite_pascal_overload_expr(value, overloads, return_types, enum_members, scope);
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             rewrite_pascal_overload_expr(cond, overloads, return_types, enum_members, scope);
             let mut then_scope = scope.clone();
             for stmt in then_body {
-                rewrite_pascal_overload_stmt(stmt, overloads, return_types, enum_members, &mut then_scope);
+                rewrite_pascal_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut then_scope,
+                );
             }
             for (cond, body) in elifs {
                 rewrite_pascal_overload_expr(cond, overloads, return_types, enum_members, scope);
                 let mut scoped = scope.clone();
                 for stmt in body {
-                    rewrite_pascal_overload_stmt(stmt, overloads, return_types, enum_members, &mut scoped);
+                    rewrite_pascal_overload_stmt(
+                        stmt,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
                 }
             }
             if let Some(body) = else_body {
                 let mut scoped = scope.clone();
                 for stmt in body {
-                    rewrite_pascal_overload_stmt(stmt, overloads, return_types, enum_members, &mut scoped);
+                    rewrite_pascal_overload_stmt(
+                        stmt,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
                 }
             }
         }
@@ -698,79 +752,183 @@ fn rewrite_pascal_overload_stmt(
             rewrite_pascal_overload_expr(cond, overloads, return_types, enum_members, scope);
             let mut scoped = scope.clone();
             for stmt in body {
-                rewrite_pascal_overload_stmt(stmt, overloads, return_types, enum_members, &mut scoped);
+                rewrite_pascal_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
             }
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             let mut scoped = scope.clone();
             if let Some(init) = init {
-                rewrite_pascal_overload_stmt(init, overloads, return_types, enum_members, &mut scoped);
+                rewrite_pascal_overload_stmt(
+                    init,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
             }
             if let Some(cond) = cond {
-                rewrite_pascal_overload_expr(cond, overloads, return_types, enum_members, &mut scoped);
+                rewrite_pascal_overload_expr(
+                    cond,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
             }
             if let Some(update) = update {
-                rewrite_pascal_overload_expr(update, overloads, return_types, enum_members, &mut scoped);
+                rewrite_pascal_overload_expr(
+                    update,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
             }
             for stmt in body {
-                rewrite_pascal_overload_stmt(stmt, overloads, return_types, enum_members, &mut scoped);
+                rewrite_pascal_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
             }
         }
         StmtKind::ForIn { iter, body, .. } => {
             rewrite_pascal_overload_expr(iter, overloads, return_types, enum_members, scope);
             let mut scoped = scope.clone();
             for stmt in body {
-                rewrite_pascal_overload_stmt(stmt, overloads, return_types, enum_members, &mut scoped);
+                rewrite_pascal_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
             }
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             rewrite_pascal_overload_expr(expr, overloads, return_types, enum_members, scope);
             for case in cases {
                 for cond in &mut case.conditions {
                     match cond {
                         CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
-                            rewrite_pascal_overload_expr(expr, overloads, return_types, enum_members, scope);
+                            rewrite_pascal_overload_expr(
+                                expr,
+                                overloads,
+                                return_types,
+                                enum_members,
+                                scope,
+                            );
                         }
                         CaseCondition::Range { from, to } => {
-                            rewrite_pascal_overload_expr(from, overloads, return_types, enum_members, scope);
-                            rewrite_pascal_overload_expr(to, overloads, return_types, enum_members, scope);
+                            rewrite_pascal_overload_expr(
+                                from,
+                                overloads,
+                                return_types,
+                                enum_members,
+                                scope,
+                            );
+                            rewrite_pascal_overload_expr(
+                                to,
+                                overloads,
+                                return_types,
+                                enum_members,
+                                scope,
+                            );
                         }
                     }
                 }
                 let mut scoped = scope.clone();
                 for stmt in &mut case.body {
-                    rewrite_pascal_overload_stmt(stmt, overloads, return_types, enum_members, &mut scoped);
+                    rewrite_pascal_overload_stmt(
+                        stmt,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
                 }
             }
             if let Some(body) = default {
                 let mut scoped = scope.clone();
                 for stmt in body {
-                    rewrite_pascal_overload_stmt(stmt, overloads, return_types, enum_members, &mut scoped);
+                    rewrite_pascal_overload_stmt(
+                        stmt,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
                 }
             }
         }
         StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
             for member in members {
                 match member {
-                    ClassMember::Field { init: Some(init), type_hint, name, .. } => {
+                    ClassMember::Field {
+                        init: Some(init),
+                        type_hint,
+                        name,
+                        ..
+                    } => {
                         if let Some(type_hint) = type_hint {
-                            scope.insert(name.to_lowercase(), bare_type_name(type_hint).to_lowercase());
+                            scope.insert(
+                                name.to_lowercase(),
+                                bare_type_name(type_hint).to_lowercase(),
+                            );
                         }
-                        rewrite_pascal_overload_expr(init, overloads, return_types, enum_members, scope);
+                        rewrite_pascal_overload_expr(
+                            init,
+                            overloads,
+                            return_types,
+                            enum_members,
+                            scope,
+                        );
                     }
                     ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
                         let mut scoped = scope.clone();
-                        rewrite_pascal_overload_stmt(stmt, overloads, return_types, enum_members, &mut scoped);
+                        rewrite_pascal_overload_stmt(
+                            stmt,
+                            overloads,
+                            return_types,
+                            enum_members,
+                            &mut scoped,
+                        );
                     }
                     ClassMember::Constructor { params, body, .. } => {
                         let mut scoped = scope.clone();
                         for param in params {
                             if let Some(type_hint) = &param.type_hint {
-                                scoped.insert(param.name.to_lowercase(), bare_type_name(type_hint).to_lowercase());
+                                scoped.insert(
+                                    param.name.to_lowercase(),
+                                    bare_type_name(type_hint).to_lowercase(),
+                                );
                             }
                         }
                         for stmt in body {
-                            rewrite_pascal_overload_stmt(stmt, overloads, return_types, enum_members, &mut scoped);
+                            rewrite_pascal_overload_stmt(
+                                stmt,
+                                overloads,
+                                return_types,
+                                enum_members,
+                                &mut scoped,
+                            );
                         }
                     }
                     _ => {}
@@ -791,11 +949,19 @@ fn rewrite_pascal_overload_expr(
     match &mut expr.kind {
         ExprKind::Call { callee, args, .. } => {
             for arg in args.iter_mut() {
-                rewrite_pascal_overload_expr(&mut arg.value, overloads, return_types, enum_members, scope);
+                rewrite_pascal_overload_expr(
+                    &mut arg.value,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    scope,
+                );
             }
             if let ExprKind::Ident(name) = &mut callee.kind {
                 if let Some(candidates) = overloads.get(&name.to_lowercase()) {
-                    if let Some(best) = choose_pascal_overload(candidates, args, return_types, enum_members, scope) {
+                    if let Some(best) =
+                        choose_pascal_overload(candidates, args, return_types, enum_members, scope)
+                    {
                         *name = best.internal_name.clone();
                     }
                 }
@@ -825,7 +991,13 @@ fn rewrite_pascal_overload_expr(
         ExprKind::New { class, args } => {
             rewrite_pascal_overload_expr(class, overloads, return_types, enum_members, scope);
             for arg in args {
-                rewrite_pascal_overload_expr(&mut arg.value, overloads, return_types, enum_members, scope);
+                rewrite_pascal_overload_expr(
+                    &mut arg.value,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    scope,
+                );
             }
         }
         ExprKind::Assign { target, value } => {
@@ -837,7 +1009,13 @@ fn rewrite_pascal_overload_expr(
                 if let Some(key) = &mut item.key {
                     rewrite_pascal_overload_expr(key, overloads, return_types, enum_members, scope);
                 }
-                rewrite_pascal_overload_expr(&mut item.value, overloads, return_types, enum_members, scope);
+                rewrite_pascal_overload_expr(
+                    &mut item.value,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    scope,
+                );
             }
         }
         ExprKind::Tuple(items) | ExprKind::Set(items) => {
@@ -862,19 +1040,21 @@ fn choose_pascal_overload<'a>(
     candidates
         .iter()
         .filter_map(|candidate| {
-            let required = candidate.params.iter().filter(|p| p.default.is_none()).count();
+            let required = candidate
+                .params
+                .iter()
+                .filter(|p| p.default.is_none())
+                .count();
             if args.len() < required || args.len() > candidate.params.len() {
                 return None;
             }
-            let mut score = if args.len() == candidate.params.len() { 0 } else { 10 };
+            let mut score = if args.len() == candidate.params.len() {
+                0
+            } else {
+                10
+            };
             for (arg, param) in args.iter().zip(candidate.params.iter()) {
-                score += pascal_overload_arg_score(
-                    arg,
-                    param,
-                    return_types,
-                    enum_members,
-                    scope,
-                )?;
+                score += pascal_overload_arg_score(arg, param, return_types, enum_members, scope)?;
             }
             Some((score, candidate.params.len(), candidate.order, candidate))
         })
@@ -889,7 +1069,9 @@ fn pascal_overload_arg_score(
     enum_members: &std::collections::HashMap<String, String>,
     scope: &std::collections::HashMap<String, String>,
 ) -> Option<usize> {
-    if matches!(param.pass_by, PassBy::Ref | PassBy::Out) && !pascal_overload_is_assignable(&arg.value) {
+    if matches!(param.pass_by, PassBy::Ref | PassBy::Out)
+        && !pascal_overload_is_assignable(&arg.value)
+    {
         return None;
     }
     let param_type = param
@@ -905,8 +1087,15 @@ fn pascal_overload_arg_score(
         (Some("char"), Some("string")) => Some(1),
         (Some("string"), Some("char")) => Some(50),
         (Some("integer"), Some("real" | "single" | "double" | "extended")) => Some(2),
-        (Some("integer"), Some("longint" | "shortint" | "byte" | "word" | "cardinal" | "int64")) => Some(1),
-        (Some(arg), Some("integer")) if enum_members.values().any(|ty| ty.eq_ignore_ascii_case(arg)) => Some(4),
+        (
+            Some("integer"),
+            Some("longint" | "shortint" | "byte" | "word" | "cardinal" | "int64"),
+        ) => Some(1),
+        (Some(arg), Some("integer"))
+            if enum_members.values().any(|ty| ty.eq_ignore_ascii_case(arg)) =>
+        {
+            Some(4)
+        }
         (Some(_), Some(_)) => Some(30),
         (None, Some(_)) => Some(15),
     }
@@ -941,7 +1130,9 @@ fn pascal_overload_expr_type(
             }
         }
         ExprKind::Cast { type_name, .. } => Some(bare_type_name(type_name).to_lowercase()),
-        ExprKind::Unary { op: UnaryOp::Not, .. } => Some("boolean".to_string()),
+        ExprKind::Unary {
+            op: UnaryOp::Not, ..
+        } => Some("boolean".to_string()),
         ExprKind::Binary { op, .. } => match op {
             BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
                 Some("boolean".to_string())
@@ -955,7 +1146,10 @@ fn pascal_overload_expr_type(
 fn pascal_overload_is_assignable(expr: &Expression) -> bool {
     matches!(
         expr.kind,
-        ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Index { .. } | ExprKind::RefLoad(_)
+        ExprKind::Ident(_)
+            | ExprKind::Member { .. }
+            | ExprKind::Index { .. }
+            | ExprKind::RefLoad(_)
     )
 }
 
@@ -980,8 +1174,8 @@ fn collect_pascal_operator_methods(
 ) -> std::collections::HashMap<String, Vec<PascalOperatorMethod>> {
     let mut out = std::collections::HashMap::new();
     for stmt in body {
-        let (StmtKind::ClassDecl { name, members, .. } | StmtKind::StructDecl { name, members, .. }) =
-            &stmt.kind
+        let (StmtKind::ClassDecl { name, members, .. }
+        | StmtKind::StructDecl { name, members, .. }) = &stmt.kind
         else {
             continue;
         };
@@ -1063,16 +1257,22 @@ fn lower_pascal_operator_overload_stmt(
                 if let (BindingPattern::Ident(name), Some(type_hint)) =
                     (&decl.pattern, &decl.type_hint)
                 {
-                    scope.insert(name.to_lowercase(), bare_type_name(type_hint).to_lowercase());
+                    scope.insert(
+                        name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
                 }
                 if let Some(init) = &mut decl.init {
                     lower_pascal_operator_overload_expr(init, operators, scope);
                     if let (BindingPattern::Ident(_), Some(type_hint)) =
                         (&decl.pattern, &decl.type_hint)
                     {
-                        if let Some(converted) =
-                            pascal_implicit_operator_call(bare_type_name(type_hint), init, operators, scope)
-                        {
+                        if let Some(converted) = pascal_implicit_operator_call(
+                            bare_type_name(type_hint),
+                            init,
+                            operators,
+                            scope,
+                        ) {
                             *init = converted;
                         }
                     }
@@ -1083,7 +1283,10 @@ fn lower_pascal_operator_overload_stmt(
             let mut scoped = scope.clone();
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
-                    scoped.insert(param.name.to_lowercase(), bare_type_name(type_hint).to_lowercase());
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
                 }
             }
             lower_pascal_operator_overload_body(body, operators, &mut scoped);
@@ -1105,11 +1308,14 @@ fn lower_pascal_operator_overload_stmt(
             }
             lower_pascal_operator_overload_expr(value, operators, scope);
             if targets.len() == 1 {
-                if let Some(call) = pascal_inc_dec_operator_assignment(&targets[0], value, operators, scope) {
+                if let Some(call) =
+                    pascal_inc_dec_operator_assignment(&targets[0], value, operators, scope)
+                {
                     stmt.kind = StmtKind::Expr(call);
                     return;
                 }
-                if let Some(target_type) = pascal_operator_expr_type(&targets[0], scope, operators) {
+                if let Some(target_type) = pascal_operator_expr_type(&targets[0], scope, operators)
+                {
                     if let Some(converted) =
                         pascal_implicit_operator_call(&target_type, value, operators, scope)
                     {
@@ -1132,7 +1338,12 @@ fn lower_pascal_operator_overload_stmt(
                 }
             }
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             lower_pascal_operator_overload_expr(cond, operators, scope);
             let mut then_scope = scope.clone();
             lower_pascal_operator_overload_body(then_body, operators, &mut then_scope);
@@ -1151,7 +1362,12 @@ fn lower_pascal_operator_overload_stmt(
             let mut scoped = scope.clone();
             lower_pascal_operator_overload_body(body, operators, &mut scoped);
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             let mut scoped = scope.clone();
             if let Some(init) = init {
                 lower_pascal_operator_overload_stmt(init, operators, &mut scoped);
@@ -1169,7 +1385,11 @@ fn lower_pascal_operator_overload_stmt(
             let mut scoped = scope.clone();
             lower_pascal_operator_overload_body(body, operators, &mut scoped);
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             lower_pascal_operator_overload_expr(expr, operators, scope);
             for case in cases {
                 for cond in &mut case.conditions {
@@ -1194,9 +1414,17 @@ fn lower_pascal_operator_overload_stmt(
         StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
             for member in members {
                 match member {
-                    ClassMember::Field { name, type_hint, init: Some(init), .. } => {
+                    ClassMember::Field {
+                        name,
+                        type_hint,
+                        init: Some(init),
+                        ..
+                    } => {
                         if let Some(type_hint) = type_hint {
-                            scope.insert(name.to_lowercase(), bare_type_name(type_hint).to_lowercase());
+                            scope.insert(
+                                name.to_lowercase(),
+                                bare_type_name(type_hint).to_lowercase(),
+                            );
                         }
                         lower_pascal_operator_overload_expr(init, operators, scope);
                     }
@@ -1208,7 +1436,10 @@ fn lower_pascal_operator_overload_stmt(
                         let mut scoped = scope.clone();
                         for param in params {
                             if let Some(type_hint) = &param.type_hint {
-                                scoped.insert(param.name.to_lowercase(), bare_type_name(type_hint).to_lowercase());
+                                scoped.insert(
+                                    param.name.to_lowercase(),
+                                    bare_type_name(type_hint).to_lowercase(),
+                                );
                             }
                         }
                         lower_pascal_operator_overload_body(body, operators, &mut scoped);
@@ -1217,7 +1448,10 @@ fn lower_pascal_operator_overload_stmt(
                 }
             }
         }
-        StmtKind::Return(Some(expr)) | StmtKind::Throw { expr: Some(expr), .. } => {
+        StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr), ..
+        } => {
             lower_pascal_operator_overload_expr(expr, operators, scope);
         }
         _ => {}
@@ -1234,7 +1468,9 @@ fn lower_pascal_operator_overload_expr(
             lower_pascal_operator_overload_expr(left, operators, scope);
             lower_pascal_operator_overload_expr(right, operators, scope);
             if let Some(method) = pascal_operator_method_for_binop(*op) {
-                if let Some(call) = pascal_binary_operator_call(method, left, right, operators, scope) {
+                if let Some(call) =
+                    pascal_binary_operator_call(method, left, right, operators, scope)
+                {
                     *expr = call;
                 } else if *op == BinOp::Gt {
                     if let Some(call) =
@@ -1258,7 +1494,10 @@ fn lower_pascal_operator_overload_expr(
                 }
             }
         }
-        ExprKind::Cast { expr: inner, type_name } => {
+        ExprKind::Cast {
+            expr: inner,
+            type_name,
+        } => {
             lower_pascal_operator_overload_expr(inner, operators, scope);
             if let Some(call) = pascal_explicit_operator_call(type_name, inner, operators, scope) {
                 *expr = call;
@@ -1270,7 +1509,9 @@ fn lower_pascal_operator_overload_expr(
                 lower_pascal_operator_overload_expr(&mut arg.value, operators, scope);
             }
         }
-        ExprKind::Member { object, .. } => lower_pascal_operator_overload_expr(object, operators, scope),
+        ExprKind::Member { object, .. } => {
+            lower_pascal_operator_overload_expr(object, operators, scope)
+        }
         ExprKind::Index { object, index, .. } => {
             lower_pascal_operator_overload_expr(object, operators, scope);
             lower_pascal_operator_overload_expr(index, operators, scope);
@@ -1357,7 +1598,11 @@ fn pascal_binary_operator_call(
     let left_type = pascal_operator_expr_type(left, scope, operators)?;
     let right_type = pascal_operator_expr_type(right, scope, operators);
     let owner = choose_pascal_operator_owner(method, &[Some(left_type), right_type], operators)?;
-    Some(pascal_static_operator_call(&owner, method, vec![left.clone(), right.clone()]))
+    Some(pascal_static_operator_call(
+        &owner,
+        method,
+        vec![left.clone(), right.clone()],
+    ))
 }
 
 fn pascal_unary_operator_call(
@@ -1368,7 +1613,11 @@ fn pascal_unary_operator_call(
 ) -> Option<Expression> {
     let value_type = pascal_operator_expr_type(value, scope, operators)?;
     let owner = choose_pascal_operator_owner(method, &[Some(value_type)], operators)?;
-    Some(pascal_static_operator_call(&owner, method, vec![value.clone()]))
+    Some(pascal_static_operator_call(
+        &owner,
+        method,
+        vec![value.clone()],
+    ))
 }
 
 fn pascal_explicit_operator_call(
@@ -1385,7 +1634,11 @@ fn pascal_explicit_operator_call(
         .as_deref()
         .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case(target_type))
     {
-        Some(pascal_static_operator_call(&owner, "Explicit", vec![value.clone()]))
+        Some(pascal_static_operator_call(
+            &owner,
+            "Explicit",
+            vec![value.clone()],
+        ))
     } else {
         None
     }
@@ -1409,7 +1662,11 @@ fn pascal_implicit_operator_call(
             && method.params.len() == 1
             && pascal_operator_arg_matches(&method.params[0], value, scope)
     })?;
-    Some(pascal_static_operator_call(&target, &method.name, vec![value.clone()]))
+    Some(pascal_static_operator_call(
+        &target,
+        &method.name,
+        vec![value.clone()],
+    ))
 }
 
 fn pascal_inc_dec_operator_stmt_expr(
@@ -1473,7 +1730,10 @@ fn choose_pascal_operator_owner(
     arg_types: &[Option<String>],
     operators: &std::collections::HashMap<String, Vec<PascalOperatorMethod>>,
 ) -> Option<String> {
-    let first_type = arg_types.iter().flatten().find(|ty| operators.contains_key(*ty))?;
+    let first_type = arg_types
+        .iter()
+        .flatten()
+        .find(|ty| operators.contains_key(*ty))?;
     let methods = operators.get(first_type)?;
     methods
         .iter()
@@ -1484,14 +1744,16 @@ fn choose_pascal_operator_owner(
                     .params
                     .iter()
                     .zip(arg_types.iter())
-                    .all(|(param, arg_type)| match (param.type_hint.as_deref(), arg_type) {
-                        (Some(param_type), Some(arg_type)) => {
-                            bare_type_name(param_type).eq_ignore_ascii_case(arg_type)
-                                || is_pascal_numeric_type(param_type)
-                        }
-                        (Some(_), None) => true,
-                        (None, _) => true,
-                    })
+                    .all(
+                        |(param, arg_type)| match (param.type_hint.as_deref(), arg_type) {
+                            (Some(param_type), Some(arg_type)) => {
+                                bare_type_name(param_type).eq_ignore_ascii_case(arg_type)
+                                    || is_pascal_numeric_type(param_type)
+                            }
+                            (Some(_), None) => true,
+                            (None, _) => true,
+                        },
+                    )
         })
         .map(|_| first_type.clone())
 }
@@ -1578,12 +1840,28 @@ fn pascal_expr_same_place(a: &Expression, b: &Expression) -> bool {
     match (&a.kind, &b.kind) {
         (ExprKind::Ident(a), ExprKind::Ident(b)) => a.eq_ignore_ascii_case(b),
         (
-            ExprKind::Member { object: ao, field: af, .. },
-            ExprKind::Member { object: bo, field: bf, .. },
+            ExprKind::Member {
+                object: ao,
+                field: af,
+                ..
+            },
+            ExprKind::Member {
+                object: bo,
+                field: bf,
+                ..
+            },
         ) => af.eq_ignore_ascii_case(bf) && pascal_expr_same_place(ao, bo),
         (
-            ExprKind::Index { object: ao, index: ai, .. },
-            ExprKind::Index { object: bo, index: bi, .. },
+            ExprKind::Index {
+                object: ao,
+                index: ai,
+                ..
+            },
+            ExprKind::Index {
+                object: bo,
+                index: bi,
+                ..
+            },
         ) => pascal_expr_same_place(ao, bo) && format!("{:?}", ai.kind) == format!("{:?}", bi.kind),
         _ => false,
     }
@@ -1632,19 +1910,30 @@ fn collect_pascal_method_pointer_info(body: &[Statement]) -> PascalMethodPointer
         match &stmt.kind {
             StmtKind::VarDecl { declarations, kind } if *kind == VarDeclKind::Const => {
                 for decl in declarations {
-                    if let (BindingPattern::Ident(name), Some(type_hint)) = (&decl.pattern, &decl.type_hint) {
-                        info.aliases.insert(name.to_lowercase(), type_hint.to_lowercase());
+                    if let (BindingPattern::Ident(name), Some(type_hint)) =
+                        (&decl.pattern, &decl.type_hint)
+                    {
+                        info.aliases
+                            .insert(name.to_lowercase(), type_hint.to_lowercase());
                     }
                 }
             }
             StmtKind::FunctionDecl { name, params, .. } if !name.contains('.') => {
                 info.routines.insert(name.to_lowercase(), params.clone());
             }
-            StmtKind::ClassDecl { name, parents, members, .. } => {
+            StmtKind::ClassDecl {
+                name,
+                parents,
+                members,
+                ..
+            } => {
                 let class = name.to_lowercase();
                 info.parents.insert(
                     class.clone(),
-                    parents.iter().map(|p| bare_type_name(p).to_lowercase()).collect(),
+                    parents
+                        .iter()
+                        .map(|p| bare_type_name(p).to_lowercase())
+                        .collect(),
                 );
                 collect_pascal_method_pointer_members(&mut info, class, members);
             }
@@ -1666,7 +1955,9 @@ fn collect_pascal_method_pointer_members(
     let method_set = info.methods.entry(class).or_default();
     for member in members {
         match member {
-            ClassMember::Field { name, type_hint, .. } => {
+            ClassMember::Field {
+                name, type_hint, ..
+            } => {
                 if let Some(type_hint) = type_hint {
                     field_map.insert(name.to_lowercase(), type_hint.to_lowercase());
                 }
@@ -1706,7 +1997,9 @@ fn lower_pascal_method_pointer_stmt(
                 }
             }
             for decl in declarations {
-                if let (BindingPattern::Ident(name), Some(type_hint)) = (&decl.pattern, &decl.type_hint) {
+                if let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, &decl.type_hint)
+                {
                     var_types.insert(name.to_lowercase(), type_hint.to_lowercase());
                 }
             }
@@ -1763,7 +2056,12 @@ fn lower_pascal_method_pointer_stmt(
             let mut scoped = var_types.clone();
             lower_pascal_method_pointer_body(body, info, &mut scoped);
         }
-        StmtKind::If { cond, then_body, elifs, else_body } => {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
             lower_pascal_method_pointer_expr(cond, info, var_types);
             for stmt in then_body {
                 lower_pascal_method_pointer_stmt(stmt, info, &mut var_types.clone());
@@ -1780,7 +2078,12 @@ fn lower_pascal_method_pointer_stmt(
                 }
             }
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             let mut scoped = var_types.clone();
             if let Some(init) = init {
                 lower_pascal_method_pointer_stmt(init, info, &mut scoped);
@@ -1821,13 +2124,16 @@ fn lower_pascal_method_pointer_expr(
                     .and_then(|param| param.type_hint.as_deref())
                     .is_some_and(|ty| is_pascal_procedural_type(ty, info))
                 {
-                    if let Some(lambda) = pascal_method_pointer_lambda(&arg.value, info, var_types) {
+                    if let Some(lambda) = pascal_method_pointer_lambda(&arg.value, info, var_types)
+                    {
                         arg.value = lambda;
                     }
                 }
             }
         }
-        ExprKind::Member { object, .. } => lower_pascal_method_pointer_expr(object, info, var_types),
+        ExprKind::Member { object, .. } => {
+            lower_pascal_method_pointer_expr(object, info, var_types)
+        }
         ExprKind::Binary { left, right, .. } => {
             lower_pascal_method_pointer_expr(left, info, var_types);
             lower_pascal_method_pointer_expr(right, info, var_types);
@@ -3999,10 +4305,7 @@ fn default_init_const_bounded_arrays(body: &mut [Statement]) {
     }
 }
 
-fn collect_pascal_int_consts(
-    body: &[Statement],
-    out: &mut std::collections::HashMap<String, i64>,
-) {
+fn collect_pascal_int_consts(body: &[Statement], out: &mut std::collections::HashMap<String, i64>) {
     for stmt in body {
         match &stmt.kind {
             StmtKind::VarDecl {
@@ -4010,8 +4313,7 @@ fn collect_pascal_int_consts(
                 kind: VarDeclKind::Const,
             } => {
                 for decl in declarations {
-                    if let (BindingPattern::Ident(name), Some(init)) = (&decl.pattern, &decl.init)
-                    {
+                    if let (BindingPattern::Ident(name), Some(init)) = (&decl.pattern, &decl.init) {
                         if let Some(value) = const_int_expr(init) {
                             out.insert(name.to_lowercase(), value);
                         }
@@ -5806,11 +6108,13 @@ fn rewrite_pascal_fixed_array_bounds_expr(
             let Some((lo, hi)) = bounds.get((dim - 1) as usize).copied() else {
                 return;
             };
-            *expr = Expression::new(ExprKind::Lit(Literal::Int(if name.eq_ignore_ascii_case("low") {
-                lo
-            } else {
-                hi
-            })));
+            *expr = Expression::new(ExprKind::Lit(Literal::Int(
+                if name.eq_ignore_ascii_case("low") {
+                    lo
+                } else {
+                    hi
+                },
+            )));
         }
         ExprKind::Binary { left, right, .. } => {
             rewrite_pascal_fixed_array_bounds_expr(left, env);
@@ -13271,14 +13575,16 @@ fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
             | ExprKind::New { .. }
             | ExprKind::Assign { .. }
             | ExprKind::Lit(_) => expr,
-            ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Index { .. } => Expression::with_span(
-                ExprKind::Call {
-                    callee: Box::new(expr.clone()),
-                    args: Vec::new(),
-                    optional: false,
-                },
-                expr.span,
-            ),
+            ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Index { .. } => {
+                Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(expr.clone()),
+                        args: Vec::new(),
+                        optional: false,
+                    },
+                    expr.span,
+                )
+            }
             _ => expr,
         };
         return Ok(StmtKind::Expr(expr));

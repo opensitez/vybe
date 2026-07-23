@@ -1,6 +1,6 @@
-use vybe_emitter::instructions::{core_wasm, host};
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_emitter::instructions::{core_wasm, host};
 
 use vybe_emitter::{collections, dict, ops, strings, tuples};
 
@@ -461,11 +461,7 @@ pub fn emit_gen_throw(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
         core_wasm::dup(&mut chunks[current], line);
         chunks[current].emit_string_const("", line);
-        vybe_emitter::errors::emit_exception_new_finalize(
-            &mut chunks[current],
-            "Exception",
-            line,
-        );
+        vybe_emitter::errors::emit_exception_new_finalize(&mut chunks[current], "Exception", line);
     }
     vybe_emitter::generators::emit_resume_throw(&mut chunks[current], line);
 }

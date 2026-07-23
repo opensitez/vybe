@@ -27,11 +27,11 @@
 // ============================================================================
 
 use super::{Rule, WastParser};
-use vybe_ast::*;
 use pest::Parser;
 use pest::iterators::Pair;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use vybe_ast::*;
 
 thread_local! {
     static FUNC_INDEX_ARITIES: RefCell<Vec<usize>> = RefCell::new(Vec::new());
@@ -208,7 +208,9 @@ fn peek_block_result_count(pair: &Pair<Rule>) -> usize {
             // declared result count (looked up from the pre-scan).
             if let Some(idx) = bt.into_inner().find(|p| p.as_rule() == Rule::index) {
                 let name = idx.as_str().trim_start_matches('$').to_string();
-                count += TYPE_FUNC_RESULTS.with(|m| m.borrow().get(&name).copied()).unwrap_or(0);
+                count += TYPE_FUNC_RESULTS
+                    .with(|m| m.borrow().get(&name).copied())
+                    .unwrap_or(0);
             }
         }
     }
@@ -268,10 +270,12 @@ fn carry_stack_into_temps(
     let start = stack.len() - avail;
     for (k, temp) in temps.iter().enumerate() {
         if let Some(val) = stack.get(start + k) {
-            out.push(Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
-                target: Box::new(Expression::ident(temp)),
-                value: Box::new(val.clone()),
-            }))));
+            out.push(Statement::new(StmtKind::Expr(Expression::new(
+                ExprKind::Assign {
+                    target: Box::new(Expression::ident(temp)),
+                    value: Box::new(val.clone()),
+                },
+            ))));
         }
     }
     if consume {
@@ -291,10 +295,7 @@ fn preserve_stack_across_block(stack: &mut Vec<Expression>, statements: &mut Vec
         // A bare value expression (const/local.get/ident) has no side effect and
         // needs no temp — keep it deferred as-is. Anything else is bound to a
         // temp so its effect runs here, in order.
-        let keep = matches!(
-            e.kind,
-            ExprKind::Lit(_) | ExprKind::Ident(_)
-        );
+        let keep = matches!(e.kind, ExprKind::Lit(_) | ExprKind::Ident(_));
         if keep {
             stack.push(e);
         } else {
@@ -373,7 +374,11 @@ fn emit_folded_block(
             kind: VarDeclKind::Let,
         }));
     }
-    let kind = if is_loop { LabelKind::Loop } else { LabelKind::Block };
+    let kind = if is_loop {
+        LabelKind::Loop
+    } else {
+        LabelKind::Block
+    };
     let effective = labels.push(label.clone(), kind, result_temps.clone());
     let mut body = fold_instructions_seeded(instr_pairs, labels, seed)?;
     labels.pop();
@@ -381,7 +386,10 @@ fn emit_folded_block(
     let inner_stmt = if !is_loop {
         Statement::with_span(StmtKind::Block(body), span)
     } else {
-        body.push(Statement::with_span(StmtKind::Break(BreakTarget::Implicit), span));
+        body.push(Statement::with_span(
+            StmtKind::Break(BreakTarget::Implicit),
+            span,
+        ));
         Statement::with_span(
             StmtKind::While {
                 cond: Expression::bool(true),
@@ -473,14 +481,26 @@ fn emit_folded_try_table(
         } else if kw.starts_with("(catch_all") {
             (None, false, idxs.first().cloned().unwrap_or_default())
         } else if kw.starts_with("(catch_ref") {
-            (idxs.first().cloned(), true, idxs.get(1).cloned().unwrap_or_default())
+            (
+                idxs.first().cloned(),
+                true,
+                idxs.get(1).cloned().unwrap_or_default(),
+            )
         } else {
-            (idxs.first().cloned(), false, idxs.get(1).cloned().unwrap_or_default())
+            (
+                idxs.first().cloned(),
+                false,
+                idxs.get(1).cloned().unwrap_or_default(),
+            )
         };
 
         let arity = tag.as_deref().map(tag_arity).unwrap_or(0);
         let payload_binds: Vec<String> = (0..arity).map(|_| fresh_result_temp()).collect();
-        let exnref_bind = if capture_ref { Some(fresh_result_temp()) } else { None };
+        let exnref_bind = if capture_ref {
+            Some(fresh_result_temp())
+        } else {
+            None
+        };
 
         // Handler ≡ `br $L` carrying the delivered payload (+exnref): assign them
         // into the target's carry temps, then branch. The compiler binds the
@@ -944,9 +964,7 @@ fn validate_module(pair: &Pair<Rule>) -> Result<(), String> {
         let is_inline_import = is_def_kind && inner.as_str().contains("(import");
         let is_import = inner.as_rule() == Rule::import_field || is_inline_import;
         if is_import && def_seen {
-            return Err(
-                "imports must occur before all non-import definitions".to_string()
-            );
+            return Err("imports must occur before all non-import definitions".to_string());
         }
         if is_def_kind && !is_inline_import {
             def_seen = true;
@@ -976,7 +994,8 @@ fn validate_module(pair: &Pair<Rule>) -> Result<(), String> {
                     let dtext = desc.as_str();
                     if dtext.trim_start().starts_with("(func") || dtext.contains("(func") {
                         func_count += 1;
-                        if let Some(id) = desc.clone().into_inner().find(|c| c.as_rule() == Rule::id)
+                        if let Some(id) =
+                            desc.clone().into_inner().find(|c| c.as_rule() == Rule::id)
                         {
                             func_names.insert(id.as_str()[1..].to_string());
                         }
@@ -1070,8 +1089,7 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
         if child.as_rule() == Rule::module_field {
             if let Some(inner) = child.into_inner().next() {
                 if inner.as_rule() == Rule::func_field {
-                    let (name, params_count, results_count) =
-                        scan_func_signature(inner.clone());
+                    let (name, params_count, results_count) = scan_func_signature(inner.clone());
                     index_arities.push(params_count);
                     index_results.push(results_count);
                     if let Some(n) = &name {
@@ -1170,7 +1188,8 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                                         _ => {}
                                     }
                                 }
-                                if let Some(inner2) = composite.and_then(|c| c.into_inner().next()) {
+                                if let Some(inner2) = composite.and_then(|c| c.into_inner().next())
+                                {
                                     if inner2.as_rule() == Rule::array_type {
                                         array_elem = array_elem_type(&inner2);
                                     }
@@ -1207,7 +1226,9 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                                                 .next_back()
                                             {
                                                 parent_ref = Some(
-                                                    idx.as_str().trim_start_matches('$').to_string(),
+                                                    idx.as_str()
+                                                        .trim_start_matches('$')
+                                                        .to_string(),
                                                 );
                                             }
                                         }
@@ -1220,9 +1241,7 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                                                 let n = p
                                                     .clone()
                                                     .into_inner()
-                                                    .filter(|v| {
-                                                        v.as_rule() == Rule::any_val_type
-                                                    })
+                                                    .filter(|v| v.as_rule() == Rule::any_val_type)
                                                     .count();
                                                 match p.as_rule() {
                                                     Rule::param => ps += n,
@@ -1388,8 +1407,7 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                     match sub.as_rule() {
                         Rule::id => id = Some(sub.as_str()[1..].to_string()),
                         Rule::export_inline => {
-                            if let Some(s) =
-                                sub.into_inner().find(|p| p.as_rule() == Rule::string)
+                            if let Some(s) = sub.into_inner().find(|p| p.as_rule() == Rule::string)
                             {
                                 if unquote(s.as_str()) == "_start" {
                                     exports_start = true;
@@ -1568,8 +1586,10 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
             // reached as `ModuleClass._start()`.
             // Does the entry yield a value? If so, surface it as output the way
             // `wasmtime --invoke` prints an exported function's result.
-            let entry_yields =
-                FUNC_NAME_RESULTS.with(|f| f.borrow().get(&entry).copied()).unwrap_or(0) > 0;
+            let entry_yields = FUNC_NAME_RESULTS
+                .with(|f| f.borrow().get(&entry).copied())
+                .unwrap_or(0)
+                > 0;
             let callee = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(&class_name)),
                 field: entry,
@@ -1849,7 +1869,11 @@ fn walk_local(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                 // default lands as `Value::F32(0.0)` (Displays "0.0"), not a
                 // generic float folding to `F64` (Displays "0"). f64 keeps the
                 // JS-number 0.0 (Displays "0", matching its shared semantics).
-                "f32" => make_call("f32_demote_f64", vec![Expression::float(0.0)], Span::default()),
+                "f32" => make_call(
+                    "f32_demote_f64",
+                    vec![Expression::float(0.0)],
+                    Span::default(),
+                ),
                 "f64" => Expression::float(0.0),
                 // A concrete `(ref null $t)` local defaults to a WASM GC typed
                 // null so `struct.get`/`array.get` on a never-assigned typed-ref
@@ -2001,7 +2025,10 @@ fn walk_folded_instr_as_stmts(
             let mut body = fold_instructions(instr_pairs, labels)?;
             labels.pop();
             // A WASM loop exits on fall-through; while(true) needs an explicit break.
-            body.push(Statement::with_span(StmtKind::Break(BreakTarget::Implicit), span));
+            body.push(Statement::with_span(
+                StmtKind::Break(BreakTarget::Implicit),
+                span,
+            ));
             let while_stmt = Statement::with_span(
                 StmtKind::While {
                     cond: Expression::bool(true),
@@ -2184,7 +2211,6 @@ fn walk_folded_core(
         return Ok(last_expr);
     }
 
-
     // ── (if cond (then ...) (else ...)) → ternary ─────────────────────────
     let mut args: Vec<Expression> = Vec::new();
     let mut then_exprs: Vec<Expression> = Vec::new();
@@ -2281,7 +2307,11 @@ fn wat_float_format(x: Expression) -> Expression {
     let zero = || Expression::float(0.0);
     // whole number → "<x>.0"; otherwise the natural decimal string.
     let finite = tern(
-        bin(BinOp::StrictEq, bin(BinOp::Mod, x.clone(), Expression::float(1.0)), zero()),
+        bin(
+            BinOp::StrictEq,
+            bin(BinOp::Mod, x.clone(), Expression::float(1.0)),
+            zero(),
+        ),
         bin(
             BinOp::Add,
             bin(BinOp::Add, x.clone(), Expression::string("")),
@@ -2291,7 +2321,11 @@ fn wat_float_format(x: Expression) -> Expression {
     );
     // (x - x) is 0 for finite values but NaN for ±∞.
     let inf_or_finite = tern(
-        bin(BinOp::StrictNotEq, bin(BinOp::Sub, x.clone(), x.clone()), zero()),
+        bin(
+            BinOp::StrictNotEq,
+            bin(BinOp::Sub, x.clone(), x.clone()),
+            zero(),
+        ),
         tern(
             bin(BinOp::Lt, x.clone(), zero()),
             Expression::string("-inf"),
@@ -2361,9 +2395,9 @@ fn index_binding_name(i: i64, is_global: bool) -> String {
 fn resolve_wat_memidx(e: &Expression) -> usize {
     match &e.kind {
         ExprKind::Lit(Literal::Int(n)) => *n as usize,
-        ExprKind::Ident(nm) => {
-            MEMORY_NAME_INDEX.with(|f| f.borrow().get(nm).copied()).unwrap_or(0)
-        }
+        ExprKind::Ident(nm) => MEMORY_NAME_INDEX
+            .with(|f| f.borrow().get(nm).copied())
+            .unwrap_or(0),
         _ => 0,
     }
 }
@@ -2374,13 +2408,11 @@ fn resolve_wat_memidx(e: &Expression) -> usize {
 fn mem_op_immediate_count(name: &str) -> usize {
     match name {
         "memory.copy" => 2,
-        "memory.fill" | "memory.size" | "memory.grow"
-        | "i32.load" | "i64.load" | "f32.load" | "f64.load"
-        | "i32.load8_s" | "i32.load8_u" | "i32.load16_s" | "i32.load16_u"
-        | "i64.load8_s" | "i64.load8_u" | "i64.load16_s" | "i64.load16_u"
-        | "i64.load32_s" | "i64.load32_u"
-        | "i32.store" | "i64.store" | "f32.store" | "f64.store"
-        | "i32.store8" | "i32.store16" | "i64.store8" | "i64.store16" | "i64.store32" => 1,
+        "memory.fill" | "memory.size" | "memory.grow" | "i32.load" | "i64.load" | "f32.load"
+        | "f64.load" | "i32.load8_s" | "i32.load8_u" | "i32.load16_s" | "i32.load16_u"
+        | "i64.load8_s" | "i64.load8_u" | "i64.load16_s" | "i64.load16_u" | "i64.load32_s"
+        | "i64.load32_u" | "i32.store" | "i64.store" | "f32.store" | "f64.store" | "i32.store8"
+        | "i32.store16" | "i64.store8" | "i64.store16" | "i64.store32" => 1,
         _ => 0,
     }
 }
@@ -2535,7 +2567,10 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
         "i64.const" => {
             let v = args.into_iter().next().unwrap_or(Expression::int(0));
             if let ExprKind::Lit(Literal::Int(n)) = &v.kind {
-                Ok(Expression::with_span(ExprKind::Lit(Literal::BigInt(*n)), span))
+                Ok(Expression::with_span(
+                    ExprKind::Lit(Literal::BigInt(*n)),
+                    span,
+                ))
             } else {
                 Ok(v)
             }
@@ -2654,9 +2689,18 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
             // `select (result t)` prepends a result-type annotation; the stack
             // operands (val1, val2, cond) are always the last three args.
             let n = args.len();
-            let val1 = args.get(n.wrapping_sub(3)).cloned().unwrap_or(Expression::null());
-            let val2 = args.get(n.wrapping_sub(2)).cloned().unwrap_or(Expression::null());
-            let cond = args.get(n.wrapping_sub(1)).cloned().unwrap_or(Expression::bool(false));
+            let val1 = args
+                .get(n.wrapping_sub(3))
+                .cloned()
+                .unwrap_or(Expression::null());
+            let val2 = args
+                .get(n.wrapping_sub(2))
+                .cloned()
+                .unwrap_or(Expression::null());
+            let cond = args
+                .get(n.wrapping_sub(1))
+                .cloned()
+                .unwrap_or(Expression::bool(false));
             Ok(Expression::with_span(
                 ExprKind::Ternary {
                     cond: Box::new(cond),
@@ -2695,9 +2739,7 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
             // of the module class; qualify `Ident(f)` as `ClassName.f`. Imports
             // keep their bare name so the profile builtin table resolves them.
             let callee = match &callee.kind {
-                ExprKind::Ident(n)
-                    if DEFINED_FUNC_NAMES.with(|d| d.borrow().contains(n)) =>
-                {
+                ExprKind::Ident(n) if DEFINED_FUNC_NAMES.with(|d| d.borrow().contains(n)) => {
                     let class = MODULE_CLASS_NAME.with(|c| c.borrow().clone());
                     Expression::with_span(
                         ExprKind::Member {
@@ -2758,7 +2800,10 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
         // The VM has no host-externref type; model it faithfully as its integer
         // payload so equality-by-payload works both as an invoke arg and as an
         // expected result. `result_val`'s `(ref.extern N)` already lowers to N.
-        "ref.extern" => Ok(args.into_iter().next().unwrap_or_else(|| Expression::int(0))),
+        "ref.extern" => Ok(args
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| Expression::int(0))),
         // call_ref $sig: call a funcref value. args = [$sig, ...operands]; the
         // funcref is on top of the stack (last operand), the sig's params
         // precede it. Lower to a Call on the funcref value (compiler → CALL_REF).
@@ -3138,7 +3183,10 @@ fn walk_tag_field(pair: Pair<Rule>) -> Result<Statement, String> {
 /// inline `(table t (elem $f …))` abbreviation, its active-segment population
 /// (goes AFTER the class — it references the funcs as static methods, so it must
 /// run once the class exists, exactly like a standalone `(elem …)` field).
-fn walk_table_field(pair: Pair<Rule>, table_idx: usize) -> Result<(Statement, Vec<Statement>), String> {
+fn walk_table_field(
+    pair: Pair<Rule>,
+    table_idx: usize,
+) -> Result<(Statement, Vec<Statement>), String> {
     let span = to_span(&pair);
     let mut min_size: u64 = 0;
     let mut max_size: Option<u64> = None;
@@ -3249,7 +3297,6 @@ fn wast_stamp_type(obj: Expression, type_name: &str, span: Span) -> Expression {
         span,
     )
 }
-
 
 fn first_ident_or_index(pair: &Pair<Rule>) -> Option<String> {
     for c in pair.clone().into_inner() {
@@ -3561,7 +3608,10 @@ fn decode_wat_data_string(s: &str) -> Vec<u8> {
                     i += 2;
                 }
             }
-            c if c.is_ascii_hexdigit() && i + 2 < bytes.len() && bytes[i + 2].is_ascii_hexdigit() => {
+            c if c.is_ascii_hexdigit()
+                && i + 2 < bytes.len()
+                && bytes[i + 2].is_ascii_hexdigit() =>
+            {
                 out.push((hex_val(c) << 4) | hex_val(bytes[i + 2]));
                 i += 3;
             }
@@ -3748,10 +3798,7 @@ fn walk_const_expr(pair: Pair<Rule>) -> Result<Expression, String> {
     // computed one — otherwise the scalar path below would collapse the whole
     // vector to its first lane.
     let children: Vec<Pair<Rule>> = pair.into_inner().collect();
-    if let Some(lane) = children
-        .iter()
-        .find(|c| c.as_rule() == Rule::val_lane_type)
-    {
+    if let Some(lane) = children.iter().find(|c| c.as_rule() == Rule::val_lane_type) {
         let mut args = vec![Expression::string(lane.as_str())];
         for c in &children {
             if c.as_rule() == Rule::integer {
@@ -3931,7 +3978,9 @@ fn parse_hex_float(s: &str) -> Option<f64> {
         Some(r) => (true, r),
         None => (false, s.strip_prefix('+').unwrap_or(s)),
     };
-    let rest = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X"))?;
+    let rest = rest
+        .strip_prefix("0x")
+        .or_else(|| rest.strip_prefix("0X"))?;
     let (mantissa, exp) = match rest.find(['p', 'P']) {
         Some(i) => (&rest[..i], rest[i + 1..].parse::<i32>().ok()?),
         None => (rest, 0),
@@ -4153,7 +4202,8 @@ fn fold_instructions_seeded(
                         let then_end = else_idx.unwrap_or(end_idx);
                         let then_pairs: Vec<Pair<Rule>> = pairs[i + 1..then_end].to_vec();
                         labels.push(label.clone(), LabelKind::Block, Vec::new());
-                        let mut then_body = fold_instructions_seeded(then_pairs, labels, seed.clone())?;
+                        let mut then_body =
+                            fold_instructions_seeded(then_pairs, labels, seed.clone())?;
                         let mut else_body = if let Some(ei) = else_idx {
                             let else_pairs: Vec<Pair<Rule>> = pairs[ei + 1..end_idx].to_vec();
                             Some(fold_instructions_seeded(else_pairs, labels, seed)?)
@@ -4222,8 +4272,7 @@ fn fold_instructions_seeded(
                         // the next iteration's value into it (see the `br` arm).
                         // This makes the loop a real `while(true)` rather than the
                         // one-shot block a param-less lowering would force.
-                        let loop_has_param =
-                            kw == "loop" && peek_opener_has_param(&pairs[i]);
+                        let loop_has_param = kw == "loop" && peek_opener_has_param(&pairs[i]);
                         let param_temps: Vec<String> = if loop_has_param {
                             (0..param_count).map(|_| fresh_result_temp()).collect()
                         } else {
@@ -4274,8 +4323,7 @@ fn fold_instructions_seeded(
                                 kind: VarDeclKind::Let,
                             }));
                         }
-                        let effective =
-                            labels.push(label.clone(), kind, result_temps.clone());
+                        let effective = labels.push(label.clone(), kind, result_temps.clone());
                         labels.set_last_param_temps(param_temps.clone());
                         let mut body = fold_instructions_seeded(body_pairs, labels, seed)?;
                         labels.pop();
@@ -4416,8 +4464,7 @@ fn fold_instructions_seeded(
                     // a `call` + `return` (which would grow the stack).
                     if kw == "return_call_indirect" {
                         let call = make_call("return_call_indirect", call_args, span);
-                        statements
-                            .push(Statement::with_span(StmtKind::Expr(call), span));
+                        statements.push(Statement::with_span(StmtKind::Expr(call), span));
                     } else {
                         stack.push(make_call("call_indirect", call_args, span));
                     }
@@ -4462,10 +4509,24 @@ fn fold_instructions_seeded(
                         emit_folded_try_table(inner, span, labels, &mut statements, &mut stack)?;
                     }
                     "br_on_null" => {
-                        emit_folded_br_on_null(inner, false, span, labels, &mut statements, &mut stack)?;
+                        emit_folded_br_on_null(
+                            inner,
+                            false,
+                            span,
+                            labels,
+                            &mut statements,
+                            &mut stack,
+                        )?;
                     }
                     "br_on_non_null" => {
-                        emit_folded_br_on_null(inner, true, span, labels, &mut statements, &mut stack)?;
+                        emit_folded_br_on_null(
+                            inner,
+                            true,
+                            span,
+                            labels,
+                            &mut statements,
+                            &mut stack,
+                        )?;
                     }
                     "return" => {
                         emit_folded_return(inner, span, labels, &mut statements, &mut stack)?;
@@ -4495,11 +4556,25 @@ fn fold_instructions_seeded(
                             nested.as_ref().map(folded_instr_head).unwrap_or_default();
                         match (nested, nested_head.as_str()) {
                             (Some(op), "br_on_null") => {
-                                emit_folded_br_on_null(op, false, span, labels, &mut statements, &mut stack)?;
+                                emit_folded_br_on_null(
+                                    op,
+                                    false,
+                                    span,
+                                    labels,
+                                    &mut statements,
+                                    &mut stack,
+                                )?;
                                 stack.pop();
                             }
                             (Some(op), "br_on_non_null") => {
-                                emit_folded_br_on_null(op, true, span, labels, &mut statements, &mut stack)?;
+                                emit_folded_br_on_null(
+                                    op,
+                                    true,
+                                    span,
+                                    labels,
+                                    &mut statements,
+                                    &mut stack,
+                                )?;
                                 stack.pop();
                             }
                             _ => {
@@ -4631,9 +4706,18 @@ fn fold_instructions_seeded(
                     // lowers to the frame-reusing `Op::RETURN_CALL` (a plain
                     // `return f(args)` would grow the stack and overflow).
                     "return_call" | "return_call_ref" => {
-                        let inner = if name == "return_call" { "call" } else { "call_ref" };
+                        let inner = if name == "return_call" {
+                            "call"
+                        } else {
+                            "call_ref"
+                        };
                         let call = map_instr_to_ast(inner.to_string(), args, span)?;
-                        if let ExprKind::Call { callee, args: call_args, .. } = call.kind {
+                        if let ExprKind::Call {
+                            callee,
+                            args: call_args,
+                            ..
+                        } = call.kind
+                        {
                             let mut tail_args = vec![*callee];
                             tail_args.extend(call_args.into_iter().map(|a| a.value));
                             statements.push(Statement::with_span(
@@ -4641,10 +4725,8 @@ fn fold_instructions_seeded(
                                 span,
                             ));
                         } else {
-                            statements.push(Statement::with_span(
-                                StmtKind::Return(Some(call)),
-                                span,
-                            ));
+                            statements
+                                .push(Statement::with_span(StmtKind::Return(Some(call)), span));
                         }
                     }
                     "br" => {
@@ -4655,12 +4737,7 @@ fn fold_instructions_seeded(
                             // a continue that carries the NEXT iteration's params; a
                             // `br` to a block carries the block's results.
                             let carry = branch_carry_temps(&entry);
-                            carry_stack_into_temps(
-                                &carry,
-                                &mut stack,
-                                true,
-                                &mut statements,
-                            );
+                            carry_stack_into_temps(&carry, &mut stack, true, &mut statements);
                             statements.push(br_stmt_for(&entry, span));
                         } else {
                             statements.push(make_br_stmt_opt(None, labels, span));
@@ -4687,12 +4764,7 @@ fn fold_instructions_seeded(
                                 // loop target carries its param temps; a block, its
                                 // result temps.
                                 let carry = branch_carry_temps(&entry);
-                                carry_stack_into_temps(
-                                    &carry,
-                                    &mut stack,
-                                    false,
-                                    &mut then_body,
-                                );
+                                carry_stack_into_temps(&carry, &mut stack, false, &mut then_body);
                                 br_stmt_for(&entry, span)
                             }
                             None => make_br_stmt_opt(None, labels, span),
@@ -5009,49 +5081,51 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
         "memory.fill" | "memory.copy" | "memory.init" => 3,
 
         // Tables. The table index is an immediate; these are the stack operands.
-        "table.get" => 1,             // elem index
+        "table.get" => 1,                // elem index
         "table.set" | "table.grow" => 2, // (index,value) / (init,delta)
         "table.size" => 0,
         "table.fill" | "table.copy" | "table.init" => 3,
 
         // GC references without a type/field immediate — pure stack arity.
-        "ref.i31" => 1,               // i32 → i31ref
+        "ref.i31" => 1,                 // i32 → i31ref
         "i31.get_s" | "i31.get_u" => 1, // i31ref → i32
         "ref.as_non_null" | "any.convert_extern" | "extern.convert_any" => 1,
-        "ref.is_null" => 1,           // [ref] → [i32]
+        "ref.is_null" => 1, // [ref] → [i32]
         "ref.eq" => 2,
         // [ref] → [i32] (test) / [ref] → [ref] (cast). The heap-type operand is
         // an immediate, not a stack value; one ref is popped.
         "ref.test" | "ref.test_null" | "ref.cast" | "ref.cast_null" => 1,
 
         // ── Stringref proposal (stack-operand counts; $mem is an immediate) ──
-        "string.new_utf8" | "string.new_wtf8" | "string.new_lossy_utf8"
-        | "string.new_wtf16" => 2, // ptr, len (wtf16: ptr, codeunits)
-        "string.new_utf8_array" | "string.new_wtf16_array"
-        | "string.new_wtf8_array" | "string.new_lossy_utf8_array" => 3, // arr, start, end
+        "string.new_utf8" | "string.new_wtf8" | "string.new_lossy_utf8" | "string.new_wtf16" => 2, // ptr, len (wtf16: ptr, codeunits)
+        "string.new_utf8_array"
+        | "string.new_wtf16_array"
+        | "string.new_wtf8_array"
+        | "string.new_lossy_utf8_array" => 3, // arr, start, end
         "string.measure_utf8" | "string.measure_wtf8" | "string.measure_wtf16" => 1,
-        "string.encode_utf8" | "string.encode_wtf16"
-        | "string.encode_lossy_utf8" | "string.encode_wtf8" => 2, // str, ptr
-        "string.encode_utf8_array" | "string.encode_wtf16_array"
-        | "string.encode_lossy_utf8_array" | "string.encode_wtf8_array" => 3, // str, arr, start
+        "string.encode_utf8"
+        | "string.encode_wtf16"
+        | "string.encode_lossy_utf8"
+        | "string.encode_wtf8" => 2, // str, ptr
+        "string.encode_utf8_array"
+        | "string.encode_wtf16_array"
+        | "string.encode_lossy_utf8_array"
+        | "string.encode_wtf8_array" => 3, // str, arr, start
         "string.concat" | "string.eq" | "string.compare" => 2,
-        "string.is_usv_sequence"
-        | "string.as_wtf8" | "string.as_wtf16" | "string.as_iter" => 1,
+        "string.is_usv_sequence" | "string.as_wtf8" | "string.as_wtf16" | "string.as_iter" => 1,
         "stringview_iter.next" | "stringview_wtf16.length" => 1,
         // iterator advance/rewind/slice take (view, codepoints).
-        "stringview_iter.advance" | "stringview_iter.rewind"
-        | "stringview_iter.slice" => 2,
+        "stringview_iter.advance" | "stringview_iter.rewind" | "stringview_iter.slice" => 2,
         // WTF-16 view: get_codeunit(view,pos)=2, slice(view,start,end)=3,
         // encode(view,ptr,pos,len)=4. WTF-8 view: advance(view,pos,bytes)=3,
         // slice(view,start,end)=3, encode_utf8(view,ptr,pos,bytes)=4.
         "stringview_wtf16.get_codeunit" => 2,
-        "stringview_wtf16.slice" | "stringview_wtf8.advance"
-        | "stringview_wtf8.slice" => 3,
+        "stringview_wtf16.slice" | "stringview_wtf8.advance" | "stringview_wtf8.slice" => 3,
         "stringview_wtf16.encode" | "stringview_wtf8.encode_utf8" => 4,
-        "array.len" => 1,             // arrayref → i32
+        "array.len" => 1, // arrayref → i32
         // Array ops carrying a type-index immediate (kept as an immediate arg):
-        "array.new" => 2,            // value, length
-        "array.new_default" => 1,    // length
+        "array.new" => 2,         // value, length
+        "array.new_default" => 1, // length
         // array.new_fixed $T N: typeidx + count are immediates; N stack values.
         "array.new_fixed" => args
             .get(1)
@@ -5065,15 +5139,15 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
             .unwrap_or(0),
         "array.get_s" | "array.get_u" => 2, // arrayref, index
         // Typeless array access (VM ignores the WAT typeidx → walker drops it):
-        "array.get" => 2,            // arrayref, index
-        "array.set" => 3,            // arrayref, index, value
-        "array.fill" => 4,           // arrayref, index, value, count
-        "array.copy" => 5,           // dst, dst_off, src, src_off, len (2 typeidxs dropped)
+        "array.get" => 2,  // arrayref, index
+        "array.set" => 3,  // arrayref, index, value
+        "array.fill" => 4, // arrayref, index, value, count
+        "array.copy" => 5, // dst, dst_off, src, src_off, len (2 typeidxs dropped)
         // GC array-from-segment ops carry `typeidx` + `dataidx`/`elemidx` as
         // immediates; the stack operands are (offset, size) for new_* and
         // (array, dest_offset, src_offset, size) for init_*.
-        "array.new_data" | "array.new_elem" => 2,   // offset, size
-        "array.init_data" | "array.init_elem" => 4,  // array, dst_off, src_off, size
+        "array.new_data" | "array.new_elem" => 2, // offset, size
+        "array.init_data" | "array.init_elem" => 4, // array, dst_off, src_off, size
 
         // br_if
         "br_if" => 1,
@@ -5140,9 +5214,10 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
 
 /// Is this a SIMD (v128) instruction mnemonic?
 fn is_simd_instr(name: &str) -> bool {
-    matches!(name.split_once('.').map(|(p, _)| p), Some(
-        "i8x16" | "i16x8" | "i32x4" | "i64x2" | "f32x4" | "f64x2" | "v128"
-    ))
+    matches!(
+        name.split_once('.').map(|(p, _)| p),
+        Some("i8x16" | "i16x8" | "i32x4" | "i64x2" | "f32x4" | "f64x2" | "v128")
+    )
 }
 
 /// How many STACK operands a SIMD op consumes (immediates excluded). Derived
@@ -5211,12 +5286,12 @@ fn simd_stack_arity(name: &str) -> usize {
 /// only functions we positively know to be void become statements.
 fn call_result_count(args: &[Expression]) -> usize {
     match args.first().map(|e| &e.kind) {
-        Some(ExprKind::Ident(n)) => {
-            FUNC_NAME_RESULTS.with(|f| f.borrow().get(n).copied()).unwrap_or(1)
-        }
-        Some(ExprKind::Lit(Literal::Int(idx))) => {
-            FUNC_INDEX_RESULTS.with(|f| f.borrow().get(*idx as usize).copied()).unwrap_or(1)
-        }
+        Some(ExprKind::Ident(n)) => FUNC_NAME_RESULTS
+            .with(|f| f.borrow().get(n).copied())
+            .unwrap_or(1),
+        Some(ExprKind::Lit(Literal::Int(idx))) => FUNC_INDEX_RESULTS
+            .with(|f| f.borrow().get(*idx as usize).copied())
+            .unwrap_or(1),
         _ => 1,
     }
 }

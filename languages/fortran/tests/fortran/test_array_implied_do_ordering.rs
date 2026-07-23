@@ -344,4 +344,3 @@ end program array_implied_do_ordering_stride_then_masked_fill
     );
     assert_eq!(out, vec!["6", "2", "0", "0", "0"]);
 }
-

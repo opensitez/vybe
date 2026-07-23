@@ -20,8 +20,8 @@
 //!   forms reduced to bare name params.
 
 use super::{JavaParser, Rule};
-use pest::iterators::Pair;
 use pest::Parser;
+use pest::iterators::Pair;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use vybe_ast::*;
@@ -318,10 +318,16 @@ fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> b
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
             java_expr_references_any_name(expr, names)
         }
-        StmtKind::Block(body) | StmtKind::FunctionDecl { body, .. } => {
-            body.iter().any(|stmt| java_stmt_references_any_name(stmt, names))
-        }
-        StmtKind::ClassDecl { parents, interfaces, members, decorators, .. } => {
+        StmtKind::Block(body) | StmtKind::FunctionDecl { body, .. } => body
+            .iter()
+            .any(|stmt| java_stmt_references_any_name(stmt, names)),
+        StmtKind::ClassDecl {
+            parents,
+            interfaces,
+            members,
+            decorators,
+            ..
+        } => {
             parents.iter().any(|name| names.contains(name))
                 || interfaces.iter().any(|name| names.contains(name))
                 || decorators
@@ -331,13 +337,22 @@ fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> b
                     .iter()
                     .any(|member| java_class_member_references_any_name(member, names))
         }
-        StmtKind::InterfaceDecl { parents, decorators, .. } => {
+        StmtKind::InterfaceDecl {
+            parents,
+            decorators,
+            ..
+        } => {
             parents.iter().any(|name| names.contains(name))
                 || decorators
                     .iter()
                     .any(|expr| java_expr_references_any_name(expr, names))
         }
-        StmtKind::EnumDecl { interfaces, body_members, decorators, .. } => {
+        StmtKind::EnumDecl {
+            interfaces,
+            body_members,
+            decorators,
+            ..
+        } => {
             interfaces.iter().any(|name| names.contains(name))
                 || decorators
                     .iter()
@@ -346,7 +361,12 @@ fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> b
                     .iter()
                     .any(|member| java_class_member_references_any_name(member, names))
         }
-        StmtKind::StructDecl { interfaces, members, decorators, .. } => {
+        StmtKind::StructDecl {
+            interfaces,
+            members,
+            decorators,
+            ..
+        } => {
             interfaces.iter().any(|name| names.contains(name))
                 || decorators
                     .iter()
@@ -355,9 +375,9 @@ fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> b
                     .iter()
                     .any(|member| java_class_member_references_any_name(member, names))
         }
-        StmtKind::NamespaceDecl { body, .. } => {
-            body.iter().any(|stmt| java_stmt_references_any_name(stmt, names))
-        }
+        StmtKind::NamespaceDecl { body, .. } => body
+            .iter()
+            .any(|stmt| java_stmt_references_any_name(stmt, names)),
         StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|decl| {
             decl.type_hint
                 .as_deref()
@@ -398,7 +418,12 @@ fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> b
                         .any(|stmt| java_stmt_references_any_name(stmt, names))
                 })
         }
-        StmtKind::For { init, cond, update, body } => {
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
             init.as_ref()
                 .is_some_and(|stmt| java_stmt_references_any_name(stmt, names))
                 || cond
@@ -411,7 +436,12 @@ fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> b
                     .iter()
                     .any(|stmt| java_stmt_references_any_name(stmt, names))
         }
-        StmtKind::ForIn { iter, body, else_body, .. } => {
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
             java_expr_references_any_name(iter, names)
                 || body
                     .iter()
@@ -421,7 +451,11 @@ fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> b
                         .any(|stmt| java_stmt_references_any_name(stmt, names))
                 })
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             java_expr_references_any_name(cond, names)
                 || body
                     .iter()
@@ -436,7 +470,11 @@ fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> b
                 .any(|stmt| java_stmt_references_any_name(stmt, names))
                 || java_expr_references_any_name(cond, names)
         }
-        StmtKind::Switch { expr, cases, default } => {
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
             java_expr_references_any_name(expr, names)
                 || cases.iter().any(|case| {
                     case.conditions
@@ -489,8 +527,15 @@ fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> b
 
 fn java_class_member_references_any_name(member: &ClassMember, names: &HashSet<String>) -> bool {
     match member {
-        ClassMember::Field { type_hint, init, array_bounds, .. } => {
-            type_hint.as_deref().is_some_and(|type_name| names.contains(type_name))
+        ClassMember::Field {
+            type_hint,
+            init,
+            array_bounds,
+            ..
+        } => {
+            type_hint
+                .as_deref()
+                .is_some_and(|type_name| names.contains(type_name))
                 || init
                     .as_ref()
                     .is_some_and(|expr| java_expr_references_any_name(expr, names))
@@ -503,7 +548,9 @@ fn java_class_member_references_any_name(member: &ClassMember, names: &HashSet<S
         ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
             java_stmt_references_any_name(stmt, names)
         }
-        ClassMember::Constructor { body, base_args, .. } => {
+        ClassMember::Constructor {
+            body, base_args, ..
+        } => {
             base_args.as_ref().is_some_and(|args| {
                 args.iter()
                     .any(|expr| java_expr_references_any_name(expr, names))
@@ -511,8 +558,15 @@ fn java_class_member_references_any_name(member: &ClassMember, names: &HashSet<S
                 .iter()
                 .any(|stmt| java_stmt_references_any_name(stmt, names))
         }
-        ClassMember::Property { type_hint, getter, setter, .. } => {
-            type_hint.as_deref().is_some_and(|type_name| names.contains(type_name))
+        ClassMember::Property {
+            type_hint,
+            getter,
+            setter,
+            ..
+        } => {
+            type_hint
+                .as_deref()
+                .is_some_and(|type_name| names.contains(type_name))
                 || getter.as_ref().is_some_and(|body| {
                     body.iter()
                         .any(|stmt| java_stmt_references_any_name(stmt, names))
@@ -524,13 +578,17 @@ fn java_class_member_references_any_name(member: &ClassMember, names: &HashSet<S
                         .any(|stmt| java_stmt_references_any_name(stmt, names))
                 })
         }
-        ClassMember::Const { type_hint, value, .. } => {
-            type_hint.as_deref().is_some_and(|type_name| names.contains(type_name))
+        ClassMember::Const {
+            type_hint, value, ..
+        } => {
+            type_hint
+                .as_deref()
+                .is_some_and(|type_name| names.contains(type_name))
                 || java_expr_references_any_name(value, names)
         }
-        ClassMember::Event { type_hint, .. } => {
-            type_hint.as_deref().is_some_and(|type_name| names.contains(type_name))
-        }
+        ClassMember::Event { type_hint, .. } => type_hint
+            .as_deref()
+            .is_some_and(|type_name| names.contains(type_name)),
     }
 }
 
@@ -543,8 +601,7 @@ fn java_case_condition_references_any_name(
             java_expr_references_any_name(expr, names)
         }
         CaseCondition::Range { from, to } => {
-            java_expr_references_any_name(from, names)
-                || java_expr_references_any_name(to, names)
+            java_expr_references_any_name(from, names) || java_expr_references_any_name(to, names)
         }
     }
 }
@@ -602,8 +659,7 @@ fn java_expr_references_any_name(expr: &Expression, names: &HashSet<String>) -> 
             .iter()
             .any(|expr| java_expr_references_any_name(expr, names)),
         ExprKind::Object(props) => props.iter().any(|prop| match prop {
-            ObjectProperty::KeyValue { key, value }
-            | ObjectProperty::Computed { key, value } => {
+            ObjectProperty::KeyValue { key, value } | ObjectProperty::Computed { key, value } => {
                 java_expr_references_any_name(key, names)
                     || java_expr_references_any_name(value, names)
             }
@@ -667,7 +723,9 @@ fn java_expr_references_any_name(expr: &Expression, names: &HashSet<String>) -> 
             java_expr_references_any_name(target, names)
                 || java_expr_references_any_name(value, names)
         }
-        ExprKind::ClassExpr { parent, members, .. } => {
+        ExprKind::ClassExpr {
+            parent, members, ..
+        } => {
             parent
                 .as_ref()
                 .is_some_and(|expr| java_expr_references_any_name(expr, names))
@@ -677,8 +735,7 @@ fn java_expr_references_any_name(expr: &Expression, names: &HashSet<String>) -> 
         }
         ExprKind::FunctionExpr(stmt) => java_stmt_references_any_name(stmt, names),
         ExprKind::Range { start, end, .. } => {
-            java_expr_references_any_name(start, names)
-                || java_expr_references_any_name(end, names)
+            java_expr_references_any_name(start, names) || java_expr_references_any_name(end, names)
         }
         ExprKind::StaticAccess { class, member } => {
             java_expr_references_any_name(class, names)
@@ -2091,7 +2148,10 @@ fn qualify_java_enum_intrinsics_in_stmts(
                 }
                 qualify_java_enum_intrinsics_in_expr(value, enum_name, enum_members);
             }
-            StmtKind::Return(Some(expr)) | StmtKind::Throw { expr: Some(expr), .. } => {
+            StmtKind::Return(Some(expr))
+            | StmtKind::Throw {
+                expr: Some(expr), ..
+            } => {
                 qualify_java_enum_intrinsics_in_expr(expr, enum_name, enum_members);
             }
             StmtKind::If {
@@ -2160,7 +2220,11 @@ fn qualify_java_enum_intrinsics_in_stmts(
                     for condition in &mut case.conditions {
                         match condition {
                             CaseCondition::Value(value) => {
-                                qualify_java_enum_intrinsics_in_expr(value, enum_name, enum_members);
+                                qualify_java_enum_intrinsics_in_expr(
+                                    value,
+                                    enum_name,
+                                    enum_members,
+                                );
                             }
                             CaseCondition::Range { from, to } => {
                                 qualify_java_enum_intrinsics_in_expr(from, enum_name, enum_members);
@@ -2171,11 +2235,7 @@ fn qualify_java_enum_intrinsics_in_stmts(
                             }
                         }
                     }
-                    qualify_java_enum_intrinsics_in_stmts(
-                        &mut case.body,
-                        enum_name,
-                        enum_members,
-                    );
+                    qualify_java_enum_intrinsics_in_stmts(&mut case.body, enum_name, enum_members);
                 }
                 if let Some(default) = default {
                     qualify_java_enum_intrinsics_in_stmts(default, enum_name, enum_members);
@@ -2229,7 +2289,8 @@ fn qualify_java_enum_intrinsics_in_expr(
             qualify_java_enum_intrinsics_in_expr(object, enum_name, enum_members)
         }
         ExprKind::Index { object, index, .. } => {
-            if let Some(member) = java_enum_values_constant_index_member(object, index, enum_members)
+            if let Some(member) =
+                java_enum_values_constant_index_member(object, index, enum_members)
             {
                 *expr = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Member {
@@ -2396,7 +2457,8 @@ fn java_enum_override_dispatch_body(
         }));
     }
     body.extend(
-        fallback.unwrap_or_else(|| vec![Statement::new(StmtKind::Return(Some(Expression::null())))]),
+        fallback
+            .unwrap_or_else(|| vec![Statement::new(StmtKind::Return(Some(Expression::null())))]),
     );
     body
 }
@@ -2907,7 +2969,9 @@ fn walk_var_declarator(
     if type_hint
         .as_deref()
         .is_some_and(|hint| java_type_simple_name(hint) == "Runnable")
-        && init.as_ref().is_some_and(java_initializer_is_functional_value)
+        && init
+            .as_ref()
+            .is_some_and(java_initializer_is_functional_value)
     {
         JAVA_RUNNABLE_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
         JAVA_FUNCTIONAL_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
@@ -2919,7 +2983,9 @@ fn walk_var_declarator(
     if type_hint
         .as_deref()
         .is_some_and(java_is_functional_interface_type)
-        && init.as_ref().is_some_and(java_initializer_is_functional_value)
+        && init
+            .as_ref()
+            .is_some_and(java_initializer_is_functional_value)
     {
         JAVA_FUNCTIONAL_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
         if let Some(hint) = type_hint.as_deref() {
@@ -4509,7 +4575,11 @@ fn java_char_numeric_cast_expr(expr: Expression) -> Expression {
             left: Box::new(java_char_numeric_cast_expr(*left)),
             right: Box::new(java_char_numeric_cast_expr(*right)),
         }),
-        ExprKind::Index { object, index, null_safe } => Expression::new(ExprKind::Call {
+        ExprKind::Index {
+            object,
+            index,
+            null_safe,
+        } => Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_char_ord")),
             args: vec![Argument::positional(Expression::new(ExprKind::Index {
                 object,
@@ -4539,7 +4609,10 @@ fn java_char_numeric_cast_expr(expr: Expression) -> Expression {
     }
 }
 
-fn java_expr_is_char_numeric_source(expr: &Expression, local_types: &HashMap<String, String>) -> bool {
+fn java_expr_is_char_numeric_source(
+    expr: &Expression,
+    local_types: &HashMap<String, String>,
+) -> bool {
     match &expr.kind {
         ExprKind::Lit(Literal::Char(_)) => true,
         ExprKind::Ident(name) => local_types
@@ -9031,10 +9104,9 @@ fn erase_java_interface_param_hints_with_types(
                     }
                     if let BindingPattern::Ident(name) = &decl.pattern {
                         if is_interface_hint
-                            && decl
-                                .init
-                                .as_ref()
-                                .is_some_and(|init| java_initializer_is_class_object(init, concrete_locals))
+                            && decl.init.as_ref().is_some_and(|init| {
+                                java_initializer_is_class_object(init, concrete_locals)
+                            })
                         {
                             JAVA_FUNCTIONAL_VARS.with(|vars| {
                                 vars.borrow_mut().remove(name);
@@ -9129,9 +9201,10 @@ fn java_concrete_initializer_type(
 
 fn erase_java_interface_hints_expr(expr: &mut Expression) {
     match &mut expr.kind {
-        ExprKind::Cast { expr: inner, type_name }
-            if java_anonymous_interface_target(type_name) =>
-        {
+        ExprKind::Cast {
+            expr: inner,
+            type_name,
+        } if java_anonymous_interface_target(type_name) => {
             *expr = (**inner).clone();
         }
         ExprKind::Call { callee, args, .. } => {
@@ -9236,7 +9309,9 @@ fn java_is_abstract_method_declaration(member: &ClassMember) -> bool {
 fn lower_java_abstract_runtime_modifiers(body: &mut [Statement]) {
     for stmt in body {
         match &mut stmt.kind {
-            StmtKind::ClassDecl { members, modifiers, .. } => {
+            StmtKind::ClassDecl {
+                members, modifiers, ..
+            } => {
                 modifiers.is_abstract = false;
                 for member in members {
                     if let ClassMember::NestedType(nested) = member {
@@ -11094,7 +11169,8 @@ fn java_static_field_init_is_inlineable(expr: &Expression) -> bool {
             java_static_field_init_is_inlineable(expr)
         }
         ExprKind::Binary { left, right, .. } => {
-            java_static_field_init_is_inlineable(left) && java_static_field_init_is_inlineable(right)
+            java_static_field_init_is_inlineable(left)
+                && java_static_field_init_is_inlineable(right)
         }
         ExprKind::Array(elems) => elems
             .iter()
@@ -11160,10 +11236,8 @@ fn adapt_java_inner_class(
     }
 
     let inner_fields = java_instance_field_names(members);
-    let visible_owner_fields: HashSet<String> = owner_fields
-        .difference(&inner_fields)
-        .cloned()
-        .collect();
+    let visible_owner_fields: HashSet<String> =
+        owner_fields.difference(&inner_fields).cloned().collect();
 
     let abstract_without_outer_refs = modifiers.is_abstract
         && !java_inner_class_needs_outer(members, owner_name, &visible_owner_fields, owner_methods);
@@ -11271,15 +11345,12 @@ fn java_inner_class_needs_outer(
             init: Some(init),
             modifiers,
             ..
-        } if !modifiers.is_static => java_expr_needs_java_outer(
-            init,
-            owner_name,
-            owner_fields,
-            owner_methods,
-        ),
-        ClassMember::Constructor { body, .. } => body.iter().any(|stmt| {
-            java_stmt_needs_java_outer(stmt, owner_name, owner_fields, owner_methods)
-        }),
+        } if !modifiers.is_static => {
+            java_expr_needs_java_outer(init, owner_name, owner_fields, owner_methods)
+        }
+        ClassMember::Constructor { body, .. } => body
+            .iter()
+            .any(|stmt| java_stmt_needs_java_outer(stmt, owner_name, owner_fields, owner_methods)),
         ClassMember::Method(stmt) => {
             java_stmt_needs_java_outer(stmt, owner_name, owner_fields, owner_methods)
         }
@@ -11636,8 +11707,8 @@ fn rewrite_java_outer_static_refs_expr(
                 *expr = init.clone();
             } else {
                 expr.kind = ExprKind::StaticAccess {
-                class: Box::new(Expression::ident(owner_name)),
-                member: Box::new(Expression::ident(&field)),
+                    class: Box::new(Expression::ident(owner_name)),
+                    member: Box::new(Expression::ident(&field)),
                 };
             }
         }
@@ -11650,8 +11721,8 @@ fn rewrite_java_outer_static_refs_expr(
                 *expr = init.clone();
             } else {
                 expr.kind = ExprKind::StaticAccess {
-                class: Box::new(Expression::ident(owner_name)),
-                member: Box::new(Expression::ident(&field)),
+                    class: Box::new(Expression::ident(owner_name)),
+                    member: Box::new(Expression::ident(&field)),
                 };
             }
         }
@@ -12262,7 +12333,9 @@ fn java_expr_reads_java_outer(expr: &Expression) -> bool {
         ExprKind::Binary { left, right, .. } => {
             java_expr_reads_java_outer(left) || java_expr_reads_java_outer(right)
         }
-        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => java_expr_reads_java_outer(expr),
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            java_expr_reads_java_outer(expr)
+        }
         ExprKind::Assign { target, value } => {
             java_expr_reads_java_outer(target) || java_expr_reads_java_outer(value)
         }
@@ -12544,7 +12617,9 @@ fn rewrite_java_tostring_stmts(
                                 params,
                                 return_type: Some(return_type),
                                 ..
-                            } if params.is_empty() => Some((format!("{name}()"), return_type.clone())),
+                            } if params.is_empty() => {
+                                Some((format!("{name}()"), return_type.clone()))
+                            }
                             _ => None,
                         },
                         _ => None,
@@ -13303,7 +13378,10 @@ fn rewrite_java_tostring_expr(
             // (java.io.PrintStream). Wrap args whose static type is a user
             // class with toString or an enum constant (JLS §8.9.3 toString).
             if let ExprKind::Ident(fn_name) = &callee.kind {
-                if matches!(fn_name.as_str(), "__j_println" | "__j_print" | "__java_println" | "__java_print") {
+                if matches!(
+                    fn_name.as_str(),
+                    "__j_println" | "__j_print" | "__java_println" | "__java_print"
+                ) {
                     for arg in &mut *args {
                         if java_print_arg_needs_tostring(
                             &arg.value,
@@ -13319,13 +13397,8 @@ fn rewrite_java_tostring_expr(
                 }
                 if fn_name == "__java_string_concat" {
                     for arg in &mut *args {
-                        if java_expr_enum_type(
-                            &arg.value,
-                            enum_values,
-                            current_class,
-                            locals,
-                        )
-                        .is_some()
+                        if java_expr_enum_type(&arg.value, enum_values, current_class, locals)
+                            .is_some()
                         {
                             let receiver = arg.value.clone();
                             arg.value = java_tostring_call(receiver);
@@ -14409,7 +14482,9 @@ fn java_type_is_random(type_name: Option<&str>) -> bool {
 
 fn java_random_receiver(receiver: &Expression) -> bool {
     match &receiver.kind {
-        ExprKind::Ident(name) => JAVA_RANDOM_VARS.with(|vars| vars.borrow().contains(name.as_str())),
+        ExprKind::Ident(name) => {
+            JAVA_RANDOM_VARS.with(|vars| vars.borrow().contains(name.as_str()))
+        }
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(name) if name == "__java_random_new")
         }
@@ -15384,15 +15459,12 @@ fn java_expr_enum_type(
 fn java_class_method_return_type(class_name: &str, method_name: &str) -> Option<String> {
     let simple = java_type_simple_name(class_name);
     JAVA_REFLECTION_CLASSES.with(|classes| {
-        classes
-            .borrow()
-            .get(simple)
-            .and_then(|meta| {
-                meta.methods
-                    .iter()
-                    .find(|method| method.name == method_name)
-                    .and_then(|method| method.return_type.clone())
-            })
+        classes.borrow().get(simple).and_then(|meta| {
+            meta.methods
+                .iter()
+                .find(|method| method.name == method_name)
+                .and_then(|method| method.return_type.clone())
+        })
     })
 }
 
@@ -18965,8 +19037,14 @@ fn normalize_java_expr(
                     | BinOp::UShr
             ) && (*op != BinOp::Add || has_char_numeric_operand)
             {
-                *left = Box::new(java_cast_char_numeric_operand((**left).clone(), local_types));
-                *right = Box::new(java_cast_char_numeric_operand((**right).clone(), local_types));
+                *left = Box::new(java_cast_char_numeric_operand(
+                    (**left).clone(),
+                    local_types,
+                ));
+                *right = Box::new(java_cast_char_numeric_operand(
+                    (**right).clone(),
+                    local_types,
+                ));
             }
         }
         ExprKind::Unary { op, expr: inner } => {
@@ -18982,8 +19060,10 @@ fn normalize_java_expr(
                 local_types,
                 is_assignment_target,
             );
-            if matches!(op, UnaryOp::PreInc | UnaryOp::PostInc | UnaryOp::PreDec | UnaryOp::PostDec)
-                && matches!(&inner.kind, ExprKind::Ident(name) if local_types.get(name).is_some_and(|ty| java_type_simple_name(ty) == "char"))
+            if matches!(
+                op,
+                UnaryOp::PreInc | UnaryOp::PostInc | UnaryOp::PreDec | UnaryOp::PostDec
+            ) && matches!(&inner.kind, ExprKind::Ident(name) if local_types.get(name).is_some_and(|ty| java_type_simple_name(ty) == "char"))
             {
                 let delta = if matches!(op, UnaryOp::PreDec | UnaryOp::PostDec) {
                     -1

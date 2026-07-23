@@ -369,15 +369,24 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.make_set" => {
             crate::emitter::collections_adapter::emit_make_set(chunks, current, argc, line)
         }
-        "python.set_issubset" => {
-            crate::emitter::collections_adapter::emit_set_predicate(chunks, current, "isSubsetOf", line)
-        }
-        "python.set_issuperset" => {
-            crate::emitter::collections_adapter::emit_set_predicate(chunks, current, "isSupersetOf", line)
-        }
-        "python.set_isdisjoint" => {
-            crate::emitter::collections_adapter::emit_set_predicate(chunks, current, "isDisjointFrom", line)
-        }
+        "python.set_issubset" => crate::emitter::collections_adapter::emit_set_predicate(
+            chunks,
+            current,
+            "isSubsetOf",
+            line,
+        ),
+        "python.set_issuperset" => crate::emitter::collections_adapter::emit_set_predicate(
+            chunks,
+            current,
+            "isSupersetOf",
+            line,
+        ),
+        "python.set_isdisjoint" => crate::emitter::collections_adapter::emit_set_predicate(
+            chunks,
+            current,
+            "isDisjointFrom",
+            line,
+        ),
         "python.add" => crate::emitter::collections_adapter::emit_add(chunks, current, line),
         "python.remove" => crate::emitter::collections_adapter::emit_remove(chunks, current, line),
         "python.discard" => {

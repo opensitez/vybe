@@ -1166,7 +1166,10 @@ fn builtin_popcount_expr(value: Option<Expression>) -> Expression {
     let bits = builtin_binary_string(value);
     expr(ExprKind::Binary {
         op: BinOp::Sub,
-        left: Box::new(member(call_expr(member(bits, "split"), vec![str_lit("1")]), "length")),
+        left: Box::new(member(
+            call_expr(member(bits, "split"), vec![str_lit("1")]),
+            "length",
+        )),
         right: Box::new(int_lit(1)),
     })
 }
@@ -6027,7 +6030,8 @@ impl Walker {
             ExprKind::Lit(Literal::Str(text)) => Some(text.clone()),
             ExprKind::Ident(name) => self.char_string_values.get(name).cloned(),
             ExprKind::Cast { expr, .. } => self.temp_template_text(expr),
-            _ => carray_base_ident(value).and_then(|name| self.char_string_values.get(&name).cloned()),
+            _ => carray_base_ident(value)
+                .and_then(|name| self.char_string_values.get(&name).cloned()),
         }
     }
 
@@ -6761,16 +6765,32 @@ impl Walker {
         let r = complex_adapter::cabs(re.clone(), im.clone());
         let real = ecma_math_call(
             "sqrt",
-            binary_expr(BinOp::Div, binary_expr(BinOp::Add, r.clone(), re.clone()), int_lit(2)),
+            binary_expr(
+                BinOp::Div,
+                binary_expr(BinOp::Add, r.clone(), re.clone()),
+                int_lit(2),
+            ),
         );
         let imag_mag = ecma_math_call(
             "sqrt",
-            binary_expr(BinOp::Div, binary_expr(BinOp::Sub, r, re.clone()), int_lit(2)),
+            binary_expr(
+                BinOp::Div,
+                binary_expr(BinOp::Sub, r, re.clone()),
+                int_lit(2),
+            ),
         );
-        let sign = ternary_expr(binary_expr(BinOp::Lt, im.clone(), int_lit(0)), int_lit(-1), int_lit(1));
+        let sign = ternary_expr(
+            binary_expr(BinOp::Lt, im.clone(), int_lit(0)),
+            int_lit(-1),
+            int_lit(1),
+        );
         let imag = ternary_expr(
             binary_expr(BinOp::Eq, im, int_lit(0)),
-            ternary_expr(binary_expr(BinOp::Lt, re, int_lit(0)), imag_mag.clone(), int_lit(0)),
+            ternary_expr(
+                binary_expr(BinOp::Lt, re, int_lit(0)),
+                imag_mag.clone(),
+                int_lit(0),
+            ),
             binary_expr(BinOp::Mul, sign, imag_mag),
         );
         self.complex_object(real, imag)
@@ -6778,32 +6798,64 @@ impl Walker {
 
     fn complex_sin_parts(&self, re: Expression, im: Expression) -> Expression {
         self.complex_object(
-            binary_expr(BinOp::Mul, ecma_math_call("sin", re.clone()), ecma_math_call("cosh", im.clone())),
-            binary_expr(BinOp::Mul, ecma_math_call("cos", re), ecma_math_call("sinh", im)),
+            binary_expr(
+                BinOp::Mul,
+                ecma_math_call("sin", re.clone()),
+                ecma_math_call("cosh", im.clone()),
+            ),
+            binary_expr(
+                BinOp::Mul,
+                ecma_math_call("cos", re),
+                ecma_math_call("sinh", im),
+            ),
         )
     }
 
     fn complex_cos_parts(&self, re: Expression, im: Expression) -> Expression {
         self.complex_object(
-            binary_expr(BinOp::Mul, ecma_math_call("cos", re.clone()), ecma_math_call("cosh", im.clone())),
+            binary_expr(
+                BinOp::Mul,
+                ecma_math_call("cos", re.clone()),
+                ecma_math_call("cosh", im.clone()),
+            ),
             unary_expr(
                 UnaryOp::Neg,
-                binary_expr(BinOp::Mul, ecma_math_call("sin", re), ecma_math_call("sinh", im)),
+                binary_expr(
+                    BinOp::Mul,
+                    ecma_math_call("sin", re),
+                    ecma_math_call("sinh", im),
+                ),
             ),
         )
     }
 
     fn complex_sinh_parts(&self, re: Expression, im: Expression) -> Expression {
         self.complex_object(
-            binary_expr(BinOp::Mul, ecma_math_call("sinh", re.clone()), ecma_math_call("cos", im.clone())),
-            binary_expr(BinOp::Mul, ecma_math_call("cosh", re), ecma_math_call("sin", im)),
+            binary_expr(
+                BinOp::Mul,
+                ecma_math_call("sinh", re.clone()),
+                ecma_math_call("cos", im.clone()),
+            ),
+            binary_expr(
+                BinOp::Mul,
+                ecma_math_call("cosh", re),
+                ecma_math_call("sin", im),
+            ),
         )
     }
 
     fn complex_cosh_parts(&self, re: Expression, im: Expression) -> Expression {
         self.complex_object(
-            binary_expr(BinOp::Mul, ecma_math_call("cosh", re.clone()), ecma_math_call("cos", im.clone())),
-            binary_expr(BinOp::Mul, ecma_math_call("sinh", re), ecma_math_call("sin", im)),
+            binary_expr(
+                BinOp::Mul,
+                ecma_math_call("cosh", re.clone()),
+                ecma_math_call("cos", im.clone()),
+            ),
+            binary_expr(
+                BinOp::Mul,
+                ecma_math_call("sinh", re),
+                ecma_math_call("sin", im),
+            ),
         )
     }
 
@@ -8763,7 +8815,10 @@ impl Walker {
             let args = normalized_call_args.clone();
             match name.as_str() {
                 "__builtin_expect" => {
-                    return args.first().map(|a| a.value.clone()).unwrap_or_else(|| int_lit(0));
+                    return args
+                        .first()
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(|| int_lit(0));
                 }
                 "__builtin_unreachable" => {
                     return int_lit(0);
@@ -8995,7 +9050,11 @@ impl Walker {
                 }
                 "tmpnam" | "tmpnam_r" => {
                     let path = str_lit("__vybe_tmpnam_000001");
-                    let target = args.into_iter().next().map(|a| a.value).unwrap_or_else(null_lit);
+                    let target = args
+                        .into_iter()
+                        .next()
+                        .map(|a| a.value)
+                        .unwrap_or_else(null_lit);
                     if self.is_null_expr_value(&target) {
                         return path;
                     }
@@ -9244,10 +9303,7 @@ impl Walker {
                             cond: Box::new(index_expr(ident("__c_file_closed"), file.clone())),
                             then: Box::new(int_lit(1)),
                             else_: Box::new(expr(ExprKind::Sequence(vec![
-                                assign_expr(
-                                    target,
-                                    call_expr(ident("__c_ftell_h"), vec![file]),
-                                ),
+                                assign_expr(target, call_expr(ident("__c_ftell_h"), vec![file])),
                                 int_lit(0),
                             ]))),
                         });
@@ -9267,12 +9323,18 @@ impl Walker {
                             cond: Box::new(index_expr(ident("__c_file_closed"), file.clone())),
                             then: Box::new(int_lit(1)),
                             else_: Box::new(expr(ExprKind::Sequence(vec![
-                                assign_expr(index_expr(ident("__c_file_pos"), file.clone()), source),
-                                assign_expr(index_expr(ident("__c_file_eof"), file.clone()), int_lit(0)),
-                            assign_expr(
-                                index_expr(ident("__c_file_ungot"), file),
-                                expr(ExprKind::Array(vec![])),
-                            ),
+                                assign_expr(
+                                    index_expr(ident("__c_file_pos"), file.clone()),
+                                    source,
+                                ),
+                                assign_expr(
+                                    index_expr(ident("__c_file_eof"), file.clone()),
+                                    int_lit(0),
+                                ),
+                                assign_expr(
+                                    index_expr(ident("__c_file_ungot"), file),
+                                    expr(ExprKind::Array(vec![])),
+                                ),
                                 int_lit(0),
                             ]))),
                         });
@@ -9302,8 +9364,14 @@ impl Walker {
                 "clearerr" => {
                     if let Some(file) = args.into_iter().next() {
                         return expr(ExprKind::Sequence(vec![
-                            assign_expr(index_expr(ident("__c_file_eof"), file.value.clone()), int_lit(0)),
-                            assign_expr(index_expr(ident("__c_file_error"), file.value), int_lit(0)),
+                            assign_expr(
+                                index_expr(ident("__c_file_eof"), file.value.clone()),
+                                int_lit(0),
+                            ),
+                            assign_expr(
+                                index_expr(ident("__c_file_error"), file.value),
+                                int_lit(0),
+                            ),
                             int_lit(0),
                         ]));
                     }
@@ -9401,7 +9469,10 @@ impl Walker {
                             })),
                             then: Box::new(int_lit(-1)),
                             else_: Box::new(expr(ExprKind::Sequence(vec![
-                                assign_expr(index_expr(ident("__c_path_exists"), path.clone()), int_lit(0)),
+                                assign_expr(
+                                    index_expr(ident("__c_path_exists"), path.clone()),
+                                    int_lit(0),
+                                ),
                                 assign_expr(index_expr(ident("__c_file_store"), path), null_lit()),
                                 int_lit(0),
                             ]))),
@@ -9411,8 +9482,10 @@ impl Walker {
                 }
                 "rename" => {
                     if args.len() >= 2 {
-                        let src = call_expr(ident("__libc_char_to_str"), vec![args[0].value.clone()]);
-                        let dst = call_expr(ident("__libc_char_to_str"), vec![args[1].value.clone()]);
+                        let src =
+                            call_expr(ident("__libc_char_to_str"), vec![args[0].value.clone()]);
+                        let dst =
+                            call_expr(ident("__libc_char_to_str"), vec![args[1].value.clone()]);
                         let src_missing = expr(ExprKind::Binary {
                             op: BinOp::Eq,
                             left: Box::new(index_expr(ident("__c_path_exists"), src.clone())),
@@ -9882,7 +9955,10 @@ impl Walker {
                                     formatted_expr.clone(),
                                 ),
                                 assign_expr(
-                                    index_expr(ident("__c_file_store"), str_lit("test_vdprintf.txt")),
+                                    index_expr(
+                                        ident("__c_file_store"),
+                                        str_lit("test_vdprintf.txt"),
+                                    ),
                                     formatted_expr.clone(),
                                 ),
                                 call_expr(ident("__c_stdout_append"), vec![formatted_expr.clone()]),
@@ -10175,7 +10251,10 @@ impl Walker {
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
                 "feclearexcept" => {
-                    let mask = args.first().map(|a| a.value.clone()).unwrap_or_else(|| int_lit(0));
+                    let mask = args
+                        .first()
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(|| int_lit(0));
                     return expr(ExprKind::Sequence(vec![
                         assign_expr(
                             ident("__c_fenv_excepts"),
@@ -10189,7 +10268,10 @@ impl Walker {
                     ]));
                 }
                 "feraiseexcept" => {
-                    let mask = args.first().map(|a| a.value.clone()).unwrap_or_else(|| int_lit(0));
+                    let mask = args
+                        .first()
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(|| int_lit(0));
                     return expr(ExprKind::Sequence(vec![
                         assign_expr(
                             ident("__c_fenv_excepts"),
@@ -10199,7 +10281,10 @@ impl Walker {
                     ]));
                 }
                 "fetestexcept" => {
-                    let mask = args.first().map(|a| a.value.clone()).unwrap_or_else(|| int_lit(0));
+                    let mask = args
+                        .first()
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(|| int_lit(0));
                     return binary_expr(BinOp::BitAnd, ident("__c_fenv_excepts"), mask);
                 }
                 "fegetenv" => {
@@ -10219,7 +10304,11 @@ impl Walker {
                         return expr(ExprKind::Sequence(vec![
                             assign_expr(
                                 ident("__c_fenv_excepts"),
-                                ternary_expr(binary_expr(BinOp::Eq, raw, int_lit(-1)), int_lit(0), saved),
+                                ternary_expr(
+                                    binary_expr(BinOp::Eq, raw, int_lit(-1)),
+                                    int_lit(0),
+                                    saved,
+                                ),
                             ),
                             int_lit(0),
                         ]));
@@ -10398,7 +10487,8 @@ impl Walker {
                                     ),
                                 ),
                             );
-                            return self.complex_object(int_lit(0), unary_expr(UnaryOp::Neg, acosh));
+                            return self
+                                .complex_object(int_lit(0), unary_expr(UnaryOp::Neg, acosh));
                         }
                         return ecma_math_call("acos", a.value);
                     }
@@ -11930,9 +12020,18 @@ impl Walker {
                         .first()
                         .map(|a| a.value.clone())
                         .unwrap_or_else(|| int_lit(-1));
-                    let msg = args.get(1).map(|a| a.value.clone()).unwrap_or_else(null_lit);
-                    let len = args.get(2).map(|a| a.value.clone()).unwrap_or_else(|| int_lit(0));
-                    let prio = args.get(3).map(|a| a.value.clone()).unwrap_or_else(|| int_lit(0));
+                    let msg = args
+                        .get(1)
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(null_lit);
+                    let len = args
+                        .get(2)
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(|| int_lit(0));
+                    let prio = args
+                        .get(3)
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(|| int_lit(0));
                     return posix_adapter::mq_send(q, msg, len, prio);
                 }
                 "mq_receive" | "mq_timedreceive" => {
@@ -11940,9 +12039,18 @@ impl Walker {
                         .first()
                         .map(|a| a.value.clone())
                         .unwrap_or_else(|| int_lit(-1));
-                    let buf = args.get(1).map(|a| a.value.clone()).unwrap_or_else(null_lit);
-                    let len = args.get(2).map(|a| a.value.clone()).unwrap_or_else(|| int_lit(0));
-                    let prio = args.get(3).map(|a| a.value.clone()).unwrap_or_else(null_lit);
+                    let buf = args
+                        .get(1)
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(null_lit);
+                    let len = args
+                        .get(2)
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(|| int_lit(0));
+                    let prio = args
+                        .get(3)
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(null_lit);
                     return posix_adapter::mq_receive(q, buf, len, prio);
                 }
                 "mq_getattr" => {
@@ -17492,14 +17600,20 @@ fn vsscanf_ints_expr(source: Expression, ap: Expression) -> Expression {
                 assign_expr(
                     tokens_expr.clone(),
                     call_expr(
-                        member(call_expr(member(source_expr.clone(), "trim"), vec![]), "split"),
+                        member(
+                            call_expr(member(source_expr.clone(), "trim"), vec![]),
+                            "split",
+                        ),
                         vec![str_lit(" ")],
                     ),
                 ),
                 assign_expr(count_expr.clone(), int_lit(0)),
                 assign_expr(
                     n0_expr.clone(),
-                    call_expr(ident("Number"), vec![index_expr(tokens_expr.clone(), int_lit(0))]),
+                    call_expr(
+                        ident("Number"),
+                        vec![index_expr(tokens_expr.clone(), int_lit(0))],
+                    ),
                 ),
                 expr(ExprKind::Ternary {
                     cond: Box::new(n0_valid),

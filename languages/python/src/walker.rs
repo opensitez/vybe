@@ -1,8 +1,8 @@
 use super::{PythonParser, Rule};
-use vybe_ast::*;
 use pest::Parser;
 use pest::iterators::Pair;
 use std::collections::HashMap;
+use vybe_ast::*;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Indentation preprocessor
@@ -338,8 +338,7 @@ fn source_uses_slice_ctor(source: &str) -> bool {
     while let Some(pos) = source[i..].find("slice(") {
         let at = i + pos;
         let prev_ok = at == 0
-            || !matches!(bytes[at - 1], b'.' | b'_')
-                && !bytes[at - 1].is_ascii_alphanumeric();
+            || !matches!(bytes[at - 1], b'.' | b'_') && !bytes[at - 1].is_ascii_alphanumeric();
         if prev_ok {
             return true;
         }
@@ -1002,7 +1001,6 @@ def __vybe_bytes_decode(a):
         r += chr(b)
     return r
 "#;
-
 
 fn walk_stmt_into(
     pair: Pair<Rule>,
@@ -2558,10 +2556,7 @@ fn build_with_desugar(items: &[WithItem], body: Vec<Statement>) -> Vec<Statement
 
     vec![
         assign(&mgr, first.expr.clone()),
-        assign(
-            &target,
-            with_call(with_member(&mgr, "__enter__"), vec![]),
-        ),
+        assign(&target, with_call(with_member(&mgr, "__enter__"), vec![])),
         assign(&hit, Expression::bool(false)),
         with_stmt(StmtKind::Try {
             body: inner_body,
@@ -3443,9 +3438,8 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         let ri = matches!(right.kind, ExprKind::Lit(Literal::Int(_)));
                         let rf = matches!(right.kind, ExprKind::Lit(Literal::Float(_)));
                         if (li && rf) || (lf && ri) {
-                            left = Expression::new(ExprKind::Lit(Literal::Bool(
-                                op == BinOp::IsNot,
-                            )));
+                            left =
+                                Expression::new(ExprKind::Lit(Literal::Bool(op == BinOp::IsNot)));
                         } else {
                             // `a is b` — object identity, NOT value equality. Route to
                             // the Python adapter (`emit_js_strict_eq`: reference
@@ -3458,9 +3452,7 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 "__py_is_not__"
                             };
                             left = Expression::new(ExprKind::Call {
-                                callee: Box::new(Expression::new(ExprKind::Ident(
-                                    helper.into(),
-                                ))),
+                                callee: Box::new(Expression::new(ExprKind::Ident(helper.into()))),
                                 args: vec![
                                     Argument::positional(left.clone()),
                                     Argument::positional(right),
@@ -3489,10 +3481,8 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 right: Box::new(right),
                             });
                         }
-                    } else if matches!(
-                        op,
-                        BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq
-                    ) && expr_is_python_bytes(&left)
+                    } else if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq)
+                        && expr_is_python_bytes(&left)
                         && expr_is_python_bytes(&right)
                     {
                         // bytes vs bytes — compare their latin-1 decodings, which
@@ -4314,8 +4304,11 @@ fn parse_namedtuple_call(value: &Expression) -> Option<NamedTupleDef> {
     if fname != "namedtuple" && fname != "NamedTuple" {
         return None;
     }
-    let positional: Vec<&Expression> =
-        args.iter().filter(|a| a.name.is_none()).map(|a| &a.value).collect();
+    let positional: Vec<&Expression> = args
+        .iter()
+        .filter(|a| a.name.is_none())
+        .map(|a| &a.value)
+        .collect();
     if positional.len() < 2 {
         return None;
     }
@@ -4382,12 +4375,7 @@ fn build_namedtuple_construction(def: &NamedTupleDef, args: Vec<Argument>) -> Ex
         .fields
         .iter()
         .zip(values)
-        .map(|(name, value)| {
-            (
-                Some(name.clone()),
-                value.unwrap_or_else(Expression::null),
-            )
-        })
+        .map(|(name, value)| (Some(name.clone()), value.unwrap_or_else(Expression::null)))
         .collect();
     ExprKind::NamedTuple {
         fields,
@@ -4692,14 +4680,14 @@ fn zoneinfo_call(callee: &Expression, args: &[Argument]) -> Option<ExprKind> {
         ])),
         "available_timezones" if args.is_empty() => Some(ExprKind::Call {
             callee: Box::new(Expression::ident("set")),
-            args: vec![Argument::positional(Expression::new(ExprKind::Array(vec![
-                ArrayElement {
+            args: vec![Argument::positional(Expression::new(ExprKind::Array(
+                vec![ArrayElement {
                     value: Expression::string("UTC"),
                     spread: false,
                     key: None,
                     by_ref: false,
-                },
-            ])))],
+                }],
+            )))],
             optional: false,
         }),
         _ => None,
@@ -4865,8 +4853,19 @@ fn module_namespace_path(e: &Expression) -> Option<String> {
 fn calendar_name_table(path: &str) -> Option<&'static [&'static str]> {
     Some(match path {
         "calendar.month_name" => &[
-            "", "January", "February", "March", "April", "May", "June", "July", "August",
-            "September", "October", "November", "December",
+            "",
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
         ],
         "calendar.month_abbr" => &[
             "", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -4957,9 +4956,11 @@ fn py_static_type_name(e: &Expression) -> Option<&'static str> {
         ExprKind::Lit(Literal::Null) => Some("NoneType"),
         ExprKind::Array(_) => Some("list"),
         ExprKind::Tuple(_) | ExprKind::NamedTuple { .. } => Some("tuple"),
-        ExprKind::Object(_) | ExprKind::Comprehension { kind: ComprehensionKind::Dict, .. } => {
-            Some("dict")
-        }
+        ExprKind::Object(_)
+        | ExprKind::Comprehension {
+            kind: ComprehensionKind::Dict,
+            ..
+        } => Some("dict"),
         ExprKind::Set(_) => Some("set"),
         ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) => Some("function"),
         ExprKind::New { class, .. } => {
@@ -4975,7 +4976,9 @@ fn py_static_type_name(e: &Expression) -> Option<&'static str> {
             Some("builtin_function_or_method")
         }
         ExprKind::Ident(name) => py_builtin_type_name(name).map(|_| "type"),
-        ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(n) if n == "type") && args.len() == 1 => {
+        ExprKind::Call { callee, args, .. }
+            if matches!(&callee.kind, ExprKind::Ident(n) if n == "type") && args.len() == 1 =>
+        {
             Some("type")
         }
         ExprKind::Call { callee, .. } => match &callee.kind {
@@ -5311,8 +5314,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
             // attribute hops — once a call or subscript intervenes the result
             // is an ordinary value (`datetime.date(2020, 6, 15).year`) whose
             // attributes live on the data path, not the module surface.
-            let keep = matches!(root.as_deref(), Some("self"))
-                || is_module_namespace_path(&object);
+            let keep = matches!(root.as_deref(), Some("self")) || is_module_namespace_path(&object);
             if keep {
                 Expression::new(ExprKind::Member {
                     object: Box::new(object),
@@ -5934,11 +5936,10 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                     if py_builtin_type_name(target).is_some()
                                                         || is_defined_class(target)
                                                     {
-                                                        expr = Expression::bool(
-                                                            py_class_is_subclass(
+                                                        expr =
+                                                            Expression::bool(py_class_is_subclass(
                                                                 class_name, target,
-                                                            ),
-                                                        );
+                                                            ));
                                                         continue;
                                                     }
                                                 }
@@ -5968,17 +5969,20 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                         py_class_is_subclass(value_type, target)
                                                     } else {
                                                         value_type == target
-                                                        || target == "object"
-                                                        || (value_type == "bool"
-                                                            && target == "int")
+                                                            || target == "object"
+                                                            || (value_type == "bool"
+                                                                && target == "int")
                                                     };
                                                     expr = Expression::bool(ok);
                                                     continue;
                                                 }
                                             }
-                                            ExprKind::Call { callee, args: type_args, .. }
-                                                if matches!(&callee.kind, ExprKind::Ident(n) if n == "type")
-                                                    && type_args.len() == 1 =>
+                                            ExprKind::Call {
+                                                callee,
+                                                args: type_args,
+                                                ..
+                                            } if matches!(&callee.kind, ExprKind::Ident(n) if n == "type")
+                                                && type_args.len() == 1 =>
                                             {
                                                 if let Some(target) =
                                                     py_static_type_name(&type_args[0].value)
@@ -5999,9 +6003,9 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                                 )
                                                             } else {
                                                                 value_type == target
-                                                                || target == "object"
-                                                                || (value_type == "bool"
-                                                                    && target == "int")
+                                                                    || target == "object"
+                                                                    || (value_type == "bool"
+                                                                        && target == "int")
                                                             };
                                                         }
                                                     }
@@ -7441,9 +7445,7 @@ fn resolve_format_value(
     args: &[Argument],
     auto_idx: &mut usize,
 ) -> Option<Expression> {
-    let acc_start = name_part
-        .find(['[', '.'])
-        .unwrap_or(name_part.len());
+    let acc_start = name_part.find(['[', '.']).unwrap_or(name_part.len());
     let base_name = &name_part[..acc_start];
     let mut rest = &name_part[acc_start..];
 
@@ -7610,7 +7612,10 @@ fn expand_python_format_spec(value: Expression, spec: &str) -> Option<Expression
         fill = chars[0];
         align = Some(chars[1]);
         i = 2;
-    } else if chars.first().is_some_and(|c| matches!(c, '<' | '>' | '^' | '=')) {
+    } else if chars
+        .first()
+        .is_some_and(|c| matches!(c, '<' | '>' | '^' | '='))
+    {
         align = Some(chars[0]);
         i = 1;
     }
@@ -7638,7 +7643,11 @@ fn expand_python_format_spec(value: Expression, spec: &str) -> Option<Expression
         width_s.push(chars[i]);
         i += 1;
     }
-    let width: Option<i64> = if width_s.is_empty() { None } else { width_s.parse().ok() };
+    let width: Option<i64> = if width_s.is_empty() {
+        None
+    } else {
+        width_s.parse().ok()
+    };
     // grouping
     let grouping = if chars.get(i).is_some_and(|c| matches!(c, ',' | '_')) {
         let g = chars[i];
@@ -7828,9 +7837,7 @@ fn walk_fstring(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 // padding, rather than dropping to raw JS coercion.
                 let field = match spec.as_deref().filter(|s| !s.is_empty()) {
                     Some(spec) => {
-                        if let Some(native) =
-                            expand_python_format_spec(converted.clone(), spec)
-                        {
+                        if let Some(native) = expand_python_format_spec(converted.clone(), spec) {
                             native
                         } else if let Some(fmt) = format_spec_to_printf(spec) {
                             Expression::new(ExprKind::Call {

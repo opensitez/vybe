@@ -103,6 +103,7 @@ __vybe_wire_error_proto(SyntaxError, __vybe_error_proto_root, "SyntaxError");
 __vybe_wire_error_proto(URIError, __vybe_error_proto_root, "URIError");
 __vybe_wire_error_proto(EvalError, __vybe_error_proto_root, "EvalError");
 __vybe_wire_error_proto(AggregateError, __vybe_error_proto_root, "AggregateError");
+__vybe_wire_error_proto(SuppressedError, __vybe_error_proto_root, "SuppressedError");
 
 
 if (!globalThis.__vybe_js_prelude_done) {

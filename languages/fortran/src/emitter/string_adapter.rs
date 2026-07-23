@@ -8,8 +8,8 @@
 //!   (stub: trimStart for now; full adjustl needs declared length).
 //! - `adjustr(s)` — symmetric.
 
-use vybe_emitter::instructions::host;
 use vybe_bytecode::Chunk;
+use vybe_emitter::instructions::host;
 
 /// Fortran `len_trim(s)` — length of string after stripping trailing
 /// blanks. Composes `ecma:string.trimEnd` + `wasm:js-string.length`.

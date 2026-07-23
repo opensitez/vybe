@@ -397,4 +397,3 @@ end program array_fill_pattern_internals_fill_with_conditional_offsets
     );
     assert_eq!(out, vec!["42", "16", "65"]);
 }
-

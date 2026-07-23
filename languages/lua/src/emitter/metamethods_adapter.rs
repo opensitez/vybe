@@ -6,8 +6,8 @@
 //! `ecma:lua` host surface, so these adapters delegate to common emitter
 //! primitives.
 
-use vybe_bytecode::opcode::Op;
 use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
 fn call1(chunk: &mut Chunk, import_idx: u16, line: u32) {
@@ -59,7 +59,10 @@ fn emit_lua_missing_to_nil(chunk: &mut Chunk, value_slot: u16, line: u32) {
 }
 
 fn emit_lua_table_bounds_error(chunk: &mut Chunk, line: u32) {
-    chunk.emit_string_const("bad argument #2 to table operation (position out of bounds)", line);
+    chunk.emit_string_const(
+        "bad argument #2 to table operation (position out of bounds)",
+        line,
+    );
     vybe_emitter::errors::emit_throw(chunk, line);
 }
 
@@ -128,7 +131,13 @@ fn emit_lua_assoc_map(
     chunks[current].emit_end(line);
 }
 
-fn emit_lua_table_read(chunks: &mut Vec<Chunk>, current: usize, table_slot: u16, key_slot: u16, line: u32) {
+fn emit_lua_table_read(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    table_slot: u16,
+    key_slot: u16,
+    line: u32,
+) {
     let adjusted_key_slot = chunks[current].alloc_scratch(1);
     let assoc_slot = chunks[current].alloc_scratch(1);
     let value_slot = chunks[current].alloc_scratch(1);
@@ -378,7 +387,10 @@ pub fn emit_lua_stdout(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
 
 pub fn emit_lua_coroutine_create(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     if argc != 1 {
-        chunks[current].emit_string_const("bad argument #1 to coroutine.create (function expected)", line);
+        chunks[current].emit_string_const(
+            "bad argument #1 to coroutine.create (function expected)",
+            line,
+        );
         vybe_emitter::errors::emit_throw(&mut chunks[current], line);
         return;
     }
@@ -408,7 +420,13 @@ pub fn emit_lua_coroutine_create(chunks: &mut Vec<Chunk>, current: usize, argc: 
     load(&mut chunks[current], co, line);
 }
 
-fn emit_lua_set_object_string(chunk: &mut Chunk, object_slot: u16, key: &str, value: &str, line: u32) {
+fn emit_lua_set_object_string(
+    chunk: &mut Chunk,
+    object_slot: u16,
+    key: &str,
+    value: &str,
+    line: u32,
+) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     load(chunk, object_slot, line);
     chunk.emit_string_const(value, line);
@@ -416,7 +434,13 @@ fn emit_lua_set_object_string(chunk: &mut Chunk, object_slot: u16, key: &str, va
     chunk.emit_op(Op::DROP, line);
 }
 
-fn emit_lua_set_object_slot(chunk: &mut Chunk, object_slot: u16, key: &str, value_slot: u16, line: u32) {
+fn emit_lua_set_object_slot(
+    chunk: &mut Chunk,
+    object_slot: u16,
+    key: &str,
+    value_slot: u16,
+    line: u32,
+) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     load(chunk, object_slot, line);
     load(chunk, value_slot, line);
@@ -424,7 +448,13 @@ fn emit_lua_set_object_slot(chunk: &mut Chunk, object_slot: u16, key: &str, valu
     chunk.emit_op(Op::DROP, line);
 }
 
-fn emit_lua_set_object_bool(chunk: &mut Chunk, object_slot: u16, key: &str, value: bool, line: u32) {
+fn emit_lua_set_object_bool(
+    chunk: &mut Chunk,
+    object_slot: u16,
+    key: &str,
+    value: bool,
+    line: u32,
+) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     load(chunk, object_slot, line);
     chunk.emit_bool_const(value, line);
@@ -936,7 +966,13 @@ fn emit_lua_slot_string_eq(chunk: &mut Chunk, slot: u16, value: &str, str_compar
     chunk.emit_op(Op::I32_EQ, line);
 }
 
-fn emit_lua_coroutine_payload(chunks: &mut Vec<Chunk>, current: usize, base: u16, argc: u8, line: u32) {
+fn emit_lua_coroutine_payload(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    base: u16,
+    argc: u8,
+    line: u32,
+) {
     match argc {
         0 | 1 => chunks[current].emit_op(Op::NULL, line),
         2 => load(&mut chunks[current], base + 1, line),
@@ -959,7 +995,13 @@ fn emit_lua_coroutine_set_state_from_has_more(
 ) {
     load(&mut chunks[current], has_more_slot, line);
     chunks[current].emit_if(line);
-    emit_lua_set_object_string(&mut chunks[current], co_slot, "__lua_state", "suspended", line);
+    emit_lua_set_object_string(
+        &mut chunks[current],
+        co_slot,
+        "__lua_state",
+        "suspended",
+        line,
+    );
     chunks[current].emit_else(line);
     emit_lua_set_object_string(&mut chunks[current], co_slot, "__lua_state", "dead", line);
     chunks[current].emit_end(line);
@@ -1012,7 +1054,13 @@ fn emit_lua_restore_running(
     chunks[current].emit_op(Op::NULL, line);
     emit_lua_global_set(&mut chunks[current], "__lua_running_coroutine", line);
     chunks[current].emit_else(line);
-    emit_lua_set_object_string(&mut chunks[current], previous_slot, "__lua_state", "running", line);
+    emit_lua_set_object_string(
+        &mut chunks[current],
+        previous_slot,
+        "__lua_state",
+        "running",
+        line,
+    );
     load(&mut chunks[current], previous_slot, line);
     emit_lua_global_set(&mut chunks[current], "__lua_running_coroutine", line);
     chunks[current].emit_end(line);
@@ -1024,7 +1072,10 @@ pub fn emit_lua_coroutine_resume(chunks: &mut Vec<Chunk>, current: usize, argc: 
         vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
         let ok_slot = chunks[current].alloc_scratch(1);
         save(&mut chunks[current], ok_slot, line);
-        chunks[current].emit_string_const("bad argument #1 to coroutine.resume (thread expected)", line);
+        chunks[current].emit_string_const(
+            "bad argument #1 to coroutine.resume (thread expected)",
+            line,
+        );
         let value_slot = chunks[current].alloc_scratch(1);
         save(&mut chunks[current], value_slot, line);
         emit_lua_coroutine_result_row(chunks, current, ok_slot, value_slot, line);
@@ -1058,7 +1109,13 @@ pub fn emit_lua_coroutine_resume(chunks: &mut Vec<Chunk>, current: usize, argc: 
     save(&mut chunks[current], value_slot, line);
     chunks[current].emit_else(line);
 
-    emit_lua_slot_string_eq(&mut chunks[current], state_slot, "running", str_compare, line);
+    emit_lua_slot_string_eq(
+        &mut chunks[current],
+        state_slot,
+        "running",
+        str_compare,
+        line,
+    );
     chunks[current].emit_if(line);
     i32_const(&mut chunks[current], 0, line);
     vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
@@ -1072,9 +1129,21 @@ pub fn emit_lua_coroutine_resume(chunks: &mut Vec<Chunk>, current: usize, argc: 
     emit_is_missing_value(&mut chunks[current], previous_slot, line);
     chunks[current].emit_if(line);
     chunks[current].emit_else(line);
-    emit_lua_set_object_string(&mut chunks[current], previous_slot, "__lua_state", "normal", line);
+    emit_lua_set_object_string(
+        &mut chunks[current],
+        previous_slot,
+        "__lua_state",
+        "normal",
+        line,
+    );
     chunks[current].emit_end(line);
-    emit_lua_set_object_string(&mut chunks[current], co_slot, "__lua_state", "running", line);
+    emit_lua_set_object_string(
+        &mut chunks[current],
+        co_slot,
+        "__lua_state",
+        "running",
+        line,
+    );
     load(&mut chunks[current], co_slot, line);
     emit_lua_global_set(&mut chunks[current], "__lua_running_coroutine", line);
 
@@ -1170,7 +1239,12 @@ pub fn emit_lua_coroutine_close(chunks: &mut Vec<Chunk>, current: usize, argc: u
     chunks[current].emit_bool_const(true, line);
 }
 
-pub fn emit_lua_coroutine_isyieldable(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+pub fn emit_lua_coroutine_isyieldable(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
     for _ in 0..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
@@ -1182,7 +1256,12 @@ pub fn emit_lua_coroutine_isyieldable(chunks: &mut Vec<Chunk>, current: usize, a
     vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
-pub fn emit_lua_coroutine_wrap_resume(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+pub fn emit_lua_coroutine_wrap_resume(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
     emit_lua_coroutine_resume(chunks, current, argc, line);
     let row_slot = chunks[current].alloc_scratch(1);
     let ok_slot = chunks[current].alloc_scratch(1);
@@ -1315,17 +1394,38 @@ fn emit_lua_get_metatable_for_value(
     emit_lua_global_get(&mut chunks[current], "__lua_mt_nil", line);
     chunks[current].emit_else(line);
 
-    emit_lua_type_is_slot(&mut chunks[current], value_slot, type_of, str_compare, "string", line);
+    emit_lua_type_is_slot(
+        &mut chunks[current],
+        value_slot,
+        type_of,
+        str_compare,
+        "string",
+        line,
+    );
     chunks[current].emit_if_value(line);
     emit_lua_global_get(&mut chunks[current], "__lua_mt_string", line);
     chunks[current].emit_else(line);
 
-    emit_lua_type_is_slot(&mut chunks[current], value_slot, type_of, str_compare, "number", line);
+    emit_lua_type_is_slot(
+        &mut chunks[current],
+        value_slot,
+        type_of,
+        str_compare,
+        "number",
+        line,
+    );
     chunks[current].emit_if_value(line);
     emit_lua_global_get(&mut chunks[current], "__lua_mt_number", line);
     chunks[current].emit_else(line);
 
-    emit_lua_type_is_slot(&mut chunks[current], value_slot, type_of, str_compare, "boolean", line);
+    emit_lua_type_is_slot(
+        &mut chunks[current],
+        value_slot,
+        type_of,
+        str_compare,
+        "boolean",
+        line,
+    );
     chunks[current].emit_if_value(line);
     emit_lua_global_get(&mut chunks[current], "__lua_mt_boolean", line);
     chunks[current].emit_else(line);
@@ -1355,19 +1455,40 @@ fn emit_lua_set_metatable_for_value(
     emit_lua_global_set(&mut chunks[current], "__lua_mt_nil", line);
     chunks[current].emit_else(line);
 
-    emit_lua_type_is_slot(&mut chunks[current], value_slot, type_of, str_compare, "string", line);
+    emit_lua_type_is_slot(
+        &mut chunks[current],
+        value_slot,
+        type_of,
+        str_compare,
+        "string",
+        line,
+    );
     chunks[current].emit_if(line);
     load(&mut chunks[current], mt_slot, line);
     emit_lua_global_set(&mut chunks[current], "__lua_mt_string", line);
     chunks[current].emit_else(line);
 
-    emit_lua_type_is_slot(&mut chunks[current], value_slot, type_of, str_compare, "number", line);
+    emit_lua_type_is_slot(
+        &mut chunks[current],
+        value_slot,
+        type_of,
+        str_compare,
+        "number",
+        line,
+    );
     chunks[current].emit_if(line);
     load(&mut chunks[current], mt_slot, line);
     emit_lua_global_set(&mut chunks[current], "__lua_mt_number", line);
     chunks[current].emit_else(line);
 
-    emit_lua_type_is_slot(&mut chunks[current], value_slot, type_of, str_compare, "boolean", line);
+    emit_lua_type_is_slot(
+        &mut chunks[current],
+        value_slot,
+        type_of,
+        str_compare,
+        "boolean",
+        line,
+    );
     chunks[current].emit_if(line);
     load(&mut chunks[current], mt_slot, line);
     emit_lua_global_set(&mut chunks[current], "__lua_mt_boolean", line);
@@ -1382,7 +1503,6 @@ fn emit_lua_set_metatable_for_value(
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
-
 }
 
 fn emit_lua_first_if_multi_row(
@@ -1405,7 +1525,13 @@ fn emit_lua_first_if_multi_row(
     chunks[current].emit_end(line);
 }
 
-fn emit_call_binary_metamethod(chunk: &mut Chunk, method_slot: u16, left: u16, right: u16, line: u32) {
+fn emit_call_binary_metamethod(
+    chunk: &mut Chunk,
+    method_slot: u16,
+    left: u16,
+    right: u16,
+    line: u32,
+) {
     let fn_call = chunk.add_import("ecma:function", "call");
     load(chunk, method_slot, line);
     chunk.emit_op(Op::NULL, line);
@@ -1779,7 +1905,14 @@ fn emit_lua_type_is_slot(
     chunk.emit_op(Op::I32_EQ, line);
 }
 
-fn emit_lua_numeric_rel_cmp(chunk: &mut Chunk, left: u16, right: u16, to_f64: u16, op: Op, line: u32) {
+fn emit_lua_numeric_rel_cmp(
+    chunk: &mut Chunk,
+    left: u16,
+    right: u16,
+    to_f64: u16,
+    op: Op,
+    line: u32,
+) {
     load(chunk, left, line);
     call1(chunk, to_f64, line);
     load(chunk, right, line);
@@ -2158,7 +2291,8 @@ pub fn emit_lua_math_random(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             load(&mut chunks[current], hi, line);
             chunks[current].emit_op(Op::I32_GT_S, line);
             chunks[current].emit_if(line);
-            chunks[current].emit_string_const("bad argument #1 to 'random' (interval is empty)", line);
+            chunks[current]
+                .emit_string_const("bad argument #1 to 'random' (interval is empty)", line);
             vybe_emitter::errors::emit_throw(&mut chunks[current], line);
             chunks[current].emit_end(line);
             load(&mut chunks[current], lo, line);
@@ -2448,7 +2582,8 @@ pub fn emit_metamethod_newindex(chunks: &mut Vec<Chunk>, current: usize, argc: u
         let fn_call = chunks[current].add_import("ecma:function", "call");
         let type_of = chunks[current].add_import("ecma:value", "typeof");
         let str_compare = chunks[current].add_import("wasm:js-string", "compare");
-        let active_key = chunks[current].add_constant(Value::String(Arc::from("__lua_newindex_active")));
+        let active_key =
+            chunks[current].add_constant(Value::String(Arc::from("__lua_newindex_active")));
 
         save(&mut chunks[current], value_slot, line);
         save(&mut chunks[current], key_slot, line);
@@ -2496,7 +2631,15 @@ pub fn emit_metamethod_newindex(chunks: &mut Vec<Chunk>, current: usize, argc: u
         save(&mut chunks[current], method_slot, line);
         emit_is_missing_value(&mut chunks[current], method_slot, line);
         chunks[current].emit_if(line);
-        emit_lua_table_write(chunks, current, current_slot, key_slot, value_slot, false, line);
+        emit_lua_table_write(
+            chunks,
+            current,
+            current_slot,
+            key_slot,
+            value_slot,
+            false,
+            line,
+        );
         chunks[current].emit_op(Op::DROP, line);
         i32_const(&mut chunks[current], 1, line);
         save(&mut chunks[current], done_slot, line);
@@ -2505,7 +2648,12 @@ pub fn emit_metamethod_newindex(chunks: &mut Vec<Chunk>, current: usize, argc: u
         load(&mut chunks[current], method_slot, line);
         vybe_emitter::reflection::emit_is_callable(chunks, current, line);
         chunks[current].emit_if(line);
-        emit_object_get_const_key(&mut chunks[current], current_slot, "__lua_newindex_active", line);
+        emit_object_get_const_key(
+            &mut chunks[current],
+            current_slot,
+            "__lua_newindex_active",
+            line,
+        );
         save(&mut chunks[current], active_slot, line);
         emit_is_missing_value(&mut chunks[current], active_slot, line);
         chunks[current].emit_if(line);
@@ -2534,7 +2682,15 @@ pub fn emit_metamethod_newindex(chunks: &mut Vec<Chunk>, current: usize, argc: u
         chunks[current].emit_string_const("loop in __newindex", line);
         vybe_emitter::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_else(line);
-        emit_lua_table_write(chunks, current, current_slot, key_slot, value_slot, false, line);
+        emit_lua_table_write(
+            chunks,
+            current,
+            current_slot,
+            key_slot,
+            value_slot,
+            false,
+            line,
+        );
         chunks[current].emit_op(Op::DROP, line);
         i32_const(&mut chunks[current], 1, line);
         save(&mut chunks[current], done_slot, line);
@@ -2562,7 +2718,15 @@ pub fn emit_metamethod_newindex(chunks: &mut Vec<Chunk>, current: usize, argc: u
         chunks[current].emit_op(Op::I32_ADD, line);
         save(&mut chunks[current], depth_slot, line);
         chunks[current].emit_else(line);
-        emit_lua_table_write(chunks, current, method_slot, key_slot, value_slot, false, line);
+        emit_lua_table_write(
+            chunks,
+            current,
+            method_slot,
+            key_slot,
+            value_slot,
+            false,
+            line,
+        );
         chunks[current].emit_op(Op::DROP, line);
         i32_const(&mut chunks[current], 1, line);
         save(&mut chunks[current], done_slot, line);
@@ -2585,7 +2749,9 @@ pub fn emit_metamethod_newindex(chunks: &mut Vec<Chunk>, current: usize, argc: u
         chunks[current].emit_end(line);
 
         chunks[current].emit_else(line);
-        emit_lua_table_write(chunks, current, table_slot, key_slot, value_slot, false, line);
+        emit_lua_table_write(
+            chunks, current, table_slot, key_slot, value_slot, false, line,
+        );
         chunks[current].emit_end(line);
     }
 }
@@ -2981,7 +3147,13 @@ pub fn emit_lua_mark_rest(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     let func = chunks[current].alloc_scratch(1);
     save(&mut chunks[current], fixed, line);
     save(&mut chunks[current], func, line);
-    emit_lua_set_object_slot(&mut chunks[current], func, "__vybe_rest_fixed_arity", fixed, line);
+    emit_lua_set_object_slot(
+        &mut chunks[current],
+        func,
+        "__vybe_rest_fixed_arity",
+        fixed,
+        line,
+    );
     load(&mut chunks[current], func, line);
 }
 
@@ -3258,7 +3430,9 @@ pub fn emit_lua_rawset(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     save(&mut chunks[current], value_slot, line);
     save(&mut chunks[current], key_slot, line);
     save(&mut chunks[current], table_slot, line);
-    emit_lua_table_write(chunks, current, table_slot, key_slot, value_slot, true, line);
+    emit_lua_table_write(
+        chunks, current, table_slot, key_slot, value_slot, true, line,
+    );
 }
 
 pub fn emit_lua_table_insert(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
@@ -3377,7 +3551,12 @@ pub fn emit_lua_table_remove(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     }
 }
 
-fn emit_lua_table_concat_validate(chunks: &mut Vec<Chunk>, current: usize, table_slot: u16, line: u32) {
+fn emit_lua_table_concat_validate(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    table_slot: u16,
+    line: u32,
+) {
     let i = chunks[current].alloc_scratch(1);
     let len = chunks[current].alloc_scratch(1);
     let value = chunks[current].alloc_scratch(1);
@@ -3400,8 +3579,22 @@ fn emit_lua_table_concat_validate(chunks: &mut Vec<Chunk>, current: usize, table
     load(&mut chunks[current], i, line);
     vybe_emitter::collections::emit_get(chunks, current, line);
     save(&mut chunks[current], value, line);
-    emit_lua_type_is_slot(&mut chunks[current], value, type_of, str_compare, "string", line);
-    emit_lua_type_is_slot(&mut chunks[current], value, type_of, str_compare, "number", line);
+    emit_lua_type_is_slot(
+        &mut chunks[current],
+        value,
+        type_of,
+        str_compare,
+        "string",
+        line,
+    );
+    emit_lua_type_is_slot(
+        &mut chunks[current],
+        value,
+        type_of,
+        str_compare,
+        "number",
+        line,
+    );
     chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
     chunks[current].emit_else(line);
@@ -3416,7 +3609,12 @@ fn emit_lua_table_concat_validate(chunks: &mut Vec<Chunk>, current: usize, table
     vybe_emitter::loops::emit_loop_end(chunks, current, loop_state, line);
 }
 
-fn emit_lua_table_sequence_array(chunks: &mut Vec<Chunk>, current: usize, table_slot: u16, line: u32) {
+fn emit_lua_table_sequence_array(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    table_slot: u16,
+    line: u32,
+) {
     let out = chunks[current].alloc_scratch(1);
     let i = chunks[current].alloc_scratch(1);
     let len = chunks[current].alloc_scratch(1);

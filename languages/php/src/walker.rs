@@ -39,8 +39,8 @@
 //!   silent). User scripts may or may not have it.
 
 use super::{PhpParser, Rule};
-use pest::iterators::Pair;
 use pest::Parser;
+use pest::iterators::Pair;
 use std::cell::RefCell;
 use vybe_ast::*;
 
@@ -1991,10 +1991,12 @@ fn note_simple_getter_method(method: &str, body: &[Statement]) {
     let Some(class_name) = current_class_name() else {
         return;
     };
-    let [Statement {
-        kind: StmtKind::Return(Some(expr)),
-        ..
-    }] = body
+    let [
+        Statement {
+            kind: StmtKind::Return(Some(expr)),
+            ..
+        },
+    ] = body
     else {
         return;
     };
@@ -2091,23 +2093,28 @@ fn php_array_read_parts(expr: &Expression) -> Option<(Expression, Expression)> {
     let ExprKind::Sequence(items) = &expr.kind else {
         return None;
     };
-    let [Expression {
-        kind:
-            ExprKind::Assign {
-                target: obj_target,
-                value: receiver,
-            },
-        ..
-    }, Expression {
-        kind: ExprKind::Assign {
-            target: idx_target,
-            value: index,
+    let [
+        Expression {
+            kind:
+                ExprKind::Assign {
+                    target: obj_target,
+                    value: receiver,
+                },
+            ..
         },
-        ..
-    }, Expression {
-        kind: ExprKind::Ternary { .. },
-        ..
-    }] = items.as_slice()
+        Expression {
+            kind:
+                ExprKind::Assign {
+                    target: idx_target,
+                    value: index,
+                },
+            ..
+        },
+        Expression {
+            kind: ExprKind::Ternary { .. },
+            ..
+        },
+    ] = items.as_slice()
     else {
         return None;
     };
@@ -10499,10 +10506,12 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                     unnote_simple_fiber_var(name);
                 }
                 if let ExprKind::Sequence(items) = &rhs.kind {
-                    if let [Expression {
-                        kind: ExprKind::Ident(src),
-                        ..
-                    }] = items.as_slice()
+                    if let [
+                        Expression {
+                            kind: ExprKind::Ident(src),
+                            ..
+                        },
+                    ] = items.as_slice()
                     {
                         propagate_simple_index_aliases(src, name);
                     }

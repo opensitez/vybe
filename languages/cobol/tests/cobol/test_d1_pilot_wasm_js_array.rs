@@ -72,9 +72,8 @@ fn compile_array_call(count: Expression, init: Expression) -> Vec<(String, Strin
         body: vec![Statement::new(stmt)],
         imports: Vec::new(),
     };
-    let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_cobol::profile_source())
-            .expect("parse profile");
+    let profile = vybe_compiler::profile::parse_profile(vybe_language_cobol::profile_source())
+        .expect("parse profile");
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile");
@@ -244,9 +243,8 @@ fn array_call_end_to_end_runtime_produces_array_of_length_n() {
         body: vec![Statement::new(decl)],
         imports: Vec::new(),
     };
-    let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_cobol::profile_source())
-            .expect("parse profile");
+    let profile = vybe_compiler::profile::parse_profile(vybe_language_cobol::profile_source())
+        .expect("parse profile");
     let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile");

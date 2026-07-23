@@ -1,9 +1,9 @@
 use super::{RubyParser, Rule};
-use vybe_ast::*;
 use pest::Parser;
 use pest::iterators::Pair;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use vybe_ast::*;
 
 #[derive(Clone, Default)]
 struct RubyMethodInfo {
@@ -2323,8 +2323,8 @@ a = [1].freeze; begin; a.delete_at(0); rescue FrozenError; puts 'err'; end"#, r#
     let source = normalize_ruby_round_half_keywords(&source);
     let source = normalize_ruby_map_round_blocks(&source);
     let source = normalize_ruby_const_reads(&source);
-    let pairs =
-        RubyParser::parse(Rule::program, source.as_str()).map_err(|e| format!("Parse error: {}", e))?;
+    let pairs = RubyParser::parse(Rule::program, source.as_str())
+        .map_err(|e| format!("Parse error: {}", e))?;
 
     let mut body = Vec::new();
     let mut imports = Vec::new();
@@ -2510,7 +2510,10 @@ fn normalize_ruby_file_dir_smoke_tests(source: &str) -> String {
 }
 
 fn normalize_ruby_frozen_string_literals(source: &str) -> String {
-    if !source.trim_start().starts_with("# frozen_string_literal: true") {
+    if !source
+        .trim_start()
+        .starts_with("# frozen_string_literal: true")
+    {
         return source.to_string();
     }
     let mut out = String::new();
@@ -2555,7 +2558,10 @@ fn normalize_ruby_literal_percent_formats(source: &str) -> String {
     source
         .replace("'%{a} %{b}' % {a: 'x', b: 'y'}", "'x y'")
         .replace("'%{name} %{age}' % {name: 'Bob', age: 30}", "'Bob 30'")
-        .replace("'%<name>-5s %<age>03d' % {name: 'Bob', age: 30}", "'Bob   030'")
+        .replace(
+            "'%<name>-5s %<age>03d' % {name: 'Bob', age: 30}",
+            "'Bob   030'",
+        )
         .replace("'%*.*f' % [8, 2, 3.14159]", "'    3.14'")
 }
 
@@ -3830,7 +3836,11 @@ fn normalize_ruby_heredocs(source: &str) -> String {
             } else {
                 ruby_heredoc_double_quoted(&body)
             };
-            replacements.push((marker.start, marker.end, format!("{}{}", lit, marker.suffix)));
+            replacements.push((
+                marker.start,
+                marker.end,
+                format!("{}{}", lit, marker.suffix),
+            ));
         }
 
         let mut new_line = String::new();
@@ -4076,7 +4086,9 @@ fn normalize_ruby_instance_exec_singleton_defs(source: &str) -> String {
             break;
         };
         let block = rest[block_start..block_close].trim();
-        let Some((block_var, method_name, method_body)) = ruby_extract_define_singleton_method(block) else {
+        let Some((block_var, method_name, method_body)) =
+            ruby_extract_define_singleton_method(block)
+        else {
             out.push_str(&rest[..block_close + 1]);
             rest = &rest[block_close + 1..];
             continue;
@@ -4202,7 +4214,11 @@ fn ruby_extract_define_singleton_method(block: &str) -> Option<(&str, &str, &str
     let open_rel = body[block_search..].find('{')?;
     let inner_start = block_search + open_rel + 1;
     let close_rel = body[inner_start..].find('}')?;
-    Some((block_var, method_name, body[inner_start..inner_start + close_rel].trim()))
+    Some((
+        block_var,
+        method_name,
+        body[inner_start..inner_start + close_rel].trim(),
+    ))
 }
 
 fn normalize_percent_array_literals(source: &str) -> String {
@@ -4528,17 +4544,19 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
 
         other => return Err(format!("Unexpected statement rule: {:?}", other)),
     };
-    Ok(Statement::with_span(normalize_ruby_raise_stmt_kind(kind), span))
+    Ok(Statement::with_span(
+        normalize_ruby_raise_stmt_kind(kind),
+        span,
+    ))
 }
 
 fn normalize_ruby_raise_stmt_kind(kind: StmtKind) -> StmtKind {
     let StmtKind::Expr(Expression {
-        kind:
-            ExprKind::Call {
-                callee,
-                args,
-                optional,
-            },
+        kind: ExprKind::Call {
+            callee,
+            args,
+            optional,
+        },
         ..
     }) = kind
     else {
@@ -4669,13 +4687,7 @@ fn register_ruby_module_members(name: &str, members: &[ClassMember]) {
 }
 
 fn ruby_module_members(name: &str) -> Vec<ClassMember> {
-    RUBY_MODULE_MEMBERS.with(|modules| {
-        modules
-            .borrow()
-            .get(name)
-            .cloned()
-            .unwrap_or_default()
-    })
+    RUBY_MODULE_MEMBERS.with(|modules| modules.borrow().get(name).cloned().unwrap_or_default())
 }
 
 fn register_ruby_member_methods(owner: &str, members: &[ClassMember]) {
@@ -5019,7 +5031,8 @@ fn ruby_remove_method_stmt(stmt: &Statement) -> Option<String> {
     let ExprKind::Call { callee, args, .. } = &expr.kind else {
         return None;
     };
-    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "remove_method") || args.len() != 1 {
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name == "remove_method") || args.len() != 1
+    {
         return None;
     }
     ruby_method_name_arg(&args[0].value)
@@ -5577,10 +5590,9 @@ fn normalize_ruby_raise_args(mut exprs: Vec<Expression>) -> Expression {
 
 fn normalize_ruby_raise_expr(expr: Expression) -> Expression {
     match &expr.kind {
-        ExprKind::Lit(Literal::Str(_)) => ruby_call_expr(
-            "__ruby_exception_runtime_error",
-            vec![expr],
-        ),
+        ExprKind::Lit(Literal::Str(_)) => {
+            ruby_call_expr("__ruby_exception_runtime_error", vec![expr])
+        }
         ExprKind::Ident(name) => {
             if let Some(helper) = ruby_exception_helper_name(name) {
                 ruby_call_expr(helper, Vec::new())
@@ -5628,7 +5640,12 @@ fn ruby_exception_ancestors_expr(name: &str) -> Option<Expression> {
         "NameError" => &["NameError", "StandardError", "Exception"],
         "KeyError" => &["KeyError", "IndexError", "StandardError", "Exception"],
         "IndexError" => &["IndexError", "StandardError", "Exception"],
-        "FloatDomainError" => &["FloatDomainError", "RangeError", "StandardError", "Exception"],
+        "FloatDomainError" => &[
+            "FloatDomainError",
+            "RangeError",
+            "StandardError",
+            "Exception",
+        ],
         "RangeError" => &["RangeError", "StandardError", "Exception"],
         "ArgumentError" => &["ArgumentError", "StandardError", "Exception"],
         "TypeError" => &["TypeError", "StandardError", "Exception"],
@@ -5645,7 +5662,12 @@ fn ruby_exception_ancestors_expr(name: &str) -> Option<Expression> {
         "ScriptError" => &["ScriptError", "Exception"],
         "SecurityError" => &["SecurityError", "Exception"],
         "NoMemoryError" => &["NoMemoryError", "Exception"],
-        "UncaughtThrowError" => &["UncaughtThrowError", "ArgumentError", "StandardError", "Exception"],
+        "UncaughtThrowError" => &[
+            "UncaughtThrowError",
+            "ArgumentError",
+            "StandardError",
+            "Exception",
+        ],
         "LocalJumpError" => &["LocalJumpError", "StandardError", "Exception"],
         "Exception" => &["Exception"],
         _ => return None,
@@ -6318,9 +6340,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
             "Encoding::UTF_8" => Ok(ExprKind::Lit(Literal::Str("UTF-8".to_string()))),
             "Encoding::US_ASCII" => Ok(ExprKind::Lit(Literal::Str("US-ASCII".to_string()))),
-            "Encoding::Windows_1252" => {
-                Ok(ExprKind::Lit(Literal::Str("Windows-1252".to_string())))
-            }
+            "Encoding::Windows_1252" => Ok(ExprKind::Lit(Literal::Str("Windows-1252".to_string()))),
             path => {
                 let mut parts = path.split("::");
                 let first = parts.next().unwrap_or(path);
@@ -6637,7 +6657,11 @@ fn maybe_ruby_array_binary(left: Expression, op: BinOp, right: Expression) -> Ex
         }
         let mut args = vec![Argument::positional(left)];
         if let ExprKind::Array(elements) = right.kind {
-            args.extend(elements.into_iter().map(|element| Argument::positional(element.value)));
+            args.extend(
+                elements
+                    .into_iter()
+                    .map(|element| Argument::positional(element.value)),
+            );
         } else {
             args.push(Argument::positional(right));
         }
@@ -6755,9 +6779,7 @@ fn ruby_percent_hash_literal(fmt_expr: &Expression, hash_expr: &Expression) -> O
     }
     let mut iter = parts.into_iter();
     let first = iter.next().unwrap_or_else(|| Expression::string(""));
-    Some(iter.fold(first, |acc, part| {
-        ruby_add_expr(acc, part)
-    }))
+    Some(iter.fold(first, |acc, part| ruby_add_expr(acc, part)))
 }
 
 fn literal_string(expr: &Expression) -> Option<&str> {
@@ -6777,7 +6799,10 @@ fn ruby_hash_string_map(expr: &Expression) -> Option<Vec<(String, String)>> {
         let ObjectProperty::KeyValue { key, value } = prop else {
             return None;
         };
-        out.push((literal_string(key)?.to_string(), literal_string(value)?.to_string()));
+        out.push((
+            literal_string(key)?.to_string(),
+            literal_string(value)?.to_string(),
+        ));
     }
     Some(out)
 }
@@ -6971,7 +6996,8 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let const_name = chain.as_str();
             if matches!((&expr.kind, const_name), (ExprKind::Ident(base), "PI") if base == "Math") {
                 expr = Expression::new(ExprKind::Lit(Literal::Float(std::f64::consts::PI)));
-            } else if matches!((&expr.kind, const_name), (ExprKind::Ident(base), "E") if base == "Math") {
+            } else if matches!((&expr.kind, const_name), (ExprKind::Ident(base), "E") if base == "Math")
+            {
                 expr = Expression::new(ExprKind::Lit(Literal::Float(std::f64::consts::E)));
             } else {
                 expr = Expression::new(ExprKind::Call {
@@ -7089,10 +7115,9 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
 
             if let ExprKind::Ident(class_name) = &expr.kind {
                 if class_name == "Proc" && method_name == "new" && !final_args.is_empty() {
-                    return Ok(Expression::new(ruby_proc_expr(
-                        "__ruby_proc",
-                        final_args.remove(0).value,
-                    ).kind));
+                    return Ok(Expression::new(
+                        ruby_proc_expr("__ruby_proc", final_args.remove(0).value).kind,
+                    ));
                 }
                 if class_name == "Enumerator" && method_name == "new" {
                     if let Some(gen_fn) = block_text
@@ -7149,7 +7174,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 }
             }
 
-            if matches!((&expr.kind, method_name.as_str()), (ExprKind::Ident(name), "utc") if name == "Time") {
+            if matches!((&expr.kind, method_name.as_str()), (ExprKind::Ident(name), "utc") if name == "Time")
+            {
                 return Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__ruby_time_utc")),
                     args: final_args,
@@ -7255,7 +7281,8 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
             if matches!(
                 method_name.as_str(),
                 "each" | "map" | "collect" | "select" | "filter" | "reject"
-            ) && final_args.is_empty() {
+            ) && final_args.is_empty()
+            {
                 return Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__ruby_enum_from")),
                     args: vec![
@@ -7454,10 +7481,14 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
             let const_name = children[0].as_str();
             if let ExprKind::Ident(base) = &expr.kind {
                 if base == "Math" && const_name == "PI" {
-                    return Ok(Expression::new(ExprKind::Lit(Literal::Float(std::f64::consts::PI))));
+                    return Ok(Expression::new(ExprKind::Lit(Literal::Float(
+                        std::f64::consts::PI,
+                    ))));
                 }
                 if base == "Math" && const_name == "E" {
-                    return Ok(Expression::new(ExprKind::Lit(Literal::Float(std::f64::consts::E))));
+                    return Ok(Expression::new(ExprKind::Lit(Literal::Float(
+                        std::f64::consts::E,
+                    ))));
                 }
                 return Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__ruby_const_get")),
@@ -7556,15 +7587,15 @@ fn ruby_enumerator_generator_expr(source: &str) -> Option<Expression> {
         let mut parsed = RubyParser::parse(Rule::expression, value).ok()?;
         let expr_pair = parsed.next()?;
         let expr = walk_expression(expr_pair).ok()?;
-        body.push(Statement::new(StmtKind::Expr(Expression::new(ExprKind::Yield(
-            Some(Box::new(expr)),
-        )))));
+        body.push(Statement::new(StmtKind::Expr(Expression::new(
+            ExprKind::Yield(Some(Box::new(expr))),
+        ))));
     }
     if body.is_empty() {
         return None;
     }
-    Some(Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
-        StmtKind::FunctionDecl {
+    Some(Expression::new(ExprKind::FunctionExpr(Box::new(
+        Statement::new(StmtKind::FunctionDecl {
             name: String::new(),
             params: Vec::new(),
             return_type: None,
@@ -7574,8 +7605,8 @@ fn ruby_enumerator_generator_expr(source: &str) -> Option<Expression> {
             is_async: false,
             is_generator: true,
             is_sub: false,
-        },
-    )))))
+        }),
+    ))))
 }
 
 fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
@@ -7828,14 +7859,19 @@ fn stmt_contains_spaceship(stmt: &Statement) -> bool {
 fn expr_contains_spaceship(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Binary { op, left, right } => {
-            *op == BinOp::Spaceship || expr_contains_spaceship(left) || expr_contains_spaceship(right)
+            *op == BinOp::Spaceship
+                || expr_contains_spaceship(left)
+                || expr_contains_spaceship(right)
         }
         ExprKind::Unary { expr, .. } => expr_contains_spaceship(expr),
         ExprKind::Ternary { cond, then, else_ } => {
-            expr_contains_spaceship(cond) || expr_contains_spaceship(then) || expr_contains_spaceship(else_)
+            expr_contains_spaceship(cond)
+                || expr_contains_spaceship(then)
+                || expr_contains_spaceship(else_)
         }
         ExprKind::Call { callee, args, .. } => {
-            expr_contains_spaceship(callee) || args.iter().any(|arg| expr_contains_spaceship(&arg.value))
+            expr_contains_spaceship(callee)
+                || args.iter().any(|arg| expr_contains_spaceship(&arg.value))
         }
         ExprKind::Member { object, .. } => expr_contains_spaceship(object),
         ExprKind::Index { object, index, .. } => {
@@ -7856,7 +7892,9 @@ fn expr_contains_spaceship(expr: &Expression) -> bool {
             InterpolPart::Expr(e) | InterpolPart::Formatted(e, _) => expr_contains_spaceship(e),
             InterpolPart::Text(_) => false,
         }),
-        ExprKind::Range { start, end, .. } => expr_contains_spaceship(start) || expr_contains_spaceship(end),
+        ExprKind::Range { start, end, .. } => {
+            expr_contains_spaceship(start) || expr_contains_spaceship(end)
+        }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(e) => expr_contains_spaceship(e),
             LambdaBody::Block(stmts) => stmts.iter().any(stmt_contains_spaceship),
@@ -7897,7 +7935,8 @@ fn walk_block_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                                     .next()
                                     .map(|c| c.as_str().to_string())
                                     .unwrap_or_default();
-                                let default = inner.find(|c| is_expression_rule(c.as_rule()))
+                                let default = inner
+                                    .find(|c| is_expression_rule(c.as_rule()))
                                     .map(walk_expression)
                                     .transpose()?;
                                 params.push(Param {
@@ -8080,7 +8119,9 @@ fn walk_lambda(pair: Pair<Rule>) -> Result<ExprKind, String> {
         if !inner.is_empty() && !inner.contains(';') && !inner.contains('\n') {
             if let Ok(mut parsed) = RubyParser::parse(Rule::expression, inner) {
                 if let Some(expr_pair) = parsed.next() {
-                    body = vec![Statement::new(StmtKind::Return(Some(walk_expression(expr_pair)?)))];
+                    body = vec![Statement::new(StmtKind::Return(Some(walk_expression(
+                        expr_pair,
+                    )?)))];
                 }
             }
         }

@@ -21,11 +21,13 @@ fn stub_stdin(vm: &mut VM) {
 }
 
 fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
-    { static R: std::sync::Once = std::sync::Once::new(); R.call_once(vybe_language_cobol::register); }
+    {
+        static R: std::sync::Once = std::sync::Once::new();
+        R.call_once(vybe_language_cobol::register);
+    }
     let module = vybe_language_cobol::parse(src)?;
-    let profile =
-        vybe_compiler::profile::parse_profile(vybe_language_cobol::profile_source())
-            .map_err(|e| format!("profile parse failed: {}", e))?;
+    let profile = vybe_compiler::profile::parse_profile(vybe_language_cobol::profile_source())
+        .map_err(|e| format!("profile parse failed: {}", e))?;
     vybe_compiler::compiler::Compiler::with_profile(profile).compile(&module)
 }
 

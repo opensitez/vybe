@@ -107,11 +107,6 @@ tuple_literals_tagged = true
 "Object.Equals"       = { emit = "common:dyn_eq",                 min_args = 2, max_args = 2 }
 "Object.ReferenceEquals" = { emit = "common:ref_eq",              min_args = 2, max_args = 2 }
 
-# ── JSON ─────────────────────────────────────────────────────────────────────
-
-"JsonSerializer.Serialize"     = { emit = "host:ecma:json:stringify", min_args = 1, max_args = 1 }
-"JsonSerializer.Deserialize"   = { emit = "host:ecma:json:parse",    min_args = 1, max_args = 1 }
-
 # ── Environment ──────────────────────────────────────────────────────────────
 
 # ── Threading ────────────────────────────────────────────────────────────────
@@ -119,14 +114,6 @@ tuple_literals_tagged = true
 # opcodes (thread_spawn, thread_join, atomic_*) — NOT Vybe-specific host calls.
 # Standard WASM runtimes that support the threads proposal get proper threading
 # without needing the Vybe host. Sleep uses the standard `wasi:clocks` import.
-
-# ── GUI (Windows Forms) ─────────────────────────────────────────────────────
-
-"Application.Run"              = { emit = "host:vybe:gui:runApplication",   min_args = 1, max_args = 1 }
-"Application.Exit"             = { emit = "host:vybe:gui:appExit",          min_args = 0, max_args = 0 }
-"Application.EnableVisualStyles" = { emit = "host:vybe:gui:noop",          min_args = 0, max_args = 0 }
-"Application.SetCompatibleTextRenderingDefault" = { emit = "host:vybe:gui:noop", min_args = 1, max_args = 1 }
-"MessageBox.Show"              = { emit = "host:vybe:gui:msgBox",           min_args = 1, max_args = 3 }
 
 # ── Layout no-ops ────────────────────────────────────────────────────────────
 
@@ -234,16 +221,6 @@ module = "ecma:object"
 # compile to Op::THREAD_SPAWN, Interlocked.* compiles to WASM atomic opcodes,
 # Thread.Sleep uses wasi:clocks/sleep. No ESM namespace object is needed —
 # the compiler intercepts these calls directly.
-
-[[esm_default]]
-kind = "namespace"
-alias = "Application"
-module = "vybe:gui"
-
-[[esm_default]]
-kind = "namespace"
-alias = "MessageBox"
-module = "vybe:gui"
 
 # ────────────────────────────────────────────────────────────────────────────
 # KNOWN TYPES — constructor mappings for new TypeName()

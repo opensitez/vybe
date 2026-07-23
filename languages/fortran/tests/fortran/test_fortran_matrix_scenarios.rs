@@ -31,7 +31,11 @@ end program fortran_matrix_arithmetic_expressions
 #[test]
 fn fortran_matrix_branching_by_mod() {
     for n in 1..=100 {
-        let expected = if n % 3 == 0 { (n / 3) as i64 } else { (n - 1) as i64 };
+        let expected = if n % 3 == 0 {
+            (n / 3) as i64
+        } else {
+            (n - 1) as i64
+        };
         let src = format!(
             r#"
 program fortran_matrix_branching_by_mod
@@ -538,7 +542,11 @@ end program fortran_matrix_logical_gate_table
 fn fortran_matrix_minmax_pairing() {
     for n in 1..=100 {
         let expected_min = n as i64;
-        let expected_max = if n < 5 { (n + 5) as i64 } else { (3 * n) as i64 };
+        let expected_max = if n < 5 {
+            (n + 5) as i64
+        } else {
+            (3 * n) as i64
+        };
         let src = format!(
             r#"
 program fortran_matrix_minmax_pairing

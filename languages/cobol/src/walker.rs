@@ -33,10 +33,10 @@
 //!   / `__exec_dli` helper calls.
 
 use super::{CobolParser, Rule};
-use vybe_ast::*;
 use pest::Parser;
 use pest::iterators::{Pair, Pairs};
 use std::collections::{HashMap, HashSet};
+use vybe_ast::*;
 
 const COBOL_ARRAY_INDEXING: ArrayIndexSemantics = ArrayIndexSemantics::ONE_BASED;
 
@@ -5083,10 +5083,7 @@ fn walk_inspect_tallying(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_inspect_replacing(
-    pair: Pair<Rule>,
-    ctx: &CobolWalkerContext,
-) -> Result<StmtKind, String> {
+fn walk_inspect_replacing(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
     let parts = inner_nokw(pair);
     let var = parts
         .iter()

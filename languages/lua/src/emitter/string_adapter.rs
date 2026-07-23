@@ -73,7 +73,14 @@ fn emit_slot_eq_bool(chunk: &mut Chunk, slot: u16, value: bool, line: u32) {
     vybe_emitter::ops::emit_dyn_eq(chunk, line);
 }
 
-fn emit_type_is_slot(chunk: &mut Chunk, slot: u16, type_of: u16, str_compare: u16, type_name: &str, line: u32) {
+fn emit_type_is_slot(
+    chunk: &mut Chunk,
+    slot: u16,
+    type_of: u16,
+    str_compare: u16,
+    type_name: &str,
+    line: u32,
+) {
     lget(chunk, slot, line);
     chunk.emit_call(type_of, 1, line);
     push_str(chunk, type_name, line);
@@ -95,7 +102,13 @@ fn emit_slot_is_missing_or_false(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op(Op::I32_OR, line);
 }
 
-fn emit_array_push_slot(chunks: &mut Vec<Chunk>, current: usize, arr_slot: u16, value_slot: u16, line: u32) {
+fn emit_array_push_slot(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    arr_slot: u16,
+    value_slot: u16,
+    line: u32,
+) {
     let push = chunks[current].add_import("ecma:array", "push");
     lget(&mut chunks[current], arr_slot, line);
     lget(&mut chunks[current], value_slot, line);
@@ -159,13 +172,8 @@ fn emit_lua_gsub_manual_replace(
     chunks[current].emit_f64_const(0.0, line);
     lset(&mut chunks[current], cursor_slot, line);
 
-    let loop_state = vybe_emitter::loops::emit_for_in_start(
-        chunks,
-        current,
-        matches_slot,
-        idx_slot,
-        line,
-    );
+    let loop_state =
+        vybe_emitter::loops::emit_for_in_start(chunks, current, matches_slot, idx_slot, line);
     lset(&mut chunks[current], item_slot, line);
 
     lget(&mut chunks[current], item_slot, line);
@@ -694,7 +702,11 @@ fn emit_lua_pack_u32_from_slot(
         lset(&mut chunks[current], slot, line);
     }
 
-    let order = if little_endian { [b0, b1, b2, b3] } else { [b3, b2, b1, b0] };
+    let order = if little_endian {
+        [b0, b1, b2, b3]
+    } else {
+        [b3, b2, b1, b0]
+    };
     lget(&mut chunks[current], order[0], line);
     chunks[current].emit_call(from_char_code, 1, line);
     for slot in order.iter().copied().skip(1) {
@@ -917,7 +929,11 @@ fn emit_lua_unpack_u32(
     little_endian: bool,
     line: u32,
 ) {
-    let order = if little_endian { [0.0, 1.0, 2.0, 3.0] } else { [3.0, 2.0, 1.0, 0.0] };
+    let order = if little_endian {
+        [0.0, 1.0, 2.0, 3.0]
+    } else {
+        [3.0, 2.0, 1.0, 0.0]
+    };
     emit_lua_char_code_at_zero(chunks, current, s_slot, order[0], line);
     emit_lua_char_code_at_zero(chunks, current, s_slot, order[1], line);
     chunks[current].emit_f64_const(256.0, line);
@@ -1485,7 +1501,15 @@ pub fn emit_lua_string_match(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     chunks[current].emit_op(Op::I32_GT_S, line);
     chunks[current].emit_if(line);
     for index in 1..=4 {
-        emit_push_match_part_if_present(chunks, current, result_slot, row_slot, len_slot, index, line);
+        emit_push_match_part_if_present(
+            chunks,
+            current,
+            result_slot,
+            row_slot,
+            len_slot,
+            index,
+            line,
+        );
     }
     chunks[current].emit_else(line);
     emit_push_match_part_if_present(chunks, current, result_slot, row_slot, len_slot, 0, line);
@@ -1508,7 +1532,16 @@ pub fn emit_lua_string_match(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
 // For MVP: returns start+1, end+1 (1-based) using match.index + match[0].length
 
 pub fn emit_lua_string_find(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
-    let (s_slot, pat_slot, init_slot, _plain_slot, js_pat_slot, result_slot, start0_slot, search_slot) = {
+    let (
+        s_slot,
+        pat_slot,
+        init_slot,
+        _plain_slot,
+        js_pat_slot,
+        result_slot,
+        start0_slot,
+        search_slot,
+    ) = {
         let c = &mut chunks[current];
         (
             alloc_local(c),
@@ -1642,7 +1675,15 @@ pub fn emit_lua_string_find(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         emit_array_push_slot(chunks, current, row_slot, start_slot, line);
         emit_array_push_slot(chunks, current, row_slot, end_slot, line);
         for index in 1..=4 {
-            emit_push_match_part_if_present(chunks, current, result_slot, row_slot, cap_len_slot, index, line);
+            emit_push_match_part_if_present(
+                chunks,
+                current,
+                result_slot,
+                row_slot,
+                cap_len_slot,
+                index,
+                line,
+            );
         }
         lget(&mut chunks[current], row_slot, line);
         mark_lua_multi_row(chunks, current, line);
@@ -1661,7 +1702,16 @@ pub fn emit_lua_string_find(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 // The count return is approximated.
 
 pub fn emit_lua_string_gsub(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
-    let (s_slot, pat_slot, repl_slot, _n_slot, js_pat_slot, replace_pat_slot, count_slot, result_slot) = {
+    let (
+        s_slot,
+        pat_slot,
+        repl_slot,
+        _n_slot,
+        js_pat_slot,
+        replace_pat_slot,
+        count_slot,
+        result_slot,
+    ) = {
         let c = &mut chunks[current];
         (
             alloc_local(c),
@@ -1723,8 +1773,22 @@ pub fn emit_lua_string_gsub(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     vybe_emitter::reflection::emit_is_callable(chunks, current, line);
     chunks[current].emit_if(line);
     chunks[current].emit_else(line);
-    emit_type_is_slot(&mut chunks[current], repl_slot, type_of, str_compare, "string", line);
-    emit_type_is_slot(&mut chunks[current], repl_slot, type_of, str_compare, "number", line);
+    emit_type_is_slot(
+        &mut chunks[current],
+        repl_slot,
+        type_of,
+        str_compare,
+        "string",
+        line,
+    );
+    emit_type_is_slot(
+        &mut chunks[current],
+        repl_slot,
+        type_of,
+        str_compare,
+        "number",
+        line,
+    );
     chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
     lget(&mut chunks[current], repl_slot, line);
@@ -1748,7 +1812,14 @@ pub fn emit_lua_string_gsub(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     lget(&mut chunks[current], repl_slot, line);
     vybe_emitter::reflection::emit_is_callable(chunks, current, line);
     lset(&mut chunks[current], callable_slot, line);
-    emit_type_is_slot(&mut chunks[current], repl_slot, type_of, str_compare, "object", line);
+    emit_type_is_slot(
+        &mut chunks[current],
+        repl_slot,
+        type_of,
+        str_compare,
+        "object",
+        line,
+    );
     lset(&mut chunks[current], object_slot, line);
 
     lget(&mut chunks[current], callable_slot, line);
@@ -1768,8 +1839,22 @@ pub fn emit_lua_string_gsub(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     );
     chunks[current].emit_else(line);
 
-    emit_type_is_slot(&mut chunks[current], repl_slot, type_of, str_compare, "string", line);
-    emit_type_is_slot(&mut chunks[current], repl_slot, type_of, str_compare, "number", line);
+    emit_type_is_slot(
+        &mut chunks[current],
+        repl_slot,
+        type_of,
+        str_compare,
+        "string",
+        line,
+    );
+    emit_type_is_slot(
+        &mut chunks[current],
+        repl_slot,
+        type_of,
+        str_compare,
+        "number",
+        line,
+    );
     chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
     if argc >= 4 {
@@ -1829,7 +1914,17 @@ pub fn emit_lua_string_gmatch_match_all(
     _argc: u8,
     line: u32,
 ) {
-    let (s_slot, pat_slot, js_pat_slot, matches_slot, out_slot, idx_slot, item_slot, row_slot, len_slot) = {
+    let (
+        s_slot,
+        pat_slot,
+        js_pat_slot,
+        matches_slot,
+        out_slot,
+        idx_slot,
+        item_slot,
+        row_slot,
+        len_slot,
+    ) = {
         let c = &mut chunks[current];
         (
             alloc_local(c),
@@ -1874,13 +1969,8 @@ pub fn emit_lua_string_gmatch_match_all(
     vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
     lset(&mut chunks[current], out_slot, line);
 
-    let loop_state = vybe_emitter::loops::emit_for_in_start(
-        chunks,
-        current,
-        matches_slot,
-        idx_slot,
-        line,
-    );
+    let loop_state =
+        vybe_emitter::loops::emit_for_in_start(chunks, current, matches_slot, idx_slot, line);
     lset(&mut chunks[current], item_slot, line);
 
     lget(&mut chunks[current], item_slot, line);
@@ -1895,7 +1985,9 @@ pub fn emit_lua_string_gmatch_match_all(
     chunks[current].emit_op(Op::I32_GT_S, line);
     chunks[current].emit_if(line);
     for index in 1..=4 {
-        emit_push_match_part_if_present(chunks, current, item_slot, row_slot, len_slot, index, line);
+        emit_push_match_part_if_present(
+            chunks, current, item_slot, row_slot, len_slot, index, line,
+        );
     }
     chunks[current].emit_else(line);
     emit_push_match_part_if_present(chunks, current, item_slot, row_slot, len_slot, 0, line);
@@ -1913,7 +2005,11 @@ pub fn emit_lua_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
         lset(&mut chunks[current], fmt_slot, line);
         emit_str_eq_const(&mut chunks[current], fmt_slot, "%d", line);
         chunks[current].emit_if(line);
-        push_str(&mut chunks[current], "bad argument #2 to 'format' (number expected, got no value)", line);
+        push_str(
+            &mut chunks[current],
+            "bad argument #2 to 'format' (number expected, got no value)",
+            line,
+        );
         vybe_emitter::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_else(line);
         lget(&mut chunks[current], fmt_slot, line);
@@ -1931,7 +2027,11 @@ pub fn emit_lua_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
         lset(&mut chunks[current], fmt_slot, line);
         emit_str_eq_const(&mut chunks[current], fmt_slot, "%*d", line);
         chunks[current].emit_if(line);
-        push_str(&mut chunks[current], "invalid option '%*' to 'format'", line);
+        push_str(
+            &mut chunks[current],
+            "invalid option '%*' to 'format'",
+            line,
+        );
         vybe_emitter::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_else(line);
         lget(&mut chunks[current], fmt_slot, line);
@@ -1994,9 +2094,20 @@ pub fn emit_lua_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
     chunks[current].emit_if(line);
     let type_of = chunks[current].add_import("ecma:value", "typeof");
     let str_compare = chunks[current].add_import("wasm:js-string", "compare");
-    emit_type_is_slot(&mut chunks[current], value_slot, type_of, str_compare, "string", line);
+    emit_type_is_slot(
+        &mut chunks[current],
+        value_slot,
+        type_of,
+        str_compare,
+        "string",
+        line,
+    );
     chunks[current].emit_if(line);
-    push_str(&mut chunks[current], "bad argument #2 to 'format' (number expected, got string)", line);
+    push_str(
+        &mut chunks[current],
+        "bad argument #2 to 'format' (number expected, got string)",
+        line,
+    );
     vybe_emitter::errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_else(line);
     lget(&mut chunks[current], fmt_slot, line);

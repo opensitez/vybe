@@ -363,4 +363,3 @@ end program array_section_shape_and_strides_section_as_lhs_rhs_same_shape
     );
     assert_eq!(out, vec!["39", "3", "9"]);
 }
-

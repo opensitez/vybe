@@ -1,10 +1,10 @@
 //! Fortran walker — pest `Pair<Rule>` → `vybe_compiler::ast::Module`.
 
 use super::{FortranParser, Rule};
-use vybe_ast::*;
 use pest::Parser;
 use pest::iterators::Pair;
 use std::collections::{HashMap, HashSet};
+use vybe_ast::*;
 
 const FORTRAN_TBP_IMPL_HANDLE_PREFIX: &str = "__fortran_tbp_impl:";
 const FORTRAN_IO_BUFFER_GLOBAL: &str = "__vybe_fortran_io_buffer";
@@ -695,7 +695,10 @@ fn walk_enum_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut next_value = 0_i64;
     let mut known_values: HashMap<String, i64> = HashMap::new();
 
-    for decl in pair.into_inner().filter(|p| p.as_rule() == Rule::enumerator_decl) {
+    for decl in pair
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::enumerator_decl)
+    {
         for value_pair in decl
             .into_inner()
             .filter(|p| p.as_rule() == Rule::enumerator_value)
@@ -765,10 +768,14 @@ fn fortran_const_int_expr(expr: &Expression, known_values: &HashMap<String, i64>
         ExprKind::Lit(Literal::Int(value)) => Some(*value),
         ExprKind::Lit(Literal::Float(value)) => Some(*value as i64),
         ExprKind::Ident(name) => known_values.get(name).copied(),
-        ExprKind::Unary { op: UnaryOp::Neg, expr } => {
-            fortran_const_int_expr(expr, known_values).map(|value| -value)
-        }
-        ExprKind::Unary { op: UnaryOp::Pos, expr } => fortran_const_int_expr(expr, known_values),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => fortran_const_int_expr(expr, known_values).map(|value| -value),
+        ExprKind::Unary {
+            op: UnaryOp::Pos,
+            expr,
+        } => fortran_const_int_expr(expr, known_values),
         ExprKind::Binary { op, left, right } => {
             let left = fortran_const_int_expr(left, known_values)?;
             let right = fortran_const_int_expr(right, known_values)?;
@@ -3464,10 +3471,7 @@ fn fortran_random_assignment_target(target: Expression) -> Expression {
     }
 }
 
-fn fortran_random_target_is_array(
-    target: &Expression,
-    type_env: &HashMap<String, String>,
-) -> bool {
+fn fortran_random_target_is_array(target: &Expression, type_env: &HashMap<String, String>) -> bool {
     match &target.kind {
         ExprKind::Ident(name) => type_env
             .get(&name.to_ascii_lowercase())
@@ -12174,7 +12178,11 @@ fn build_fortran_count_expr(array_expr: Expression) -> Expression {
     })
 }
 
-fn build_fortran_lexical_compare_expr(op: BinOp, left: Expression, right: Expression) -> Expression {
+fn build_fortran_lexical_compare_expr(
+    op: BinOp,
+    left: Expression,
+    right: Expression,
+) -> Expression {
     let compare = Expression::new(ExprKind::Binary {
         op,
         left: Box::new(left),

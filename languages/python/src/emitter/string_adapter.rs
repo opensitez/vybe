@@ -7,8 +7,8 @@
 //! The receiver and explicit arguments arrive pre-pushed on the stack (receiver
 //! first), matching the `emit_common` value-method calling convention.
 
-use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
+use vybe_bytecode::opcode::Op;
 
 use vybe_emitter::{collections, ops, strings};
 

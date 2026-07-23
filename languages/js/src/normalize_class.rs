@@ -30,7 +30,10 @@
 //! the legacy `compile_class` orchestration in `crate::compiler::classes`.
 //! Phase 2b flips the switch.
 
-use vybe_ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, Statement, StmtKind};
+use vybe_ast::{
+    Argument, ClassMember, ClassModifiers, ExprKind, Expression, LambdaBody, Modifiers, Param,
+    PropertySetter, Span, Statement, StmtKind,
+};
 use vybe_plugin::class_normalize::{
     build_normal_method,
     canonical::{ClassLang, canonicalize_method},
@@ -88,6 +91,17 @@ pub fn normalize_class(
             }
             ClassMember::Method(stmt) => {
                 if let Some(nm) = method_from_funcdecl(span.clone(), stmt) {
+                    if is_static_method(stmt)
+                        && (nm.source_name == "__static_init"
+                            || nm.source_name == "__static_init__")
+                    {
+                        static_fields.push(static_block_field(
+                            span.clone(),
+                            static_fields.len(),
+                            nm.body,
+                        ));
+                        continue;
+                    }
                     let (canon, kind) = canonicalize_method(ClassLang::Js, &nm.source_name);
                     let nm = NormalMethod {
                         canonical_name: canon.clone(),
@@ -221,6 +235,29 @@ pub fn normalize_class(
         special_methods,
         event_bindings: Vec::new(),
         raw_extra_members,
+    }
+}
+
+fn static_block_field(span: Span, index: usize, body: Vec<Statement>) -> NormalField {
+    let lambda = Expression::new(ExprKind::Lambda {
+        params: Vec::<Param>::new(),
+        body: LambdaBody::Block(body),
+        is_async: false,
+        captures: Vec::new(),
+    });
+    let init = Expression::new(ExprKind::Call {
+        callee: Box::new(lambda),
+        args: Vec::<Argument>::new(),
+        optional: false,
+    });
+    NormalField {
+        span,
+        name: format!("__static_block_{}", index),
+        type_hint: None,
+        init: Some(init),
+        array_bounds: None,
+        access: Access::Private,
+        readonly: false,
     }
 }
 

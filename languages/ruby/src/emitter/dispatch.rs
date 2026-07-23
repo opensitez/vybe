@@ -12,9 +12,8 @@ use vybe_bytecode::opcode::Op;
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     match name {
         "ruby.dig" => emit_dig(&mut chunks[current], argc, line),
-        name if crate::emitter::runtime_adapter::emit_helper(
-            name, chunks, current, argc, line,
-        ) => {}
+        name if crate::emitter::runtime_adapter::emit_helper(name, chunks, current, argc, line) => {
+        }
         _ => return false,
     }
     true

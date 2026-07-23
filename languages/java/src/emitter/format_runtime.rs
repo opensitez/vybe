@@ -6402,7 +6402,10 @@ fn thread_fns() -> Vec<Statement> {
                     binary(BinOp::StrictNotEq, fld("r", "job"), undefined_lit()),
                 ),
                 vec![
-                    stmt(StmtKind::Expr(call("__j_future_task_run", vec![ident("r")]))),
+                    stmt(StmtKind::Expr(call(
+                        "__j_future_task_run",
+                        vec![ident("r")],
+                    ))),
                     ret(null_lit()),
                 ],
                 None,
@@ -6574,10 +6577,17 @@ fn thread_fns() -> Vec<Statement> {
                 binary(
                     BinOp::And,
                     binary(BinOp::Eq, typeof_expr(ident("r")), str_lit("object")),
-                    binary(BinOp::StrictNotEq, member(ident("r"), "job"), undefined_lit()),
+                    binary(
+                        BinOp::StrictNotEq,
+                        member(ident("r"), "job"),
+                        undefined_lit(),
+                    ),
                 ),
                 vec![
-                    stmt(StmtKind::Expr(call("__j_future_task_run", vec![ident("r")]))),
+                    stmt(StmtKind::Expr(call(
+                        "__j_future_task_run",
+                        vec![ident("r")],
+                    ))),
                     ret(null_lit()),
                 ],
                 None,
@@ -6605,7 +6615,10 @@ fn thread_fns() -> Vec<Statement> {
         vec![
             if_stmt(
                 binary(BinOp::Gt, fld("l", "count"), int_lit(0)),
-                vec![assign(fld("l", "count"), sub(fld("l", "count"), int_lit(1)))],
+                vec![assign(
+                    fld("l", "count"),
+                    sub(fld("l", "count"), int_lit(1)),
+                )],
                 None,
             ),
             ret(null_lit()),
@@ -6622,7 +6635,10 @@ fn thread_fns() -> Vec<Statement> {
         vec![
             if_stmt(
                 binary(BinOp::Gt, fld("l", "count"), int_lit(0)),
-                vec![stmt(StmtKind::Expr(call("__java_thread_sleep", vec![int_lit(5)])))],
+                vec![stmt(StmtKind::Expr(call(
+                    "__java_thread_sleep",
+                    vec![int_lit(5)],
+                )))],
                 None,
             ),
             ret(null_lit()),
@@ -6665,7 +6681,10 @@ fn thread_fns() -> Vec<Statement> {
                 body: vec![if_stmt(
                     binary(BinOp::Eq, fld("f", "hasPreset"), bool_lit(true)),
                     vec![
-                        stmt(StmtKind::Expr(call("__j_runnable_run", vec![fld("f", "job")]))),
+                        stmt(StmtKind::Expr(call(
+                            "__j_runnable_run",
+                            vec![fld("f", "job")],
+                        ))),
                         assign(fld("f", "result"), fld("f", "preset")),
                     ],
                     Some(vec![assign(
@@ -6713,7 +6732,10 @@ fn thread_fns() -> Vec<Statement> {
             ),
             if_stmt(
                 binary(BinOp::Eq, fld("f", "done"), bool_lit(false)),
-                vec![stmt(StmtKind::Expr(call("__j_future_task_run", vec![ident("f")])) )],
+                vec![stmt(StmtKind::Expr(call(
+                    "__j_future_task_run",
+                    vec![ident("f")],
+                )))],
                 None,
             ),
             if_stmt(
@@ -6797,10 +6819,17 @@ fn thread_fns() -> Vec<Statement> {
                 binary(
                     BinOp::And,
                     binary(BinOp::Eq, typeof_expr(ident("job")), str_lit("object")),
-                    binary(BinOp::StrictNotEq, member(ident("job"), "job"), undefined_lit()),
+                    binary(
+                        BinOp::StrictNotEq,
+                        member(ident("job"), "job"),
+                        undefined_lit(),
+                    ),
                 ),
                 vec![
-                    stmt(StmtKind::Expr(call("__j_future_task_run", vec![ident("job")]))),
+                    stmt(StmtKind::Expr(call(
+                        "__j_future_task_run",
+                        vec![ident("job")],
+                    ))),
                     ret(ident("job")),
                 ],
                 None,
@@ -6812,7 +6841,10 @@ fn thread_fns() -> Vec<Statement> {
                     vec![ident("job"), undefined_lit(), bool_lit(false)],
                 ),
             ),
-            stmt(StmtKind::Expr(call("__j_future_task_run", vec![ident("f")]))),
+            stmt(StmtKind::Expr(call(
+                "__j_future_task_run",
+                vec![ident("f")],
+            ))),
             ret(ident("f")),
         ],
     ));
@@ -6820,14 +6852,20 @@ fn thread_fns() -> Vec<Statement> {
         "__j_exec_execute",
         vec!["p", "job"],
         vec![
-            stmt(StmtKind::Expr(call("__j_exec_submit", vec![ident("p"), ident("job")]))),
+            stmt(StmtKind::Expr(call(
+                "__j_exec_submit",
+                vec![ident("p"), ident("job")],
+            ))),
             ret(null_lit()),
         ],
     ));
     out.push(function_stmt(
         "__j_exec_shutdown",
         vec!["p"],
-        vec![assign(fld("p", "shutdown"), bool_lit(true)), ret(null_lit())],
+        vec![
+            assign(fld("p", "shutdown"), bool_lit(true)),
+            ret(null_lit()),
+        ],
     ));
     out.push(function_stmt(
         "__j_exec_is_shutdown",

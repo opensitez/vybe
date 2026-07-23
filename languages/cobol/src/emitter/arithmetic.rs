@@ -1,6 +1,6 @@
-use vybe_emitter::instructions::core_wasm;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_emitter::instructions::core_wasm;
 
 use super::support::stash_args;
 

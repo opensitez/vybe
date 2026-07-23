@@ -31,7 +31,10 @@ pub fn register_namespace_tree() {
         let mut root = Subtree::new();
         // `deque(iterable)` IS an ecma array (same as `list`); its methods
         // (append/pop/appendleft/popleft/rotate/extendleft) are array emits.
-        root.insert("deque".to_string(), namespaces::host_fn("ecma:array", "from"));
+        root.insert(
+            "deque".to_string(),
+            namespaces::host_fn("ecma:array", "from"),
+        );
         // `OrderedDict(...)` IS an insertion-ordered dict — an ecma object.
         root.insert(
             "OrderedDict".to_string(),

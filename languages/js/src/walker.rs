@@ -1,6 +1,7 @@
 use super::{JsParser, Rule};
 use pest::Parser;
 use pest::iterators::Pair;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vybe_ast::*;
 
@@ -80,6 +81,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // Static TDZ pass — ECMA-262 §14.3.1 / §14.6: a `let` / `const` / `class`
     // binding is in a temporal dead zone until its declaration executes.
     apply_static_tdz(&mut body);
+    validate_private_class_syntax(&body)?;
 
     Ok(Module {
         name: "main".into(),
@@ -87,6 +89,739 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body,
         imports,
     })
+}
+
+fn validate_private_class_syntax(body: &[Statement]) -> Result<(), String> {
+    for stmt in body {
+        validate_private_stmt(stmt)?;
+    }
+    Ok(())
+}
+
+fn validate_private_stmt(stmt: &Statement) -> Result<(), String> {
+    match &stmt.kind {
+        StmtKind::Expr(expr) => validate_private_expr(expr),
+        StmtKind::Block(body)
+        | StmtKind::NamespaceDecl { body, .. }
+        | StmtKind::FunctionDecl { body, .. } => validate_private_class_syntax(body),
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => validate_private_class_members(members),
+        StmtKind::EnumDecl { body_members, .. } => validate_private_class_members(body_members),
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &decl.init {
+                    validate_private_expr(init)?;
+                }
+            }
+            Ok(())
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            validate_private_expr(cond)?;
+            validate_private_class_syntax(then_body)?;
+            for (cond, body) in elifs {
+                validate_private_expr(cond)?;
+                validate_private_class_syntax(body)?;
+            }
+            if let Some(body) = else_body {
+                validate_private_class_syntax(body)?;
+            }
+            Ok(())
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                validate_private_stmt(init)?;
+            }
+            if let Some(cond) = cond {
+                validate_private_expr(cond)?;
+            }
+            if let Some(update) = update {
+                validate_private_expr(update)?;
+            }
+            validate_private_class_syntax(body)
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            validate_private_expr(iter)?;
+            validate_private_class_syntax(body)?;
+            if let Some(body) = else_body {
+                validate_private_class_syntax(body)?;
+            }
+            Ok(())
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            validate_private_expr(cond)?;
+            validate_private_class_syntax(body)?;
+            if let Some(body) = else_body {
+                validate_private_class_syntax(body)?;
+            }
+            Ok(())
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            validate_private_class_syntax(body)?;
+            validate_private_expr(cond)
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            validate_private_expr(expr)?;
+            for case in cases {
+                for cond in &case.conditions {
+                    validate_private_case_condition(cond)?;
+                }
+                validate_private_class_syntax(&case.body)?;
+            }
+            if let Some(body) = default {
+                validate_private_class_syntax(body)?;
+            }
+            Ok(())
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            validate_private_class_syntax(body)?;
+            for catch in catches {
+                validate_private_class_syntax(&catch.body)?;
+            }
+            if let Some(body) = else_body {
+                validate_private_class_syntax(body)?;
+            }
+            if let Some(body) = finally {
+                validate_private_class_syntax(body)?;
+            }
+            Ok(())
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                validate_private_expr(&item.expr)?;
+            }
+            validate_private_class_syntax(body)
+        }
+        StmtKind::Using { resource, body, .. } => {
+            validate_private_expr(resource)?;
+            validate_private_class_syntax(body)
+        }
+        StmtKind::Lock { expr, body } => {
+            validate_private_expr(expr)?;
+            validate_private_class_syntax(body)
+        }
+        StmtKind::Return(expr) => {
+            if let Some(expr) = expr {
+                validate_private_expr(expr)?;
+            }
+            Ok(())
+        }
+        StmtKind::Throw { expr, cause } => {
+            if let Some(expr) = expr {
+                validate_private_expr(expr)?;
+            }
+            if let Some(cause) = cause {
+                validate_private_expr(cause)?;
+            }
+            Ok(())
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                validate_private_expr(target)?;
+            }
+            validate_private_expr(value)
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            validate_private_expr(target)?;
+            validate_private_expr(value)
+        }
+        StmtKind::ReDim { bounds, .. } => {
+            for bound in bounds {
+                validate_private_expr(bound)?;
+            }
+            Ok(())
+        }
+        StmtKind::AddHandler {
+            control, handler, ..
+        } => {
+            validate_private_expr(control)?;
+            validate_private_expr(handler)
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_private_class_members(members: &[ClassMember]) -> Result<(), String> {
+    let mut instance_private = HashMap::new();
+    let mut static_private = HashMap::new();
+    for member in members {
+        let (name, is_static, private_kind) = match member {
+            ClassMember::Field {
+                name,
+                modifiers,
+                init,
+                ..
+            } => {
+                if let Some(init) = init {
+                    validate_private_expr(init)?;
+                }
+                (name.as_str(), modifiers.is_static, 0b001)
+            }
+            ClassMember::Method(stmt) => {
+                if let StmtKind::FunctionDecl {
+                    name,
+                    body,
+                    modifiers,
+                    ..
+                } = &stmt.kind
+                {
+                    validate_private_class_syntax(body)?;
+                    (name.as_str(), modifiers.is_static, 0b001)
+                } else {
+                    continue;
+                }
+            }
+            ClassMember::Property {
+                name,
+                getter,
+                setter,
+                modifiers,
+                ..
+            } => {
+                if let Some(body) = getter {
+                    validate_private_class_syntax(body)?;
+                }
+                if let Some(setter) = setter {
+                    validate_private_class_syntax(&setter.body)?;
+                }
+                let private_kind = match (getter.is_some(), setter.is_some()) {
+                    (true, false) => 0b010,
+                    (false, true) => 0b100,
+                    (true, true) => 0b110,
+                    (false, false) => 0,
+                };
+                (name.as_str(), modifiers.is_static, private_kind)
+            }
+            ClassMember::Constructor { body, .. } => {
+                validate_private_class_syntax(body)?;
+                continue;
+            }
+            ClassMember::Const { value, .. } => {
+                validate_private_expr(value)?;
+                continue;
+            }
+            ClassMember::NestedType(stmt) => {
+                validate_private_stmt(stmt)?;
+                continue;
+            }
+            ClassMember::Event { .. } => continue,
+        };
+        if name.starts_with('#') {
+            let seen: &mut HashMap<String, u8> = if is_static {
+                &mut static_private
+            } else {
+                &mut instance_private
+            };
+            let existing = seen.get(name).copied().unwrap_or(0);
+            if existing & private_kind != 0
+                || existing & 0b001 != 0
+                || private_kind & 0b001 != 0 && existing != 0
+            {
+                return Err(format!("Duplicate private member {}", name));
+            }
+            seen.insert(name.to_string(), existing | private_kind);
+        }
+    }
+    Ok(())
+}
+
+fn validate_private_expr(expr: &Expression) -> Result<(), String> {
+    match &expr.kind {
+        ExprKind::Delete(inner) => {
+            if matches!(
+                &inner.kind,
+                ExprKind::Member { field, .. } if field.starts_with('#')
+            ) {
+                return Err("Cannot delete private member".to_string());
+            }
+            validate_private_expr(inner)
+        }
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Range {
+            start: left,
+            end: right,
+            ..
+        } => {
+            validate_private_expr(left)?;
+            validate_private_expr(right)
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::Cast { expr, .. } => validate_private_expr(expr),
+        ExprKind::RefOf(place) => validate_private_place(place),
+        ExprKind::Ternary { cond, then, else_ } => {
+            validate_private_expr(cond)?;
+            validate_private_expr(then)?;
+            validate_private_expr(else_)
+        }
+        ExprKind::Member { object, .. } => validate_private_expr(object),
+        ExprKind::Index { object, index, .. } => {
+            validate_private_expr(object)?;
+            validate_private_expr(index)
+        }
+        ExprKind::Call { callee, args, .. }
+        | ExprKind::New {
+            class: callee,
+            args,
+        } => {
+            validate_private_expr(callee)?;
+            for arg in args {
+                validate_private_expr(&arg.value)?;
+            }
+            Ok(())
+        }
+        ExprKind::Assign { target, value } => {
+            validate_private_expr(target)?;
+            validate_private_expr(value)
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => validate_private_expr(expr),
+            LambdaBody::Block(body) => validate_private_class_syntax(body),
+        },
+        ExprKind::Array(items) => {
+            for item in items {
+                if let Some(key) = &item.key {
+                    validate_private_expr(key)?;
+                }
+                validate_private_expr(&item.value)?;
+            }
+            Ok(())
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                validate_private_expr(item)?;
+            }
+            Ok(())
+        }
+        ExprKind::NamedTuple { fields, .. } => {
+            for (_, expr) in fields {
+                validate_private_expr(expr)?;
+            }
+            Ok(())
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        validate_private_expr(key)?;
+                        validate_private_expr(value)?;
+                    }
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => validate_private_stmt(value)?,
+                    ObjectProperty::Spread(expr) => validate_private_expr(expr)?,
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+            Ok(())
+        }
+        ExprKind::Interpolation(parts) => {
+            for part in parts {
+                if let InterpolPart::Expr(expr) = part {
+                    validate_private_expr(expr)?;
+                }
+            }
+            Ok(())
+        }
+        ExprKind::Yield(Some(expr)) => validate_private_expr(expr),
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
+            validate_private_expr(element)?;
+            for generator in generators {
+                validate_private_expr(&generator.target)?;
+                validate_private_expr(&generator.iter)?;
+                for cond in &generator.conditions {
+                    validate_private_expr(cond)?;
+                }
+            }
+            Ok(())
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            if let Some(expr) = lower {
+                validate_private_expr(expr)?;
+            }
+            if let Some(expr) = upper {
+                validate_private_expr(expr)?;
+            }
+            if let Some(expr) = step {
+                validate_private_expr(expr)?;
+            }
+            Ok(())
+        }
+        ExprKind::Walrus { target, value } => {
+            validate_private_expr(target)?;
+            validate_private_expr(value)
+        }
+        ExprKind::ClassExpr {
+            parent, members, ..
+        } => {
+            if let Some(parent) = parent {
+                validate_private_expr(parent)?;
+            }
+            validate_private_class_members(members)
+        }
+        ExprKind::FunctionExpr(stmt) => validate_private_stmt(stmt),
+        ExprKind::StaticAccess { class, member } => {
+            validate_private_expr(class)?;
+            validate_private_expr(member)
+        }
+        ExprKind::Match { subject, arms } => {
+            validate_private_expr(subject)?;
+            for arm in arms {
+                if let Some(conditions) = &arm.conditions {
+                    for cond in conditions {
+                        validate_private_expr(cond)?;
+                    }
+                }
+                validate_private_expr(&arm.body)?;
+            }
+            Ok(())
+        }
+        ExprKind::Lit(_)
+        | ExprKind::Ident(_)
+        | ExprKind::This
+        | ExprKind::Super
+        | ExprKind::DefaultOf(_)
+        | ExprKind::AddressOf(_)
+        | ExprKind::SuperCall { .. }
+        | ExprKind::Yield(None)
+        | ExprKind::Destructure(_) => Ok(()),
+    }
+}
+
+fn validate_private_case_condition(cond: &CaseCondition) -> Result<(), String> {
+    match cond {
+        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
+            validate_private_expr(expr)
+        }
+        CaseCondition::Range { from, to } => {
+            validate_private_expr(from)?;
+            validate_private_expr(to)
+        }
+    }
+}
+
+fn stmt_contains_await(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(expr) => expr_contains_await(expr),
+        StmtKind::Block(body)
+        | StmtKind::NamespaceDecl { body, .. }
+        | StmtKind::FunctionDecl { body, .. } => body.iter().any(stmt_contains_await),
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => members.iter().any(class_member_contains_await),
+        StmtKind::VarDecl { declarations, .. } => declarations
+            .iter()
+            .any(|decl| decl.init.as_ref().is_some_and(expr_contains_await)),
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            expr_contains_await(cond)
+                || then_body.iter().any(stmt_contains_await)
+                || elifs.iter().any(|(cond, body)| {
+                    expr_contains_await(cond) || body.iter().any(stmt_contains_await)
+                })
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(stmt_contains_await))
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            init.as_ref().is_some_and(|stmt| stmt_contains_await(stmt))
+                || cond.as_ref().is_some_and(expr_contains_await)
+                || update.as_ref().is_some_and(expr_contains_await)
+                || body.iter().any(stmt_contains_await)
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            expr_contains_await(iter)
+                || body.iter().any(stmt_contains_await)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(stmt_contains_await))
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            expr_contains_await(cond)
+                || body.iter().any(stmt_contains_await)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(stmt_contains_await))
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            body.iter().any(stmt_contains_await) || expr_contains_await(cond)
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            body.iter().any(stmt_contains_await)
+                || catches
+                    .iter()
+                    .any(|catch| catch.body.iter().any(stmt_contains_await))
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(stmt_contains_await))
+                || finally
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(stmt_contains_await))
+        }
+        StmtKind::Return(expr) => expr.as_ref().is_some_and(expr_contains_await),
+        StmtKind::Throw { expr, cause } => {
+            expr.as_ref().is_some_and(expr_contains_await)
+                || cause.as_ref().is_some_and(expr_contains_await)
+        }
+        StmtKind::Assign { targets, value } => {
+            targets.iter().any(expr_contains_await) || expr_contains_await(value)
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            expr_contains_await(target) || expr_contains_await(value)
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            expr_contains_await(expr)
+                || cases.iter().any(|case| {
+                    case.conditions.iter().any(case_condition_contains_await)
+                        || case.body.iter().any(stmt_contains_await)
+                })
+                || default
+                    .as_ref()
+                    .is_some_and(|body| body.iter().any(stmt_contains_await))
+        }
+        StmtKind::With { items, body, .. } => {
+            items.iter().any(|item| expr_contains_await(&item.expr))
+                || body.iter().any(stmt_contains_await)
+        }
+        StmtKind::Using { resource, body, .. } => {
+            expr_contains_await(resource) || body.iter().any(stmt_contains_await)
+        }
+        StmtKind::Lock { expr, body } => {
+            expr_contains_await(expr) || body.iter().any(stmt_contains_await)
+        }
+        _ => false,
+    }
+}
+
+fn class_member_contains_await(member: &ClassMember) -> bool {
+    match member {
+        ClassMember::Field { init, .. } => init.as_ref().is_some_and(expr_contains_await),
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => stmt_contains_await(stmt),
+        ClassMember::Constructor { body, .. } => body.iter().any(stmt_contains_await),
+        ClassMember::Property { getter, setter, .. } => {
+            getter
+                .as_ref()
+                .is_some_and(|body| body.iter().any(stmt_contains_await))
+                || setter
+                    .as_ref()
+                    .is_some_and(|setter| setter.body.iter().any(stmt_contains_await))
+        }
+        ClassMember::Const { value, .. } => expr_contains_await(value),
+        ClassMember::Event { .. } => false,
+    }
+}
+
+fn expr_contains_await(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Await(_) => true,
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Range {
+            start: left,
+            end: right,
+            ..
+        } => expr_contains_await(left) || expr_contains_await(right),
+        ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::Cast { expr, .. } => expr_contains_await(expr),
+        ExprKind::Ternary { cond, then, else_ } => {
+            expr_contains_await(cond) || expr_contains_await(then) || expr_contains_await(else_)
+        }
+        ExprKind::Member { object, .. } => expr_contains_await(object),
+        ExprKind::Index { object, index, .. } => {
+            expr_contains_await(object) || expr_contains_await(index)
+        }
+        ExprKind::Call { callee, args, .. }
+        | ExprKind::New {
+            class: callee,
+            args,
+        } => expr_contains_await(callee) || args.iter().any(|arg| expr_contains_await(&arg.value)),
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            expr_contains_await(target) || expr_contains_await(value)
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => expr_contains_await(expr),
+            LambdaBody::Block(body) => body.iter().any(stmt_contains_await),
+        },
+        ExprKind::Array(items) => items.iter().any(|item| {
+            item.key.as_ref().is_some_and(expr_contains_await) || expr_contains_await(&item.value)
+        }),
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            items.iter().any(expr_contains_await)
+        }
+        ExprKind::NamedTuple { fields, .. } => {
+            fields.iter().any(|(_, expr)| expr_contains_await(expr))
+        }
+        ExprKind::Object(props) => props.iter().any(|prop| match prop {
+            ObjectProperty::KeyValue { key, value } | ObjectProperty::Computed { key, value } => {
+                expr_contains_await(key) || expr_contains_await(value)
+            }
+            ObjectProperty::Spread(expr) => expr_contains_await(expr),
+            ObjectProperty::Method { value, .. } | ObjectProperty::Accessor { value, .. } => {
+                stmt_contains_await(value)
+            }
+            ObjectProperty::Shorthand(_) => false,
+        }),
+        ExprKind::Interpolation(parts) => parts.iter().any(|part| match part {
+            InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                expr_contains_await(expr)
+            }
+            InterpolPart::Text(_) => false,
+        }),
+        ExprKind::Yield(Some(expr)) => expr_contains_await(expr),
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
+            expr_contains_await(element)
+                || generators.iter().any(|generator| {
+                    expr_contains_await(&generator.target)
+                        || expr_contains_await(&generator.iter)
+                        || generator.conditions.iter().any(expr_contains_await)
+                })
+        }
+        ExprKind::Slice { lower, upper, step } => {
+            lower.as_ref().is_some_and(|expr| expr_contains_await(expr))
+                || upper.as_ref().is_some_and(|expr| expr_contains_await(expr))
+                || step.as_ref().is_some_and(|expr| expr_contains_await(expr))
+        }
+        ExprKind::ClassExpr {
+            parent, members, ..
+        } => {
+            parent
+                .as_ref()
+                .is_some_and(|expr| expr_contains_await(expr))
+                || members.iter().any(class_member_contains_await)
+        }
+        ExprKind::FunctionExpr(stmt) => stmt_contains_await(stmt),
+        ExprKind::StaticAccess { class, member } => {
+            expr_contains_await(class) || expr_contains_await(member)
+        }
+        ExprKind::Match { subject, arms } => {
+            expr_contains_await(subject)
+                || arms.iter().any(|arm| {
+                    arm.conditions
+                        .as_ref()
+                        .is_some_and(|conditions| conditions.iter().any(expr_contains_await))
+                        || expr_contains_await(&arm.body)
+                })
+        }
+        ExprKind::RefOf(place) => place_contains_await(place),
+        ExprKind::Lit(_)
+        | ExprKind::Ident(_)
+        | ExprKind::This
+        | ExprKind::Super
+        | ExprKind::DefaultOf(_)
+        | ExprKind::AddressOf(_)
+        | ExprKind::SuperCall { .. }
+        | ExprKind::Yield(None)
+        | ExprKind::Destructure(_) => false,
+    }
+}
+
+fn case_condition_contains_await(cond: &CaseCondition) -> bool {
+    match cond {
+        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
+            expr_contains_await(expr)
+        }
+        CaseCondition::Range { from, to } => expr_contains_await(from) || expr_contains_await(to),
+    }
+}
+
+fn place_contains_await(place: &PlaceExpr) -> bool {
+    match place {
+        PlaceExpr::Member { object, .. } => expr_contains_await(object),
+        PlaceExpr::Index { object, index, .. } => {
+            expr_contains_await(object) || expr_contains_await(index)
+        }
+        PlaceExpr::Deref(expr) => expr_contains_await(expr),
+        PlaceExpr::Ident(_) => false,
+    }
+}
+
+fn validate_private_place(place: &PlaceExpr) -> Result<(), String> {
+    match place {
+        PlaceExpr::Member { object, .. } => validate_private_expr(object),
+        PlaceExpr::Index { object, index, .. } => {
+            validate_private_expr(object)?;
+            validate_private_expr(index)
+        }
+        PlaceExpr::Deref(expr) => validate_private_expr(expr),
+        PlaceExpr::Ident(_) => Ok(()),
+    }
 }
 
 // ── Static TDZ pass — ECMA-262 §14.3.1 / §14.6 ──────────────────────────────
@@ -1836,12 +2571,9 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 // Lets `class X extends getBase()` /
                 // `class X extends Mixin(Base)` work without changing
                 // the AST shape (parent stays a single ident name).
+                let init = walk_expression(p.clone())?;
                 let raw = extract_ident_name(&p);
-                let is_simple = !raw.contains('(')
-                    && !raw.contains('.')
-                    && !raw.contains(' ')
-                    && !raw.contains('[')
-                    && !raw.is_empty();
+                let is_ident_parent = matches!(&init.kind, ExprKind::Ident(_));
                 // §15.7.5 ClassDefinitionEvaluation: `extends undefined`
                 // throws a TypeError at DEFINITION time; `extends null`
                 // is legal at definition — the class is heritage-less and
@@ -1858,11 +2590,30 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     }));
                 } else if raw == "null" {
                     extends_null = true;
-                } else if is_simple {
-                    parents.push(raw);
+                } else if matches!(
+                    &init.kind,
+                    ExprKind::Lit(Literal::Int(_))
+                        | ExprKind::Lit(Literal::Float(_))
+                        | ExprKind::Lit(Literal::BigInt(_))
+                        | ExprKind::Lit(Literal::Str(_))
+                        | ExprKind::Lit(Literal::Bool(_))
+                        | ExprKind::Lit(Literal::Char(_))
+                ) {
+                    pre_class_stmts.push(Statement::new(StmtKind::Throw {
+                        expr: Some(Expression::new(ExprKind::New {
+                            class: Box::new(Expression::ident("TypeError")),
+                            args: vec![Argument::positional(Expression::string(
+                                "Class extends value is not a constructor or null",
+                            ))],
+                        })),
+                        cause: None,
+                    }));
+                } else if is_ident_parent {
+                    if let ExprKind::Ident(parent_name) = init.kind {
+                        parents.push(parent_name);
+                    }
                 } else {
                     let synth = format!("__extends_{}_{}", name, parents.len());
-                    let init = walk_expression(p)?;
                     pre_class_stmts.push(Statement::new(StmtKind::VarDecl {
                         declarations: vec![VarDeclarator {
                             pattern: BindingPattern::Ident(synth.clone()),
@@ -1916,27 +2667,6 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         });
     }
 
-    // Extract static block bodies — these run immediately after class definition.
-    // Collect them and emit as post-class statements in a wrapping Block.
-    let mut static_init_stmts: Vec<Statement> = Vec::new();
-    members.retain(|m| {
-        if let ClassMember::Method(func) = m {
-            if let StmtKind::FunctionDecl {
-                name: ref mname,
-                ref body,
-                ref modifiers,
-                ..
-            } = func.kind
-            {
-                if mname == "__static_init" && modifiers.is_static {
-                    static_init_stmts.extend(body.iter().cloned());
-                    return false; // remove from members
-                }
-            }
-        }
-        true
-    });
-
     let class_stmt = StmtKind::ClassDecl {
         name,
         parents,
@@ -1946,14 +2676,12 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         decorators: vec![],
     };
 
-    if static_init_stmts.is_empty() && pre_class_stmts.is_empty() {
+    if pre_class_stmts.is_empty() {
         Ok(class_stmt)
     } else {
-        // Wrap: pre-class extends bindings, then class declaration,
-        // then static init statements, all in a Block.
+        // Wrap: pre-class extends bindings, then class declaration.
         let mut block = pre_class_stmts;
         block.push(Statement::new(class_stmt));
-        block.extend(static_init_stmts);
         Ok(StmtKind::Block(block))
     }
 }
@@ -1988,6 +2716,9 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
             .filter(|p| !matches!(p.as_rule(), Rule::NEWLINE | Rule::static_kw))
             .map(walk_statement)
             .collect::<Result<_, _>>()?;
+        if stmts.iter().any(stmt_contains_await) {
+            return Err("Await is not allowed in class static initialization blocks".to_string());
+        }
         let func = Statement::new(StmtKind::FunctionDecl {
             name: "__static_init".to_string(),
             params: vec![],
