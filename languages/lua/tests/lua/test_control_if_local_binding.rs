@@ -2,13 +2,18 @@ use super::helpers::run_lua_one;
 
 #[test]
 fn test_control_if_local_binding_true_branch_prints_value() {
-    assert_eq!(run_lua_one("if true then local value = 4; print(value) end"), "4");
+    assert_eq!(
+        run_lua_one("if true then local value = 4; print(value) end"),
+        "4"
+    );
 }
 
 #[test]
 fn test_control_if_local_binding_false_branch_not_bound() {
     assert_eq!(
-        run_lua_one("if false then local value = 12 end print(value == nil and \"nil\" or \"bound\")"),
+        run_lua_one(
+            "if false then local value = 12 end print(value == nil and \"nil\" or \"bound\")"
+        ),
         "nil",
     );
 }
@@ -16,7 +21,9 @@ fn test_control_if_local_binding_false_branch_not_bound() {
 #[test]
 fn test_control_if_local_binding_elseif_keeps_that_branch() {
     assert_eq!(
-        run_lua_one("if false then local value = 1 elseif true then local value = 3 print(value) end"),
+        run_lua_one(
+            "if false then local value = 1 elseif true then local value = 3 print(value) end"
+        ),
         "3",
     );
 }
@@ -64,7 +71,9 @@ fn test_control_if_local_binding_table_isolated_in_branch() {
 #[test]
 fn test_control_if_local_binding_false_branch_has_its_own_local() {
     assert_eq!(
-        run_lua_one("if false then local message = \"x\" else local message = \"ok\" print(message) end"),
+        run_lua_one(
+            "if false then local message = \"x\" else local message = \"ok\" print(message) end"
+        ),
         "ok",
     );
 }
@@ -80,20 +89,27 @@ fn test_control_if_local_binding_string_concat_in_local_branch() {
 #[test]
 fn test_control_if_local_binding_local_scope_used_in_nested_do() {
     assert_eq!(
-        run_lua_one("if true then local total = 0; do local add = 5; total = total + add end print(total) end"),
+        run_lua_one(
+            "if true then local total = 0; do local add = 5; total = total + add end print(total) end"
+        ),
         "5",
     );
 }
 
 #[test]
 fn test_control_if_local_binding_local_boolean() {
-    assert_eq!(run_lua_one("if true then local enabled = true; print(enabled) end"), "true");
+    assert_eq!(
+        run_lua_one("if true then local enabled = true; print(enabled) end"),
+        "true"
+    );
 }
 
 #[test]
 fn test_control_if_local_binding_elseif_else_selects_else_local() {
     assert_eq!(
-        run_lua_one("if false then local x = 1 elseif false then local x = 2 else local x = 8 print(x) end"),
+        run_lua_one(
+            "if false then local x = 1 elseif false then local x = 2 else local x = 8 print(x) end"
+        ),
         "8",
     );
 }
@@ -127,7 +143,9 @@ fn test_control_if_local_binding_block_shadow_does_not_escape() {
 #[test]
 fn test_control_if_local_binding_nested_if_inner_local_changes_count() {
     assert_eq!(
-        run_lua_one("if true then local x = 1; if true then local y = 2 else local y = 3 end print(x + y) end"),
+        run_lua_one(
+            "if true then local x = 1; if true then local y = 2 else local y = 3 end print(x + y) end"
+        ),
         "3",
     );
 }
@@ -135,7 +153,9 @@ fn test_control_if_local_binding_nested_if_inner_local_changes_count() {
 #[test]
 fn test_control_if_local_binding_local_table_update() {
     assert_eq!(
-        run_lua_one("if true then local t = {} t[\"a\"] = 1 t[\"a\"] = t[\"a\"] + 4 print(t[\"a\"]) end"),
+        run_lua_one(
+            "if true then local t = {} t[\"a\"] = 1 t[\"a\"] = t[\"a\"] + 4 print(t[\"a\"]) end"
+        ),
         "5",
     );
 }
@@ -151,7 +171,9 @@ fn test_control_if_local_binding_local_returned_from_if_body() {
 #[test]
 fn test_control_if_local_binding_local_branch_selects_default_when_nil() {
     assert_eq!(
-        run_lua_one("if false then local value = 1 else local value = nil print(value == nil and \"nil\" or \"v\") end"),
+        run_lua_one(
+            "if false then local value = 1 else local value = nil print(value == nil and \"nil\" or \"v\") end"
+        ),
         "nil",
     );
 }
@@ -167,7 +189,9 @@ fn test_control_if_local_binding_local_with_or_default() {
 #[test]
 fn test_control_if_local_binding_inner_local_arithmetic_chain() {
     assert_eq!(
-        run_lua_one("if true then local base = 2; do local base = 3 local bonus = 4 print(base * bonus) end end"),
+        run_lua_one(
+            "if true then local base = 2; do local base = 3 local bonus = 4 print(base * bonus) end end"
+        ),
         "12",
     );
 }
@@ -175,8 +199,9 @@ fn test_control_if_local_binding_inner_local_arithmetic_chain() {
 #[test]
 fn test_control_if_local_binding_local_for_loop_within_branch() {
     assert_eq!(
-        run_lua_one("if true then local total = 0; for i = 1, 3 do total = total + i end print(total) end"),
+        run_lua_one(
+            "if true then local total = 0; for i = 1, 3 do total = total + i end print(total) end"
+        ),
         "6",
     );
 }
-

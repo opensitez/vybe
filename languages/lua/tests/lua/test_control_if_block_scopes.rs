@@ -11,7 +11,9 @@ fn test_control_if_block_scopes_simple_block_accumulates() {
 #[test]
 fn test_control_if_block_scopes_nested_block_keeps_outer() {
     assert_eq!(
-        run_lua_one("if true then local sum = 0; do local x = 2; sum = sum + x; do local x = 5 sum = sum + x end end print(sum) end"),
+        run_lua_one(
+            "if true then local sum = 0; do local x = 2; sum = sum + x; do local x = 5 sum = sum + x end end print(sum) end"
+        ),
         "7",
     );
 }
@@ -27,7 +29,9 @@ fn test_control_if_block_scopes_block_local_does_not_escape() {
 #[test]
 fn test_control_if_block_scopes_nested_blocks_with_two_locals() {
     assert_eq!(
-        run_lua_one("if true then do local left = 2 do local right = 3 print(left + right) end end"),
+        run_lua_one(
+            "if true then do local left = 2 do local right = 3 print(left + right) end end"
+        ),
         "5",
     );
 }
@@ -35,7 +39,9 @@ fn test_control_if_block_scopes_nested_blocks_with_two_locals() {
 #[test]
 fn test_control_if_block_scopes_else_and_blocks() {
     assert_eq!(
-        run_lua_one("if false then print(0) else do local a = 4 do local b = 5 print(a + b) end end end"),
+        run_lua_one(
+            "if false then print(0) else do local a = 4 do local b = 5 print(a + b) end end end"
+        ),
         "9",
     );
 }
@@ -43,7 +49,9 @@ fn test_control_if_block_scopes_else_and_blocks() {
 #[test]
 fn test_control_if_block_scopes_repeated_blocks_sum() {
     assert_eq!(
-        run_lua_one("if true then local sum = 0; do local v = 1 sum = sum + v end do local v = 2 sum = sum + v end print(sum) end"),
+        run_lua_one(
+            "if true then local sum = 0; do local v = 1 sum = sum + v end do local v = 2 sum = sum + v end print(sum) end"
+        ),
         "3",
     );
 }
@@ -59,7 +67,9 @@ fn test_control_if_block_scopes_shadowed_variable_in_inner_block() {
 #[test]
 fn test_control_if_block_scopes_multiple_block_scopes() {
     assert_eq!(
-        run_lua_one("if true then local sum = 0; do local x = 1 sum = sum + x end do local x = 2 sum = sum + x end print(sum) end"),
+        run_lua_one(
+            "if true then local sum = 0; do local x = 1 sum = sum + x end do local x = 2 sum = sum + x end print(sum) end"
+        ),
         "3",
     );
 }
@@ -67,7 +77,9 @@ fn test_control_if_block_scopes_multiple_block_scopes() {
 #[test]
 fn test_control_if_block_scopes_conditional_block_scope() {
     assert_eq!(
-        run_lua_one("if true then local base = 3; if base > 1 then do local base = base + 7 print(base) end end end"),
+        run_lua_one(
+            "if true then local base = 3; if base > 1 then do local base = base + 7 print(base) end end end"
+        ),
         "10",
     );
 }
@@ -75,7 +87,9 @@ fn test_control_if_block_scopes_conditional_block_scope() {
 #[test]
 fn test_control_if_block_scopes_block_return_with_loop() {
     assert_eq!(
-        run_lua_one("if true then local total = 0; do for i = 1, 3 do total = total + i end end print(total) end"),
+        run_lua_one(
+            "if true then local total = 0; do for i = 1, 3 do total = total + i end end print(total) end"
+        ),
         "6",
     );
 }
@@ -91,7 +105,9 @@ fn test_control_if_block_scopes_blocked_assignment_outside() {
 #[test]
 fn test_control_if_block_scopes_block_table_building() {
     assert_eq!(
-        run_lua_one("if true then local t = {} do t[\"a\"] = 4 t[\"b\"] = 6 end print(t[\"a\"] + t[\"b\"]) end"),
+        run_lua_one(
+            "if true then local t = {} do t[\"a\"] = 4 t[\"b\"] = 6 end print(t[\"a\"] + t[\"b\"]) end"
+        ),
         "10",
     );
 }
@@ -99,7 +115,9 @@ fn test_control_if_block_scopes_block_table_building() {
 #[test]
 fn test_control_if_block_scopes_block_scopes_mixed_types() {
     assert_eq!(
-        run_lua_one("if true then local count = 0; do local s = \"x\"; if s == \"x\" then count = count + 1 end end print(count) end"),
+        run_lua_one(
+            "if true then local count = 0; do local s = \"x\"; if s == \"x\" then count = count + 1 end end print(count) end"
+        ),
         "1",
     );
 }
@@ -107,7 +125,9 @@ fn test_control_if_block_scopes_block_scopes_mixed_types() {
 #[test]
 fn test_control_if_block_scopes_inner_block_uses_outer() {
     assert_eq!(
-        run_lua_one("if true then local base = 2; do local offset = 3 print(base + offset) end end"),
+        run_lua_one(
+            "if true then local base = 2; do local offset = 3 print(base + offset) end end"
+        ),
         "5",
     );
 }
@@ -115,7 +135,9 @@ fn test_control_if_block_scopes_inner_block_uses_outer() {
 #[test]
 fn test_control_if_block_scopes_block_with_if_else() {
     assert_eq!(
-        run_lua_one("if true then local total = 0 do if total == 0 then total = 4 else total = 0 end print(total) end end"),
+        run_lua_one(
+            "if true then local total = 0 do if total == 0 then total = 4 else total = 0 end print(total) end end"
+        ),
         "4",
     );
 }
@@ -123,7 +145,9 @@ fn test_control_if_block_scopes_block_with_if_else() {
 #[test]
 fn test_control_if_block_scopes_local_scopes_chain() {
     assert_eq!(
-        run_lua_one("if true then local a = 1 do local a = 2 do local a = 3 print(a + 10) end print(a + 20) end print(a + 30) end"),
+        run_lua_one(
+            "if true then local a = 1 do local a = 2 do local a = 3 print(a + 10) end print(a + 20) end print(a + 30) end"
+        ),
         "13",
     );
 }
@@ -139,7 +163,9 @@ fn test_control_if_block_scopes_function_calls_inside_block() {
 #[test]
 fn test_control_if_block_scopes_block_sum_of_strings() {
     assert_eq!(
-        run_lua_one("if true then local out = \"\" do local part = \"hi\" out = out .. part end print(out) end"),
+        run_lua_one(
+            "if true then local out = \"\" do local part = \"hi\" out = out .. part end print(out) end"
+        ),
         "hi",
     );
 }
@@ -147,7 +173,9 @@ fn test_control_if_block_scopes_block_sum_of_strings() {
 #[test]
 fn test_control_if_block_scopes_block_local_booleans() {
     assert_eq!(
-        run_lua_one("if true then local ok = false do local seen = true print(ok == false and seen == true and \"true\" or \"false\") end"),
+        run_lua_one(
+            "if true then local ok = false do local seen = true print(ok == false and seen == true and \"true\" or \"false\") end"
+        ),
         "true",
     );
 }
@@ -155,7 +183,9 @@ fn test_control_if_block_scopes_block_local_booleans() {
 #[test]
 fn test_control_if_block_scopes_block_scope_after_loop_iteration() {
     assert_eq!(
-        run_lua_one("if true then local sum = 0 do for i = 1, 2 do sum = sum + i end end print(sum) end"),
+        run_lua_one(
+            "if true then local sum = 0 do for i = 1, 2 do sum = sum + i end end print(sum) end"
+        ),
         "3",
     );
 }
@@ -163,7 +193,9 @@ fn test_control_if_block_scopes_block_scope_after_loop_iteration() {
 #[test]
 fn test_control_if_block_scopes_nested_blocks_short_circuit_style() {
     assert_eq!(
-        run_lua_one("if true then local value = 1 do if true then do local value = 8; value = value + 1 end end print(value) end"),
+        run_lua_one(
+            "if true then local value = 1 do if true then do local value = 8; value = value + 1 end end print(value) end"
+        ),
         "1",
     );
 }

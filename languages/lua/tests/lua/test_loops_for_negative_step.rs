@@ -51,7 +51,9 @@ fn test_loops_for_negative_step_zero_stride_guarded_by_bound() {
 #[test]
 fn test_loops_for_negative_step_break_stops_early() {
     assert_eq!(
-        run_lua_one("local sum = 0\nfor i = 9, 1, -1 do if i == 4 then break end sum = sum + i end\nprint(sum)"),
+        run_lua_one(
+            "local sum = 0\nfor i = 9, 1, -1 do if i == 4 then break end sum = sum + i end\nprint(sum)"
+        ),
         "35",
     );
 }
@@ -59,7 +61,9 @@ fn test_loops_for_negative_step_break_stops_early() {
 #[test]
 fn test_loops_for_negative_step_nested_if() {
     assert_eq!(
-        run_lua_one("local even = 0\nfor i = 12, 2, -2 do if i % 4 == 0 then even = even + 1 end end\nprint(even)"),
+        run_lua_one(
+            "local even = 0\nfor i = 12, 2, -2 do if i % 4 == 0 then even = even + 1 end end\nprint(even)"
+        ),
         "3",
     );
 }
@@ -107,7 +111,9 @@ fn test_loops_for_negative_step_count_items() {
 #[test]
 fn test_loops_for_negative_step_accumulate_with_odd_even() {
     assert_eq!(
-        run_lua_one("local even = 0\nfor i = 11, 3, -2 do if i % 2 == 0 then even = even + i end end\nprint(even)"),
+        run_lua_one(
+            "local even = 0\nfor i = 11, 3, -2 do if i % 2 == 0 then even = even + i end end\nprint(even)"
+        ),
         "0",
     );
 }
@@ -115,7 +121,9 @@ fn test_loops_for_negative_step_accumulate_with_odd_even() {
 #[test]
 fn test_loops_for_negative_step_sum_until_too_small() {
     assert_eq!(
-        run_lua_one("local sum = 0\nfor i = 6, 0, -2 do if i < 3 then break end sum = sum + i end\nprint(sum)"),
+        run_lua_one(
+            "local sum = 0\nfor i = 6, 0, -2 do if i < 3 then break end sum = sum + i end\nprint(sum)"
+        ),
         "10",
     );
 }
@@ -131,7 +139,9 @@ fn test_loops_for_negative_step_decrement_with_multiplier() {
 #[test]
 fn test_loops_for_negative_step_with_local_variable_step() {
     assert_eq!(
-        run_lua_one("local sum = 0\nlocal step = -4\nfor i = 16, 1, step do sum = sum + i end\nprint(sum)"),
+        run_lua_one(
+            "local sum = 0\nlocal step = -4\nfor i = 16, 1, step do sum = sum + i end\nprint(sum)"
+        ),
         "40",
     );
 }
@@ -139,7 +149,9 @@ fn test_loops_for_negative_step_with_local_variable_step() {
 #[test]
 fn test_loops_for_negative_step_then_if_adds_offsets() {
     assert_eq!(
-        run_lua_one("local sum = 0\nfor i = 7, 0, -1 do if i > 4 then sum = sum + 1 end end\nprint(sum)"),
+        run_lua_one(
+            "local sum = 0\nfor i = 7, 0, -1 do if i > 4 then sum = sum + 1 end end\nprint(sum)"
+        ),
         "3",
     );
 }
@@ -155,7 +167,9 @@ fn test_loops_for_negative_step_large_range() {
 #[test]
 fn test_loops_for_negative_step_string_counter() {
     assert_eq!(
-        run_lua_one("local out = \"\"\nfor i = 5, 1, -1 do out = out .. tostring(i) end\nprint(out)"),
+        run_lua_one(
+            "local out = \"\"\nfor i = 5, 1, -1 do out = out .. tostring(i) end\nprint(out)"
+        ),
         "54321",
     );
 }
@@ -171,7 +185,9 @@ fn test_loops_for_negative_step_nested_blocks() {
 #[test]
 fn test_loops_for_negative_step_uses_negative_step_with_continue_like_if() {
     assert_eq!(
-        run_lua_one("local sum = 0\nfor i = 10, 1, -2 do if i == 6 then sum = sum + 0 else sum = sum + i end end\nprint(sum)"),
+        run_lua_one(
+            "local sum = 0\nfor i = 10, 1, -2 do if i == 6 then sum = sum + 0 else sum = sum + i end end\nprint(sum)"
+        ),
         "24",
     );
 }
