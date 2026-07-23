@@ -90,7 +90,10 @@ fn java_prelude_inventory_report() {
     }
 }
 
-fn sample_usage(source: &str, prelude_names: &BTreeSet<String>) -> Result<BTreeSet<String>, String> {
+fn sample_usage(
+    source: &str,
+    prelude_names: &BTreeSet<String>,
+) -> Result<BTreeSet<String>, String> {
     let module = vybe_language_java::parse(source)?;
     let prelude_prefix = module
         .body
@@ -175,9 +178,7 @@ fn prelude_family(name: &str) -> &'static str {
         _ if name.contains("_string") || name.contains("_sb_") || name.contains("_sj_") => {
             "strings"
         }
-        _ if name.contains("_fmt") || name.contains("_printf") || name == "__j_sprintf" => {
-            "format"
-        }
+        _ if name.contains("_fmt") || name.contains("_printf") || name == "__j_sprintf" => "format",
         _ if name.contains("_object") || name.contains("_objects") => "objects",
         _ if name.contains("_prop") || name.contains("_system") => "system",
         _ => "misc",
@@ -241,7 +242,11 @@ fn collect_stmt_refs(stmt: &Statement, out: &mut BTreeSet<String>) {
                 }
             }
         }
-        StmtKind::While { cond, body, else_body } => {
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
             collect_expr_refs(cond, out);
             for stmt in body {
                 collect_stmt_refs(stmt, out);
@@ -339,7 +344,10 @@ fn collect_stmt_refs(stmt: &Statement, out: &mut BTreeSet<String>) {
                 }
             }
         }
-        StmtKind::Throw { expr: Some(expr), cause } => {
+        StmtKind::Throw {
+            expr: Some(expr),
+            cause,
+        } => {
             collect_expr_refs(expr, out);
             if let Some(cause) = cause {
                 collect_expr_refs(cause, out);
@@ -351,8 +359,12 @@ fn collect_stmt_refs(stmt: &Statement, out: &mut BTreeSet<String>) {
 
 fn collect_member_refs(member: &ClassMember, out: &mut BTreeSet<String>) {
     match member {
-        ClassMember::Field { init: Some(init), .. } => collect_expr_refs(init, out),
-        ClassMember::Constructor { body, base_args, .. } => {
+        ClassMember::Field {
+            init: Some(init), ..
+        } => collect_expr_refs(init, out),
+        ClassMember::Constructor {
+            body, base_args, ..
+        } => {
             if let Some(base_args) = base_args {
                 for arg in base_args {
                     collect_expr_refs(arg, out);
@@ -470,9 +482,7 @@ fn collect_expr_refs(expr: &Expression, out: &mut BTreeSet<String>) {
             }
         },
         ExprKind::ClassExpr {
-            parent,
-            members,
-            ..
+            parent, members, ..
         } => {
             if let Some(parent) = parent {
                 collect_expr_refs(parent, out);
