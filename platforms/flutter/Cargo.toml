@@ -1,0 +1,11 @@
+[package]
+name = "vybe_platform_flutter"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+vybe_ast = { workspace = true }
+vybe_bytecode = { workspace = true }
+vybe_emitter = { workspace = true }

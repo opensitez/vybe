@@ -2564,6 +2564,22 @@ pub fn emit_dart_set_contains_all(chunks: &mut [Chunk], current: usize, line: u3
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
+/// `x == null` / `null == x` fast path: a single reference null-test instead of
+/// the full `emit_dart_eq` deep-equality routine. Stack: `[value]` → `[bool]`.
+/// Comparing against the `null` literal never needs value/collection equality,
+/// so routing it here keeps every null guard a couple of instructions rather
+/// than inlining the ~thousand-instruction equality cascade at each site.
+pub fn emit_dart_is_null(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    // Normalize the raw i32 test to a Dart bool so the result is usable as a
+    // value (`!`, interpolation, storage), not only as an `if` condition.
+    chunks[current].emit_if(line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_end(line);
+}
+
 pub fn emit_dart_eq(chunks: &mut [Chunk], current: usize, line: u32) {
     let right_slot = reserve_slot(&mut chunks[current]);
     let left_slot = reserve_slot(&mut chunks[current]);

@@ -52,6 +52,19 @@ const DART_USER_ADD_METHOD: &str = "__dart_user_add";
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let source = normalize_dart_expression_source(source);
+    // Flutter render runtime: the `platforms/flutter` adapter owns its Dart
+    // runtime (`runApp` + the widget-tree realizer). Append it ONLY when a
+    // program actually renders — imports a Flutter library AND references
+    // `runApp`. Widget-only code (construction, `is`-checks, the TDD suite)
+    // never imports it, so it stays out of those programs entirely.
+    let source = if source.contains("package:flutter/") && source.contains("runApp") {
+        format!(
+            "{source}\n{}",
+            vybe_platform_flutter::runtime_source()
+        )
+    } else {
+        source
+    };
     let mut pairs = DartParser::parse(Rule::program, &source)
         .map_err(|e| format!("Dart parse error: {}", e))?;
     let program = pairs.next().ok_or("empty parse")?;
@@ -3076,7 +3089,110 @@ fn rewrite_static_idents_expr(expr: &mut Expression, class_name: &str, static_fi
                 }
             }
         }
+        // Descend into closures: a lambda inside an instance method (an event
+        // handler, a `setState(() {...})` body) may reference sibling members
+        // unqualified too. Inside a closure `this` is the DYNAMIC call-time
+        // receiver — undefined when a host callback (GUI Click, forEach) fires
+        // it — so route members through `_vybeSelf`, a local capturing `this`
+        // at method entry that the closure captures as an upvalue.
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(value) => {
+                rewrite_static_idents_expr(value, "_vybeSelf", static_fields)
+            }
+            LambdaBody::Block(stmts) => {
+                for stmt in stmts.iter_mut() {
+                    rewrite_static_idents(stmt, "_vybeSelf", static_fields);
+                }
+            }
+        },
         _ => {}
+    }
+}
+
+/// `let _vybeSelf = this;` — captures the instance so closures in a method
+/// reach members through a real (upvalue-captured) local.
+fn self_capture_stmt() -> Statement {
+    Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident("_vybeSelf".to_string()),
+            type_hint: None,
+            init: Some(Expression::new(ExprKind::This)),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Let,
+    })
+}
+
+fn stmts_contain_lambda(stmts: &[Statement]) -> bool {
+    stmts.iter().any(stmt_contains_lambda)
+}
+
+fn stmt_contains_lambda(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(e) | StmtKind::Return(Some(e)) => expr_contains_lambda(e),
+        StmtKind::VarDecl { declarations, .. } => declarations
+            .iter()
+            .any(|d| d.init.as_ref().is_some_and(expr_contains_lambda)),
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            expr_contains_lambda(cond)
+                || stmts_contain_lambda(then_body)
+                || elifs
+                    .iter()
+                    .any(|(c, b)| expr_contains_lambda(c) || stmts_contain_lambda(b))
+                || else_body.as_ref().is_some_and(|b| stmts_contain_lambda(b))
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+            ..
+        } => {
+            init.as_deref().is_some_and(stmt_contains_lambda)
+                || cond.as_ref().is_some_and(expr_contains_lambda)
+                || update.as_ref().is_some_and(expr_contains_lambda)
+                || stmts_contain_lambda(body)
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            expr_contains_lambda(iter) || stmts_contain_lambda(body)
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            expr_contains_lambda(cond) || stmts_contain_lambda(body)
+        }
+        StmtKind::Block(stmts) => stmts_contain_lambda(stmts),
+        _ => false,
+    }
+}
+
+fn expr_contains_lambda(e: &Expression) -> bool {
+    match &e.kind {
+        ExprKind::Lambda { .. } => true,
+        ExprKind::Binary { left, right, .. } => {
+            expr_contains_lambda(left) || expr_contains_lambda(right)
+        }
+        ExprKind::Unary { expr, .. } => expr_contains_lambda(expr),
+        ExprKind::Call { callee, args, .. } => {
+            expr_contains_lambda(callee) || args.iter().any(|a| expr_contains_lambda(&a.value))
+        }
+        ExprKind::Member { object, .. } => expr_contains_lambda(object),
+        ExprKind::Index { object, index, .. } => {
+            expr_contains_lambda(object) || expr_contains_lambda(index)
+        }
+        ExprKind::Assign { target, value } => {
+            expr_contains_lambda(target) || expr_contains_lambda(value)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            expr_contains_lambda(cond) || expr_contains_lambda(then) || expr_contains_lambda(else_)
+        }
+        ExprKind::Array(elems) => elems.iter().any(|e| expr_contains_lambda(&e.value)),
+        _ => false,
     }
 }
 
@@ -3099,8 +3215,24 @@ fn rewrite_instance_member_idents(members: &mut [ClassMember], extra_members: &[
                 } = &mut stmt.kind
                 {
                     if !modifiers.is_static {
-                        for stmt in body {
-                            rewrite_static_idents(stmt, "__dart_instance", &instance_members);
+                        // A host-invoked closure (GUI Click, forEach, Future)
+                        // clobbers the global `this`/`__js_this` and never
+                        // restores it, so any `this.member` AFTER such a callback
+                        // — and every member reference INSIDE it — reads garbage.
+                        // When the method contains a closure, capture `this` into
+                        // a real local (`_vybeSelf`) at entry and route EVERY
+                        // member reference (inside and outside closures) through
+                        // it, never relying on the fragile global receiver.
+                        // Closure-free methods keep the plain `this.member` form.
+                        if stmts_contain_lambda(body) {
+                            body.insert(0, self_capture_stmt());
+                            for stmt in body {
+                                rewrite_static_idents(stmt, "_vybeSelf", &instance_members);
+                            }
+                        } else {
+                            for stmt in body {
+                                rewrite_static_idents(stmt, "__dart_instance", &instance_members);
+                            }
                         }
                     }
                 }
@@ -5447,7 +5579,18 @@ fn normalize_dart_index_reads(expr: Expression, preserve_place: bool) -> Express
                 BinOp::Eq | BinOp::NotEq => {
                     let left = normalize_dart_index_reads(*left, false);
                     let right = normalize_dart_index_reads(*right, false);
-                    let eq = if let Some(runtime_type_cmp) =
+                    let left_is_null = matches!(&left.kind, ExprKind::Lit(Literal::Null));
+                    let right_is_null = matches!(&right.kind, ExprKind::Lit(Literal::Null));
+                    let eq = if left_is_null || right_is_null {
+                        // `x == null` / `null == x` is a reference null-test, not
+                        // value equality — skip the deep `__dart_eq` cascade.
+                        let operand = if left_is_null { right } else { left };
+                        Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__dart_is_null")),
+                            args: vec![Argument::positional(operand)],
+                            optional: false,
+                        })
+                    } else if let Some(runtime_type_cmp) =
                         dart_runtime_type_compare_expr(left.clone(), right.clone())
                     {
                         runtime_type_cmp

@@ -71,6 +71,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::string_adapter::emit_dart_index_get(chunks, current, line)
         }
         "dart.eq" => crate::emitter::string_adapter::emit_dart_eq(chunks, current, line),
+        "dart.is_null" => crate::emitter::string_adapter::emit_dart_is_null(chunks, current, line),
         "dart.identical" => {
             crate::emitter::string_adapter::emit_dart_identical(chunks, current, line)
         }

@@ -103,6 +103,7 @@ __dart_index_set    = { emit = "common:dart.index_set",          min_args = 3, m
 __dart_set_from     = { emit = "common:dart.set_from",           min_args = 1, max_args = 1 }
 __dart_for_in_iterable = { emit = "common:dart.for_in_iterable", min_args = 1, max_args = 1 }
 __dart_eq           = { emit = "common:dart.eq",                 min_args = 2, max_args = 2 }
+__dart_is_null      = { emit = "common:dart.is_null",            min_args = 1, max_args = 1 }
 __dart_hash_code    = { emit = "common:dart.hash_code",          min_args = 1, max_args = 1 }
 __dart_object_hash_code = { emit = "common:dart.object_hash_code", min_args = 1, max_args = 1 }
 __dart_runtime_type = { emit = "common:dart.runtime_type",       min_args = 1, max_args = 1 }
