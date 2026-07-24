@@ -56,6 +56,44 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             1,
             MethodBody::Common(parse_emit.into()),
         ));
+        if matches!(name, "Decimal" | "decimal") {
+            ty = ty
+                .with_method(MethodDef::static_method(
+                    "Round",
+                    1,
+                    MethodBody::Common("dotnet.system.math.round".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Round",
+                    2,
+                    MethodBody::Common("dotnet.system.math.round".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Round",
+                    3,
+                    MethodBody::Common("dotnet.system.math.round".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Truncate",
+                    1,
+                    MethodBody::Common("dotnet.system.math.truncate".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Floor",
+                    1,
+                    MethodBody::Common("dotnet.system.math.floor".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Ceiling",
+                    1,
+                    MethodBody::Common("dotnet.system.math.ceiling".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Abs",
+                    1,
+                    MethodBody::Common("dotnet.system.math.abs".into()),
+                ));
+        }
         if matches!(name, "Int32" | "int") {
             ty = ty.with_method(MethodDef::static_method(
                 "TryParse",

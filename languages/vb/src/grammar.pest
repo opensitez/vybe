@@ -14,7 +14,12 @@ line_continuation = _{ "_" ~ (" " | "\t")* ~ ("\r\n" | "\n" | "\r") }
 // Program structure
 program = { SOI ~ line* ~ EOI }
 line = _{ xml_namespace_imports_statement | imports_statement | option_directive | statement_line | NEWLINE | COMMENT }
-option_directive = { ^"Option" ~ (^"Explicit" | ^"Strict" | ^"Infer") ~ (^"On" | ^"Off") ~ (NEWLINE | EOI) }
+option_directive = {
+    ^"Option" ~ (
+        ((^"Explicit" | ^"Strict" | ^"Infer") ~ (^"On" | ^"Off"))
+        | (^"Compare" ~ (^"Binary" | ^"Text"))
+    ) ~ (NEWLINE | EOI)
+}
 statement_line = {
     (
         (sub_decl | function_decl)
@@ -224,9 +229,10 @@ select_end = { ^"End" ~ ^"Select" }
 
 // With...End With
 with_statement = {
-    ^"With" ~ expression ~ (NEWLINE | EOI)
-    ~ (!with_end ~ line)*
-    ~ with_end
+    ^"With" ~ expression ~ (
+        (":" ~ !with_end ~ statement ~ (":" ~ !with_end ~ statement)* ~ ":"? ~ with_end)
+        | ((NEWLINE | EOI) ~ (!with_end ~ line)* ~ with_end)
+    )
 }
 with_end = { ^"End" ~ ^"With" }
 
@@ -677,7 +683,7 @@ member_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // Keywords
 keyword = _{
-    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Yield" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Xor" | ^"Eqv" | ^"Imp" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"Iterator" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"ParamArray" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler" | ^"GoTo" | ^"Static" | ^"Interface" | ^"Structure" | ^"Delegate" | ^"Event" | ^"Resume" | ^"Namespace" | ^"Using" | ^"SyncLock")
+    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Yield" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Xor" | ^"Eqv" | ^"Imp" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"Iterator" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"ParamArray" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler" | ^"GoTo" | ^"Static" | ^"Interface" | ^"Structure" | ^"Delegate" | ^"Event" | ^"Resume" | ^"Namespace" | ^"Using" | ^"SyncLock" | ^"Compare")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
 

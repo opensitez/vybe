@@ -22,12 +22,27 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         .with_method(MethodDef::static_method(
             "Delay",
             1,
-            MethodBody::Common("threading.task_delay".into()),
+            MethodBody::Common("dotnet.task_delay".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "Delay",
+            2,
+            MethodBody::Common("dotnet.task_delay".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "Yield",
+            0,
+            MethodBody::Common("dotnet.task_yield".into()),
         ))
         .with_method(MethodDef::static_method(
             "FromResult",
             1,
             MethodBody::Common("dotnet.task_from_result".into()),
+        ))
+        .with_method(MethodDef::new(
+            "IsCanceled",
+            0,
+            MethodBody::Common("dotnet.task_is_canceled".into()),
         ))
         .with_method(MethodDef::new(
             "ContinueWith",
@@ -69,6 +84,110 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     3,
                     MethodBody::Common("threading.atomic_cmpxchg".to_string()),
                 )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Threading",
+            ClassType::new("CancellationTokenSource")
+                .with_constructor(ConstructorDef::new(0).with_common_backing(
+                    "dotnet.cancellation_token_source_new",
+                ))
+                .with_method(MethodDef::new(
+                    "Cancel",
+                    0,
+                    MethodBody::Common("dotnet.cancellation_token_cancel".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CancelAfter",
+                    1,
+                    MethodBody::Common("dotnet.cancellation_token_cancel_after".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Token",
+                    0,
+                    MethodBody::Common("dotnet.cancellation_token_source_token".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsCancellationRequested",
+                    0,
+                    MethodBody::Common("dotnet.cancellation_token_is_requested".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ThrowIfCancellationRequested",
+                    0,
+                    MethodBody::Common("dotnet.cancellation_token_throw_if_requested".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Register",
+                    1,
+                    MethodBody::Common("dotnet.cancellation_token_register".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CanBeCanceled",
+                    0,
+                    MethodBody::Common("dotnet.cancellation_token_can_be_canceled".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "WaitHandle",
+                    0,
+                    MethodBody::Common("dotnet.cancellation_token_wait_handle".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Dispose",
+                    0,
+                    MethodBody::Common("dotnet.noop".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "CreateLinkedTokenSource",
+                    1,
+                    MethodBody::Common("dotnet.cancellation_token_linked_source".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "CreateLinkedTokenSource",
+                    2,
+                    MethodBody::Common("dotnet.cancellation_token_linked_source".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Threading",
+            ClassType::new("CancellationToken")
+                .with_method(MethodDef::static_method(
+                    "None",
+                    0,
+                    MethodBody::Common("dotnet.cancellation_token_none".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IsCancellationRequested",
+                    0,
+                    MethodBody::Common("dotnet.cancellation_token_is_requested".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ThrowIfCancellationRequested",
+                    0,
+                    MethodBody::Common("dotnet.cancellation_token_throw_if_requested".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Register",
+                    1,
+                    MethodBody::Common("dotnet.cancellation_token_register".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CanBeCanceled",
+                    0,
+                    MethodBody::Common("dotnet.cancellation_token_can_be_canceled".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "WaitHandle",
+                    0,
+                    MethodBody::Common("dotnet.cancellation_token_wait_handle".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Threading.Tasks",
+            ClassType::new("ValueTask").with_method(MethodDef::new(
+                "AsTask",
+                0,
+                MethodBody::Common("dotnet.value_task_as_task".into()),
+            )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Threading",

@@ -87,12 +87,12 @@ mod tests {
         assert!(
             static_method_mappings()
                 .iter()
-                .any(|mapping| mapping.type_name == "Console")
+                .any(|mapping| mapping.type_name == "Convert")
         );
         assert!(
             static_method_mappings()
                 .iter()
-                .any(|mapping| mapping.type_name == "Application")
+                .all(|mapping| mapping.type_name != "Application")
         );
     }
 }

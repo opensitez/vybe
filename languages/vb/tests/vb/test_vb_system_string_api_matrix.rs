@@ -39,7 +39,7 @@ End Module
 "#,
     );
 
-    assert_eq!(out, vec!["5", "True", "True", "True", "1", "4"]);
+    assert_eq!(out, vec!["5", "True", "True", "True", "2", "2"]);
 }
 
 #[test]

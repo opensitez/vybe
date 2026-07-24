@@ -27,7 +27,9 @@
 //!     ctor). We populate `auto_init_methods` so the shim preserves
 //!     that semantic when the direct `emit_class` path lands.
 
-use vybe_ast::{ClassMember, ClassModifiers, PropertySetter, Span, StmtKind, Visibility};
+use vybe_ast::{
+    ClassMember, ClassModifiers, ExprKind, Literal, PropertySetter, Span, StmtKind, Visibility,
+};
 use vybe_plugin::class_normalize::{
     build_normal_method,
     canonical::{ClassLang, canonicalize_method},
@@ -68,7 +70,7 @@ pub fn normalize_class(
                     span: span.clone(),
                     name: fname.clone(),
                     type_hint: type_hint.clone(),
-                    init: init.clone(),
+                    init: init.clone().or_else(|| vb_default_field_init(type_hint)),
                     array_bounds: array_bounds.clone(),
                     access: access_from_visibility(m.visibility),
                     readonly: m.is_readonly,
@@ -283,6 +285,41 @@ pub fn normalize_class(
         event_bindings: Vec::new(), // walker already turned `Handles` into AddHandler statements
         raw_extra_members,
     }
+}
+
+fn vb_default_field_init(type_hint: &Option<String>) -> Option<vybe_ast::Expression> {
+    let ty = type_hint.as_deref()?.trim();
+    if matches!(
+        ty.to_ascii_lowercase().as_str(),
+        "integer"
+            | "int32"
+            | "short"
+            | "int16"
+            | "long"
+            | "int64"
+            | "byte"
+            | "sbyte"
+            | "ushort"
+            | "uint16"
+            | "uinteger"
+            | "uint32"
+            | "ulong"
+            | "uint64"
+            | "single"
+            | "double"
+            | "decimal"
+    ) {
+        return Some(vybe_ast::Expression::new(ExprKind::Lit(Literal::Int(0))));
+    }
+    if ty.eq_ignore_ascii_case("Boolean") {
+        return Some(vybe_ast::Expression::new(ExprKind::Lit(Literal::Bool(false))));
+    }
+    if ty.eq_ignore_ascii_case("Char") {
+        return Some(vybe_ast::Expression::new(ExprKind::Lit(Literal::Str(
+            "\0".into(),
+        ))));
+    }
+    None
 }
 
 fn access_from_visibility(v: Visibility) -> Access {

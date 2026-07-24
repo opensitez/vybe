@@ -210,6 +210,16 @@ pub fn emit_encoding_get_bytes(
     chunks[current].emit_op_u16(Op::LOCAL_GET, enc_slot, line);
     push_const(
         &mut chunks[current],
+        Value::String(Arc::from("utf32")),
+        line,
+    );
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_utf32_text_to_bytes(chunks, current, value_slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, enc_slot, line);
+    push_const(
+        &mut chunks[current],
         Value::String(Arc::from("us-ascii:throw")),
         line,
     );
@@ -249,6 +259,7 @@ pub fn emit_encoding_get_bytes(
     chunks[current].emit_op_u16(Op::LOCAL_GET, enc_slot, line);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, from_idx, line);
     chunks[current].emit(2, line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_encoding_get_byte_count(
@@ -275,6 +286,29 @@ pub fn emit_encoding_get_string(
 ) {
     let (enc_slot, bytes_slot) = stash_receiver_bytes(chunks, current, argc, fallback, line);
     let to_string_idx = chunks[current].add_import("node:buffer", "toString");
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, enc_slot, line);
+    push_const(
+        &mut chunks[current],
+        Value::String(Arc::from("utf16le")),
+        line,
+    );
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_utf16_bytes_to_string(chunks, current, bytes_slot, false, 2, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, enc_slot, line);
+    push_const(
+        &mut chunks[current],
+        Value::String(Arc::from("utf32")),
+        line,
+    );
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_utf16_bytes_to_string(chunks, current, bytes_slot, false, 4, line);
+    chunks[current].emit_else(line);
+
     chunks[current].emit_op_u16(Op::LOCAL_GET, enc_slot, line);
     push_const(
         &mut chunks[current],
@@ -295,6 +329,8 @@ pub fn emit_encoding_get_string(
     chunks[current].emit_op_u16(Op::LOCAL_GET, enc_slot, line);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, to_string_idx, line);
     chunks[current].emit(2, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 fn emit_throw_on_invalid_utf8_bytes(
@@ -481,8 +517,7 @@ pub fn emit_encoding_big_endian_unicode_get_bytes(
     emit_utf16be_get_bytes(chunks, current, argc, line);
 }
 
-pub fn emit_encoding_utf32_get_bytes(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let (_enc_slot, text_slot) = stash_receiver_text(chunks, current, argc, "utf32", line);
+fn emit_utf32_text_to_bytes(chunks: &mut [Chunk], current: usize, text_slot: u16, line: u32) {
     let len_idx = chunks[current].add_import("wasm:js-string", "length");
     let char_code_idx = chunks[current].add_import("wasm:js-string", "charCodeAt");
     let chunk = &mut chunks[current];
@@ -533,6 +568,11 @@ pub fn emit_encoding_utf32_get_bytes(chunks: &mut [Chunk], current: usize, argc:
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
 }
 
+pub fn emit_encoding_utf32_get_bytes(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let (_enc_slot, text_slot) = stash_receiver_text(chunks, current, argc, "utf32", line);
+    emit_utf32_text_to_bytes(chunks, current, text_slot, line);
+}
+
 pub fn emit_encoding_get_preamble(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     for _ in 0..argc {
         chunks[current].emit_op(Op::DROP, line);
@@ -559,14 +599,27 @@ pub fn emit_encoding_get_max_byte_count(
 ) {
     let chunk = &mut chunks[current];
     let char_count_slot = reserve_slot(chunk);
+    let factor_slot = reserve_slot(chunk);
     if argc > 1 {
+        let recv_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, char_count_slot, line);
-        chunk.emit_op(Op::DROP, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, recv_slot, line);
+        emit_encoding_name_from_receiver(chunk, recv_slot, "utf-8", line);
+        push_const(chunk, Value::String(Arc::from("utf16le")), line);
+        vybe_emitter::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_if_value(line);
+        push_const(chunk, Value::I32(2), line);
+        chunk.emit_else(line);
+        push_const(chunk, Value::I32(factor), line);
+        chunk.emit_end(line);
+        chunk.emit_op_u16(Op::LOCAL_SET, factor_slot, line);
     } else {
         chunk.emit_op_u16(Op::LOCAL_SET, char_count_slot, line);
+        push_const(chunk, Value::I32(factor), line);
+        chunk.emit_op_u16(Op::LOCAL_SET, factor_slot, line);
     }
     chunk.emit_op_u16(Op::LOCAL_GET, char_count_slot, line);
-    push_const(chunk, Value::I32(factor), line);
+    chunk.emit_op_u16(Op::LOCAL_GET, factor_slot, line);
     chunk.emit_op(Op::I32_MUL, line);
 }
 

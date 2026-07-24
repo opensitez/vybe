@@ -148,6 +148,71 @@ pub fn emit_array_reverse(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::NULL, line);
 }
 
+/// `List<T>.RemoveAll(pred)` — remove each matching element in place and
+/// return the number removed. Stack: `[list, pred]` → `[removed_count]`.
+pub fn emit_list_remove_all(chunks: &mut [Chunk], current: usize, line: u32) {
+    let list_slot = alloc_locals(&mut chunks[current], 5);
+    let fn_slot = list_slot + 1;
+    let idx_slot = list_slot + 2;
+    let removed_slot = list_slot + 3;
+    let matched_slot = list_slot + 4;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, list_slot, line);
+
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, removed_slot, line);
+
+    let block_p = chunks[current].emit_block(line);
+    let (loop_p, _) = chunks[current].emit_loop_s(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, matched_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, matched_slot, line);
+    chunks[current].emit_if(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    vybe_emitter::collections::emit_remove_at(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, removed_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, removed_slot, line);
+
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_p);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block_p);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, removed_slot, line);
+}
+
 /// `Array.IndexOf(arr, value)` — search for `value`, return index or -1.
 /// Stack: `[arr, value]` → `[index]`.
 ///

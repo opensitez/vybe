@@ -890,7 +890,11 @@ fn collect_record_shapes_in_statement(stmt: &Statement, shapes: &mut HashMap<Str
                 collect_record_shapes_in_statement(stmt, shapes);
             }
         }
-        StmtKind::ClassDecl { name, members, .. } => {
+        StmtKind::ClassDecl {
+            name: class_name,
+            members,
+            ..
+        } => {
             if let Some(shape) = members.iter().find_map(|member| {
                 let ClassMember::Method(stmt) = member else {
                     return None;
@@ -906,7 +910,7 @@ fn collect_record_shapes_in_statement(stmt: &Statement, shapes: &mut HashMap<Str
                 }
                 extract_deconstruct_shape(params, body)
             }) {
-                shapes.insert(name.clone(), shape);
+                shapes.insert(class_name.clone(), shape);
             }
             for member in members {
                 if let ClassMember::NestedType(stmt) = member {
@@ -4760,7 +4764,7 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
                 if is_same_target {
                     if let Some(compound_op) = compound_op {
                         // `btn.Click += handler` / `-=` → AddHandler / RemoveHandler so
-                        // the compiler routes through vybe:gui:bindEvent like VB does.
+                        // the compiler routes through the shared dotnet WinForms event path.
                         if matches!(compound_op, CompoundOp::Add | CompoundOp::Sub) {
                             if let ExprKind::Member { object, field, .. } = &target.kind {
                                 // Custom event: `obj.E += h` → `obj.add_E(h)`,
@@ -9518,7 +9522,7 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
         }
     }
 
-    // Record positional params become fields + constructor
+    // Record positional params become fields + constructor.
     for param in &params {
         members.push(ClassMember::Field {
             name: param.name.clone(),
@@ -12412,63 +12416,6 @@ fn build_csharp_get_length_expr(receiver: Expression, dimension: usize) -> Expre
     canonicalize_member_access(target, "Length")
 }
 
-fn build_csharp_math_call(name: &str, arg: Expression) -> Expression {
-    Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new(build_dotted_expr("System.Math")),
-            field: name.to_string(),
-            null_safe: false,
-        })),
-        args: vec![Argument::positional(arg)],
-        optional: false,
-    })
-}
-
-fn build_csharp_bankers_round_expr(value: Expression) -> Expression {
-    let floor = build_csharp_math_call("Floor", value.clone());
-    let ceil = build_csharp_math_call("Ceiling", value.clone());
-    let frac = Expression::new(ExprKind::Binary {
-        op: BinOp::Sub,
-        left: Box::new(value),
-        right: Box::new(floor.clone()),
-    });
-    let half = Expression::new(ExprKind::Lit(Literal::Float(0.5)));
-    let floor_is_even = Expression::new(ExprKind::Binary {
-        op: BinOp::Eq,
-        left: Box::new(Expression::new(ExprKind::Binary {
-            op: BinOp::BitAnd,
-            left: Box::new(Expression::new(ExprKind::Cast {
-                expr: Box::new(floor.clone()),
-                type_name: "int".into(),
-            })),
-            right: Box::new(Expression::int(1)),
-        })),
-        right: Box::new(Expression::int(0)),
-    });
-
-    Expression::new(ExprKind::Ternary {
-        cond: Box::new(Expression::new(ExprKind::Binary {
-            op: BinOp::Lt,
-            left: Box::new(frac.clone()),
-            right: Box::new(half.clone()),
-        })),
-        then: Box::new(floor.clone()),
-        else_: Box::new(Expression::new(ExprKind::Ternary {
-            cond: Box::new(Expression::new(ExprKind::Binary {
-                op: BinOp::Gt,
-                left: Box::new(frac),
-                right: Box::new(half),
-            })),
-            then: Box::new(ceil.clone()),
-            else_: Box::new(Expression::new(ExprKind::Ternary {
-                cond: Box::new(floor_is_even),
-                then: Box::new(floor),
-                else_: Box::new(ceil),
-            })),
-        })),
-    })
-}
-
 fn parse_csharp_generic_type_args(raw_type_name: &str) -> Vec<String> {
     let Some(start) = raw_type_name.find('<') else {
         return Vec::new();
@@ -12825,18 +12772,17 @@ fn walk_with_expr(receiver: Expression, postfix: Pair<Rule>) -> Result<Expressio
 
     // Lower to an IIFE:
     //   ((src) => {
-    //       var __o = Object.assign({}, src);
+    //       var __o = __csharp_object_assign({}, src);
     //       __o.Prop = val;
     //       ...
     //       return __o;
     //   })(receiver)
     //
-    // We use `Object.assign({}, src)` shape via the dotted-name
-    // resolver (resolves to `ecma:object.assign`) so the clone sees
-    // the same prototype chain as the source.
+    // Use the shared reflection assign primitive through a walker-private
+    // helper, not an ECMA namespace mount in the C# profile.
     let mut body: Vec<Statement> = Vec::new();
     let assign_call = Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Ident("Object.assign".into()))),
+        callee: Box::new(Expression::ident("__csharp_object_assign")),
         args: vec![
             Argument::positional(Expression::new(ExprKind::Object(Vec::new()))),
             Argument::positional(Expression::ident("__src")),
@@ -14643,16 +14589,6 @@ fn strip_object_get_lvalue(expr: Expression) -> Expression {
 /// `arr.Length` → `Call(__len__, [arr])`
 /// `list.Count` → `Call(__len__, [list])`
 fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
-    // Resolve System.Math.PI / System.Math.E / System.Math.Tau at walk time
-    if let Some(path) = expr_dotted_name(&object) {
-        let full = format!("{}.{}", path, name);
-        match full.as_str() {
-            "System.Math.PI" => return Expression::float(std::f64::consts::PI),
-            "System.Math.E" => return Expression::float(std::f64::consts::E),
-            "System.Math.Tau" => return Expression::float(std::f64::consts::TAU),
-            _ => {}
-        }
-    }
     if matches!(
         name,
         "Year"
@@ -14950,100 +14886,64 @@ fn rewrite_csharp_string_instance_call(
     }
 
     if field.eq_ignore_ascii_case("Contains") && (args.len() == 1 || args.len() == 2) {
-        let ignore_case = args
-            .get(1)
-            .is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
-        let haystack = if ignore_case {
-            lower_case_expr(receiver.clone())
-        } else {
-            receiver.clone()
-        };
-        let needle = char_arg_to_string(&args[0].value);
-        let needle = if ignore_case {
-            lower_case_expr(needle)
-        } else {
-            needle
-        };
-        let index = call_builtin(
-            "__csharp_str_index_of",
-            vec![Argument::positional(haystack), Argument::positional(needle)],
-        );
-        return Some(Expression::new(ExprKind::Binary {
-            op: BinOp::GtEq,
-            left: Box::new(index),
-            right: Box::new(Expression::int(0)),
-        }));
+        let mut call_args = vec![
+            Argument::positional(receiver),
+            Argument::positional(char_arg_to_string(&args[0].value)),
+        ];
+        if let Some(comparison) = args.get(1) {
+            call_args.push(Argument::positional(comparison.value.clone()));
+        }
+        return Some(call_builtin("__dotnet_string_contains", call_args));
     }
     if field.eq_ignore_ascii_case("StartsWith") && (args.len() == 1 || args.len() == 2) {
-        let ignore_case = args
-            .get(1)
-            .is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
-        let haystack = if ignore_case {
-            lower_case_expr(receiver.clone())
-        } else {
-            receiver.clone()
-        };
-        let prefix = char_arg_to_string(&args[0].value);
-        let prefix = if ignore_case {
-            lower_case_expr(prefix)
-        } else {
-            prefix
-        };
-        return Some(call_builtin(
-            "__csharp_str_starts_with",
-            vec![Argument::positional(haystack), Argument::positional(prefix)],
-        ));
+        let mut call_args = vec![
+            Argument::positional(receiver),
+            Argument::positional(char_arg_to_string(&args[0].value)),
+        ];
+        if let Some(comparison) = args.get(1) {
+            call_args.push(Argument::positional(comparison.value.clone()));
+        }
+        return Some(call_builtin("__dotnet_string_starts_with", call_args));
     }
-    if field.eq_ignore_ascii_case("EndsWith") && args.len() == 1 {
-        return Some(call_builtin(
-            "__csharp_str_ends_with",
-            vec![
-                Argument::positional(receiver),
-                Argument::positional(char_arg_to_string(&args[0].value)),
-            ],
-        ));
+    if field.eq_ignore_ascii_case("EndsWith") && (args.len() == 1 || args.len() == 2) {
+        let mut call_args = vec![
+            Argument::positional(receiver),
+            Argument::positional(char_arg_to_string(&args[0].value)),
+        ];
+        if let Some(comparison) = args.get(1) {
+            call_args.push(Argument::positional(comparison.value.clone()));
+        }
+        return Some(call_builtin("__dotnet_string_ends_with", call_args));
     }
     if field.eq_ignore_ascii_case("IndexOf") && (args.len() == 1 || args.len() == 2) {
-        let ignore_case = args
-            .get(1)
-            .is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
-        let haystack = if ignore_case {
-            lower_case_expr(receiver.clone())
-        } else {
-            receiver
-        };
-        let needle = char_arg_to_string(&args[0].value);
-        let needle = if ignore_case {
-            lower_case_expr(needle)
-        } else {
-            needle
-        };
-        let mut call_args = vec![Argument::positional(haystack), Argument::positional(needle)];
-        if args.len() == 2 && !is_string_comparison_arg(&args[1].value) {
-            call_args.push(Argument::positional(char_arg_to_string(&args[1].value)));
+        if args.len() == 2 && is_string_comparison_arg(&args[1].value) {
+            return Some(call_builtin(
+                "__dotnet_string_index_of",
+                vec![
+                    Argument::positional(receiver),
+                    Argument::positional(char_arg_to_string(&args[0].value)),
+                    Argument::positional(args[1].value.clone()),
+                ],
+            ));
+        }
+        let mut call_args = vec![
+            Argument::positional(receiver),
+            Argument::positional(char_arg_to_string(&args[0].value)),
+        ];
+        if let Some(start) = args.get(1) {
+            call_args.push(Argument::positional(char_arg_to_string(&start.value)));
         }
         return Some(call_builtin("__csharp_str_index_of", call_args));
     }
     if field.eq_ignore_ascii_case("Equals") && (args.len() == 1 || args.len() == 2) {
-        let ignore_case = args
-            .get(1)
-            .is_some_and(|arg| is_ignore_case_string_comparison(&arg.value));
-        let left = if ignore_case {
-            lower_case_expr(receiver)
-        } else {
-            receiver
-        };
-        let right = char_arg_to_string(&args[0].value);
-        let right = if ignore_case {
-            lower_case_expr(right)
-        } else {
-            right
-        };
-        return Some(Expression::new(ExprKind::Binary {
-            op: BinOp::Eq,
-            left: Box::new(left),
-            right: Box::new(right),
-        }));
+        let mut call_args = vec![
+            Argument::positional(receiver),
+            Argument::positional(char_arg_to_string(&args[0].value)),
+        ];
+        if let Some(comparison) = args.get(1) {
+            call_args.push(Argument::positional(comparison.value.clone()));
+        }
+        return Some(call_builtin("__dotnet_string_equals", call_args));
     }
     if field.eq_ignore_ascii_case("ToUpper") && args.is_empty() {
         return Some(call_builtin(
@@ -15051,7 +14951,19 @@ fn rewrite_csharp_string_instance_call(
             vec![Argument::positional(receiver)],
         ));
     }
+    if field.eq_ignore_ascii_case("ToUpperInvariant") && args.is_empty() {
+        return Some(call_builtin(
+            "__csharp_str_to_upper",
+            vec![Argument::positional(receiver)],
+        ));
+    }
     if field.eq_ignore_ascii_case("ToLower") && args.is_empty() {
+        return Some(call_builtin(
+            "__csharp_str_to_lower",
+            vec![Argument::positional(receiver)],
+        ));
+    }
+    if field.eq_ignore_ascii_case("ToLowerInvariant") && args.is_empty() {
         return Some(call_builtin(
             "__csharp_str_to_lower",
             vec![Argument::positional(receiver)],
@@ -15422,12 +15334,6 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             }
         }
         if let Some(path) = expr_dotted_name(object) {
-            if (path.eq_ignore_ascii_case("Math") || path.eq_ignore_ascii_case("System.Math"))
-                && field.eq_ignore_ascii_case("Round")
-                && args.len() == 1
-            {
-                return build_csharp_bankers_round_expr(args[0].value.clone());
-            }
             if (path.eq_ignore_ascii_case("Array") || path.eq_ignore_ascii_case("System.Array"))
                 && field.eq_ignore_ascii_case("CreateInstance")
             {
@@ -15460,7 +15366,14 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
             }
         }
         if field == "CompareTo" && args.len() == 1 {
-            return compare_expr((**object).clone(), args[0].value.clone());
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__dotnet_string_compare")),
+                args: vec![
+                    Argument::positional((**object).clone()),
+                    Argument::positional(args[0].value.clone()),
+                ],
+                optional: false,
+            });
         }
     }
     // Static method rewrites to canonical instance form
@@ -15535,26 +15448,6 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                     null_safe: false,
                 });
             }
-            if (path.eq_ignore_ascii_case("string") || path.eq_ignore_ascii_case("System.String"))
-                && field.eq_ignore_ascii_case("Compare")
-                && (args.len() == 2 || args.len() == 3)
-            {
-                let ignore_case = args.get(2).map_or(false, |arg| {
-                    matches!(arg.value.kind, ExprKind::Lit(Literal::Bool(true)))
-                        || is_ignore_case_string_comparison(&arg.value)
-                });
-                let left = if ignore_case {
-                    lower_case_expr(args[0].value.clone())
-                } else {
-                    args[0].value.clone()
-                };
-                let right = if ignore_case {
-                    lower_case_expr(args[1].value.clone())
-                } else {
-                    args[1].value.clone()
-                };
-                return compare_expr(left, right);
-            }
         }
         if let ExprKind::Ident(obj_name) = &object.kind {
             if (obj_name.eq_ignore_ascii_case("string")
@@ -15591,54 +15484,6 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                     })),
                     args: vec![Argument::positional(sep)],
                     optional: false,
-                });
-            }
-            // string.Equals(a, b, StringComparison.OrdinalIgnoreCase)
-            //   → a.toLowerCase() === b.toLowerCase()
-            // string.Equals(a, b) → a === b
-            if (obj_name.eq_ignore_ascii_case("string")
-                || obj_name.eq_ignore_ascii_case("System.String"))
-                && field.eq_ignore_ascii_case("Equals")
-                && (args.len() == 2 || args.len() == 3)
-            {
-                let a = args[0].value.clone();
-                let b = args[1].value.clone();
-                let ignore_case = args.get(2).map_or(false, |arg| {
-                    if let ExprKind::Member { field, .. } = &arg.value.kind {
-                        field.contains("IgnoreCase")
-                    } else {
-                        false
-                    }
-                });
-                if ignore_case {
-                    let a_lc = Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::new(ExprKind::Member {
-                            object: Box::new(a),
-                            field: "toLowerCase".into(),
-                            null_safe: false,
-                        })),
-                        args: vec![],
-                        optional: false,
-                    });
-                    let b_lc = Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::new(ExprKind::Member {
-                            object: Box::new(b),
-                            field: "toLowerCase".into(),
-                            null_safe: false,
-                        })),
-                        args: vec![],
-                        optional: false,
-                    });
-                    return Expression::new(ExprKind::Binary {
-                        op: BinOp::Eq,
-                        left: Box::new(a_lc),
-                        right: Box::new(b_lc),
-                    });
-                }
-                return Expression::new(ExprKind::Binary {
-                    op: BinOp::Eq,
-                    left: Box::new(a),
-                    right: Box::new(b),
                 });
             }
             // char.IsXxx / char.ToXxx — single-char string predicates / converters
@@ -15700,12 +15545,10 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
 
 fn lower_case_expr(expr: Expression) -> Expression {
     Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new(expr),
-            field: "toLowerCase".into(),
-            null_safe: false,
-        })),
-        args: vec![],
+        callee: Box::new(Expression::new(ExprKind::Ident(
+            "__csharp_str_to_lower".into(),
+        ))),
+        args: vec![Argument::positional(expr)],
         optional: false,
     })
 }
@@ -15714,15 +15557,6 @@ fn is_string_comparison_arg(expr: &Expression) -> bool {
     matches!(
         &expr.kind,
         ExprKind::Lit(Literal::Str(tag)) if tag.starts_with("__dotnet_stringcomparison_")
-    )
-}
-
-fn is_ignore_case_string_comparison(expr: &Expression) -> bool {
-    matches!(
-        &expr.kind,
-        ExprKind::Lit(Literal::Str(tag))
-            if tag == "__dotnet_stringcomparison_ordinalignorecase"
-                || tag == "__dotnet_stringcomparison_invariantignorecase"
     )
 }
 

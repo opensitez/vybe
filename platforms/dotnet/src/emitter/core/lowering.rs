@@ -25,6 +25,17 @@ fn member_expr(object: Expression, field: &str) -> Expression {
     })
 }
 
+fn dotted_expr_name(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::Member { object, field, .. } => {
+            let base = dotted_expr_name(object)?;
+            Some(format!("{base}.{field}"))
+        }
+        _ => None,
+    }
+}
+
 fn index_expr(object: Expression, index: Expression) -> Expression {
     Expression::new(ExprKind::Index {
         object: Box::new(object),
@@ -172,6 +183,26 @@ pub fn is_datetime_static_producer(name: &str) -> bool {
             | "system.datetime.today"
             | "system.datetime.parse"
     )
+}
+
+pub fn encoding_static_name(expr: &Expression) -> Option<&'static str> {
+    let receiver = match &expr.kind {
+        ExprKind::Call { callee, args, .. } if args.is_empty() => callee.as_ref(),
+        _ => expr,
+    };
+    let path = dotted_expr_name(receiver)?;
+    let name = path
+        .strip_prefix("Encoding.")
+        .or_else(|| path.strip_prefix("System.Text.Encoding."))?;
+    match name.to_ascii_lowercase().as_str() {
+        "utf8" | "default" => Some("utf8"),
+        "ascii" => Some("ascii"),
+        "unicode" => Some("unicode"),
+        "utf32" => Some("utf32"),
+        "latin1" => Some("latin1"),
+        "bigendianunicode" => Some("bigendianunicode"),
+        _ => None,
+    }
 }
 
 /// Build a runtime expression that yields the .NET short type name of `expr`.

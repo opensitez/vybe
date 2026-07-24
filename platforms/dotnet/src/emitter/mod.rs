@@ -59,6 +59,9 @@ pub enum InstancePropertyTarget {
         func: String,
         key: Option<String>,
     },
+    Common {
+        emit: String,
+    },
 }
 pub struct DotnetSurface {
     default_imports: Vec<String>,
@@ -453,6 +456,43 @@ impl DotnetSurface {
     ) -> Option<InstancePropertyTarget> {
         let requested = class_name.trim();
         let requested_short = requested.rsplit('.').next().unwrap_or(requested);
+        if requested_short.eq_ignore_ascii_case("StringBuilder") {
+            let emit = match (want_setter, property_name.to_ascii_lowercase().as_str()) {
+                (false, "length") => Some("dotnet.sb_length"),
+                (true, "length") => Some("dotnet.sb_set_length"),
+                (false, "capacity") => Some("dotnet.sb_capacity"),
+                (true, "capacity") => Some("dotnet.sb_set_capacity"),
+                (false, "maxcapacity") => Some("dotnet.sb_max_capacity"),
+                _ => None,
+            };
+            if let Some(emit) = emit {
+                return Some(InstancePropertyTarget::Common {
+                    emit: emit.to_string(),
+                });
+            }
+        }
+        if requested_short.eq_ignore_ascii_case("Stopwatch") && !want_setter {
+            let emit = match property_name.to_ascii_lowercase().as_str() {
+                "elapsedmilliseconds" => Some("dotnet.stopwatch_elapsed_ms"),
+                "isrunning" => Some("dotnet.stopwatch_is_running"),
+                _ => None,
+            };
+            if let Some(emit) = emit {
+                return Some(InstancePropertyTarget::Common {
+                    emit: emit.to_string(),
+                });
+            }
+        }
+        if matches!(
+            requested_short.to_ascii_lowercase().as_str(),
+            "list" | "arraylist"
+        ) && !want_setter
+            && property_name.eq_ignore_ascii_case("Capacity")
+        {
+            return Some(InstancePropertyTarget::Common {
+                emit: "dotnet.list_capacity".to_string(),
+            });
+        }
         let mut current = self.component_descriptor.classes.iter().find(|class| {
             class.name.eq_ignore_ascii_case(requested)
                 || class.name.eq_ignore_ascii_case(requested_short)
@@ -629,6 +669,39 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
         ) {
             return Some("string".into());
         }
+    }
+    if class.eq_ignore_ascii_case("CancellationTokenSource") {
+        if method_name.eq_ignore_ascii_case("Token") {
+            return Some("CancellationToken".into());
+        }
+    }
+    if class.eq_ignore_ascii_case("CancellationToken") {
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "register" | "waithandle"
+        ) {
+            return Some("Object".into());
+        }
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "iscancellationrequested" | "canbecanceled"
+        ) {
+            return Some("Boolean".into());
+        }
+    }
+    if class.eq_ignore_ascii_case("Task") {
+        if method_name.eq_ignore_ascii_case("iscanceled") {
+            return Some("Boolean".into());
+        }
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "wait" | "continuewith"
+        ) {
+            return Some("Task".into());
+        }
+    }
+    if class.eq_ignore_ascii_case("ValueTask") && method_name.eq_ignore_ascii_case("AsTask") {
+        return Some("Task".into());
     }
     // LINQ deferred (sequence-returning) operators stay `IEnumerable<T>`, so a
     // chain like `xs.OrderBy(k).Distinct().Where(p)` keeps resolving each step
@@ -834,6 +907,26 @@ pub fn static_member_constant(prefix: &str, member_name: &str) -> Option<&'stati
     {
         return Some("__dotnet_stringcomparison_ordinal");
     }
+    if normalized.eq_ignore_ascii_case("Base64FormattingOptions")
+        || normalized.eq_ignore_ascii_case("System.Base64FormattingOptions")
+    {
+        if member_name.eq_ignore_ascii_case("InsertLineBreaks") {
+            return Some("__dotnet_base64_insertlinebreaks");
+        }
+        if member_name.eq_ignore_ascii_case("None") {
+            return Some("__dotnet_base64_none");
+        }
+    }
+    if normalized.eq_ignore_ascii_case("StringSplitOptions")
+        || normalized.eq_ignore_ascii_case("System.StringSplitOptions")
+    {
+        if member_name.eq_ignore_ascii_case("RemoveEmptyEntries") {
+            return Some("__dotnet_stringsplit_removeemptyentries");
+        }
+        if member_name.eq_ignore_ascii_case("None") {
+            return Some("__dotnet_stringsplit_none");
+        }
+    }
     if normalized.contains("EqualityComparer<") && member_name.eq_ignore_ascii_case("Default") {
         return Some("__dotnet_equalitycomparer_default");
     }
@@ -877,6 +970,12 @@ pub fn static_member_constant(prefix: &str, member_name: &str) -> Option<&'stati
 
 pub fn static_member_parameterless_call(prefix: &str, member_name: &str) -> bool {
     let normalized = prefix.trim();
+    if (normalized.eq_ignore_ascii_case("CancellationToken")
+        || normalized.eq_ignore_ascii_case("System.Threading.CancellationToken"))
+        && member_name.eq_ignore_ascii_case("None")
+    {
+        return true;
+    }
     ((normalized.eq_ignore_ascii_case("DateTime")
         || normalized.eq_ignore_ascii_case("System.DateTime"))
         && (member_name.eq_ignore_ascii_case("Now")
@@ -885,6 +984,12 @@ pub fn static_member_parameterless_call(prefix: &str, member_name: &str) -> bool
         || ((normalized.eq_ignore_ascii_case("TimeSpan")
             || normalized.eq_ignore_ascii_case("System.TimeSpan"))
             && member_name.eq_ignore_ascii_case("Zero"))
+        || ((normalized.eq_ignore_ascii_case("Encoding")
+            || normalized.eq_ignore_ascii_case("System.Text.Encoding"))
+            && matches!(
+                member_name.to_ascii_lowercase().as_str(),
+                "utf8" | "ascii" | "unicode" | "default" | "utf32" | "latin1" | "bigendianunicode"
+            ))
 }
 
 pub fn canonical_type_name(raw: &str) -> String {
@@ -933,6 +1038,72 @@ pub fn lookup_component_static_property(
     property_name: &str,
 ) -> Option<StaticPropertyTarget> {
     surface().lookup_static_property(prefix, property_name)
+}
+
+pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<&'static str> {
+    let class = class_name.rsplit('.').next().unwrap_or(class_name);
+    if class.eq_ignore_ascii_case("TimeSpan")
+        && matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "fromdays" | "fromhours" | "fromminutes" | "fromseconds" | "frommilliseconds" | "zero"
+        )
+    {
+        return Some("TimeSpan");
+    }
+    if class.eq_ignore_ascii_case("DateTime")
+        && matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "now" | "utcnow" | "today" | "parse"
+        )
+    {
+        return Some("DateTime");
+    }
+    if class.eq_ignore_ascii_case("Convert") && method_name.eq_ignore_ascii_case("ToDateTime") {
+        return Some("DateTime");
+    }
+    if class.eq_ignore_ascii_case("Guid")
+        && matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "empty" | "newguid" | "parse"
+        )
+    {
+        return Some("Guid");
+    }
+    if class.eq_ignore_ascii_case("Version") && method_name.eq_ignore_ascii_case("Parse") {
+        return Some("Version");
+    }
+    if class.eq_ignore_ascii_case("CancellationToken") && method_name.eq_ignore_ascii_case("None") {
+        return Some("CancellationToken");
+    }
+    if class.eq_ignore_ascii_case("CancellationTokenSource")
+        && method_name.eq_ignore_ascii_case("CreateLinkedTokenSource")
+    {
+        return Some("CancellationTokenSource");
+    }
+    if class.eq_ignore_ascii_case("Task")
+        && matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "delay" | "yield" | "whenall" | "whenany" | "fromresult" | "run"
+        )
+    {
+        return Some("Task");
+    }
+    if class.eq_ignore_ascii_case("Encoding")
+        && matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "utf8"
+                | "ascii"
+                | "unicode"
+                | "default"
+                | "utf32"
+                | "latin1"
+                | "bigendianunicode"
+                | "getencoding"
+        )
+    {
+        return Some("Encoding");
+    }
+    None
 }
 
 fn collection_runtime_method_names(descriptor: &ComponentDescriptor) -> HashSet<String> {
@@ -1104,7 +1275,7 @@ mod tests {
                     && exp.name == "Application")
         );
         assert!(
-            descriptor
+            !descriptor
                 .imports
                 .iter()
                 .any(|imp| imp.interface == "vybe:gui"
@@ -1154,7 +1325,7 @@ mod tests {
         let binding = lookup_component_constructor("List").expect("List constructor");
         assert_eq!(
             binding,
-            ConstructorTarget::Common("collections.new".to_string())
+            ConstructorTarget::Common("dotnet.list_new".to_string())
         );
     }
 

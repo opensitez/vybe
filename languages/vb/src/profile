@@ -55,6 +55,9 @@ linq_queries = true                    # LINQ query syntax compiled to method ch
 # tostring, GetEnumerator → iterator, etc.) and populates the class's
 # `auto_init_methods` when InitializeComponent is defined.
 uses_normalize_class = true
+# VB `Async Function` returns a Task/Task(Of T). Under the shared runtime that
+# is the same fulfilled/rejected promise shape used by the common await emitter.
+async_wraps_body_in_try = true
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — every function/method the VB compiler knows about
@@ -74,26 +77,29 @@ uses_normalize_class = true
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
-"__vb_object_get" = { emit = "host:ecma:object:get", min_args = 2, max_args = 2 }
+"__vb_object_get" = { emit = "common:reflection.object_get", min_args = 2, max_args = 2 }
 "__vb_err_raise" = { emit = "throw", min_args = 1, max_args = 3 }
+"__dotnet_string_compare" = { emit = "common:dotnet.string_compare", min_args = 2, max_args = 3 }
+"__vb_task_delay" = { emit = "common:dotnet.task_delay", min_args = 1, max_args = 2 }
+"__vb_task_run" = { emit = "common:threading.task_run", min_args = 1, max_args = 1 }
+"__vb_task_from_result" = { emit = "common:dotnet.task_from_result", min_args = 1, max_args = 1 }
+"__vb_task_when_all" = { emit = "common:dotnet.task_when_all", min_args = 1, max_args = 255 }
+"__vb_task_when_any" = { emit = "common:dotnet.task_when_any", min_args = 1, max_args = 255 }
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
-"console.error.writeline" = { emit = "host:wasi:cli:error",  min_args = 0, max_args = 255 }
-"console.error"       = { emit = "host:wasi:cli:error",      min_args = 0, max_args = 255 }
-"console.readline"    = { emit = "host:wasi:cli:readLine",   min_args = 0, max_args = 0 }
-"msgbox"              = { emit = "host:vybe:gui:msgBox",     min_args = 1, max_args = 3 }
-"inputbox"            = { emit = "host:vybe:gui:msgBox",     min_args = 1, max_args = 3 }
-"debug.print"         = { emit = "host:wasi:cli:log",        min_args = 0, max_args = 255 }
+"msgbox"              = { emit = "common:dotnet.winforms_message_box_show", min_args = 1, max_args = 3 }
+"inputbox"            = { emit = "common:dotnet.winforms_message_box_show", min_args = 1, max_args = 3 }
+"debug.print"         = { emit = "common:dotnet.vb_debug_print", min_args = 0, max_args = 255 }
 
 # ── Type Conversions ─────────────────────────────────────────────────────────
 
 cstr    = { emit = "intrinsic:cstr",               min_args = 1, max_args = 1 }
 cint    = { emit = "intrinsic:cint",               min_args = 1, max_args = 1 }
-cdbl    = { emit = "host:ecma:number:Number",      min_args = 1, max_args = 1 }
+cdbl    = { emit = "common:dotnet.vb_to_number",   min_args = 1, max_args = 1 }
 cbool   = { emit = "common:dyn_to_bool",           min_args = 1, max_args = 1 }
 clng    = { emit = "intrinsic:clng",       min_args = 1, max_args = 1 }
-csng    = { emit = "host:ecma:number:Number",       min_args = 1, max_args = 1 }
+csng    = { emit = "common:dotnet.vb_to_number",    min_args = 1, max_args = 1 }
 cbyte   = { emit = "intrinsic:cbyte",              min_args = 1, max_args = 1 }
 cchar   = { emit = "common:dotnet.cchar",          min_args = 1, max_args = 1 }
 
@@ -108,7 +114,7 @@ cuint   = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
 culng   = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
 csbyte  = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
 ccur    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
-cdec    = { emit = "host:ecma:number:Number",      min_args = 1, max_args = 1 }
+cdec    = { emit = "common:dotnet.vb_to_number",   min_args = 1, max_args = 1 }
 cvar    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
 cobj    = { emit = "opcode:f64_from_i32",          min_args = 1, max_args = 1 }
 val     = { emit = "common:dotnet.val",            min_args = 1, max_args = 1 }
@@ -116,8 +122,8 @@ hex     = { emit = "intrinsic:hex",        min_args = 1, max_args = 1 }
 "hex$"  = { emit = "intrinsic:hex",        min_args = 1, max_args = 1 }
 oct     = { emit = "intrinsic:oct",        min_args = 1, max_args = 1 }
 "oct$"  = { emit = "intrinsic:oct",        min_args = 1, max_args = 1 }
-str     = { emit = "host:ecma:string:String",      min_args = 1, max_args = 1 }
-"str$"  = { emit = "host:ecma:string:String",      min_args = 1, max_args = 1 }
+str     = { emit = "common:dotnet.vb_to_string",   min_args = 1, max_args = 1 }
+"str$"  = { emit = "common:dotnet.vb_to_string",   min_args = 1, max_args = 1 }
 iif     = { emit = "common:dotnet.iif",            min_args = 3, max_args = 3 }
 choose  = { emit = "common:dotnet.choose",         min_args = 2, max_args = 255 }
 rgb     = { emit = "common:dotnet.rgb",            min_args = 3, max_args = 3 }
@@ -148,17 +154,17 @@ round         = { emit = "common:round", min_args = 1, max_args = 2 }
 
 # ── Math — host calls ───────────────────────────────────────────────────────
 
-sgn        = { emit = "host:ecma:math:sign",   min_args = 1, max_args = 1 }
-rnd        = { emit = "host:ecma:math:random", min_args = 0, max_args = 1 }
-randomize  = { emit = "host:ecma:math:random", min_args = 0, max_args = 0 }
-log        = { emit = "host:ecma:math:log",    min_args = 1, max_args = 1 }
-exp        = { emit = "host:ecma:math:exp",    min_args = 1, max_args = 1 }
-sin        = { emit = "host:ecma:math:sin",    min_args = 1, max_args = 1 }
-cos        = { emit = "host:ecma:math:cos",    min_args = 1, max_args = 1 }
-tan        = { emit = "host:ecma:math:tan",    min_args = 1, max_args = 1 }
-atn        = { emit = "host:ecma:math:atan",   min_args = 1, max_args = 1 }
-atan       = { emit = "host:ecma:math:atan",   min_args = 1, max_args = 1 }
-pow                 = { emit = "host:ecma:math:pow",    min_args = 2, max_args = 2 }
+sgn        = { emit = "common:dotnet.system.math.sign", min_args = 1, max_args = 1 }
+rnd        = { emit = "common:dotnet.vb_random", min_args = 0, max_args = 1 }
+randomize  = { emit = "common:dotnet.vb_random", min_args = 0, max_args = 0 }
+log        = { emit = "common:dotnet.system.math.log",  min_args = 1, max_args = 1 }
+exp        = { emit = "common:dotnet.system.math.exp",  min_args = 1, max_args = 1 }
+sin        = { emit = "common:dotnet.system.math.sin",  min_args = 1, max_args = 1 }
+cos        = { emit = "common:dotnet.system.math.cos",  min_args = 1, max_args = 1 }
+tan        = { emit = "common:dotnet.system.math.tan",  min_args = 1, max_args = 1 }
+atn        = { emit = "common:dotnet.system.math.atan", min_args = 1, max_args = 1 }
+atan       = { emit = "common:dotnet.system.math.atan", min_args = 1, max_args = 1 }
+pow        = { emit = "common:dotnet.system.math.pow",  min_args = 2, max_args = 2 }
 
 # ── Financial functions ─────────────────────────────────────────────────────
 
@@ -214,8 +220,8 @@ spc        = { emit = "intrinsic:space",           min_args = 1, max_args = 1 }
 strcomp    = { emit = "intrinsic:strcomp",         min_args = 2, max_args = 3 }
 format     = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
 "format$"  = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
-lset       = { emit = "host:ecma:string:padEnd",     min_args = 2, max_args = 2 }
-rset       = { emit = "host:ecma:string:padStart",     min_args = 2, max_args = 2 }
+lset       = { emit = "common:dotnet.vb_lset",       min_args = 2, max_args = 2 }
+rset       = { emit = "common:dotnet.vb_rset",       min_args = 2, max_args = 2 }
 filter     = { emit = "intrinsic:filter",         min_args = 2, max_args = 4 }
 
 # Format variants
@@ -223,14 +229,14 @@ formatnumber   = { emit = "common:dotnet.format_picture", min_args = 1, max_args
 formatcurrency = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
 formatpercent  = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
 formatdatetime = { emit = "common:dotnet.format_picture", min_args = 1, max_args = 2 }
-strconv        = { emit = "host:ecma:string:String", min_args = 1, max_args = 2 }
-strdup         = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
+strconv        = { emit = "common:dotnet.vb_to_string", min_args = 1, max_args = 2 }
+strdup         = { emit = "common:dotnet.vb_to_string", min_args = 1, max_args = 1 }
 
 # ── Array functions ──────────────────────────────────────────────────────────
 
 ubound  = { emit = "intrinsic:ubound",            min_args = 1, max_args = 1 }
 lbound  = { emit = "intrinsic:lbound",            min_args = 0, max_args = 1 }
-array   = { emit = "host:ecma:array:from",         min_args = 0, max_args = 255 }
+array   = { emit = "common:dotnet.vb_array",       min_args = 0, max_args = 255 }
 erase   = { emit = "intrinsic:erase",              min_args = 1, max_args = 1 }
 
 # ── Date/Time functions ──────────────────────────────────────────────────────
@@ -261,41 +267,41 @@ timevalue    = { emit = "common:dotnet.datetime_parse", min_args = 1, max_args =
 # `timeserial` removed alongside `timeserial`/`dateserial` (see DateAdd
 # comment above).
 cdate        = { emit = "common:dotnet.datetime_parse", min_args = 1, max_args = 1 }
-monthname    = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
+monthname    = { emit = "common:dotnet.vb_to_string",      min_args = 1, max_args = 1 }
 weekday      = { emit = "common:dotnet.datetime_day_of_week",  min_args = 1, max_args = 1 }
-weekdayname  = { emit = "host:ecma:string:String",         min_args = 1, max_args = 1 }
+weekdayname  = { emit = "common:dotnet.vb_to_string",      min_args = 1, max_args = 1 }
 
 # ── File I/O ─────────────────────────────────────────────────────────────────
 
 "dir"        = { emit = "common:dotnet.vb_dir",  min_args = 0, max_args = 1 }
 "dir$"       = { emit = "common:dotnet.vb_dir",  min_args = 0, max_args = 1 }
-filecopy     = { emit = "host:wasi:filesystem:copy",     min_args = 2, max_args = 2 }
-kill         = { emit = "host:wasi:filesystem:remove",   min_args = 1, max_args = 1 }
-fileexists   = { emit = "host:wasi:filesystem:exists",   min_args = 1, max_args = 1 }
+filecopy     = { emit = "common:dotnet.vb_filecopy",     min_args = 2, max_args = 2 }
+kill         = { emit = "common:dotnet.vb_kill",         min_args = 1, max_args = 1 }
+fileexists   = { emit = "common:dotnet.vb_fileexists",   min_args = 1, max_args = 1 }
 filedatetime = { emit = "common:dotnet.vb_filedatetime", min_args = 1, max_args = 1 }
-filelen      = { emit = "host:wasi:filesystem:fileSize",  min_args = 1, max_args = 1 }
+filelen      = { emit = "common:dotnet.vb_filelen",      min_args = 1, max_args = 1 }
 lof          = { emit = "common:dotnet.vb_lof",            min_args = 1, max_args = 1 }
-"curdir"     = { emit = "host:node:process:cwd",          min_args = 0, max_args = 0 }
-"curdir$"    = { emit = "host:node:process:cwd",          min_args = 0, max_args = 0 }
-chdir        = { emit = "host:node:process:chdir",        min_args = 1, max_args = 1 }
-mkdir        = { emit = "host:wasi:filesystem:mkdir",     min_args = 1, max_args = 1 }
-rmdir        = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 1 }
+"curdir"     = { emit = "common:dotnet.vb_curdir",       min_args = 0, max_args = 0 }
+"curdir$"    = { emit = "common:dotnet.vb_curdir",       min_args = 0, max_args = 0 }
+chdir        = { emit = "common:dotnet.vb_chdir",        min_args = 1, max_args = 1 }
+mkdir        = { emit = "common:dotnet.vb_mkdir",        min_args = 1, max_args = 1 }
+rmdir        = { emit = "common:dotnet.vb_rmdir",        min_args = 1, max_args = 1 }
 freefile     = { emit = "intrinsic:cint",         min_args = 0, max_args = 0 }
-"name"       = { emit = "host:wasi:filesystem:rename",    min_args = 2, max_args = 2 }
+"name"       = { emit = "common:dotnet.vb_name",         min_args = 2, max_args = 2 }
 loc          = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
 fileattr     = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
 getattr      = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
 setattr      = { emit = "noop",                           min_args = 2, max_args = 2 }
 eof          = { emit = "common:dotnet.vb_eof",            min_args = 1, max_args = 1 }
 seek         = { emit = "noop",                           min_args = 2, max_args = 2 }
-get          = { emit = "host:wasi:filesystem:readFile",  min_args = 1, max_args = 3 }
-put          = { emit = "host:wasi:filesystem:writeFile", min_args = 1, max_args = 3 }
+get          = { emit = "common:dotnet.vb_get",           min_args = 1, max_args = 3 }
+put          = { emit = "common:dotnet.vb_put",           min_args = 1, max_args = 3 }
 
 # ── Layout methods (no-ops in our renderer) ──────────────────────────────────
 
-suspendlayout  = { emit = "noop", min_args = 0, max_args = 0 }
-resumelayout   = { emit = "noop", min_args = 0, max_args = 0 }
-performlayout  = { emit = "noop", min_args = 0, max_args = 0 }
+suspendlayout  = { emit = "common:dotnet.winforms_noop", min_args = 0, max_args = 0 }
+resumelayout   = { emit = "common:dotnet.winforms_noop", min_args = 0, max_args = 1 }
+performlayout  = { emit = "common:dotnet.winforms_noop", min_args = 0, max_args = 0 }
 
 # ── Interaction ──────────────────────────────────────────────────────────────
 
@@ -311,13 +317,13 @@ doevents     = { emit = "noop",                            min_args = 0, max_arg
 
 # ── Environment ──────────────────────────────────────────────────────────────
 # `System.Environment` lives in the shared dotnet component descriptor.
-"app.path"                            = { emit = "host:node:process:cwd",               min_args = 0, max_args = 0 }
-"app.title"                           = { emit = "host:node:process:argv0",             min_args = 0, max_args = 0 }
+"app.path"                            = { emit = "common:dotnet.vb_app_path",           min_args = 0, max_args = 0 }
+"app.title"                           = { emit = "common:dotnet.vb_app_title",          min_args = 0, max_args = 0 }
 
 # ── JSON / XML / Regex ───────────────────────────────────────────────────────
 
-"json.serialize"   = { emit = "host:ecma:json:stringify", min_args = 1, max_args = 1 }
-"json.deserialize" = { emit = "host:ecma:json:parse",    min_args = 1, max_args = 1 }
+"json.serialize"   = { emit = "common:dotnet.json_serialize",   min_args = 1, max_args = 1 }
+"json.deserialize" = { emit = "common:dotnet.json_deserialize", min_args = 1, max_args = 1 }
 "xml.parse"        = { emit = "common:xml.parse",     min_args = 1, max_args = 1 }
 "xml.load"         = { emit = "common:xml.load",      min_args = 1, max_args = 1 }
 "xdocument.load"   = { emit = "common:xml.load",      min_args = 1, max_args = 1 }
@@ -328,36 +334,6 @@ doevents     = { emit = "noop",                            min_args = 0, max_arg
 # (`platforms/dotnet/.../component_classes_text.rs`) so VB and C# resolve
 # the same `System.Text.RegularExpressions.Regex` descriptors.
 
-# ── Encoding ─────────────────────────────────────────────────────────────────
-
-"encoding.ascii.getbytes"      = { emit = "common:dotnet.encoding_ascii_get_bytes", min_args = 1, max_args = 1 }
-"encoding.utf8.getbytes"       = { emit = "common:dotnet.encoding_get_bytes", min_args = 1, max_args = 1 }
-"encoding.unicode.getbytes"    = { emit = "common:dotnet.encoding_unicode_get_bytes", min_args = 1, max_args = 1 }
-"encoding.default.getbytes"    = { emit = "common:dotnet.encoding_get_bytes", min_args = 1, max_args = 1 }
-"encoding.utf32.getbytes"      = { emit = "common:dotnet.encoding_utf32_get_bytes", min_args = 1, max_args = 1 }
-"encoding.latin1.getbytes"     = { emit = "common:dotnet.encoding_latin1_get_bytes", min_args = 1, max_args = 1 }
-"encoding.bigendianunicode.getbytes" = { emit = "common:dotnet.encoding_big_endian_unicode_get_bytes", min_args = 1, max_args = 1 }
-"encoding.ascii.getstring"     = { emit = "common:dotnet.encoding_ascii_get_string", min_args = 1, max_args = 1 }
-"encoding.utf8.getstring"      = { emit = "common:dotnet.encoding_get_string", min_args = 1, max_args = 1 }
-"encoding.unicode.getstring"   = { emit = "common:dotnet.encoding_unicode_get_string", min_args = 1, max_args = 1 }
-"encoding.default.getstring"   = { emit = "common:dotnet.encoding_get_string", min_args = 1, max_args = 1 }
-"encoding.utf32.getstring"     = { emit = "common:dotnet.encoding_utf32_get_string", min_args = 1, max_args = 1 }
-"encoding.latin1.getstring"    = { emit = "common:dotnet.encoding_latin1_get_string", min_args = 1, max_args = 1 }
-"encoding.ascii.getbytecount"  = { emit = "common:dotnet.encoding_ascii_get_byte_count", min_args = 1, max_args = 1 }
-"encoding.utf8.getbytecount"   = { emit = "common:dotnet.encoding_get_byte_count", min_args = 1, max_args = 1 }
-"encoding.unicode.getbytecount" = { emit = "common:dotnet.encoding_unicode_get_byte_count", min_args = 1, max_args = 1 }
-"encoding.default.getbytecount" = { emit = "common:dotnet.encoding_get_byte_count", min_args = 1, max_args = 1 }
-"encoding.utf32.getbytecount"  = { emit = "common:dotnet.encoding_utf32_get_byte_count", min_args = 1, max_args = 1 }
-"encoding.latin1.getbytecount" = { emit = "common:dotnet.encoding_latin1_get_byte_count", min_args = 1, max_args = 1 }
-"encoding.utf8.getpreamble"    = { emit = "common:dotnet.encoding_utf8_get_preamble", min_args = 0, max_args = 0 }
-"encoding.unicode.getpreamble" = { emit = "common:dotnet.encoding_get_preamble", min_args = 0, max_args = 0 }
-"encoding.utf8.getmaxbytecount" = { emit = "common:dotnet.encoding_get_max_byte_count", min_args = 1, max_args = 1 }
-"encoding.unicode.getmaxbytecount" = { emit = "common:dotnet.encoding_unicode_get_max_byte_count", min_args = 1, max_args = 1 }
-"encoding.utf8.getmaxcharcount" = { emit = "common:dotnet.encoding_get_max_char_count", min_args = 1, max_args = 1 }
-"encoding.utf8.getcharcount"  = { emit = "common:dotnet.encoding_get_char_count", min_args = 1, max_args = 3 }
-"encoding.utf8.getchars"      = { emit = "common:dotnet.encoding_get_chars", min_args = 5, max_args = 5 }
-"encoding.getencoding"         = { emit = "common:dotnet.encoding_get_encoding", min_args = 1, max_args = 3 }
-"encoding.convert"             = { emit = "common:dotnet.encoding_convert", min_args = 3, max_args = 3 }
 "__vb_object_equals"           = { emit = "common:dotnet.object_equals", min_args = 2, max_args = 2 }
 
 # ── StringBuilder ────────────────────────────────────────────────────────────
@@ -368,19 +344,19 @@ switch        = { emit = "intrinsic:switch",                min_args = 2, max_ar
 
 # ── Legacy VB6 ───────────────────────────────────────────────────────────────
 
-loadpicture  = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
+loadpicture  = { emit = "common:dotnet.vb_to_string", min_args = 1, max_args = 1 }
 savepicture  = { emit = "noop",                        min_args = 1, max_args = 2 }
 load         = { emit = "noop",                        min_args = 1, max_args = 1 }
 unload       = { emit = "noop",                        min_args = 1, max_args = 1 }
-app          = { emit = "host:wasi:cli:args",          min_args = 0, max_args = 0 }
+app          = { emit = "common:dotnet.vb_app",        min_args = 0, max_args = 0 }
 screen       = { emit = "intrinsic:cint",      min_args = 0, max_args = 0 }
-clipboard    = { emit = "host:ecma:string:String",  min_args = 0, max_args = 1 }
-forms        = { emit = "host:ecma:string:String",  min_args = 0, max_args = 0 }
-print        = { emit = "host:wasi:cli:log",           min_args = 0, max_args = 255 }
-input        = { emit = "host:wasi:cli:readLine",      min_args = 0, max_args = 1 }
-inputb       = { emit = "host:wasi:cli:readLine",      min_args = 0, max_args = 1 }
-lineinput    = { emit = "host:wasi:cli:readLine",      min_args = 0, max_args = 1 }
-open         = { emit = "host:wasi:filesystem:readFile", min_args = 1, max_args = 3 }
+clipboard    = { emit = "common:dotnet.vb_to_string", min_args = 0, max_args = 1 }
+forms        = { emit = "common:dotnet.vb_to_string", min_args = 0, max_args = 0 }
+print        = { emit = "common:dotnet.vb_print",      min_args = 0, max_args = 255 }
+input        = { emit = "common:dotnet.vb_input",      min_args = 0, max_args = 1 }
+inputb       = { emit = "common:dotnet.vb_input",      min_args = 0, max_args = 1 }
+lineinput    = { emit = "common:dotnet.vb_input",      min_args = 0, max_args = 1 }
+open         = { emit = "common:dotnet.vb_open",       min_args = 1, max_args = 3 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # INTRINSIC DEFINITIONS — multi-opcode sequences
@@ -440,18 +416,45 @@ string_isnullorempty = "dup, ref_is_null, br_if_true, str_length, const_i32(0), 
 # String instance methods (use compiler_common::strings)
 toupper       = { emit = "common:strings.to_upper",   min_args = 0, max_args = 0 }
 tolower       = { emit = "common:strings.to_lower",   min_args = 0, max_args = 0 }
-"trim"        = { emit = "common:strings.trim",        min_args = 0, max_args = 0 }
-trimstart     = { emit = "common:str_trim_start",      min_args = 0, max_args = 0 }
-trimend       = { emit = "common:str_trim_end",        min_args = 0, max_args = 0 }
-startswith    = { emit = "common:str_starts_with",     min_args = 1, max_args = 1 }
-endswith      = { emit = "common:str_ends_with",       min_args = 1, max_args = 1 }
-substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
-indexof       = { emit = "common:strings.index_of",    min_args = 1, max_args = 1 }
-lastindexof   = { emit = "host:ecma:array:lastIndexOf",   min_args = 1, max_args = 1 }
-contains      = { emit = "common:str_includes",        min_args = 1, max_args = 1 }
+"trim"        = [
+    { emit = "common:strings.trim",                 min_args = 0, max_args = 0 },
+    { emit = "common:dotnet.string_trim_chars",     min_args = 1, max_args = 255 },
+]
+trimstart     = [
+    { emit = "common:str_trim_start",               min_args = 0, max_args = 0 },
+    { emit = "common:dotnet.string_trim_start_chars", min_args = 1, max_args = 255 },
+]
+trimend       = [
+    { emit = "common:str_trim_end",                 min_args = 0, max_args = 0 },
+    { emit = "common:dotnet.string_trim_end_chars", min_args = 1, max_args = 255 },
+]
+startswith    = [
+    { emit = "common:str_starts_with",             min_args = 1, max_args = 1 },
+    { emit = "common:dotnet.string_starts_with",   min_args = 2, max_args = 2 },
+]
+endswith      = [
+    { emit = "common:str_ends_with",               min_args = 1, max_args = 1 },
+    { emit = "common:dotnet.string_ends_with",     min_args = 2, max_args = 2 },
+]
+substring     = { emit = "common:dotnet.string_substring", min_args = 1, max_args = 2 }
+indexof       = { emit = "common:dotnet.string_index_of", min_args = 1, max_args = 3 }
+indexofany    = { emit = "common:dotnet.string_index_of_any", min_args = 1, max_args = 2 }
+lastindexof   = { emit = "common:dotnet.string_last_index_of", min_args = 1, max_args = 3 }
+lastindexofany = { emit = "common:dotnet.string_last_index_of_any", min_args = 1, max_args = 1 }
+contains      = [
+    { emit = "common:str_includes",                min_args = 1, max_args = 1 },
+    { emit = "common:dotnet.string_contains",      min_args = 2, max_args = 2 },
+]
+equals        = [
+    { emit = "common:dyn_eq",                      min_args = 1, max_args = 1 },
+    { emit = "common:dotnet.string_equals",        min_args = 2, max_args = 2 },
+]
+compareto     = { emit = "common:dotnet.string_compare", min_args = 1, max_args = 1 }
 tostring      = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
-padleft       = { emit = "common:str_pad_start",       min_args = 1, max_args = 2 }
-padright      = { emit = "common:str_pad_end",         min_args = 1, max_args = 2 }
+padleft       = { emit = "common:dotnet.string_pad_left", min_args = 1, max_args = 2 }
+padright      = { emit = "common:dotnet.string_pad_right", min_args = 1, max_args = 2 }
+replace       = { emit = "common:dotnet.string_replace", min_args = 2, max_args = 2 }
+split         = { emit = "common:dotnet.string_split", min_args = 1, max_args = 255 }
 
 # Collection instance methods (use compiler_common — works for both list and dict)
 # Add has two overloads: list.Add(item) (1 arg) and dict.Add(key, value) (2 args)
@@ -462,17 +465,17 @@ add = [
 remove        = { emit = "common:dotnet.array_remove_value",  min_args = 1, max_args = 1 }
 removeat      = { emit = "common:dotnet.array_remove_at",     min_args = 1, max_args = 1 }
 insert        = { emit = "common:dotnet.array_insert",        min_args = 2, max_args = 2 }
-clear         = { emit = "host:ecma:array:clear",      min_args = 0, max_args = 0 }
+clear         = { emit = "common:collections.clear",   min_args = 0, max_args = 0 }
 count         = { emit = "common:collections.length", min_args = 0, max_args = 0 }
 sort          = { emit = "common:dotnet.sort_in_place", min_args = 0, max_args = 0 }
 reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
-toarray       = { emit = "host:ecma:array:slice",      min_args = 0, max_args = 0 }
+toarray       = { emit = "common:collections.clone",   min_args = 0, max_args = 0 }
 containskey   = { emit = "common:dict.has",            min_args = 1, max_args = 1 }
 
 # WinForms methods — no-ops in our renderer
-suspendlayout  = { emit = "noop", min_args = 0, max_args = 0 }
-resumelayout   = { emit = "noop", min_args = 0, max_args = 0 }
-performlayout  = { emit = "noop", min_args = 0, max_args = 0 }
+suspendlayout  = { emit = "common:dotnet.winforms_noop", min_args = 0, max_args = 0 }
+resumelayout   = { emit = "common:dotnet.winforms_noop", min_args = 0, max_args = 1 }
+performlayout  = { emit = "common:dotnet.winforms_noop", min_args = 0, max_args = 0 }
 refresh        = { emit = "noop", min_args = 0, max_args = 0 }
 invalidate     = { emit = "noop", min_args = 0, max_args = 0 }
 update         = { emit = "noop", min_args = 0, max_args = 0 }
@@ -482,72 +485,20 @@ dispose        = { emit = "noop", min_args = 0, max_args = 0 }
 bringtofront   = { emit = "noop", min_args = 0, max_args = 0 }
 sendtoback     = { emit = "noop", min_args = 0, max_args = 0 }
 
-# GUI methods — host calls
-show           = { emit = "host:vybe:gui:showForm",        min_args = 0, max_args = 0 }
-close          = { emit = "host:vybe:gui:closeForm",       min_args = 0, max_args = 0 }
-showdialog     = { emit = "host:vybe:gui:showFormDialog",  min_args = 0, max_args = 0 }
-hide           = { emit = "host:vybe:gui:hideForm",        min_args = 0, max_args = 0 }
+# GUI methods route through the shared dotnet WinForms surface.
+show           = { emit = "common:dotnet.winforms_control_show",      min_args = 0, max_args = 0 }
+close          = { emit = "common:dotnet.winforms_control_close",     min_args = 0, max_args = 0 }
+showdialog     = { emit = "common:dotnet.winforms_form_show_dialog",  min_args = 0, max_args = 0 }
+hide           = { emit = "common:dotnet.winforms_control_hide",      min_args = 0, max_args = 0 }
 
 # Controls.Add — special: parent object passed as first arg
-"controls.add" = { emit = "host:vybe:gui:controlsAdd",    min_args = 1, max_args = 1 }
-
-# Stopwatch methods
-start          = { emit = "common:dotnet.stopwatch_start",   min_args = 0, max_args = 0 }
-stop           = { emit = "common:dotnet.stopwatch_stop",    min_args = 0, max_args = 0 }
-reset          = { emit = "common:dotnet.stopwatch_reset",   min_args = 0, max_args = 0 }
-
-# Regex instance methods — extract __pattern from self object
-ismatch        = { emit = "host:ecma:regexp:test",         min_args = 1, max_args = 1 }
-"match"        = { emit = "host:ecma:regexp:exec",         min_args = 1, max_args = 1 }
-matches        = { emit = "host:ecma:regexp:matchAll",     min_args = 1, max_args = 1 }
-replace        = { emit = "host:ecma:regexp:replace",      min_args = 2, max_args = 2 }
-
-# StringBuilder methods (overloaded with array ops by arity where unambiguous)
-append         = { emit = "common:dotnet.sb_append",       min_args = 1, max_args = 1 }
-appendline     = { emit = "common:dotnet.sb_append_line",  min_args = 0, max_args = 1 }
-
-# Stopwatch extended
-elapsedmilliseconds = { emit = "common:dotnet.stopwatch_elapsed_ms", min_args = 0, max_args = 0 }
-isrunning           = { emit = "common:dotnet.stopwatch_is_running", min_args = 0, max_args = 0 }
-restart             = { emit = "common:dotnet.stopwatch_restart",    min_args = 0, max_args = 0 }
-
-# List/collection extra — `addrange` shares the .NET BCL semantics
-# with C# `List<T>.AddRange`; both route through the dotnet adapter.
-addrange       = { emit = "common:dotnet.list_add_range",  min_args = 1, max_args = 1 }
-trygetvalue    = { emit = "common:dict.get_dynamic",       min_args = 1, max_args = 2 }
-containsvalue  = { emit = "host:ecma:array:includes",      min_args = 1, max_args = 1 }
+"controls.add" = { emit = "common:dotnet.winforms_controls_add",     min_args = 1, max_args = 1 }
 
 # LINQ surface lives once in the shared .NET component resolver
 # (`platforms/dotnet/.../component_classes_linq.rs`, class `IEnumerable`),
 # resolved by receiver type — or by method name for untyped receivers on the
 # .NET path — so VB declares NO per-function LINQ entries. Same shared surface
 # and `generators.rs`-backed adapters as C#.
-
-# Queue methods
-enqueue        = { emit = "host:ecma:array:push",  min_args = 1, max_args = 1 }
-dequeue        = { emit = "host:ecma:array:shift",  min_args = 0, max_args = 0 }
-# `peek` value-method retired — Queue.peek / Stack.peek dispatch
-# through the runtime TypeRegistry to the right ecma:array primitive
-# (Queue → first, Stack → last) per the per-class TypeDef in
-# `vybe_host::builtin_types`. No language-shared value-method entry
-# needed.
-
-# Stack methods
-push           = { emit = "host:ecma:array:push",     min_args = 1, max_args = 1 }
-pop            = { emit = "host:ecma:array:pop",      min_args = 0, max_args = 0 }
-
-# HashSet methods (add/remove/contains/count share keys with List — dispatch by arity is ambiguous)
-# HashSet.Add(val) = 1 arg, same as List.Add — both route to push/add; OK since collections are duck-typed
-
-# Random instance methods — bind directly to real WASI. Raw u64 is what
-# the WASI primitive returns; range-bounded `.Next(min, max)` and float
-# conversion for `.NextDouble()` are compiler-lowering work-in-progress
-# (TODO: compiler_common::random) and temporarily return unscaled values.
-"next"         = [
-    { emit = "common:dotnet.random_next", min_args = 0, max_args = 2 },
-]
-nextdouble     = { emit = "common:dotnet.random_next_double", min_args = 0, max_args = 0 }
-
 
 # ────────────────────────────────────────────────────────────────────────────
 # ARRAY HIGHER-ORDER METHODS (HOF)

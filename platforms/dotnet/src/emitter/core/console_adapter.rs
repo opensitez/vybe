@@ -25,7 +25,7 @@ use vybe_bytecode::opcode::Op;
 /// stages its converted string and `br exit`. Emitting a RETURN inside a
 /// structured block would leak the block label to the caller's `label_stack`
 /// (the trap iter_drain hit), so every path branches to the shared exit.
-fn emit_dotnet_stringify(chunk: &mut Chunk, v_local: u16, result_local: u16, line: u32) {
+pub(crate) fn emit_dotnet_stringify(chunk: &mut Chunk, v_local: u16, result_local: u16, line: u32) {
     use vybe_emitter::instructions::host;
 
     let exit_block = chunk.emit_block(line);
@@ -164,19 +164,19 @@ pub fn emit_console_readline(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_emitter::io::emit_input(&mut chunks[current], line);
 }
 
-/// `Console.Error.WriteLine(v)` / `Console.Error.Write(v)` — stringify, append
-/// `\n`, write to stderr via WASI I/O. Stack: [v] → [null].
-pub fn emit_console_error(chunks: &mut [Chunk], current: usize, line: u32) {
+fn emit_console_stderr(chunks: &mut [Chunk], current: usize, append_newline: bool, line: u32) {
     let v_local = alloc_local(&mut chunks[current]);
     let result_local = alloc_local(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, v_local, line);
     emit_dotnet_stringify(&mut chunks[current], v_local, result_local, line);
 
-    let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
-    chunk.emit_string_const("\n", line);
-    vybe_emitter::strings::emit_concat(chunk, 2, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+    if append_newline {
+        let chunk = &mut chunks[current];
+        chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
+        chunk.emit_string_const("\n", line);
+        vybe_emitter::strings::emit_concat(chunk, 2, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
+    }
 
     emit_stream_write(
         &mut chunks[current],
@@ -185,6 +185,23 @@ pub fn emit_console_error(chunks: &mut [Chunk], current: usize, line: u32) {
         "get-stderr",
         line,
     );
+}
+
+/// `Console.Error.Write(v)` — stringify and write to stderr with NO newline.
+/// Stack: [v] → [null].
+pub fn emit_console_error_write(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_console_stderr(chunks, current, false, line);
+}
+
+/// `Console.Error.WriteLine(v)` — stringify, append `\n`, write to stderr.
+/// Stack: [v] → [null].
+pub fn emit_console_error_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_console_stderr(chunks, current, true, line);
+}
+
+/// Legacy shared surface name kept for profile/back-compat during migration.
+pub fn emit_console_error(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_console_error_writeline(chunks, current, line);
 }
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {

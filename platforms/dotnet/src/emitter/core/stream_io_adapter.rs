@@ -36,6 +36,8 @@ const BUF_KEY: &str = "__buf";
 
 const READER_TYPE: &str = "StreamReader";
 const WRITER_TYPE: &str = "StreamWriter";
+const STRING_READER_TYPE: &str = "StringReader";
+const STRING_WRITER_TYPE: &str = "StringWriter";
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
@@ -86,6 +88,34 @@ pub fn emit_stream_reader_new(chunks: &mut [Chunk], current: usize, _argc: u8, l
     chunk.emit_op(Op::DROP, line);
 
     // __pos = 0
+    core_wasm::dup(chunk, line);
+    core_wasm::i32_const(chunk, line, 0);
+    chunk.emit_op_u16(Op::STRUCT_SET, pos_key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+/// `new StringReader(text)` — cache the supplied string and initialise
+/// `__pos = 0`. Stack: `[text]` → `[reader]`.
+pub fn emit_string_reader_new(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
+    let content_key = chunk.add_constant(Value::String(Arc::from(CONTENT_KEY)));
+    let pos_key = chunk.add_constant(Value::String(Arc::from(POS_KEY)));
+
+    let content_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+
+    core_wasm::dup(chunk, line);
+    push_const(chunk, Value::String(Arc::from(STRING_READER_TYPE)), line);
+    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_op(Op::DROP, line);
+
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, content_key, line);
+    chunk.emit_op(Op::DROP, line);
+
     core_wasm::dup(chunk, line);
     core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::STRUCT_SET, pos_key, line);
@@ -285,6 +315,43 @@ pub fn emit_stream_writer_new(chunks: &mut [Chunk], current: usize, _argc: u8, l
     chunk.emit_op(Op::DROP, line);
 }
 
+/// `new StringWriter()` / `new StringWriter(StringBuilder)` — initialise an
+/// in-memory buffer. Stack: `[]` or `[builder]` → `[writer]`.
+pub fn emit_string_writer_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
+    let buf_key = chunk.add_constant(Value::String(Arc::from(BUF_KEY)));
+    let nl_key = chunk.add_constant(Value::String(Arc::from("NewLine")));
+
+    let initial_slot = reserve_slot(chunk);
+    if argc > 0 {
+        chunk.emit_op_u16(Op::LOCAL_SET, initial_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, initial_slot, line);
+        host::emit(chunk, "ecma:string", "String", 1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, initial_slot, line);
+    } else {
+        push_const(chunk, Value::String(Arc::from("")), line);
+        chunk.emit_op_u16(Op::LOCAL_SET, initial_slot, line);
+    }
+
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+
+    core_wasm::dup(chunk, line);
+    push_const(chunk, Value::String(Arc::from(STRING_WRITER_TYPE)), line);
+    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_op(Op::DROP, line);
+
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, initial_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, buf_key, line);
+    chunk.emit_op(Op::DROP, line);
+
+    core_wasm::dup(chunk, line);
+    push_const(chunk, Value::String(Arc::from("\n")), line);
+    chunk.emit_op_u16(Op::STRUCT_SET, nl_key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
 /// `writer.Write(s)` — append `s` to `__buf`. Stack: `[writer, s]` → `[null]`.
 pub fn emit_stream_writer_write(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
@@ -319,6 +386,77 @@ pub fn emit_stream_writer_write_line(chunks: &mut [Chunk], current: usize, line:
     chunk.emit_op_u16(Op::STRUCT_SET, buf_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op(Op::NULL, line);
+}
+
+/// `StringWriter.ToString()` — return accumulated buffer.
+pub fn emit_string_writer_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let buf_key = chunk.add_constant(Value::String(Arc::from(BUF_KEY)));
+    chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
+}
+
+/// `StringWriter.Flush/Close/Dispose()` — no-op for in-memory writers.
+pub fn emit_string_writer_noop(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+/// `StringReader.Peek()` — next UTF-16 code unit or -1 at end.
+pub fn emit_string_reader_peek(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_string_reader_read_char(chunks, current, line, false);
+}
+
+/// `StringReader.Read()` — next UTF-16 code unit and advance, or -1.
+pub fn emit_string_reader_read(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_string_reader_read_char(chunks, current, line, true);
+}
+
+fn emit_string_reader_read_char(
+    chunks: &mut [Chunk],
+    current: usize,
+    line: u32,
+    advance: bool,
+) {
+    let chunk = &mut chunks[current];
+    let content_key = chunk.add_constant(Value::String(Arc::from(CONTENT_KEY)));
+    let pos_key = chunk.add_constant(Value::String(Arc::from(POS_KEY)));
+    let reader_slot = reserve_slot(chunk);
+    let content_slot = reserve_slot(chunk);
+    let pos_slot = reserve_slot(chunk);
+    let len_slot = reserve_slot(chunk);
+    let result_slot = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, reader_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, content_key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, pos_key, line);
+    chunk.emit_op(Op::I32_FROM_F64, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, pos_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunk.emit_i32_const(-1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
+    host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    if advance {
+        chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
+        chunk.emit_i32_const(1, line);
+        chunk.emit_op(Op::I32_ADD, line);
+        chunk.emit_op_u16(Op::STRUCT_SET, pos_key, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
 /// `writer.Flush()` / `writer.Close()` — `node:fs.writeFileSync(__path, __buf)`.

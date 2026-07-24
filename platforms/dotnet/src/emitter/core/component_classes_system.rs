@@ -44,6 +44,20 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
     }));
     exports.extend(vec![
         DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("Object")
+                .with_method(MethodDef::static_method(
+                    "Equals",
+                    2,
+                    MethodBody::Common("dotnet.object_equals".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ReferenceEquals",
+                    2,
+                    MethodBody::Common("dotnet.object_reference_equals".into()),
+                )),
+        ),
+        DotnetClassExport::new(
             "dotnet.System.Text.RegularExpressions",
             ClassType::new("RegexMatchTimeoutException").with_parent("TimeoutException"),
         ),
@@ -490,11 +504,6 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.console_readline".into()),
                 ))
                 .with_method(MethodDef::static_method(
-                    "Error",
-                    1,
-                    MethodBody::Common("dotnet.console_error".into()),
-                ))
-                .with_method(MethodDef::static_method(
                     "Print",
                     1,
                     MethodBody::Common("dotnet.console_writeline".into()),
@@ -591,17 +600,35 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "ToBase64String",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:string", "btoa")),
+                    MethodBody::Common("dotnet.convert_to_base64_string".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToBase64String",
+                    2,
+                    MethodBody::Common("dotnet.convert_to_base64_string".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToBase64String",
+                    3,
+                    MethodBody::Common("dotnet.convert_to_base64_string".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "FromBase64String",
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:string", "atob")),
+                    MethodBody::Common("dotnet.convert_from_base64_string".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToBase64CharArray",
+                    5,
+                    MethodBody::Common("dotnet.convert_to_base64_char_array".into()),
                 )),
         ),
         DotnetClassExport::new(
             "dotnet.System",
             ClassType::new("String")
+                .with_constructor(
+                    ConstructorDef::new(3).with_common_backing("dotnet.string_from_chars"),
+                )
                 .with_method(MethodDef::static_method(
                     "Format",
                     2,
@@ -618,6 +645,41 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("str_concat".into()),
                 ))
                 .with_method(MethodDef::static_method(
+                    "Concat",
+                    3,
+                    MethodBody::Common("dotnet.string_concat".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Compare",
+                    2,
+                    MethodBody::Common("dotnet.string_compare".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Compare",
+                    3,
+                    MethodBody::Common("dotnet.string_compare".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Compare",
+                    6,
+                    MethodBody::Common("dotnet.string_compare".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "CompareOrdinal",
+                    2,
+                    MethodBody::Common("dotnet.string_compare".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Equals",
+                    2,
+                    MethodBody::Common("dotnet.string_equals".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Equals",
+                    3,
+                    MethodBody::Common("dotnet.string_equals".into()),
+                ))
+                .with_method(MethodDef::static_method(
                     "IsNullOrWhiteSpace",
                     1,
                     MethodBody::Common("dotnet.string_is_null_or_whitespace".into()),
@@ -631,6 +693,166 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Contains",
                     1,
                     MethodBody::HostCall(HostTarget::new("ecma:string", "includes")),
+                ))
+                .with_method(MethodDef::new(
+                    "Contains",
+                    2,
+                    MethodBody::Common("dotnet.string_contains".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "StartsWith",
+                    1,
+                    MethodBody::Common("str_starts_with".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "StartsWith",
+                    2,
+                    MethodBody::Common("dotnet.string_starts_with".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "EndsWith",
+                    1,
+                    MethodBody::Common("str_ends_with".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "EndsWith",
+                    2,
+                    MethodBody::Common("dotnet.string_ends_with".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IndexOf",
+                    1,
+                    MethodBody::Common("dotnet.string_index_of".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IndexOf",
+                    2,
+                    MethodBody::Common("dotnet.string_index_of".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IndexOf",
+                    3,
+                    MethodBody::Common("dotnet.string_index_of".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IndexOfAny",
+                    1,
+                    MethodBody::Common("dotnet.string_index_of_any".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "IndexOfAny",
+                    2,
+                    MethodBody::Common("dotnet.string_index_of_any".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "LastIndexOf",
+                    1,
+                    MethodBody::Common("dotnet.string_last_index_of".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "LastIndexOf",
+                    2,
+                    MethodBody::Common("dotnet.string_last_index_of".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "LastIndexOf",
+                    3,
+                    MethodBody::Common("dotnet.string_last_index_of".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "LastIndexOfAny",
+                    1,
+                    MethodBody::Common("dotnet.string_last_index_of_any".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Substring",
+                    1,
+                    MethodBody::Common("dotnet.string_substring".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Substring",
+                    2,
+                    MethodBody::Common("dotnet.string_substring".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "PadLeft",
+                    1,
+                    MethodBody::Common("dotnet.string_pad_left".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "PadLeft",
+                    2,
+                    MethodBody::Common("dotnet.string_pad_left".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "PadRight",
+                    1,
+                    MethodBody::Common("dotnet.string_pad_right".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "PadRight",
+                    2,
+                    MethodBody::Common("dotnet.string_pad_right".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Replace",
+                    2,
+                    MethodBody::Common("dotnet.string_replace".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Split",
+                    1,
+                    MethodBody::Common("dotnet.string_split".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Split",
+                    2,
+                    MethodBody::Common("dotnet.string_split".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Split",
+                    3,
+                    MethodBody::Common("dotnet.string_split".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Insert",
+                    2,
+                    MethodBody::Common("dotnet.str_insert".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Remove",
+                    1,
+                    MethodBody::Common("dotnet.str_remove_start".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Remove",
+                    2,
+                    MethodBody::Common("dotnet.str_remove_range".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Trim",
+                    1,
+                    MethodBody::Common("dotnet.string_trim_chars".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TrimStart",
+                    1,
+                    MethodBody::Common("dotnet.string_trim_start_chars".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TrimEnd",
+                    1,
+                    MethodBody::Common("dotnet.string_trim_end_chars".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Equals",
+                    1,
+                    MethodBody::Common("dotnet.string_equals".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Equals",
+                    2,
+                    MethodBody::Common("dotnet.string_equals".into()),
                 ))
                 // `MemoryExtensions.AsSpan` over a string. A `ReadOnlySpan<char>`
                 // is the substring itself here — indexing it yields the same
@@ -741,6 +963,30 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Desktop",
                     0,
                     MethodBody::Common("dotnet.environment_special_folder_desktop".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.Microsoft.VisualBasic",
+            ClassType::new("Strings")
+                .with_method(MethodDef::static_method(
+                    "Left",
+                    2,
+                    MethodBody::Common("dotnet.vb_strings_left".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Right",
+                    2,
+                    MethodBody::Common("dotnet.vb_strings_right".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Mid",
+                    2,
+                    MethodBody::Common("dotnet.vb_strings_mid".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Mid",
+                    3,
+                    MethodBody::Common("dotnet.vb_strings_mid".into()),
                 )),
         ),
     ]);

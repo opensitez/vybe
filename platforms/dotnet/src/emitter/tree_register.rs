@@ -49,6 +49,24 @@ pub fn register_namespace_tree() {
                         .or_insert_with(|| namespaces::host_fn(&getter.module, &getter.name));
                 }
             }
+            if interface.eq_ignore_ascii_case("dotnet.System")
+                && class.name.eq_ignore_ascii_case("Console")
+            {
+                statics.insert("out".into(), console_stdout_writer_node());
+                statics.insert("error".into(), console_stderr_writer_node());
+            }
+            if interface.eq_ignore_ascii_case("dotnet.System")
+                && class.name.eq_ignore_ascii_case("Object")
+            {
+                statics.insert(
+                    "equals".into(),
+                    NamespaceNode::CommonEmit("dotnet.object_equals".into()),
+                );
+                statics.insert(
+                    "referenceequals".into(),
+                    NamespaceNode::CommonEmit("dotnet.object_reference_equals".into()),
+                );
+            }
             let ty = NamespaceNode::Type {
                 ctor: None,
                 statics,
@@ -70,6 +88,32 @@ pub fn register_namespace_tree() {
             namespaces::register_namespace_tree(&segments.pop().expect("root"), node);
         }
     });
+}
+
+fn console_stdout_writer_node() -> NamespaceNode {
+    let mut statics = Subtree::new();
+    statics.insert(
+        "write".into(),
+        NamespaceNode::CommonEmit("dotnet.console_write".into()),
+    );
+    statics.insert(
+        "writeline".into(),
+        NamespaceNode::CommonEmit("dotnet.console_writeline".into()),
+    );
+    NamespaceNode::Namespace(statics)
+}
+
+fn console_stderr_writer_node() -> NamespaceNode {
+    let mut statics = Subtree::new();
+    statics.insert(
+        "write".into(),
+        NamespaceNode::CommonEmit("dotnet.console_error_write".into()),
+    );
+    statics.insert(
+        "writeline".into(),
+        NamespaceNode::CommonEmit("dotnet.console_error_writeline".into()),
+    );
+    NamespaceNode::Namespace(statics)
 }
 
 #[cfg(test)]
@@ -152,7 +196,31 @@ mod resolve_gap_tests {
     fn console_and_datetime_resolve_via_tree() {
         super::register_namespace_tree();
 
+        let r = resolve_path(&["dotnet", "system", "object", "referenceequals"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => {
+                assert_eq!(name, "dotnet.object_reference_equals")
+            }
+            other => panic!("expected CommonEmit(dotnet.object_reference_equals), got {other:?}"),
+        }
+
         let r = resolve_path(&["dotnet", "system", "console", "writeline"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => {
+                assert_eq!(name, "dotnet.console_writeline")
+            }
+            other => panic!("expected CommonEmit(dotnet.console_writeline), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "console", "error", "write"]);
+        match r {
+            Some(ResolutionTarget::CommonEmit(name)) => {
+                assert_eq!(name, "dotnet.console_error_write")
+            }
+            other => panic!("expected CommonEmit(dotnet.console_error_write), got {other:?}"),
+        }
+
+        let r = resolve_path(&["dotnet", "system", "console", "out", "writeline"]);
         match r {
             Some(ResolutionTarget::CommonEmit(name)) => {
                 assert_eq!(name, "dotnet.console_writeline")
@@ -291,11 +359,10 @@ mod resolve_gap_tests {
             "enablevisualstyles",
         ]);
         match r {
-            Some(ResolutionTarget::HostCall { module, func, .. }) => {
-                assert_eq!(module, "vybe:gui");
-                assert_eq!(func, "noop");
+            Some(ResolutionTarget::CommonEmit(name)) => {
+                assert_eq!(name, "dotnet.winforms_noop");
             }
-            other => panic!("expected HostCall(vybe:gui/noop), got {other:?}"),
+            other => panic!("expected CommonEmit(dotnet.winforms_noop), got {other:?}"),
         }
 
         let r = resolve_path(&[
@@ -307,11 +374,10 @@ mod resolve_gap_tests {
             "setcompatibletextrenderingdefault",
         ]);
         match r {
-            Some(ResolutionTarget::HostCall { module, func, .. }) => {
-                assert_eq!(module, "vybe:gui");
-                assert_eq!(func, "noop");
+            Some(ResolutionTarget::CommonEmit(name)) => {
+                assert_eq!(name, "dotnet.winforms_noop");
             }
-            other => panic!("expected HostCall(vybe:gui/noop), got {other:?}"),
+            other => panic!("expected CommonEmit(dotnet.winforms_noop), got {other:?}"),
         }
     }
 }

@@ -54,23 +54,15 @@ tuple_literals_tagged = true
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
-"Console.Error"           = { emit = "host:wasi:cli:error",       min_args = 0, max_args = 255 }
 "Array.isArray"           = { emit = "common:ref_is_array",       min_args = 1, max_args = 1 }
-"__csharp_object_get"     = { emit = "host:ecma:object:get",      min_args = 2, max_args = 2 }
+"__csharp_object_get"     = { emit = "common:reflection.object_get", min_args = 2, max_args = 2 }
 
 # ── Math — shorthand resolves through the shared `System.Math` Dotnet tree ──
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 #
-# `Convert.*`, primitive `<T>.Parse`, and `Int32.TryParse` resolve through the
-# shared .NET namespace tree registered by `platforms/dotnet`.
-"decimal.Round"      = { emit = "common:dotnet.system.math.round", min_args = 1, max_args = 2 }
-"Decimal.Round"      = { emit = "common:dotnet.system.math.round", min_args = 1, max_args = 2 }
-"decimal.Truncate"   = { emit = "common:dotnet.system.math.truncate", min_args = 1, max_args = 1 }
-"Decimal.Truncate"   = { emit = "common:dotnet.system.math.truncate", min_args = 1, max_args = 1 }
-"decimal.Floor"      = { emit = "common:dotnet.system.math.floor", min_args = 1, max_args = 1 }
-"decimal.Ceiling"    = { emit = "common:dotnet.system.math.ceiling", min_args = 1, max_args = 1 }
-"decimal.Abs"        = { emit = "common:dotnet.system.math.abs", min_args = 1, max_args = 1 }
+# `Convert.*`, primitive `<T>.Parse`, `Decimal.*`, and `Int32.TryParse`
+# resolve through the shared .NET namespace tree registered by `platforms/dotnet`.
 
 # ── String static methods ────────────────────────────────────────────────────
 
@@ -92,20 +84,22 @@ tuple_literals_tagged = true
 "__csharp_str_pad_right"   = { emit = "common:str_pad_end",         min_args = 3, max_args = 3 }
 "__csharp_str_length"      = { emit = "common:strings.length",      min_args = 1, max_args = 1 }
 "__csharp_str_char_code_at" = { emit = "common:str_char_code_at",   min_args = 2, max_args = 2 }
+"__dotnet_string_contains"  = { emit = "common:dotnet.string_contains",      min_args = 2, max_args = 3 }
+"__dotnet_string_compare"   = { emit = "common:dotnet.string_compare",       min_args = 2, max_args = 3 }
+"__dotnet_string_starts_with" = { emit = "common:dotnet.string_starts_with", min_args = 2, max_args = 3 }
+"__dotnet_string_ends_with" = { emit = "common:dotnet.string_ends_with",     min_args = 2, max_args = 3 }
+"__dotnet_string_index_of"  = { emit = "common:dotnet.string_index_of",      min_args = 2, max_args = 3 }
+"__dotnet_string_last_index_of" = { emit = "common:dotnet.string_last_index_of", min_args = 2, max_args = 3 }
+"__dotnet_string_equals"    = { emit = "common:dotnet.string_equals",        min_args = 2, max_args = 3 }
 "__csharp_array_clone"     = { emit = "common:collections.clone",   min_args = 1, max_args = 1 }
 "__csharp_delegate_combine" = { emit = "common:delegates.combine",  min_args = 2, max_args = 2 }
 "__csharp_delegate_remove"  = { emit = "common:delegates.remove",   min_args = 2, max_args = 2 }
 "__csharp_to_string"       = { emit = "common:dotnet.tostring",     min_args = 1, max_args = 1 }
+"__csharp_object_assign"   = { emit = "common:reflection.assign",   min_args = 2, max_args = 255 }
 
 # ── Array static methods ────────────────────────────────────────────────────
 # All shared with VB via `common:dotnet.array_*` adapters in
 # `crates/vybex/src/emitter/dotnet/core/array_adapter.rs`.
-
-# ── Object static methods ───────────────────────────────────────────────────
-
-"Object.assign"      = { emit = "host:ecma:object:assign",       min_args = 2, max_args = 255 }
-"Object.Equals"       = { emit = "common:dyn_eq",                 min_args = 2, max_args = 2 }
-"Object.ReferenceEquals" = { emit = "common:ref_eq",              min_args = 2, max_args = 2 }
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
@@ -117,9 +111,9 @@ tuple_literals_tagged = true
 
 # ── Layout no-ops ────────────────────────────────────────────────────────────
 
-"SuspendLayout"   = { emit = "noop", min_args = 0, max_args = 0 }
-"ResumeLayout"    = { emit = "noop", min_args = 0, max_args = 1 }
-"PerformLayout"   = { emit = "noop", min_args = 0, max_args = 0 }
+"SuspendLayout"   = { emit = "common:dotnet.winforms_noop", min_args = 0, max_args = 0 }
+"ResumeLayout"    = { emit = "common:dotnet.winforms_noop", min_args = 0, max_args = 1 }
+"PerformLayout"   = { emit = "common:dotnet.winforms_noop", min_args = 0, max_args = 0 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance methods called on values
@@ -151,18 +145,6 @@ Remove        = [
     { emit = "common:dotnet.str_remove_range", min_args = 2, max_args = 2 },
 ]
 
-# Array/List instance methods
-# Add has two overloads: list.Add(item) (1 arg) and dict.Add(key, value) (2 args)
-Add           = [
-    { emit = "common:collections.push", min_args = 1, max_args = 1 },
-    { emit = "common:dict.set_dynamic", min_args = 2, max_args = 2 },
-]
-Clear         = { emit = "host:ecma:array:clear",      min_args = 0, max_args = 0 }
-Reverse       = { emit = "common:collections.reverse",       min_args = 0, max_args = 0 }
-Sort          = [
-    { emit = "common:dotnet.sort_in_place",        min_args = 0, max_args = 0 },
-    { emit = "common:dotnet.sort_with_comparator", min_args = 1, max_args = 1 },
-]
 join          = { emit = "common:collections.join",    min_args = 1, max_args = 1 }
 GetType       = { emit = "common:ref_typeof",          min_args = 0, max_args = 0 }
 # Delegate introspection: the invocation list as a plain array of handlers,
@@ -175,22 +157,8 @@ Equals        = { emit = "common:dyn_eq",              min_args = 1, max_args = 
 # Dispatch resolves it by receiver type — or, for untyped receivers on the
 # .NET path, by method name — so there are NO per-function LINQ entries here.
 # The adapters drain any receiver (array, List<T>, generator, cross-language
-# iterable) through `generators.rs`. Only List/Dictionary mutators that are
-# not `IEnumerable` extension methods remain in the profile.
-AddRange           = { emit = "common:dotnet.list_add_range",             min_args = 1, max_args = 1 }
-EntriesSorted      = { emit = "common:dotnet.sorted_dictionary_entries",  min_args = 0, max_args = 0 }
-
-# Dictionary methods
-ContainsKey   = { emit = "common:dict.has",            min_args = 1, max_args = 1 }
-ContainsValue = { emit = "invoke:ContainsValue",        min_args = 1, max_args = 1 }
-TryGetValue   = { emit = "invoke:TryGetValue",          min_args = 1, max_args = 2 }
-
-# Queue/Stack methods
-Enqueue       = { emit = "common:collections.push",          min_args = 1, max_args = 1 }
-Dequeue       = { emit = "common:collections.shift",         min_args = 0, max_args = 0 }
-Push          = { emit = "common:collections.push",          min_args = 1, max_args = 1 }
-Pop           = { emit = "common:collections.pop",           min_args = 0, max_args = 0 }
-Peek          = { emit = "invoke:Peek",                 min_args = 0, max_args = 0 }
+# iterable) through `generators.rs`; collection mutators and dictionary/queue/
+# stack methods resolve through the shared dotnet collection descriptor.
 
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS — C# namespace objects → host modules, ECMA-262 §16.2 shape
@@ -210,12 +178,9 @@ path = "dotnet.system"
 # compile time through the dotnet wrapper Component Model dispatch.
 # The namespace object itself is still registered in
 # `vybe_host::namespaces::convert` (binding `ToInt32` → `ecma:number.parseInt`
-# etc.) for any dynamic identifier-resolution path.
-
-[[esm_default]]
-kind = "namespace"
-alias = "Object"
-module = "ecma:object"
+# etc.) for any dynamic identifier-resolution path. C# record `with` lowering
+# calls a walker-private helper routed through
+# `common:reflection.assign`; `System.Object` comes from the dotnet tree.
 
 # Task / Thread / Interlocked are compiler-only now: Task.Run / Thread.Start
 # compile to Op::THREAD_SPAWN, Interlocked.* compiles to WASM atomic opcodes,
@@ -238,23 +203,6 @@ module = "ecma:object"
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS — property access, NOT function call
 # ────────────────────────────────────────────────────────────────────────────
-
-# ────────────────────────────────────────────────────────────────────────────
-# ARRAY METHODS — higher-order methods routed to compiler_common::loops
-# ────────────────────────────────────────────────────────────────────────────
-
-[array_methods]
-ForEach   = "__array_forEach"
-# LINQ extension methods (`Where`, `Any`, `All`, `OrderBy`, `Aggregate`, ...)
-# live in the shared .NET `IEnumerable` surface, not in per-language array
-# aliases.
-# List<T> instance-method aliases — same HOF semantics, different names per
-# .NET BCL. Routes through the same compiler_common loop emitters.
-Find       = "__array_find"
-FindAll    = "__array_filter"
-Exists     = "__array_some"
-TrueForAll = "__array_every"
-ConvertAll = "__array_map"
 
 [namespace_constants]
 "bool.TrueString"       = "True"

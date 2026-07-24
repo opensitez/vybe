@@ -26,10 +26,32 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         return true;
     }
 
+    if name == "dotnet.string_is_null_or_empty" {
+        collections::emit_runtime_helper_call(
+            chunks,
+            current,
+            "__vybe_string_is_null_or_empty",
+            argc,
+            line,
+        );
+        vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+        return true;
+    }
+
+    if name == "dotnet.string_is_null_or_whitespace" {
+        collections::emit_runtime_helper_call(
+            chunks,
+            current,
+            "__vybe_string_is_null_or_whitespace",
+            argc,
+            line,
+        );
+        vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+        return true;
+    }
+
     let global = match name {
         "dotnet.cchar" => "__vybe_cchar",
-        "dotnet.string_is_null_or_empty" => "__vybe_string_is_null_or_empty",
-        "dotnet.string_is_null_or_whitespace" => "__vybe_string_is_null_or_whitespace",
         "dotnet.newline" => "__vybe_newline",
         "dotnet.str_insert" => "__vybe_str_insert",
         "dotnet.str_remove_start" => "__vybe_str_remove_start",
@@ -130,6 +152,7 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     let tostring_key = chunk.add_constant(Value::String(Arc::from("tostring")));
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
     let value_key = chunk.add_constant(Value::String(Arc::from("__value")));
+    let buf_key = chunk.add_constant(Value::String(Arc::from("__buf")));
 
     chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
 
@@ -174,7 +197,8 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, func, line);
     host::emit(chunk, "wasm:js-undefined", "test", 1, line);
     chunk.emit_if(line);
-    // No `tostring` member: a Guid renders its stored value, else String().
+    // No `tostring` member: known .NET-shaped structs/classes render their
+    // payload, otherwise fall back to ECMA String().
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);
     chunk.emit_string_const("Guid", line);
@@ -185,7 +209,17 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);
+    chunk.emit_string_const("StringWriter", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     vybe_emitter::strings::emit_to_string(chunk, line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
     chunk.emit_else(line);

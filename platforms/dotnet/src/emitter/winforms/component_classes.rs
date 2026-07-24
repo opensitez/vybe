@@ -19,28 +19,41 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
                 .with_method(MethodDef::static_method(
                     "Run",
                     1,
-                    MethodBody::HostCall(HostTarget::new(
-                        "vybe:gui",
-                        vybe_emitter::gui::HOST_FN_RUN_APPLICATION,
-                    )),
+                    MethodBody::Common("dotnet.winforms_application_run".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "Exit",
                     0,
-                    MethodBody::HostCall(HostTarget::new(
-                        "vybe:gui",
-                        vybe_emitter::gui::HOST_FN_APP_EXIT,
-                    )),
+                    MethodBody::Common("dotnet.winforms_application_exit".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "EnableVisualStyles",
                     0,
-                    MethodBody::HostCall(HostTarget::new("vybe:gui", "noop")),
+                    MethodBody::Common("dotnet.winforms_noop".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "SetCompatibleTextRenderingDefault",
                     1,
-                    MethodBody::HostCall(HostTarget::new("vybe:gui", "noop")),
+                    MethodBody::Common("dotnet.winforms_noop".into()),
+                )),
+        ));
+        exports.push(DotnetClassExport::new(
+            "dotnet.System.Windows.Forms",
+            ClassType::new("MessageBox")
+                .with_method(MethodDef::static_method(
+                    "Show",
+                    1,
+                    MethodBody::Common("dotnet.winforms_message_box_show".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Show",
+                    2,
+                    MethodBody::Common("dotnet.winforms_message_box_show".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Show",
+                    3,
+                    MethodBody::Common("dotnet.winforms_message_box_show".into()),
                 )),
         ));
         exports

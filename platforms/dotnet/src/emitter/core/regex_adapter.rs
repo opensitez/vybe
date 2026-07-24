@@ -13,6 +13,8 @@ const GROUPS_KEY: &str = "__groups";
 const GROUP_VALUES_KEY: &str = "__group_values";
 const RAW_GROUPS_KEY: &str = "groups";
 const KEYS_KEY: &str = "__keys";
+const GROUP_NAMES_KEY: &str = "__group_names";
+const GROUP_NUMBERS_KEY: &str = "__group_numbers";
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
@@ -135,7 +137,10 @@ fn emit_group_object_from_value_slot(chunk: &mut Chunk, value_slot: u16, line: u
     let dotnet_value_key = chunk.add_constant(Value::String(Arc::from("Value")));
     let success_key = chunk.add_constant(Value::String(Arc::from(SUCCESS_KEY)));
     let dotnet_success_key = chunk.add_constant(Value::String(Arc::from("Success")));
+    let length_key = chunk.add_constant(Value::String(Arc::from("Length")));
+    let lower_length_key = chunk.add_constant(Value::String(Arc::from("length")));
     let group_slot = reserve_slot(chunk);
+    let length_idx = chunk.add_import("wasm:js-string", "length");
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, group_slot, line);
@@ -166,6 +171,75 @@ fn emit_group_object_from_value_slot(chunk: &mut Chunk, value_slot: u16, line: u
     chunk.emit_op_u16(Op::STRUCT_SET, dotnet_success_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, length_idx, line);
+    chunk.emit(1, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, length_key, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, length_idx, line);
+    chunk.emit(1, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, lower_length_key, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
+}
+
+fn emit_dotnet_match_properties(chunk: &mut Chunk, result_slot: u16, obj_slot: u16, line: u32) {
+    let object_get = chunk.add_import("ecma:object", "get");
+    let length_idx = chunk.add_import("wasm:js-string", "length");
+    let index_key = chunk.add_constant(Value::String(Arc::from("index")));
+    let dotnet_index_key = chunk.add_constant(Value::String(Arc::from("Index")));
+    let length_key = chunk.add_constant(Value::String(Arc::from("Length")));
+    let lower_length_key = chunk.add_constant(Value::String(Arc::from("length")));
+    let dotnet_success_key = chunk.add_constant(Value::String(Arc::from("Success")));
+    let value_slot = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunk.emit_op_u16(Op::CONST, index_key, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, object_get, line);
+    chunk.emit(2, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, dotnet_index_key, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    chunk.emit_string_const("", line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, length_idx, line);
+    chunk.emit(1, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, length_key, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, length_idx, line);
+    chunk.emit(1, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, lower_length_key, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, dotnet_success_key, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot: u16, line: u32) {
@@ -173,7 +247,10 @@ fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot:
     let object_set = chunk.add_import("ecma:object", "set");
     let groups_key = chunk.add_constant(Value::String(Arc::from(GROUPS_KEY)));
     let group_values_key = chunk.add_constant(Value::String(Arc::from(GROUP_VALUES_KEY)));
+    let dotnet_groups_key = chunk.add_constant(Value::String(Arc::from("Groups")));
+    let public_groups_key = chunk.add_constant(Value::String(Arc::from("groups")));
     let count_key = chunk.add_constant(Value::String(Arc::from(COUNT_KEY)));
+    let dotnet_count_key = chunk.add_constant(Value::String(Arc::from("Count")));
     let raw_groups_key = chunk.add_constant(Value::String(Arc::from(RAW_GROUPS_KEY)));
     let keys_key = chunk.add_constant(Value::String(Arc::from(KEYS_KEY)));
     let groups_slot = reserve_slot(chunk);
@@ -198,10 +275,20 @@ fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot:
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
     chunk.emit_op_u16(Op::STRUCT_SET, count_key, line);
     chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, groups_slot, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, dotnet_count_key, line);
+    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, group_values_slot, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
     chunk.emit_op_u16(Op::STRUCT_SET, count_key, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, group_values_slot, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, dotnet_count_key, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_i32_const(0, line);
@@ -297,6 +384,16 @@ fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot:
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, groups_slot, line);
     chunk.emit_op_u16(Op::STRUCT_SET, groups_key, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, groups_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, dotnet_groups_key, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, groups_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, public_groups_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
@@ -433,6 +530,26 @@ pub fn emit_regex_static_split(chunks: &mut [Chunk], current: usize, argc: u8, l
     chunk.emit(2, line);
 }
 
+pub fn emit_regex_escape(chunks: &mut [Chunk], current: usize, line: u32) {
+    let escape_idx = chunks[current].add_import("ecma:regexp", "escape");
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::CALL_IMPORT, escape_idx, line);
+    chunk.emit(1, line);
+}
+
+pub fn emit_regex_unescape(chunks: &mut [Chunk], current: usize, line: u32) {
+    let replace_idx = chunks[current].add_import("ecma:regexp", "replaceAll");
+    let chunk = &mut chunks[current];
+    let input_slot = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
+    chunk.emit_string_const(r"/\\([\\.\+\*\?\^\$\[\]\(\)\{\}\=\!\<\>\|\:\-])/g", line);
+    chunk.emit_string_const("$1", line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, replace_idx, line);
+    chunk.emit(3, line);
+}
+
 pub fn emit_regex_replace(chunks: &mut [Chunk], current: usize, line: u32) {
     let replace_idx = chunks[current].add_import("ecma:regexp", "replaceAll");
     let chunk = &mut chunks[current];
@@ -517,6 +634,7 @@ pub fn emit_regex_match(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_SET, success_key, line);
     chunk.emit_op(Op::DROP, line);
 
+    emit_dotnet_match_properties(chunk, result_slot, obj_slot, line);
     emit_dotnet_match_groups_shape(chunk, result_slot, obj_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -574,6 +692,7 @@ pub fn emit_regex_static_match(chunks: &mut [Chunk], current: usize, argc: u8, l
     chunk.emit_op_u16(Op::STRUCT_SET, success_key, line);
     chunk.emit_op(Op::DROP, line);
 
+    emit_dotnet_match_properties(chunk, result_slot, obj_slot, line);
     emit_dotnet_match_groups_shape(chunk, result_slot, obj_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -626,4 +745,41 @@ pub fn emit_regex_static_matches(chunks: &mut [Chunk], current: usize, argc: u8,
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     emit_dotnet_match_collection_shape(chunk, result_slot, count_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+pub fn emit_regex_get_group_names(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let group_names_key = chunk.add_constant(Value::String(Arc::from(GROUP_NAMES_KEY)));
+
+    chunk.emit_op_u16(Op::STRUCT_GET, group_names_key, line);
+}
+
+pub fn emit_regex_group_name_from_number(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let number_slot = reserve_slot(chunk);
+    let self_slot = reserve_slot(chunk);
+    let group_names_key = chunk.add_constant(Value::String(Arc::from(GROUP_NAMES_KEY)));
+
+    chunk.emit_op_u16(Op::LOCAL_SET, number_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, group_names_key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, number_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+}
+
+pub fn emit_regex_group_number_from_name(chunks: &mut [Chunk], current: usize, line: u32) {
+    let object_get = chunks[current].add_import("ecma:object", "get");
+    let chunk = &mut chunks[current];
+    let name_slot = reserve_slot(chunk);
+    let self_slot = reserve_slot(chunk);
+    let group_numbers_key = chunk.add_constant(Value::String(Arc::from(GROUP_NUMBERS_KEY)));
+
+    chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, group_numbers_key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, object_get, line);
+    chunk.emit(2, line);
 }

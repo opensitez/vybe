@@ -61,11 +61,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_static_method_mappings_include_application() {
+    fn test_static_method_mappings_exclude_common_application_adapters() {
         assert!(
             static_method_mappings()
                 .iter()
-                .any(|mapping| mapping.type_name == "Application")
+                .all(|mapping| mapping.type_name != "Application")
         );
     }
 }

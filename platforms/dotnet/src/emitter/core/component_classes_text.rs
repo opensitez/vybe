@@ -15,6 +15,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.sb_append".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "Append",
+                    2,
+                    MethodBody::Common("dotnet.sb_append".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Append",
+                    3,
+                    MethodBody::Common("dotnet.sb_append".into()),
+                ))
+                .with_method(MethodDef::new(
                     "AppendLine",
                     0,
                     MethodBody::Common("dotnet.sb_append_line".into()),
@@ -35,6 +45,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.sb_append_format".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "AppendFormat",
+                    4,
+                    MethodBody::Common("dotnet.sb_append_format".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AppendJoin",
+                    2,
+                    MethodBody::Common("dotnet.sb_append_join".into()),
+                ))
+                .with_method(MethodDef::new(
                     "ToString",
                     0,
                     MethodBody::Common("dotnet.sb_to_string".into()),
@@ -50,9 +70,24 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.sb_clear".into()),
                 ))
                 .with_method(MethodDef::new(
-                    "Length",
-                    0,
-                    MethodBody::Common("dotnet.sb_length".into()),
+                    "Chars",
+                    1,
+                    MethodBody::Common("dotnet.sb_index_get".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "EnsureCapacity",
+                    1,
+                    MethodBody::Common("dotnet.sb_ensure_capacity".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CopyTo",
+                    4,
+                    MethodBody::Common("dotnet.sb_copy_to".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Equals",
+                    1,
+                    MethodBody::Common("dotnet.sb_equals".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Insert",
@@ -67,6 +102,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Replace",
                     2,
+                    MethodBody::Common("dotnet.sb_replace".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Replace",
+                    4,
                     MethodBody::Common("dotnet.sb_replace".into()),
                 )),
         ),
@@ -136,6 +176,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     3,
                     MethodBody::Common("dotnet.regex_static_split".into()),
                 ))
+                .with_method(MethodDef::static_method(
+                    "Escape",
+                    1,
+                    MethodBody::Common("dotnet.regex_escape".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Unescape",
+                    1,
+                    MethodBody::Common("dotnet.regex_unescape".into()),
+                ))
                 .with_method(MethodDef::new(
                     "IsMatch",
                     1,
@@ -160,6 +210,35 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Matches",
                     1,
                     MethodBody::Common("dotnet.regex_matches".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetGroupNames",
+                    0,
+                    MethodBody::Common("dotnet.regex_get_group_names".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GroupNameFromNumber",
+                    1,
+                    MethodBody::Common("dotnet.regex_group_name_from_number".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GroupNumberFromName",
+                    1,
+                    MethodBody::Common("dotnet.regex_group_number_from_name".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Text.Json",
+            ClassType::new("JsonSerializer")
+                .with_method(MethodDef::static_method(
+                    "Serialize",
+                    1,
+                    MethodBody::Common("dotnet.json_serialize".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Deserialize",
+                    1,
+                    MethodBody::Common("dotnet.json_deserialize".into()),
                 )),
         ),
         DotnetClassExport::new(

@@ -13,6 +13,7 @@ const BLOCKING_COMPLETED: &str = "__dotnet_blocking_completed";
 const BLOCKING_LIFO: &str = "__dotnet_blocking_lifo";
 const OBSERVABLE_ITEMS: &str = "__dotnet_observable_items";
 const OBSERVABLE_NOTIFYING: &str = "__dotnet_observable_notifying";
+const LIST_CAPACITY: &str = "__dotnet_list_capacity";
 
 fn call_import(
     chunks: &mut [Chunk],
@@ -110,6 +111,149 @@ pub fn emit_set_new_ignore_comparer(chunks: &mut [Chunk], current: usize, line: 
 
 pub fn emit_list_new_from_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_spread_iterable(chunks, current, line);
+}
+
+fn emit_list_set_capacity_to_len(chunks: &mut [Chunk], current: usize, list_slot: u16, line: u32) {
+    let len_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    emit_set_field(chunks, current, list_slot, LIST_CAPACITY, len_slot, line);
+}
+
+pub fn emit_list_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        let list_slot = chunks[current].alloc_scratch(1);
+        collections::emit_array_new(chunks, current, 0, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, list_slot, line);
+        let cap_slot = chunks[current].alloc_scratch(1);
+        chunks[current].emit_i32_const(0, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, cap_slot, line);
+        emit_set_field(chunks, current, list_slot, LIST_CAPACITY, cap_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+        return;
+    }
+
+    let arg_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arg_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg_slot, line);
+    call_import(chunks, current, "wasm:js-number", "test", 1, line);
+    chunks[current].emit_if(line);
+
+    let numeric_list_slot = chunks[current].alloc_scratch(1);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, numeric_list_slot, line);
+    emit_set_field(
+        chunks,
+        current,
+        numeric_list_slot,
+        LIST_CAPACITY,
+        arg_slot,
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_GET, numeric_list_slot, line);
+
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arg_slot, line);
+    emit_list_new_from_iterable(chunks, current, line);
+    let iterable_list_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, iterable_list_slot, line);
+    emit_list_set_capacity_to_len(chunks, current, iterable_list_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, iterable_list_slot, line);
+
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_list_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
+    let list_slot = chunks[current].alloc_scratch(1);
+    let cap_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, list_slot, line);
+    emit_get_field(chunks, current, list_slot, LIST_CAPACITY, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cap_slot, line);
+    emit_slot_is_nullish(chunks, current, cap_slot, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cap_slot, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_list_add(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value_slot = chunks[current].alloc_scratch(1);
+    let list_slot = chunks[current].alloc_scratch(1);
+    let len_slot = chunks[current].alloc_scratch(1);
+    let cap_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, list_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+
+    emit_get_field(chunks, current, list_slot, LIST_CAPACITY, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cap_slot, line);
+    emit_slot_is_nullish(chunks, current, cap_slot, line);
+    chunks[current].emit_if(line);
+    emit_set_field(chunks, current, list_slot, LIST_CAPACITY, len_slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cap_slot, line);
+    vybe_emitter::ops::emit_dyn_gt(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    emit_set_field(chunks, current, list_slot, LIST_CAPACITY, len_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_list_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
+    let desired_slot = chunks[current].alloc_scratch(1);
+    let list_slot = chunks[current].alloc_scratch(1);
+    let cap_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, desired_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, list_slot, line);
+
+    emit_get_field(chunks, current, list_slot, LIST_CAPACITY, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cap_slot, line);
+    emit_slot_is_nullish(chunks, current, cap_slot, line);
+    chunks[current].emit_if(line);
+    emit_set_field(
+        chunks,
+        current,
+        list_slot,
+        LIST_CAPACITY,
+        desired_slot,
+        line,
+    );
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, desired_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cap_slot, line);
+    vybe_emitter::ops::emit_dyn_gt(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    emit_set_field(
+        chunks,
+        current,
+        list_slot,
+        LIST_CAPACITY,
+        desired_slot,
+        line,
+    );
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
+    emit_list_capacity(chunks, current, line);
+}
+
+pub fn emit_list_trim_excess(chunks: &mut [Chunk], current: usize, line: u32) {
+    let list_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, list_slot, line);
+    emit_list_set_capacity_to_len(chunks, current, list_slot, line);
+    chunks[current].emit_op(Op::NULL, line);
 }
 
 pub fn emit_readonly_observable_collection_new(_chunks: &mut [Chunk], _current: usize, _line: u32) {

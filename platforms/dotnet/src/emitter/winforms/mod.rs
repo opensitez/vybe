@@ -1,3 +1,4 @@
+pub mod adapter;
 pub mod component_classes;
 pub mod host_map;
 pub mod imports;

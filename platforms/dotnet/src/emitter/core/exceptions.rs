@@ -24,6 +24,7 @@ pub const EXCEPTION_HIERARCHY: &[(&str, &str)] = &[
     ("IndexOutOfRangeException", "SystemException"),
     ("KeyNotFoundException", "SystemException"),
     ("TimeoutException", "SystemException"),
+    ("OperationCanceledException", "SystemException"),
     ("DivideByZeroException", "ArithmeticException"),
     ("OverflowException", "ArithmeticException"),
     ("ArgumentNullException", "ArgumentException"),

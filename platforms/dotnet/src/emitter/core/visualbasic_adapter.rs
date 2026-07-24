@@ -43,6 +43,20 @@ fn gset(chunk: &mut Chunk, name: &str, line: u32) {
     chunk.emit_op_u16(Op::GLOBAL_SET, key, line);
 }
 
+fn emit_host_call(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    name: &str,
+    argc: u8,
+    line: u32,
+) {
+    let idx = chunks[current].add_import(module, name);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunk.emit(argc, line);
+}
+
 fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32) -> u16 {
     let slot = {
         let chunk = &mut chunks[current];
@@ -75,6 +89,112 @@ fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32
         lset(chunk, slot, line);
     }
     slot
+}
+
+pub fn emit_vb_filecopy(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:filesystem", "copy", argc, line);
+}
+
+pub fn emit_vb_kill(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:filesystem", "remove", argc, line);
+}
+
+pub fn emit_vb_fileexists(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:filesystem", "exists", argc, line);
+}
+
+pub fn emit_vb_filelen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:filesystem", "fileSize", argc, line);
+}
+
+pub fn emit_vb_curdir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "node:process", "cwd", argc, line);
+}
+
+pub fn emit_vb_chdir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "node:process", "chdir", argc, line);
+}
+
+pub fn emit_vb_mkdir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:filesystem", "mkdir", argc, line);
+}
+
+pub fn emit_vb_rmdir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:filesystem", "remove", argc, line);
+}
+
+pub fn emit_vb_name(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:filesystem", "rename", argc, line);
+}
+
+pub fn emit_vb_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:filesystem", "readFile", argc, line);
+}
+
+pub fn emit_vb_put(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:filesystem", "writeFile", argc, line);
+}
+
+pub fn emit_vb_app_path(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "node:process", "cwd", argc, line);
+}
+
+pub fn emit_vb_app_title(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "node:process", "argv0", argc, line);
+}
+
+pub fn emit_vb_to_number(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "ecma:number", "Number", argc, line);
+}
+
+pub fn emit_vb_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 1 {
+        emit_host_call(chunks, current, "ecma:string", "String", argc, line);
+        return;
+    }
+
+    let value_slot = alloc_local(&mut chunks[current]);
+    let result_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+    lset(chunk, value_slot, line);
+    super::console_adapter::emit_dotnet_stringify(chunk, value_slot, result_slot, line);
+    lget(chunk, result_slot, line);
+}
+
+pub fn emit_vb_random(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "ecma:math", "random", argc, line);
+}
+
+pub fn emit_vb_lset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "ecma:string", "padEnd", argc, line);
+}
+
+pub fn emit_vb_rset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "ecma:string", "padStart", argc, line);
+}
+
+pub fn emit_vb_array(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "ecma:array", "from", argc, line);
+}
+
+pub fn emit_vb_debug_print(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:cli", "log", argc, line);
+}
+
+pub fn emit_vb_print(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:cli", "log", argc, line);
+}
+
+pub fn emit_vb_input(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:cli", "readLine", argc, line);
+}
+
+pub fn emit_vb_app(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:cli", "args", argc, line);
+}
+
+pub fn emit_vb_open(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:filesystem", "readFile", argc, line);
 }
 
 pub fn emit_vb_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

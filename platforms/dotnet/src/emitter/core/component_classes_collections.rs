@@ -15,10 +15,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         collection_class_common(
             "dotnet.System.Collections.Generic",
             "List",
-            "collections.new",
+            "dotnet.list_new",
             &[
-                ("Add", 1, "collections.push"),
+                ("Add", 1, "dotnet.list_add"),
                 ("Remove", 1, "collections.remove"),
+                ("RemoveAll", 1, "dotnet.list_remove_all"),
                 ("RemoveAt", 1, "collections.remove_at"),
                 ("Contains", 1, "collections.contains"),
                 ("Count", 0, "dotnet.observable_collection_count"),
@@ -38,6 +39,8 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ("Find", 1, "dotnet.array_find"),
                 ("FindAll", 1, "dotnet.array_find_all"),
                 ("BinarySearch", 1, "dotnet.array_binary_search"),
+                ("EnsureCapacity", 1, "dotnet.list_ensure_capacity"),
+                ("TrimExcess", 0, "dotnet.list_trim_excess"),
             ],
         ),
         // .NET `Dictionary<K,V>` is shape-identical to ECMA-262 §24.1
@@ -728,7 +731,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Add",
                     1,
-                    MethodBody::Common("collections.push".into()),
+                    MethodBody::Common("dotnet.list_add".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Remove",
@@ -753,7 +756,17 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "Capacity",
                     0,
-                    MethodBody::Common("collections.length".into()),
+                    MethodBody::Common("dotnet.list_capacity".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "EnsureCapacity",
+                    1,
+                    MethodBody::Common("dotnet.list_ensure_capacity".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "TrimExcess",
+                    0,
+                    MethodBody::Common("dotnet.list_trim_excess".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Clear",
@@ -941,7 +954,9 @@ fn collection_class_common(
 ) -> DotnetClassExport {
     let mut class = ClassType::new(name)
         .with_constructor(ConstructorDef::new(0).with_common_backing(ctor_common));
-    if matches!(name, "List" | "ObservableCollection") {
+    if name == "List" {
+        class = class.with_constructor(ConstructorDef::new(1).with_common_backing(ctor_common));
+    } else if name == "ObservableCollection" {
         class = class.with_constructor(
             ConstructorDef::new(1).with_common_backing("dotnet.list_new_from_iterable"),
         );

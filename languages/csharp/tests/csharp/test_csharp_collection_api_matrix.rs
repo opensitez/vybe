@@ -206,13 +206,14 @@ fn hashset_matrix_uniqueness_and_remove() {
             .join(" ");
         let unique_count = values.iter().cloned().collect::<HashSet<_>>().len();
         let removed = values.first().copied().unwrap_or(0);
+        let post_remove_count = unique_count.saturating_sub(usize::from(!values.is_empty()));
         let src = format!(
             "using System.Collections.Generic; var set = new HashSet<int>(); {add_lines} bool had = set.Contains({removed}); set.Remove({removed}); Console.WriteLine(set.Count); Console.WriteLine(had); Console.WriteLine(set.Contains({removed}));"
         );
         assert_eq!(
             run_csharp(&src),
             vec![
-                unique_count.to_string(),
+                post_remove_count.to_string(),
                 bool_text(!values.is_empty()).to_string(),
                 bool_text(false).to_string(),
             ]

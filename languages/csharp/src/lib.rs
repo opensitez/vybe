@@ -15,6 +15,14 @@ pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {
 
 /// Embedded profile TOML source.
 pub fn profile_source() -> &'static str {
+    static DOTNET_CONSTANTS: std::sync::Once = std::sync::Once::new();
+    DOTNET_CONSTANTS.call_once(|| {
+        let mappings = vybe_platform_dotnet::emitter::namespace_constant_mappings()
+            .iter()
+            .map(|(name, value)| (name.to_string(), *value))
+            .collect();
+        vybe_plugin::profile::register_dotnet_namespace_constants(mappings);
+    });
     include_str!("profile")
 }
 

@@ -100,7 +100,7 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
         "system.security.cryptography" => Some("wasi:crypto/hashes"),
         "system.xml.linq" => Some("web:dom-parser"),
         "system.drawing" => Some("vybe:gui"),
-        "microsoft.visualbasic" => Some("ecma:string"),
+        "microsoft.visualbasic" => None,
         _ => None,
     }
 }
@@ -121,7 +121,7 @@ mod tests {
         assert!(
             static_method_mappings()
                 .iter()
-                .any(|mapping| mapping.type_name == "Console")
+                .any(|mapping| mapping.type_name == "Convert")
         );
         assert!(
             !static_method_mappings()
