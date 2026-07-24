@@ -63,6 +63,10 @@ pub trait Application {
     fn title(&self) -> String {
         String::new()
     }
+
+    /// Called on every event-loop wake (~60 Hz, see `about_to_wait`) so the app
+    /// can advance time-based state — e.g. fire due GUI timers. Default no-op.
+    fn on_tick(&mut self) {}
 }
 
 // ── Internal Runner ────────────────────────────────────────────────────
@@ -119,6 +123,23 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
         self.app.on_init(lw, lh, self.scale);
 
         self.window.as_ref().unwrap().request_redraw();
+    }
+
+    // Drive a steady redraw cadence so state changes that did NOT come from an OS
+    // input event still reach the screen: programmatic mutation, timers, async
+    // callbacks, or a debugger-simulated event. Under a plain `ControlFlow::Wait`
+    // the window only repaints in response to mouse/keyboard, so any such change
+    // stayed invisible until the next interaction. `render()` reads live widget
+    // state, so re-rendering on a fixed tick can never miss an update. ~60 Hz.
+    fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        // Advance time-based state (fire due GUI timers) before repainting.
+        self.app.on_tick();
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(
+            std::time::Instant::now() + std::time::Duration::from_millis(16),
+        ));
     }
 
     fn window_event(

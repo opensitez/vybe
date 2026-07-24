@@ -104,7 +104,7 @@ impl PanelWidget for ProgressBar {
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
             WidgetCommand::SetValue(v) => {
-                self.value = *v as f32;
+                self.value = (*v as f32).clamp(0.0, 1.0);
                 CommandValue::None
             }
             WidgetCommand::GetValue => CommandValue::Number(self.value as f64),

@@ -20,6 +20,7 @@ use super::layout::{
     CommandValue, FocusManager, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext,
     WidgetCommand, WidgetEvent, WidgetId,
 };
+use std::collections::HashMap;
 use tiny_skia::*;
 
 /// A form holds a collection of controls laid out at absolute positions.
@@ -34,6 +35,14 @@ pub struct Form {
     controls: Vec<Box<dyn PanelWidget>>,
     focus: FocusManager,
     pending_events: Vec<WidgetEvent>,
+    /// Children staged for a parent whose widget isn't attached yet — the
+    /// declarative (Flutter) tree assembles bottom-up (a Row nests its buttons
+    /// before the Row itself is nested into a Column). Keyed by parent name.
+    pending_children: HashMap<String, Vec<Box<dyn PanelWidget>>>,
+    /// Index of a control that fills the form (the Flutter `runApp` root) — it
+    /// is re-sized to the form's rect on every `set_rect` so its flow layout
+    /// cascades once the window supplies a real size.
+    fill_root: Option<usize>,
 }
 
 impl Form {
@@ -46,7 +55,56 @@ impl Form {
             controls: Vec::new(),
             focus: FocusManager::new(),
             pending_events: Vec::new(),
+            pending_children: HashMap::new(),
+            fill_root: None,
         }
+    }
+
+    /// Stage a control into the widget tree (declarative/Flutter path). The
+    /// host creates `widget` (via `make_widget`) and tells us its `name`, its
+    /// `parent` name, and whether the parent is the form itself. We first
+    /// adopt any children that were waiting on `name` (bottom-up assembly),
+    /// then either fill+attach to the form (parent is the form) or park the
+    /// finished subtree until `parent`'s own widget is staged. vybe_widgets
+    /// owns the tree + layout; the host stays a thin bridge.
+    pub fn stage_control(
+        &mut self,
+        name: &str,
+        mut widget: Box<dyn PanelWidget>,
+        parent: &str,
+        parent_is_form: bool,
+    ) {
+        let _ = name;
+        if parent_is_form {
+            // Fill the form so the root's relayout cascades down the subtree.
+            // Recorded as `fill_root` so a later `set_rect` (real window size)
+            // re-fills and re-lays-out.
+            widget.set_rect(LayoutRect::new(self.rect.x, self.rect.y, self.rect.w, self.rect.h));
+            self.fill_root = Some(self.controls.len());
+            self.controls.push(widget);
+        } else {
+            // Top-down: the parent control already exists in the tree — add the
+            // child into it by name.
+            let mut child = Some(widget);
+            for ctrl in &mut self.controls {
+                if let Some(w) = child.take() {
+                    child = ctrl.add_child_to(parent, w);
+                }
+                if child.is_none() {
+                    break;
+                }
+            }
+            // If `child` is still Some, the parent wasn't found — drop it.
+        }
+    }
+
+    /// Drop every control + staged subtree — used by the Flutter `setState`
+    /// rebuild, which re-realizes the widget tree from scratch (state persists
+    /// separately, in the Dart runtime's per-type State cache).
+    pub fn clear_controls(&mut self) {
+        self.controls.clear();
+        self.pending_children.clear();
+        self.fill_root = None;
     }
 
     /// Add a control at an absolute position within the form.
@@ -181,6 +239,13 @@ impl PanelWidget for Form {
             for ctrl in &mut self.controls {
                 let cr = ctrl.rect();
                 ctrl.set_rect(LayoutRect::new(cr.x + dx, cr.y + dy, cr.w, cr.h));
+            }
+        }
+        // A Flutter `runApp` root fills the form and re-lays-out its subtree
+        // whenever the form is (re)sized.
+        if let Some(i) = self.fill_root {
+            if let Some(root) = self.controls.get_mut(i) {
+                root.set_rect(rect);
             }
         }
     }

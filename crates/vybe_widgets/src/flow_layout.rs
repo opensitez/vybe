@@ -30,6 +30,12 @@ pub struct FlowLayoutPanel {
     pub padding: f32,
     /// Whether children wrap to the next row/column when they exceed the panel size.
     pub wrap_contents: bool,
+    /// This panel's flex weight when it is itself a child of another flex
+    /// container (0 = fixed/natural size). Default 1.
+    pub flex: f32,
+    /// Fixed main-axis size (height in TopDown, width in LeftToRight) used when
+    /// `flex == 0`. Default ~a toolbar height.
+    pub fixed_main: f32,
     rect: LayoutRect,
     children: Vec<Box<dyn PanelWidget>>,
 }
@@ -46,10 +52,12 @@ impl FlowLayoutPanel {
             },
             id: WidgetId::next(),
             name: String::new(),
-            flow_direction: FlowDirection::LeftToRight,
+            flow_direction: FlowDirection::TopDown,
             spacing: 4.0,
             padding: 4.0,
             wrap_contents: true,
+            flex: 1.0,
+            fixed_main: 44.0,
             rect: LayoutRect::zero(),
             children: Vec::new(),
         }
@@ -112,86 +120,90 @@ impl FlowLayoutPanel {
         }
     }
 
+    // Flutter Row: children side by side. Fixed-flex children keep their
+    // `fixed_main` width; flex children share the leftover by weight. Full
+    // height.
     fn layout_left_to_right(&mut self) {
         let r = self.rect;
+        let n = self.children.len();
+        if n == 0 {
+            return;
+        }
+        let inner_w = (r.w - 2.0 * self.padding).max(0.0);
+        let inner_h = (r.h - 2.0 * self.padding).max(0.0);
+        let gaps = self.spacing * (n as f32 - 1.0);
+        let (total_flex, fixed) = self.flex_totals();
+        let leftover = (inner_w - gaps - fixed).max(0.0);
         let mut cx = r.x + self.padding;
-        let mut cy = r.y + self.padding;
-        let mut row_height: f32 = 0.0;
-        let max_x = r.x + r.w - self.padding;
-
+        let cy = r.y + self.padding;
         for child in &mut self.children {
-            let cr = child.rect();
-            let cw = cr.w.max(20.0); // minimum child width
-            let ch = cr.h.max(16.0); // minimum child height
-
-            // Wrap to next row if needed
-            if self.wrap_contents && cx + cw > max_x && cx > r.x + self.padding {
-                cx = r.x + self.padding;
-                cy += row_height + self.spacing;
-                row_height = 0.0;
-            }
-
-            child.set_rect(LayoutRect::new(cx, cy, cw, ch));
+            let f = child.layout_flex();
+            let cw = if f <= 0.0 {
+                Self::child_fixed(child.as_ref())
+            } else if total_flex > 0.0 {
+                leftover * f / total_flex
+            } else {
+                0.0
+            };
+            child.set_rect(LayoutRect::new(cx, cy, cw, inner_h));
             cx += cw + self.spacing;
-            row_height = row_height.max(ch);
         }
     }
 
+    // Flutter Column: children stacked top to bottom. Fixed-flex children keep
+    // their `fixed_main` height; flex children share the leftover by weight.
+    // Full width.
     fn layout_top_down(&mut self) {
         let r = self.rect;
-        let mut cx = r.x + self.padding;
+        let n = self.children.len();
+        if n == 0 {
+            return;
+        }
+        let inner_w = (r.w - 2.0 * self.padding).max(0.0);
+        let inner_h = (r.h - 2.0 * self.padding).max(0.0);
+        let gaps = self.spacing * (n as f32 - 1.0);
+        let (total_flex, fixed) = self.flex_totals();
+        let leftover = (inner_h - gaps - fixed).max(0.0);
+        let cx = r.x + self.padding;
         let mut cy = r.y + self.padding;
-        let mut col_width: f32 = 0.0;
-        let max_y = r.y + r.h - self.padding;
-
         for child in &mut self.children {
-            let cr = child.rect();
-            let cw = cr.w.max(20.0);
-            let ch = cr.h.max(16.0);
-
-            // Wrap to next column if needed
-            if self.wrap_contents && cy + ch > max_y && cy > r.y + self.padding {
-                cy = r.y + self.padding;
-                cx += col_width + self.spacing;
-                col_width = 0.0;
-            }
-
-            child.set_rect(LayoutRect::new(cx, cy, cw, ch));
+            let f = child.layout_flex();
+            let ch = if f <= 0.0 {
+                Self::child_fixed(child.as_ref())
+            } else if total_flex > 0.0 {
+                leftover * f / total_flex
+            } else {
+                0.0
+            };
+            child.set_rect(LayoutRect::new(cx, cy, inner_w, ch));
             cy += ch + self.spacing;
-            col_width = col_width.max(cw);
         }
     }
 
-    /// Paint — light background with dashed border.
-    pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
-        let ts = Transform::from_scale(scale, scale);
-        let mut paint = Paint::default();
-        paint.anti_alias = true;
-
-        // Light background
-        let (r, g, b, a) = self.colors.background;
-        paint.set_color_rgba8(r, g, b, a);
-        if let Some(rect) = Rect::from_xywh(x, y, self.width, self.height) {
-            pixmap.fill_rect(rect, &paint, ts, None);
+    /// (sum of flex weights, sum of fixed children's main-axis sizes).
+    fn flex_totals(&self) -> (f32, f32) {
+        let mut total_flex = 0.0;
+        let mut fixed = 0.0;
+        for child in &self.children {
+            let f = child.layout_flex();
+            if f <= 0.0 {
+                fixed += Self::child_fixed(child.as_ref());
+            } else {
+                total_flex += f;
+            }
         }
-
-        // Dashed border
-        let (r, g, b, a) = self.colors.border;
-        paint.set_color_rgba8(r, g, b, a);
-        let mut stroke = Stroke::default();
-        stroke.width = 1.0;
-        stroke.dash = StrokeDash::new(vec![4.0, 3.0], 0.0);
-
-        let mut pb = PathBuilder::new();
-        pb.move_to(x, y);
-        pb.line_to(x + self.width, y);
-        pb.line_to(x + self.width, y + self.height);
-        pb.line_to(x, y + self.height);
-        pb.close();
-        if let Some(path) = pb.finish() {
-            pixmap.stroke_path(&path, &paint, &stroke, ts, None);
-        }
+        (total_flex, fixed)
     }
+
+    /// The fixed main-axis size of a flex-0 child (a toolbar-height bar).
+    fn child_fixed(_child: &dyn PanelWidget) -> f32 {
+        44.0
+    }
+
+    /// Paint — a Flutter layout container is transparent (no chrome); only its
+    /// children paint. Kept as a no-op so Column/Row/Scaffold don't draw the
+    /// WinForms-style dashed panel border.
+    pub fn paint(&self, _pixmap: &mut Pixmap, _x: f32, _y: f32, _scale: f32) {}
 
     pub fn measure(&self) -> (f32, f32) {
         (self.width, self.height)
@@ -213,6 +225,47 @@ impl PanelWidget for FlowLayoutPanel {
     }
     fn rect(&self) -> LayoutRect {
         self.rect
+    }
+
+    fn add_child(&mut self, child: Box<dyn PanelWidget>) -> Option<Box<dyn PanelWidget>> {
+        self.add(child); // pushes + relayout()
+        None
+    }
+
+    fn send_command_named(
+        &mut self,
+        name: &str,
+        cmd: &WidgetCommand,
+    ) -> Option<CommandValue> {
+        if self.name == name {
+            return Some(self.handle_command(cmd));
+        }
+        for child in &mut self.children {
+            if let Some(result) = child.send_command_named(name, cmd) {
+                return Some(result);
+            }
+        }
+        None
+    }
+
+    fn add_child_to(
+        &mut self,
+        parent_name: &str,
+        child: Box<dyn PanelWidget>,
+    ) -> Option<Box<dyn PanelWidget>> {
+        if self.name == parent_name {
+            return self.add_child(child);
+        }
+        let mut child = Some(child);
+        for existing in &mut self.children {
+            if let Some(c) = child.take() {
+                child = existing.add_child_to(parent_name, c);
+            }
+            if child.is_none() {
+                break;
+            }
+        }
+        child
     }
 
     fn render(&mut self, ctx: &mut RenderContext) {
@@ -270,8 +323,16 @@ impl PanelWidget for FlowLayoutPanel {
         events
     }
 
+    fn layout_flex(&self) -> f32 {
+        self.flex
+    }
+
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
+            WidgetCommand::SetFlex(f) => {
+                self.flex = *f;
+                CommandValue::None
+            }
             WidgetCommand::SetEnabled(_) | WidgetCommand::SetVisible(_) => {
                 for child in &mut self.children {
                     child.handle_command(cmd);

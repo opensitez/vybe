@@ -8,7 +8,7 @@ use super::{WidgetColors, circle_path, rounded_rect_path};
 use tiny_skia::*;
 
 pub struct Slider {
-    pub value: f32, // 0.0..1.0
+    pub value: f32, // actual value in [min, max]
     pub min: f32,
     pub max: f32,
     pub disabled: bool,
@@ -28,13 +28,8 @@ pub struct Slider {
 
 impl Slider {
     pub fn new(min: f32, max: f32, value: f32) -> Self {
-        let pct = if max > min {
-            (value - min) / (max - min)
-        } else {
-            0.0
-        };
         Self {
-            value: pct.clamp(0.0, 1.0),
+            value: if max > min { value.clamp(min, max) } else { min },
             min,
             max,
             disabled: false,
@@ -58,9 +53,18 @@ impl Slider {
         self
     }
 
-    /// Get the actual value (mapped from 0..1 to min..max).
+    /// The current actual value (already in `[min, max]`).
     pub fn actual_value(&self) -> f32 {
-        self.min + self.value * (self.max - self.min)
+        self.value
+    }
+
+    /// Position as a 0..1 fraction of the range, for painting/hit-testing.
+    fn pct(&self) -> f32 {
+        if self.max > self.min {
+            ((self.value - self.min) / (self.max - self.min)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
     }
 
     pub fn paint(&self, pixmap: &mut Pixmap, x: f32, y: f32, scale: f32) {
@@ -69,7 +73,7 @@ impl Slider {
         paint.anti_alias = true;
 
         let track_y = y + (self.height - self.track_height) / 2.0;
-        let thumb_x = x + self.thumb_radius + self.value * (self.width - self.thumb_radius * 2.0);
+        let thumb_x = x + self.thumb_radius + self.pct() * (self.width - self.thumb_radius * 2.0);
         let thumb_y = y + self.height / 2.0;
 
         // Track background
@@ -135,8 +139,8 @@ impl Slider {
 
     fn set_from_x(&mut self, x: f32) {
         let usable = self.width - self.thumb_radius * 2.0;
-        let pct = (x - self.thumb_radius) / usable;
-        self.value = pct.clamp(0.0, 1.0);
+        let pct = ((x - self.thumb_radius) / usable).clamp(0.0, 1.0);
+        self.value = self.min + pct * (self.max - self.min);
     }
 }
 
@@ -216,7 +220,8 @@ impl PanelWidget for Slider {
         use winit::keyboard::{Key, NamedKey};
         match &event.logical_key {
             Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowUp) => {
-                self.value = (self.value + 0.05).clamp(0.0, 1.0);
+                self.value =
+                    (self.value + (self.max - self.min) * 0.05).clamp(self.min, self.max);
                 self.pending_events.push(WidgetEvent::SliderChanged(
                     self.name.clone(),
                     self.actual_value(),
@@ -224,7 +229,8 @@ impl PanelWidget for Slider {
                 true
             }
             Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowDown) => {
-                self.value = (self.value - 0.05).clamp(0.0, 1.0);
+                self.value =
+                    (self.value - (self.max - self.min) * 0.05).clamp(self.min, self.max);
                 self.pending_events.push(WidgetEvent::SliderChanged(
                     self.name.clone(),
                     self.actual_value(),
@@ -241,7 +247,7 @@ impl PanelWidget for Slider {
     fn handle_command(&mut self, cmd: &WidgetCommand) -> CommandValue {
         match cmd {
             WidgetCommand::SetValue(v) => {
-                let new_v = *v as f32;
+                let new_v = (*v as f32).clamp(self.min, self.max);
                 if (self.value - new_v).abs() > f32::EPSILON {
                     self.value = new_v;
                     self.pending_events.push(WidgetEvent::SliderChanged(
@@ -254,6 +260,25 @@ impl PanelWidget for Slider {
             WidgetCommand::GetValue => CommandValue::Number(self.value as f64),
             WidgetCommand::SetEnabled(e) => {
                 self.disabled = !e;
+                CommandValue::None
+            }
+            // The Flutter adapter forwards `min`/`max` as `Set<Prop>` customs.
+            // The stored value is actual, so changing bounds only re-clamps it;
+            // the painted position (pct) tracks the new range automatically.
+            WidgetCommand::Custom(key, val) => {
+                let n = match val {
+                    CommandValue::Text(s) => s.parse::<f32>().ok(),
+                    CommandValue::Number(f) => Some(*f as f32),
+                    _ => None,
+                };
+                if let Some(n) = n {
+                    match key.as_str() {
+                        "SetMin" => self.min = n,
+                        "SetMax" => self.max = n,
+                        _ => {}
+                    }
+                    self.value = self.value.clamp(self.min, self.max);
+                }
                 CommandValue::None
             }
             _ => CommandValue::None,

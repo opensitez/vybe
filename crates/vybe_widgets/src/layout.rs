@@ -491,6 +491,10 @@ pub fn apply_anchor_layouts(
 /// Commands sent from the host application **to** a widget.
 #[derive(Clone, Debug)]
 pub enum WidgetCommand {
+    /// Set a layout flex weight (0 = fixed/natural size, >0 = share leftover
+    /// space). Used by the Flutter adapter: a Scaffold app-bar is fixed, the
+    /// body flexes; `Expanded`/`Flexible` flex, plain content is fixed.
+    SetFlex(f32),
     /// Set the widget's text / label content.
     SetText(String),
     /// Get the widget's current text.
@@ -623,6 +627,57 @@ pub trait PanelWidget: Send + Sync {
     /// `Some(self as &mut dyn Any)`.
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
+    }
+
+    /// Nest a child widget into this container and re-run its layout.
+    ///
+    /// Default returns `Some(child)` — "I'm not a container, here it is back."
+    /// Layout containers (FlowLayoutPanel/StackPanel/Panel) override to take
+    /// ownership, arrange, and return `None`. This is how the host bridge lets
+    /// vybe_widgets own the widget tree + layout instead of flat-positioning.
+    fn add_child(&mut self, child: Box<dyn PanelWidget>) -> Option<Box<dyn PanelWidget>> {
+        Some(child)
+    }
+
+    /// Route a name-targeted command down the tree. `None` = "no widget here
+    /// owns that name" (keep searching siblings); `Some(_)` = handled. Leaf
+    /// widgets match their own name; containers override to recurse into
+    /// children so nested controls (a Flutter tree) stay reachable by name —
+    /// the basis for `setState` updating a control's property in place.
+    fn send_command_named(
+        &mut self,
+        name: &str,
+        cmd: &WidgetCommand,
+    ) -> Option<CommandValue> {
+        if self.name() == name {
+            Some(self.handle_command(cmd))
+        } else {
+            None
+        }
+    }
+
+    /// Layout flex weight when this widget is a child of a flex container
+    /// (`FlowLayoutPanel`). 0 = fixed/natural size; >0 = share leftover space.
+    /// Default 1 (flex). Containers that carry a set weight override this.
+    fn layout_flex(&self) -> f32 {
+        1.0
+    }
+
+    /// Add `child` into the container named `parent_name`, searching this
+    /// widget and its descendants. Returns `None` if it was placed, or
+    /// `Some(child)` (unconsumed) if `parent_name` wasn't found here — the
+    /// top-down counterpart to `add_child`, used by the Flutter realizer which
+    /// creates parents before children.
+    fn add_child_to(
+        &mut self,
+        parent_name: &str,
+        child: Box<dyn PanelWidget>,
+    ) -> Option<Box<dyn PanelWidget>> {
+        if self.name() == parent_name {
+            self.add_child(child)
+        } else {
+            Some(child)
+        }
     }
 
     /// Handle a mouse event. Returns `true` if the event was consumed.
@@ -1035,8 +1090,8 @@ impl FocusManager {
         cmd: &WidgetCommand,
     ) -> CommandValue {
         for w in widgets.iter_mut() {
-            if w.name() == name {
-                return w.handle_command(cmd);
+            if let Some(result) = w.send_command_named(name, cmd) {
+                return result;
             }
         }
         CommandValue::None
