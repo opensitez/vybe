@@ -165,6 +165,16 @@ pub enum DebugCommand {
     StreamOpcodes {
         enabled: bool,
     },
+    /// Toggle whether the entry pause skips the runtime prelude (default on).
+    SetSkipSystem {
+        enabled: bool,
+    },
+    /// Simulate a GUI event: invoke `control`'s `event` handler through the live
+    /// VM (e.g. a button Click or window Close) without an OS window.
+    FireEvent {
+        control: String,
+        event: String,
+    },
 }
 
 // ─── Protocol: VM → client (replies) ────────────────────────────────────────
@@ -345,6 +355,24 @@ pub struct Debugger {
     /// Set once the first instruction has been seen (so PauseNext doesn't fire
     /// on the same instruction it was requested from).
     armed: bool,
+    /// When true (default), the entry pause is skipped over the injected runtime
+    /// prelude and lands on the first line of the user's own code
+    /// (`<script>.user_code_offset`). Toggle with `skip-system off` to debug the
+    /// prelude/runtime. Only affects the initial entry pause; explicit
+    /// breakpoints inside the prelude still fire.
+    skip_system: bool,
+    /// One-time latch so the prelude-skip only arms on the first instruction.
+    prelude_skip_done: bool,
+    /// A resuming command (`continue`/`step`/`next`/`out`/`run-to`) whose reply is
+    /// held until the VM next pauses — see `Flow::Resume { await_stop }`. Flushed
+    /// in `enter_pause`; if the program instead runs to completion the `Sender`
+    /// drops with the debugger, unblocking the client via a closed channel.
+    pending_reply: Option<Sender<DebugResponse>>,
+    /// True during the prelude-skip auto-run (entry → first user-code pause).
+    /// While set, `on_instruction` does not service client commands, so a piped
+    /// command batch waits in the channel and is processed in order at the first
+    /// real pause instead of being consumed mid-run. Cleared in `enter_pause`.
+    defer_cmds_until_pause: bool,
 }
 
 impl Debugger {
@@ -372,6 +400,10 @@ impl Debugger {
             stream_opcodes: false,
             watches: Vec::new(),
             armed: false,
+            skip_system: true,
+            prelude_skip_done: false,
+            pending_reply: None,
+            defer_cmds_until_pause: false,
         }
     }
 
@@ -382,6 +414,33 @@ impl Debugger {
             return Ok(());
         }
         let chunk_index = vm.frames.last().unwrap().chunk_index;
+
+        // 0. Prelude skip (once, on the very first instruction). If the entry
+        //    pause is requested and the script chunk marked where user code
+        //    begins, convert the entry pause into a one-shot stop at that offset
+        //    and run there — so the first pause lands in the user's own code,
+        //    not ~200k instructions deep in the runtime prelude. `skip-system
+        //    off` disables this. Explicit breakpoints inside the prelude still
+        //    fire (they're checked independently).
+        if !self.prelude_skip_done {
+            self.prelude_skip_done = true;
+            if self.skip_system
+                && matches!(self.mode, RunMode::PauseNext)
+                && !self.armed
+            {
+                if let Some(off) = vm.chunks.first().and_then(|c| c.user_code_offset) {
+                    self.push_breakpoint(0, off as usize, None, None, /* one_shot */ true);
+                    self.mode = RunMode::Running;
+                    // Until we reach that first user-code pause we are auto-running
+                    // ~200k prelude instructions. Do NOT service client commands
+                    // during that window — a piped command stream would otherwise
+                    // be consumed mid-run (a `c` absorbed by the prelude-skip stop).
+                    // Hold them in the channel so the first batch is processed, in
+                    // order, at the first real pause (`enter_pause` clears this).
+                    self.defer_cmds_until_pause = true;
+                }
+            }
+        }
 
         // 1. Live opcode stream (filterable VYBE_TRACE replacement).
         if self.stream_opcodes {
@@ -399,16 +458,34 @@ impl Debugger {
         }
 
         // 2. Service any async requests that arrived while running (pause, set-bp,
-        //    inspect). Non-blocking; may flip mode so step 3 stops.
-        if !matches!(self.mode, RunMode::Paused) {
+        //    inspect). Non-blocking; may flip mode so step 3 stops. Suppressed
+        //    during the pre-first-pause prelude-skip auto-run (see step 0) so a
+        //    piped command batch isn't consumed mid-run.
+        if !matches!(self.mode, RunMode::Paused) && !self.defer_cmds_until_pause {
             while let Ok(req) = self.cmd_rx.try_recv() {
                 let ctrl = self.handle_command(vm, req.command, chunk_index, ip);
-                let _ = req.reply.send(ctrl.response);
                 match ctrl.flow {
-                    Flow::Stay => {}
-                    Flow::Resume(mode) => self.mode = mode,
-                    Flow::Quit => return Err(VMError::new("__debug_quit__")),
-                    Flow::Restart => return Err(VMError::new("__debug_restart__")),
+                    Flow::Stay => {
+                        let _ = req.reply.send(ctrl.response);
+                    }
+                    Flow::Resume { mode, await_stop } => {
+                        self.mode = mode;
+                        // Defer the reply until the next stop (see `enter_pause`);
+                        // reply now only for non-awaiting resumes (detach/pause).
+                        if await_stop {
+                            self.pending_reply = Some(req.reply);
+                        } else {
+                            let _ = req.reply.send(ctrl.response);
+                        }
+                    }
+                    Flow::Quit => {
+                        let _ = req.reply.send(ctrl.response);
+                        return Err(VMError::new("__debug_quit__"));
+                    }
+                    Flow::Restart => {
+                        let _ = req.reply.send(ctrl.response);
+                        return Err(VMError::new("__debug_restart__"));
+                    }
                 }
             }
         }
@@ -534,6 +611,19 @@ impl Debugger {
             watches,
         });
 
+        // We have actually stopped — the prelude-skip auto-run (if any) is over,
+        // so resume normal command servicing in `on_instruction`.
+        self.defer_cmds_until_pause = false;
+
+        // Release the reply held from the resuming command that got us here
+        // (`continue`/`step`/…). This is the whole point of deferral: the client's
+        // `send_and_print` was blocked until *now*, so it only reads its next piped
+        // command while we are genuinely paused. No reply is pending on the entry
+        // pause or a fresh interrupt — that's fine.
+        if let Some(reply) = self.pending_reply.take() {
+            let _ = reply.send(DebugResponse::Ok);
+        }
+
         loop {
             let req = match self.cmd_rx.recv() {
                 Ok(r) => r,
@@ -544,16 +634,31 @@ impl Debugger {
                 }
             };
             let ctrl = self.handle_command(vm, req.command, chunk_index, ip);
-            let _ = req.reply.send(ctrl.response);
             match ctrl.flow {
-                Flow::Stay => continue,
-                Flow::Resume(mode) => {
+                Flow::Stay => {
+                    let _ = req.reply.send(ctrl.response);
+                    continue;
+                }
+                Flow::Resume { mode, await_stop } => {
                     self.mode = mode;
+                    // Hold the reply until the next stop (flushed above) so the
+                    // client blocks here; reply now for non-awaiting resumes.
+                    if await_stop {
+                        self.pending_reply = Some(req.reply);
+                    } else {
+                        let _ = req.reply.send(ctrl.response);
+                    }
                     let _ = self.evt_tx.send(DebugEvent::Resumed);
                     return Ok(());
                 }
-                Flow::Quit => return Err(VMError::new("__debug_quit__")),
-                Flow::Restart => return Err(VMError::new("__debug_restart__")),
+                Flow::Quit => {
+                    let _ = req.reply.send(ctrl.response);
+                    return Err(VMError::new("__debug_quit__"));
+                }
+                Flow::Restart => {
+                    let _ = req.reply.send(ctrl.response);
+                    return Err(VMError::new("__debug_restart__"));
+                }
             }
         }
     }
@@ -569,17 +674,17 @@ impl Debugger {
     ) -> Control {
         use DebugCommand::*;
         match command {
-            Continue => Control::resume(DebugResponse::Ok, RunMode::Running),
+            Continue => Control::resume_await(DebugResponse::Ok, RunMode::Running),
             Detach => Control::resume(DebugResponse::Ok, RunMode::Running),
-            StepInto | StepInstruction => Control::resume(DebugResponse::Ok, RunMode::PauseNext),
-            StepOver => Control::resume(
+            StepInto | StepInstruction => Control::resume_await(DebugResponse::Ok, RunMode::PauseNext),
+            StepOver => Control::resume_await(
                 DebugResponse::Ok,
                 RunMode::StepOver {
                     target_depth: vm.frames.len(),
                     fiber: vm.cur_fiber_id,
                 },
             ),
-            StepOut => Control::resume(
+            StepOut => Control::resume_await(
                 DebugResponse::Ok,
                 RunMode::StepOut {
                     target_depth: vm.frames.len(),
@@ -601,9 +706,39 @@ impl Debugger {
             }
             BreakSourceLine { line, condition } => self.set_source_line_breakpoint(vm, line, condition),
             BreakFunction { name, condition } => {
-                match resolve_chunk(vm, &ChunkRef::Name(name.clone())) {
-                    Some(ci) => self.install_breakpoint(vm, ci, 0, condition),
-                    None => Control::stay(DebugResponse::Error(format!("no function named '{name}'"))),
+                // A function name is NOT unique: overrides across a class
+                // hierarchy compile to separate chunks that share a name (e.g.
+                // three `whoami` chunks for A/B/C). Breaking on only the first
+                // match silently misses the one that actually runs. Install on
+                // EVERY chunk with this name so the breakpoint fires wherever
+                // control lands.
+                let matches: Vec<usize> = vm
+                    .chunks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| c.name == *name)
+                    .map(|(i, _)| i)
+                    .collect();
+                if matches.is_empty() {
+                    Control::stay(DebugResponse::Error(format!("no function named '{name}'")))
+                } else {
+                    let mut last_id = 0;
+                    for ci in &matches {
+                        last_id = self.push_breakpoint(*ci, 0, condition.clone(), None, false);
+                    }
+                    let ci0 = matches[0];
+                    let line = vm.chunks.get(ci0).and_then(|c| c.get_line(0));
+                    let chunk = if matches.len() > 1 {
+                        format!("{name} (×{})", matches.len())
+                    } else {
+                        name.clone()
+                    };
+                    Control::stay(DebugResponse::BreakpointSet {
+                        id: last_id,
+                        chunk,
+                        offset: 0,
+                        line,
+                    })
                 }
             }
             Logpoint { line, message } => {
@@ -622,8 +757,8 @@ impl Debugger {
                 for (ci, off) in targets {
                     self.push_breakpoint(ci, off, None, None, /* one_shot */ true);
                 }
-                // …and resume until it's hit.
-                Control::resume(DebugResponse::Ok, RunMode::Running)
+                // …and resume until it's hit (defer the reply until we stop there).
+                Control::resume_await(DebugResponse::Ok, RunMode::Running)
             }
             SetIgnoreCount { id, count } => {
                 if let Some(bp) = self.breakpoints.iter_mut().find(|b| b.id == id) {
@@ -706,8 +841,13 @@ impl Debugger {
                         Control::stay(match vm.debug_eval(&path, &locals) {
                             Ok(v) => DebugResponse::Value(render_value(&v)),
                             // Prefer the eval error, but if eval is unavailable
-                            // surface the structural error (more actionable).
-                            Err(e) if e.starts_with("expression eval unavailable") => {
+                            // for this language the structural error is the real,
+                            // actionable one ("no field `x`") — surface it instead
+                            // of the generic "eval isn't available" noise.
+                            Err(e)
+                                if e.contains("eval unavailable")
+                                    || e.contains("eval isn't available") =>
+                            {
                                 DebugResponse::Error(struct_err)
                             }
                             Err(e) => DebugResponse::Error(e),
@@ -763,6 +903,17 @@ impl Debugger {
                 self.stream_opcodes = enabled;
                 Control::stay(DebugResponse::Ok)
             }
+            SetSkipSystem { enabled } => {
+                self.skip_system = enabled;
+                Control::stay(DebugResponse::Value(format!(
+                    "skip-system {}",
+                    if enabled { "on" } else { "off" }
+                )))
+            }
+            FireEvent { control, event } => Control::stay(match vm.fire_event(&control, &event) {
+                Ok(v) => DebugResponse::Value(format!("fired {control}.{event} → {}", render_value(&v))),
+                Err(e) => DebugResponse::Error(e),
+            }),
         }
     }
 
@@ -930,7 +1081,13 @@ impl Debugger {
 
 enum Flow {
     Stay,
-    Resume(RunMode),
+    /// Resume execution. When `await_stop` is true the command's reply is
+    /// *deferred* until the VM next pauses (or the program ends) — this is what
+    /// makes `continue`/`step`/`next`/`out`/`run-to` block the client until the
+    /// next stop, so a one-shot piped command stream stays in lock-step instead
+    /// of racing ahead into a running VM. `await_stop` is false only for commands
+    /// that resume and never come back on their own (detach, async pause-request).
+    Resume { mode: RunMode, await_stop: bool },
     Quit,
     Restart,
 }
@@ -947,10 +1104,20 @@ impl Control {
             flow: Flow::Stay,
         }
     }
+    /// Resume and reply immediately (detach / async pause-request — no guaranteed
+    /// next stop to defer the reply to).
     fn resume(response: DebugResponse, mode: RunMode) -> Self {
         Control {
             response,
-            flow: Flow::Resume(mode),
+            flow: Flow::Resume { mode, await_stop: false },
+        }
+    }
+    /// Resume and defer the reply until the next pause — the correct behavior for
+    /// stepping/continue so the client blocks until execution actually stops.
+    fn resume_await(response: DebugResponse, mode: RunMode) -> Self {
+        Control {
+            response,
+            flow: Flow::Resume { mode, await_stop: true },
         }
     }
 }

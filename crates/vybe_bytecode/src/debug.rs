@@ -52,7 +52,23 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
         }
         OperandFormat::U16 => {
             let idx = chunk.read_u16(operand_start);
-            let extra = if op == Op::CONST && (idx as usize) < chunk.constants.len() {
+            // Ops whose U16 operand indexes the constant pool for a key/name/
+            // value string. Resolving it is essential for reading property
+            // access (`struct.get "prototype"`), global access (`global.get
+            // "B"`), and literals — without it a disassembly of e.g. a super
+            // chain is unreadable (just `struct.get 1/2/3`). LOCAL_GET/SET use
+            // a *slot* index, not the constant pool, so they are excluded.
+            let references_constant = matches!(
+                op,
+                Op::CONST
+                    | Op::GLOBAL_GET
+                    | Op::GLOBAL_SET
+                    | Op::STRUCT_GET
+                    | Op::STRUCT_GET_S
+                    | Op::STRUCT_GET_U
+                    | Op::STRUCT_SET
+            );
+            let extra = if references_constant && (idx as usize) < chunk.constants.len() {
                 format!(" ({})", chunk.constants[idx as usize])
             } else {
                 String::new()

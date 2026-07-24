@@ -190,6 +190,13 @@ pub struct Chunk {
     /// name per slot. Empty when the frontend emitted no debug names. Never
     /// read during execution — inspection/eval only.
     pub local_names: Vec<(u16, String)>,
+    /// Debug metadata (script chunk only): bytecode offset where the user's
+    /// own code begins, i.e. just past the injected language runtime prelude
+    /// (`__vybe_user_code_start__` marker). `None` when there is no prelude or
+    /// the frontend didn't mark it. The step debugger uses it to land the first
+    /// pause in user code and to skip/step-over "system" (prelude) code. Never
+    /// read during execution.
+    pub user_code_offset: Option<u32>,
     /// Import table — only on the script chunk (chunk 0).
     /// Each entry is a (module, name) pair.
     /// CallHost operand indexes into this table.
@@ -314,6 +321,7 @@ impl Chunk {
             arity: 0,
             local_count: 0,
             local_names: Vec::new(),
+            user_code_offset: None,
             dup_slot: None,
             imports: Vec::new(),
             types: Vec::new(),

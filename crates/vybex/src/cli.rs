@@ -546,10 +546,41 @@ pub fn run() {
         vm.set_reload_hook(Box::new(move |_live| {
             recompile_for_reload(&reload_path, reload_caps.clone())
         }));
+
+        // Install the event simulator: look up the control's handler in the live
+        // GUI state and invoke it through the VM, so the debugger can fire a
+        // click / window-close without an OS window. The lock is released before
+        // invoking (the handler re-enters host fns that lock the same GuiState).
+        // Args are built by handler ARITY — the same framework-agnostic rule the
+        // real window uses (gui_launch::invoke_callback): 0→[], 1→[me], 2→[me,
+        // sender], _→[me, sender, null], where `me` is the form and `sender` is
+        // the control name. So this fits Dart's 0-arg closures AND .NET/VB
+        // `(sender, e)`-style handlers with no language special-casing.
+        let fire_gui = gui.clone();
+        vm.set_event_fire_hook(Box::new(move |vm, control, event| {
+            let handler = {
+                let g = fire_gui.lock().map_err(|_| "gui state unavailable".to_string())?;
+                g.get_event_handler(control, event).cloned()
+            };
+            let Some(cb) = handler else {
+                return Err(format!(
+                    "no `{event}` handler on `{control}` (see `widgets` for wired events)"
+                ));
+            };
+            let me = vm.globals.get("__f").cloned().unwrap_or(vybe_bytecode::Value::Null);
+            let sender = vybe_bytecode::Value::String(std::sync::Arc::from(control));
+            let args: Vec<vybe_bytecode::Value> = match crate::gui_launch::fn_arity(&cb) {
+                0 => vec![],
+                1 => vec![me],
+                2 => vec![me, sender],
+                _ => vec![me, sender, vybe_bytecode::Value::Null],
+            };
+            Ok(vm.invoke_callback(&cb, &args))
+        }));
         if let Some(port) = dap_port {
             crate::dap::attach(&mut vm, port, source_path.display().to_string());
         } else {
-            crate::debug_repl::attach(&mut vm);
+            crate::debug_repl::attach(&mut vm, gui.clone());
         }
     }
 
@@ -558,11 +589,19 @@ pub fn run() {
         crate::dynamic::RuntimeCompilerService::with_capabilities(&mut vm, dynamic_compile_caps);
     match runtime_compiler.run_compiled(compiled) {
         Ok(v) => {
-            if debug {
+            // A GUI program hasn't really finished when `run_compiled` returns —
+            // `runApplication` set `should_run` and the window/event loop is
+            // launched below. Under the debugger we must let that happen (so
+            // breakpoints in click handlers fire, via `vm.invoke` re-entering the
+            // instrumented dispatch loop); only report "exited" for a program with
+            // no GUI. Without this, `--debug` on a GUI app exited before the window
+            // ever showed.
+            let gui_should_run = gui.lock().unwrap().should_run;
+            if debug && !gui_should_run {
                 eprintln!("\n● program exited → {v}");
                 std::process::exit(0);
             }
-            if dap_port.is_some() {
+            if dap_port.is_some() && !gui_should_run {
                 // The client sees the socket close and ends the session.
                 std::process::exit(0);
             }

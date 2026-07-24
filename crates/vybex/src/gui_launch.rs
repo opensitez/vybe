@@ -390,12 +390,20 @@ impl FormApp {
                 me.type_tag()
             );
         }
+        let _t0 = std::time::Instant::now();
         let result = match arity {
             0 => vm.invoke(cb, &[]),
             1 => vm.invoke(cb, &[me]),
             2 => vm.invoke(cb, &[me, sender]),
             _ => vm.invoke(cb, &[me, sender, vybe_bytecode::Value::Null]),
         };
+        if Self::gui_trace_enabled() {
+            eprintln!(
+                "[gui] callback elapsed={:.1}ms control={}",
+                _t0.elapsed().as_secs_f64() * 1000.0,
+                control_name
+            );
+        }
         if let Err(e) = result {
             eprintln!("Event handler error: {e}");
         } else if Self::gui_trace_enabled() {
@@ -673,7 +681,7 @@ impl FormApp {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-fn fn_arity(val: &vybe_bytecode::Value) -> usize {
+pub(crate) fn fn_arity(val: &vybe_bytecode::Value) -> usize {
     match val {
         vybe_bytecode::Value::Object(obj) => match &obj.lock().unwrap().kind {
             vybe_bytecode::value::ObjectKind::Function(f) => f.arity as usize,

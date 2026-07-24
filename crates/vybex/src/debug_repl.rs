@@ -9,16 +9,21 @@
 
 use std::io::{BufRead, Write};
 use std::sync::mpsc::{Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use vybe_bytecode::debugger::{
     ChunkRef, DebugEvent, DebugResponse, FrameInfo, Location, PauseReason,
 };
 use vybe_bytecode::{DebugCommand, DebugRequest, VM};
+use vybe_host::gui_state::GuiState;
 
 /// Attach a debugger to `vm` and spawn the REPL worker threads. Call this before
-/// running the VM; it pauses on entry so breakpoints can be set first.
-pub fn attach(vm: &mut VM) {
+/// running the VM; it pauses on entry so breakpoints can be set first. `gui` is
+/// the live GUI state shared with the host functions — the `widgets` command
+/// reads it directly (client-side), so it reflects live controls regardless of
+/// the isolated eval VM.
+pub fn attach(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
     let (cmd_tx, cmd_rx) = channel::<DebugRequest>();
     let (evt_tx, evt_rx) = channel::<DebugEvent>();
     vm.attach_debugger(cmd_rx, evt_tx, /* pause_on_entry */ true);
@@ -42,6 +47,14 @@ pub fn attach(vm: &mut VM) {
             if line.is_empty() {
                 continue;
             }
+            // `widgets`/`gui`/`controls` are handled entirely client-side: they
+            // read the live GuiState Arc directly (safe to lock while the VM is
+            // paused or running), so they never round-trip through the VM.
+            let head = line.split_whitespace().next().unwrap_or("");
+            if matches!(head, "widgets" | "controls") {
+                print_widgets(&gui);
+                continue;
+            }
             match parse_command(line) {
                 Ok(command) => {
                     if !send_and_print(&cmd_tx, command) {
@@ -52,6 +65,51 @@ pub fn attach(vm: &mut VM) {
             }
         }
     });
+}
+
+/// Dump the live GUI state (controls, their properties, wired events). Reads the
+/// shared `GuiState` directly — reflects the live program, not the eval VM.
+fn print_widgets(gui: &Arc<Mutex<GuiState>>) {
+    let g = match gui.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            eprintln!("  (gui state unavailable)");
+            return;
+        }
+    };
+    if g.control_names.is_empty() {
+        eprintln!("  (no controls realized yet)");
+        return;
+    }
+    eprintln!(
+        "  form {}×{}  running={}  ({} control(s))",
+        g.width,
+        g.height,
+        g.should_run,
+        g.control_names.len()
+    );
+    for name in &g.control_names {
+        // Properties recorded for this control (keyed by (control, prop_lower)).
+        let mut props: Vec<String> = g
+            .properties
+            .iter()
+            .filter(|((c, _), _)| c.eq_ignore_ascii_case(name))
+            .map(|((_, p), v)| format!("{p}={v}"))
+            .collect();
+        props.sort();
+        // Events wired on this control (keys are "control.event").
+        let mut events: Vec<String> = g
+            .event_handlers
+            .keys()
+            .filter_map(|k| k.rsplit_once('.'))
+            .filter(|(c, _)| c.eq_ignore_ascii_case(name))
+            .map(|(_, ev)| ev.to_string())
+            .collect();
+        events.sort();
+        let prop_str = if props.is_empty() { String::new() } else { format!("  {{{}}}", props.join(", ")) };
+        let evt_str = if events.is_empty() { String::new() } else { format!("  events[{}]", events.join(",")) };
+        eprintln!("  • {name}{prop_str}{evt_str}");
+    }
 }
 
 fn banner() {
@@ -172,6 +230,24 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
         "restart" | "R" => DebugCommand::Restart,
         "trace" => DebugCommand::StreamOpcodes {
             enabled: rest.first() != Some(&"off"),
+        },
+        "skip-system" | "sys" => DebugCommand::SetSkipSystem {
+            enabled: rest.first() != Some(&"off"),
+        },
+
+        // ── simulate GUI events (fire a handler through the live VM) ──
+        "click" | "tap" => DebugCommand::FireEvent {
+            control: rest.first().ok_or("usage: click <control>  (see `widgets` for names)")?.to_string(),
+            event: "Click".to_string(),
+        },
+        "fire" => {
+            let control = rest.first().ok_or("usage: fire <control> <event>")?.to_string();
+            let event = rest.get(1).ok_or("usage: fire <control> <event>")?.to_string();
+            DebugCommand::FireEvent { control, event }
+        }
+        "close" | "window-close" => DebugCommand::FireEvent {
+            control: rest.first().unwrap_or(&"form").to_string(),
+            event: "Close".to_string(),
         },
 
         // ── function breakpoint / logpoint / run-to-cursor / ignore ──
@@ -423,6 +499,7 @@ fn print_help() {
          \x20 data:     wp <name> watchpoint · wps list · unwp clear · fibers/threads · restart\n\
          \x20 inspect:  bt backtrace · locals [frame] · stack · g/globals [prefix] · dis [n] · chunks\n\
          \x20 vars:     p <name>[.field][idx] or p <expr> · set <name> = <literal> · watch <expr> · watches · unwatch\n\
+         \x20 gui:      widgets/controls · click <control> · fire <control> <event> · close [control]\n\
          \x20 reload:   reload  (recompile + swap changed fn bodies in place; heap/globals kept)\n\
          \x20 stream:   trace on|off  (live opcode stream — the VYBE_TRACE replacement)\n\
          \x20 chunk may be a name or a numeric index (see `chunks`)."

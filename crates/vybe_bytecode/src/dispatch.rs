@@ -94,6 +94,19 @@ impl VM {
 }
 use std::sync::{Arc, Mutex};
 
+fn make_operation_cancelled_error() -> Value {
+    let mut obj = Object::new();
+    let name = Value::String(Arc::from("OperationCanceledException"));
+    obj.properties.insert("name".into(), name.clone());
+    obj.properties.insert("__type".into(), name.clone());
+    obj.properties.insert("__exception_type".into(), name);
+    obj.properties.insert(
+        "message".into(),
+        Value::String(Arc::from("The operation was canceled.")),
+    );
+    Value::Object(Arc::new(Mutex::new(obj)))
+}
+
 // ── Block table ──────────────────────────────────────────────────────────────
 
 /// Scan `code` once and build a map from every BLOCK/LOOP/IF/ELSE opcode
@@ -502,6 +515,10 @@ impl VM {
                 .get("__type")
                 .map(|v| format!("{}", v))
                 .unwrap_or_default();
+            if ty == "Task" {
+                drop(o);
+                return self.await_task_object(arc);
+            }
             if ty != "Promise" {
                 // Raw thenable (callable `then`): §27.2.1.3.2 PromiseResolve
                 // adopts its eventual state. The host promise engine already
@@ -616,6 +633,112 @@ impl VM {
             }
             self.push(value)?;
             return Ok(());
+        }
+    }
+
+    fn await_task_object(&mut self, task_obj: Arc<Mutex<Object>>) -> Result<(), VMError> {
+        self.join_task_object_if_needed(&task_obj);
+
+        let delay_token_cancelled = self.task_delay_token_cancelled(&task_obj);
+        let (status, result, exception) = {
+            let task = task_obj.lock().unwrap();
+            let status = task
+                .properties
+                .get("status")
+                .map(|v| format!("{}", v))
+                .unwrap_or_default();
+            let result = task.properties.get("result").cloned().unwrap_or(Value::Null);
+            let exception = task.properties.get("exception").cloned();
+            (status, result, exception)
+        };
+
+        let faulted = delay_token_cancelled
+            || status.eq_ignore_ascii_case("Faulted")
+            || status.eq_ignore_ascii_case("Canceled")
+            || exception
+                .as_ref()
+                .is_some_and(|v| !matches!(v, Value::Null | Value::Undefined));
+
+        if faulted {
+            let reason = exception.unwrap_or_else(|| {
+                if delay_token_cancelled || status.eq_ignore_ascii_case("Canceled") {
+                    make_operation_cancelled_error()
+                } else {
+                    Value::String(Arc::from("Task faulted"))
+                }
+            });
+            if !self.async_floors.is_empty() {
+                let id = self.event_loop.borrow_mut().next_promise_id();
+                self.pending_settled_await = Some((id, reason, true));
+                return Err(VMError::new(format!("__jspi__:{}", id)));
+            }
+            if self.top_level_await_ticks() {
+                return Err(self.tick_top_level_await(reason, true));
+            }
+            return self.raise_exception_value(reason);
+        }
+
+        if !self.async_floors.is_empty() {
+            let id = self.event_loop.borrow_mut().next_promise_id();
+            self.pending_settled_await = Some((id, result, false));
+            return Err(VMError::new(format!("__jspi__:{}", id)));
+        }
+        if self.top_level_await_ticks() {
+            return Err(self.tick_top_level_await(result, false));
+        }
+        self.push(result)?;
+        Ok(())
+    }
+
+    fn task_delay_token_cancelled(&self, task_obj: &Arc<Mutex<Object>>) -> bool {
+        let token = {
+            let task = task_obj.lock().unwrap();
+            task.properties.get("__dotnet_delay_token").cloned()
+        };
+        let Some(Value::Object(token_obj)) = token else {
+            return false;
+        };
+        let token = token_obj.lock().unwrap();
+        ["__dotnet_cancelled", "IsCancellationRequested"]
+            .iter()
+            .any(|key| {
+                token
+                    .properties
+                    .get(*key)
+                    .is_some_and(|value| matches!(value, Value::Bool(true)))
+            })
+    }
+
+    fn join_task_object_if_needed(&mut self, task_obj: &Arc<Mutex<Object>>) {
+        let tid = {
+            let task = task_obj.lock().unwrap();
+            task.properties
+                .get("__thread_id")
+                .map(|v| v.as_f64() as i32)
+                .unwrap_or(-1)
+        };
+        if let Some(handle) = self.thread_handles.remove(&tid) {
+            let success = match handle.join() {
+                Ok(result) => result.first().copied().unwrap_or(1) == 0,
+                Err(_) => false,
+            };
+            let mut task = task_obj.lock().unwrap();
+            task.properties
+                .insert("iscompleted".into(), Value::Bool(true));
+            task.properties.insert("isalive".into(), Value::Bool(false));
+            task.properties.insert("hasexited".into(), Value::Bool(true));
+            task.properties.insert(
+                "exitcode".into(),
+                Value::I32(if success { 0 } else { -1 }),
+            );
+            task.properties.insert(
+                "status".into(),
+                Value::String(Arc::from(if success {
+                    "RanToCompletion"
+                } else {
+                    "Faulted"
+                })),
+            );
         }
     }
 
@@ -4960,7 +5083,11 @@ impl VM {
                                     vec![0u8]
                                 }
                                 Err(e) => {
+                                    let thrown = child_vm.last_exception.take().unwrap_or_else(|| {
+                                        Value::String(Arc::from(e.message.as_str()))
+                                    });
                                     let mut t = task_for_child.lock().unwrap();
+                                    t.properties.insert("exception".into(), thrown);
                                     t.properties.insert("iscompleted".into(), Value::Bool(true));
                                     t.properties.insert("isalive".into(), Value::Bool(false));
                                     t.properties.insert("hasexited".into(), Value::Bool(true));

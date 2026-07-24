@@ -752,6 +752,13 @@ pub struct VM {
     /// swap. `None` → hot reload reports as unavailable.
     #[allow(clippy::type_complexity)]
     pub(crate) reload_hook: Option<Box<dyn FnMut(&mut VM) -> Result<Vec<Chunk>, String>>>,
+    /// Debugger event simulator. Installed by the shell (captures the live GUI
+    /// state): given `(control, event)` it looks up the registered handler and
+    /// invokes it through this VM, so a click/close can be fired from the
+    /// debugger without an OS window. `None` → simulating reports as unavailable.
+    #[allow(clippy::type_complexity)]
+    pub(crate) event_fire_hook:
+        Option<Box<dyn FnMut(&mut VM, &str, &str) -> Result<Value, String>>>,
     /// Single hot-path gate = `trace || debugger.is_some()`. Kept in sync by
     /// `set_trace` / `attach_debugger` / `detach_debugger` so the dispatch loop
     /// tests one bool, not two.
@@ -902,6 +909,7 @@ impl VM {
             debugger: None,
             eval_hook: None,
             reload_hook: None,
+            event_fire_hook: None,
             instrumented: std::env::var("VYBE_TRACE").map_or(false, |v| v == "1" || v == "true"),
             handle_table: crate::handle_table::HandleTable::new(),
             cm_tasks: Vec::new(),
@@ -963,6 +971,31 @@ impl VM {
             None => Err("expression eval unavailable (no compiler hook attached)".to_string()),
         };
         self.eval_hook = hook;
+        result
+    }
+
+    /// Install the debugger's event simulator (see the `event_fire_hook` field).
+    #[allow(clippy::type_complexity)]
+    pub fn set_event_fire_hook(
+        &mut self,
+        hook: Box<dyn FnMut(&mut VM, &str, &str) -> Result<Value, String>>,
+    ) {
+        self.event_fire_hook = Some(hook);
+    }
+
+    /// Fire a GUI event (`control`.`event`) by invoking its registered handler
+    /// through this live VM — lets the debugger simulate a click / window-close
+    /// without an OS window. Breakpoints inside the handler fire normally
+    /// (`invoke_callback` re-enters the instrumented dispatch loop). Returns the
+    /// handler's result, or an error if no simulator is attached / no handler is
+    /// registered for that control+event.
+    pub fn fire_event(&mut self, control: &str, event: &str) -> Result<Value, String> {
+        let mut hook = self.event_fire_hook.take();
+        let result = match hook.as_mut() {
+            Some(h) => h(self, control, event),
+            None => Err("event simulation unavailable (no gui hook attached)".to_string()),
+        };
+        self.event_fire_hook = hook;
         result
     }
 
@@ -1547,6 +1580,34 @@ impl VM {
         // `host_registry` remains the fast lookup path; `modules` is
         // the spec-aligned per-module view.
         self.insert_host_module_export(module, name, ExportEntry::Function { idx });
+    }
+
+    /// Debugger-eval support: replace this VM's host-function closures with the
+    /// ones registered under the same `(module, name)` in `live`, so host calls
+    /// evaluated in this VM hit the LIVE program's captured host state (e.g. the
+    /// shared `GuiState` Arc) instead of this VM's fresh, empty state.
+    ///
+    /// Matched **by name**, not by index: this VM keeps its own index scheme, so
+    /// the eval fragment's imports (linked against this VM's `host_registry`) and
+    /// any copied namespace refs still resolve. Only the closures' captured
+    /// *side-state* is shared — execution and exception state stay isolated in
+    /// this separate VM, which is what keeps eval from perturbing the paused
+    /// program (a throw is contained here, never on the live handler stack).
+    ///
+    /// This shares live host state for **reads**; a host fn whose effect is on
+    /// `HostContext.vm` (allocation, callbacks, the event loop) still runs
+    /// against *this* VM, so it won't mutate the live program. That's the correct
+    /// boundary for a debugger.
+    pub fn overlay_host_fns_from(&mut self, live: &VM) {
+        for ((module, name), &live_idx) in &live.host_registry {
+            if let Some(&idx) = self.host_registry.get(&(module.clone(), name.clone())) {
+                if let (Some(dst), Some(src)) =
+                    (self.host_fns.get_mut(idx), live.host_fns.get(live_idx))
+                {
+                    *dst = src.clone();
+                }
+            }
+        }
     }
 
     /// Authoritative host function export view used by both the ESM linker
