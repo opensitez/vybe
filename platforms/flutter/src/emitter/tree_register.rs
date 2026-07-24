@@ -28,24 +28,45 @@ fn ctor_spec(class: &FlutterClass) -> CtorSpec {
     for iface in class.interfaces {
         ancestry.push((*iface).to_string());
     }
+    // Leaf controls whose child/label Text IS the control's own caption (a
+    // button's face), rather than a nested child control.
+    let is_captioned_leaf = matches!(
+        class.name,
+        "ElevatedButton"
+            | "TextButton"
+            | "OutlinedButton"
+            | "CupertinoButton"
+            | "FloatingActionButton"
+            | "Chip"
+            | "ActionChip"
+            | "FilterChip"
+            | "ChoiceChip"
+    );
     let field_gui = class
         .fields
         .iter()
         .map(|f| {
-            let caption = (class.name == "ElevatedButton" && f.name == "child")
-                || (class.name == "AppBar" && f.name == "title");
+            let caption = (is_captioned_leaf && (f.name == "child" || f.name == "label"))
+                || (class.name == "AppBar" && f.name == "title")
+                || (class.name == "Tab" && f.name == "text");
             if caption {
                 // A leaf control (button/app-bar) takes its child Text as its
                 // own caption, not as a nested child.
                 FieldGui::Caption
             } else if f.children {
                 FieldGui::Children
-            } else if f.name == "onPressed" || f.name == "onLongPress" {
+            } else if is_callback_field(f.name) {
+                // Every user callback (`onPressed`/`onChanged`/`onTap`/…) wires
+                // to the control's event; the host routes control events
+                // (ButtonClicked/CheckboxToggled/TextChanged/SelectChanged) to
+                // the "Click" handler.
                 FieldGui::Event("Click".to_string())
             } else if f.name == "data" {
                 // `Text('x').data` is the control's caption.
                 FieldGui::NestOrProp("Text".to_string())
             } else {
+                // Semantic value fields (`value`/`min`/`max`/`text`/…) forward
+                // as `Set<Prop>` commands to the backing control.
                 FieldGui::NestOrProp(f.name.to_string())
             }
         })
@@ -56,7 +77,40 @@ fn ctor_spec(class: &FlutterClass) -> CtorSpec {
         ancestry,
         control_fn: class.widget_host_fn.map(str::to_string),
         field_gui,
+        value_equality: is_value_equality_type(class.name),
     }
+}
+
+/// A user-supplied callback field (wires to the control's event, not a prop).
+/// Flutter names all handlers `on…`: `onPressed`/`onChanged`/`onTap`/
+/// `onLongPress`/`onDoubleTap`/`onSelected`/`onDeleted`/`onDismissed`/
+/// `onPageChanged`/`onClosing`/`onSaved`.
+fn is_callback_field(name: &str) -> bool {
+    name.starts_with("on")
+        && name.len() > 2
+        && name.as_bytes()[2].is_ascii_uppercase()
+}
+
+/// Flutter immutable value types whose `operator ==` is by VALUE (structural),
+/// not identity. Keys are the classic case (`ValueKey('a') == ValueKey('a')`);
+/// so are the small geometry/paint value classes. Identity types (`GlobalKey`,
+/// `UniqueKey`, `FocusNode`, controllers, notifiers) are deliberately EXCLUDED —
+/// two distinct instances are never equal.
+fn is_value_equality_type(name: &str) -> bool {
+    matches!(
+        name,
+        "Key"
+            | "ValueKey"
+            | "ObjectKey"
+            | "GlobalObjectKey"
+            | "Color"
+            | "Offset"
+            | "FractionalOffset"
+            | "Size"
+            | "Radius"
+            | "IconData"
+            | "TextStyle"
+    )
 }
 
 /// Register the Flutter widget catalog under the `flutter` root. Idempotent;

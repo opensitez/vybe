@@ -95,8 +95,12 @@ void _vfRealize(dynamic w, String path, dynamic parent) {
         vybe.gui.onEvent(path, key, value);
       }
     } else if (kind == 3) {
-      // Caption: a child Text's data is this control's text.
-      vybe.gui.setProperty(path, "Text", _vfCaption(value));
+      // Caption: a child Text's data is this control's text. A captioned leaf
+      // (button/app-bar) emits a caption op for BOTH `child` and `label`; skip
+      // the absent one (null) so it can't clobber the caption that IS set.
+      if (value != null) {
+        vybe.gui.setProperty(path, "Text", _vfCaption(value));
+      }
     }
   }
 }

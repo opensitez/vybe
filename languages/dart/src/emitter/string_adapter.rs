@@ -2614,11 +2614,23 @@ pub fn emit_dart_eq(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
     collections::emit_sequence_equal(chunks, current, line);
     chunks[current].emit_else(line);
+    // Structural (JSON) equality when BOTH sides are plain map-like objects OR
+    // both are stamped value-equality types (Flutter `ValueKey`/`Color`/… whose
+    // `operator ==` is by value). Otherwise fall through to identity.
     chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
     emit_dart_plain_map_like(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
     emit_dart_plain_map_like(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_AND, line);
+    let veq_key = string_key(&mut chunks[current], "__value_eq");
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunks[current].emit_op_u16(Op::STRUCT_GET, veq_key, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    chunks[current].emit_op_u16(Op::STRUCT_GET, veq_key, line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
     host::emit(&mut chunks[current], "ecma:json", "stringify", 1, line);

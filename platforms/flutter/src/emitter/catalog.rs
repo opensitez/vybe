@@ -160,6 +160,7 @@ const APPBAR_FIELDS: &[FlutterField] = &[
     FlutterField::named("bottom"),
     FlutterField::named("elevation"),
     FlutterField::named("backgroundColor"),
+    FlutterField::named("centerTitle"),
 ];
 
 const TEXT_FIELDS: &[FlutterField] = &[
@@ -169,6 +170,8 @@ const TEXT_FIELDS: &[FlutterField] = &[
     FlutterField::named("textDirection"),
     FlutterField::named_default("softWrap", "true"),
     FlutterField::named("overflow"),
+    FlutterField::named("maxLines"),
+    FlutterField::named("textSpan"),
 ];
 
 const CONTAINER_FIELDS: &[FlutterField] = &[
@@ -228,12 +231,12 @@ const ICON_FIELDS: &[FlutterField] = &[
 
 const EXPANDED_FIELDS: &[FlutterField] = &[
     FlutterField::named("child"),
-    FlutterField::named("flex"),
+    FlutterField::named_default("flex", "1"),
 ];
 
 const FLEXIBLE_FIELDS: &[FlutterField] = &[
     FlutterField::named("child"),
-    FlutterField::named("flex"),
+    FlutterField::named_default("flex", "1"),
     FlutterField::named("fit"),
 ];
 
@@ -243,6 +246,7 @@ const MATERIALAPP_FIELDS: &[FlutterField] = &[
     FlutterField::named("theme"),
     FlutterField::named("initialRoute"),
     FlutterField::named("routes"),
+    FlutterField::named("color"),
     FlutterField::named_default("debugShowCheckedModeBanner", "true"),
 ];
 
@@ -251,6 +255,10 @@ const ELEVATEDBUTTON_FIELDS: &[FlutterField] = &[
     FlutterField::named("onPressed"),
     FlutterField::named("onLongPress"),
     FlutterField::named("style"),
+    FlutterField::named("focusNode"),
+    FlutterField::named("icon"),
+    FlutterField::named("label"),
+    FlutterField::named("autofocus"),
 ];
 
 const POSITIONED_FIELDS: &[FlutterField] = &[
@@ -300,7 +308,17 @@ const F_VLBUILDER: &[FlutterField] = &[FlutterField::named("valueListenable"), F
 const F_SLIVERGRID: &[FlutterField] = &[FlutterField::children_list("children"), FlutterField::named("delegate"), FlutterField::named("gridDelegate"), FlutterField::named("crossAxisCount"), FlutterField::named("maxCrossAxisExtent"), FlutterField::named("itemCount"), FlutterField::named("itemBuilder")];
 const F_SLIVERLIST: &[FlutterField] = &[FlutterField::named("delegate"), FlutterField::named("itemCount"), FlutterField::named("itemBuilder"), FlutterField::named("separatorBuilder")];
 const F_SLIVERPAD: &[FlutterField] = &[FlutterField::named("padding"), FlutterField::named("sliver")];
-const F_SPACER: &[FlutterField] = &[FlutterField::named("flex")];
+const F_SPACER: &[FlutterField] = &[FlutterField::named_default("flex", "1")];
+const F_FOCUSNODE: &[FlutterField] = &[
+    FlutterField::named("debugLabel"),
+    FlutterField::named_default("hasFocus", "false"),
+    FlutterField::named_default("hasPrimaryFocus", "false"),
+    FlutterField::named_default("canRequestFocus", "true"),
+    FlutterField::named_default("skipTraversal", "false"),
+    FlutterField::named_default("descendantsAreFocusable", "true"),
+];
+const F_RECOGNIZER: &[FlutterField] =
+    &[FlutterField::named("debugOwner"), FlutterField::named("onTap")];
 const F_DEFTEXTSTYLE: &[FlutterField] = &[FlutterField::named("style"), FlutterField::named("child")];
 
 // Simple positional/named value types (no computed getters, no control).
@@ -475,8 +493,8 @@ static CLASSES: &[FlutterClass] = &[
     widget_class!("Expanded", "Flexible", "FlowLayoutPanel", EXPANDED_FIELDS),
     widget_class!("Positioned", "ParentDataWidget", "Panel", POSITIONED_FIELDS),
     // ── Material app + button surface (samples) ──────────────────────────
-    widget_class!("MaterialApp", "StatelessWidget", "FlowLayoutPanel", MATERIALAPP_FIELDS),
-    widget_class!("ElevatedButton", "StatelessWidget", "Button", ELEVATEDBUTTON_FIELDS),
+    widget_class!("MaterialApp", "StatefulWidget", "FlowLayoutPanel", MATERIALAPP_FIELDS),
+    widget_class!("ElevatedButton", "StatefulWidget", "Button", ELEVATEDBUTTON_FIELDS),
     widget_class!("Radio", "StatefulWidget", "RadioButton", RADIO_FIELDS),
     // ── Abstract bases needed for `is` chains ────────────────────────────
     abstract_class!("InheritedWidget", Some("ProxyWidget")),
@@ -486,7 +504,16 @@ static CLASSES: &[FlutterClass] = &[
     abstract_class!("FormField", Some("StatefulWidget")),
     abstract_class!("ImplicitlyAnimatedWidget", Some("StatefulWidget")),
     abstract_class!("AnimatedWidget", Some("StatefulWidget")),
-    abstract_class!("Key", None),
+    // `Key('x')` is a factory for `ValueKey<String>('x')` — construct it as a
+    // value key: capture `value`, and carry ValueKey/LocalKey identity so
+    // `is ValueKey`/`is LocalKey` match. Value equality via the allow-list.
+    FlutterClass {
+        name: "Key",
+        parent: None,
+        interfaces: &["ValueKey", "LocalKey"],
+        fields: F_VALKEY,
+        widget_host_fn: None,
+    },
     abstract_class!("LocalKey", Some("Key")),
     // ── grp_ad widgets ───────────────────────────────────────────────────
     widget_class!("FittedBox", "SingleChildRenderObjectWidget", "Panel", F_FITTEDBOX),
@@ -498,13 +525,13 @@ static CLASSES: &[FlutterClass] = &[
     widget_class!("Hero", "StatefulWidget", "Panel", F_HERO),
     widget_class!("HeroMode", "StatelessWidget", "Panel", F_HEROMODE),
     widget_class!("IconTheme", "InheritedWidget", "Panel", F_ICONTHEME),
-    widget_class!("Image", "StatefulWidget", "Panel", F_IMAGE),
+    widget_class!("Image", "StatefulWidget", "picturebox", F_IMAGE),
     widget_class!("InheritedNotifier", "InheritedWidget", "Panel", F_INHNOTIFIER),
     widget_class!("InheritedModel", "InheritedWidget", "Panel", F_CHILD_ONLY),
     widget_class!("InteractiveViewer", "StatefulWidget", "Panel", F_INTERACTIVE),
     widget_class!("IntrinsicHeight", "SingleChildRenderObjectWidget", "Panel", F_CHILD_ONLY),
     widget_class!("IntrinsicWidth", "SingleChildRenderObjectWidget", "Panel", F_INTRINSICW),
-    widget_class!("ListView", "BoxScrollView", "FlowLayoutPanel", F_LISTVIEW),
+    widget_class!("ListView", "BoxScrollView", "listbox", F_LISTVIEW),
     // ── grp_af widgets ───────────────────────────────────────────────────
     widget_class!("SliverGrid", "StatelessWidget", "FlowLayoutPanel", F_SLIVERGRID),
     widget_class!("SliverList", "StatelessWidget", "FlowLayoutPanel", F_SLIVERLIST),
@@ -525,17 +552,17 @@ static CLASSES: &[FlutterClass] = &[
     widget_class!("IconButton", "StatelessWidget", "Button", F_ICONBUTTON),
     widget_class!("InkWell", "StatelessWidget", "Panel", F_INKWELL),
     widget_class!("InputDecorator", "StatefulWidget", "Panel", F_INPUTDECORATOR),
-    widget_class!("LinearProgressIndicator", "StatefulWidget", "Panel", F_LINEARPROG),
+    widget_class!("LinearProgressIndicator", "StatefulWidget", "progressbar", F_LINEARPROG),
     widget_class!("ListTile", "StatelessWidget", "Panel", F_LISTTILE),
     widget_class!("OutlinedButton", "StatefulWidget", "Button", F_OUTLINEDBTN),
     widget_class!("PopupMenuButton", "StatefulWidget", "Button", F_POPUPMENUBTN),
     widget_class!("PopupMenuItem", "Widget", "Panel", F_POPUPMENUITEM),
-    widget_class!("Slider", "StatefulWidget", "Panel", F_SLIDER),
+    widget_class!("Slider", "StatefulWidget", "trackbar", F_SLIDER),
     widget_class!("SliverAppBar", "StatefulWidget", "Panel", F_SLIVERAPPBAR),
     widget_class!("Stepper", "StatefulWidget", "Panel", F_STEPPER),
     widget_class!("Switch", "StatefulWidget", "CheckBox", F_SWITCH),
     widget_class!("TabBarView", "StatefulWidget", "FlowLayoutPanel", F_TABBARVIEW),
-    widget_class!("TabBar", "StatefulWidget", "HFlowLayoutPanel", F_TABBAR),
+    widget_class!("TabBar", "StatefulWidget", "tabcontrol", F_TABBAR),
     widget_class!("TextButton", "StatefulWidget", "Button", F_TEXTBUTTON),
     widget_class!("TextField", "StatefulWidget", "TextBox", F_TEXTFIELD),
     widget_class!("TextFormField", "FormField", "TextBox", F_TEXTFORMFIELD),
@@ -546,28 +573,28 @@ static CLASSES: &[FlutterClass] = &[
     widget_class!("Tab", "StatelessWidget", "Label", F_TAB),
     // ── grp_aa material + cupertino widgets ──────────────────────────────
     widget_class!("CupertinoButton", "StatefulWidget", "Button", F_CUPBUTTON),
-    widget_class!("CupertinoSlider", "StatefulWidget", "Panel", F_CUPSLIDER),
+    widget_class!("CupertinoSlider", "StatefulWidget", "trackbar", F_CUPSLIDER),
     widget_class!("CupertinoSwitch", "StatefulWidget", "CheckBox", F_CUPSWITCH),
     widget_class!("BottomAppBar", "StatefulWidget", "Panel", F_BOTTOMAPPBAR),
     widget_class!("BottomSheet", "StatefulWidget", "Panel", F_BOTTOMSHEET),
-    widget_class!("Card", "StatelessWidget", "Panel", F_CARD),
+    widget_class!("Card", "StatelessWidget", "groupbox", F_CARD),
     widget_class!("Checkbox", "StatefulWidget", "CheckBox", F_CHECKBOX),
     widget_class!("Chip", "StatelessWidget", "Panel", F_CHIP),
-    widget_class!("ActionChip", "StatelessWidget", "Panel", F_ACTIONCHIP),
+    widget_class!("ActionChip", "StatelessWidget", "Button", F_ACTIONCHIP),
     widget_class!("FilterChip", "StatelessWidget", "Panel", F_SELCHIP),
     widget_class!("ChoiceChip", "StatelessWidget", "Panel", F_SELCHIP),
-    widget_class!("CircularProgressIndicator", "StatefulWidget", "Panel", F_CIRCPROG),
-    widget_class!("DataTable", "StatelessWidget", "Panel", F_DATATABLE),
-    widget_class!("DatePickerDialog", "StatefulWidget", "Panel", F_DATEPICKERDIALOG),
+    widget_class!("CircularProgressIndicator", "StatefulWidget", "progressbar", F_CIRCPROG),
+    widget_class!("DataTable", "StatelessWidget", "datagrid", F_DATATABLE),
+    widget_class!("DatePickerDialog", "StatefulWidget", "datetimepicker", F_DATEPICKERDIALOG),
     widget_class!("Divider", "StatelessWidget", "Panel", F_DIVIDER),
     widget_class!("VerticalDivider", "StatelessWidget", "Panel", F_VDIVIDER),
     widget_class!("DrawerHeader", "StatelessWidget", "Panel", F_DRAWERHEADER),
-    widget_class!("DropdownButton", "StatefulWidget", "Panel", F_DROPDOWNBTN),
+    widget_class!("DropdownButton", "StatefulWidget", "combobox", F_DROPDOWNBTN),
     widget_class!("DropdownMenuItem", "Widget", "Panel", F_DROPDOWNITEM),
     widget_class!("BackButton", "StatelessWidget", "Button", NO_FIELDS),
-    widget_class!("CircleAvatar", "StatelessWidget", "Panel", F_CIRCLEAVATAR),
+    widget_class!("CircleAvatar", "StatelessWidget", "picturebox", F_CIRCLEAVATAR),
     // ── grp_ac widgets ───────────────────────────────────────────────────
-    widget_class!("TimePickerDialog", "StatefulWidget", "Panel", F_TIMEPICKERDIALOG),
+    widget_class!("TimePickerDialog", "StatefulWidget", "datetimepicker", F_TIMEPICKERDIALOG),
     widget_class!("Tooltip", "StatefulWidget", "Panel", F_TOOLTIP),
     widget_class!("AnimatedAlign", "ImplicitlyAnimatedWidget", "Panel", F_ANIMALIGN),
     widget_class!("AnimatedBuilder", "AnimatedWidget", "Panel", F_ANIMBUILDER),
@@ -596,7 +623,7 @@ static CLASSES: &[FlutterClass] = &[
     widget_class!("RotatedBox", "SingleChildRenderObjectWidget", "Panel", F_ROTATEDBOX),
     widget_class!("SafeArea", "StatelessWidget", "Panel", F_SAFEAREA),
     widget_class!("SliverSafeArea", "StatelessWidget", "Panel", F_SLIVERSAFEAREA),
-    widget_class!("Scrollbar", "StatelessWidget", "Panel", F_SCROLLBAR),
+    widget_class!("Scrollbar", "StatelessWidget", "vscrollbar", F_SCROLLBAR),
     widget_class!("ShaderMask", "SingleChildRenderObjectWidget", "Panel", F_SHADERMASK),
     widget_class!("SingleChildScrollView", "StatelessWidget", "FlowLayoutPanel", F_SINGLESCROLL),
     widget_class!("PageView", "StatefulWidget", "FlowLayoutPanel", F_PAGEVIEW),
@@ -604,7 +631,7 @@ static CLASSES: &[FlutterClass] = &[
     widget_class!("PhysicalShape", "SingleChildRenderObjectWidget", "Panel", F_PHYSSHAPE),
     // ── Value types (no backing control; construction + field read-back) ──
     data_class!("Color", None, COLOR_FIELDS),
-    data_class!("FocusNode", None, NO_FIELDS),
+    data_class!("FocusNode", None, F_FOCUSNODE),
     data_class!("Offset", None, F_OFFSET),
     data_class!("Size", None, F_SIZE),
     data_class!("FractionalOffset", None, F_OFFSET),
@@ -655,16 +682,16 @@ static CLASSES: &[FlutterClass] = &[
     data_class!("ValueNotifier", None, F_VALNOTIFIER),
     data_class!("NetworkImage", None, F_NETIMAGE),
     data_class!("AssetImage", None, F_ASSETIMAGE),
-    data_class!("ExactAssetImage", None, F_NETIMAGE),
+    data_class!("ExactAssetImage", None, F_ASSETIMAGE),
     data_class!("FileImage", None, F_FILEIMAGE),
     data_class!("MemoryImage", None, F_MEMIMAGE),
     data_class!("ResizeImage", None, F_RESIZEIMAGE),
     data_class!("PointerDownEvent", None, F_POINTER),
-    data_class!("TapGestureRecognizer", None, NO_FIELDS),
-    data_class!("DoubleTapGestureRecognizer", None, NO_FIELDS),
-    data_class!("LongPressGestureRecognizer", None, NO_FIELDS),
-    data_class!("PanGestureRecognizer", None, NO_FIELDS),
-    data_class!("ScaleGestureRecognizer", None, NO_FIELDS),
+    data_class!("TapGestureRecognizer", None, F_RECOGNIZER),
+    data_class!("DoubleTapGestureRecognizer", None, F_RECOGNIZER),
+    data_class!("LongPressGestureRecognizer", None, F_RECOGNIZER),
+    data_class!("PanGestureRecognizer", None, F_RECOGNIZER),
+    data_class!("ScaleGestureRecognizer", None, F_RECOGNIZER),
     // ── Key hierarchy ────────────────────────────────────────────────────
     data_class!("ValueKey", Some("LocalKey"), F_VALKEY),
     data_class!("ObjectKey", Some("LocalKey"), F_VALKEY),
