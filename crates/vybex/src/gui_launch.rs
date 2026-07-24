@@ -254,6 +254,9 @@ struct FormApp {
     navigators: Vec<NavigatorInfo>,
     data_store: std::collections::HashMap<String, DataStore>,
     initialised: bool,
+    /// Last time each GUI timer fired, keyed by control name — used by `on_tick`
+    /// to decide when a timer's interval has elapsed.
+    timer_last_fire: std::collections::HashMap<String, std::time::Instant>,
 }
 
 impl Application for FormApp {
@@ -311,6 +314,47 @@ impl Application for FormApp {
 
     fn cursor_icon(&self) -> vybe_widgets::CursorIcon {
         vybe_widgets::CursorIcon::Default
+    }
+
+    /// Fire any GUI timers whose interval has elapsed. Called ~60 Hz from the
+    /// event loop's `about_to_wait`. Each due timer's `OnTimer`/`Tick` handler
+    /// runs through the VM (like a click); the ~60 Hz repaint then reflects any
+    /// state it changed. This is what makes `TTimer`/`WinForms.Timer` actually
+    /// tick — nothing drove them before.
+    fn on_tick(&mut self) {
+        let now = std::time::Instant::now();
+        let due: Vec<vybe_bytecode::Value> = {
+            let timers = self.gui.lock().unwrap().active_timers();
+            let mut due = Vec::new();
+            for (name, interval_ms, handler) in timers {
+                let last = self.timer_last_fire.entry(name).or_insert(now);
+                if now.duration_since(*last) >= std::time::Duration::from_millis(interval_ms) {
+                    *last = now;
+                    due.push(handler);
+                }
+            }
+            due
+        };
+        if due.is_empty() {
+            return;
+        }
+        // Receiver for instance-method handlers (`procedure Tick(Sender)`), same
+        // rule as click handlers: the form, from `__f` (falling back to the live
+        // GuiState form object). Args by arity.
+        let me = {
+            let vm = self.vm.borrow();
+            vm.globals.get("__f").cloned()
+        }
+        .or_else(|| self.gui.lock().unwrap().form_object.clone())
+        .unwrap_or(vybe_bytecode::Value::Null);
+        for handler in due {
+            let mut vm = self.vm.borrow_mut();
+            let _ = match fn_arity(&handler) {
+                0 => vm.invoke(&handler, &[]),
+                1 => vm.invoke(&handler, &[me.clone()]),
+                _ => vm.invoke(&handler, &[me.clone(), vybe_bytecode::Value::Null]),
+            };
+        }
     }
 }
 
@@ -957,6 +1001,7 @@ pub fn launch_vybewidget_form(
         navigators,
         data_store: std::collections::HashMap::new(),
         initialised: false,
+        timer_last_fire: std::collections::HashMap::new(),
     };
 
     run_app(&form.text, form.width as u32, form.height as u32, 1.0, app);
@@ -985,6 +1030,7 @@ pub fn launch_gui(mut vm: vybe_bytecode::VM, gui: Arc<Mutex<GuiState>>) {
         navigators: Vec::new(),
         data_store: std::collections::HashMap::new(),
         initialised: false,
+        timer_last_fire: std::collections::HashMap::new(),
     };
 
     run_app(&title, width, height, 1.0, app);
@@ -1127,6 +1173,7 @@ mod tests {
             navigators: Vec::new(),
             data_store: std::collections::HashMap::new(),
             initialised: false,
+            timer_last_fire: std::collections::HashMap::new(),
         };
 
         app.on_init(300.0, 400.0, 1.0);
@@ -1193,6 +1240,7 @@ mod tests {
             navigators: Vec::new(),
             data_store: std::collections::HashMap::new(),
             initialised: false,
+            timer_last_fire: std::collections::HashMap::new(),
         };
 
         app.on_init(340.0, 280.0, 1.0);
@@ -1242,6 +1290,7 @@ mod tests {
             navigators: Vec::new(),
             data_store: std::collections::HashMap::new(),
             initialised: false,
+            timer_last_fire: std::collections::HashMap::new(),
         };
 
         app.on_init(340.0, 280.0, 1.0);

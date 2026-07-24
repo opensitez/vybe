@@ -558,16 +558,22 @@ pub fn run() {
         // `(sender, e)`-style handlers with no language special-casing.
         let fire_gui = gui.clone();
         vm.set_event_fire_hook(Box::new(move |vm, control, event| {
-            let handler = {
+            // The receiver (`me`) comes from the live GuiState's `form_object`,
+            // which is populated during construction — the `__f` global is only
+            // set later by `launch_gui`, so at a debug pause it's still null and a
+            // C#/VB instance handler would get a null receiver. Fall back to `__f`.
+            let (handler, form_object) = {
                 let g = fire_gui.lock().map_err(|_| "gui state unavailable".to_string())?;
-                g.get_event_handler(control, event).cloned()
+                (g.get_event_handler(control, event).cloned(), g.form_object.clone())
             };
             let Some(cb) = handler else {
                 return Err(format!(
                     "no `{event}` handler on `{control}` (see `widgets` for wired events)"
                 ));
             };
-            let me = vm.globals.get("__f").cloned().unwrap_or(vybe_bytecode::Value::Null);
+            let me = form_object
+                .or_else(|| vm.globals.get("__f").cloned())
+                .unwrap_or(vybe_bytecode::Value::Null);
             let sender = vybe_bytecode::Value::String(std::sync::Arc::from(control));
             let args: Vec<vybe_bytecode::Value> = match crate::gui_launch::fn_arity(&cb) {
                 0 => vec![],
