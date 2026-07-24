@@ -84,36 +84,7 @@ impl Compiler {
             return Some("Graphics".into());
         }
         let class_name = Self::expr_terminal_type_name(object)?;
-        if class_name.eq_ignore_ascii_case("TimeSpan")
-            && matches!(
-                field.as_str(),
-                "FromDays"
-                    | "FromHours"
-                    | "FromMinutes"
-                    | "FromSeconds"
-                    | "FromMilliseconds"
-                    | "Zero"
-            )
-        {
-            return Some("TimeSpan".into());
-        }
-        if class_name.eq_ignore_ascii_case("DateTime")
-            && matches!(field.as_str(), "Now" | "UtcNow" | "Today" | "Parse")
-        {
-            return Some("DateTime".into());
-        }
-        if class_name.eq_ignore_ascii_case("Convert") && field.eq_ignore_ascii_case("ToDateTime") {
-            return Some("DateTime".into());
-        }
-        if class_name.eq_ignore_ascii_case("Guid")
-            && matches!(field.as_str(), "Empty" | "NewGuid" | "Parse")
-        {
-            return Some("Guid".into());
-        }
-        if class_name.eq_ignore_ascii_case("Version") && matches!(field.as_str(), "Parse") {
-            return Some("Version".into());
-        }
-        None
+        common::dotnet::static_method_return_type(&class_name, field).map(str::to_string)
     }
 
     pub(super) fn infer_function_return_type(&self, callee: &Expression) -> Option<String> {

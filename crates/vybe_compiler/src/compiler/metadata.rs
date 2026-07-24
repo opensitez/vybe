@@ -1080,9 +1080,19 @@ impl Compiler {
     ) -> Result<(), String> {
         self.emit_u16(Op::LOCAL_GET, object_slot);
         self.emit_const(Value::String(Arc::from(storage_name)));
-        let has_own_idx = self.import("ecma:object", "hasOwn");
+        // Probe with `ecma:object.has` (own + prototype-chain walk, raw key
+        // lookup) rather than `hasOwn`. The private storage key is
+        // `__js_private_<Class>.<name>` — a `__`-prefixed key that the
+        // user-facing `hasOwn` deliberately hides (it returns false for any
+        // `__`-prefixed key so internal markers don't leak through
+        // `Object.hasOwn`). `has` does a raw lookup and also walks the
+        // prototype, which is required under `class_method_dispatch =
+        // "prototype"` where private *methods* live on the class prototype,
+        // not as own instance properties. This makes the brand check see the
+        // private member for both fields (own) and methods (proto).
+        let has_idx = self.import("ecma:object", "has");
         let line = self.line;
-        self.emit_host_call(has_own_idx, 2);
+        self.emit_host_call(has_idx, 2);
         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
         self.chunk().emit_else(line);

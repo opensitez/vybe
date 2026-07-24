@@ -12,4 +12,5 @@
 //! retired — control/value/drawing types resolve through the component
 //! descriptor + the GUI-direct `vybe:gui` path instead of an emitted prelude.
 
+pub mod flutter;
 pub mod plib;

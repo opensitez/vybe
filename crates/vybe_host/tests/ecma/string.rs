@@ -237,6 +237,65 @@ fn last_index_of_finds_last_occurrence() {
     );
 }
 
+#[test]
+fn last_index_of_honors_start_position() {
+    assert_eq!(
+        invoke("lastIndexOf", vec![s("ababa"), s("ba"), Value::F64(2.0)]),
+        Value::F64(1.0)
+    );
+    assert_eq!(
+        invoke("lastIndexOf", vec![s("banana"), s("a"), Value::F64(4.0)]),
+        Value::F64(3.0)
+    );
+    assert_eq!(
+        invoke("lastIndexOf", vec![s("abcabc"), s("a"), Value::F64(-2.0)]),
+        Value::F64(0.0)
+    );
+    assert_eq!(
+        invoke("lastIndexOf", vec![s("abc"), s(""), Value::F64(1.0)]),
+        Value::F64(1.0)
+    );
+}
+
+#[test]
+fn last_index_of_position_uses_to_integer_or_infinity() {
+    assert_eq!(
+        invoke("lastIndexOf", vec![s("ababa"), s("ba"), Value::Undefined]),
+        Value::F64(3.0)
+    );
+    assert_eq!(
+        invoke("lastIndexOf", vec![s("ababa"), s("ba"), Value::F64(f64::NAN)]),
+        Value::F64(-1.0)
+    );
+    assert_eq!(
+        invoke(
+            "lastIndexOf",
+            vec![s("ababa"), s("ba"), Value::F64(f64::INFINITY)]
+        ),
+        Value::F64(3.0)
+    );
+    assert_eq!(
+        invoke("lastIndexOf", vec![s("ababa"), s("ba"), s("2")]),
+        Value::F64(1.0)
+    );
+    assert_eq!(
+        invoke("lastIndexOf", vec![s("ababa"), s("ba"), Value::Bool(true)]),
+        Value::F64(1.0)
+    );
+}
+
+#[test]
+fn last_index_of_uses_utf16_code_unit_indices() {
+    assert_eq!(
+        invoke("lastIndexOf", vec![s("😀a😀"), s("😀")]),
+        Value::F64(3.0)
+    );
+    assert_eq!(
+        invoke("lastIndexOf", vec![s("😀a😀"), s("😀"), Value::F64(2.0)]),
+        Value::F64(0.0)
+    );
+}
+
 // ── startsWith / endsWith ─────────────────────────────────────────
 
 #[test]

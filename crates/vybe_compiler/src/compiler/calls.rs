@@ -63,31 +63,7 @@ fn dotnet_factory_return_type(callee: &Expression) -> Option<String> {
         return None;
     };
     let class_name = terminal_type_name(object)?;
-    if class_name.eq_ignore_ascii_case("TimeSpan")
-        && matches!(
-            field.as_str(),
-            "FromDays" | "FromHours" | "FromMinutes" | "FromSeconds" | "FromMilliseconds" | "Zero"
-        )
-    {
-        return Some("TimeSpan".into());
-    }
-    if class_name.eq_ignore_ascii_case("DateTime")
-        && matches!(field.as_str(), "Now" | "UtcNow" | "Today" | "Parse")
-    {
-        return Some("DateTime".into());
-    }
-    if class_name.eq_ignore_ascii_case("Convert") && field.eq_ignore_ascii_case("ToDateTime") {
-        return Some("DateTime".into());
-    }
-    if class_name.eq_ignore_ascii_case("Guid")
-        && matches!(field.as_str(), "Empty" | "NewGuid" | "Parse")
-    {
-        return Some("Guid".into());
-    }
-    if class_name.eq_ignore_ascii_case("Version") && matches!(field.as_str(), "Parse") {
-        return Some("Version".into());
-    }
-    None
+    common::dotnet::static_method_return_type(&class_name, field).map(str::to_string)
 }
 
 fn dotnet_static_member_return_type(expr: &Expression) -> Option<String> {
@@ -95,21 +71,7 @@ fn dotnet_static_member_return_type(expr: &Expression) -> Option<String> {
         return None;
     };
     let class_name = terminal_type_name(object)?;
-    if class_name.eq_ignore_ascii_case("DateTime")
-        && matches!(field.as_str(), "Now" | "UtcNow" | "Today")
-    {
-        return Some("DateTime".into());
-    }
-    if class_name.eq_ignore_ascii_case("TimeSpan") && field == "Zero" {
-        return Some("TimeSpan".into());
-    }
-    if class_name.eq_ignore_ascii_case("Guid") && field == "Empty" {
-        return Some("Guid".into());
-    }
-    if class_name.eq_ignore_ascii_case("Version") && field == "Parse" {
-        return Some("Version".into());
-    }
-    None
+    common::dotnet::static_method_return_type(&class_name, field).map(str::to_string)
 }
 
 fn js_dynamic_import_alias(module: &str) -> String {
@@ -2725,6 +2687,31 @@ impl Compiler {
                     }
                     self.emit_u8(Op::CALL_REF, args.len() as u8);
                     return Ok(());
+                }
+            }
+        }
+
+        // Common-resolver construction (namespaceplan.md): a bare
+        // `TypeName(args)` call whose name resolves — via a mounted ambient
+        // root (`flutter.*`, …) — to a tree `Type` carrying a `CtorSpec` is a
+        // constructor call, not a function call. Dart's `Scaffold(...)` (no
+        // `new`) reaches here as a `Call`; construct it generically through the
+        // ONE resolver. A local/function/user-class of the same name shadows.
+        if let ExprKind::Ident(name) = &callee.kind {
+            let canon = self.canon(name);
+            if self.scope().resolve(name).is_none()
+                && !self.defined_functions.contains(name.as_str())
+                && !self.defined_functions.contains(&canon)
+                && !self.defined_classes.contains(name.as_str())
+                && !self.defined_classes.contains(&canon)
+            {
+                if let Some(super::resolver::Resolution::Tree(
+                    crate::emitter::namespaces::ResolutionTarget::Ctor {
+                        spec: Some(spec), ..
+                    },
+                )) = self.resolve_profile_namespace_chain(&[name.to_string()])
+                {
+                    return self.emit_tree_ctor_construction(&spec, args);
                 }
             }
         }

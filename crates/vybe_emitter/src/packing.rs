@@ -289,3 +289,199 @@ pub fn emit_unpack_u32_from_string_slot_f64(
     chunks[current].emit_op(Op::F64_MUL, line);
     chunks[current].emit_op(Op::F64_ADD, line);
 }
+
+fn emit_slot_to_u32_i32(chunk: &mut Chunk, value_slot: u16, line: u32) {
+    local_get(chunk, value_slot, line);
+    let to_number = chunk.add_import("ecma:value", "toNumber");
+    chunk.emit_call(to_number, 1, line);
+    chunk.emit_op(Op::I32_TRUNC_F64_U, line);
+}
+
+fn emit_store_array_byte(chunks: &mut [Chunk], current: usize, array_slot: u16, index: i32, byte: u16, line: u32) {
+    local_get(&mut chunks[current], array_slot, line);
+    chunks[current].emit_i32_const(index, line);
+    local_get(&mut chunks[current], byte, line);
+    crate::collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
+fn emit_load_array_byte_f64(chunks: &mut [Chunk], current: usize, array_slot: u16, index: i32, line: u32) {
+    local_get(&mut chunks[current], array_slot, line);
+    chunks[current].emit_i32_const(index, line);
+    crate::collections::emit_get(chunks, current, line);
+    let to_number = chunks[current].add_import("ecma:value", "toNumber");
+    chunks[current].emit_call(to_number, 1, line);
+}
+
+/// Store the low 16 bits of a numeric local into a byte array.
+///
+/// Stack: `[] -> []`. The array is mutated through the shared collection setter.
+pub fn emit_store_u16_to_array_from_number_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    array_slot: u16,
+    value_slot: u16,
+    endian: Endian,
+    line: u32,
+) {
+    let lo = chunks[current].alloc_scratch(1);
+    let hi = chunks[current].alloc_scratch(1);
+
+    emit_slot_to_u32_i32(&mut chunks[current], value_slot, line);
+    chunks[current].emit_i32_const(255, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    local_set(&mut chunks[current], lo, line);
+
+    emit_slot_to_u32_i32(&mut chunks[current], value_slot, line);
+    chunks[current].emit_i32_const(8, line);
+    chunks[current].emit_op(Op::I32_SHR_U, line);
+    chunks[current].emit_i32_const(255, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    local_set(&mut chunks[current], hi, line);
+
+    let order = match endian {
+        Endian::Little => [lo, hi],
+        Endian::Big => [hi, lo],
+    };
+    emit_store_array_byte(chunks, current, array_slot, 0, order[0], line);
+    emit_store_array_byte(chunks, current, array_slot, 1, order[1], line);
+}
+
+/// Store the low 32 bits of a numeric local into a byte array.
+///
+/// Stack: `[] -> []`. The array is mutated through the shared collection setter.
+pub fn emit_store_u32_to_array_from_number_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    array_slot: u16,
+    value_slot: u16,
+    endian: Endian,
+    line: u32,
+) {
+    let b0 = chunks[current].alloc_scratch(1);
+    let b1 = chunks[current].alloc_scratch(1);
+    let b2 = chunks[current].alloc_scratch(1);
+    let b3 = chunks[current].alloc_scratch(1);
+
+    for (slot, shift) in [(b0, 0), (b1, 8), (b2, 16), (b3, 24)] {
+        emit_slot_to_u32_i32(&mut chunks[current], value_slot, line);
+        if shift > 0 {
+            chunks[current].emit_i32_const(shift, line);
+            chunks[current].emit_op(Op::I32_SHR_U, line);
+        }
+        chunks[current].emit_i32_const(255, line);
+        chunks[current].emit_op(Op::I32_AND, line);
+        local_set(&mut chunks[current], slot, line);
+    }
+
+    let order = match endian {
+        Endian::Little => [b0, b1, b2, b3],
+        Endian::Big => [b3, b2, b1, b0],
+    };
+    for (index, slot) in order.iter().copied().enumerate() {
+        emit_store_array_byte(chunks, current, array_slot, index as i32, slot, line);
+    }
+}
+
+/// Store a split 64-bit value (hi/lo u32) into a byte array.
+///
+/// Stack: `[] -> []`. This avoids routing 64-bit integer literals through f64.
+pub fn emit_store_u64_parts_to_array_from_number_slots(
+    chunks: &mut [Chunk],
+    current: usize,
+    array_slot: u16,
+    hi_slot: u16,
+    lo_slot: u16,
+    endian: Endian,
+    line: u32,
+) {
+    let b0 = chunks[current].alloc_scratch(1);
+    let b1 = chunks[current].alloc_scratch(1);
+    let b2 = chunks[current].alloc_scratch(1);
+    let b3 = chunks[current].alloc_scratch(1);
+    let b4 = chunks[current].alloc_scratch(1);
+    let b5 = chunks[current].alloc_scratch(1);
+    let b6 = chunks[current].alloc_scratch(1);
+    let b7 = chunks[current].alloc_scratch(1);
+
+    for (slot, source, shift) in [
+        (b0, hi_slot, 24),
+        (b1, hi_slot, 16),
+        (b2, hi_slot, 8),
+        (b3, hi_slot, 0),
+        (b4, lo_slot, 24),
+        (b5, lo_slot, 16),
+        (b6, lo_slot, 8),
+        (b7, lo_slot, 0),
+    ] {
+        emit_slot_to_u32_i32(&mut chunks[current], source, line);
+        if shift > 0 {
+            chunks[current].emit_i32_const(shift, line);
+            chunks[current].emit_op(Op::I32_SHR_U, line);
+        }
+        chunks[current].emit_i32_const(255, line);
+        chunks[current].emit_op(Op::I32_AND, line);
+        local_set(&mut chunks[current], slot, line);
+    }
+
+    let order = match endian {
+        Endian::Big => [b0, b1, b2, b3, b4, b5, b6, b7],
+        Endian::Little => [b7, b6, b5, b4, b3, b2, b1, b0],
+    };
+    for (index, slot) in order.iter().copied().enumerate() {
+        emit_store_array_byte(chunks, current, array_slot, index as i32, slot, line);
+    }
+}
+
+/// Read a u16 from a byte array as an f64.
+pub fn emit_load_u16_from_array_f64(
+    chunks: &mut [Chunk],
+    current: usize,
+    array_slot: u16,
+    endian: Endian,
+    line: u32,
+) {
+    match endian {
+        Endian::Little => {
+            emit_load_array_byte_f64(chunks, current, array_slot, 0, line);
+            emit_load_array_byte_f64(chunks, current, array_slot, 1, line);
+            chunks[current].emit_f64_const(256.0, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            chunks[current].emit_op(Op::F64_ADD, line);
+        }
+        Endian::Big => {
+            emit_load_array_byte_f64(chunks, current, array_slot, 0, line);
+            chunks[current].emit_f64_const(256.0, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+            emit_load_array_byte_f64(chunks, current, array_slot, 1, line);
+            chunks[current].emit_op(Op::F64_ADD, line);
+        }
+    }
+}
+
+/// Read a u32 from a byte array as an f64.
+pub fn emit_load_u32_from_array_f64(
+    chunks: &mut [Chunk],
+    current: usize,
+    array_slot: u16,
+    endian: Endian,
+    line: u32,
+) {
+    let order = match endian {
+        Endian::Little => [0, 1, 2, 3],
+        Endian::Big => [3, 2, 1, 0],
+    };
+    emit_load_array_byte_f64(chunks, current, array_slot, order[0], line);
+    emit_load_array_byte_f64(chunks, current, array_slot, order[1], line);
+    chunks[current].emit_f64_const(256.0, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    emit_load_array_byte_f64(chunks, current, array_slot, order[2], line);
+    chunks[current].emit_f64_const(65536.0, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    emit_load_array_byte_f64(chunks, current, array_slot, order[3], line);
+    chunks[current].emit_f64_const(16777216.0, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+}

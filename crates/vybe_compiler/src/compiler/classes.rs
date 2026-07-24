@@ -3765,19 +3765,26 @@ impl Compiler {
             // methods are skipped — their upvalues bind in the
             // constructor's frame, not at definition scope.
             for (mname, mci, _, _) in &instance_methods {
-                let has_captures = method_capture_name_map
+                // Bind EVERY instance method onto the prototype, including
+                // capture-carrying ones (methods that use `super` capture
+                // `__shared_env`). Previously these were skipped, which left a
+                // derived class's own methods off its prototype — so a
+                // grandchild's `super.m()` (which does an own-only `struct.get`
+                // on the PARENT prototype) couldn't find a derived parent's
+                // method and resolved to undefined (multi-level super broke at
+                // 3+ levels). `__shared_env` is a local in this
+                // (class-definition) scope, so its upvalues resolve here.
+                let capture_names = method_capture_name_map
                     .get(mci)
-                    .is_some_and(|c| !c.is_empty());
-                if has_captures {
-                    continue;
-                }
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
                 let (m_async, m_gen) = self
                     .method_fn_kinds
                     .get(mci)
                     .copied()
                     .unwrap_or((self.chunks[*mci].is_async, self.chunks[*mci].is_generator));
                 self.emit_u16(Op::LOCAL_GET, proto_local);
-                self.emit_ref_func_with_captures(*mci, &[], false)?;
+                self.emit_ref_func_with_captures(*mci, capture_names, false)?;
                 // ECMA-262 function-kind stamp: async/generator methods'
                 // __proto__ is the matching intrinsic prototype (§27.7.1 /
                 // §27.3.1 / §27.4.1) — `getPrototypeOf(C.prototype.m)`.

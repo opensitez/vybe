@@ -23,6 +23,140 @@ impl Compiler {
         }
     }
 
+    /// Construct a tree `Type` node generically — the common-resolver
+    /// construction path (namespaceplan.md), retiring per-platform surfaces.
+    ///
+    /// Reorders named args by the spec's param names (the shared named-arg
+    /// machinery), allocates the object, stamps `__type` + the `__types`
+    /// ancestry array (so `is`/`instanceof` matches every ancestor), and stores
+    /// each constructor argument into its field — an omitted optional stores an
+    /// explicit `null`. Any language/platform registering a tree `Ctor`
+    /// (`flutter.*`, and eventually the dotnet BCL) constructs through this ONE
+    /// path. Leaves the constructed object on the stack.
+    pub(crate) fn emit_tree_ctor_construction(
+        &mut self,
+        spec: &crate::emitter::namespaces::CtorSpec,
+        args: &[crate::ast::Argument],
+    ) -> Result<(), String> {
+        use crate::ast::{Expression, Param, PassBy};
+
+        let params: Vec<Param> = spec
+            .params
+            .iter()
+            .map(|name| Param {
+                name: name.clone(),
+                type_hint: None,
+                default: Some(Expression::null()),
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: true,
+                is_nullable: true,
+            })
+            .collect();
+        let sig = super::CallSignature::from_params(&params);
+        let ordered = self.reorder_named_args_with_signatures(args, &[sig]);
+
+        use crate::emitter::namespaces::FieldGui;
+
+        // Every widget is a config OBJECT (data), never a control at
+        // construction — the runtime realizer creates/updates the backing
+        // `vybe:gui` control once, keyed by a stable path name, so `setState`
+        // updates by name instead of rebuilding.
+        let this_slot = self.define_local("__tree_ctor_this");
+        self.emit_u16(Op::STRUCT_NEW, 0);
+        self.emit_u16(Op::LOCAL_SET, this_slot);
+
+        // Compile each constructor arg ONCE into a slot (child widgets must not
+        // be built twice — once for the field, once for the op).
+        let mut arg_slots = Vec::with_capacity(spec.fields.len());
+        for i in 0..spec.fields.len() {
+            let slot = self.define_local("__tree_ctor_arg");
+            match ordered.get(i) {
+                Some(arg) => self.compile_expr(&arg.value)?,
+                None => self.emit(Op::NULL),
+            }
+            self.emit_u16(Op::LOCAL_SET, slot);
+            arg_slots.push(slot);
+        }
+
+        // __type = ancestry[0]
+        if let Some(name) = spec.ancestry.first() {
+            self.emit_u16(Op::LOCAL_GET, this_slot);
+            self.emit_const(Value::String(std::sync::Arc::from(name.as_str())));
+            let k = self.str_const("__type");
+            self.emit_u16(Op::STRUCT_SET, k);
+            self.emit(Op::DROP);
+        }
+        // __types = full ancestry array (js_instanceof membership check)
+        self.emit_u16(Op::LOCAL_GET, this_slot);
+        for name in &spec.ancestry {
+            self.emit_const(Value::String(std::sync::Arc::from(name.as_str())));
+        }
+        self.emit_u16(Op::ARRAY_NEW_FIXED, spec.ancestry.len() as u16);
+        let tk = self.str_const("__types");
+        self.emit_u16(Op::STRUCT_SET, tk);
+        self.emit(Op::DROP);
+
+        // __controlfn — the `vybe:gui` factory for this widget (`new_Label`…),
+        // or null for a plain tree type. Marks a GUI-adapter widget.
+        self.emit_u16(Op::LOCAL_GET, this_slot);
+        match &spec.control_fn {
+            Some(cf) => self.emit_const(Value::String(std::sync::Arc::from(cf.as_str()))),
+            None => self.emit(Op::NULL),
+        }
+        let cfk = self.str_const("__controlfn");
+        self.emit_u16(Op::STRUCT_SET, cfk);
+        self.emit(Op::DROP);
+
+        // __value_eq — mark immutable value types (Flutter ValueKey/Color/…)
+        // so the language `==` compares them structurally (by __type + fields)
+        // rather than by reference identity.
+        if spec.value_equality {
+            self.emit_u16(Op::LOCAL_GET, this_slot);
+            self.emit_const(Value::Bool(true));
+            let vk = self.str_const("__value_eq");
+            self.emit_u16(Op::STRUCT_SET, vk);
+            self.emit(Op::DROP);
+        }
+
+        // Store each arg as a readable field (`Scaffold(appBar:x).appBar`).
+        for (i, field) in spec.fields.iter().enumerate() {
+            self.emit_u16(Op::LOCAL_GET, this_slot);
+            self.emit_u16(Op::LOCAL_GET, arg_slots[i]);
+            let fk = self.str_const(field);
+            self.emit_u16(Op::STRUCT_SET, fk);
+            self.emit(Op::DROP);
+        }
+
+        // For GUI widgets, stamp __ops = [[kind,key,value],…] — the realizer's
+        // instruction list. kind: 0 NestOrProp(key), 1 Children, 2 Event(name),
+        // 3 Caption.
+        if spec.control_fn.is_some() {
+            self.emit_u16(Op::LOCAL_GET, this_slot);
+            for (i, field) in spec.fields.iter().enumerate() {
+                let (kind, key): (i32, &str) = match spec.field_gui.get(i) {
+                    Some(FieldGui::Children) => (1, ""),
+                    Some(FieldGui::Event(name)) => (2, name.as_str()),
+                    Some(FieldGui::Caption) => (3, ""),
+                    Some(FieldGui::NestOrProp(k)) => (0, k.as_str()),
+                    None => (0, field.as_str()),
+                };
+                self.emit_const(Value::I32(kind));
+                self.emit_const(Value::String(std::sync::Arc::from(key)));
+                self.emit_u16(Op::LOCAL_GET, arg_slots[i]);
+                self.emit_u16(Op::ARRAY_NEW_FIXED, 3);
+            }
+            self.emit_u16(Op::ARRAY_NEW_FIXED, spec.fields.len() as u16);
+            let ok = self.str_const("__ops");
+            self.emit_u16(Op::STRUCT_SET, ok);
+            self.emit(Op::DROP);
+        }
+
+        self.emit_u16(Op::LOCAL_GET, this_slot);
+        Ok(())
+    }
+
     /// Like [`Self::emit_constructor_global_ref`] but resolves a primary
     /// constructor global then an optional fallback before autoloading.
     pub(crate) fn emit_dynamic_constructor_global_ref(
@@ -1538,6 +1672,30 @@ impl Compiler {
                     self.emit_private_access_denied(field)?;
                     return Ok(());
                 }
+                if self.profile.name == "vb"
+                    && self.profile.namespaces.use_dotnet
+                    && field.eq_ignore_ascii_case("Result")
+                {
+                    let obj_slot = self.define_local("__dotnet_task_result_obj");
+                    let value_slot = self.define_local("__dotnet_task_result_value");
+                    self.compile_expr(object)?;
+                    self.emit_u16(Op::LOCAL_SET, obj_slot);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    let result_key = self.str_const("Result");
+                    self.emit_u16(Op::STRUCT_GET, result_key);
+                    self.emit_u16(Op::LOCAL_SET, value_slot);
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    let undef_idx = self.import("wasm:js-undefined", "test");
+                    self.emit_host_call(undef_idx, 1);
+                    let line = self.line;
+                    self.chunk().emit_if_value(line);
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    crate::emitter::functions::emit_await(self.chunk(), line);
+                    self.chunk().emit_else(line);
+                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                    self.chunk().emit_end(line);
+                    return Ok(());
+                }
                 if self.profile.namespaces.use_dotnet {
                     let parts = self.flatten_member_chain(expr);
                     if let Some(super::resolver::Resolution::ResolvedPrefix { target, suffix }) =
@@ -1995,7 +2153,11 @@ impl Compiler {
                     let getter_name = format!("__get_{}", field_name);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_const(Value::String(Arc::from(getter_name.as_str())));
-                    let has_own_idx = self.import("ecma:object", "hasOwn");
+                    // `has` (proto-walk, raw key) not `hasOwn`: the private
+                    // accessor key is `__get_/__set___js_private_*` — a `__`
+                    // key that `hasOwn` hides, and under prototype dispatch the
+                    // accessor lives on the class prototype, not the instance.
+                    let has_own_idx = self.import("ecma:object", "has");
                     self.emit_host_call(has_own_idx, 2);
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if_value(line);
@@ -2496,6 +2658,12 @@ impl Compiler {
                             } else {
                                 self.emit_host_call(idx, 1);
                             }
+                            return Ok(());
+                        }
+                        common::dotnet::InstancePropertyTarget::Common { emit } => {
+                            let line = self.line;
+                            self.compile_expr(object)?;
+                            self.emit_common(&emit, 1, line);
                             return Ok(());
                         }
                     }
@@ -3791,6 +3959,25 @@ impl Compiler {
                         return Ok(());
                     }
 
+                    // Common-resolver construction (namespaceplan.md): a tree
+                    // `Type` node carrying a `CtorSpec` — resolved via a mounted
+                    // ambient root (`flutter.*`, …) — constructs generically,
+                    // cross-language, through the ONE resolver. A user class of
+                    // the same name shadows it.
+                    if !self.defined_classes.contains(type_name)
+                        && !self.defined_classes.contains(bare_str)
+                        && !self.defined_classes.contains(&self.canon(type_name))
+                    {
+                        if let Some(super::resolver::Resolution::Tree(
+                            crate::emitter::namespaces::ResolutionTarget::Ctor {
+                                spec: Some(spec), ..
+                            },
+                        )) = self.resolve_profile_namespace_chain(&[type_name.to_string()])
+                        {
+                            return self.emit_tree_ctor_construction(&spec, args);
+                        }
+                    }
+
                     // GUI control: Button, TextBox, Label, Timer, etc.
                     // Checked BEFORE dotnet known_types so GUI controls always
                     // route through the canonical gui emitter regardless of
@@ -4413,6 +4600,29 @@ impl Compiler {
             // right answer.
             ExprKind::Object(props) => {
                 let line = self.line;
+                // Dict literal → Map when the profile opts in AND the literal is
+                // plain key/value pairs. A Map keeps non-string key types
+                // (`{1: 'a'}` stays int) and insertion order — Python dicts.
+                if self.profile.dict_literals_as_map
+                    && props
+                        .iter()
+                        .all(|p| matches!(p, ObjectProperty::KeyValue { .. }))
+                {
+                    // Build `[[k, v], …]` then `Map.fromEntries` — keeps key
+                    // types and insertion order.
+                    let n = props.len();
+                    for prop in props {
+                        if let ObjectProperty::KeyValue { key, value } = prop {
+                            self.compile_expr(key)?;
+                            self.compile_expr(value)?;
+                            self.emit_u16(Op::ARRAY_NEW_FIXED, 2);
+                        }
+                    }
+                    self.emit_u16(Op::ARRAY_NEW_FIXED, n as u16);
+                    let idx = self.import("ecma:map", "fromEntries");
+                    self.emit_host_call(idx, 1);
+                    return Ok(());
+                }
                 common::dict::emit_new(&mut self.chunks, self.current, line);
                 for prop in props {
                     match prop {
@@ -5876,9 +6086,14 @@ impl Compiler {
                 let line = self.line;
                 let is_dict = *kind == ComprehensionKind::Dict;
                 let is_set = *kind == ComprehensionKind::Set;
+                // Dict comprehension builds a Map (same as a dict literal) so
+                // non-string keys keep their type — Python dict === PHP array.
+                let dict_as_map = is_dict && self.profile.dict_literals_as_map;
 
-                // Build the accumulator: dict → Object, set/list/gen → Array
-                if is_dict {
+                // Build the accumulator: dict → Map/Object, set/list/gen → Array
+                if dict_as_map {
+                    common::collections::emit_map_new(&mut self.chunks, self.current, line);
+                } else if is_dict {
                     common::dict::emit_new(&mut self.chunks, self.current, line);
                 } else {
                     common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
@@ -5892,6 +6107,36 @@ impl Compiler {
                 let mut loop_info: Vec<(u16, LoopState)> = Vec::new();
                 for generator in generators.iter() {
                     self.compile_expr(&generator.iter)?;
+                    // Materialize the source so the index loop below can walk it:
+                    // a lazy generator (e.g. `range()` / a genexpr) drains via
+                    // stack-switching; other iterables use the natural per-type
+                    // iteration (dict → keys for Python) when the profile opts in.
+                    {
+                        let line = self.line;
+                        let src_slot = self.define_local("__comp_src");
+                        self.emit_u16(Op::LOCAL_SET, src_slot);
+                        self.emit_u16(Op::LOCAL_GET, src_slot);
+                        let is_gen = self.import("ecma:value", "isGenerator");
+                        self.emit_host_call(is_gen, 1);
+                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        self.chunk().emit_if_value(line);
+                        self.emit_u16(Op::LOCAL_GET, src_slot);
+                        common::generators::emit_drain_into_array(
+                            &mut self.chunks,
+                            self.current,
+                            line,
+                        );
+                        self.chunk().emit_else(line);
+                        self.emit_u16(Op::LOCAL_GET, src_slot);
+                        if self.profile.for_in_object_yields_keys {
+                            common::collections::emit_iter_natural(
+                                &mut self.chunks,
+                                self.current,
+                                line,
+                            );
+                        }
+                        self.chunk().emit_end(line);
+                    }
                     let arr_slot = self.define_local("__comp_iter");
                     self.emit_u16(Op::LOCAL_SET, arr_slot);
                     let idx_slot = self.define_local("__comp_idx");
@@ -5968,14 +6213,17 @@ impl Compiler {
                             let l = self.line;
                             common::collections::emit_set(&mut self.chunks, self.current, l);
                             self.emit(Op::DROP);
-                            // Track key in __keys so len() works
-                            self.emit_u16(Op::LOCAL_GET, result_slot);
-                            let keys_key = self.str_const("__keys");
-                            self.emit_u16(Op::STRUCT_GET, keys_key);
-                            self.emit_u16(Op::LOCAL_GET, key_slot);
-                            let l = self.line;
-                            common::collections::emit_push(&mut self.chunks, self.current, l);
-                            self.emit(Op::DROP);
+                            // Ordinary objects need explicit __keys order tracking;
+                            // a Map tracks insertion order internally, so skip it.
+                            if !dict_as_map {
+                                self.emit_u16(Op::LOCAL_GET, result_slot);
+                                let keys_key = self.str_const("__keys");
+                                self.emit_u16(Op::STRUCT_GET, keys_key);
+                                self.emit_u16(Op::LOCAL_GET, key_slot);
+                                let l = self.line;
+                                common::collections::emit_push(&mut self.chunks, self.current, l);
+                                self.emit(Op::DROP);
+                            }
                         }
                     }
                 } else {
@@ -6318,7 +6566,11 @@ impl Compiler {
                         let getter_name = format!("__get_{}", field_name);
                         self.emit_u16(Op::LOCAL_GET, class_slot);
                         self.emit_const(Value::String(Arc::from(getter_name.as_str())));
-                        let has_own_idx = self.import("ecma:object", "hasOwn");
+                        // `has` (proto-walk, raw key) not `hasOwn`: the private
+                    // accessor key is `__get_/__set___js_private_*` — a `__`
+                    // key that `hasOwn` hides, and under prototype dispatch the
+                    // accessor lives on the class prototype, not the instance.
+                    let has_own_idx = self.import("ecma:object", "has");
                         let line = self.line;
                         self.emit_host_call(has_own_idx, 2);
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);

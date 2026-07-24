@@ -291,6 +291,78 @@ pub fn emit_iter_entries(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_php_array_iter(chunks, current, line, true);
 }
 
+/// Python/JS-style natural `for x in obj` iteration, dispatched on the shared
+/// VM type (`ObjectKind`, exposed as `Object.prototype.toString` tags):
+///   - Array / TypedArray → elements (iterate as-is)
+///   - String             → characters
+///   - Map / Object        → **keys** (`for k in dict` / `for k in obj`)
+///   - Set / everything else → values
+///
+/// This is why Python `for k in {'a': 1}` yields `'a'`, not `1`: a dict is the
+/// same `Map`/`Ordinary` type as a JS object, and iterating an object yields its
+/// keys. Stack: [iterable] → [array].
+pub fn emit_iter_natural(chunks: &mut [Chunk], current: usize, line: u32) {
+    let slot = chunks[current].alloc_scratch(1);
+    let tag_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+
+    // Array → iterate elements directly.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    {
+        let idx = chunks[current].add_import("ecma:array", "isArray");
+        chunks[current].emit_call(idx, 1, line);
+    }
+    crate::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunks[current].emit_else(line);
+
+    // String → characters (via the shared materialize path).
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    {
+        let idx = chunks[current].add_import("wasm:js-string", "test");
+        chunks[current].emit_call(idx, 1, line);
+    }
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    emit_iter_for_of(chunks, current, line);
+    chunks[current].emit_else(line);
+
+    // tag = Object.prototype.toString(obj) → "[object Map]" / "[object Object]" / …
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    {
+        let idx = chunks[current].add_import("ecma:object", "toStringTag");
+        chunks[current].emit_call(idx, 1, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tag_slot, line);
+
+    // Map / plain Object → keys.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tag_slot, line);
+    chunks[current].emit_string_const("[object Map]", line);
+    {
+        let idx = chunks[current].add_import("wasm:js-string", "equals");
+        chunks[current].emit_call(idx, 2, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tag_slot, line);
+    chunks[current].emit_string_const("[object Object]", line);
+    {
+        let idx = chunks[current].add_import("wasm:js-string", "equals");
+        chunks[current].emit_call(idx, 2, line);
+    }
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    emit_iter_keys(chunks, current, line);
+    chunks[current].emit_else(line);
+    // Set / anything else → values.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    emit_iter_for_of(chunks, current, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
 /// Create an empty Map (ordered associative: IndexMap<Value, Value>).
 /// Stack: [] → [map] via `ecma:map.new`. Used by languages with
 /// keyed literals (PHP `['k'=>v]`, Python `{'k':v}`, Ruby `{k=>v}`) —

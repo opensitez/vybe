@@ -1143,6 +1143,294 @@ pub struct ComprehensionGen {
     pub is_async: bool,
 }
 
+/// True when a statement list contains `yield` / `yield from` in the current
+/// function scope. Nested functions, lambdas, and class expressions are scope
+/// boundaries.
+pub fn statements_contain_yield_outside_nested_scopes(stmts: &[Statement]) -> bool {
+    stmts.iter().any(stmt_contains_yield_outside_nested_scopes)
+}
+
+fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::FunctionDecl { .. } | StmtKind::ClassDecl { .. } => false,
+        StmtKind::Expr(expr) | StmtKind::Assert { test: expr, .. } => {
+            expr_contains_yield_outside_nested_scopes(expr)
+        }
+        StmtKind::Block(stmts) | StmtKind::NamespaceDecl { body: stmts, .. } => {
+            statements_contain_yield_outside_nested_scopes(stmts)
+        }
+        StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|decl| {
+            decl.init
+                .as_ref()
+                .is_some_and(expr_contains_yield_outside_nested_scopes)
+        }),
+        StmtKind::Return(expr) | StmtKind::CloseFile(expr) => expr
+            .as_ref()
+            .is_some_and(expr_contains_yield_outside_nested_scopes),
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            expr_contains_yield_outside_nested_scopes(cond)
+                || statements_contain_yield_outside_nested_scopes(then_body)
+                || elifs.iter().any(|(cond, body)| {
+                    expr_contains_yield_outside_nested_scopes(cond)
+                        || statements_contain_yield_outside_nested_scopes(body)
+                })
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| statements_contain_yield_outside_nested_scopes(body))
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            expr_contains_yield_outside_nested_scopes(cond)
+                || statements_contain_yield_outside_nested_scopes(body)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| statements_contain_yield_outside_nested_scopes(body))
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            statements_contain_yield_outside_nested_scopes(body)
+                || expr_contains_yield_outside_nested_scopes(cond)
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            init.as_ref()
+                .is_some_and(|stmt| stmt_contains_yield_outside_nested_scopes(stmt))
+                || cond
+                    .as_ref()
+                    .is_some_and(expr_contains_yield_outside_nested_scopes)
+                || update
+                    .as_ref()
+                    .is_some_and(expr_contains_yield_outside_nested_scopes)
+                || statements_contain_yield_outside_nested_scopes(body)
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            expr_contains_yield_outside_nested_scopes(iter)
+                || statements_contain_yield_outside_nested_scopes(body)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| statements_contain_yield_outside_nested_scopes(body))
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            expr_contains_yield_outside_nested_scopes(expr)
+                || cases
+                    .iter()
+                    .any(|case| statements_contain_yield_outside_nested_scopes(&case.body))
+                || default
+                    .as_ref()
+                    .is_some_and(|body| statements_contain_yield_outside_nested_scopes(body))
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            statements_contain_yield_outside_nested_scopes(body)
+                || catches
+                    .iter()
+                    .any(|catch| statements_contain_yield_outside_nested_scopes(&catch.body))
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| statements_contain_yield_outside_nested_scopes(body))
+                || finally
+                    .as_ref()
+                    .is_some_and(|body| statements_contain_yield_outside_nested_scopes(body))
+        }
+        StmtKind::With { body, .. }
+        | StmtKind::Using { body, .. }
+        | StmtKind::Lock { body, .. } => statements_contain_yield_outside_nested_scopes(body),
+        StmtKind::Assign { targets, value } => {
+            targets.iter().any(expr_contains_yield_outside_nested_scopes)
+                || expr_contains_yield_outside_nested_scopes(value)
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            expr_contains_yield_outside_nested_scopes(target)
+                || expr_contains_yield_outside_nested_scopes(value)
+        }
+        StmtKind::Throw { expr, cause } => {
+            expr.as_ref()
+                .is_some_and(expr_contains_yield_outside_nested_scopes)
+                || cause
+                    .as_ref()
+                    .is_some_and(expr_contains_yield_outside_nested_scopes)
+        }
+        StmtKind::Labeled { body, .. } => stmt_contains_yield_outside_nested_scopes(body),
+        StmtKind::Echo(exprs)
+        | StmtKind::Delete(exprs)
+        | StmtKind::RaiseEvent { args: exprs, .. } => {
+            exprs.iter().any(expr_contains_yield_outside_nested_scopes)
+        }
+        StmtKind::Export {
+            declaration,
+            default,
+            ..
+        } => {
+            declaration
+                .as_ref()
+                .is_some_and(|stmt| stmt_contains_yield_outside_nested_scopes(stmt))
+                || default
+                    .as_ref()
+                    .is_some_and(|expr| expr_contains_yield_outside_nested_scopes(expr))
+        }
+        StmtKind::WasmTryTable { body, catches } => {
+            statements_contain_yield_outside_nested_scopes(body)
+                || catches
+                    .iter()
+                    .any(|catch| statements_contain_yield_outside_nested_scopes(&catch.body))
+        }
+        _ => false,
+    }
+}
+
+fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Yield(_) | ExprKind::YieldFrom(_) => true,
+        ExprKind::Lambda { .. } | ExprKind::FunctionExpr(_) | ExprKind::ClassExpr { .. } => false,
+        ExprKind::RefOf(place) => match place.as_ref() {
+            PlaceExpr::Ident(_) => false,
+            PlaceExpr::Member { object, .. } => expr_contains_yield_outside_nested_scopes(object),
+            PlaceExpr::Index { object, index, .. } => {
+                expr_contains_yield_outside_nested_scopes(object)
+                    || expr_contains_yield_outside_nested_scopes(index)
+            }
+            PlaceExpr::Deref(expr) => expr_contains_yield_outside_nested_scopes(expr),
+        },
+        ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr) => expr_contains_yield_outside_nested_scopes(expr),
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Assign {
+            target: left,
+            value: right,
+        }
+        | ExprKind::Walrus {
+            target: left,
+            value: right,
+        }
+        | ExprKind::Range {
+            start: left,
+            end: right,
+            ..
+        }
+        | ExprKind::StaticAccess {
+            class: left,
+            member: right,
+        }
+        | ExprKind::Index {
+            object: left,
+            index: right,
+            ..
+        } => {
+            expr_contains_yield_outside_nested_scopes(left)
+                || expr_contains_yield_outside_nested_scopes(right)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            expr_contains_yield_outside_nested_scopes(cond)
+                || expr_contains_yield_outside_nested_scopes(then)
+                || expr_contains_yield_outside_nested_scopes(else_)
+        }
+        ExprKind::Member { object, .. } => expr_contains_yield_outside_nested_scopes(object),
+        ExprKind::Call { callee, args, .. } => {
+            expr_contains_yield_outside_nested_scopes(callee)
+                || args
+                    .iter()
+                    .any(|arg| expr_contains_yield_outside_nested_scopes(&arg.value))
+        }
+        ExprKind::New { class, args } => {
+            expr_contains_yield_outside_nested_scopes(class)
+                || args
+                    .iter()
+                    .any(|arg| expr_contains_yield_outside_nested_scopes(&arg.value))
+        }
+        ExprKind::SuperCall { args, .. } => args
+            .iter()
+            .any(|arg| expr_contains_yield_outside_nested_scopes(&arg.value)),
+        ExprKind::Array(elems) => elems.iter().any(|elem| {
+            expr_contains_yield_outside_nested_scopes(&elem.value)
+                || elem
+                    .key
+                    .as_ref()
+                    .is_some_and(expr_contains_yield_outside_nested_scopes)
+        }),
+        ExprKind::Tuple(exprs)
+        | ExprKind::Set(exprs)
+        | ExprKind::Sequence(exprs) => exprs.iter().any(expr_contains_yield_outside_nested_scopes),
+        ExprKind::NamedTuple { fields, .. } => fields
+            .iter()
+            .any(|(_, expr)| expr_contains_yield_outside_nested_scopes(expr)),
+        ExprKind::Object(props) => props.iter().any(|prop| match prop {
+            ObjectProperty::KeyValue { key, value }
+            | ObjectProperty::Computed { key, value } => {
+                expr_contains_yield_outside_nested_scopes(key)
+                    || expr_contains_yield_outside_nested_scopes(value)
+            }
+            ObjectProperty::Spread(expr) => expr_contains_yield_outside_nested_scopes(expr),
+            ObjectProperty::Shorthand(_)
+            | ObjectProperty::Method { .. }
+            | ObjectProperty::Accessor { .. } => false,
+        }),
+        ExprKind::Interpolation(parts) => parts.iter().any(|part| match part {
+            InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                expr_contains_yield_outside_nested_scopes(expr)
+            }
+            InterpolPart::Text(_) => false,
+        }),
+        ExprKind::Match { subject, arms } => {
+            expr_contains_yield_outside_nested_scopes(subject)
+                || arms.iter().any(|arm| {
+                    arm.conditions.as_ref().is_some_and(|conditions| {
+                        conditions.iter().any(expr_contains_yield_outside_nested_scopes)
+                    }) || expr_contains_yield_outside_nested_scopes(&arm.body)
+                })
+        }
+        ExprKind::Comprehension {
+            element,
+            generators,
+            ..
+        } => {
+            expr_contains_yield_outside_nested_scopes(element)
+                || generators.iter().any(|generator| {
+                    expr_contains_yield_outside_nested_scopes(&generator.iter)
+                        || generator
+                            .conditions
+                            .iter()
+                            .any(expr_contains_yield_outside_nested_scopes)
+                })
+        }
+        ExprKind::Slice { lower, upper, step } => [lower, upper, step]
+            .iter()
+            .any(|expr| expr.as_ref().is_some_and(|expr| expr_contains_yield_outside_nested_scopes(expr))),
+        _ => false,
+    }
+}
+
 // ── Destructuring ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]

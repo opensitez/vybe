@@ -120,6 +120,59 @@ fn base64_decode(s: &str) -> Vec<u8> {
     out
 }
 
+fn base64_decode_strict(s: &str) -> Option<Vec<u8>> {
+    let filtered: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if filtered.len() % 4 == 1 {
+        return None;
+    }
+    if filtered.is_empty() {
+        return Some(Vec::new());
+    }
+    if filtered.len() % 4 != 0 {
+        return None;
+    }
+
+    let decode = |b: u8| -> Option<u32> {
+        match b {
+            b'A'..=b'Z' => Some((b - b'A') as u32),
+            b'a'..=b'z' => Some((b - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((b - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    };
+
+    let mut out = Vec::new();
+    let chunk_count = filtered.len() / 4;
+    for (chunk_index, chunk) in filtered.chunks(4).enumerate() {
+        let last = chunk_index + 1 == chunk_count;
+        let a = decode(chunk[0])?;
+        let b = decode(chunk[1])?;
+        let c = chunk[2];
+        let d = chunk[3];
+        if c == b'=' {
+            if d != b'=' || !last {
+                return None;
+            }
+            out.push(((a << 2) | (b >> 4)) as u8);
+            continue;
+        }
+        let c = decode(c)?;
+        out.push(((a << 2) | (b >> 4)) as u8);
+        out.push((((b & 0x0f) << 4) | (c >> 2)) as u8);
+        if d == b'=' {
+            if !last {
+                return None;
+            }
+            continue;
+        }
+        let d = decode(d)?;
+        out.push((((c & 0x03) << 6) | d) as u8);
+    }
+    Some(out)
+}
+
 fn decode_with_encoding(s: &str, enc: &str) -> Vec<u8> {
     match enc.to_lowercase().as_str() {
         "hex" => hex_decode(s),
@@ -205,6 +258,23 @@ pub fn register(vm: &mut VM) {
                 }
             }
             _ => bytes_to_buf(Vec::new()),
+        }),
+    );
+
+    // fromBase64Strict(string) -> Buffer | null. Node's `Buffer.from(s,
+    // "base64")` is intentionally lenient; .NET Convert.FromBase64String
+    // needs strict validation so it can throw FormatException.
+    vm.register_host_fn(
+        "node:buffer",
+        "fromBase64Strict",
+        Box::new(|_ctx, args| {
+            let Some(Value::String(text)) = args.first() else {
+                return Value::Null;
+            };
+            match base64_decode_strict(text) {
+                Some(bytes) => bytes_to_buf(bytes),
+                None => Value::Null,
+            }
         }),
     );
 

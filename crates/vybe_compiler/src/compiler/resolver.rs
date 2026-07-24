@@ -108,7 +108,34 @@ impl Compiler {
         // 3. Global namespace tree (platform surfaces register their
         //    descriptor data on first query; resolution logic stays here).
         register_platform_trees();
-        namespaces::resolve_path(&[key.as_str()]).map(Resolution::Tree)
+        if let Some(target) = namespaces::resolve_path(&[key.as_str()]) {
+            return Some(Resolution::Tree(target));
+        }
+
+        // 3b. Ambient roots — a bare unqualified name searches under each
+        //     mounted ambient tree root in declaration order (the single-name
+        //     analogue of the dotted-chain rule in `resolve_namespace_path`).
+        //     PURE FALLBACK: only reached when the name resolves to nothing at
+        //     top level, so it can only add resolutions, never change an
+        //     existing one. Narrowed further to a `Ctor` carrying a
+        //     construction `spec` — a config-object type constructed through
+        //     the common-resolver path (`flutter.scaffold`). This deliberately
+        //     excludes spec-less `Ctor`s (the dotnet BCL registers its tree
+        //     Types with `ctor: None`, reaching construction via
+        //     `lookup_constructor` + dotted chains instead), so mounting a
+        //     `.NET` ambient root here never re-routes a bare `Console`.
+        let ambient_key = key.to_lowercase();
+        for root in &self.ambient_tree_roots {
+            let mut expanded: Vec<String> = root.split('.').map(str::to_string).collect();
+            expanded.push(ambient_key.clone());
+            let refs: Vec<&str> = expanded.iter().map(String::as_str).collect();
+            if let Some(target @ namespaces::ResolutionTarget::Ctor { spec: Some(_), .. }) =
+                namespaces::resolve_path(&refs)
+            {
+                return Some(Resolution::Tree(target));
+            }
+        }
+        None
     }
 
     /// Resolve a dotted chain (`["json", "dumps"]`, `["dotnet", "system",

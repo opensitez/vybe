@@ -406,6 +406,15 @@ impl Compiler {
             }
         }
         common::collections::emit_pack_n(&mut self.chunks, self.current, n as u16, first, line);
+        // A multi-value-return function is returning a tuple (the ABI is only
+        // taken for functions whose returns are same-arity tuple literals), so
+        // the repacked array must carry the tuple tag — otherwise a tuple that
+        // flows through a `return` reprs/`type()`s as a plain list, unlike the
+        // identical value built inline (which `ExprKind::Tuple` tags). Languages
+        // that don't tag tuples (e.g. Lua's multi-value rows) are unaffected.
+        if self.profile.tuple_literals_tagged {
+            common::tuples::emit_tag(&mut self.chunks, self.current, line);
+        }
         if self.profile.name == "lua" {
             let row_slot = self.define_local("__lua_mv_pack_row");
             self.emit_u16(Op::LOCAL_SET, row_slot);

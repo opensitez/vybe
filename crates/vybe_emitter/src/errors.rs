@@ -107,6 +107,8 @@ pub fn canonical_exception_name(name: &str) -> &str {
         "importerror" => "ImportError",
         "notimplementederror" | "unimplementederror" => "NotImplementedError",
         "overflowerror" | "overflowexception" | "stackoverflowerror" => "OverflowError",
+        "operationcanceledexception" | "taskcanceledexception" => "OperationCanceledException",
+        "aggregateexception" => "AggregateException",
         "ioerror" | "ioexception" => "IOError",
         "oserror" => "OSError",
         "exception" | "error" => "Exception",
@@ -240,6 +242,7 @@ pub fn is_exception_type(name: &str) -> bool {
         | "integerdivisionbyzeroexception" | "rangerror" | "stateexception"
         | "filenotfoundexception" | "ioexception" | "formaterror"
         | "nosuchmethoderror" | "unimplementederror" | "overflowexception"
+        | "operationcanceledexception" | "taskcanceledexception"
         // PHP
         | "runtimeexception" | "logicexception" | "domainexception"
         | "lengthexception" | "outofboundsexception" | "outofrangeexception"
@@ -374,6 +377,18 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
             "BaseException",
         ],
         "RuntimeError" => &["RuntimeError", "Exception", "BaseException"],
+        "OperationCanceledException" => &[
+            "OperationCanceledException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
+        "AggregateException" => &[
+            "AggregateException",
+            "SystemException",
+            "Exception",
+            "BaseException",
+        ],
         // OSError branch (IOError/EnvironmentError are aliases in Py3)
         "FileNotFoundError" => &["FileNotFoundError", "OSError", "Exception", "BaseException"],
         "PermissionError" => &["PermissionError", "OSError", "Exception", "BaseException"],

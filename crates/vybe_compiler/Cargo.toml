@@ -18,6 +18,7 @@ vybe_plugin = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_emitter = { workspace = true }
 vybe_platform_dotnet = { workspace = true }
+vybe_platform_flutter = { workspace = true }
 vybe_platform_libc = { workspace = true }
 vybe_platform_plib = { workspace = true }
 vybe_platform_wasm = { workspace = true }

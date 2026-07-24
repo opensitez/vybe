@@ -9,6 +9,20 @@ use super::*;
 impl Compiler {
     pub(super) fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), String> {
         self.line = stmt.span.start_line;
+        // Runtime-prelude boundary marker: a frontend that prepends a prelude
+        // (e.g. JS) injects a `__vybe_user_code_start__` string-expression right
+        // before the user's own code. Record the current bytecode offset on the
+        // chunk (the `<script>`) for the debugger's prelude-skip, and emit
+        // nothing. Generic — not gated on any language name.
+        if let StmtKind::Expr(expr) = &stmt.kind {
+            if let ExprKind::Lit(Literal::Str(s)) = &expr.kind {
+                if s == "__vybe_user_code_start__" {
+                    let off = self.chunks[self.current].code.len() as u32;
+                    self.chunks[self.current].user_code_offset = Some(off);
+                    return Ok(());
+                }
+            }
+        }
         match &stmt.kind {
             // ── Expression statement ────────────────────────────────────
             StmtKind::Expr(expr) => {
@@ -741,10 +755,26 @@ impl Compiler {
                         self.label_depth -= 1;
                     }
 
+                    // Python/JS-style `for x in obj` yields KEYS for dict-like
+                    // objects (Map/Ordinary) and values for sequences — one
+                    // shared, type-dispatched primitive. Skips the generic
+                    // iterForOf+values path below.
+                    let natural_object_iter =
+                        self.profile.for_in_object_yields_keys && *of && key.is_none();
+                    if natural_object_iter {
+                        self.emit_u16(Op::LOCAL_GET, iter_slot);
+                        common::collections::emit_iter_natural(
+                            &mut self.chunks,
+                            self.current,
+                            self.line,
+                        );
+                        self.emit_u16(Op::LOCAL_SET, iter_slot);
+                    }
+
                     // Materialize iterable → array via common emitter.
                     // All languages use iterForOf which handles Array, Map,
                     // Set, String, and custom iterables uniformly.
-                    if *of && key.is_none() {
+                    if *of && key.is_none() && !natural_object_iter {
                         self.emit_u16(Op::LOCAL_GET, iter_slot);
                         common::collections::emit_iter_for_of(
                             &mut self.chunks,
@@ -4620,7 +4650,11 @@ impl Compiler {
                         let setter_name = format!("__set_{}", field_name);
                         self.emit_u16(Op::LOCAL_GET, class_tmp);
                         self.emit_const(Value::String(Arc::from(setter_name.as_str())));
-                        let has_own_idx = self.import("ecma:object", "hasOwn");
+                        // `has` (proto-walk, raw key) not `hasOwn`: the private
+                    // accessor key is `__get_/__set___js_private_*` — a `__`
+                    // key that `hasOwn` hides, and under prototype dispatch the
+                    // accessor lives on the class prototype, not the instance.
+                    let has_own_idx = self.import("ecma:object", "has");
                         let line = self.line;
                         self.emit_host_call(has_own_idx, 2);
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -4718,27 +4752,40 @@ impl Compiler {
                 {
                     if let Some(type_hint) = self.infer_expr_type_hint(object) {
                         let class_name = Self::normalize_type_hint(&type_hint);
-                        if let Some(common::dotnet::InstancePropertyTarget::Host {
-                            module,
-                            func,
-                            key,
-                        }) = common::dotnet::surface()
+                        if let Some(target) = common::dotnet::surface()
                             .lookup_instance_property_setter(&class_name, field)
                         {
-                            let value_tmp = self.define_local("__dotnet_prop_value");
-                            self.emit_u16(Op::LOCAL_SET, value_tmp);
-                            self.compile_expr(object)?;
-                            let idx = self.import(&module, &func);
-                            if let Some(key) = key {
-                                self.emit_const(Value::String(Arc::from(key.as_str())));
-                                self.emit_u16(Op::LOCAL_GET, value_tmp);
-                                self.emit_host_call(idx, 3);
-                            } else {
-                                self.emit_u16(Op::LOCAL_GET, value_tmp);
-                                self.emit_host_call(idx, 2);
+                            match target {
+                                common::dotnet::InstancePropertyTarget::Host {
+                                    module,
+                                    func,
+                                    key,
+                                } => {
+                                    let value_tmp = self.define_local("__dotnet_prop_value");
+                                    self.emit_u16(Op::LOCAL_SET, value_tmp);
+                                    self.compile_expr(object)?;
+                                    let idx = self.import(&module, &func);
+                                    if let Some(key) = key {
+                                        self.emit_const(Value::String(Arc::from(key.as_str())));
+                                        self.emit_u16(Op::LOCAL_GET, value_tmp);
+                                        self.emit_host_call(idx, 3);
+                                    } else {
+                                        self.emit_u16(Op::LOCAL_GET, value_tmp);
+                                        self.emit_host_call(idx, 2);
+                                    }
+                                    self.emit(Op::DROP);
+                                    return Ok(());
+                                }
+                                common::dotnet::InstancePropertyTarget::Common { emit } => {
+                                    let value_tmp = self.define_local("__dotnet_prop_value");
+                                    self.emit_u16(Op::LOCAL_SET, value_tmp);
+                                    self.compile_expr(object)?;
+                                    self.emit_u16(Op::LOCAL_GET, value_tmp);
+                                    self.emit_common(&emit, 2, self.line);
+                                    self.emit(Op::DROP);
+                                    return Ok(());
+                                }
                             }
-                            self.emit(Op::DROP);
-                            return Ok(());
                         }
                     }
                 }
@@ -4862,7 +4909,11 @@ impl Compiler {
                     let setter_name = format!("__set_{}", field_name);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_const(Value::String(Arc::from(setter_name.as_str())));
-                    let has_own_idx = self.import("ecma:object", "hasOwn");
+                    // `has` (proto-walk, raw key) not `hasOwn`: the private
+                    // accessor key is `__get_/__set___js_private_*` — a `__`
+                    // key that `hasOwn` hides, and under prototype dispatch the
+                    // accessor lives on the class prototype, not the instance.
+                    let has_own_idx = self.import("ecma:object", "has");
                     let line = self.line;
                     self.emit_host_call(has_own_idx, 2);
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -4881,7 +4932,11 @@ impl Compiler {
                     let getter_name = format!("__get_{}", field_name);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_const(Value::String(Arc::from(getter_name.as_str())));
-                    let has_own_idx = self.import("ecma:object", "hasOwn");
+                    // `has` (proto-walk, raw key) not `hasOwn`: the private
+                    // accessor key is `__get_/__set___js_private_*` — a `__`
+                    // key that `hasOwn` hides, and under prototype dispatch the
+                    // accessor lives on the class prototype, not the instance.
+                    let has_own_idx = self.import("ecma:object", "has");
                     self.emit_host_call(has_own_idx, 2);
                     crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);

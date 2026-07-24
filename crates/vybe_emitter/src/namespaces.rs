@@ -54,7 +54,7 @@ pub enum NamespaceNode {
     /// resolves through the namespace tree; only `ctor` and `statics` are
     /// reachable by path walk.
     Type {
-        ctor: Option<FuncSig>,
+        ctor: Option<CtorSpec>,
         statics: Subtree,
         methods: BTreeMap<String, FuncSig>,
     },
@@ -76,6 +76,67 @@ pub enum NamespaceNode {
     Alias(Path),
 }
 
+/// Everything the compiler needs to construct a tree `Type` generically,
+/// language-neutrally, through the ONE resolver — no per-platform surface.
+///
+/// A `Type` node carrying this is constructed by: reordering named args by
+/// `params` (the shared named-arg machinery), allocating a fresh object,
+/// stamping `__type`/`__types` from `ancestry`, and storing each constructor
+/// argument into the matching `fields` slot. This is the reusable path that
+/// retires the dotnet-surface `lookup_constructor` (namespaceplan.md).
+#[derive(Debug, Clone, Default)]
+pub struct CtorSpec {
+    /// Constructor parameter names, in positional order — drives named-arg
+    /// reorder (`Widget(named: v, …)` → positional slots).
+    pub params: Vec<String>,
+    /// Instance fields to capture from the constructor args, aligned with
+    /// `params` (usually identical). Read at the construction site.
+    pub fields: Vec<String>,
+    /// Type identity chain, self first (`["Scaffold","StatefulWidget",
+    /// "Widget"]`) — stamped as `__type` (first) + `__types` (all) so
+    /// `is`/`instanceof` matches every ancestor.
+    pub ancestry: Vec<String>,
+    /// Optional GUI control factory (`new_Panel`/`new_Label`/`new_Button`).
+    /// When set, the type is a thin GUI adapter: construction creates the
+    /// `vybe:gui` control and, per arg, either nests a child widget/control
+    /// (`controlsAdd`) or forwards a scalar (`controlSetProperty`) — child vs
+    /// scalar detected at runtime. The object IS the control, so vybe_widgets
+    /// holds all state/layout/rendering. `None` = plain object (no GUI).
+    pub control_fn: Option<String>,
+    /// How each constructor arg maps onto the control, aligned with `fields`.
+    /// Only meaningful when `control_fn` is set.
+    pub field_gui: Vec<FieldGui>,
+    /// True for immutable value types whose `==` is by VALUE, not identity
+    /// (Flutter `ValueKey`/`Color`/`Offset` override `operator ==`). The
+    /// construction site stamps `__value_eq` so the language equality path
+    /// compares such instances structurally (by `__type` + fields) instead of
+    /// by reference. `false` (default) = reference identity, like a plain class.
+    pub value_equality: bool,
+}
+
+/// How a GUI-adapter constructor arg is applied to its `vybe:gui` control.
+#[derive(Debug, Clone)]
+pub enum FieldGui {
+    /// Nest as a child control if the value is a widget, else set it as a
+    /// scalar property under this key (`Text.data`→`"Text"`, `Scaffold.body`).
+    NestOrProp(String),
+    /// The value is a LIST of child widgets (`Column.children`).
+    Children,
+    /// The value is an event handler wired under this event (`onPressed`
+    /// →`"Click"`).
+    Event(String),
+    /// The value is a child widget whose text IS this control's caption
+    /// (`ElevatedButton(child: Text('7'))` → the button's `Text`), rather than
+    /// a nested control.
+    Caption,
+}
+
+impl Default for FieldGui {
+    fn default() -> Self {
+        FieldGui::NestOrProp(String::new())
+    }
+}
+
 /// What a successful path walk resolves to.
 #[derive(Debug, Clone)]
 pub enum ResolutionTarget {
@@ -87,8 +148,9 @@ pub enum ResolutionTarget {
     },
     /// `common:<cat>.<op>` dispatch.
     CommonEmit(String),
-    /// A constructable type at `path`.
-    Ctor { path: Path, sig: Option<FuncSig> },
+    /// A constructable type at `path`, with the spec that drives generic
+    /// construction (named-arg reorder + field capture + `is` ancestry).
+    Ctor { path: Path, spec: Option<CtorSpec> },
     /// Compile-time constant, inlined at use-site.
     Const(Value),
     /// The path names a namespace (or type used as a namespace) — callers
@@ -246,7 +308,7 @@ fn terminal(
         NamespaceNode::Namespace(_) => Some(ResolutionTarget::NamespaceObject(path.to_string())),
         NamespaceNode::Type { ctor, .. } => Some(ResolutionTarget::Ctor {
             path: path.to_string(),
-            sig: ctor.clone(),
+            spec: ctor.clone(),
         }),
         NamespaceNode::Fn { module, func, sig } => Some(ResolutionTarget::HostCall {
             module: module.clone(),

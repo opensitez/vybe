@@ -123,3 +123,53 @@ pub fn emit_invoke_method(
     c.emit_op_u16(Op::GLOBAL_SET, js_this_const, line);
     c.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
+
+/// Emit a receiver-once protocol method call.
+///
+/// This is the language-neutral skeleton for dynamic method syntax such as
+/// `receiver.method(args)` / `receiver:method(args)` when a language needs its
+/// own property protocol before the final call.
+///
+/// Stack before: `[receiver, method_key, arg1, ..., argN]`
+/// Stack after : `[result]`
+///
+/// `emit_lookup` receives saved `receiver_slot` and `method_key_slot` and must
+/// leave the method/callable value on the stack. `emit_call` receives the stack
+/// rebuilt as `[method, receiver, arg1, ..., argN]` and performs the final
+/// callable/protocol dispatch.
+pub fn emit_protocol_method_call<L, C>(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    argc: u8,
+    line: u32,
+    mut emit_lookup: L,
+    mut emit_call: C,
+) where
+    L: FnMut(&mut Vec<Chunk>, usize, u16, u16, u32),
+    C: FnMut(&mut Vec<Chunk>, usize, u8, u32),
+{
+    if argc < 2 {
+        for _ in 0..argc {
+            chunks[current].emit_op(Op::DROP, line);
+        }
+        chunks[current].emit_string_const("attempt to call a non-function value", line);
+        crate::errors::emit_throw(&mut chunks[current], line);
+        return;
+    }
+
+    let base = chunks[current].alloc_scratch(argc as u16);
+    let method = chunks[current].alloc_scratch(1);
+    for i in (0..argc).rev() {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
+    }
+
+    emit_lookup(chunks, current, base, base + 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, method, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, method, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    for i in 2..argc {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + i as u16, line);
+    }
+    emit_call(chunks, current, argc, line);
+}

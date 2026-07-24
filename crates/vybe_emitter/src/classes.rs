@@ -51,6 +51,82 @@ fn stamp_reflection_type_fields(
     stamp_local_string_field(chunk, slot, reflection::FIELD_KIND, kind.as_str(), line);
 }
 
+fn stamp_local_dynamic_field(
+    chunk: &mut Chunk,
+    slot: u16,
+    field: &str,
+    value_slot: u16,
+    line: u32,
+) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    let key = chunk.add_constant(Value::String(Arc::from(field)));
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+/// Stamp shared reflection/class metadata on an existing object when the class
+/// name is known as a runtime value. This is useful for dynamic languages that
+/// normalize class-like prototype objects but cannot bake a static class token
+/// into the emitter call.
+pub fn emit_retype_object_dynamic(
+    chunks: &mut [Chunk],
+    current: usize,
+    this_slot: u16,
+    class_name_slot: u16,
+    line: u32,
+) {
+    stamp_local_dynamic_field(
+        &mut chunks[current],
+        this_slot,
+        reflection::FIELD_TYPE,
+        class_name_slot,
+        line,
+    );
+    stamp_local_dynamic_field(
+        &mut chunks[current],
+        this_slot,
+        reflection::FIELD_TYPE_NAME,
+        class_name_slot,
+        line,
+    );
+    stamp_local_string_field(
+        &mut chunks[current],
+        this_slot,
+        reflection::FIELD_KIND,
+        reflection::ReflectKind::Object.as_str(),
+        line,
+    );
+    stamp_local_dynamic_field(
+        &mut chunks[current],
+        this_slot,
+        "__control_name",
+        class_name_slot,
+        line,
+    );
+
+    let types_key = chunks[current].add_constant(Value::String(Arc::from(reflection::FIELD_TYPES)));
+    chunks[current].emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op_u16(Op::STRUCT_GET, types_key, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    let init_block = chunks[current].emit_block(line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(0, line);
+    chunks[current].emit_op(Op::DROP, line);
+    crate::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(init_block);
+
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, class_name_slot, line);
+    crate::collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::STRUCT_SET, types_key, line);
+    chunks[current].emit_op(Op::DROP, line);
+}
+
 /// Create a new empty object and stamp it with type info.
 /// Emits: struct_new 0 → local, __type string stamp, __control_name stamp,
 /// set_type_id via __tid_ global.

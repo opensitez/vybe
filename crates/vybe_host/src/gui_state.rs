@@ -355,6 +355,25 @@ impl GuiState {
         self.hide_root_form_entries();
     }
 
+    /// Declarative (Flutter) path: create a control widget and stage it into
+    /// the widget tree under `parent` (a layout panel, or the form itself),
+    /// letting vybe_widgets own nesting + flow layout. Contrast `add_widget`,
+    /// which flat-adds at absolute coords (WinForms/VCL adapters).
+    pub fn stage_control(
+        &mut self,
+        type_name: &str,
+        name: &str,
+        text: &str,
+        w: i32,
+        h: i32,
+        parent: &str,
+        parent_is_form: bool,
+    ) {
+        let widget = make_widget(type_name, name, text, w as f32, h as f32);
+        self.form.stage_control(name, widget, parent, parent_is_form);
+        self.track_live_control_name(name, name);
+    }
+
     pub fn seed_form_identity(&mut self, name: &str, title: &str) {
         self.properties
             .insert((name.to_string(), "name".into()), name.to_string());
@@ -368,6 +387,38 @@ impl GuiState {
     /// AND mirrors to the property store. The mirror lets callers query
     /// `get_property` for any control (including the form itself, which
     /// isn't represented as a child widget).
+    /// Enabled GUI timers as `(control_name, interval_ms, handler)`. A timer is a
+    /// control with a registered `Timer`/`Tick` event handler; `Enabled` defaults
+    /// to true unless explicitly false, `Interval` defaults to 1000 ms. Drives
+    /// `TTimer.OnTimer` / `System.Windows.Forms.Timer.Tick` from the event loop.
+    pub fn active_timers(&self) -> Vec<(String, u64, Value)> {
+        let mut out = Vec::new();
+        for (key, handler) in &self.event_handlers {
+            let Some((name, ev)) = key.rsplit_once('.') else { continue };
+            if ev != "timer" && ev != "tick" {
+                continue;
+            }
+            let prop = |p: &str| {
+                self.properties
+                    .iter()
+                    .find(|((c, k), _)| k == p && c.eq_ignore_ascii_case(name))
+                    .map(|(_, v)| v.clone())
+            };
+            let enabled = prop("enabled")
+                .map(|v| !matches!(v.as_str(), "false" | "False" | "0" | ""))
+                .unwrap_or(true);
+            if !enabled {
+                continue;
+            }
+            let interval = prop("interval")
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .filter(|ms| *ms > 0)
+                .unwrap_or(1000);
+            out.push((name.to_string(), interval, handler.clone()));
+        }
+        out
+    }
+
     pub fn set_property(&mut self, control: &str, property: &str, value: &str) {
         let name = self.resolve_control_name(control);
         let public = self.public_control_name(control);
@@ -379,6 +430,10 @@ impl GuiState {
             "text" => {
                 self.form
                     .send_command(&name, &WidgetCommand::SetText(value.to_string()));
+            }
+            "flex" => {
+                let f = value.parse::<f32>().unwrap_or(1.0);
+                self.form.send_command(&name, &WidgetCommand::SetFlex(f));
             }
             "enabled" => {
                 let enabled = !matches!(value, "false" | "False" | "0" | "");
@@ -396,6 +451,32 @@ impl GuiState {
                     &name,
                     &WidgetCommand::Custom("SetReadOnly".into(), CommandValue::Bool(ro)),
                 );
+            }
+            // Semantic property names route to the EXISTING typed commands the
+            // controls already handle (Slider/ProgressBar SetValue, Checkbox/
+            // Radio SetChecked, Combo/List/Tabs SetSelectedIndex) — the Flutter
+            // adapter forwards `value`/`checked`/`selectedindex` here.
+            "value" => {
+                // `value` is numeric on a Slider/ProgressBar, boolean on a
+                // Checkbox/Switch — the control owns the state either way.
+                if let Ok(n) = value.parse::<f64>() {
+                    self.form.send_command(&name, &WidgetCommand::SetValue(n));
+                } else {
+                    let c = matches!(value, "true" | "True" | "1");
+                    self.form
+                        .send_command(&name, &WidgetCommand::SetChecked(c));
+                }
+            }
+            "checked" | "ischecked" | "selected" => {
+                let c = matches!(value, "true" | "True" | "1");
+                self.form
+                    .send_command(&name, &WidgetCommand::SetChecked(c));
+            }
+            "selectedindex" => {
+                if let Ok(i) = value.parse::<usize>() {
+                    self.form
+                        .send_command(&name, &WidgetCommand::SetSelectedIndex(i));
+                }
             }
             other => {
                 self.form.send_command(
@@ -561,6 +642,13 @@ fn make_widget(type_name: &str, name: &str, text: &str, w: f32, h: f32) -> Box<d
         "contextmenustrip" => Box::new(ContextMenu::new().with_name(name)),
         "splitcontainer" => Box::new(SplitContainer::new(false).with_name(name)),
         "flowlayoutpanel" => Box::new(FlowLayoutPanel::new().with_name(name)),
+        // Horizontal flow — Flutter `Row`. (Vertical `FlowLayoutPanel` default
+        // serves Column/Scaffold.)
+        "hflowlayoutpanel" => Box::new(
+            FlowLayoutPanel::new()
+                .with_name(name)
+                .with_direction(vybe_widgets::flow_layout::FlowDirection::LeftToRight),
+        ),
         "tablelayoutpanel" => Box::new(TableLayoutPanel::new(2, 2).with_name(name)),
         "bindingnavigator" => Box::new(BindingNavigator::new(name)),
         _ => {
@@ -571,5 +659,120 @@ fn make_widget(type_name: &str, name: &str, text: &str, w: f32, h: f32) -> Box<d
             l.height = h;
             Box::new(l)
         }
+    }
+}
+
+#[cfg(test)]
+mod adapter_tests {
+    //! Per-widget adapter verification: build the control the way the Flutter
+    //! realizer does (`stage_control`), forward a declared property the way the
+    //! adapter does (`set_property`), then assert the REAL control's state — not
+    //! the mirror store — reflects it. State lives in the widget.
+    use super::*;
+    use vybe_widgets::layout::{LayoutRect, MouseButton, MouseEvent, MouseEventKind};
+    use vybe_widgets::{WidgetCommand, WidgetEvent};
+
+    /// Checkbox, fully wired: `Checkbox(value: true/false)` reflects onto the
+    /// real checkbox control's checked state.
+    #[test]
+    fn checkbox_value_applies_to_control() {
+        let mut gui = GuiState::new();
+        gui.stage_control("checkbox", "cb1", "", 20, 20, "", true);
+
+        // Flutter `Checkbox(value: true)` → adapter forwards value=true.
+        gui.set_property("cb1", "value", "true");
+        assert!(
+            matches!(
+                gui.form.send_command("cb1", &WidgetCommand::GetValue),
+                CommandValue::Bool(true)
+            ),
+            "value:true must check the real control"
+        );
+
+        gui.set_property("cb1", "value", "false");
+        assert!(
+            matches!(
+                gui.form.send_command("cb1", &WidgetCommand::GetValue),
+                CommandValue::Bool(false)
+            ),
+            "value:false must uncheck the real control"
+        );
+    }
+
+    /// Checkbox `onChanged`: a click on the real control emits its toggle event
+    /// (which the host routes to the Dart handler → `setState`). State stays in
+    /// the widget — the click flips the control's own checked state.
+    #[test]
+    fn checkbox_click_emits_toggle_event() {
+        let mut gui = GuiState::new();
+        gui.stage_control("checkbox", "cb1", "", 20, 20, "", true);
+        // Lay the form out so the staged checkbox gets a hit-testable rect.
+        gui.form.set_rect(LayoutRect::new(0.0, 0.0, 200.0, 200.0));
+
+        let click = MouseEvent {
+            x: 10.0,
+            y: 10.0,
+            kind: MouseEventKind::Press(MouseButton::Left),
+            cmd: false,
+            shift: false,
+            alt: false,
+        };
+        gui.form.handle_mouse(&click);
+        let events = gui.form.drain_events();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, WidgetEvent::CheckboxToggled(name, true) if name == "cb1")),
+            "clicking the checkbox must emit CheckboxToggled(checked=true); got {events:?}"
+        );
+    }
+
+    fn slider_actual(gui: &mut GuiState, name: &str) -> f64 {
+        match gui.form.send_command(name, &WidgetCommand::GetValue) {
+            CommandValue::Number(n) => n,
+            other => panic!("slider GetValue returned {other:?}"),
+        }
+    }
+
+    /// Slider, fully wired: `Slider(value:, min:, max:)` positions the real
+    /// trackbar at the actual value, regardless of the order fields arrive in
+    /// (the control stores the actual value and derives the fraction).
+    #[test]
+    fn slider_value_and_bounds_apply_to_control() {
+        // Standard 0..100 range.
+        let mut gui = GuiState::new();
+        gui.stage_control("trackbar", "sl1", "", 200, 20, "", true);
+        gui.set_property("sl1", "value", "40");
+        gui.set_property("sl1", "min", "0");
+        gui.set_property("sl1", "max", "100");
+        assert!(
+            (slider_actual(&mut gui, "sl1") - 40.0).abs() < 0.001,
+            "Slider(value:40) must sit at 40, not the 0..1 fraction"
+        );
+
+        // Custom range with the value set BEFORE the bounds — must still land at
+        // the actual value (order-independence is the whole point).
+        let mut gui2 = GuiState::new();
+        gui2.stage_control("trackbar", "sl2", "", 200, 20, "", true);
+        gui2.set_property("sl2", "value", "50");
+        gui2.set_property("sl2", "min", "10");
+        gui2.set_property("sl2", "max", "90");
+        assert!(
+            (slider_actual(&mut gui2, "sl2") - 50.0).abs() < 0.001,
+            "Slider(value:50, min:10, max:90) must sit at 50"
+        );
+    }
+
+    /// Progress indicator, fully wired: `LinearProgressIndicator(value: 0.6)`
+    /// fills the real progress bar to 0.6 (Flutter's value is already 0..1).
+    #[test]
+    fn progress_value_applies_to_control() {
+        let mut gui = GuiState::new();
+        gui.stage_control("progressbar", "pb1", "", 200, 8, "", true);
+        gui.set_property("pb1", "value", "0.6");
+        assert!(
+            (slider_actual(&mut gui, "pb1") - 0.6).abs() < 0.001,
+            "LinearProgressIndicator(value:0.6) must fill to 0.6"
+        );
     }
 }

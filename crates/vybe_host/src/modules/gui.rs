@@ -406,6 +406,52 @@ mod gui_impl {
             .collect();
         drop(o);
 
+        // Declarative (Flutter) path: when the parent is a layout container
+        // (FlowLayoutPanel/StackPanel), or the `runApp` root (a layout panel
+        // added under the form — `createForm` returns the form NAME string, so
+        // a string/none parent IS the form), stage into the widget tree and let
+        // vybe_widgets own nesting + flow layout. WinForms/VCL adapters use
+        // absolute Panels/Forms with a Form *object* parent and non-layout
+        // children, so they fall through to the flat placement below.
+        let (parent_is_layout, parent_name) = match parent {
+            Some(Value::Object(p)) => {
+                let p = p.lock().unwrap();
+                let pt = p
+                    .properties
+                    .get("__control_type")
+                    .map(|v| format!("{}", v))
+                    .unwrap_or_default();
+                let pn = p
+                    .properties
+                    .get("__control_name")
+                    .or_else(|| p.properties.get("name"))
+                    .map(|v| format!("{}", v))
+                    .unwrap_or_default();
+                (matches!(pt.as_str(), "FlowLayoutPanel" | "HFlowLayoutPanel" | "StackPanel"), pn)
+            }
+            _ => (false, String::new()),
+        };
+        let parent_is_form = matches!(parent, Some(Value::String(_)) | None);
+        let child_is_layout = matches!(control_type.as_str(), "FlowLayoutPanel" | "HFlowLayoutPanel" | "StackPanel");
+        if parent_is_layout || (parent_is_form && child_is_layout) {
+            {
+                let mut g = gui.lock().unwrap();
+                g.stage_control(
+                    &control_type,
+                    &control_name,
+                    &text,
+                    width,
+                    height,
+                    &parent_name,
+                    parent_is_form && !parent_is_layout,
+                );
+            }
+            if let Some(Value::Object(parent_obj)) = parent {
+                append_to_owner_collection(parent_obj, "controls", Value::Object(obj.clone()));
+            }
+            return;
+        }
+
         let abs_left = left + parent_abs_x;
         let abs_top = top + parent_abs_y;
         let mut g = gui.lock().unwrap();
@@ -615,6 +661,53 @@ mod gui_impl {
                 Value::Null
             })
         });
+
+        // Drop all controls so the Flutter `setState` rebuild can re-realize
+        // the widget tree from scratch (State persists in the Dart runtime).
+        vm.register_host_fn("vybe:gui", "clearControls", {
+            let gui = gui.clone();
+            Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+                gui.lock().unwrap().form.clear_controls();
+                Value::Null
+            })
+        });
+
+        // True when a control with this name already exists — lets the Flutter
+        // realizer create-or-update by stable name (the control's name is its
+        // cross-framework identity; setState updates in place, no rebuild).
+        vm.register_host_fn("vybe:gui", "hasControl", {
+            let gui = gui.clone();
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                let name = str_arg(args, 0, "");
+                Value::Bool(gui.lock().unwrap().is_live_control_name(&name))
+            })
+        });
+
+        // Make a control-handle object of `type` named `name` (NOT added to any
+        // form yet — the realizer nests it with `controlsAdd`). `type` is a
+        // control type string (`Label`/`Button`/`FlowLayoutPanel`…).
+        vm.register_host_fn(
+            "vybe:gui",
+            "newControl",
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                let type_name = str_arg(args, 0, "Panel");
+                let name = str_arg(args, 1, "control");
+                let obj = Arc::new(Mutex::new(Object::new()));
+                {
+                    let mut o = obj.lock().unwrap();
+                    let s = |v: &str| Value::String(Arc::from(v));
+                    o.properties.insert("__control_type".into(), s(&type_name));
+                    o.properties.insert("__control_name".into(), s(&name));
+                    o.properties.insert("__type".into(), s(&type_name));
+                    o.properties.insert("name".into(), s(&name));
+                    o.properties.insert("width".into(), Value::F64(100.0));
+                    o.properties.insert("height".into(), Value::F64(30.0));
+                    o.properties.insert("left".into(), Value::F64(0.0));
+                    o.properties.insert("top".into(), Value::F64(0.0));
+                }
+                Value::Object(obj)
+            }),
+        );
 
         vm.register_host_fn("vybe:gui", "addControl", {
             let gui = gui.clone();
@@ -911,6 +1004,7 @@ mod gui_impl {
             "StatusStrip",
             "SplitContainer",
             "FlowLayoutPanel",
+            "HFlowLayoutPanel",
             "TableLayoutPanel",
             "LinkLabel",
             "MaskedTextBox",

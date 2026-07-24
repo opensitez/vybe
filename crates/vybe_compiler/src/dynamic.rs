@@ -306,11 +306,21 @@ pub fn debug_eval_expression(
     ));
 
     // 3. Set up the isolated mini-VM (runtime registration + host functions).
+    //    Register WITH gui so the gui module's (module,name) keys exist here to be
+    //    overlaid below — otherwise `vybe.gui.*` in an eval expression would fail
+    //    to link. The fresh GuiState this creates is immediately shadowed by the
+    //    live closures in `overlay_host_fns_from`.
     let mut eval_vm = VM::new();
-    vybe_host::register_all(&mut eval_vm);
+    let _eval_gui = vybe_host::register_all_with_gui(&mut eval_vm);
     vybe_host::setup_namespaces(&mut eval_vm);
     ensure_php_runtime_registered(&mut eval_vm);
     ensure_js_runtime_registered(&mut eval_vm);
+    // Share the LIVE program's host-function closures (matched by name), so host
+    // calls in the eval expression hit the live captured state (e.g. the shared
+    // GuiState Arc) instead of this mini-VM's fresh, empty one. Execution and
+    // exception state stay isolated — a throw is contained to `eval_vm`, never
+    // corrupting the paused program's handler stack. See `overlay_host_fns_from`.
+    eval_vm.overlay_host_fns_from(live);
     // Copy live globals (scalars + shared objects; NOT function values — their
     // chunk_index refs belong to the live VM's chunk table). Objects are shared
     // by Arc, so reads see live object state. Locals come in as params (below).
@@ -408,6 +418,7 @@ fn eval_scaffold(language_name: &str, expr: &str) -> Option<String> {
             format!("class __VybeFrag {{ static object __vybe_frag() {{ return ({expr}); }} }}\n")
         }
         "c" => format!("long __vybe_frag() {{ return ({expr}); }}\n"),
+        "dart" => format!("dynamic __vybe_frag() {{ return ({expr}); }}\n"),
         "vb" => format!(
             "Module __VbFrag\n  Function __vybe_frag() As Object\n    Return ({expr})\n  End Function\nEnd Module\n"
         ),
@@ -456,17 +467,15 @@ fn frag_return_expression(module: &crate::ast::Module) -> Option<crate::ast::Exp
 /// A value that can be lifted into the eval mini-VM. Function/host-function
 /// values can't cross VMs (their chunk_index refs are VM-local), so they are
 /// excluded.
-fn eval_value_is_copyable(v: &Value) -> bool {
-    match v {
-        Value::Object(o) => {
-            let obj = o.lock().unwrap();
-            !matches!(
-                obj.kind,
-                ObjectKind::Function(_) | ObjectKind::HostFunction(_)
-            )
-        }
-        _ => true,
-    }
+fn eval_value_is_copyable(_v: &Value) -> bool {
+    // Copy EVERY global into the eval mini-VM, including function/constructor
+    // values. They are Arc-shared, so property READS (`typeof C.prototype.x`,
+    // walking a class's prototype chain) see live state — essential for
+    // debugger inspection of classes. Calling a copied user `Function` in the
+    // mini-VM would dispatch on the live VM's chunk_index (wrong table) and
+    // error, but that degrades gracefully; `HostFunction(idx)` stays call-safe
+    // because register_all is deterministic (same index in the mini-VM).
+    true
 }
 
 pub fn install_chunk_globals(vm: &mut VM, chunks: &[Chunk], base_chunk_index: usize) {

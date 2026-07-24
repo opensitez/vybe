@@ -26,6 +26,7 @@ pub mod platforms {
     //! Facade over the platform crates so `crate::platforms::…` paths
     //! keep resolving; the packages live at `platforms/*` in the workspace.
     pub use vybe_platform_dotnet as dotnet;
+    pub use vybe_platform_flutter as flutter;
     pub use vybe_platform_libc as libc;
     pub use vybe_platform_plib as plib;
 
@@ -33,6 +34,7 @@ pub mod platforms {
     pub(crate) fn register_namespace_trees() {
         vybe_emitter::xml::register_namespace_tree();
         dotnet::emitter::tree_register::register_namespace_tree();
+        flutter::emitter::tree_register::register_namespace_tree();
         libc::emitter::tree_register::register_namespace_tree();
         plib::emitter::tree_register::register_namespace_tree();
     }

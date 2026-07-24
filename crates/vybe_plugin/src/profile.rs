@@ -360,6 +360,17 @@ pub struct LanguageProfile {
     /// `fmt.Println(1)` still prints `1`.
     pub materialize_bool_results: bool,
 
+    /// `for x in obj` yields the object's KEYS for dict-like values (Map /
+    /// Ordinary), while sequences (Array / Set / String) still yield values.
+    /// Python `for k in dict` / JS-style object iteration. Routes the for-in
+    /// values path through `collections::emit_iter_natural`.
+    pub for_in_object_yields_keys: bool,
+
+    /// Dict/hash literals (`{k: v}`) build a `Map` rather than an Ordinary
+    /// object, so non-string keys keep their type (`{1: 'a'}` stays `1`, not
+    /// `'1'`) and insertion order is preserved. Python dicts, Ruby hashes.
+    pub dict_literals_as_map: bool,
+
     /// Stamp Python-style introspection metadata (`__name__`, `__mro__`) on each
     /// class object, so `Cls.__name__`, `Cls.__mro__`, and `type(obj).__name__`
     /// resolve. Off by default; languages with this reflection surface opt in.
@@ -1139,6 +1150,14 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("materialize_bool_results")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let for_in_object_yields_keys = compiler
+        .get("for_in_object_yields_keys")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let dict_literals_as_map = compiler
+        .get("dict_literals_as_map")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let class_introspection_metadata = compiler
         .get("class_introspection_metadata")
         .and_then(|v| v.as_bool())
@@ -1611,6 +1630,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         uses_common_resolver,
         missing_arg_is_undefined,
         materialize_bool_results,
+        for_in_object_yields_keys,
+        dict_literals_as_map,
         class_introspection_metadata,
         class_multiple_inheritance,
         supports_autoload,

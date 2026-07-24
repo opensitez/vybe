@@ -128,6 +128,44 @@ fn i32_arg(args: &[Value], idx: usize, default: i32) -> i32 {
     }
 }
 
+fn to_integer_or_infinity(value: Option<&Value>, default_for_undefined: f64) -> f64 {
+    let number = match value {
+        None | Some(Value::Undefined) => default_for_undefined,
+        Some(Value::Null) => 0.0,
+        Some(Value::Bool(v)) => {
+            if *v {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        Some(Value::I32(n)) => *n as f64,
+        Some(Value::I64(n)) => *n as f64,
+        Some(Value::F32(n)) => *n as f64,
+        Some(Value::F64(n)) => *n,
+        Some(Value::String(text)) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                0.0
+            } else if trimmed == "Infinity" || trimmed == "+Infinity" {
+                f64::INFINITY
+            } else if trimmed == "-Infinity" {
+                f64::NEG_INFINITY
+            } else {
+                trimmed.parse::<f64>().unwrap_or(f64::NAN)
+            }
+        }
+        Some(other) => format!("{other}").parse::<f64>().unwrap_or(f64::NAN),
+    };
+    if number.is_nan() || number == 0.0 {
+        0.0
+    } else if number.is_infinite() {
+        number
+    } else {
+        number.trunc()
+    }
+}
+
 fn s_val(text: &str) -> Value {
     Value::String(Arc::from(text))
 }
@@ -738,13 +776,24 @@ fn register_search_ops(vm: &mut VM) {
             let needle = s_arg(args, 1);
             let hay = utf16_units(&s);
             let ndl = utf16_units(&needle);
+            let pos = to_integer_or_infinity(args.get(2), f64::INFINITY);
+            let end = if pos.is_infinite() && pos.is_sign_positive() {
+                hay.len()
+            } else if pos <= 0.0 {
+                0
+            } else if pos >= hay.len() as f64 {
+                hay.len()
+            } else {
+                pos as usize
+            };
             if ndl.is_empty() {
-                return Value::F64(hay.len() as f64);
+                return Value::F64(end as f64);
             }
             if ndl.len() > hay.len() {
                 return Value::F64(-1.0);
             }
-            for i in (0..=(hay.len() - ndl.len())).rev() {
+            let start = end.min(hay.len() - ndl.len());
+            for i in (0..=start).rev() {
                 if hay[i..i + ndl.len()] == ndl[..] {
                     return Value::F64(i as f64);
                 }

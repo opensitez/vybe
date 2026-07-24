@@ -2244,6 +2244,10 @@ fn resolve_imports(module: &mut Module, lang: &Language, base_dir: &Path) {
             || path_str.starts_with("wasm:")
             || path_str.starts_with("vybe:")
             || path_str.starts_with("node:")
+            // Flutter is a resolver-provided pseudo-package (its `flutter.*`
+            // widgets are registered in the namespace tree + the adapter
+            // runtime), not a source file on disk.
+            || path_str.starts_with("package:flutter/")
         {
             continue;
         }

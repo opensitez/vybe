@@ -181,7 +181,7 @@ pub(crate) struct CallSignature {
 }
 
 impl CallSignature {
-    fn from_params(params: &[Param]) -> Self {
+    pub(crate) fn from_params(params: &[Param]) -> Self {
         Self {
             param_names: params
                 .iter()
@@ -2407,6 +2407,10 @@ impl Compiler {
 
         if crate::registry::plib::module_uses_plib_gcl(module) {
             self.register_plib_gcl_classes()?;
+        }
+
+        if crate::registry::flutter::module_uses_flutter(module) {
+            self.mount_flutter_ambient();
         }
 
         // Pre-pass: merge `Partial Class` declarations sharing the same name.

@@ -8,9 +8,6 @@ use super::*;
 fn dotnet_ambient_tree_root(path: &str) -> Option<String> {
     let trimmed = path.trim();
     let lower = trimmed.to_ascii_lowercase();
-    if lower == "system.threading.tasks" {
-        return None;
-    }
     if lower == "system" {
         return Some("dotnet.system".into());
     }
@@ -590,9 +587,6 @@ impl Compiler {
                 // `using System.Text;`) make bare qualified chains resolve
                 // under the shared dotnet tree (`Regex.IsMatch` →
                 // `dotnet.system.text.regularexpressions.regex.ismatch`).
-                // Keep `System.Threading.Tasks` out of ambient lookup so
-                // `Task.Run` / `Task.Delay` stay on the compiler's JSPI
-                // THREAD_SPAWN special path.
                 crate::ast::ImportKind::Simple { path, alias: None }
                     if self.profile.namespaces.use_dotnet =>
                 {
