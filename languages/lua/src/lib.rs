@@ -1,5 +1,7 @@
 pub mod emitter;
 mod normalize;
+pub mod normalize_class;
+mod protocol;
 pub mod walker;
 
 use pest_derive::Parser;
@@ -25,7 +27,7 @@ pub fn register() {
         parse,
         profile_source,
         emit_dispatch: Some(emitter::dispatch::dispatch),
-        normalize_class: None,
+        normalize_class: Some(normalize_class::normalize_class),
         register_tree: None,
     });
 }

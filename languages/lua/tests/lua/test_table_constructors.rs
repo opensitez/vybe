@@ -53,9 +53,9 @@ lua_print! {
         "local t = {[true]=\"yes\", [false]=\"no\"}\nprint(t[true])\n",
         "yes"
     },
-    constructor_nil_key_entry_ignored => {
-        "local t = {[nil]=1, a=2}\nprint(t.a)\n",
-        "2"
+    constructor_nil_key_entry_errors => {
+        "local ok = pcall(function() return {[nil]=1, a=2} end)\nprint(tostring(ok))\n",
+        "false"
     },
     constructor_string_key_without_brackets => {
         "local t = {hello=\"world\"}\nprint(t.hello)\n",

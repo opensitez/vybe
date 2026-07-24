@@ -11,7 +11,7 @@ lua_print! {
     },
     balanced_match_curly => {
         "print(string.match(\"{one {two}}\", \"%b{}\"))\n",
-        ""
+        "{one {two}}"
     },
     balanced_match_nil => {
         "print(tostring(string.match(\"no parens\", \"%b()\")))\n",

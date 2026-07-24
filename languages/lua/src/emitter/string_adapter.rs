@@ -45,6 +45,14 @@ fn mark_lua_multi_row(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     super::metamethods_adapter::emit_lua_multi_row(chunks, current, 1, line);
 }
 
+pub fn emit_lua_string_dump(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_string_const("unable to dump C function", line);
+    vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+}
+
 /// Call a host import on `chunks[current]` with `argc` args already on stack.
 fn call_import(
     chunks: &mut Vec<Chunk>,
@@ -1158,6 +1166,30 @@ fn emit_lua_pattern_to_js_regex(chunks: &mut Vec<Chunk>, current: usize, line: u
         emit_replace_literal(chunks, current, from, to, line);
     }
 
+    let early_punct_escapes: &[(&str, &str)] = &[
+        ("%%", "%"),
+        ("%.", "\\."),
+        ("%+", "\\+"),
+        ("%-", "\\-"),
+        ("%*", "\\*"),
+        ("%?", "\\?"),
+        ("%(", "\\("),
+        ("%)", "\\)"),
+        ("%[", "\\["),
+        ("%]", "\\]"),
+        ("%{", "\\{"),
+        ("%}", "\\}"),
+        ("%^", "\\^"),
+        ("%$", "\\$"),
+        ("%|", "\\|"),
+        ("%/", "\\/"),
+        ("%\\", "\\\\"),
+    ];
+
+    for &(from, to) in early_punct_escapes {
+        emit_replace_literal(chunks, current, from, to, line);
+    }
+
     emit_replace_literal(chunks, current, "%b<>", "<[^<>]*>", line);
 
     // 1. Quantifier '-' replacements FIRST, before we introduce any hyphens by replacing classes.
@@ -1360,6 +1392,11 @@ pub fn emit_lua_string_match(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     emit_lua_balanced_match_row(chunks, current, s_slot, "[", "]", line);
     chunks[current].emit_else(line);
 
+    emit_str_eq_const(&mut chunks[current], pat_slot, "%b{}", line);
+    chunks[current].emit_if(line);
+    emit_lua_balanced_match_row(chunks, current, s_slot, "{", "}", line);
+    chunks[current].emit_else(line);
+
     lget(&mut chunks[current], pat_slot, line);
     emit_lua_pattern_to_js_regex(chunks, current, line);
     lset(&mut chunks[current], js_pat_slot, line);
@@ -1440,6 +1477,7 @@ pub fn emit_lua_string_match(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
 
     lget(&mut chunks[current], row_slot, line);
     mark_lua_multi_row(chunks, current, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -2048,12 +2086,48 @@ pub fn emit_lua_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
     vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
     chunks[current].emit_else(line);
 
+    emit_str_eq_const(&mut chunks[current], fmt_slot, "%.1f", line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], value_slot, line);
+    chunks[current].emit_f64_const(0.000000000001, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_f64_const(1.0, line);
+    call_import(chunks, current, "ecma:number", "toFixed", 2, line);
+    chunks[current].emit_else(line);
+
+    emit_str_eq_const(&mut chunks[current], fmt_slot, "%.2f", line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], value_slot, line);
+    chunks[current].emit_f64_const(0.000000000001, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_f64_const(2.0, line);
+    call_import(chunks, current, "ecma:number", "toFixed", 2, line);
+    chunks[current].emit_else(line);
+
     emit_str_eq_const(&mut chunks[current], fmt_slot, "%.3f", line);
     chunks[current].emit_if(line);
     lget(&mut chunks[current], value_slot, line);
     chunks[current].emit_f64_const(0.000000000001, line);
     chunks[current].emit_op(Op::F64_ADD, line);
     chunks[current].emit_f64_const(3.0, line);
+    call_import(chunks, current, "ecma:number", "toFixed", 2, line);
+    chunks[current].emit_else(line);
+
+    emit_str_eq_const(&mut chunks[current], fmt_slot, "%.4f", line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], value_slot, line);
+    chunks[current].emit_f64_const(0.000000000001, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_f64_const(4.0, line);
+    call_import(chunks, current, "ecma:number", "toFixed", 2, line);
+    chunks[current].emit_else(line);
+
+    emit_str_eq_const(&mut chunks[current], fmt_slot, "%.5f", line);
+    chunks[current].emit_if(line);
+    lget(&mut chunks[current], value_slot, line);
+    chunks[current].emit_f64_const(0.000000000001, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_f64_const(5.0, line);
     call_import(chunks, current, "ecma:number", "toFixed", 2, line);
     chunks[current].emit_else(line);
 
@@ -2107,6 +2181,10 @@ pub fn emit_lua_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
     push_str(&mut chunks[current], "E-0$1", line);
     call_import(chunks, current, "ecma:regexp", "replace", 3, line);
 
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);

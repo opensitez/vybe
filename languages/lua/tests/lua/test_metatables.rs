@@ -14,7 +14,7 @@ lua_print! {
         "3"
     },
     __add_metamethod_on_tables => {
-        "local mt={__add=function(a,b) return a.v+b.v end}\nlocal a=setmetatable({v=2},mt)\nlocal b=setmetatable({v=5},mt)\nprint((a+b).v)\n",
+        "local mt={__add=function(a,b) return {v=a.v+b.v} end}\nlocal a=setmetatable({v=2},mt)\nlocal b=setmetatable({v=5},mt)\nprint((a+b).v)\n",
         "7"
     },
     __eq_metamethod_can_make_equal => {
@@ -102,7 +102,7 @@ lua_print! {
         "true"
     },
     metatable_protected_by_metatable_field => {
-        "local mt = {__metatable = \"locked\"}\nlocal ok = pcall(function() setmetatable({}, mt) end)\nprint(ok)\n",
+        "local mt = {__metatable = \"locked\"}\nlocal t = setmetatable({}, mt)\nlocal ok = pcall(function() setmetatable(t, {}) end)\nprint(ok)\n",
         "false"
     },
     metatable_len_metamethod => {

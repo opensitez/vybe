@@ -24,5 +24,5 @@ lua_print! {
     test_hash_constructor_evaluation_order => { "local i=0; local function f() i=i+1; return i end; local t={[f()]=f(), [f()]=f()}; local cnt=0; for k,v in pairs(t) do cnt=cnt+k+v end; print(cnt)", "10" },
     test_hash_large_number_of_keys => { "local t={}; for i=1,100 do t['k'..i]=i end; print(t.k50)", "50" },
     test_hash_remove_during_iteration => { "local t={a=1, b=2, c=3}; for k,v in pairs(t) do if k=='b' then t[k]=nil end end; print(t.a..' '..(t.b or 'nil')..' '..t.c)", "1 nil 3" },
-    test_hash_add_during_iteration_error => { "local t={a=1}; local ok = pcall(function() for k,v in pairs(t) do t.b=2 end end); print(tostring(ok))", "false" }
+    test_hash_add_during_iteration_error => { "local t={a=1}; local ok = pcall(function() for k,v in pairs(t) do t.b=2 end end); print(tostring(ok)..' '..t.b)", "true 2" }
 }

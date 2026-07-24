@@ -33,9 +33,10 @@ fn test_running_thread_return_type() {
         run_lua_one(
             r#"local t = coroutine.create(function()
   local thr = coroutine.running()
-  print(type(thr))
+  return type(thr)
 end)
-print(coroutine.resume(t) == true)"#
+local ok, kind = coroutine.resume(t)
+print(ok == true and kind == "thread")"#
         ),
         "true"
     );
@@ -76,7 +77,6 @@ fn test_running_returns_thread_not_main_when_in_coroutine() {
 local t = coroutine.create(function()
   local th, main = coroutine.running()
   stored = (main == false)
-  print(main)
 end)
 coroutine.resume(t)
 print(stored == true)"#
@@ -153,10 +153,10 @@ fn test_running_coroutine_type() {
         run_lua_one(
             r#"local t = coroutine.create(function()
   local thread = coroutine.running()
-  print(type(thread))
+  return type(thread)
 end)
-coroutine.resume(t)
-print(coroutine.status(t) == "dead")"#
+local ok, kind = coroutine.resume(t)
+print(ok == true and kind == "thread" and coroutine.status(t) == "dead")"#
         ),
         "true"
     );
@@ -184,7 +184,8 @@ fn test_running_after_error() {
         run_lua_one(
             r#"local state
 local t = coroutine.create(function()
-  state = coroutine.running()
+  local th = coroutine.running()
+  state = th
   error("x")
 end)
 coroutine.resume(t)
@@ -203,7 +204,10 @@ fn test_running_two_runs_same_thread() {
   return main and 1 or 2
 end)
 local _, a = coroutine.resume(t)
-local t2 = coroutine.create(function() return coroutine.running() ~= nil end)
+local t2 = coroutine.create(function()
+  local th = coroutine.running()
+  return th ~= nil
+end)
 local _, b = coroutine.resume(t2)
 print(a == 2 and b == true)"#
         ),
@@ -247,8 +251,14 @@ print(ok and ok2 and type(first) == "boolean" and second == true)"#
 fn test_running_multiple_coroutines() {
     assert_eq!(
         run_lua_one(
-            r#"local c1 = coroutine.create(function() return coroutine.running() ~= nil end)
-local c2 = coroutine.create(function() return coroutine.running() ~= nil end)
+            r#"local c1 = coroutine.create(function()
+  local th = coroutine.running()
+  return th ~= nil
+end)
+local c2 = coroutine.create(function()
+  local th = coroutine.running()
+  return th ~= nil
+end)
 local _, a = coroutine.resume(c1)
 local _, b = coroutine.resume(c2)
 print(a == true and b == true)"#

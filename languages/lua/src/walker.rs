@@ -167,7 +167,7 @@ fn walk_for_generic(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     .map(|c| c.as_str().to_string())
                     .collect();
             }
-            Rule::expr => expl.push(walk_expression(p)?),
+            Rule::expr => expl.push(walk_expression_value(p)?),
             Rule::body_block | Rule::block => {
                 body = walk_block(p)?;
             }
@@ -314,56 +314,13 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 });
             }
             Rule::assign => in_values = true,
-            Rule::expr => values.push(walk_expression(p)?),
+            Rule::expr => values.push(walk_expression_value(p)?),
             _ => {}
         }
     }
     for (i, decl) in declarations.iter_mut().enumerate() {
         if let Some(val) = values.get(i) {
             decl.init = Some(val.clone());
-        }
-    }
-    if declarations.len() > 1
-        && values.len() == 1
-        && matches!(values[0].kind, ExprKind::Call { .. })
-    {
-        let names = declarations
-            .iter()
-            .filter_map(|decl| match &decl.pattern {
-                BindingPattern::Ident(name) => Some(name.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        if names.len() == declarations.len() {
-            let decls = declarations
-                .iter()
-                .map(|decl| VarDeclarator {
-                    pattern: decl.pattern.clone(),
-                    type_hint: decl.type_hint.clone(),
-                    init: None,
-                    array_bounds: decl.array_bounds.clone(),
-                    with_events: decl.with_events,
-                })
-                .collect();
-            return Ok(StmtKind::Block(vec![
-                Statement::new(StmtKind::VarDecl {
-                    declarations: decls,
-                    kind: VarDeclKind::Let,
-                }),
-                Statement::new(StmtKind::Assign {
-                    targets: vec![Expression::new(ExprKind::Destructure(
-                        DestructurePattern::Array(
-                            names
-                                .into_iter()
-                                .map(|name| {
-                                    ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
-                                })
-                                .collect(),
-                        ),
-                    ))],
-                    value: values[0].clone(),
-                }),
-            ]));
         }
     }
     Ok(StmtKind::VarDecl {
@@ -652,7 +609,7 @@ fn walk_return_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut values = Vec::new();
     for p in pair.into_inner() {
         if p.as_rule() == Rule::expr {
-            values.push(walk_expression(p)?);
+            values.push(walk_expression_value(p)?);
         }
     }
     if values.len() > 1 {
@@ -681,13 +638,13 @@ fn walk_assign_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::assign_rhs => {
                 for rhs in p.into_inner() {
                     if rhs.as_rule() == Rule::expr {
-                        values.push(walk_expression(rhs)?);
+                        values.push(walk_expression_value(rhs)?);
                     }
                 }
             }
             Rule::assign => seen_assign = true,
             Rule::postfix if !seen_assign => targets.push(walk_expression(p)?),
-            Rule::expr if seen_assign => values.push(walk_expression(p)?),
+            Rule::expr if seen_assign => values.push(walk_expression_value(p)?),
             _ => {}
         }
     }
@@ -714,6 +671,38 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     Ok(Expression::with_span(kind, span))
 }
 
+fn lua_parenthesized_call_first(expr: Expression) -> ExprKind {
+    if matches!(
+        &expr.kind,
+        ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "__lua_first")
+    ) {
+        return expr.kind;
+    }
+    ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Ident("__lua_first".to_string()))),
+        args: vec![Argument::positional(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Ident(
+                "__lua_multi_row".to_string(),
+            ))),
+            args: vec![Argument::positional(expr)],
+            optional: false,
+        }))],
+        optional: false,
+    }
+}
+
+fn walk_expression_value(pair: Pair<Rule>) -> Result<Expression, String> {
+    let source = pair.as_str().trim().to_string();
+    let span = to_span(&pair);
+    let expr = walk_expression(pair)?;
+    if source.starts_with('(') && source.ends_with(')') && matches!(expr.kind, ExprKind::Call { .. }) {
+        Ok(Expression::with_span(lua_parenthesized_call_first(expr), span))
+    } else {
+        Ok(expr)
+    }
+}
+
 fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
     match pair.as_rule() {
         Rule::call_expression => return walk_call_expression(pair),
@@ -726,9 +715,14 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
     }
 
     let rule = pair.as_rule();
+    let source = pair.as_str().trim().to_string();
     let mut inner: Vec<Pair<Rule>> = pair.into_inner().collect();
     if inner.len() == 1 {
-        return walk_expression(inner.remove(0)).map(|e| e.kind);
+        let expr = walk_expression(inner.remove(0))?;
+        if source.starts_with('(') && source.ends_with(')') && matches!(expr.kind, ExprKind::Call { .. }) {
+            return Ok(lua_parenthesized_call_first(expr));
+        }
+        return Ok(expr.kind);
     }
     match rule {
         Rule::or_expr => walk_binary_chain(inner, |_| BinOp::Or),
@@ -956,7 +950,7 @@ fn walk_call_expression(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let mut args = Vec::new();
             for arg in chain_inner {
                 if arg.as_rule() == Rule::expr {
-                    args.push(Argument::positional(walk_expression(arg)?));
+                    args.push(Argument::positional(walk_expression_value(arg)?));
                 }
             }
             if let ExprKind::Ident(name) = &expr.kind {
@@ -995,18 +989,21 @@ fn walk_call_expression(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let mut args = Vec::new();
             for arg in chain_inner {
                 if arg.as_rule() == Rule::expr {
-                    args.push(Argument::positional(walk_expression(arg)?));
+                    args.push(Argument::positional(walk_expression_value(arg)?));
                 }
             }
             let receiver = expr.clone();
-            args.insert(0, Argument::positional(receiver));
+            let mut helper_args = Vec::with_capacity(args.len() + 2);
+            helper_args.push(Argument::positional(receiver));
+            helper_args.push(Argument::positional(Expression::new(ExprKind::Lit(
+                Literal::Str(field),
+            ))));
+            helper_args.extend(args);
             expr = Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::new(ExprKind::Member {
-                    object: Box::new(expr),
-                    field,
-                    null_safe: true,
-                })),
-                args,
+                callee: Box::new(Expression::new(ExprKind::Ident(
+                    "__lua_method_call".to_string(),
+                ))),
+                args: helper_args,
                 optional: false,
             });
         } else if chain_src.starts_with('[') {
@@ -1258,7 +1255,12 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let expr = inner
                 .find(|p| p.as_rule() == Rule::expr)
                 .ok_or("empty parentheses")?;
-            walk_expression(expr).map(|e| e.kind)
+            let expr = walk_expression(expr)?;
+            if matches!(expr.kind, ExprKind::Call { .. }) {
+                Ok(lua_parenthesized_call_first(expr))
+            } else {
+                Ok(expr.kind)
+            }
         }
         other => Err(format!("Unhandled primary: {other:?}")),
     }
@@ -1287,7 +1289,7 @@ fn walk_table_field(field: Pair<Rule>, out: &mut Vec<ArrayElement>) -> Result<()
             .ok_or("missing spread expression")?;
         out.push(ArrayElement {
             key: None,
-            value: walk_expression(spread_expr.clone())?,
+            value: walk_expression_value(spread_expr.clone())?,
             spread: true,
             by_ref: false,
         });
@@ -1302,7 +1304,7 @@ fn walk_table_field(field: Pair<Rule>, out: &mut Vec<ArrayElement>) -> Result<()
             .collect();
         out.push(ArrayElement {
             key: Some(walk_expression(exprs[0].clone())?),
-            value: walk_expression(
+            value: walk_expression_value(
                 exprs
                     .get(1)
                     .cloned()
@@ -1322,7 +1324,7 @@ fn walk_table_field(field: Pair<Rule>, out: &mut Vec<ArrayElement>) -> Result<()
             .ok_or("missing named table field value")?;
         out.push(ArrayElement {
             key: Some(Expression::new(ExprKind::Lit(Literal::Str(key_name)))),
-            value: walk_expression(value_expr.clone())?,
+            value: walk_expression_value(value_expr.clone())?,
             spread: false,
             by_ref: false,
         });
@@ -1332,7 +1334,7 @@ fn walk_table_field(field: Pair<Rule>, out: &mut Vec<ArrayElement>) -> Result<()
     if let Some(expr_pair) = inner.iter().find(|p| p.as_rule() == Rule::expr) {
         out.push(ArrayElement {
             key: None,
-            value: walk_expression(expr_pair.clone())?,
+            value: walk_expression_value(expr_pair.clone())?,
             spread: false,
             by_ref: false,
         });

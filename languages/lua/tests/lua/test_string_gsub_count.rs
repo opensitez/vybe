@@ -7,27 +7,27 @@ lua_print! {
     },
     gsub_first_only => {
         "print((string.gsub(\"aaa\", \"a\", \"b\", 1)))\n",
-        "baa\t1"
+        "baa"
     },
     gsub_anchor_start => {
         "print((string.gsub(\"hello\", \"^h\", \"H\")))\n",
-        "Hello\t1"
+        "Hello"
     },
     gsub_anchor_end => {
         "print((string.gsub(\"world!\", \"!$\", \".\")))\n",
-        "world.\t1"
+        "world."
     },
     gsub_digit_class => {
         "print((string.gsub(\"a1b2c3\", \"%d\", \"N\")))\n",
-        "aNbNcN\t3"
+        "aNbNcN"
     },
     gsub_word_boundary => {
         "print((string.gsub(\"cat and dog\", \"%a+\", \"X\")))\n",
-        "X X X\t3"
+        "X X X"
     },
     gsub_space_chars => {
         "print((string.gsub(\"a b  c\", \"%s+\", \"-\")))\n",
-        "a-b-c\t2"
+        "a-b-c"
     },
     gsub_fn_skip => {
         "local r = (string.gsub(\"abc\", \"%a\", function(m)\n  if m ~= \"b\" then return m:upper() end\nend))\nprint(r)\n",
@@ -35,10 +35,10 @@ lua_print! {
     },
     gsub_replace_ref => {
         "print((string.gsub(\"hello world\", \"(%a+)\", \"[%1]\")))\n",
-        "[hello] [world]\t2"
+        "[hello] [world]"
     },
     gsub_multi_caps => {
         "print((string.gsub(\"key=val\", \"(%a+)=(%a+)\", \"%2=%1\")))\n",
-        "val=key\t1"
+        "val=key"
     },
 }

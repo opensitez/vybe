@@ -23,7 +23,7 @@ lua_print! {
     },
     newindex_missing_only => {
         "local called = 0\nlocal t = setmetatable({x = 1}, {\n  __newindex = function(tbl, k, v)\n    called = called + 1\n    rawset(tbl, k, v)\n  end\n})\nt.x = 99   -- existing, no __newindex\nt.y = 10   -- new, triggers\nprint(called, t.x, t.y)\n",
-        "1\t99\t10"
+        "1 99 10"
     },
     index_table_proto => {
         "local proto = {kind = \"base\", greet = function(self) return \"hi \" .. self.name end}\nlocal obj = setmetatable({name = \"world\"}, {__index = proto})\nprint(obj:greet())\n",
@@ -31,6 +31,6 @@ lua_print! {
     },
     index_exist_shortcircuit => {
         "local called = false\nlocal t = setmetatable({k = 99}, {\n  __index = function() called = true; return 0 end\n})\nlocal v = t.k\nprint(v, called)\n",
-        "99\tfalse"
+        "99 false"
     },
 }

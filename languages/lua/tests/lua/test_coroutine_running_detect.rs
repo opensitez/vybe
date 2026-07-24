@@ -26,7 +26,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -41,7 +41,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -56,7 +56,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -71,7 +71,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -86,7 +86,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -101,7 +101,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -116,7 +116,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -131,7 +131,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -146,7 +146,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -161,7 +161,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -176,7 +176,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -191,7 +191,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -206,7 +206,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -221,7 +221,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -236,7 +236,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -251,7 +251,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -266,7 +266,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -281,7 +281,7 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }
 
@@ -296,6 +296,6 @@ end)
 print(coroutine.resume(co))
 if inside then print(true) else print(false) end"#
         ),
-        "false"
+        "true"
     );
 }

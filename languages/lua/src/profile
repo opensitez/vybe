@@ -27,6 +27,7 @@ allow_trailing_comma = true
 supports_spread_arguments = true
 for_loop_per_iteration_binding = true
 multi_value_tuple_returns = true
+uses_normalize_class = true
 
 [builtins]
 
@@ -38,7 +39,9 @@ rawlen = { emit = "common:lua.rawlen", min_args = 1, max_args = 1 }
 rawget = { emit = "common:lua.rawget", min_args = 2, max_args = 2 }
 rawset = { emit = "common:lua.rawset", min_args = 3, max_args = 3 }
 assert = { emit = "common:lua.assert", min_args = 1, max_args = 255 }
+collectgarbage = { emit = "common:lua.collectgarbage", min_args = 0, max_args = 2 }
 setmetatable = { emit = "common:lua.setmetatable", min_args = 2, max_args = 2 }
+__lua_set_class_metatable = { emit = "common:lua.set_class_metatable", min_args = 3, max_args = 3 }
 getmetatable = { emit = "common:lua.getmetatable", min_args = 1, max_args = 1 }
 pairs = { emit = "common:lua.pairs", min_args = 1, max_args = 1 }
 ipairs = { emit = "common:lua.ipairs", min_args = 1, max_args = 1 }
@@ -67,16 +70,20 @@ select = { emit = "common:lua.select", min_args = 1, max_args = 255 }
 "coroutine.wrap" = { emit = "common:lua.coroutine_wrap", min_args = 1, max_args = 1 }
 "coroutine.close" = { emit = "common:lua.coroutine_close", min_args = 1, max_args = 1 }
 "coroutine.isyieldable" = { emit = "common:lua.coroutine_isyieldable", min_args = 0, max_args = 0 }
+"coroutine.__wrap_resume" = { emit = "common:lua.coroutine_wrap_resume", min_args = 1, max_args = 255 }
+"coroutine.__wrap_resume_row" = { emit = "common:lua.coroutine_wrap_resume_row", min_args = 2, max_args = 2 }
 __lua_print = { emit = "common:lua.print", min_args = 0, max_args = 255 }
 __lua_print_row = { emit = "common:lua.print_row", min_args = 1, max_args = 1 }
 __lua_apply_row = { emit = "common:lua.apply_row", min_args = 2, max_args = 2 }
 __lua_apply_row_prefix = { emit = "common:lua.apply_row_prefix", min_args = 3, max_args = 3 }
 __lua_call = { emit = "common:lua.metamethod_call", min_args = 1, max_args = 255 }
+__lua_method_call = { emit = "common:lua.method_call", min_args = 2, max_args = 255 }
 __lua_wrap_resume = { emit = "common:lua.coroutine_wrap_resume", min_args = 1, max_args = 255 }
 __lua_tostring = { emit = "common:lua.tostring", min_args = 1, max_args = 1 }
 __lua_error = { emit = "common:lua.error", min_args = 0, max_args = 2 }
 __lua_float_repr = { emit = "common:lua.float_repr", min_args = 1, max_args = 1 }
 __lua_multi_row = { emit = "common:lua.multi_row", min_args = 1, max_args = 1 }
+__lua_multi_row_prefix = { emit = "common:lua.multi_row_prefix", min_args = 2, max_args = 2 }
 __lua_as_multi_row = { emit = "common:lua.as_multi_row", min_args = 1, max_args = 1 }
 __lua_first = { emit = "common:lua.first", min_args = 1, max_args = 1 }
 __lua_mark_rest = { emit = "common:lua.mark_rest", min_args = 2, max_args = 2 }
@@ -144,6 +151,7 @@ __lua_truthy = { emit = "common:lua.truthy", min_args = 1, max_args = 1 }
 "string.reverse" = { emit = "common:str_reverse", min_args = 1, max_args = 1 }
 "string.char" = { emit = "common:lua.string_char", min_args = 0, max_args = 255 }
 "string.byte" = { emit = "common:lua.string_byte", min_args = 1, max_args = 3 }
+"string.dump" = { emit = "common:lua.string_dump", min_args = 1, max_args = 2 }
 "string.format" = { emit = "common:lua.string_format", min_args = 1, max_args = 255 }
 __lua_string_format_row = { emit = "common:lua.string_format_row", min_args = 2, max_args = 2 }
 "string.find" = { emit = "common:lua.string_find", min_args = 2, max_args = 4 }
@@ -191,7 +199,7 @@ __lua_ge = { emit = "common:lua.metamethod_ge", min_args = 2, max_args = 2 }
 __lua_eq = { emit = "common:lua.metamethod_eq", min_args = 2, max_args = 2 }
 __lua_ne = { emit = "common:lua.metamethod_ne", min_args = 2, max_args = 2 }
 __lua_index = { emit = "common:lua.metamethod_index", min_args = 2, max_args = 2 }
-__lua_index0 = { emit = "common:collections.get", min_args = 2, max_args = 2 }
+__lua_index0 = { emit = "common:lua.multi_index0", min_args = 2, max_args = 2 }
 __lua_multi_get0 = { emit = "common:lua.multi_index0", min_args = 2, max_args = 2 }
 __lua_newindex = { emit = "common:lua.metamethod_newindex", min_args = 3, max_args = 3 }
 

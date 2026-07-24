@@ -19,7 +19,7 @@ lua_print! {
     },
     inherit_rawset_override => {
         "local proto = {x = 1}\nlocal obj = setmetatable({}, {__index = proto})\nrawset(obj, \"x\", 2)\nprint(obj.x, proto.x)\n",
-        "2\t1"
+        "2 1"
     },
     inherit_dynamic_proto => {
         "local protoA = {x = 1}\nlocal protoB = {x = 2}\nlocal mt = {__index = protoA}\nlocal obj = setmetatable({}, mt)\nprint(obj.x)\nmt.__index = protoB\nprint(obj.x)\n",

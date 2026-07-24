@@ -97,9 +97,9 @@ lua_print! {
         "print(string.match(\"!ab!\", \"%w+\"))\n",
         "ab"
     },
-    pattern_end_of_string_anchor_z => {
+    pattern_zero_byte_class_z_does_not_match_newline => {
         "print(string.match(\"file\\n\", \"%z\"))\n",
-        ""
+        "nil"
     },
     pattern_non_greedy_minus_suffix => {
         "print(string.match(\"aab\", \"a.-b\"))\n",

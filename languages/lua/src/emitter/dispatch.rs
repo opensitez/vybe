@@ -26,6 +26,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "lua.string_char" => {
             super::string_adapter::emit_lua_string_char(chunks, current, argc, line);
         }
+        "lua.string_dump" => {
+            super::string_adapter::emit_lua_string_dump(chunks, current, argc, line);
+        }
         "lua.string_format" => {
             super::string_adapter::emit_lua_string_format(chunks, current, argc, line);
         }
@@ -64,6 +67,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "lua.assert" => {
             super::metamethods_adapter::emit_lua_assert(chunks, current, argc, line);
+        }
+        "lua.collectgarbage" => {
+            super::metamethods_adapter::emit_lua_collectgarbage(chunks, current, argc, line);
         }
         "lua.float_repr" => {
             super::metamethods_adapter::emit_lua_float_repr(chunks, current, argc, line);
@@ -137,6 +143,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "lua.setmetatable" => {
             super::metamethods_adapter::emit_lua_setmetatable(chunks, current, argc, line);
         }
+        "lua.set_class_metatable" => {
+            super::metamethods_adapter::emit_lua_set_class_metatable(chunks, current, argc, line);
+        }
         "lua.getmetatable" => {
             super::metamethods_adapter::emit_lua_getmetatable(chunks, current, argc, line);
         }
@@ -199,6 +208,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "lua.multi_row" => {
             super::metamethods_adapter::emit_lua_multi_row(chunks, current, argc, line);
+        }
+        "lua.multi_row_prefix" => {
+            super::metamethods_adapter::emit_lua_multi_row_prefix(chunks, current, argc, line);
         }
         "lua.multi_index0" => {
             super::metamethods_adapter::emit_lua_multi_index0(chunks, current, argc, line);
@@ -265,6 +277,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "lua.coroutine_wrap_resume" => {
             super::metamethods_adapter::emit_lua_coroutine_wrap_resume(chunks, current, argc, line);
+        }
+        "lua.coroutine_wrap_resume_row" => {
+            super::metamethods_adapter::emit_lua_coroutine_wrap_resume_row(
+                chunks, current, argc, line,
+            );
         }
         "lua.iter_end" => {
             super::metamethods_adapter::emit_lua_iter_end(chunks, current, argc, line);
@@ -343,6 +360,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "lua.metamethod_call" => {
             super::metamethods_adapter::emit_metamethod_call(chunks, current, argc, line);
+        }
+        "lua.method_call" => {
+            super::metamethods_adapter::emit_lua_method_call(chunks, current, argc, line);
         }
         "lua.metamethod_len" => {
             super::metamethods_adapter::emit_metamethod_len(chunks, current, argc, line);

@@ -14,7 +14,7 @@ lua_print! {
     pattern_class_not_space => { "print(string.match(\"  a  \", \"%S\"))\n", "a" },
     pattern_any_char => { "print(string.match(\"abc\", \".\"))\n", "a" },
     pattern_custom_set => { "print(string.match(\"hello\", \"[aeiou]\"))\n", "e" },
-    pattern_custom_complement => { "print(string.match(\"hello\", \"[^hello]\"))\n", "" },
+    pattern_custom_complement => { "print(string.match(\"hello\", \"[^hello]\"))\n", "nil" },
     pattern_custom_complement_match => { "print(string.match(\"hello!\", \"[^%a]\"))\n", "!" },
     pattern_anchor_start_match => { "print(string.match(\"abc\", \"^a\"))\n", "a" },
     pattern_anchor_start_fail => { "print(tostring(string.match(\"bac\", \"^a\")))\n", "nil" },

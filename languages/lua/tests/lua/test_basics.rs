@@ -1,4 +1,4 @@
-use super::helpers::{compile_ok, parse_ok, run_lua_one};
+use super::helpers::{compile_ok, parse_ok, run_lua, run_lua_one};
 
 // ── Literals ────────────────────────────────────────────────────────────────
 
@@ -68,7 +68,7 @@ fn print_nil() {
 #[test]
 fn print_multiple_values_space_separated() {
     let out = run_lua_one("print(1, 2, 3)\n");
-    assert_eq!(out, "1 2 3");
+    assert_eq!(out, "1\t2\t3");
 }
 
 #[test]
@@ -208,10 +208,16 @@ lua_print! {
     },
     nested_do_blocks_scoping => {
         "local a = 1\ndo\n  do\n    local a = 3\n    print(a)\n  end\n  print(a)\nend\n",
-        "3\n1"
+        "3"
     },
     boolean_operator_and_returns_first_falsy => {
         "print(false and 10)\n",
         "false"
     },
+}
+
+#[test]
+fn nested_do_blocks_scoping_all_output() {
+    let out = run_lua("local a = 1\ndo\n  do\n    local a = 3\n    print(a)\n  end\n  print(a)\nend\n");
+    assert_eq!(out, vec!["3".to_string(), "1".to_string()]);
 }

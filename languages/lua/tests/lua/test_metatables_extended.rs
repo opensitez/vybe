@@ -11,7 +11,7 @@ lua_print! {
     },
     meta_newindex_table => {
         "local parent = {}\nlocal child = setmetatable({}, {__newindex = parent})\nchild.x = 42\nprint(parent.x, tostring(rawget(child, \"x\")))\n",
-        "42\tnil"
+        "42 nil"
     },
     meta_newindex_function => {
         "local log = nil\nlocal t = setmetatable({}, {__newindex = function(tbl, k, v) log = k .. \"=\" .. v end})\nt.score = 100\nprint(log)\n",
