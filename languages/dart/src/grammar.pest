@@ -561,7 +561,13 @@ call_expression = {
 
 new_expression = { "new" ~ ident_name ~ ("." ~ ident_name)? ~ type_args? ~ "(" ~ argument_list? ~ ")" }
 
-const_expression = { const_kw ~ ident_name ~ ("." ~ ident_name)? ~ type_args? ~ "(" ~ argument_list? ~ ")" }
+const_expression = {
+    const_kw ~ (
+        list_literal
+        | map_or_set_literal
+        | (ident_name ~ ("." ~ ident_name)? ~ type_args? ~ "(" ~ argument_list? ~ ")")
+    )
+}
 
 call_chain = {
     cascade_chain

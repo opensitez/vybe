@@ -8,7 +8,7 @@
 use vybe_ast::{
     Argument, ClassMember, ClassModifiers, ExprKind, Expression, Literal, Span, StmtKind,
 };
-use vybe_plugin::class_normalize::{
+use vybe_bytecode::class_normalize::{
     Access, BaseCall, NormalClass, NormalConstructor, NormalField, from_method_stmt,
 };
 

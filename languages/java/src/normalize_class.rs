@@ -15,7 +15,7 @@
 use vybe_ast::{
     ClassMember, ClassModifiers, ConstructorInitializerTarget, Span, StmtKind, Visibility,
 };
-use vybe_plugin::class_normalize::{
+use vybe_bytecode::class_normalize::{
     canonical::{ClassLang, canonicalize_method},
     from_method_stmt,
     types::*,

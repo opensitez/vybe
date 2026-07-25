@@ -46,12 +46,273 @@ use vybe_ast::*;
 
 const DART_USER_ADD_METHOD: &str = "__dart_user_add";
 
+thread_local! {
+    /// Types the program itself declares (class/enum/mixin/extension). Flutter
+    /// named-constructor desugaring skips any type present here — the user's
+    /// own declaration wins over the built-in allowlist (shadowing).
+    static USER_DECLARED_TYPES: std::cell::RefCell<HashSet<String>> =
+        std::cell::RefCell::new(HashSet::new());
+}
+
+/// Cheap source pre-scan for declared type names, so [`dart_flutter_named_ctor`]
+/// can respect user shadowing. A declaration is a line starting with
+/// `class`/`enum`/`mixin`/`extension` (with the usual `abstract`/`sealed`/… )
+/// followed by the name.
+fn collect_user_declared_types(source: &str) -> HashSet<String> {
+    let mut set = HashSet::new();
+    for line in source.lines() {
+        let mut t = line.trim_start();
+        for modifier in ["abstract ", "sealed ", "final ", "base ", "interface "] {
+            if let Some(rest) = t.strip_prefix(modifier) {
+                t = rest.trim_start();
+            }
+        }
+        for kw in ["class ", "enum ", "mixin ", "extension "] {
+            if let Some(rest) = t.strip_prefix(kw) {
+                let name: String = rest
+                    .trim_start()
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    set.insert(name);
+                }
+            }
+        }
+    }
+    set
+}
+
+/// Desugar an allowlisted Flutter named constructor (`Type.name(args)`) into
+/// the primary catalog construction (`Type(field: value, …)`), which the
+/// common resolver's `Ctor` path lowers. `Type.name(...)` is syntactically a
+/// static-method call, so this is a strictly CLOSED allowlist — never a
+/// blanket rewrite — and it bails when the user declares their own `Type`.
+/// Returns the rewritten `Call`, or `None` when nothing matches.
+/// True when `name` is a widget/value type registered in the Flutter catalog.
+fn is_flutter_catalog_class(name: &str) -> bool {
+    vybe_platform_flutter::emitter::flutter_classes()
+        .iter()
+        .any(|c| c.name == name)
+}
+
+fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Option<ExprKind> {
+    if USER_DECLARED_TYPES.with(|s| s.borrow().contains(type_name)) {
+        return None;
+    }
+    fn named(field: &str, value: Expression) -> Argument {
+        Argument {
+            value,
+            name: Some(field.to_string()),
+            by_ref: false,
+            spread: false,
+        }
+    }
+    fn zero() -> Expression {
+        Expression::new(ExprKind::Lit(Literal::Float(0.0)))
+    }
+    let positional: Vec<Expression> = args
+        .iter()
+        .filter(|a| a.name.is_none())
+        .map(|a| a.value.clone())
+        .collect();
+    let by_name = |label: &str| -> Option<Expression> {
+        args.iter()
+            .find(|a| a.name.as_deref() == Some(label))
+            .map(|a| a.value.clone())
+    };
+    let construct = |ty: &str, fields: Vec<Argument>| -> ExprKind {
+        ExprKind::Call {
+            callee: Box::new(Expression::ident(ty)),
+            args: fields,
+            optional: false,
+        }
+    };
+
+    match (type_name, ctor) {
+        // EdgeInsets: four resolved edges. `.all`/`.symmetric`/`.only`/`.fromLTRB`.
+        ("EdgeInsets" | "EdgeInsetsDirectional", "all") => {
+            let v = positional.first()?.clone();
+            Some(construct(
+                "EdgeInsets",
+                vec![
+                    named("left", v.clone()),
+                    named("top", v.clone()),
+                    named("right", v.clone()),
+                    named("bottom", v),
+                ],
+            ))
+        }
+        ("EdgeInsets" | "EdgeInsetsDirectional", "symmetric") => {
+            let h = by_name("horizontal").unwrap_or_else(zero);
+            let v = by_name("vertical").unwrap_or_else(zero);
+            Some(construct(
+                "EdgeInsets",
+                vec![
+                    named("left", h.clone()),
+                    named("right", h),
+                    named("top", v.clone()),
+                    named("bottom", v),
+                ],
+            ))
+        }
+        ("EdgeInsets", "only") => Some(construct(
+            "EdgeInsets",
+            vec![
+                named("left", by_name("left").unwrap_or_else(zero)),
+                named("top", by_name("top").unwrap_or_else(zero)),
+                named("right", by_name("right").unwrap_or_else(zero)),
+                named("bottom", by_name("bottom").unwrap_or_else(zero)),
+            ],
+        )),
+        ("EdgeInsets", "fromLTRB") => Some(construct(
+            "EdgeInsets",
+            vec![
+                named("left", positional.first()?.clone()),
+                named("top", positional.get(1)?.clone()),
+                named("right", positional.get(2)?.clone()),
+                named("bottom", positional.get(3)?.clone()),
+            ],
+        )),
+
+        // Image factory ctors → `Image(image: <Provider>(src), …passthrough)`.
+        ("Image", "network") | ("Image", "asset") | ("Image", "memory") | ("Image", "file") => {
+            let provider = match ctor {
+                "network" => "NetworkImage",
+                "asset" => "AssetImage",
+                "memory" => "MemoryImage",
+                _ => "FileImage",
+            };
+            let src = positional.first()?.clone();
+            let image = Expression::new(construct(
+                provider,
+                vec![Argument::positional(src)],
+            ));
+            let mut fields = vec![named("image", image)];
+            fields.extend(args.iter().filter(|a| a.name.is_some()).cloned());
+            Some(construct("Image", fields))
+        }
+
+        // SizedBox factory ctors → explicit width/height (+ optional child).
+        ("SizedBox", "shrink") => {
+            let mut fields = vec![named("width", zero()), named("height", zero())];
+            if let Some(c) = by_name("child") {
+                fields.push(named("child", c));
+            }
+            Some(construct("SizedBox", fields))
+        }
+        ("SizedBox", "expand") => {
+            let inf = || {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident("double")),
+                    field: "infinity".to_string(),
+                    null_safe: false,
+                })
+            };
+            let mut fields = vec![named("width", inf()), named("height", inf())];
+            if let Some(c) = by_name("child") {
+                fields.push(named("child", c));
+            }
+            Some(construct("SizedBox", fields))
+        }
+        ("SizedBox", "square") => {
+            let d = by_name("dimension").unwrap_or_else(zero);
+            let mut fields = vec![named("width", d.clone()), named("height", d)];
+            if let Some(c) = by_name("child") {
+                fields.push(named("child", c));
+            }
+            Some(construct("SizedBox", fields))
+        }
+        ("SizedBox", "fromSize") => {
+            let size = by_name("size")?;
+            let w = Expression::new(ExprKind::Member {
+                object: Box::new(size.clone()),
+                field: "width".to_string(),
+                null_safe: false,
+            });
+            let h = Expression::new(ExprKind::Member {
+                object: Box::new(size),
+                field: "height".to_string(),
+                null_safe: false,
+            });
+            Some(construct("SizedBox", vec![named("width", w), named("height", h)]))
+        }
+
+        // Positioned.fill — stretch to fill the Stack: zero edges (any of
+        // left/top/right/bottom may be overridden as a margin), plus child.
+        ("Positioned", "fill") => {
+            let mut fields = vec![
+                named("left", by_name("left").unwrap_or_else(zero)),
+                named("top", by_name("top").unwrap_or_else(zero)),
+                named("right", by_name("right").unwrap_or_else(zero)),
+                named("bottom", by_name("bottom").unwrap_or_else(zero)),
+            ];
+            if let Some(c) = by_name("child") {
+                fields.push(named("child", c));
+            }
+            Some(construct("Positioned", fields))
+        }
+        // Positioned.fromRect — left/top + width/height from the rect.
+        ("Positioned", "fromRect") => {
+            let rect = by_name("rect")?;
+            let m = |f: &str| Expression::new(ExprKind::Member {
+                object: Box::new(rect.clone()),
+                field: f.to_string(),
+                null_safe: false,
+            });
+            let mut fields = vec![
+                named("left", m("left")),
+                named("top", m("top")),
+                named("width", m("width")),
+                named("height", m("height")),
+            ];
+            if let Some(c) = by_name("child") {
+                fields.push(named("child", c));
+            }
+            Some(construct("Positioned", fields))
+        }
+        // Positioned.fromRelativeRect — all four edges from the rect.
+        ("Positioned", "fromRelativeRect") => {
+            let rect = by_name("rect")?;
+            let m = |f: &str| Expression::new(ExprKind::Member {
+                object: Box::new(rect.clone()),
+                field: f.to_string(),
+                null_safe: false,
+            });
+            let mut fields = vec![
+                named("left", m("left")),
+                named("top", m("top")),
+                named("right", m("right")),
+                named("bottom", m("bottom")),
+            ];
+            if let Some(c) = by_name("child") {
+                fields.push(named("child", c));
+            }
+            Some(construct("Positioned", fields))
+        }
+
+        // General fallback: any other named constructor on a known Flutter
+        // catalog class is an alternate entry point that captures the same
+        // fields — forward the args to the base type's construction.
+        _ => {
+            if is_flutter_catalog_class(type_name) {
+                Some(construct(type_name, args.to_vec()))
+            } else {
+                None
+            }
+        }
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Entry point
 // ════════════════════════════════════════════════════════════════════════════
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let source = normalize_dart_expression_source(source);
+    // Record the program's own declared types up front so Flutter named-ctor
+    // desugaring respects user shadowing.
+    USER_DECLARED_TYPES.with(|s| *s.borrow_mut() = collect_user_declared_types(&source));
     // Flutter render runtime: the `platforms/flutter` adapter owns its Dart
     // runtime (`runApp` + the widget-tree realizer). Append it ONLY when a
     // program actually renders — imports a Flutter library AND references
@@ -389,6 +650,18 @@ fn collect_instance_member_names_for_type(
 fn rewrite_user_add_methods(body: &mut Vec<Statement>) {
     let mut add_return_types: HashMap<String, Option<String>> = HashMap::new();
     let mut operator_return_types: HashMap<(String, String), Option<String>> = HashMap::new();
+    // Seed Flutter widget/value-type field types (from the flutter catalog) so
+    // `double` fields render `.0` and chained value reads resolve. Feeds the
+    // SAME static-type tracker as operator overloading — display is driven by
+    // declared types, never a runtime check. Harmless for non-Flutter programs
+    // (those type names never appear); user classes are inserted below and win
+    // on key collision (insert-after).
+    for (owner, field, ty) in vybe_platform_flutter::emitter::field_type_seed() {
+        operator_return_types.insert(
+            (owner.to_string(), field.to_string()),
+            Some(ty.to_string()),
+        );
+    }
     let mut iterator_return_classes: HashMap<String, String> = HashMap::new();
     let mut iterator_current_types: HashMap<String, String> = HashMap::new();
     let mut class_parents: Vec<(String, Vec<String>)> = Vec::new();
@@ -1038,6 +1311,33 @@ fn rewrite_user_add_calls_in_expr(
                     operator_return_types,
                 );
             }
+            // `print(x)` where `x` is statically a `double` must render Dart
+            // style (`10.0`, not `10`) — driven by the same static-type source
+            // used for operator overloading, no runtime check.
+            if matches!(&callee.kind, ExprKind::Ident(name) if name == "print") {
+                for arg in &mut *args {
+                    if arg.name.is_none()
+                        && matches!(
+                            dart_user_add_expr_type(
+                                &arg.value,
+                                env,
+                                current_class,
+                                add_return_types,
+                                operator_return_types,
+                            )
+                            .as_deref(),
+                            Some("double")
+                        )
+                    {
+                        let inner = arg.value.clone();
+                        arg.value = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("__dart_double_to_string")),
+                            args: vec![Argument::positional(inner)],
+                            optional: false,
+                        });
+                    }
+                }
+            }
             if let ExprKind::Member { object, field, .. } = &callee.kind {
                 if field == "toString" && args.is_empty() {
                     if matches!(
@@ -1429,14 +1729,49 @@ fn rewrite_user_add_calls_in_expr(
         }
         ExprKind::Interpolation(parts) => {
             for part in parts {
-                if let InterpolPart::Expr(value) | InterpolPart::Formatted(value, _) = part {
-                    rewrite_user_add_calls_in_expr(
-                        value,
-                        env,
-                        current_class,
-                        add_return_types,
-                        operator_return_types,
-                    );
+                match part {
+                    // A plain `${x}` where `x` is statically a `double` must
+                    // render Dart-style (`2.0`, not `2`). The static type comes
+                    // from the same operator/field type tracking used for
+                    // operator overloading — no runtime type check.
+                    InterpolPart::Expr(value) => {
+                        let is_double = matches!(
+                            dart_user_add_expr_type(
+                                value,
+                                env,
+                                current_class,
+                                add_return_types,
+                                operator_return_types,
+                            )
+                            .as_deref(),
+                            Some("double")
+                        );
+                        rewrite_user_add_calls_in_expr(
+                            value,
+                            env,
+                            current_class,
+                            add_return_types,
+                            operator_return_types,
+                        );
+                        if is_double {
+                            let inner = value.clone();
+                            *value = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__dart_double_to_string")),
+                                args: vec![Argument::positional(inner)],
+                                optional: false,
+                            });
+                        }
+                    }
+                    InterpolPart::Formatted(value, _) => {
+                        rewrite_user_add_calls_in_expr(
+                            value,
+                            env,
+                            current_class,
+                            add_return_types,
+                            operator_return_types,
+                        );
+                    }
+                    InterpolPart::Text(_) => {}
                 }
             }
         }
@@ -6261,6 +6596,11 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 }
             }
             let class_name = class_parts.join(".");
+            if let Some((ty, ctor)) = class_name.split_once('.') {
+                if let Some(kind) = dart_flutter_named_ctor(ty, ctor, &args) {
+                    return Ok(kind);
+                }
+            }
             if let Some(alias) = dart_exception_constructor_alias(&class_name) {
                 return Ok(ExprKind::Call {
                     callee: Box::new(Expression::ident(alias)),
@@ -6280,6 +6620,11 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let mut args = Vec::new();
             for p in pair.into_inner() {
                 match p.as_rule() {
+                    // `const [...]` / `const {...}` — `const` is inert in the
+                    // dynamic runtime; lower the collection literal directly.
+                    Rule::list_literal | Rule::map_or_set_literal => {
+                        return walk_expr_kind(p);
+                    }
                     Rule::ident_name => class_parts.push(p.as_str().to_string()),
                     Rule::type_args => {}
                     Rule::argument_list => args = walk_arguments(p)?,
@@ -6288,6 +6633,11 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 }
             }
             let class_name = class_parts.join(".");
+            if let Some((ty, ctor)) = class_name.split_once('.') {
+                if let Some(kind) = dart_flutter_named_ctor(ty, ctor, &args) {
+                    return Ok(kind);
+                }
+            }
             if let Some(alias) = dart_exception_constructor_alias(&class_name) {
                 return Ok(ExprKind::Call {
                     callee: Box::new(Expression::ident(alias)),
@@ -8002,6 +8352,16 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         Rule::ident_name | Rule::ident_or_keyword => name = p.as_str().to_string(),
                         Rule::argument_list => call_args = Some(walk_arguments(p)?),
                         _ => {}
+                    }
+                }
+                // Flutter named constructor written as a bare call
+                // (`EdgeInsets.all(8)`, no `const`/`new`): the receiver is a
+                // plain type identifier and `name` is an allowlisted named
+                // ctor → desugar to the primary construction.
+                if let (ExprKind::Ident(type_name), Some(cargs)) = (&expr.kind, &call_args) {
+                    if let Some(kind) = dart_flutter_named_ctor(type_name, &name, cargs) {
+                        expr = Expression::new(kind);
+                        continue;
                     }
                 }
                 // Dart `arr.fold(initial, combine)` → `arr.reduce(combine, initial)`

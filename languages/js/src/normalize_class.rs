@@ -34,7 +34,7 @@ use vybe_ast::{
     Argument, ClassMember, ClassModifiers, ExprKind, Expression, LambdaBody, Modifiers, Param,
     PropertySetter, Span, Statement, StmtKind,
 };
-use vybe_plugin::class_normalize::{
+use vybe_bytecode::class_normalize::{
     build_normal_method,
     canonical::{ClassLang, canonicalize_method},
     from_method_stmt,

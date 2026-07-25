@@ -405,6 +405,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.sort_by_key" => {
             crate::emitter::collections_adapter::emit_sort_by_key(chunks, current, argc, line)
         }
+        "python.re_search" => crate::emitter::re_adapter::emit_search(chunks, current, argc, line),
+        "python.re_match" => crate::emitter::re_adapter::emit_match(chunks, current, argc, line),
+        "python.re_findall" => crate::emitter::re_adapter::emit_findall(chunks, current, argc, line),
+        "python.re_sub" => crate::emitter::re_adapter::emit_sub(chunks, current, argc, line),
+        "python.re_split" => crate::emitter::re_adapter::emit_split(chunks, current, argc, line),
+        "python.re_escape" => crate::emitter::re_adapter::emit_escape(chunks, current, argc, line),
         "python.make_set" => {
             crate::emitter::collections_adapter::emit_make_set(chunks, current, argc, line)
         }

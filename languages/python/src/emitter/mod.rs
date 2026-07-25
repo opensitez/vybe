@@ -16,6 +16,7 @@ pub mod json_adapter;
 pub mod math_adapter;
 pub mod os_path_adapter;
 pub mod repr_adapter;
+pub mod re_adapter;
 pub mod runtime_adapter;
 pub mod sql_adapter;
 pub mod statistics_adapter;

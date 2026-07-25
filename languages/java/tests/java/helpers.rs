@@ -31,7 +31,7 @@ pub fn compile(src: &str) -> Vec<vybe_bytecode::Chunk> {
 pub fn run(src: &str) -> Value {
     let chunks = compile(src);
     let mut vm = VM::new();
-    vybe_host::register_all(&mut vm);
+    vybe_emitter::platforms::init_platforms(&mut vm);
     vm.run(chunks).expect("run failed")
 }
 
@@ -52,7 +52,7 @@ pub fn run_prints(src: &str) -> Vec<String> {
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
         let mut vm = VM::new();
-        vybe_host::register_all(&mut vm);
+        vybe_emitter::platforms::init_platforms(&mut vm);
         vm.register_host_fn(
             "wasi:logging/logging",
             "log",
@@ -77,7 +77,7 @@ pub fn run_prints(src: &str) -> Vec<String> {
                 Value::Null
             }),
         );
-        vybe_host::setup_namespaces(&mut vm);
+        vybe_emitter::platforms::finalize_platforms(&mut vm);
         let result = vm.run(chunks);
         let _ = tx.send(result);
     });

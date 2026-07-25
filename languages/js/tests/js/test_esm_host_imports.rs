@@ -313,7 +313,7 @@ fn calling_value_import_reports_not_callable_runtime_error() {
     use vybe_bytecode::VM;
 
     let mut vm = VM::new();
-    vybe_host::register_all(&mut vm);
+    vybe_emitter::platforms::init_platforms(&mut vm);
     vybe_compiler::adapters::register_all(&mut vm).expect("adapters");
 
     let module = vybe_language_js::parse(
@@ -336,7 +336,7 @@ version();
     vybe_compiler::host_imports::install(&mut vm, &result.host_imports);
     let err = vybe_compiler::dynamic::run_with_js_dynamic_runtime(
         &mut vm,
-        vybe_host::Capabilities::all(),
+        vybe_bytecode::capabilities::Capabilities::all(),
         result.chunks,
     )
     .expect_err("calling a value import should fail at runtime");
@@ -354,7 +354,7 @@ fn validator_accepts_resolvable_imports() {
     // Validator should return an empty unresolved list.
     use vybe_bytecode::VM;
     let mut vm = VM::new();
-    vybe_host::register_all(&mut vm);
+    vybe_emitter::platforms::init_platforms(&mut vm);
     vybe_compiler::adapters::register_all(&mut vm).expect("adapters");
 
     let module = vybe_language_js::parse(
@@ -391,7 +391,7 @@ fn validator_flags_unknown_export() {
     // at link time, not at VM setup.
     use vybe_bytecode::VM;
     let mut vm = VM::new();
-    vybe_host::register_all(&mut vm);
+    vybe_emitter::platforms::init_platforms(&mut vm);
     vybe_compiler::adapters::register_all(&mut vm).expect("adapters");
 
     let module = vybe_language_js::parse(

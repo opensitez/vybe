@@ -1425,6 +1425,21 @@ pub fn emit_range(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 }
 
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
+    // `str(x)` = `"" + x` — empty-string-FIRST concat, so the polymorphic
+    // dyn-add always takes the string-concat path (coercing x to its string
+    // form) instead of the numeric path (which traps on non-numbers). The `""`
+    // must be the left operand, so stash x in a scratch local first. Inlined
+    // from the retired `__vybe_tostring` stdlib chunk, which did exactly this.
+    if name == "python.tostring" {
+        let chunk = &mut chunks[current];
+        let slot = chunk.local_count;
+        chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+        chunk.emit_string_const("", line);
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        return true;
+    }
     // `zip(a, b, …)` → array of tuples, stopping at the SHORTEST input (Python
     // semantics). Shared `vybe_emitter` op; `argc` = number of iterables.
     // `zip(a, b, …)` → array of tuples, stopping at the SHORTEST input (Python
@@ -1544,7 +1559,6 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         "python.hash" => "__vybe_hash",
         "python.format_map" => "__vybe_format_map",
         "python.setdefault" => "__vybe_setdefault",
-        "python.tostring" => "__vybe_tostring",
         _ => return false,
     };
     collections::emit_runtime_helper_call(chunks, current, global, argc, line);

@@ -250,7 +250,7 @@ fn array_call_end_to_end_runtime_produces_array_of_length_n() {
         .expect("compile");
 
     let mut vm = VM::new();
-    vybe_host::register_all(&mut vm);
+    vybe_emitter::platforms::init_platforms(&mut vm);
     // Running this chunk produces an Array and stores it in a global.
     // The call itself is the last value on the stack of chunk 0 before
     // the GLOBAL_SET; running to completion is sufficient to prove the

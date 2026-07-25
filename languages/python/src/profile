@@ -164,6 +164,16 @@ frozenset       = { emit = "common:python.make_set",        min_args = 0, max_ar
 __py_frozenset  = { emit = "common:python.frozenset",       min_args = 0, max_args = 1 }
 # `sorted(x, key=f)` → sort the (spread) array by key_fn via the shared primitive.
 __py_sort_by_key = { emit = "common:python.sort_by_key",    min_args = 2, max_args = 2 }
+# `re.*` over ecma:regexp (walker rewrites re.search/…→__re_*; m.group(i)→m[i]).
+__re_search     = { emit = "common:python.re_search",       min_args = 2, max_args = 2 }
+__re_match      = { emit = "common:python.re_match",         min_args = 2, max_args = 2 }
+__re_findall    = { emit = "common:python.re_findall",       min_args = 2, max_args = 2 }
+__re_sub        = { emit = "common:python.re_sub",           min_args = 3, max_args = 3 }
+__re_split      = { emit = "common:python.re_split",         min_args = 2, max_args = 2 }
+__re_escape     = { emit = "common:python.re_escape",        min_args = 1, max_args = 1 }
+# `re.compile(pat)` → a real RegExp; ecma:regexp.new is idempotent on a RegExp,
+# so __re_search/findall/sub/split accept a compiled pattern OR a string.
+__re_compile    = { emit = "host:ecma:regexp:new",           min_args = 1, max_args = 2 }
 sorted          = { emit = "host:ecma:array:toSorted",        min_args = 1, max_args = 3 }
 reversed        = { emit = "host:ecma:array:reversed",      min_args = 1, max_args = 1 }
 enumerate       = { emit = "common:python.enumerate",              min_args = 1, max_args = 2 }

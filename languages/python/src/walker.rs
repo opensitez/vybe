@@ -152,6 +152,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     PY_NAMEDTUPLE_DEFS.with(|m| m.borrow_mut().clear());
     PY_NAMEDTUPLE_INSTANCES.with(|m| m.borrow_mut().clear());
     PY_SQL_VARS.with(|m| m.borrow_mut().clear());
+    PY_RE_VARS.with(|m| m.borrow_mut().clear());
     let preprocessed = preprocess_indentation(source);
     let pairs = PythonParser::parse(Rule::program, &preprocessed)
         .map_err(|e| format!("Parse error: {}", e))?;
@@ -275,6 +276,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // + `math` (no host RNG beyond the base entropy source).
     if source.contains("random") {
         let mut prelude = parse_python_prelude(RANDOM_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
+
+    // `string` module classes/functions (Template/Formatter/capwords). Constants
+    // are intercepted at the member-read site; the class/function surface needs
+    // real definitions, so inject them when the module is imported.
+    if source.contains("import string") {
+        let mut prelude = parse_python_prelude(STRING_PRELUDE);
         prelude.append(&mut body);
         body = prelude;
     }
@@ -1426,6 +1436,110 @@ def __py_random_setstate(state):
     return None
 "#;
 
+/// Pure-Python `string` module surface: `Template` (`$name`/`${name}`
+/// substitution with `$$` escape and a class-attribute `delimiter`),
+/// `Formatter` (delegates to `str.format`), and `capwords`. Constants
+/// (ascii_letters, digits, …) are intercepted in [desugar_member_reads].
+const STRING_PRELUDE: &str = r#"
+def __string_is_id_start(c):
+    return c == "_" or ("a" <= c <= "z") or ("A" <= c <= "Z")
+def __string_is_id_char(c):
+    return c == "_" or ("a" <= c <= "z") or ("A" <= c <= "Z") or ("0" <= c <= "9")
+class __string_Template:
+    delimiter = "$"
+    def __init__(self, template):
+        self.template = template
+    def _tscan(self, mapping, safe, collect):
+        d = self.delimiter
+        s = self.template
+        out = ""
+        ids = []
+        i = 0
+        n = len(s)
+        while i < n:
+            c = s[i]
+            if c != d:
+                out += c
+                i += 1
+                continue
+            if i + 1 < n and s[i + 1] == d:
+                out += d
+                i += 2
+                continue
+            if i + 1 < n and s[i + 1] == "{":
+                j = i + 2
+                name = ""
+                while j < n and s[j] != "}":
+                    name += s[j]
+                    j += 1
+                if j < n:
+                    if collect:
+                        if name not in ids:
+                            ids.append(name)
+                    elif name in mapping:
+                        out += str(mapping[name])
+                    elif safe:
+                        out += d + "{" + name + "}"
+                    else:
+                        raise KeyError(name)
+                    i = j + 1
+                    continue
+            if i + 1 < n and __string_is_id_start(s[i + 1]):
+                j = i + 1
+                name = ""
+                while j < n and __string_is_id_char(s[j]):
+                    name += s[j]
+                    j += 1
+                if collect:
+                    if name not in ids:
+                        ids.append(name)
+                elif name in mapping:
+                    out += str(mapping[name])
+                elif safe:
+                    out += d + name
+                else:
+                    raise KeyError(name)
+                i = j
+                continue
+            out += c
+            i += 1
+        if collect:
+            return ids
+        return out
+    def _tmerge(self, mapping, kws):
+        m = {}
+        if mapping is not None:
+            for k in mapping:
+                m[k] = mapping[k]
+        for k in kws:
+            m[k] = kws[k]
+        return m
+    def substitute(self, mapping=None, **kws):
+        return self._tscan(self._tmerge(mapping, kws), False, False)
+    def safe_substitute(self, mapping=None, **kws):
+        return self._tscan(self._tmerge(mapping, kws), True, False)
+    def get_identifiers(self):
+        return self._tscan({}, False, True)
+    def is_valid(self):
+        return True
+class __string_Formatter:
+    def format(self, fmt, *args, **kwargs):
+        return fmt.format(*args, **kwargs)
+    def vformat(self, fmt, args, kwargs):
+        return fmt.format(*args, **kwargs)
+def __string_capwords(s, sep=None):
+    if sep is None:
+        words = s.split()
+        joiner = " "
+    else:
+        words = s.split(sep)
+        joiner = sep
+    out = []
+    for w in words:
+        out.append(w.capitalize())
+    return joiner.join(out)
+"#;
+
 const BYTES_REPR_PRELUDE: &str = r#"
 def __vybe_bytes_repr(a):
     bs = chr(92)
@@ -2214,7 +2328,14 @@ fn walk_class_def(pair: Pair<Rule>, _decorators: Vec<Expression>) -> Result<Stmt
                 for arg in p.into_inner() {
                     if arg.as_rule() == Rule::class_arg {
                         // Just extract as string base name
-                        let text = arg.as_str().trim().to_string();
+                        let mut text = arg.as_str().trim().to_string();
+                        // `class X(string.Template)` → the injected prelude
+                        // global, so the base resolves to a real class.
+                        if let Some(rest) = text.strip_prefix("string.") {
+                            if let Some(name) = string_module_member(rest) {
+                                text = name.to_string();
+                            }
+                        }
                         if !text.contains('=') && !text.starts_with("**") {
                             parents.push(text);
                         }
@@ -4320,6 +4441,17 @@ fn is_sql_var(name: &str) -> bool {
     PY_SQL_VARS.with(|m| m.borrow().contains(name))
 }
 
+thread_local! {
+    /// Variables bound to `re.compile(...)` — their `.search/.findall/...`
+    /// methods route to the `__re_*` builtins with the compiled pattern.
+    static PY_RE_VARS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+fn is_re_var(name: &str) -> bool {
+    PY_RE_VARS.with(|m| m.borrow().contains(name))
+}
+
 /// Record `target` as a sqlite handle when `value` is a `__sql_connect` /
 /// `__sql_cursor` call (both produce a Connection/Cursor object).
 fn note_sql_var_if_producer(target: &Expression, value: &Expression) {
@@ -4330,6 +4462,9 @@ fn note_sql_var_if_producer(target: &Expression, value: &Expression) {
         if let ExprKind::Ident(fname) = &callee.kind {
             if fname == "__sql_connect" || fname == "__sql_cursor" {
                 note_sql_var(name);
+            }
+            if fname == "__re_compile" {
+                PY_RE_VARS.with(|m| m.borrow_mut().insert(name.to_string()));
             }
         }
     }
@@ -4420,6 +4555,144 @@ fn rewrite_sys_call(object: &Expression, field: &str, args: &[Argument]) -> Opti
         "is_finalizing" => Expression::new(ExprKind::Lit(Literal::Bool(false))),
         _ => return None,
     })
+}
+
+/// `html.escape(s)` / `html.unescape(s)` → chained `str.replace(...)`.
+fn rewrite_html_call(object: &Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+    if !matches!(&object.kind, ExprKind::Ident(n) if n == "html") || args.is_empty() {
+        return None;
+    }
+    let s = |v: &str| Expression::new(ExprKind::Lit(Literal::Str(v.into())));
+    let chain = |base: Expression, pairs: &[(&str, &str)]| {
+        pairs.iter().fold(base, |acc, (from, to)| {
+            Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(acc),
+                    field: "replace".into(),
+                    null_safe: false,
+                })),
+                args: vec![Argument::positional(s(from)), Argument::positional(s(to))],
+                optional: false,
+            })
+        })
+    };
+    let text = desugar_member_reads(args[0].value.clone());
+    match field {
+        // `&` first on escape (so later entities aren't double-escaped).
+        "escape" => Some(chain(
+            text,
+            &[
+                ("&", "&amp;"),
+                ("<", "&lt;"),
+                (">", "&gt;"),
+                ("\"", "&quot;"),
+                ("'", "&#x27;"),
+            ],
+        )),
+        // `&amp;` last on unescape (so decoded `&`s aren't re-decoded).
+        "unescape" => Some(chain(
+            text,
+            &[
+                ("&lt;", "<"),
+                ("&gt;", ">"),
+                ("&quot;", "\""),
+                ("&#x27;", "'"),
+                ("&#39;", "'"),
+                ("&nbsp;", "\u{a0}"),
+                ("&amp;", "&"),
+            ],
+        )),
+        _ => None,
+    }
+}
+
+/// `re.<fn>(...)` module functions → `__re_*` builtins over ecma:regexp.
+fn rewrite_re_call(object: &Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+    if matches!(&object.kind, ExprKind::Ident(n) if n == "re") {
+        let builtin = match field {
+            "search" => "__re_search",
+            "match" => "__re_match",
+            "findall" => "__re_findall",
+            "sub" => "__re_sub",
+            "split" => "__re_split",
+            "escape" => "__re_escape",
+            "compile" => "__re_compile",
+            _ => return None,
+        };
+        let vals = args
+            .iter()
+            .map(|a| desugar_member_reads(a.value.clone()))
+            .collect();
+        return Some(call_ident(builtin, vals));
+    }
+    // Methods on a tracked compiled pattern (`p = re.compile(...)`; `p.findall(s)`).
+    if let ExprKind::Ident(name) = &object.kind {
+        if is_re_var(name) {
+            // `match` omitted: its anchor is built by string-concat on the
+            // pattern, which a compiled RegExp object can't do.
+            let builtin = match field {
+                "search" => "__re_search",
+                "findall" => "__re_findall",
+                "sub" => "__re_sub",
+                "split" => "__re_split",
+                _ => return None,
+            };
+            let mut vals = vec![Expression::ident(name)];
+            vals.extend(args.iter().map(|a| desugar_member_reads(a.value.clone())));
+            return Some(call_ident(builtin, vals));
+        }
+    }
+    None
+}
+
+/// Match-object methods on the JS exec array: `m.group(i)`→`m[i]`,
+/// `m.start()`→`m.index`, `m.end()`→`m.index + len(m[0])`, `m.span()`→tuple,
+/// `m.groups()`→tuple(m[1:]). Gated on `import re`.
+fn rewrite_re_match_method(
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    let recv = || desugar_member_reads(object.clone());
+    let index = |obj: Expression, i: Expression| {
+        Expression::new(ExprKind::Index {
+            object: Box::new(obj),
+            index: Box::new(i),
+            null_safe: false,
+        })
+    };
+    let member = |obj: Expression, f: &str| {
+        Expression::new(ExprKind::Member {
+            object: Box::new(obj),
+            field: f.into(),
+            null_safe: false,
+        })
+    };
+    let int = |n: i64| Expression::new(ExprKind::Lit(Literal::Int(n)));
+    let len = |e: Expression| call_ident("len", vec![e]);
+    let start = || member(recv(), "index");
+    let end = || call_ident("__pyadd__", vec![member(recv(), "index"), len(index(recv(), int(0)))]);
+    match field {
+        "group" if args.is_empty() => Some(index(recv(), int(0))),
+        "group" if args.len() == 1 => {
+            Some(index(recv(), desugar_member_reads(args[0].value.clone())))
+        }
+        "start" if args.is_empty() => Some(start()),
+        "end" if args.is_empty() => Some(end()),
+        "span" if args.is_empty() => {
+            Some(Expression::new(ExprKind::Tuple(vec![start(), end()])))
+        }
+        "groups" if args.is_empty() => {
+            let sliced = Expression::new(ExprKind::Call {
+                callee: Box::new(member(recv(), "slice")),
+                args: vec![Argument::positional(int(1))],
+                optional: false,
+            });
+            // tuple(m.slice(1))
+            Some(call_ident("tuple", vec![sliced]))
+        }
+        _ => None,
+    }
 }
 
 /// `platform.<fn>()` — host/interpreter info as static strings/tuples/uname obj.
@@ -4559,6 +4832,17 @@ fn string_module_constant(field: &str) -> Option<Literal> {
         _ => return None,
     };
     Some(Literal::Str(s.into()))
+}
+
+/// Map a `string.<X>` class/function reference to its injected prelude global
+/// (see [STRING_PRELUDE]). Returns `None` for constants and unknown members.
+fn string_module_member(field: &str) -> Option<&'static str> {
+    Some(match field {
+        "Template" => "__string_Template",
+        "Formatter" => "__string_Formatter",
+        "capwords" => "__string_capwords",
+        _ => return None,
+    })
 }
 
 /// DB-API 2.0 module constants for `sqlite3` (static mount → compile-time).
@@ -6354,6 +6638,9 @@ fn desugar_member_reads(e: Expression) -> Expression {
                 if let Some(lit) = string_module_constant(&field) {
                     return Expression::new(ExprKind::Lit(lit));
                 }
+                if let Some(name) = string_module_member(&field) {
+                    return Expression::new(ExprKind::Ident(name.into()));
+                }
             }
             // `stat.S_I*` / `stat.ST_*` integer constants.
             if matches!(&object.kind, ExprKind::Ident(n) if n == "stat")
@@ -6779,6 +7066,44 @@ fn desugar_member_reads(e: Expression) -> Expression {
                 if is_imported_module("platform") {
                     if let Some(rewritten) = rewrite_platform_call(object, field) {
                         return rewritten;
+                    }
+                }
+                // `html.escape(s)` / `html.unescape(s)`.
+                if is_imported_module("html") {
+                    if let Some(rewritten) = rewrite_html_call(object, field, &args) {
+                        return rewritten;
+                    }
+                }
+                // `re.search(...)` / `m.group(i)` over ecma:regexp.
+                if is_imported_module("re") {
+                    if let Some(rewritten) = rewrite_re_call(object, field, &args) {
+                        return rewritten;
+                    }
+                    if let Some(rewritten) = rewrite_re_match_method(object, field, &args) {
+                        return rewritten;
+                    }
+                }
+            }
+            // `string.Template(...)` / `string.Formatter()` / `string.capwords(...)`
+            // — call the injected prelude global (see [STRING_PRELUDE]). Kept as a
+            // real Call so keyword args (e.g. `capwords(s, sep="-")`) survive.
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if matches!(&object.kind, ExprKind::Ident(n) if n == "string")
+                    && is_imported_module("string")
+                {
+                    if let Some(name) = string_module_member(field) {
+                        let args = args
+                            .into_iter()
+                            .map(|mut a| {
+                                a.value = desugar_member_reads(a.value);
+                                a
+                            })
+                            .collect();
+                        return Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Ident(name.into()))),
+                            args,
+                            optional,
+                        });
                     }
                 }
             }

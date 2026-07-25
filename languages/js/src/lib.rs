@@ -379,7 +379,7 @@ pub fn profile_source() -> &'static str {
 
 /// Register this language with the shared plugin registry (dylib entry point).
 pub fn register() {
-    vybe_plugin::registry::register_language(vybe_plugin::registry::LanguagePlugin {
+    vybe_bytecode::registry::register_language(vybe_bytecode::registry::LanguageDef {
         name: "js",
         parse,
         profile_source,
@@ -387,9 +387,9 @@ pub fn register() {
         normalize_class: Some(normalize_class::normalize_class),
         register_tree: None,
     });
-    vybe_plugin::registry::register_hooks(
+    vybe_bytecode::registry::register_hooks(
         "js",
-        vybe_plugin::registry::LanguageHooks {
+        vybe_bytecode::registry::LanguageHooks {
             proxy_get: Some(emitter::proxy_adapter::emit_proxy_get_dispatch),
             proxy_set: Some(emitter::proxy_adapter::emit_proxy_set_dispatch),
             proxy_set_bool: Some(emitter::proxy_adapter::emit_proxy_set_dispatch_bool),
@@ -401,14 +401,14 @@ pub fn register() {
     );
 }
 
-/// This crate as a [`vybe_plugin::Plugin`] — its `init` registers the
+/// This crate as a [`vybe_bytecode::Plugin`] — its `init` registers the
 /// language (and any forms) with the shared framework. Also the dylib entry point.
 pub struct Plugin;
-impl vybe_plugin::Plugin for Plugin {
+impl vybe_bytecode::Plugin for Plugin {
     fn name(&self) -> &'static str {
         "js"
     }
-    fn init(&self, _fw: &mut vybe_plugin::Framework<'_>) {
+    fn init(&self, _fw: &mut vybe_bytecode::Framework<'_>) {
         register();
     }
 }

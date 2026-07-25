@@ -28,7 +28,7 @@ pub fn run_lua(src: &str) -> Vec<String> {
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
-    vybe_host::register_all(&mut vm);
+    vybe_emitter::platforms::init_platforms(&mut vm);
     // `emit = "print"` → emitter/io.rs → wasi:logging/logging.log
     vm.register_host_fn(
         "wasi:logging/logging",
@@ -39,7 +39,7 @@ pub fn run_lua(src: &str) -> Vec<String> {
             Value::Null
         }),
     );
-    vybe_host::setup_namespaces(&mut vm);
+    vybe_emitter::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("Lua run failed");
     output.lock().unwrap().clone()
 }

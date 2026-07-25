@@ -78,12 +78,12 @@ pub fn run_js(src: &str) -> Vec<String> {
 
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_host::register_all(&mut vm);
+    vybe_emitter::platforms::init_platforms(&mut vm);
     register_output_capture(&mut vm, &output);
-    vybe_host::setup_namespaces(&mut vm);
+    vybe_emitter::platforms::finalize_platforms(&mut vm);
     vybe_compiler::dynamic::run_with_js_dynamic_runtime(
         &mut vm,
-        vybe_host::Capabilities::all(),
+        vybe_bytecode::capabilities::Capabilities::all(),
         chunks,
     )
     .expect("JS run failed");
@@ -107,9 +107,9 @@ pub fn run_js_with_imports(src: &str) -> Vec<String> {
 
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_host::register_all(&mut vm);
+    vybe_emitter::platforms::init_platforms(&mut vm);
     register_output_capture(&mut vm, &output);
-    vybe_host::setup_namespaces(&mut vm);
+    vybe_emitter::platforms::finalize_platforms(&mut vm);
     vybe_compiler::adapters::register_all(&mut vm).expect("adapter registration failed");
 
     let module_exports = vybe_compiler::bundle::flatten_module_exports(&vm.modules);
@@ -123,7 +123,7 @@ pub fn run_js_with_imports(src: &str) -> Vec<String> {
     vybe_compiler::host_imports::install(&mut vm, &result.host_imports);
     vybe_compiler::dynamic::run_with_js_dynamic_runtime(
         &mut vm,
-        vybe_host::Capabilities::all(),
+        vybe_bytecode::capabilities::Capabilities::all(),
         result.chunks,
     )
     .expect("JS run failed");
@@ -148,12 +148,12 @@ pub fn run_js_vm(src: &str) -> (VM, Arc<Mutex<Vec<String>>>) {
 
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_host::register_all(&mut vm);
+    vybe_emitter::platforms::init_platforms(&mut vm);
     register_output_capture(&mut vm, &output);
-    vybe_host::setup_namespaces(&mut vm);
+    vybe_emitter::platforms::finalize_platforms(&mut vm);
     vybe_compiler::dynamic::run_with_js_dynamic_runtime(
         &mut vm,
-        vybe_host::Capabilities::all(),
+        vybe_bytecode::capabilities::Capabilities::all(),
         chunks,
     )
     .expect("JS run failed");

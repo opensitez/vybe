@@ -6,7 +6,7 @@
 //! before emission, so the shared runtime never has to guess which language a
 //! raw method name came from.
 
-use vybe_plugin::class_normalize::types::SpecialMethodKind;
+use vybe_bytecode::class_normalize::types::SpecialMethodKind;
 
 pub fn canonical_method(name: &str) -> (String, Option<SpecialMethodKind>) {
     match canonical_metamethod(name) {
