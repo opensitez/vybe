@@ -80,3 +80,7 @@ pub fn register_always_on(vm: &mut VM) {
     worker_threads::register(vm);
     zlib::register(vm);
 }
+
+pub mod plugin;
+pub use plugin::Plugin;
+

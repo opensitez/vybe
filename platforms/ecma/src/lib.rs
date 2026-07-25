@@ -44,9 +44,11 @@ pub mod weakmap; // §24.3/§24.4  WeakMap + WeakSet (co-located)
 pub mod weakref; // §26.1/§26.2  WeakRef + FinalizationRegistry (co-located)
 
 // ── Global wiring (constructor↔prototype, globalThis) ────────────────
+pub mod builtin_types; // TypeRegistry vtables for the JS/Intl surface; run in Plugin::finalize
 pub mod ecma_globals; // stamps shared prototypes + wires constructors; run AFTER register()
-pub mod plugin; // EcmaPlugin — the ecma:* platform as a universal vybe_plugin::Plugin
-pub use plugin::EcmaPlugin;
+pub mod plugin; // the ecma platform as one vybe_bytecode::Plugin
+pub use plugin::Plugin;
+
 
 // ── JS-runtime helpers (not strictly ECMA-262) ───────────────────────
 pub mod fixedarray; // V8-internal fixed-length array shape

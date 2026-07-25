@@ -441,21 +441,6 @@ pub fn emit_slice(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:array", "slice", 3, line);
 }
 
-/// Push the __vybe_slice func ref. Use BEFORE compiling the object/start/end.
-/// Pure WASM — bundle wires `__vybe_slice` to `build_slice` runtime helper,
-/// which dispatches at runtime to either `str_substring` or `array_slice`
-/// depending on the operand type. Works uniformly across every language whose
-/// surface syntax is `obj[start..end]`.
-pub fn emit_slice_push_func(chunk: &mut Chunk, line: u32) {
-    let name = chunk.add_constant(Value::String(Arc::from("__vybe_slice")));
-    chunk.emit_op_u16(Op::GLOBAL_GET, name, line);
-}
-
-/// Invoke __vybe_slice after [func, obj, start, end] are on the stack.
-pub fn emit_slice_invoke(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op_u8(Op::CALL_REF, 3, line);
-}
-
 /// Array join. Stack: [array, delimiter] → [string] via `ecma:array.join`.
 pub fn emit_join(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:array", "join", 2, line);
@@ -1302,9 +1287,57 @@ pub fn emit_sorted_invoke(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u8(Op::CALL_REF, 1, line);
 }
 
-/// reversed(iterable). Stack: [array] → [reversed_array]
+/// reversed(iterable). Stack: [seq] → [reversed_array]. Inlined polymorphic
+/// reverse (works for arrays AND dicts — `emit_get` yields dict keys by
+/// insertion order, which `ecma:array.toReversed` does not), replacing the
+/// retired `__vybe_reversed` stdlib chunk.
 pub fn emit_reversed(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_runtime_helper_call(chunks, current, "__vybe_reversed", 1, line);
+    let base = chunks[current].local_count;
+    chunks[current].alloc_scratch(3); // seq(base) + result(base+1) + i(base+2)
+    let seq = base;
+    let result = base + 1;
+    let i = base + 2;
+
+    // seq = <input on stack>
+    chunks[current].emit_op_u16(Op::LOCAL_SET, seq, line);
+    // result = []
+    emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+    // i = len(seq) - 1
+    chunks[current].emit_op_u16(Op::LOCAL_GET, seq, line);
+    emit_len(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let block_p = chunks[current].emit_block(line);
+    let (loop_p, _) = chunks[current].emit_loop_s(line);
+    // if !(i >= 0) → break
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    crate::ops::emit_dyn_ge(&mut chunks[current], line);
+    crate::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+    // result.push(seq[i])
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, seq, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    emit_get(chunks, current, line);
+    emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    // i -= 1
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_p);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block_p);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
 }
 
 /// enumerate(iterable). Stack: [array] → [array_of_pairs]

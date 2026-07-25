@@ -20,6 +20,7 @@
 //!                          `parse(s)` / `load(url)` / `toString(node)`
 //!                          pending full Document/Element resource types.
 
+pub mod builtin_types; // TypeRegistry vtables for the web surface; run in Plugin::finalize
 pub mod crypto;
 pub mod dom_parser;
 pub mod encoding;
@@ -36,4 +37,7 @@ pub fn register(vm: &mut VM) {
     fetch::register(vm);
     timers::register(vm);
     dom_parser::register(vm);
-}
+}pub mod plugin;
+pub use plugin::Plugin;
+
+

@@ -40,6 +40,7 @@ pub mod json;
 pub mod loops;
 pub mod math;
 pub mod multivalue;
+pub mod platforms;
 pub mod namespaces;
 pub mod object;
 pub mod ops;

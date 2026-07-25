@@ -14,7 +14,7 @@ impl Compiler {
     fn emit_constructor_global_ref(&mut self, ctor_global: &str, autoload_name: &str) {
         if self.profile.supports_autoload {
             let line = self.line;
-            vybe_plugin::registry::hooks(&self.profile.name)
+            vybe_bytecode::registry::hooks(&self.profile.name)
                 .constructor_ref_autoload
                 .unwrap()(self.chunk(), ctor_global, autoload_name, line);
         } else {
@@ -167,7 +167,7 @@ impl Compiler {
     ) {
         if self.profile.supports_autoload {
             let line = self.line;
-            vybe_plugin::registry::hooks(&self.profile.name)
+            vybe_bytecode::registry::hooks(&self.profile.name)
                 .dynamic_constructor_ref_autoload
                 .unwrap()(
                 self.chunk(),
@@ -2127,7 +2127,7 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.emit_const(Value::String(Arc::from(field.as_str())));
                     let line = self.line;
-                    vybe_plugin::registry::hooks(&self.profile.name)
+                    vybe_bytecode::registry::hooks(&self.profile.name)
                         .proxy_get
                         .unwrap()(&mut self.chunks, self.current, line);
                     return Ok(());
@@ -2986,7 +2986,6 @@ impl Compiler {
                         self.chunk().emit_end(line);
                     } else {
                         let line = self.line;
-                        common::collections::emit_slice_push_func(self.chunk(), line);
                         self.compile_expr(object)?;
                         self.compile_expr(start)?;
                         self.compile_expr(end)?;
@@ -2995,7 +2994,9 @@ impl Compiler {
                             inst!(self, core_wasm::i32_const, 1);
                             crate::emitter::ops::emit_dyn_add(self.chunk(), line);
                         }
-                        common::collections::emit_slice_invoke(self.chunk(), line);
+                        // Direct polymorphic `ecma:array.slice` (string→substring,
+                        // array→slice) — no `__vybe_slice` func-ref/chunk detour.
+                        common::collections::emit_slice(&mut self.chunks, self.current, line);
                     }
                 } else if let ExprKind::Slice { lower, upper, step } = &index.kind {
                     self.compile_expr(object)?;
@@ -3240,7 +3241,7 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
                     let line = self.line;
-                    vybe_plugin::registry::hooks(&self.profile.name)
+                    vybe_bytecode::registry::hooks(&self.profile.name)
                         .proxy_get
                         .unwrap()(&mut self.chunks, self.current, line);
                 } else if self.profile.dynamic_member_access && *null_safe {
@@ -3707,7 +3708,7 @@ impl Compiler {
                             self.compile_expr(&args[0].value)?;
                             self.compile_expr(&args[1].value)?;
                             let line = self.line;
-                            vybe_plugin::registry::hooks(&self.profile.name)
+                            vybe_bytecode::registry::hooks(&self.profile.name)
                                 .proxy_create
                                 .unwrap()(
                                 &mut self.chunks, self.current, line

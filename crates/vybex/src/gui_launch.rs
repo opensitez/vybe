@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use vybe_host::GuiState;
+use vybe_platform_vybe::gui_state::GuiState;
 
 use vybe_widgets::{
     // Application framework
@@ -638,7 +638,7 @@ impl FormApp {
             }
 
             let sql = format!("SELECT * FROM {}", bs_info.data_member);
-            match vybe_host::wasi::sql::query_rows(&conn_str, &sql) {
+            match vybe_platform_wasi::sql::query_rows(&conn_str, &sql) {
                 Ok((columns, rows)) => {
                     let store = DataStore {
                         columns: columns.clone(),
@@ -1119,7 +1119,7 @@ mod tests {
     use vybe_compiler::compiler::Compiler;
     use vybe_compiler::profile::parse_profile;
     use vybe_compiler::projects;
-    use vybe_host::gui_state::GuiState;
+    use vybe_platform_vybe::gui_state::GuiState;
     use vybe_language_vb as vb;
     use vybe_widgets::layout::{MouseButton, MouseEvent, MouseEventKind};
 
@@ -1131,13 +1131,13 @@ mod tests {
             .expect("VB compile failed");
 
         let mut vm = VM::new();
-        let gui = vybe_host::register_all_with_gui(&mut vm);
+        let gui = crate::cli::register_plugins_with_gui(&mut vm, &vybe_bytecode::capabilities::Capabilities::all());
         vm.register_host_fn(
             "wasi:logging/logging",
             "log",
             Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
         );
-        vybe_host::setup_namespaces(&mut vm);
+        
         vm.run(chunks).expect("VB run failed");
         (vm, gui)
     }
@@ -1147,13 +1147,13 @@ mod tests {
         let chunks = bundle.compile().expect("project compile failed");
 
         let mut vm = VM::new();
-        let gui = vybe_host::register_all_with_gui(&mut vm);
+        let gui = crate::cli::register_plugins_with_gui(&mut vm, &vybe_bytecode::capabilities::Capabilities::all());
         vm.register_host_fn(
             "wasi:logging/logging",
             "log",
             Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
         );
-        vybe_host::setup_namespaces(&mut vm);
+        
         vm.run(chunks).expect("project run failed");
         (vm, gui)
     }

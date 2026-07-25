@@ -1,4 +1,4 @@
-//! Build a `vybe_host::RequestContext` from an incoming hyper `Request`.
+//! Build a `vybe_platform_node::http::RequestContext` from an incoming hyper `Request`.
 //!
 //! Handles CGI-shaped env var population, percent-decoded path, and the
 //! response-stream channel that the VM writes into while the async side
@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use http::Request;
-use vybe_host::{RequestBodyReader, RequestContext, ResponseMessage, ResponseState};
+use vybe_platform_node::http::{RequestBodyReader, RequestContext, ResponseMessage, ResponseState};
 
 pub struct BuiltContext {
     pub ctx: Arc<RequestContext>,

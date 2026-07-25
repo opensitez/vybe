@@ -19,7 +19,7 @@ use std::pin::Pin;
 use std::sync::mpsc as std_mpsc;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc as tokio_mpsc;
-use vybe_host::ResponseMessage;
+use vybe_platform_node::http::ResponseMessage;
 
 /// Full boxed hyper body.
 pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;

@@ -19,7 +19,6 @@
 //! Language is determined automatically.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use vybe_bytecode::VM;
 use vybe_bytecode::chunk::Chunk;
 use vybe_compiler::ast::{ExprKind, Literal, Module, StmtKind};
@@ -157,36 +156,69 @@ fn print_chunk_summary(chunks: &[Chunk], filter: Option<&str>) {
     }
 }
 
-/// Every bundled language, as a `vybe_plugin::Plugin`. This is the plugin list
-/// the aggregator drives through the framework. When languages become dylibs,
-/// each entry becomes a `dlopen` + the module's exported `Plugin` factory.
-const LANGUAGE_PLUGINS: &[&dyn vybe_plugin::Plugin] = &[
-    &vybe_language_c::Plugin,
-    &vybe_language_cobol::Plugin,
-    &vybe_language_csharp::Plugin,
-    &vybe_language_dart::Plugin,
-    &vybe_language_fortran::Plugin,
-    &vybe_language_go::Plugin,
-    &vybe_language_java::Plugin,
-    &vybe_language_js::Plugin,
-    &vybe_language_lua::Plugin,
-    &vybe_language_pascal::Plugin,
-    &vybe_language_php::Plugin,
-    &vybe_language_python::Plugin,
-    &vybe_language_ruby::Plugin,
-    &vybe_language_vb::Plugin,
-    &vybe_language_wast::Plugin,
-];
+/// Every bundled plugin — languages AND platforms, one type (`Plugin`), one
+/// list. `vybe` is the one stateful plugin (drawing-only via `new()`, or
+/// widget-backed via `with_gui()`), passed in so both variants share this list.
+/// Each entry registers whatever it provides (a language descriptor, host
+/// functions, types) through the framework, in the single init/finalize loop.
+fn init_all_plugins(
+    vm: &mut vybe_bytecode::VM,
+    caps: &vybe_bytecode::capabilities::Capabilities,
+    vybe: &dyn vybe_bytecode::Plugin,
+) {
+    let plugins: [&dyn vybe_bytecode::Plugin; 20] = [
+        &vybe_language_c::Plugin,
+        &vybe_language_cobol::Plugin,
+        &vybe_language_csharp::Plugin,
+        &vybe_language_dart::Plugin,
+        &vybe_language_fortran::Plugin,
+        &vybe_language_go::Plugin,
+        &vybe_language_java::Plugin,
+        &vybe_language_js::Plugin,
+        &vybe_language_lua::Plugin,
+        &vybe_language_pascal::Plugin,
+        &vybe_language_php::Plugin,
+        &vybe_language_python::Plugin,
+        &vybe_language_ruby::Plugin,
+        &vybe_language_vb::Plugin,
+        &vybe_language_wast::Plugin,
+        &vybe_platform_ecma::Plugin,
+        &vybe_platform_web::Plugin,
+        &vybe_platform_wasi::Plugin,
+        &vybe_platform_node::Plugin,
+        vybe,
+    ];
+    vybe_bytecode::init_all_on_vm_with_caps(vm, caps, &plugins);
+}
 
-/// Register every bundled language into the shared plugin registry by running
-/// each language plugin's `init` through the framework (`vybe_plugin::init_all`).
-/// Global/compile-time registration — no VM needed.
-pub fn register_languages() {
-    vybe_plugin::init_all(LANGUAGE_PLUGINS);
+/// The one and only registration: every plugin (language + platform) registers
+/// into `vm` in a single loop. Non-GUI (drawing-only) — installs `vybe:gui`
+/// no-op stubs so compiled control/form code doesn't hit unresolved imports.
+pub fn register_plugins(vm: &mut vybe_bytecode::VM, caps: &vybe_bytecode::capabilities::Capabilities) {
+    let vybe = vybe_platform_vybe::Plugin::new();
+    init_all_plugins(vm, caps, &vybe);
+    if vm
+        .host_registry
+        .get(&("vybe:gui".to_string(), "controlSetProperty".to_string()))
+        .is_none()
+    {
+        vybe_platform_vybe::register_gui_stubs(vm);
+    }
+}
+
+/// GUI variant of [`register_plugins`]: the `vybe` plugin owns a fresh
+/// `GuiState`; the same one list/loop runs, and the shared handle is returned
+/// for the form launcher.
+pub fn register_plugins_with_gui(
+    vm: &mut vybe_bytecode::VM,
+    caps: &vybe_bytecode::capabilities::Capabilities,
+) -> std::sync::Arc<std::sync::Mutex<vybe_platform_vybe::gui_state::GuiState>> {
+    let vybe = vybe_platform_vybe::Plugin::with_gui();
+    init_all_plugins(vm, caps, &vybe);
+    vybe.gui_state().expect("with_gui() always creates a GuiState")
 }
 
 pub fn run() {
-    register_languages();
     let args: Vec<String> = std::env::args().collect();
     let mut dump = false;
     let mut dump_ast = false;
@@ -312,17 +344,56 @@ pub fn run() {
     }
 
     let dynamic_compile_caps = if sandbox {
-        vybe_host::Capabilities::safe()
+        vybe_bytecode::capabilities::Capabilities::safe()
     } else {
-        vybe_host::Capabilities::all()
+        vybe_bytecode::capabilities::Capabilities::all()
     };
+
+    // ── One registration ──────────────────────────────────────────────────
+    // Create the VM and run THE single plugin loop (all 20 — languages AND
+    // platforms) ONCE, before compiling. `find_by_name`/the compiler resolve
+    // languages through `registry::all()` (populated by each language plugin's
+    // `init`), so this must precede the compile below; the same pass registers
+    // the platform host fns the runtime needs. Portable mode adds its minimal
+    // `wasi:cli` stubs on top.
+    let mut vm = VM::new();
+    if sandbox {
+        eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
+    } else if portable {
+        eprintln!("[portable] Running with WASM stdlib only — no Vybe host optimizations");
+    }
+    let gui = register_plugins_with_gui(&mut vm, &dynamic_compile_caps);
+    if portable {
+        vm.register_host_fn(
+            "wasi:cli",
+            "log",
+            Box::new(
+                |_ctx: &mut vybe_bytecode::HostContext, args: &[vybe_bytecode::Value]| {
+                    for a in args {
+                        print!("{}", a);
+                    }
+                    println!();
+                    vybe_bytecode::Value::Null
+                },
+            ),
+        );
+        vm.register_host_fn(
+            "wasi:cli",
+            "readLine",
+            Box::new(|_ctx: &mut vybe_bytecode::HostContext, _| {
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line).ok();
+                vybe_bytecode::Value::String(std::sync::Arc::from(line.trim()))
+            }),
+        );
+    }
 
     if eval_source.is_some() && file_arg.is_some() {
         eprintln!("Use either a file path or --eval, not both");
         std::process::exit(1);
     }
 
-    if eval_source.is_some() && !dynamic_compile_caps.has(vybe_host::Capability::DynamicCompile) {
+    if eval_source.is_some() && !dynamic_compile_caps.has(vybe_bytecode::capabilities::Capability::DynamicCompile) {
         eprintln!(
             "Dynamic compilation is disabled in the current mode (missing Capability::DynamicCompile)"
         );
@@ -411,46 +482,8 @@ pub fn run() {
         return;
     }
 
-    // ── Set up VM first (so adapter modules can be registered ──────────────
-    // against the Synthetic modules they re-export from before the
-    // user program is linked).
-    let mut vm = VM::new();
-
-    let gui = if sandbox {
-        eprintln!("[sandbox] Restricted mode: no filesystem, network, or database access");
-        vybe_host::register_with_capabilities_and_gui(&mut vm, &vybe_host::Capabilities::safe())
-    } else if portable {
-        eprintln!("[portable] Running with WASM stdlib only — no Vybe host optimizations");
-        vm.register_host_fn(
-            "wasi:cli",
-            "log",
-            Box::new(
-                |_ctx: &mut vybe_bytecode::HostContext, args: &[vybe_bytecode::Value]| {
-                    for a in args {
-                        print!("{}", a);
-                    }
-                    println!();
-                    vybe_bytecode::Value::Null
-                },
-            ),
-        );
-        vm.register_host_fn(
-            "wasi:cli",
-            "readLine",
-            Box::new(|_ctx: &mut vybe_bytecode::HostContext, _| {
-                let mut line = String::new();
-                std::io::stdin().read_line(&mut line).ok();
-                vybe_bytecode::Value::String(std::sync::Arc::from(line.trim()))
-            }),
-        );
-        Arc::new(Mutex::new(vybe_host::gui_state::GuiState::new()))
-    } else {
-        vybe_host::register_all_with_gui(&mut vm)
-    };
-
-    if !portable {
-        vybe_host::setup_namespaces(&mut vm);
-    }
+    // (VM + the single plugin registration already happened above, before the
+    // compile — see "One registration".)
 
     // WAST script runtime — call_indirect and try/catch are WASM VM-level
     // constructs; the WAST walker routes them through these host stubs which
@@ -641,12 +674,11 @@ pub fn run() {
 /// Returns the fresh chunk set for `VM::debug_reload` to diff and swap.
 fn recompile_for_reload(
     source_path: &Path,
-    caps: vybe_host::Capabilities,
+    caps: vybe_bytecode::capabilities::Capabilities,
 ) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     let bundle = vybe_compiler::projects::load(source_path).map_err(|e| e.to_string())?;
     let mut tv = vybe_bytecode::VM::new();
-    let _gui = vybe_host::register_all_with_gui(&mut tv);
-    vybe_host::setup_namespaces(&mut tv);
+    let _gui = register_plugins_with_gui(&mut tv, &vybe_bytecode::capabilities::Capabilities::all());
     crate::server::programmatic::register(&mut tv);
     let _ = crate::adapters::register_all(&mut tv);
     let compiled = crate::dynamic::RuntimeCompilerService::with_capabilities(&mut tv, caps)
@@ -681,8 +713,7 @@ fn run_wasm(path: &Path, dump: bool, trace: bool, chunk_filter: Option<&str>) {
     }
 
     let mut vm = VM::new();
-    let gui = vybe_host::register_all_with_gui(&mut vm);
-    vybe_host::setup_namespaces(&mut vm);
+    let gui = register_plugins_with_gui(&mut vm, &vybe_bytecode::capabilities::Capabilities::all());
 
     if trace {
         vm.set_trace(true);

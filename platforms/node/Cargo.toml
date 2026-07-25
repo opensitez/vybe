@@ -22,3 +22,6 @@ httpdate = { workspace = true }
 indexmap = { workspace = true }
 regex = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+vybe_emitter = { workspace = true }

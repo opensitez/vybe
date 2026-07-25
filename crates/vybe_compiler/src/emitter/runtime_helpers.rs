@@ -339,8 +339,8 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_sort_with_comparator");
     chunks.push(build_sort_by_key(imports));
     exports.push("__stdlib_sort_by_key");
-    chunks.push(build_reversed(imports));
-    exports.push("__stdlib_reversed");
+    // `__stdlib_reversed` removed — `reversed()` inlines its polymorphic loop
+    // in `vybe_emitter::collections::emit_reversed`.
     chunks.push(build_enumerate(imports));
     exports.push("__stdlib_enumerate");
     chunks.push(build_sum(imports));
@@ -376,8 +376,9 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     // Math transcendentals (sin/cos/tan/…/sign/clamp) removed: dead chunks —
     // every language routes math through `Math.*` → `ecma:math:*` host fns
     // directly, so these `env`-delegating wrappers were never bundled.
-    chunks.push(build_to_string(imports));
-    exports.push("__stdlib_tostring");
+    // `__stdlib_tostring` removed — `str()` / `toString` route to
+    // `ecma:string.String` directly (Python via `emit_helper`, others via
+    // `emit_to_string`).
     chunks.push(build_string_is_null_or_empty(imports));
     exports.push("__stdlib_string_is_null_or_empty");
     chunks.push(build_string_is_null_or_whitespace(imports));
@@ -462,10 +463,9 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_pybin");
     chunks.push(build_isinf(imports));
     exports.push("__stdlib_isinf");
-    chunks.push(build_splice(imports));
-    exports.push("__stdlib_splice");
-    chunks.push(build_slice(imports));
-    exports.push("__stdlib_slice");
+    // `__stdlib_splice` removed — no emit site references the `__vybe_splice`
+    // global (the chunk was bundled but never used).
+    // `__stdlib_slice` removed — slicing uses direct polymorphic `ecma:array.slice`.
     chunks.push(build_has_property(imports));
     exports.push("__stdlib_hasproperty");
     chunks.push(build_js_get_method(imports));

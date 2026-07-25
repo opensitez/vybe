@@ -10,6 +10,7 @@
 //! `vybe:gui` drawing) — a headless build never links `vybe_widgets`.
 //! `gui_state` (the live widget bridge) exists only under the feature.
 
+pub mod builtin_types; // TypeRegistry vtables for the vybe:gui control surface; run in Plugin::finalize
 pub mod canvas;
 pub mod controls;
 pub mod drawing;
@@ -17,3 +18,10 @@ pub mod gui;
 
 #[cfg(feature = "gui")]
 pub mod gui_state;
+
+pub mod plugin;
+pub use plugin::Plugin;
+
+
+pub mod stubs;
+pub use stubs::register_gui_stubs;

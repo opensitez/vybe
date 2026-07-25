@@ -16,7 +16,7 @@ use vybe_bytecode::debugger::{
     ChunkRef, DebugEvent, DebugResponse, FrameInfo, Location, PauseReason,
 };
 use vybe_bytecode::{DebugCommand, DebugRequest, VM};
-use vybe_host::gui_state::GuiState;
+use vybe_platform_vybe::gui_state::GuiState;
 
 /// Attach a debugger to `vm` and spawn the REPL worker threads. Call this before
 /// running the VM; it pauses on entry so breakpoints can be set first. `gui` is

@@ -4844,12 +4844,12 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let line = self.line;
                     if self.in_strict {
-                        vybe_plugin::registry::hooks(&self.profile.name)
+                        vybe_bytecode::registry::hooks(&self.profile.name)
                             .proxy_set_bool
                             .unwrap()(&mut self.chunks, self.current, line);
                         self.emit_strict_set_failure_check()?;
                     } else {
-                        vybe_plugin::registry::hooks(&self.profile.name)
+                        vybe_bytecode::registry::hooks(&self.profile.name)
                             .proxy_set
                             .unwrap()(&mut self.chunks, self.current, line);
                         self.emit(Op::DROP); // adapter leaves [value] on stack
@@ -5442,12 +5442,12 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let line = self.line;
                     if self.in_strict {
-                        vybe_plugin::registry::hooks(&self.profile.name)
+                        vybe_bytecode::registry::hooks(&self.profile.name)
                             .proxy_set_bool
                             .unwrap()(&mut self.chunks, self.current, line);
                         self.emit_strict_set_failure_check()?;
                     } else {
-                        vybe_plugin::registry::hooks(&self.profile.name)
+                        vybe_bytecode::registry::hooks(&self.profile.name)
                             .proxy_set
                             .unwrap()(&mut self.chunks, self.current, line);
                         self.emit(Op::DROP);

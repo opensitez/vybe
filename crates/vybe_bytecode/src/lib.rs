@@ -43,6 +43,20 @@ pub use vm::{HostContext, HostFn, ImportTarget, VM, VmSnapshot};
 pub mod component;
 pub mod component_model;
 pub mod project;
+
+// Plugin SDK + registry (folded in from the former `vybe_plugin` crate).
+// `vybe_bytecode` is the single registry every plugin registers into: the
+// `Plugin` trait + `Framework` (the registration surface), the one init loop,
+// the process-global language/hook registry, the language `profile`, and the
+// language-agnostic class IR (`class_normalize`).
+pub mod class_normalize;
+pub mod framework;
+pub mod profile;
+pub mod registry;
+pub use framework::{
+    finalize_plugins, init_plugins,
+    Framework, Plugin, init_all, init_all_on_vm, init_all_on_vm_with_caps,
+};
 pub use component::{
     BinaryLoader, Component, ExportImpl, FuncSig, ImportPolicy, Interface, Language, LinkResult,
     Linker, ModuleExport, ModuleResolver, ResolvedModule, ValType, register_binary_loader,

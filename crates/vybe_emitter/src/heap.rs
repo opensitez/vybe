@@ -176,7 +176,7 @@ fn emit_n_of(chunks: &mut [Chunk], current: usize, argc: u8, largest: bool, line
 
     let chunk = &mut chunks[current];
     if largest {
-        let rev = chunk.add_import("ecma:array", "reversed");
+        let rev = chunk.add_import("ecma:array", "toReversed");
         chunk.emit_call(rev, 1, line);
     }
     core_wasm::i32_const(chunk, line, 0);

@@ -16,7 +16,8 @@ pub mod http;
 pub mod io;
 pub mod sql;
 pub mod plugin;
-pub use plugin::WasiPlugin;
+pub use plugin::Plugin;
+
 pub mod sockets;
 pub mod clock;
 pub mod console;
@@ -34,4 +35,14 @@ pub fn register(vm: &mut VM) {
     // io::register runs after filesystem so its [method] handlers take precedence,
     // giving unified file+socket+fd dispatch for all wasi:io/streams resources.
     io::register(vm);
+}
+
+/// VM hot-reset: clear host-global state that lives OUTSIDE the VM heap — open
+/// SQL connections and OS sockets — so a reused VM starts each run clean. Call
+/// from the reset path alongside `VM::reset_to`. GUI state is reset separately
+/// via `GuiState::reset` since the runner owns that `Arc`. See
+/// `vmhotresetplan.md`.
+pub fn reset_host_globals() {
+    sql::reset();
+    sockets::reset();
 }

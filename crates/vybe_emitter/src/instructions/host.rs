@@ -17,8 +17,12 @@ struct FunctionEntry {
 
 impl FunctionRegistry {
     fn from_vm() -> Self {
+        // Emit-time validation only: enumerate the host functions the platform
+        // plugins provide, so `emit` can assert a `module.name` really exists.
+        // Runs the platform plugins through the one plugin loop — languages are
+        // irrelevant here (they register descriptors, not host fns).
         let mut vm = VM::new();
-        vybe_host::register_all(&mut vm);
+        crate::platforms::register_platforms_all(&mut vm);
         let functions = vm
             .iter_host_function_exports()
             .map(|(module, name, _idx)| {
@@ -35,7 +39,7 @@ impl FunctionRegistry {
             self.functions
                 .keys()
                 .any(|(m, n)| *m == module && *n == name),
-            "host function {module}.{name} was not registered by vybe_host::register_all"
+            "host function {module}.{name} was not registered by the platform plugins"
         );
         let idx = c.add_import(module, name);
         c.emit_call(idx, argc, line);

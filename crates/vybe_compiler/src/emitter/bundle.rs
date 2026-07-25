@@ -26,7 +26,6 @@ const MAPPINGS: &[(&str, &str)] = &[
     // C qsort/bsearch moved to platforms/libc/stdlib_runtime.rs (libc surface);
     // no longer part of the cross-language helper bundle.
     ("__stdlib_sort_by_key", "__vybe_sort_by_key"),
-    ("__stdlib_reversed", "__vybe_reversed"),
     ("__stdlib_enumerate", "__vybe_enumerate"),
     ("__stdlib_sum", "__vybe_sum"),
     ("__stdlib_min", "__vybe_min"),
@@ -44,7 +43,7 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_rotate", "__vybe_rotate"),
     ("__stdlib_array_copy", "__vybe_array_copy"),
     // Math transcendentals removed — provided natively by `ecma:math:*`.
-    ("__stdlib_tostring", "__vybe_tostring"),
+    // `__stdlib_tostring` removed — str()/toString route to `ecma:string.String`.
     (
         "__stdlib_string_is_null_or_empty",
         "__vybe_string_is_null_or_empty",
@@ -105,8 +104,7 @@ const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_pyoct", "__vybe_pyoct"),
     ("__stdlib_pybin", "__vybe_pybin"),
     ("__stdlib_isinf", "__vybe_isinf"),
-    ("__stdlib_splice", "__vybe_splice"),
-    ("__stdlib_slice", "__vybe_slice"),
+    // `__stdlib_splice` removed — no emit site references `__vybe_splice`.
     ("__stdlib_hasproperty", "__vybe_hasproperty"),
     ("__stdlib_js_get_method", "__vybe_js_get_method"),
     ("__stdlib_js_instanceof", "__vybe_js_instanceof"),

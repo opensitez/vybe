@@ -22,7 +22,7 @@
 use crate::ast::{ClassMember, ClassModifiers, Span, StmtKind};
 use crate::compiler::Compiler;
 use crate::compiler::class_normalize::{access_from_visibility, from_method_stmt};
-use vybe_plugin::class_normalize::types::*;
+use vybe_bytecode::class_normalize::types::*;
 
 /// Entry point from `compile_stmt`. Receives the raw AST fields from
 /// `StmtKind::ClassDecl`, normalises per language, then hands off to
@@ -171,7 +171,7 @@ fn normalize_for_profile(
     // paths, so a language can live in its own (eventually dylib) crate and
     // still be reached here.
     crate::ensure_languages_registered();
-    vybe_plugin::registry::normalize_class(
+    vybe_bytecode::registry::normalize_class(
         lang, span, name, parents, interfaces, members, modifiers,
     )
     .ok_or_else(|| {

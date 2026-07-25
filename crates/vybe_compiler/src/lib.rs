@@ -39,7 +39,7 @@ pub mod platforms {
         plib::emitter::tree_register::register_namespace_tree();
     }
 }
-pub use vybe_plugin::profile;
+pub use vybe_bytecode::profile;
 pub mod projects;
 pub mod registry; // platform class-library registration (dotnet BCL, pascal plib)
 

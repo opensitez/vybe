@@ -1,5 +1,5 @@
 // `java` now lives in the `languages/java` crate (`vybe_lang_java`); it
-// registers itself through `vybe_plugin::registry` via the aggregator.
+// registers itself through `vybe_bytecode::registry` via the aggregator.
 
 use vybe_bytecode::Chunk;
 
@@ -15,13 +15,13 @@ pub type EmitDispatch = fn(&str, &mut Vec<Chunk>, usize, u8, u32) -> bool;
 /// A registered language — the shared plugin descriptor from `vybe_plugin`.
 /// Built-in languages register through [`crate::ensure_languages_registered`];
 /// extracted language crates (e.g. `vybe_lang_java`) register themselves.
-pub type Language = vybe_plugin::registry::LanguagePlugin;
+pub type Language = vybe_bytecode::registry::LanguageDef;
 
 /// All registered languages. This is the ONLY place you add a new language.
 /// The profile's [info] section defines the name, extensions, and other metadata.
 pub fn all() -> Vec<Language> {
     crate::ensure_languages_registered();
-    vybe_plugin::registry::all()
+    vybe_bytecode::registry::all()
 }
 
 /// Resolve the emit dispatcher that owns `prefix` in a `common:<prefix>.*`
@@ -32,7 +32,7 @@ pub fn all() -> Vec<Language> {
 /// central dispatcher owns directly.
 pub fn emit_dispatch_for(prefix: &str) -> Option<EmitDispatch> {
     crate::ensure_languages_registered();
-    vybe_plugin::registry::emit_dispatch_for(prefix)
+    vybe_bytecode::registry::emit_dispatch_for(prefix)
         .or_else(|| crate::emitter::platform_emit_dispatch(prefix))
 }
 

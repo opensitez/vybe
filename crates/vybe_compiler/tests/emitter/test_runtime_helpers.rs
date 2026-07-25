@@ -8,7 +8,7 @@ use vybe_compiler::emitter::runtime_helpers::build_runtime_helpers;
 /// before emitting the script body that references them).
 fn run_with_prebuilt(script: Chunk, helper_chunks: Vec<Chunk>) -> Value {
     let mut vm = VM::new();
-    vybe_host::register_all(&mut vm);
+    vybe_emitter::platforms::init_platforms(&mut vm);
     let mut all_chunks = vec![script];
     all_chunks.extend(helper_chunks);
     vm.run(all_chunks).unwrap()

@@ -7,14 +7,14 @@ use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, VM, Value};
 use vybe_compiler::emitter::ops;
-use vybe_host::register_all;
+
 
 fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
     let mut chunk = Chunk::new("<test>");
     emit(&mut chunk);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
-    register_all(&mut vm);
+    vybe_emitter::platforms::register_platforms_all(&mut vm);
     vm.run(vec![chunk]).expect("VM run failed")
 }
 

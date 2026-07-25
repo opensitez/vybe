@@ -2089,7 +2089,7 @@ fn normalize_php_source_for_parser(source: &str) -> String {
         normalized.push('\n');
     }
 
-    let mixed_normalized = match vybe_plugin::registry::hooks("php").normalize_source {
+    let mixed_normalized = match vybe_bytecode::registry::hooks("php").normalize_source {
         Some(f) => f(&normalized),
         None => normalized,
     };
@@ -2291,7 +2291,7 @@ mod tests {
         let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let captured = output.clone();
 
-        vybe_host::register_all(&mut vm);
+        vybe_emitter::platforms::register_platforms_all(&mut vm);
         vm.register_host_fn(
             "wasi:logging/logging",
             "log",
@@ -2306,7 +2306,6 @@ mod tests {
                 Value::Null
             }),
         );
-        vybe_host::setup_namespaces(&mut vm);
         vm.run(compiled.chunks).expect("run bundle");
 
         output.lock().unwrap().clone()

@@ -1,10 +1,10 @@
 //! Per-language WinForms designer registry — the same registration style as
-//! `vybe_plugin::registry`, but for form modules (which need `Form`/`GuiState`).
+//! `vybe_bytecode::registry`, but for form modules (which need `Form`/`GuiState`).
 //! VB / C# register themselves; the compiler/project loader reads by name.
 
 use std::sync::{Mutex, OnceLock};
 
-use vybe_host::GuiState;
+use vybe_platform_vybe::gui_state::GuiState;
 
 use crate::winforms::form::Form;
 

@@ -18,7 +18,8 @@ use super::response_stream::{BoxBody, build_response, bytes_response};
 use bytes::Bytes;
 use http::Response;
 use indexmap::IndexMap;
-use vybe_host::{Capabilities, Capability, RequestContext};
+use vybe_bytecode::capabilities::{Capabilities, Capability};
+use vybe_platform_node::http::RequestContext;
 
 const PHP_SESSION_COOKIE_NAME: &str = "PHPSESSID";
 const PHP_SESSION_ID_GLOBAL: &str = "__php_session_id";
@@ -33,7 +34,7 @@ static PHP_SESSION_STORE: std::sync::LazyLock<
 pub async fn serve(
     script_path: PathBuf,
     ctx: Arc<RequestContext>,
-    response_rx: std::sync::mpsc::Receiver<vybe_host::ResponseMessage>,
+    response_rx: std::sync::mpsc::Receiver<vybe_platform_node::http::ResponseMessage>,
     no_sandbox: bool,
     timeout_secs: u64,
     shutdown: Option<Arc<tokio::sync::Notify>>,
@@ -116,7 +117,7 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
     use vybe_bytecode::VM;
 
     // Install the thread-local context for the duration of this VM run.
-    let _guard = vybe_host::install_context(Arc::clone(&ctx));
+    let _guard = vybe_platform_node::http::install_context(Arc::clone(&ctx));
 
     // Compile the script (Phase 2: compile cache).
     let bundle = match vybe_compiler::projects::load(script_path) {
@@ -143,8 +144,8 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
         c.grant(Capability::HttpServer);
         c
     };
-    vybe_host::register_with_capabilities(&mut vm, &caps);
-    vybe_host::setup_namespaces(&mut vm);
+    crate::cli::register_plugins(&mut vm, &caps);
+    
 
     crate::server::programmatic::register(&mut vm);
     if let Err(e) = crate::adapters::register_all(&mut vm) {
@@ -169,7 +170,7 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
             let stream_val = args.first().cloned().unwrap_or(vybe_bytecode::Value::Null);
             let bytes = host_ctx.stream_drain(&stream_val);
             if !bytes.is_empty() {
-                match vybe_host::with_context(|c| {
+                match vybe_platform_node::http::with_context(|c| {
                     c.response.lock().unwrap().write_bytes(bytes.clone());
                 }) {
                     Some(()) => {}
@@ -606,7 +607,7 @@ mod tests {
         uri: &str,
         headers: &[(&str, &str)],
         body: &[u8],
-    ) -> Arc<vybe_host::RequestContext> {
+    ) -> Arc<vybe_platform_node::http::RequestContext> {
         let mut builder = Request::builder().method(method).uri(uri);
         for (name, value) in headers {
             builder = builder.header(*name, *value);
@@ -656,13 +657,13 @@ mod tests {
 
     fn run_php_request_vm(
         src: &str,
-        ctx: Arc<vybe_host::RequestContext>,
-    ) -> (Vec<String>, Arc<vybe_host::RequestContext>, VM) {
+        ctx: Arc<vybe_platform_node::http::RequestContext>,
+    ) -> (Vec<String>, Arc<vybe_platform_node::http::RequestContext>, VM) {
         let chunks = compile_php(src);
         let mut vm = VM::new();
         let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let out = Arc::clone(&output);
-        vybe_host::register_all(&mut vm);
+        crate::cli::register_plugins(&mut vm, &vybe_bytecode::capabilities::Capabilities::all());
         vm.register_host_fn(
             "wasi:logging/logging",
             "log",
@@ -676,17 +677,17 @@ mod tests {
                 Value::Null
             }),
         );
-        vybe_host::setup_namespaces(&mut vm);
+        
         inject_superglobals(&mut vm, &ctx);
-        let _guard = vybe_host::install_context(Arc::clone(&ctx));
+        let _guard = vybe_platform_node::http::install_context(Arc::clone(&ctx));
         vm.run(chunks).expect("run php request");
         (output.lock().expect("lock output").clone(), ctx, vm)
     }
 
     fn run_php_request(
         src: &str,
-        ctx: Arc<vybe_host::RequestContext>,
-    ) -> (Vec<String>, Arc<vybe_host::RequestContext>) {
+        ctx: Arc<vybe_platform_node::http::RequestContext>,
+    ) -> (Vec<String>, Arc<vybe_platform_node::http::RequestContext>) {
         let (output, ctx, vm) = run_php_request_vm(src, ctx);
         persist_superglobals(&vm, &ctx);
         (output, ctx)

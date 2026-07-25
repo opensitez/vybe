@@ -33,7 +33,7 @@ fn register_platform_trees() {
     // Language namespace trees dispatch through the registry (c/php/dart/java),
     // so no `crate::languages::<lang>` paths are hardcoded here.
     crate::ensure_languages_registered();
-    vybe_plugin::registry::register_all_trees();
+    vybe_bytecode::registry::register_all_trees();
 }
 
 /// What a name (or dotted chain) resolves to, in resolution order.

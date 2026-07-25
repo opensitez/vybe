@@ -12,7 +12,7 @@ use vybe_bytecode::chunk::Chunk;
 use vybe_bytecode::chunk::Import;
 use vybe_bytecode::value::{Function, Object, ObjectKind};
 use vybe_bytecode::{HostContext, ImportTarget, VM, Value};
-use vybe_host::{Capabilities, Capability};
+use vybe_bytecode::capabilities::{Capabilities, Capability};
 
 thread_local! {
     static ACTIVE_PHP_RUNTIME: RefCell<Option<*mut PhpIncludeRuntime>> = const { RefCell::new(None) };
@@ -311,8 +311,7 @@ pub fn debug_eval_expression(
     //    to link. The fresh GuiState this creates is immediately shadowed by the
     //    live closures in `overlay_host_fns_from`.
     let mut eval_vm = VM::new();
-    let _eval_gui = vybe_host::register_all_with_gui(&mut eval_vm);
-    vybe_host::setup_namespaces(&mut eval_vm);
+    vybe_emitter::platforms::register_platforms_all(&mut eval_vm);
     ensure_php_runtime_registered(&mut eval_vm);
     ensure_js_runtime_registered(&mut eval_vm);
     // Share the LIVE program's host-function closures (matched by name), so host
@@ -847,7 +846,7 @@ impl JsDynamicRuntime {
         // prelude, which shifted every span and silently broke the
         // completion-value split below into the no-`return` fallback). Reached
         // through the registry so this crate never names the JS language crate.
-        let parse_eval = match vybe_plugin::registry::hooks("js").parse_eval {
+        let parse_eval = match vybe_bytecode::registry::hooks("js").parse_eval {
             Some(f) => f,
             None => return throw_eval_error(ctx, "EvalError", "js eval hook not registered"),
         };
@@ -928,8 +927,7 @@ impl JsDynamicRuntime {
         let bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
 
         let mut eval_vm = VM::new();
-        vybe_host::register_all(&mut eval_vm);
-        vybe_host::setup_namespaces(&mut eval_vm);
+        vybe_emitter::platforms::register_platforms_all(&mut eval_vm);
 
         // Direct eval shares the caller's (global) scope: copy scalar /
         // object globals in. Function values are excluded — their
@@ -1092,8 +1090,7 @@ impl JsDynamicRuntime {
         let bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
 
         let mut eval_vm = VM::new();
-        vybe_host::register_all(&mut eval_vm);
-        vybe_host::setup_namespaces(&mut eval_vm);
+        vybe_emitter::platforms::register_platforms_all(&mut eval_vm);
 
         // Python's explicit namespace dict: `eval(code, globals[, locals])` /
         // `exec(code, ns)`. The walker forwards it as `attrs.namespace` (a
@@ -1246,9 +1243,8 @@ impl JsDynamicRuntime {
         let function_global_name = symbol.to_lowercase();
 
         let mut function_vm = VM::new();
-        vybe_host::register_all(&mut function_vm);
+        vybe_emitter::platforms::register_platforms_all(&mut function_vm);
         let _ = crate::adapters::register_all(&mut function_vm);
-        vybe_host::setup_namespaces(&mut function_vm);
         sync_dynamic_function_globals(vm, &mut function_vm);
 
         {
@@ -1809,8 +1805,7 @@ mod tests {
 
     fn configured_vm() -> VM {
         let mut vm = VM::new();
-        let _gui = vybe_host::register_all_with_gui(&mut vm);
-        vybe_host::setup_namespaces(&mut vm);
+        vybe_emitter::platforms::register_platforms_all(&mut vm);
         vm
     }
 
@@ -1933,7 +1928,7 @@ mod tests {
     fn dynamic_compile_requires_capability_for_source_text() {
         let mut vm = configured_vm();
         let mut service =
-            RuntimeCompilerService::with_capabilities(&mut vm, vybe_host::Capabilities::safe());
+            RuntimeCompilerService::with_capabilities(&mut vm, vybe_bytecode::capabilities::Capabilities::safe());
 
         let err = service
             .compile_source_by_name("let x = 7;", "js", PathBuf::from("dynamic/locked.js"))
@@ -1948,7 +1943,7 @@ mod tests {
         ensure_js_runtime_registered(&mut vm);
 
         let value = {
-            let mut runtime = JsDynamicRuntime::new(vybe_host::Capabilities::all());
+            let mut runtime = JsDynamicRuntime::new(vybe_bytecode::capabilities::Capabilities::all());
             let _guard = runtime.activate(&mut vm, vec![], vec![]);
             runtime
                 .handle_function_constructor(&[
@@ -1993,7 +1988,7 @@ mod tests {
         chunk.emit_op(vybe_bytecode::opcode::Op::HALT, 0);
 
         {
-            let mut runtime = JsDynamicRuntime::new(vybe_host::Capabilities::all());
+            let mut runtime = JsDynamicRuntime::new(vybe_bytecode::capabilities::Capabilities::all());
             let _guard = runtime.activate(&mut vm, vec![], vec![]);
             vm.run_linked(
                 vec![chunk],

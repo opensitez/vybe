@@ -1,33 +1,26 @@
-//! The `wasi:*` host platform as a universal [`Plugin`].
+//! The wasi platform as a `vybe_bytecode::Plugin` — one plugin, same type as all
+//! the others. `init` registers the `wasi:*` host functions, gating each
+//! sub-module by capability via [`vybe_bytecode::Framework::granted`] (a faithful
+//! port of the old hand-written `register_with_capabilities`).
 //!
-//! Unlike ecma (always-on), wasi spans several sandbox capabilities, so it
-//! returns `None` from [`Plugin::required_capability`] and gates each
-//! sub-module internally via [`Framework::granted`] — a faithful port of the
-//! per-module gating that `vybe_host::register_with_capabilities` did by hand.
-//!
-//! Only the wasi-crate modules are registered here. `node:fs` (registered
-//! alongside filesystem under the same file capability) and `ecma:date` (gated
-//! under Clock) belong to the node / ecma plugins respectively.
+//! Only wasi-crate modules are registered here. `node:fs` and `ecma:date`
+//! belong to the node / ecma plugins.
 
-use vybe_bytecode::capabilities::Capability;
-use vybe_plugin::framework::{Framework, Plugin};
+/// The wasi platform plugin.
+pub struct Plugin;
 
-/// The `wasi:*` host platform plugin.
-pub struct WasiPlugin;
-
-impl Plugin for WasiPlugin {
+impl vybe_bytecode::Plugin for Plugin {
     fn name(&self) -> &'static str {
         "wasi"
     }
 
-    fn init(&self, fw: &mut Framework<'_>) {
-        // Decide every gate up front (immutable borrow of `fw`) before taking
-        // the `&mut VM` (mutable borrow) — the two can't overlap.
+    fn init(&self, fw: &mut vybe_bytecode::Framework<'_>) {
+        use vybe_bytecode::capabilities::Capability;
+
+        // Decide every gate up front (immutable borrow) before taking &mut VM.
         let console = fw.granted(Capability::Console);
         let clock = fw.granted(Capability::Clock);
         let random = fw.granted(Capability::Random);
-        // Filesystem surface is gated by either file capability, matching
-        // `register_with_capabilities`.
         let files = fw.granted(Capability::FileRead) || fw.granted(Capability::FileWrite);
         let environment = fw.granted(Capability::Environment);
         let http = fw.granted(Capability::Http);
@@ -36,7 +29,7 @@ impl Plugin for WasiPlugin {
         let crypto = fw.granted(Capability::Crypto);
 
         let Some(vm) = fw.vm.as_deref_mut() else {
-            return; // global (compile-time) pass — no host fns to register.
+            return;
         };
 
         if console {
@@ -51,8 +44,7 @@ impl Plugin for WasiPlugin {
         if files {
             crate::fs::register(vm); // flat wasi:filesystem convenience surface
             crate::filesystem::register(vm); // canonical wasi:filesystem/types
-            // io::register runs AFTER filesystem so its [method]input-stream /
-            // output-stream handlers take precedence for the standard fd streams.
+            // io after filesystem so its stream handlers take precedence.
             crate::io::register(vm);
         }
         if environment {
@@ -71,6 +63,4 @@ impl Plugin for WasiPlugin {
             crate::crypto::register(vm);
         }
     }
-
-    // required_capability defaults to None — wasi gates per-module above.
 }
