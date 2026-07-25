@@ -30,7 +30,7 @@
 use vybe_ast::{
     ClassMember, ClassModifiers, ExprKind, Literal, PropertySetter, Span, StmtKind, Visibility,
 };
-use vybe_plugin::class_normalize::{
+use vybe_bytecode::class_normalize::{
     build_normal_method,
     canonical::{ClassLang, canonicalize_method},
     from_method_stmt,

@@ -51,7 +51,7 @@ pub fn run_csharp(src: &str) -> Vec<String> {
     // - `wasi:logging/logging.log` — line-oriented; still used by
     //   `__debug_dump` and any residual log call, newline implied.
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_host::register_all(&mut vm);
+    vybe_emitter::platforms::init_platforms(&mut vm);
     let out = output.clone();
     vm.register_host_fn(
         "wasi:logging/logging",
@@ -78,7 +78,7 @@ pub fn run_csharp(src: &str) -> Vec<String> {
             Value::Null
         }),
     );
-    vybe_host::setup_namespaces(&mut vm);
+    vybe_emitter::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("C# run failed");
     // Concatenate all fragments, then split into lines so each printed line
     // becomes one captured entry. Strip only the final empty artifact of a

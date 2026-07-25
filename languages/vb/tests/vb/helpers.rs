@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 use vybe_bytecode::{HostContext, VM, Value};
-use vybe_host::gui_state::GuiState;
+use vybe_platform_vybe::gui_state::GuiState;
 
 /// Capture VB console output on BOTH surfaces, mirroring the C#/libc harness:
 /// - `wasi:io/streams.blocking-write-and-flush` — the byte-faithful
@@ -74,9 +74,9 @@ pub fn run_vb(src: &str) -> Vec<String> {
         .expect("VB compile failed");
 
     let mut vm = VM::new();
-    vybe_host::register_all(&mut vm);
+    vybe_emitter::platforms::init_platforms(&mut vm);
     let output = register_output_capture(&mut vm);
-    vybe_host::setup_namespaces(&mut vm);
+    vybe_emitter::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("VB run failed");
     finalize_lines(&output)
 }
@@ -90,9 +90,9 @@ pub fn run_vb_vm(src: &str) -> (VM, Arc<Mutex<Vec<String>>>) {
         .expect("VB compile failed");
 
     let mut vm = VM::new();
-    vybe_host::register_all(&mut vm);
+    vybe_emitter::platforms::init_platforms(&mut vm);
     let output = register_output_capture(&mut vm);
-    vybe_host::setup_namespaces(&mut vm);
+    vybe_emitter::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("VB run failed");
     // Split accumulated fragments into lines in place so callers inspecting the
     // shared buffer see one entry per printed line, as before.
@@ -111,9 +111,9 @@ pub fn run_vb_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<String>
         .expect("VB compile failed");
 
     let mut vm = VM::new();
-    let gui = vybe_host::register_all_with_gui(&mut vm);
+    let gui = vybe_emitter::platforms::init_platforms_with_gui(&mut vm);
     let output = register_output_capture(&mut vm);
-    vybe_host::setup_namespaces(&mut vm);
+    vybe_emitter::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("VB run failed");
     let lines = finalize_lines(&output);
     *output.lock().unwrap() = lines;
@@ -161,7 +161,7 @@ pub fn run_vb_gui_capture_msgbox(
 
     let mut vm = VM::new();
     let _output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let gui = vybe_host::register_all_with_gui(&mut vm);
+    let gui = vybe_emitter::platforms::init_platforms_with_gui(&mut vm);
 
     // Capture msgbox calls. Must be registered AFTER
     // `register_all_with_gui` (which installs the production msgBox)
@@ -179,7 +179,7 @@ pub fn run_vb_gui_capture_msgbox(
         }),
     );
 
-    vybe_host::setup_namespaces(&mut vm);
+    vybe_emitter::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("VB run failed");
     (vm, gui, msgboxes)
 }

@@ -18,7 +18,7 @@ public partial class Form1 : System.Windows.Forms.Form
 }
 "#;
 
-    let mut gui = vybe_host::GuiState::new();
+    let mut gui = vybe_platform_vybe::gui_state::GuiState::new();
     vybe_language_csharp::forms::load_designer(src, &mut gui)
         .expect("C# designer load should succeed");
 

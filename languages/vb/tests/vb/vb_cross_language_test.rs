@@ -9,7 +9,7 @@ fn setup_vm() -> (VM, Arc<Mutex<Vec<String>>>) {
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
-    vybe_host::register_all(&mut vm);
+    vybe_emitter::platforms::init_platforms(&mut vm);
     vm.register_host_fn(
         "wasi:logging/logging",
         "log",
@@ -21,7 +21,7 @@ fn setup_vm() -> (VM, Arc<Mutex<Vec<String>>>) {
             },
         ),
     );
-    vybe_host::setup_namespaces(&mut vm);
+    vybe_emitter::platforms::finalize_platforms(&mut vm);
     (vm, output)
 }
 

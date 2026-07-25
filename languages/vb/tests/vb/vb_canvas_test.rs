@@ -22,7 +22,7 @@ use vybe_widgets::canvas::DrawCmd;
 /// Helper: pull the recording for a control out of GuiState as a fresh
 /// Vec<DrawCmd>. Returns an empty vec if no recording exists.
 fn drain_recording(
-    gui: &std::sync::Arc<std::sync::Mutex<vybe_host::gui_state::GuiState>>,
+    gui: &std::sync::Arc<std::sync::Mutex<vybe_platform_vybe::gui_state::GuiState>>,
     name: &str,
 ) -> Vec<DrawCmd> {
     let mut g = gui.lock().unwrap();

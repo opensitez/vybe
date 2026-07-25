@@ -21,14 +21,14 @@ pub fn profile_source() -> &'static str {
             .iter()
             .map(|(name, value)| (name.to_string(), *value))
             .collect();
-        vybe_plugin::profile::register_dotnet_namespace_constants(mappings);
+        vybe_bytecode::profile::register_dotnet_namespace_constants(mappings);
     });
     include_str!("profile")
 }
 
 /// Register this language with the shared plugin registry (dylib entry point).
 pub fn register() {
-    vybe_plugin::registry::register_language(vybe_plugin::registry::LanguagePlugin {
+    vybe_bytecode::registry::register_language(vybe_bytecode::registry::LanguageDef {
         name: "csharp",
         parse,
         profile_source,
@@ -47,14 +47,14 @@ pub fn register() {
     );
 }
 
-/// This crate as a [`vybe_plugin::Plugin`] — its `init` registers the
+/// This crate as a [`vybe_bytecode::Plugin`] — its `init` registers the
 /// language (and any forms) with the shared framework. Also the dylib entry point.
 pub struct Plugin;
-impl vybe_plugin::Plugin for Plugin {
+impl vybe_bytecode::Plugin for Plugin {
     fn name(&self) -> &'static str {
         "csharp"
     }
-    fn init(&self, _fw: &mut vybe_plugin::Framework<'_>) {
+    fn init(&self, _fw: &mut vybe_bytecode::Framework<'_>) {
         register();
     }
 }

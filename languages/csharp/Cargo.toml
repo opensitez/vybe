@@ -11,9 +11,8 @@ name = "vybe_language_csharp"
 [dependencies]
 vybe_ast = { workspace = true }
 vybe_bytecode = { workspace = true }
-vybe_host = { workspace = true, features = ["gui"] }
+vybe_platform_vybe = { workspace = true, features = ["gui"] }
 vybe_emitter = { workspace = true }
-vybe_plugin = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }
 vybe_widgets = { workspace = true }
@@ -23,7 +22,6 @@ vybe_language_vb = { workspace = true }
 
 [dev-dependencies]
 vybe_compiler = { workspace = true }
-vybe_host = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_ast = { workspace = true }
 vybe_emitter = { workspace = true }
