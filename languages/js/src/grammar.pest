@@ -28,6 +28,13 @@ eat_terminators = _{ (";" | NEWLINE)* }
 // confuse the walker.
 eat_nl = _{ ("\n" | "\r\n" | ";")* }
 
+// Silent newline continuation used right AFTER a binary/assignment operator: the
+// right operand is required there, so a newline is never a statement terminator
+// (ASI never applies mid-expression). Newline-only — unlike `eat_nl` it does NOT
+// swallow `;`, so `a +; b` still fails as it should. Fixes `a +⏎b` (operator at
+// end of line), which is valid JS and pervasive (e.g. test262's assert.js).
+op_nl = _{ ("\n" | "\r\n")* }
+
 // ── Program ─────────────────────────────────────────────────────────────────
 // ES2023 §12.5: optional hashbang comment on line 1 (e.g. #!/usr/bin/env node)
 
@@ -348,7 +355,7 @@ conditional_expression = {
 
 // Flattened to minimize recursion depth.
 // All logical/bitwise operators in one level (precedence handled by walker via op type).
-logical_expr = { comparison ~ (logical_op ~ comparison)* }
+logical_expr = { comparison ~ (logical_op ~ op_nl ~ comparison)* }
 logical_op = {
     nullish_op | or_op | and_op | bitor_op | bitxor_op | bitand_op
 }
@@ -360,7 +367,7 @@ bitxor_op = { "^" ~ !"=" }
 bitand_op = { "&" ~ !("=" | "&") }
 
 // Equality, relational, shift all in one level.
-comparison = { additive ~ (comparison_op ~ additive)* }
+comparison = { additive ~ (comparison_op ~ op_nl ~ additive)* }
 comparison_op = {
     equality_op | shift_op | relational_op
 }
@@ -370,11 +377,11 @@ in_kw = @{ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
 relational_op = { "<=" | ">=" | "<" ~ !"<" | ">" ~ !">" | instanceof_kw | in_kw }
 shift_op = { ">>>" ~ !"=" | ">>" ~ !(">" | "=") | "<<" ~ !"=" }
 
-additive = { multiplicative ~ (additive_op ~ multiplicative)* }
+additive = { multiplicative ~ (additive_op ~ op_nl ~ multiplicative)* }
 additive_op = { "+" ~ !("+" | "=") | "-" ~ !("-" | "=") }
 
 // Multiplicative and exponentiation in one level.
-multiplicative = { unary ~ (multiplicative_op ~ unary)* }
+multiplicative = { unary ~ (multiplicative_op ~ op_nl ~ unary)* }
 multiplicative_op = { exp_op | mul_op }
 mul_op = { "*" ~ !("*" | "=") | "/" ~ !"=" | "%" ~ !"=" }
 exp_op = { "**" ~ !"=" }

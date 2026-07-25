@@ -359,6 +359,14 @@ pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {
         )));
     }
     body.extend(prelude);
+    // Boundary marker so the step debugger can skip the runtime prelude and
+    // land the first pause in the user's own code. The shared compiler
+    // recognizes this sentinel string-expression, records the `<script>`
+    // bytecode offset on `chunk.user_code_offset`, and emits nothing for it.
+    // Generic mechanism — any frontend that injects a prelude can emit it.
+    body.push(vybe_ast::Statement::new(vybe_ast::StmtKind::Expr(
+        vybe_ast::Expression::string("__vybe_user_code_start__"),
+    )));
     body.append(&mut module.body);
     module.body = body;
     Ok(module)
