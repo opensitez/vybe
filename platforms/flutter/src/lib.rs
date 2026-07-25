@@ -23,6 +23,30 @@ pub mod emitter;
 /// the minimal `EdgeInsets`/`Alignment` value types. Pure Dart over the
 /// existing `vybe:gui` host — no Flutter-specific host functions. The Dart
 /// frontend appends this only when a module references `runApp`.
+///
+/// The realizer needs two pieces of catalog knowledge at runtime — which widget
+/// types are transparent wrappers, and which property keys the backing controls
+/// actually act on. Both are GENERATED here from the catalog rather than
+/// hand-copied into the Dart source, so the widget modules stay the single
+/// source of truth.
 pub fn runtime_source() -> &'static str {
-    include_str!("runtime.dart")
+    static SOURCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SOURCE.get_or_init(|| {
+        let dart_list = |values: &[&str]| {
+            values
+                .iter()
+                .map(|v| format!("\"{v}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        format!(
+            "{}\n\n\
+             // ── Generated from the widget catalog (platforms/flutter/src/emitter/widgets) ──\n\
+             var _vfTransparentTypes = [{}];\n\
+             var _vfLiveProperties = [{}];\n",
+            include_str!("runtime.dart"),
+            dart_list(&emitter::catalog::transparent_types()),
+            dart_list(emitter::catalog::LIVE_PROPERTIES),
+        )
+    })
 }

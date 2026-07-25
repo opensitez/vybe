@@ -93,11 +93,60 @@ int _vfItemIndexOfValue(dynamic items, dynamic val) {
   return -1;
 }
 
+// A transparent wrapper (Opacity/ClipRRect/Tooltip/SafeArea/…): contributes an
+// effect on its child that no backing control can express, so it creates no
+// control — the child realizes in its place. `_vfTransparentTypes` is generated
+// from the widget catalog.
+bool _vfIsTransparent(dynamic w) {
+  if (w == null || w.__type == null) {
+    return false;
+  }
+  for (var i = 0; i < _vfTransparentTypes.length; i++) {
+    if (_vfTransparentTypes[i] == w.__type) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// True when the backing control actually acts on `key`. Flutter carries many
+// style fields (opacity/elevation/padding/message/clipBehavior) that have no
+// control command behind them; forwarding those sets nothing and an object
+// value would stamp a useless "[object]". `_vfLiveProperties` is generated
+// from the catalog's LIVE_PROPERTIES.
+bool _vfIsLiveProperty(String key) {
+  var lower = key.toLowerCase();
+  for (var i = 0; i < _vfLiveProperties.length; i++) {
+    if (_vfLiveProperties[i] == lower) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The child a transparent wrapper stands in for — `child` for box wrappers,
+// `sliver` for the sliver ones.
+dynamic _vfWrappedChild(dynamic w) {
+  if (w.child != null) {
+    return w.child;
+  }
+  return w.sliver;
+}
+
 // Create-or-update the control for `w` at `path`, nesting into `parent` (a
 // control, or null = the form root) only on first creation.
 void _vfRealize(dynamic w, String path, dynamic parent) {
   w = _vfConcrete(w);
   if (w == null || w.__controlfn == null) {
+    return;
+  }
+  // Transparent wrapper: realize the wrapped child at THIS path/parent so the
+  // tree gains no dead nesting level.
+  if (_vfIsTransparent(w)) {
+    var inner = _vfWrappedChild(w);
+    if (inner != null) {
+      _vfRealize(inner, path, parent);
+    }
     return;
   }
   var isNew = !vybe.gui.hasControl(path);
@@ -140,7 +189,7 @@ void _vfRealize(dynamic w, String path, dynamic parent) {
           if (idx >= 0) {
             vybe.gui.setProperty(path, "selectedindex", "$idx");
           }
-        } else {
+        } else if (_vfIsLiveProperty(key)) {
           vybe.gui.setProperty(path, key, value);
         }
       }

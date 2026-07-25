@@ -110,6 +110,8 @@ fn is_value_equality_type(name: &str) -> bool {
             | "Radius"
             | "IconData"
             | "TextStyle"
+            | "EdgeInsets"
+            | "EdgeInsetsDirectional"
     )
 }
 
