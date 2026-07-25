@@ -1,0 +1,17 @@
+[package]
+name = "vybe_platform_vybe"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+# Mirrors vybe_host's `gui` feature: pulls in `vybe_widgets` and compiles the
+# widget-backed surface (GuiState, form/control/canvas rendering). Without it,
+# only the headless `vybe:gui` registration (drawing, namespace shim, control
+# TypeDefs) compiles — no widgets linked.
+gui = ["vybe_widgets"]
+
+[dependencies]
+vybe_bytecode = { workspace = true }
+vybe_widgets = { workspace = true, optional = true }

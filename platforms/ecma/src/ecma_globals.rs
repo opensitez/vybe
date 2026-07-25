@@ -12,7 +12,118 @@
 //! (`Symbol`, `BigInt`) double as the namespace object's own
 //! invocation target via the `__call` convention.
 
-use super::*;
+use std::sync::Arc;
+use vybe_bytecode::value::{Object, ObjectKind};
+use vybe_bytecode::{VM, Value};
+use crate::receiver_host_fn_ref;
+
+// ---- Namespace/global wiring helpers (moved from vybe_host::namespaces) ----
+
+/// Ensure a namespace object exists at the given dotted path on the VM globals.
+/// Creates intermediate objects as needed. Returns the leaf object. Stores the
+/// root global under BOTH the original case and lowercase (case-sensitive
+/// languages hit the original key, case-insensitive ones the lowercase).
+fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
+    if path.is_empty() {
+        return Value::Null;
+    }
+    let root_orig = path[0].to_string();
+    let root_lc = root_orig.to_lowercase();
+    let root = if let Some(existing) = vm
+        .globals
+        .get(&root_orig)
+        .or_else(|| vm.globals.get(&root_lc))
+    {
+        existing.clone()
+    } else {
+        let obj = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
+        vm.globals.insert(root_orig.clone(), obj.clone());
+        if root_lc != root_orig {
+            vm.globals.insert(root_lc, obj.clone());
+        }
+        obj
+    };
+    let mut current = root;
+    for &segment in &path[1..] {
+        let orig = segment.to_string();
+        let key_lc = orig.to_lowercase();
+        let next = if let Value::Object(ref obj) = current {
+            let lock = obj.lock().unwrap();
+            lock.properties
+                .get(&orig)
+                .or_else(|| lock.properties.get(&key_lc))
+                .cloned()
+        } else {
+            None
+        };
+        if let Some(existing) = next {
+            current = existing;
+        } else {
+            let new_obj = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
+            if let Value::Object(ref obj) = current {
+                let mut o = obj.lock().unwrap();
+                o.properties.insert(orig.clone(), new_obj.clone());
+                if key_lc != orig {
+                    o.properties.insert(key_lc, new_obj.clone());
+                }
+            }
+            current = new_obj;
+        }
+    }
+    current
+}
+
+/// Set a property on a namespace object, under BOTH original-case and
+/// lowercase keys (same underlying Value).
+fn set_prop(ns: &Value, name: &str, value: Value) {
+    if let Value::Object(obj) = ns {
+        let lc = name.to_lowercase();
+        let mut o = obj.lock().unwrap();
+        o.properties.insert(name.to_string(), value.clone());
+        if lc != name {
+            o.properties.insert(lc, value);
+        }
+    }
+}
+
+/// Wire a shared prototype singleton's `constructor` exactly once
+/// (first-writer-wins) and return the canonical constructor now on it. Pinning
+/// on first write makes `x.constructor === Ctor` hold across parallel VMs.
+fn set_constructor_once(proto: &Value, ctor: Value) -> Value {
+    if let Value::Object(obj) = proto {
+        let mut o = obj.lock().unwrap();
+        if let Some(existing) = o.properties.get("constructor") {
+            return existing.clone();
+        }
+        o.properties.insert("constructor".to_string(), ctor.clone());
+    }
+    ctor
+}
+
+/// Create a HostFunction Value referencing a registered host function. Stamps
+/// the shared ecma function prototype, so it lives with ecma.
+fn host_fn_ref(vm: &VM, module: &str, name: &str) -> Value {
+    if let Some(&idx) = vm
+        .host_registry
+        .get(&(module.to_string(), name.to_string()))
+    {
+        let mut obj = Object::new();
+        obj.properties
+            .insert("__host_module".into(), Value::String(Arc::from(module)));
+        obj.properties
+            .insert("__host_name".into(), Value::String(Arc::from(name)));
+        obj.properties
+            .insert("__host_idx".into(), Value::F64(idx as f64));
+        obj.properties
+            .insert("__proto__".into(), crate::function::shared_function_prototype());
+        obj.properties
+            .insert("name".into(), Value::String(Arc::from(name)));
+        obj.kind = ObjectKind::HostFunction(idx);
+        Value::Object(vybe_bytecode::heap::alloc(obj))
+    } else {
+        Value::Null
+    }
+}
 
 /// Install a built-in constructor's `prototype` data property with the
 /// ECMA-262 attributes { [[Writable]]: false, [[Enumerable]]: false,
@@ -28,8 +139,8 @@ use super::*;
 fn set_ctor_prototype(ctor: &Value, proto: Value) {
     set_prop(ctor, "prototype", proto);
     if let Value::Object(obj) = ctor {
-        crate::ecma::object::track_nonconfig(obj, "prototype");
-        crate::ecma::object::track_nonenum(obj, "prototype");
+        crate::object::track_nonconfig(obj, "prototype");
+        crate::object::track_nonenum(obj, "prototype");
     }
 }
 
@@ -37,11 +148,11 @@ pub fn register(vm: &mut VM) {
     // ── Object / boxed primitive constructors ─────────────────────
     let object = host_fn_ref(vm, "ecma:object", "Object");
     set_prop(&object, "name", Value::String(Arc::from("Object")));
-    let object_proto = crate::ecma::object::shared_object_prototype();
+    let object_proto = crate::object::shared_object_prototype();
     set_constructor_once(&object_proto, object.clone());
     if let Value::Object(proto) = &object_proto {
-        crate::ecma::object::track_nonenum(proto, "constructor");
-        crate::ecma::object::track_nonenum(proto, "constructor");
+        crate::object::track_nonenum(proto, "constructor");
+        crate::object::track_nonenum(proto, "constructor");
     }
     // §20.1.3: the values stored ON %Object.prototype% are the RAW
     // intrinsics. A borrowed `Object.prototype.hasOwnProperty.call(o, k)`
@@ -68,10 +179,10 @@ pub fn register(vm: &mut VM) {
             receiver_host_fn_ref("ecma:object", name, idx),
         );
         if let Value::Object(proto) = &object_proto {
-            crate::ecma::object::track_nonenum(proto, name);
+            crate::object::track_nonenum(proto, name);
             let lower = name.to_lowercase();
             if lower != *name {
-                crate::ecma::object::track_nonenum(proto, &lower);
+                crate::object::track_nonenum(proto, &lower);
             }
         }
     }
@@ -99,7 +210,7 @@ pub fn register(vm: &mut VM) {
         }
         set_prop(&object, name, value);
         if let Value::Object(object_obj) = &object {
-            crate::ecma::object::track_nonenum(object_obj, name);
+            crate::object::track_nonenum(object_obj, name);
         }
     }
     set_prop(&object, "groupBy", Value::Bool(true));
@@ -108,7 +219,7 @@ pub fn register(vm: &mut VM) {
 
     let number = host_fn_ref(vm, "ecma:number", "Number");
     set_prop(&number, "name", Value::String(Arc::from("Number")));
-    let number_proto = crate::ecma::number::shared_number_prototype();
+    let number_proto = crate::number::shared_number_prototype();
     set_constructor_once(&number_proto, number.clone());
     set_prop(&number_proto, "__proto__", object_proto.clone());
     for name in &[
@@ -153,7 +264,7 @@ pub fn register(vm: &mut VM) {
 
     let string = host_fn_ref(vm, "ecma:string", "String");
     set_prop(&string, "name", Value::String(Arc::from("String")));
-    let string_proto = crate::ecma::string::shared_string_prototype();
+    let string_proto = crate::string::shared_string_prototype();
     set_constructor_once(&string_proto, string.clone());
     set_prop(&string_proto, "__proto__", object_proto.clone());
     for name in &[
@@ -207,7 +318,7 @@ pub fn register(vm: &mut VM) {
 
     let boolean = host_fn_ref(vm, "ecma:boolean", "Boolean");
     set_prop(&boolean, "name", Value::String(Arc::from("Boolean")));
-    let boolean_proto = crate::ecma::boolean::shared_boolean_prototype();
+    let boolean_proto = crate::boolean::shared_boolean_prototype();
     set_constructor_once(&boolean_proto, boolean.clone());
     set_prop(&boolean_proto, "__proto__", object_proto.clone());
     let boolean_to_string = *vm
@@ -234,7 +345,7 @@ pub fn register(vm: &mut VM) {
 
     let function = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
     set_prop(&function, "name", Value::String(Arc::from("Function")));
-    let function_proto = crate::ecma::function::shared_function_prototype();
+    let function_proto = crate::function::shared_function_prototype();
     set_constructor_once(&function_proto, function.clone());
     set_prop(&function_proto, "__proto__", object_proto.clone());
     for name in &["bind", "call", "apply"] {
@@ -258,12 +369,12 @@ pub fn register(vm: &mut VM) {
     set_prop(
         &array,
         "__proto__",
-        crate::ecma::function::shared_function_prototype(),
+        crate::function::shared_function_prototype(),
     );
-    let array_proto = crate::ecma::array::shared_array_prototype();
+    let array_proto = crate::array::shared_array_prototype();
     set_constructor_once(&array_proto, array.clone());
     if let Value::Object(proto) = &array_proto {
-        crate::ecma::object::track_nonenum(proto, "constructor");
+        crate::object::track_nonenum(proto, "constructor");
     }
     set_prop(&array_proto, "__proto__", object_proto.clone());
     for name in &[
@@ -314,10 +425,10 @@ pub fn register(vm: &mut VM) {
             receiver_host_fn_ref("ecma:array", name, idx),
         );
         if let Value::Object(proto) = &array_proto {
-            crate::ecma::object::track_nonenum(proto, name);
+            crate::object::track_nonenum(proto, name);
             let lower = name.to_lowercase();
             if lower != *name {
-                crate::ecma::object::track_nonenum(proto, &lower);
+                crate::object::track_nonenum(proto, &lower);
             }
         }
     }
@@ -332,8 +443,8 @@ pub fn register(vm: &mut VM) {
             receiver_host_fn_ref("ecma:array", "values", idx),
         );
         if let Value::Object(proto) = &array_proto {
-            crate::ecma::object::track_nonenum(proto, "iterator");
-            crate::ecma::object::track_nonenum(proto, "iterator");
+            crate::object::track_nonenum(proto, "iterator");
+            crate::object::track_nonenum(proto, "iterator");
         }
     }
     set_ctor_prototype(&array, array_proto);
@@ -391,13 +502,13 @@ pub fn register(vm: &mut VM) {
             set_prop(
                 &ctor,
                 "__proto__",
-                crate::ecma::function::shared_function_prototype(),
+                crate::function::shared_function_prototype(),
             );
             let proto = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
             set_prop(&proto, "__proto__", object_proto.clone());
             set_constructor_once(&proto, ctor.clone());
             if let Value::Object(p) = &proto {
-                crate::ecma::object::track_nonenum(p, "constructor");
+                crate::object::track_nonenum(p, "constructor");
             }
             for method in methods {
                 if let Some(&idx) = vm
@@ -406,7 +517,7 @@ pub fn register(vm: &mut VM) {
                 {
                     set_prop(&proto, method, receiver_host_fn_ref(module, method, idx));
                     if let Value::Object(p) = &proto {
-                        crate::ecma::object::track_nonenum(p, method);
+                        crate::object::track_nonenum(p, method);
                     }
                 }
             }
@@ -423,9 +534,9 @@ pub fn register(vm: &mut VM) {
         set_prop(
             &date,
             "__proto__",
-            crate::ecma::function::shared_function_prototype(),
+            crate::function::shared_function_prototype(),
         );
-        let date_proto = crate::ecma::date::shared_date_prototype();
+        let date_proto = crate::date::shared_date_prototype();
         set_prop(&date_proto, "constructor", date.clone());
         set_prop(&date_proto, "__proto__", object_proto.clone());
         for name in &[
@@ -706,7 +817,7 @@ pub fn register(vm: &mut VM) {
             }
             set_constructor_once(&proto, ctor.clone());
             if let Value::Object(p) = &proto {
-                crate::ecma::object::track_nonenum(p, "constructor");
+                crate::object::track_nonenum(p, "constructor");
             }
             set_ctor_prototype(&ctor, proto);
             vm.globals.insert(global_name.to_string(), ctor.clone());
@@ -740,7 +851,7 @@ pub fn register(vm: &mut VM) {
             }
             set_constructor_once(&proto, ctor.clone());
             if let Value::Object(p) = &proto {
-                crate::ecma::object::track_nonenum(p, "constructor");
+                crate::object::track_nonenum(p, "constructor");
             }
             set_ctor_prototype(&ctor, proto);
             vm.globals.insert(global_name.to_string(), ctor);
@@ -760,10 +871,10 @@ pub fn register(vm: &mut VM) {
         // isPrototypeOf identity holds. The prototype carries the
         // receiver-shaped instance methods (the registered host fns take
         // the regex as arg 0, exactly what receiver_host_fn_ref prepends).
-        let regexp_proto = crate::ecma::regexp::shared_regexp_prototype();
+        let regexp_proto = crate::regexp::shared_regexp_prototype();
         set_constructor_once(&regexp_proto, regexp.clone());
         if let Value::Object(p) = &regexp_proto {
-            crate::ecma::object::track_nonenum(p, "constructor");
+            crate::object::track_nonenum(p, "constructor");
         }
         for name in &["exec", "test", "toString"] {
             let idx = *vm
@@ -776,7 +887,7 @@ pub fn register(vm: &mut VM) {
                 receiver_host_fn_ref("ecma:regexp", name, idx),
             );
             if let Value::Object(p) = &regexp_proto {
-                crate::ecma::object::track_nonenum(p, name);
+                crate::object::track_nonenum(p, name);
             }
         }
         set_ctor_prototype(&regexp, regexp_proto);
@@ -789,7 +900,7 @@ pub fn register(vm: &mut VM) {
     // also returns, so identity holds across both access patterns.
     vm.globals.insert(
         "globalThis".to_string(),
-        crate::ecma::global_this::shared_singleton(),
+        crate::global_this::shared_singleton(),
     );
 
     // ── Canonical constructor anchors (`__ctor_<Name>`) ────────────────
@@ -808,15 +919,15 @@ pub fn register(vm: &mut VM) {
     // prototype, so `__ctor_<Name>` matches `x.constructor` across parallel
     // VMs even though each VM minted its own `<Name>` global.
     let core_protos: [(&str, Value); 6] = [
-        ("Object", crate::ecma::object::shared_object_prototype()),
-        ("Array", crate::ecma::array::shared_array_prototype()),
+        ("Object", crate::object::shared_object_prototype()),
+        ("Array", crate::array::shared_array_prototype()),
         (
             "Function",
-            crate::ecma::function::shared_function_prototype(),
+            crate::function::shared_function_prototype(),
         ),
-        ("Number", crate::ecma::number::shared_number_prototype()),
-        ("String", crate::ecma::string::shared_string_prototype()),
-        ("Boolean", crate::ecma::boolean::shared_boolean_prototype()),
+        ("Number", crate::number::shared_number_prototype()),
+        ("String", crate::string::shared_string_prototype()),
+        ("Boolean", crate::boolean::shared_boolean_prototype()),
     ];
     for (name, proto) in &core_protos {
         if let Value::Object(p) = proto {
@@ -868,9 +979,180 @@ pub fn register(vm: &mut VM) {
         "EvalError",
         "AggregateError",
     ] {
-        let ctor = crate::ecma::value::error_constructor_for(name);
+        let ctor = crate::value::error_constructor_for(name);
         vm.globals.insert(format!("__ctor_{name}"), ctor);
     }
+
+    // ── Intl (ECMA-402) — the `Intl` global + its service constructors ──
+    register_intl(vm);
+}
+
+/// Wire the `Intl` global: expose each ECMA-402 service constructor
+/// (`Intl.Collator`, `Intl.NumberFormat`, …) resolving to the corresponding
+/// `ecma:intl/<class>:new` host fn, stamp instance methods onto each shared
+/// service prototype, and add the `Intl.getCanonicalLocales` /
+/// `Intl.supportedValuesOf` statics. Ported from the retired
+/// `vybe_host::namespaces::intl` so `Intl` registers the same way as the rest
+/// of the ecma globals (Map/Set/TypedArrays) — see the module doc.
+fn register_intl(vm: &mut VM) {
+    let intl = ensure_namespace(vm, &["Intl"]);
+
+    // Constructors — `new Intl.X(...)` resolves to `ecma:intl/x:new`.
+    let collator = host_fn_ref(vm, "ecma:intl/collator", "new");
+    let number_format = host_fn_ref(vm, "ecma:intl/numberformat", "new");
+    let date_time_format = host_fn_ref(vm, "ecma:intl/datetimeformat", "new");
+    set_prop(
+        &intl,
+        "ListFormat",
+        host_fn_ref(vm, "ecma:intl/listformat", "new"),
+    );
+    set_prop(
+        &intl,
+        "PluralRules",
+        host_fn_ref(vm, "ecma:intl/pluralrules", "new"),
+    );
+    let relative_time_format = host_fn_ref(vm, "ecma:intl/relativetimeformat", "new");
+    let segmenter = host_fn_ref(vm, "ecma:intl/segmenter", "new");
+    set_prop(&intl, "Locale", host_fn_ref(vm, "ecma:intl/locale", "new"));
+    set_prop(
+        &intl,
+        "DisplayNames",
+        host_fn_ref(vm, "ecma:intl/displaynames", "new"),
+    );
+    set_prop(
+        &intl,
+        "DurationFormat",
+        host_fn_ref(vm, "ecma:intl/durationformat", "new"),
+    );
+    set_prop(&intl, "Collator", collator.clone());
+    set_prop(&intl, "NumberFormat", number_format.clone());
+    set_prop(&intl, "DateTimeFormat", date_time_format.clone());
+    set_prop(&intl, "RelativeTimeFormat", relative_time_format.clone());
+    set_prop(&intl, "Segmenter", segmenter.clone());
+
+    let object_proto = crate::object::shared_object_prototype();
+
+    let collator_proto = crate::intl::shared_collator_prototype();
+    set_prop(&collator_proto, "constructor", collator.clone());
+    set_prop(&collator_proto, "__proto__", object_proto.clone());
+    for name in &["compare", "resolvedOptions"] {
+        let idx = *vm
+            .host_registry
+            .get(&("ecma:intl/collator".to_string(), (*name).to_string()))
+            .expect("ecma:intl/collator method must be registered");
+        set_prop(
+            &collator_proto,
+            name,
+            receiver_host_fn_ref("ecma:intl/collator", name, idx),
+        );
+    }
+    set_prop(&collator, "prototype", collator_proto);
+
+    let number_format_proto = crate::intl::shared_number_format_prototype();
+    set_prop(&number_format_proto, "constructor", number_format.clone());
+    set_prop(&number_format_proto, "__proto__", object_proto.clone());
+    for name in &["format", "formatToParts", "resolvedOptions"] {
+        let idx = *vm
+            .host_registry
+            .get(&("ecma:intl/numberformat".to_string(), (*name).to_string()))
+            .expect("ecma:intl/numberformat method must be registered");
+        set_prop(
+            &number_format_proto,
+            name,
+            receiver_host_fn_ref("ecma:intl/numberformat", name, idx),
+        );
+    }
+    set_prop(&number_format, "prototype", number_format_proto);
+
+    let date_time_format_proto = crate::intl::shared_date_time_format_prototype();
+    set_prop(
+        &date_time_format_proto,
+        "constructor",
+        date_time_format.clone(),
+    );
+    set_prop(&date_time_format_proto, "__proto__", object_proto.clone());
+    for name in &[
+        "format",
+        "formatToParts",
+        "formatRange",
+        "formatRangeToParts",
+        "resolvedOptions",
+    ] {
+        let idx = *vm
+            .host_registry
+            .get(&("ecma:intl/datetimeformat".to_string(), (*name).to_string()))
+            .expect("ecma:intl/datetimeformat method must be registered");
+        set_prop(
+            &date_time_format_proto,
+            name,
+            receiver_host_fn_ref("ecma:intl/datetimeformat", name, idx),
+        );
+    }
+    set_prop(
+        &date_time_format,
+        "supportedLocalesOf",
+        host_fn_ref(vm, "ecma:intl/datetimeformat", "supportedLocalesOf"),
+    );
+    set_prop(&date_time_format, "prototype", date_time_format_proto);
+
+    let relative_time_format_proto = crate::intl::shared_relative_time_format_prototype();
+    set_prop(
+        &relative_time_format_proto,
+        "constructor",
+        relative_time_format.clone(),
+    );
+    set_prop(
+        &relative_time_format_proto,
+        "__proto__",
+        object_proto.clone(),
+    );
+    for name in &["format", "formatToParts", "resolvedOptions"] {
+        let idx = *vm
+            .host_registry
+            .get(&(
+                "ecma:intl/relativetimeformat".to_string(),
+                (*name).to_string(),
+            ))
+            .expect("ecma:intl/relativetimeformat method must be registered");
+        set_prop(
+            &relative_time_format_proto,
+            name,
+            receiver_host_fn_ref("ecma:intl/relativetimeformat", name, idx),
+        );
+    }
+    set_prop(
+        &relative_time_format,
+        "prototype",
+        relative_time_format_proto,
+    );
+
+    let segmenter_proto = crate::intl::shared_segmenter_prototype();
+    set_prop(&segmenter_proto, "constructor", segmenter.clone());
+    set_prop(&segmenter_proto, "__proto__", object_proto);
+    for name in &["segment", "resolvedOptions"] {
+        let idx = *vm
+            .host_registry
+            .get(&("ecma:intl/segmenter".to_string(), (*name).to_string()))
+            .expect("ecma:intl/segmenter method must be registered");
+        set_prop(
+            &segmenter_proto,
+            name,
+            receiver_host_fn_ref("ecma:intl/segmenter", name, idx),
+        );
+    }
+    set_prop(&segmenter, "prototype", segmenter_proto);
+
+    // Static methods — `Intl.getCanonicalLocales(...)` → `ecma:intl:*`.
+    set_prop(
+        &intl,
+        "getCanonicalLocales",
+        host_fn_ref(vm, "ecma:intl", "getCanonicalLocales"),
+    );
+    set_prop(
+        &intl,
+        "supportedValuesOf",
+        host_fn_ref(vm, "ecma:intl", "supportedValuesOf"),
+    );
 }
 
 /// Build a Value that is callable as a host function AND can carry

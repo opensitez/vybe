@@ -23,6 +23,7 @@
 //! `Plugin` factory, the host `dlopen`s it, and calls the same `init`.
 
 use crate::registry::{LanguageHooks, LanguagePlugin};
+use vybe_bytecode::capabilities::{Capabilities, Capability};
 use vybe_bytecode::{HostContext, VM, Value};
 
 /// A capability provider. Its [`init`](Plugin::init) registers everything the
@@ -34,6 +35,18 @@ pub trait Plugin {
     /// Register this plugin's capabilities. Called once, with the shared
     /// [`Framework`]. Only the registrations a plugin actually needs are made.
     fn init(&self, fw: &mut Framework<'_>);
+
+    /// The sandbox capability this plugin's host functions require, if any.
+    ///
+    /// During a VM-scoped pass ([`init_all_on_vm`]) a plugin whose required
+    /// capability is not granted is skipped entirely — this is how the plugin
+    /// framework replaces the old hand-gated `register_with_capabilities`.
+    /// `None` (the default) means always-on (e.g. `ecma`/`web` pure runtime).
+    /// Plugins that span multiple capabilities (wasi, node) return `None` here
+    /// and gate their sub-registrations internally via [`Framework::granted`].
+    fn required_capability(&self) -> Option<Capability> {
+        None
+    }
 }
 
 /// The single registration surface handed to every plugin's `init`.
@@ -47,17 +60,46 @@ pub struct Framework<'a> {
     /// `None` during the global (compile-time) pass, where only language
     /// descriptors and hooks are registered.
     pub vm: Option<&'a mut VM>,
+    /// The sandbox policy for this pass, when VM-scoped. Plugins that span
+    /// several capabilities gate their sub-registrations with [`granted`].
+    /// `None` during the global pass (no gating) or when a VM pass runs with
+    /// full trust.
+    caps: Option<&'a Capabilities>,
 }
 
 impl<'a> Framework<'a> {
     /// A framework for the global (compile-time) registration pass — no VM.
     pub fn global() -> Framework<'a> {
-        Framework { vm: None }
+        Framework {
+            vm: None,
+            caps: None,
+        }
     }
 
     /// A framework scoped to `vm`, for VM-scoped registration (host functions).
+    /// No capability gating (full trust) — see [`with_vm_and_caps`].
     pub fn with_vm(vm: &'a mut VM) -> Framework<'a> {
-        Framework { vm: Some(vm) }
+        Framework {
+            vm: Some(vm),
+            caps: None,
+        }
+    }
+
+    /// A VM-scoped framework carrying a sandbox policy. Plugins gate their
+    /// sub-registrations via [`granted`]; [`init_all_on_vm`] gates whole
+    /// plugins via [`Plugin::required_capability`].
+    pub fn with_vm_and_caps(vm: &'a mut VM, caps: &'a Capabilities) -> Framework<'a> {
+        Framework {
+            vm: Some(vm),
+            caps: Some(caps),
+        }
+    }
+
+    /// Whether `cap` is granted by this pass's sandbox policy. Returns `true`
+    /// when there is no policy (global pass or full-trust VM pass), so an
+    /// ungated plugin always registers.
+    pub fn granted(&self, cap: Capability) -> bool {
+        self.caps.is_none_or(|c| c.has(cap))
     }
 
     /// Register a source language (parser + profile + optional emit/normalize/tree).
@@ -103,13 +145,36 @@ pub fn init_all(plugins: &[&dyn Plugin]) {
     }
 }
 
-/// Run every plugin's `init` against a [`Framework`] scoped to `vm`.
+/// Run every plugin's `init` against a full-trust [`Framework`] scoped to
+/// `vm` (no capability gating). See [`init_all_on_vm_with_caps`] for the
+/// sandboxed path.
 ///
 /// Use for plugins that register VM-scoped capabilities (host functions). A
 /// language plugin is harmless here too (it just ignores the VM).
 pub fn init_all_on_vm(vm: &mut VM, plugins: &[&dyn Plugin]) {
     let mut fw = Framework::with_vm(vm);
     for p in plugins {
+        p.init(&mut fw);
+    }
+}
+
+/// Run every plugin's `init` against a [`Framework`] scoped to `vm` and
+/// gated by `caps` — the capability-based replacement for
+/// `vybe_host::register_with_capabilities`.
+///
+/// A plugin whose [`Plugin::required_capability`] is not granted is skipped
+/// wholesale; plugins that span several capabilities (wasi, node) declare
+/// `None` and gate their sub-registrations internally via
+/// [`Framework::granted`].
+pub fn init_all_on_vm_with_caps(vm: &mut VM, caps: &Capabilities, plugins: &[&dyn Plugin]) {
+    // Split the borrow: decide skips up front (immutable), then register.
+    for p in plugins {
+        if let Some(cap) = p.required_capability() {
+            if !caps.has(cap) {
+                continue;
+            }
+        }
+        let mut fw = Framework::with_vm_and_caps(vm, caps);
         p.init(&mut fw);
     }
 }

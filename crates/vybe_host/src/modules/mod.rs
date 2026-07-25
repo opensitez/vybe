@@ -4,143 +4,35 @@
 //! following the WASI capability-based security model.
 //!
 //! Capabilities control which modules are available:
-//! - Safe (always on): console, types, data, drawing
+//! - Safe (always on): console (wasi:cli/logging), drawing (vybe:gui)
 //! - Requires permission: fs, database, sockets, http, env, gui, crypto, xml
 //! - Compiled-in (no host fns): threading — WASM threads proposal opcodes
 //!   (thread.spawn / thread.join / atomics) emitted by compiler_common.
+//!
+//! The `wasi:*` host modules (clock/console/env/random/fs) now live in the
+//! `vybe_platform_wasi` crate and are re-exported here; `vybe:gui`
+//! (canvas/drawing/gui) lives in `vybe_platform_vybe`. This file keeps the
+//! capability model + the `register_*` orchestration that wires them onto a VM.
 
-pub mod canvas;
-pub mod clock;
-pub mod console;
-pub mod data;
-pub mod drawing;
-pub mod env;
-pub mod fs;
-pub mod gui;
-pub mod random;
-pub mod types;
+pub use vybe_platform_vybe::canvas; // vybe:gui canvas (extracted crate)
+// wasi:* host modules (clocks/cli/logging/random) live in the wasi crate.
+pub use vybe_platform_wasi::{clock, console, env, random};
+pub use vybe_platform_vybe::drawing; // vybe:gui 2D drawing (extracted crate)
+pub use vybe_platform_wasi::fs; // flat wasi:filesystem convenience surface (extracted crate)
+pub use vybe_platform_vybe::gui; // vybe:gui host fns (extracted crate)
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use vybe_bytecode::{VM, Value};
 
-/// Capability flags for host module access.
-/// Follows WASI's capability-based security model.
-#[derive(Debug, Clone)]
-pub struct Capabilities {
-    granted: HashSet<Capability>,
-}
+// Capability model moved into `vybe_bytecode::capabilities` (a VM-level
+// primitive). Re-exported here so existing `vybe_host::{Capabilities,
+// Capability}` / `modules::…` paths keep resolving.
+pub use vybe_bytecode::capabilities::{Capabilities, Capability};
 
-/// Individual capabilities that can be granted or denied.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Capability {
-    /// Console I/O (stdout, stderr). Safe for most contexts.
-    Console,
-    /// Runtime compilation from source text (guest-visible eval / compile).
-    /// Static project loading and compile-time-resolved imports do not use it.
-    DynamicCompile,
-    /// Filesystem read access.
-    FileRead,
-    /// Filesystem write access (implies FileRead).
-    FileWrite,
-    /// Network: outbound HTTP requests.
-    Http,
-    /// Network: TCP/UDP sockets (server + client).
-    Sockets,
-    /// Database connections (SQLite, MySQL, etc.).
-    Database,
-    /// Environment variables and process args.
-    Environment,
-    /// GUI / window creation.
-    Gui,
-    /// Threading / background tasks.
-    Threading,
-    /// Cryptographic operations.
-    Crypto,
-    /// System clock access (time, sleep).
-    Clock,
-    /// Random number generation.
-    Random,
-    /// XML parsing.
-    Xml,
-    /// HTTP server (binding ports, handling requests). Required for `vybex --serve`
-    /// and any script calling `vybe:http/server.listen`.
-    HttpServer,
-    /// Spawning child processes (`node:child_process.{spawnSync, execSync,
-    /// execFileSync}`, `node:process.kill`). Carries OS-level escape
-    /// potential — gated separately from FileWrite.
-    Process,
-}
 // `vybe:rt` retired — all dyn_* / get_prop / set_prop / new_object / array_* / typeof /
 // global_get / struct_get_idx operations replaced by opcodes (Op::ADD, Op::STRUCT_GET,
 // Op::TYPEOF, etc.). The module was a WASM bridge for the tree-walking interpreter;
 // bytecode emits directly.
-
-impl Capabilities {
-    /// Full access — all capabilities granted. For trusted CLI usage.
-    pub fn all() -> Self {
-        use Capability::*;
-        let mut granted = HashSet::new();
-        for cap in [
-            Console,
-            DynamicCompile,
-            FileRead,
-            FileWrite,
-            Http,
-            Sockets,
-            Database,
-            Environment,
-            Gui,
-            Threading,
-            Crypto,
-            Clock,
-            Random,
-            Xml,
-            HttpServer,
-            Process,
-        ] {
-            granted.insert(cap);
-        }
-        Capabilities { granted }
-    }
-
-    /// Safe subset — only pure computation, no I/O or side effects.
-    /// Suitable for untrusted code (web playground, sandboxed eval).
-    pub fn safe() -> Self {
-        use Capability::*;
-        let mut granted = HashSet::new();
-        for cap in [Console, Clock, Random] {
-            granted.insert(cap);
-        }
-        Capabilities { granted }
-    }
-
-    /// No capabilities — pure computation only.
-    pub fn none() -> Self {
-        Capabilities {
-            granted: HashSet::new(),
-        }
-    }
-
-    /// Custom: start with none, add specific capabilities.
-    pub fn with(caps: &[Capability]) -> Self {
-        Capabilities {
-            granted: caps.iter().copied().collect(),
-        }
-    }
-
-    pub fn has(&self, cap: Capability) -> bool {
-        self.granted.contains(&cap)
-    }
-
-    pub fn grant(&mut self, cap: Capability) {
-        self.granted.insert(cap);
-    }
-
-    pub fn revoke(&mut self, cap: Capability) {
-        self.granted.remove(&cap);
-    }
-}
 
 /// Register all standard VSI modules on a VM (no GUI).
 /// All capabilities granted.
@@ -590,8 +482,6 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     // through `ecma:map` / `ecma:set` / `ecma:weakmap` / `ecma:weakset`
     // (registered via `crate::ecma::register` below). TypeRegistry
     // dispatch in `builtin_types.rs` points at the same fns.
-    types::register(vm);
-    data::register(vm);
     drawing::register(vm);
 
     // ecma:* — JS runtime (ECMA-262 mirror). All pure computation
@@ -681,7 +571,7 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
     }
 
     // Set up namespace objects, type registry
-    crate::namespaces::setup_namespaces(vm);
+    crate::setup_namespaces(vm);
     crate::builtin_types::register_all(vm);
 
     // Polyfill: override stdlib `__vybe_*` globals with the just-registered
@@ -735,7 +625,7 @@ pub fn register_with_capabilities_and_gui(
     if caps.has(Capability::Gui) {
         gui::register(vm, gui.clone());
         canvas::register(vm, gui.clone());
-        crate::namespaces::setup_namespaces(vm);
+        crate::setup_namespaces(vm);
     }
     gui
 }

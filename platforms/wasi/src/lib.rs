@@ -15,7 +15,14 @@ pub mod filesystem;
 pub mod http;
 pub mod io;
 pub mod sql;
+pub mod plugin;
+pub use plugin::WasiPlugin;
 pub mod sockets;
+pub mod clock;
+pub mod console;
+pub mod env;
+pub mod random;
+pub mod fs;
 
 use vybe_bytecode::VM;
 

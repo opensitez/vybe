@@ -10,7 +10,7 @@
 //! `ctx.throw_value(...)` so the VM raises a trap.
 
 use std::sync::Arc;
-use vybe_bytecode::{HostContext, VM, Value};
+use crate::{HostContext, VM, Value};
 
 fn is_neg_zero(n: f64) -> bool {
     n == 0.0 && n.is_sign_negative()

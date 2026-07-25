@@ -1,5 +1,9 @@
 pub mod bigint;
+pub mod capabilities;
 pub mod chunk;
+pub mod js_builtins; // wasm:js-* CG proposals (dispatcher)
+pub mod js_primitive_builtins; // wasm:js-{number,boolean,undefined,symbol,bigint}
+pub mod js_string_builtins; // wasm:js-string (merged js-string-builtins)
 pub mod opcode;
 pub mod type_recorder;
 pub mod value;

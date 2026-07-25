@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 vybe_bytecode = { workspace = true }
+vybe_plugin = { workspace = true }
 
 # WASI 0.2.x support crates (moved from vybe_host, incl. the sockets module).
 rusqlite = { workspace = true }

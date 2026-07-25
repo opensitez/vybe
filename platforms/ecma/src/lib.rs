@@ -43,6 +43,11 @@ pub mod typedarray; // §23.2  TypedArray family
 pub mod weakmap; // §24.3/§24.4  WeakMap + WeakSet (co-located)
 pub mod weakref; // §26.1/§26.2  WeakRef + FinalizationRegistry (co-located)
 
+// ── Global wiring (constructor↔prototype, globalThis) ────────────────
+pub mod ecma_globals; // stamps shared prototypes + wires constructors; run AFTER register()
+pub mod plugin; // EcmaPlugin — the ecma:* platform as a universal vybe_plugin::Plugin
+pub use plugin::EcmaPlugin;
+
 // ── JS-runtime helpers (not strictly ECMA-262) ───────────────────────
 pub mod fixedarray; // V8-internal fixed-length array shape
 pub mod generator; // §27.3 GeneratorFunction / §27.5 Generator protocol
@@ -54,6 +59,15 @@ pub mod value; // generic JS-value reflection (Vybe extension)
 use std::sync::Arc;
 use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{VM, Value};
+
+/// Wire the ECMA global objects: stamp the shared prototypes with their
+/// methods, pin each constructor↔prototype link, and install `globalThis` +
+/// Symbol/Reflect/Atomics/BigInt/Iterator globals. MUST run AFTER [`register`]
+/// (it resolves host functions by registry index). Moved out of vybe_host so
+/// the ecma crate owns both the prototype objects and their contents.
+pub fn register_globals(vm: &mut VM) {
+    ecma_globals::register(vm);
+}
 
 /// Register the always-safe `ecma:*` host fns — pure computation, no
 /// capabilities needed. Date is NOT included because `Date.now` / `Date.parse`
