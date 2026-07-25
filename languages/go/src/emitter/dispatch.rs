@@ -9,5 +9,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     if crate::emitter::reflection_adapter::emit_helper(name, chunks, current, argc, line) {
         return true;
     }
+    if crate::emitter::binary_adapter::emit_helper(name, chunks, current, argc, line) {
+        return true;
+    }
     crate::emitter::math_adapter::emit_helper(name, chunks, current, argc, line)
 }

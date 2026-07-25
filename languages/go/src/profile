@@ -79,6 +79,18 @@ materialize_bool_results = true
 "__go_array_from"          = { emit = "host:ecma:array:from",              min_args = 1, max_args = 1 }
 "__go_is_string"           = { emit = "host:wasm:js-string:test",          min_args = 1, max_args = 1 }
 
+# encoding/binary fixed-width byte order helpers. Go owns the API shape;
+# byte/endian mechanics are emitted through vybe_emitter::packing.
+"__go_emit_binary_PutUint16" = { emit = "common:go.binary_put_uint16", min_args = 3, max_args = 3 }
+"__go_emit_binary_Uint16"    = { emit = "common:go.binary_uint16",     min_args = 2, max_args = 2 }
+"__go_emit_binary_PutInt16"  = { emit = "common:go.binary_put_int16",  min_args = 3, max_args = 3 }
+"__go_emit_binary_PutUint32" = { emit = "common:go.binary_put_uint32", min_args = 3, max_args = 3 }
+"__go_emit_binary_Uint32"    = { emit = "common:go.binary_uint32",     min_args = 2, max_args = 2 }
+"__go_emit_binary_Int32"     = { emit = "common:go.binary_int32",      min_args = 2, max_args = 2 }
+"__go_emit_binary_PutUint64PartsWrap" = { emit = "common:go.binary_put_uint64_parts", min_args = 4, max_args = 4 }
+"__go_emit_binary_AppendUint16" = { emit = "common:go.binary_append_uint16", min_args = 3, max_args = 3 }
+"__go_emit_binary_AppendUint32" = { emit = "common:go.binary_append_uint32", min_args = 3, max_args = 3 }
+
 # ── String functions ─────────────────────────────────────────────────────────
 
 "strings.ToUpper" = { emit = "common:strings.to_upper",         min_args = 1, max_args = 1 }

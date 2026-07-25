@@ -1823,17 +1823,9 @@ func (o __goByteOrder) Int32(b []byte) int32 {
 	return int32(v)
 }
 func (o __goByteOrder) PutUint64(b []byte, v uint64) {
-	tmp := make([]byte, 8)
-	var x uint64 = v
-	for i := 0; i < 8; i++ {
-		tmp[i] = __go_binary_u8u(x)
-		x = x / uint64(256)
-	}
-	if o.little {
-		for i := 0; i < 8; i++ { b[i] = tmp[i] }
-	} else {
-		for i := 0; i < 8; i++ { b[i] = tmp[7-i] }
-	}
+	hi := uint32(v / uint64(4294967296))
+	lo := uint32(v - uint64(hi)*uint64(4294967296))
+	__go_emit_binary_PutUint64PartsWrap(o.little, b, hi, lo)
 }
 func __go_binary_PutUint64Parts(o __goByteOrder, b []byte, hi uint32, lo uint32) {
 	if o.little {
@@ -13671,23 +13663,24 @@ fn go_rewrite_encoding_call(call_name: &str, args: &[Argument]) -> Option<Expres
         "__go_binary_BigEndian.PutUint64"
             | "__go_binary_LittleEndian.PutUint64"
             | "__go_binary_NativeEndian.PutUint64"
+            | "binary.BigEndian.PutUint64"
+            | "binary.LittleEndian.PutUint64"
+            | "binary.NativeEndian.PutUint64"
     ) && args.len() == 2
     {
         if let ExprKind::Lit(Literal::Int(value)) = &args[1].value.kind {
             let unsigned = *value as u64;
             let hi = ((unsigned >> 32) & 0xffff_ffff) as i64;
             let lo = (unsigned & 0xffff_ffff) as i64;
-            if let Some((receiver, _)) = call_name.split_once('.') {
-                return Some(go_builtin_call(
-                    "__go_binary_PutUint64PartsWrap",
-                    vec![
-                        Expression::ident(receiver),
-                        args[0].value.clone(),
-                        Expression::int(hi),
-                        Expression::int(lo),
-                    ],
-                ));
-            }
+            return Some(go_builtin_call(
+                    "__go_emit_binary_PutUint64PartsWrap",
+                vec![
+                    go_binary_order_arg(call_name),
+                    args[0].value.clone(),
+                    Expression::int(hi),
+                    Expression::int(lo),
+                ],
+            ));
         }
     }
 
@@ -13727,46 +13720,83 @@ fn go_rewrite_encoding_call(call_name: &str, args: &[Argument]) -> Option<Expres
         | "__go_base64_URLEncoding.DecodedLen" => "__go_base64_DecodedLen",
         "__go_base64_StdEncoding.WithPadding" => "__go_base64_WithPadding",
         "__go_binary_BigEndian.PutUint16"
+        | "binary.BigEndian.PutUint16"
         | "__go_binary_LittleEndian.PutUint16"
-        | "__go_binary_NativeEndian.PutUint16" => "__go_binary_PutUint16",
+        | "binary.LittleEndian.PutUint16"
+        | "__go_binary_NativeEndian.PutUint16" => "__go_emit_binary_PutUint16",
+        "binary.NativeEndian.PutUint16" => "__go_emit_binary_PutUint16",
         "__go_binary_BigEndian.Uint16"
+        | "binary.BigEndian.Uint16"
         | "__go_binary_LittleEndian.Uint16"
-        | "__go_binary_NativeEndian.Uint16" => "__go_binary_Uint16",
+        | "binary.LittleEndian.Uint16"
+        | "__go_binary_NativeEndian.Uint16" => "__go_emit_binary_Uint16",
+        "binary.NativeEndian.Uint16" => "__go_emit_binary_Uint16",
         "__go_binary_BigEndian.PutInt16"
+        | "binary.BigEndian.PutInt16"
         | "__go_binary_LittleEndian.PutInt16"
-        | "__go_binary_NativeEndian.PutInt16" => "__go_binary_PutInt16",
+        | "binary.LittleEndian.PutInt16"
+        | "__go_binary_NativeEndian.PutInt16" => "__go_emit_binary_PutInt16",
+        "binary.NativeEndian.PutInt16" => "__go_emit_binary_PutInt16",
         "__go_binary_BigEndian.PutUint32"
+        | "binary.BigEndian.PutUint32"
         | "__go_binary_LittleEndian.PutUint32"
-        | "__go_binary_NativeEndian.PutUint32" => "__go_binary_PutUint32",
+        | "binary.LittleEndian.PutUint32"
+        | "__go_binary_NativeEndian.PutUint32" => "__go_emit_binary_PutUint32",
+        "binary.NativeEndian.PutUint32" => "__go_emit_binary_PutUint32",
         "__go_binary_BigEndian.Uint32"
+        | "binary.BigEndian.Uint32"
         | "__go_binary_LittleEndian.Uint32"
-        | "__go_binary_NativeEndian.Uint32" => "__go_binary_Uint32",
+        | "binary.LittleEndian.Uint32"
+        | "__go_binary_NativeEndian.Uint32" => "__go_emit_binary_Uint32",
+        "binary.NativeEndian.Uint32" => "__go_emit_binary_Uint32",
         "__go_binary_BigEndian.Int32"
+        | "binary.BigEndian.Int32"
         | "__go_binary_LittleEndian.Int32"
-        | "__go_binary_NativeEndian.Int32" => "__go_binary_Int32",
+        | "binary.LittleEndian.Int32"
+        | "__go_binary_NativeEndian.Int32" => "__go_emit_binary_Int32",
+        "binary.NativeEndian.Int32" => "__go_emit_binary_Int32",
         "__go_binary_BigEndian.PutUint64"
+        | "binary.BigEndian.PutUint64"
         | "__go_binary_LittleEndian.PutUint64"
+        | "binary.LittleEndian.PutUint64"
         | "__go_binary_NativeEndian.PutUint64" => "__go_binary_PutUint64",
+        "binary.NativeEndian.PutUint64" => "__go_binary_PutUint64",
         "__go_binary_BigEndian.Uint64"
+        | "binary.BigEndian.Uint64"
         | "__go_binary_LittleEndian.Uint64"
+        | "binary.LittleEndian.Uint64"
         | "__go_binary_NativeEndian.Uint64" => "__go_binary_Uint64",
+        "binary.NativeEndian.Uint64" => "__go_binary_Uint64",
         "__go_binary_BigEndian.AppendUint16"
+        | "binary.BigEndian.AppendUint16"
         | "__go_binary_LittleEndian.AppendUint16"
-        | "__go_binary_NativeEndian.AppendUint16" => "__go_binary_AppendUint16",
+        | "binary.LittleEndian.AppendUint16"
+        | "__go_binary_NativeEndian.AppendUint16" => "__go_emit_binary_AppendUint16",
+        "binary.NativeEndian.AppendUint16" => "__go_emit_binary_AppendUint16",
         "__go_binary_BigEndian.AppendUint32"
+        | "binary.BigEndian.AppendUint32"
         | "__go_binary_LittleEndian.AppendUint32"
-        | "__go_binary_NativeEndian.AppendUint32" => "__go_binary_AppendUint32",
+        | "binary.LittleEndian.AppendUint32"
+        | "__go_binary_NativeEndian.AppendUint32" => "__go_emit_binary_AppendUint32",
+        "binary.NativeEndian.AppendUint32" => "__go_emit_binary_AppendUint32",
         _ => return None,
     };
 
     let mut values: Vec<Expression> = Vec::new();
+    if helper.starts_with("__go_emit_binary_") {
+        values.push(go_binary_order_arg(call_name));
+    }
     if let Some((receiver, _)) = call_name.split_once('.') {
-        if receiver.starts_with("__go_base64_") || receiver.starts_with("__go_binary_") {
+        if receiver.starts_with("__go_base64_") {
             values.push(Expression::ident(receiver));
         }
     }
     values.extend(args.iter().map(|arg| arg.value.clone()));
     Some(go_builtin_call(helper, values))
+}
+
+fn go_binary_order_arg(call_name: &str) -> Expression {
+    Expression::bool(call_name.contains("LittleEndian") || call_name.contains("NativeEndian"))
 }
 
 fn go_rewrite_xml_call(
