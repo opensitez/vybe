@@ -309,3 +309,4 @@ fn re_search_span_tuple() {
         "(2, 4)"
     );
 }
+
