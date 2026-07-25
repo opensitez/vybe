@@ -5141,349 +5141,43 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
 /// Does NOT descend into nested function/closure/class bodies — those are
 /// their own generator scope.
 fn body_contains_yield(stmts: &[Statement]) -> bool {
-    enum Node<'a> {
-        Stmt(&'a Statement),
-        Expr(&'a Expression),
-        Place(&'a PlaceExpr),
-    }
-
-    let mut stack = stmts.iter().map(Node::Stmt).collect::<Vec<_>>();
-    while let Some(node) = stack.pop() {
-        match node {
-            Node::Place(place) => match place {
-                PlaceExpr::Ident(_) => {}
-                PlaceExpr::Member { object, .. } => stack.push(Node::Expr(object)),
-                PlaceExpr::Index { object, index, .. } => {
-                    stack.push(Node::Expr(object));
-                    stack.push(Node::Expr(index));
-                }
-                PlaceExpr::Deref(expr) => stack.push(Node::Expr(expr)),
-            },
-            Node::Expr(expr) => match &expr.kind {
-                ExprKind::Yield(_) | ExprKind::YieldFrom(_) => return true,
-                ExprKind::Lambda { .. }
-                | ExprKind::FunctionExpr(_)
-                | ExprKind::ClassExpr { .. }
-                | ExprKind::Lit(_)
-                | ExprKind::Ident(_)
-                | ExprKind::DefaultOf(_)
-                | ExprKind::This
-                | ExprKind::Super
-                | ExprKind::AddressOf(_)
-                | ExprKind::Destructure(_) => {}
-                ExprKind::RefOf(place) => stack.push(Node::Place(place)),
-                ExprKind::Unary { expr, .. }
-                | ExprKind::RefLoad(expr)
-                | ExprKind::IsType { expr, .. }
-                | ExprKind::Cast { expr, .. }
-                | ExprKind::TypeOf(expr)
-                | ExprKind::Spread(expr)
-                | ExprKind::Await(expr)
-                | ExprKind::Void(expr)
-                | ExprKind::Delete(expr) => stack.push(Node::Expr(expr)),
-                ExprKind::Binary { left, right, .. }
-                | ExprKind::NullCoalesce { left, right }
-                | ExprKind::Assign {
-                    target: left,
-                    value: right,
-                }
-                | ExprKind::Walrus {
-                    target: left,
-                    value: right,
-                }
-                | ExprKind::Range {
-                    start: left,
-                    end: right,
-                    ..
-                } => {
-                    stack.push(Node::Expr(left));
-                    stack.push(Node::Expr(right));
-                }
-                ExprKind::StaticAccess { class, member } => {
-                    stack.push(Node::Expr(class));
-                    stack.push(Node::Expr(member));
-                }
-                ExprKind::Ternary { cond, then, else_ } => {
-                    stack.push(Node::Expr(cond));
-                    stack.push(Node::Expr(then));
-                    stack.push(Node::Expr(else_));
-                }
-                ExprKind::Member { object, .. } => stack.push(Node::Expr(object)),
-                ExprKind::Index { object, index, .. } => {
-                    stack.push(Node::Expr(object));
-                    stack.push(Node::Expr(index));
-                }
-                ExprKind::Call { callee, args, .. } => {
-                    stack.push(Node::Expr(callee));
-                    stack.extend(args.iter().map(|arg| Node::Expr(&arg.value)));
-                }
-                ExprKind::New { class, args } => {
-                    stack.push(Node::Expr(class));
-                    stack.extend(args.iter().map(|arg| Node::Expr(&arg.value)));
-                }
-                ExprKind::SuperCall { args, .. } => {
-                    stack.extend(args.iter().map(|arg| Node::Expr(&arg.value)));
-                }
-                ExprKind::Array(elems) => {
-                    for elem in elems {
-                        stack.push(Node::Expr(&elem.value));
-                        if let Some(key) = &elem.key {
-                            stack.push(Node::Expr(key));
-                        }
-                    }
-                }
-                ExprKind::Tuple(exprs) | ExprKind::Set(exprs) | ExprKind::Sequence(exprs) => {
-                    stack.extend(exprs.iter().map(Node::Expr));
-                }
-                ExprKind::NamedTuple { fields, .. } => {
-                    stack.extend(fields.iter().map(|(_, v)| Node::Expr(v)));
-                }
-                ExprKind::Object(props) => {
-                    for prop in props {
-                        match prop {
-                            ObjectProperty::KeyValue { key, value }
-                            | ObjectProperty::Computed { key, value } => {
-                                stack.push(Node::Expr(key));
-                                stack.push(Node::Expr(value));
-                            }
-                            ObjectProperty::Spread(expr) => stack.push(Node::Expr(expr)),
-                            _ => {}
-                        }
-                    }
-                }
-                ExprKind::Interpolation(parts) => {
-                    for part in parts {
-                        match part {
-                            InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
-                                stack.push(Node::Expr(expr));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                ExprKind::Match { subject, arms } => {
-                    stack.push(Node::Expr(subject));
-                    for arm in arms {
-                        if let Some(conditions) = &arm.conditions {
-                            stack.extend(conditions.iter().map(Node::Expr));
-                        }
-                        stack.push(Node::Expr(&arm.body));
-                    }
-                }
-                ExprKind::Comprehension {
-                    element,
-                    generators,
-                    ..
-                } => {
-                    stack.push(Node::Expr(element));
-                    for generator in generators {
-                        stack.push(Node::Expr(&generator.iter));
-                        stack.extend(generator.conditions.iter().map(Node::Expr));
-                    }
-                }
-                ExprKind::Slice { lower, upper, step } => {
-                    if let Some(expr) = lower {
-                        stack.push(Node::Expr(expr));
-                    }
-                    if let Some(expr) = upper {
-                        stack.push(Node::Expr(expr));
-                    }
-                    if let Some(expr) = step {
-                        stack.push(Node::Expr(expr));
-                    }
-                }
-            },
-            Node::Stmt(stmt) => match &stmt.kind {
-                StmtKind::FunctionDecl { .. } | StmtKind::ClassDecl { .. } => {}
-                StmtKind::Expr(expr) => stack.push(Node::Expr(expr)),
-                StmtKind::Block(body)
-                | StmtKind::With { body, .. }
-                | StmtKind::Using { body, .. }
-                | StmtKind::Lock { body, .. }
-                | StmtKind::NamespaceDecl { body, .. } => {
-                    stack.extend(body.iter().map(Node::Stmt));
-                }
-                StmtKind::VarDecl { declarations, .. } => {
-                    for decl in declarations {
-                        if let Some(init) = &decl.init {
-                            stack.push(Node::Expr(init));
-                        }
-                    }
-                }
-                StmtKind::Return(expr) => {
-                    if let Some(expr) = expr {
-                        stack.push(Node::Expr(expr));
-                    }
-                }
-                StmtKind::If {
-                    cond,
-                    then_body,
-                    elifs,
-                    else_body,
-                } => {
-                    stack.push(Node::Expr(cond));
-                    stack.extend(then_body.iter().map(Node::Stmt));
-                    for (cond, body) in elifs {
-                        stack.push(Node::Expr(cond));
-                        stack.extend(body.iter().map(Node::Stmt));
-                    }
-                    if let Some(body) = else_body {
-                        stack.extend(body.iter().map(Node::Stmt));
-                    }
-                }
-                StmtKind::While {
-                    cond,
-                    body,
-                    else_body,
-                } => {
-                    stack.push(Node::Expr(cond));
-                    stack.extend(body.iter().map(Node::Stmt));
-                    if let Some(body) = else_body {
-                        stack.extend(body.iter().map(Node::Stmt));
-                    }
-                }
-                StmtKind::DoWhile { body, cond, .. } => {
-                    stack.extend(body.iter().map(Node::Stmt));
-                    stack.push(Node::Expr(cond));
-                }
-                StmtKind::For {
-                    init,
-                    cond,
-                    update,
-                    body,
-                } => {
-                    if let Some(init) = init {
-                        stack.push(Node::Stmt(init));
-                    }
-                    if let Some(cond) = cond {
-                        stack.push(Node::Expr(cond));
-                    }
-                    if let Some(update) = update {
-                        stack.push(Node::Expr(update));
-                    }
-                    stack.extend(body.iter().map(Node::Stmt));
-                }
-                StmtKind::ForIn {
-                    iter,
-                    body,
-                    else_body,
-                    ..
-                } => {
-                    stack.push(Node::Expr(iter));
-                    stack.extend(body.iter().map(Node::Stmt));
-                    if let Some(body) = else_body {
-                        stack.extend(body.iter().map(Node::Stmt));
-                    }
-                }
-                StmtKind::Switch {
-                    expr,
-                    cases,
-                    default,
-                } => {
-                    stack.push(Node::Expr(expr));
-                    for case in cases {
-                        stack.extend(case.body.iter().map(Node::Stmt));
-                    }
-                    if let Some(body) = default {
-                        stack.extend(body.iter().map(Node::Stmt));
-                    }
-                }
-                StmtKind::Try {
-                    body,
-                    catches,
-                    else_body,
-                    finally,
-                } => {
-                    stack.extend(body.iter().map(Node::Stmt));
-                    for catch in catches {
-                        stack.extend(catch.body.iter().map(Node::Stmt));
-                    }
-                    if let Some(body) = else_body {
-                        stack.extend(body.iter().map(Node::Stmt));
-                    }
-                    if let Some(body) = finally {
-                        stack.extend(body.iter().map(Node::Stmt));
-                    }
-                }
-                StmtKind::Assign { targets, value } => {
-                    stack.extend(targets.iter().map(Node::Expr));
-                    stack.push(Node::Expr(value));
-                }
-                StmtKind::CompoundAssign { target, value, .. } => {
-                    stack.push(Node::Expr(target));
-                    stack.push(Node::Expr(value));
-                }
-                StmtKind::Throw { expr, cause } => {
-                    if let Some(expr) = expr {
-                        stack.push(Node::Expr(expr));
-                    }
-                    if let Some(cause) = cause {
-                        stack.push(Node::Expr(cause));
-                    }
-                }
-                StmtKind::Labeled { body, .. } => stack.push(Node::Stmt(body)),
-                StmtKind::Echo(exprs) | StmtKind::Delete(exprs) => {
-                    stack.extend(exprs.iter().map(Node::Expr));
-                }
-                StmtKind::Export {
-                    declaration,
-                    default,
-                    ..
-                } => {
-                    if let Some(declaration) = declaration {
-                        stack.push(Node::Stmt(declaration));
-                    }
-                    if let Some(default) = default {
-                        stack.push(Node::Expr(default));
-                    }
-                }
-                StmtKind::MatchStatement { subject, cases } => {
-                    stack.push(Node::Expr(subject));
-                    for case in cases {
-                        if let Some(guard) = &case.guard {
-                            stack.push(Node::Expr(guard));
-                        }
-                        stack.extend(case.body.iter().map(Node::Stmt));
-                    }
-                }
-                StmtKind::Assert { test, msg } => {
-                    stack.push(Node::Expr(test));
-                    if let Some(msg) = msg {
-                        stack.push(Node::Expr(msg));
-                    }
-                }
-                _ => {}
-            },
-        }
-    }
-    false
+    vybe_ast::statements_contain_yield_outside_nested_scopes(stmts)
 }
 
 fn php_return_type_is_generator_like(return_type: &Option<String>) -> bool {
-    let Some(ret) = return_type.as_deref() else {
+    let Some(return_type) = return_type.as_deref() else {
         return false;
     };
-    let normalized = ret
-        .trim()
-        .trim_start_matches('?')
-        .trim_start_matches('\\')
-        .to_ascii_lowercase();
-    matches!(
-        normalized.as_str(),
-        "generator" | "iterator" | "traversable"
-    )
+
+    return_type
+        .split(['|', '&'])
+        .map(|part| part.trim().trim_start_matches('?').trim_start_matches('\\'))
+        .any(|part| {
+            let short = part.rsplit('\\').next().unwrap_or(part);
+            matches!(short, "Generator" | "Iterator" | "Traversable")
+        })
 }
 
-/// Wrap a class-name expression in `str_replace('.', '\\', …)` so the
-/// runtime value shows PHP's backslash-qualified spelling instead of the
-/// internal dotted identity. No-ops for un-namespaced names.
 fn php_backslash_display(expr: Expression, span: &Span) -> Expression {
+    if let ExprKind::Lit(Literal::Str(name)) = &expr.kind {
+        return Expression::with_span(ExprKind::Lit(Literal::Str(name.replace('.', "\\"))), span.clone());
+    }
+
     Expression::with_span(
         ExprKind::Call {
-            callee: Box::new(Expression::new(ExprKind::Ident("str_replace".into()))),
+            callee: Box::new(Expression::with_span(
+                ExprKind::Ident("str_replace".to_string()),
+                span.clone(),
+            )),
             args: vec![
-                Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(".".into())))),
-                Argument::positional(Expression::new(ExprKind::Lit(Literal::Str("\\".into())))),
+                Argument::positional(Expression::with_span(
+                    ExprKind::Lit(Literal::Str(".".to_string())),
+                    span.clone(),
+                )),
+                Argument::positional(Expression::with_span(
+                    ExprKind::Lit(Literal::Str("\\".to_string())),
+                    span.clone(),
+                )),
                 Argument::positional(expr),
             ],
             optional: false,

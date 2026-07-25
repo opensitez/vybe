@@ -666,11 +666,32 @@ pub fn emit_php_json_normalize(
     value_slot: u16,
     line: u32,
 ) {
-    let helper_idx = build_php_json_normalize_helper(chunks, line);
-    let chunk = &mut chunks[current];
-    ref_func(chunk, helper_idx, line);
-    lget(chunk, value_slot, line);
-    call_ref(chunk, 1, line);
+    // Delegate to the shared `vybe_emitter::json` normalizer. PHP serializes
+    // every object's own enumerable keys (props mode), applies no encoder hook,
+    // and preserves native key order — byte-compatible with the former
+    // hand-rolled helper, now unified with Python's json path.
+    let (default_slot, sort_slot, props_slot) = {
+        let c = &mut chunks[current];
+        (c.alloc_scratch(1), c.alloc_scratch(1), c.alloc_scratch(1))
+    };
+    {
+        let c = &mut chunks[current];
+        c.emit_op(Op::NULL, line); // default (no encoder hook)
+        lset(c, default_slot, line);
+        c.emit_bool_const(false, line); // sort_keys
+        lset(c, sort_slot, line);
+        c.emit_bool_const(true, line); // serialize props
+        lset(c, props_slot, line);
+    }
+    vybe_emitter::json::emit_normalize(
+        chunks,
+        current,
+        value_slot,
+        default_slot,
+        sort_slot,
+        props_slot,
+        line,
+    );
 }
 
 fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
