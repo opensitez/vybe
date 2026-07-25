@@ -2,7 +2,7 @@
 //!
 //! Reference: <https://nodejs.org/api/dgram.html>.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, Value};
 
@@ -57,7 +57,7 @@ fn make_socket(sock_type: &str) -> Value {
     ] {
         o.properties.insert(m.into(), Value::Undefined);
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 pub fn register(vm: &mut VM) {

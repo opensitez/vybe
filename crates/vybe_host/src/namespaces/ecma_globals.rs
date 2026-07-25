@@ -232,7 +232,7 @@ pub fn register(vm: &mut VM) {
     vm.globals.insert("Boolean".to_string(), boolean.clone());
     vm.globals.insert("boolean".to_string(), boolean.clone());
 
-    let function = Value::Object(Arc::new(Mutex::new(Object::new())));
+    let function = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
     set_prop(&function, "name", Value::String(Arc::from("Function")));
     let function_proto = crate::ecma::function::shared_function_prototype();
     set_constructor_once(&function_proto, function.clone());
@@ -393,7 +393,7 @@ pub fn register(vm: &mut VM) {
                 "__proto__",
                 crate::ecma::function::shared_function_prototype(),
             );
-            let proto = Value::Object(Arc::new(Mutex::new(Object::new())));
+            let proto = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
             set_prop(&proto, "__proto__", object_proto.clone());
             set_constructor_once(&proto, ctor.clone());
             if let Value::Object(p) = &proto {
@@ -662,7 +662,7 @@ pub fn register(vm: &mut VM) {
             }
             set_prop(&ctor, "BYTES_PER_ELEMENT", Value::I32(*bpe));
             set_prop(&ctor, "__vybe_typed_array_ctor", Value::Bool(true));
-            let proto = Value::Object(Arc::new(Mutex::new(Object::new())));
+            let proto = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
             set_prop(&proto, "__proto__", object_proto.clone());
             for method in [
                 "at",
@@ -728,7 +728,7 @@ pub fn register(vm: &mut VM) {
         let ctor = host_fn_ref(vm, module, "new");
         if !matches!(ctor, Value::Null) {
             set_prop(&ctor, "name", Value::String(Arc::from(*global_name)));
-            let proto = Value::Object(Arc::new(Mutex::new(Object::new())));
+            let proto = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
             set_prop(&proto, "__proto__", object_proto.clone());
             for method in ["slice", "resize", "transfer", "transferToFixedLength"] {
                 if let Some(&idx) = vm

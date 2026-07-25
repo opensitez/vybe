@@ -6,7 +6,7 @@
 //! VM. Synchronous accessors (getServers, setServers, getDefaultResultOrder)
 //! are fully implemented.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, Value};
 
@@ -15,12 +15,12 @@ fn s(text: &str) -> Value {
 }
 
 fn empty_array() -> Value {
-    Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![])))
 }
 
 fn stub_async() -> Value {
     // Async operations return an empty object (would be Promise in a real event loop)
-    Value::Object(Arc::new(Mutex::new(Object::new())))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new()))
 }
 
 pub fn register(vm: &mut VM) {
@@ -29,7 +29,7 @@ pub fn register(vm: &mut VM) {
         "getServers",
         Box::new(|_ctx, _args| {
             let servers = vec![s("8.8.8.8"), s("8.8.4.4")];
-            Value::Object(Arc::new(Mutex::new(Object::new_array(servers))))
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(servers)))
         }),
     );
 
@@ -85,9 +85,9 @@ pub fn register(vm: &mut VM) {
                 .insert("__isResolver".into(), Value::Bool(true));
             o.properties.insert("servers".into(), {
                 let servers = vec![s("8.8.8.8"), s("8.8.4.4")];
-                Value::Object(Arc::new(Mutex::new(Object::new_array(servers))))
+                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(servers)))
             });
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 

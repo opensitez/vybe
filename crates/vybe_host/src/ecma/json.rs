@@ -132,7 +132,7 @@ pub fn register(vm: &mut VM) {
                 .insert("__type".into(), Value::String(Arc::from("RawJSON")));
             obj.properties
                 .insert("rawJSON".into(), Value::String(Arc::from(text.as_str())));
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 
@@ -719,7 +719,7 @@ fn apply_to_json(ctx: &mut HostContext, value: &Value, key: &str) -> Option<Valu
 fn make_root_holder(value: Value) -> Value {
     let mut root = Object::new();
     root.properties.insert("".into(), value);
-    Value::Object(Arc::new(Mutex::new(root)))
+    Value::Object(vybe_bytecode::heap::alloc(root))
 }
 
 fn quote_string(s: &str) -> String {
@@ -769,7 +769,7 @@ fn double_numbers_revive(value: Value) -> Value {
                     .map(|e| double_numbers_revive(e.clone()))
                     .collect();
                 drop(guard);
-                Value::Object(Arc::new(Mutex::new(Object::new_array(elems2))))
+                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elems2)))
             } else {
                 let keys: Vec<String> = guard.properties.keys().cloned().collect();
                 let vals: Vec<(String, Value)> = keys
@@ -786,7 +786,7 @@ fn double_numbers_revive(value: Value) -> Value {
                 for (k, v) in vals {
                     new_obj.properties.insert(k, v);
                 }
-                Value::Object(Arc::new(Mutex::new(new_obj)))
+                Value::Object(vybe_bytecode::heap::alloc(new_obj))
             }
         }
         _ => value,
@@ -909,7 +909,7 @@ fn mark_array_hole(object: &mut Object, index: i32) {
     let holes = match object.properties.get("__holes") {
         Some(Value::Object(existing)) => existing.clone(),
         _ => {
-            let created = Arc::new(Mutex::new(Object::new_array(Vec::new())));
+            let created = vybe_bytecode::heap::alloc(Object::new_array(Vec::new()));
             object
                 .properties
                 .insert("__holes".into(), Value::Object(created.clone()));
@@ -1109,9 +1109,9 @@ impl<'a> Parser<'a> {
         self.skip_whitespace();
         if self.peek() == Some(b']') {
             self.pos += 1;
-            return Some(Value::Object(Arc::new(Mutex::new(Object::new_array(
+            return Some(Value::Object(vybe_bytecode::heap::alloc(Object::new_array(
                 elems,
-            )))));
+            ))));
         }
         loop {
             elems.push(self.parse_value()?);
@@ -1127,9 +1127,9 @@ impl<'a> Parser<'a> {
                 _ => return None,
             }
         }
-        Some(Value::Object(Arc::new(Mutex::new(Object::new_array(
+        Some(Value::Object(vybe_bytecode::heap::alloc(Object::new_array(
             elems,
-        )))))
+        ))))
     }
 
     fn parse_object(&mut self) -> Option<Value> {
@@ -1143,7 +1143,7 @@ impl<'a> Parser<'a> {
         self.skip_whitespace();
         if self.peek() == Some(b'}') {
             self.pos += 1;
-            return Some(Value::Object(Arc::new(Mutex::new(obj))));
+            return Some(Value::Object(vybe_bytecode::heap::alloc(obj)));
         }
         loop {
             self.skip_whitespace();
@@ -1172,9 +1172,9 @@ impl<'a> Parser<'a> {
         }
         obj.properties.insert(
             "__keys".into(),
-            Value::Object(Arc::new(Mutex::new(Object::new_array(tracked_keys)))),
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(tracked_keys))),
         );
-        Some(Value::Object(Arc::new(Mutex::new(obj))))
+        Some(Value::Object(vybe_bytecode::heap::alloc(obj)))
     }
 }
 

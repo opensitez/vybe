@@ -21,7 +21,7 @@ mod types;
 mod vb_globals;
 mod web_globals;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{VM, Value};
 
@@ -83,7 +83,7 @@ pub(crate) fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
     {
         existing.clone()
     } else {
-        let obj = Value::Object(Arc::new(Mutex::new(Object::new())));
+        let obj = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
         vm.globals.insert(root_orig.clone(), obj.clone());
         if root_lc != root_orig {
             vm.globals.insert(root_lc, obj.clone());
@@ -106,7 +106,7 @@ pub(crate) fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
         if let Some(existing) = next {
             current = existing;
         } else {
-            let new_obj = Value::Object(Arc::new(Mutex::new(Object::new())));
+            let new_obj = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
             if let Value::Object(ref obj) = current {
                 let mut o = obj.lock().unwrap();
                 o.properties.insert(orig.clone(), new_obj.clone());
@@ -176,7 +176,7 @@ pub(crate) fn host_fn_ref(vm: &VM, module: &str, name: &str) -> Value {
         obj.properties
             .insert("name".into(), Value::String(Arc::from(name)));
         obj.kind = ObjectKind::HostFunction(idx);
-        Value::Object(Arc::new(Mutex::new(obj)))
+        Value::Object(vybe_bytecode::heap::alloc(obj))
     } else {
         Value::Null
     }
@@ -204,7 +204,7 @@ pub(crate) fn receiver_host_fn_ref(module: &str, name: &str, idx: usize) -> Valu
     obj.properties
         .insert("name".into(), Value::String(Arc::from(name)));
     obj.kind = ObjectKind::HostFunction(idx);
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 /// Create a HostFunction Value with bound args (Function.prototype.bind
@@ -238,10 +238,10 @@ pub(crate) fn bound_host_fn_ref(
             .insert("name".into(), Value::String(Arc::from(name)));
         obj.properties.insert(
             "__bound_args".into(),
-            Value::Object(Arc::new(Mutex::new(Object::new_array(bound_args)))),
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(bound_args))),
         );
         obj.kind = ObjectKind::HostFunction(idx);
-        Value::Object(Arc::new(Mutex::new(obj)))
+        Value::Object(vybe_bytecode::heap::alloc(obj))
     } else {
         Value::Null
     }

@@ -35,11 +35,11 @@ fn new_weakmap() -> Value {
     obj.properties.insert(WEAKMAP_TAG.into(), Value::I32(1));
     obj.properties.insert(
         WM_KEYS_PROP.into(),
-        Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new())))),
+        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new()))),
     );
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("WeakMap")));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn new_weakset() -> Value {
@@ -47,7 +47,7 @@ fn new_weakset() -> Value {
     obj.properties.insert(WEAKSET_TAG.into(), Value::I32(1));
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("WeakSet")));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn is_weakmap(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {

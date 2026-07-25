@@ -7,7 +7,7 @@
 //! are monotonically assigned counters (no true async propagation).
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, Value};
 
@@ -56,7 +56,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "node:async_hooks",
         "executionAsyncResource",
-        Box::new(|_ctx, _args| Value::Object(Arc::new(Mutex::new(Object::new())))),
+        Box::new(|_ctx, _args| Value::Object(vybe_bytecode::heap::alloc(Object::new()))),
     );
 
     // ── AsyncLocalStorage ─────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ pub fn register(vm: &mut VM) {
             let mut o = Object::new();
             o.properties.insert("__store".into(), Value::Undefined);
             o.properties.insert("__disabled".into(), Value::Bool(false));
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 
@@ -137,7 +137,7 @@ pub fn register(vm: &mut VM) {
                 .insert("__asyncId".into(), Value::I64(async_id as i64));
             o.properties
                 .insert("__triggerAsyncId".into(), Value::I32(0));
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 
@@ -185,7 +185,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, _args| {
             let mut o = Object::new();
             o.properties.insert("__enabled".into(), Value::Bool(false));
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 
@@ -197,7 +197,7 @@ pub fn register(vm: &mut VM) {
             set_prop(&hook, "__enabled", Value::Bool(true));
             match &hook {
                 Value::Object(_) => hook,
-                _ => Value::Object(Arc::new(Mutex::new(Object::new()))),
+                _ => Value::Object(vybe_bytecode::heap::alloc(Object::new())),
             }
         }),
     );
@@ -210,7 +210,7 @@ pub fn register(vm: &mut VM) {
             set_prop(&hook, "__enabled", Value::Bool(false));
             match &hook {
                 Value::Object(_) => hook,
-                _ => Value::Object(Arc::new(Mutex::new(Object::new()))),
+                _ => Value::Object(vybe_bytecode::heap::alloc(Object::new())),
             }
         }),
     );
@@ -270,7 +270,7 @@ pub fn register(vm: &mut VM) {
             ] {
                 o.properties.insert(name.into(), Value::I32(id));
             }
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 }

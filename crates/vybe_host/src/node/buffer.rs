@@ -4,7 +4,7 @@
 //!
 //! Buffers are represented as Object with ObjectKind::Array of I32 byte values (0-255).
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 
@@ -30,7 +30,7 @@ fn bytes_from_value(v: &Value) -> Vec<u8> {
 
 fn bytes_to_buf(bytes: Vec<u8>) -> Value {
     let elems: Vec<Value> = bytes.iter().map(|b| Value::I32(*b as i32)).collect();
-    Value::Object(Arc::new(Mutex::new(Object::new_array(elems))))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elems)))
 }
 
 fn hex_decode(s: &str) -> Vec<u8> {

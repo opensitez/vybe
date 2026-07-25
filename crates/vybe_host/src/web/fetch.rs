@@ -16,7 +16,7 @@
 //! delegate to wasi:http or `reqwest` once enabled.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::value::Object;
 use vybe_bytecode::{HostContext, VM, Value};
 
@@ -27,7 +27,7 @@ fn make_promise_fulfilled(value: Value) -> Value {
     obj.properties
         .insert("__state".into(), Value::String(Arc::from("fulfilled")));
     obj.properties.insert("__value".into(), value);
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn make_promise_rejected(reason: Value) -> Value {
@@ -37,7 +37,7 @@ fn make_promise_rejected(reason: Value) -> Value {
     obj.properties
         .insert("__state".into(), Value::String(Arc::from("rejected")));
     obj.properties.insert("__value".into(), reason);
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn headers_obj(map: HashMap<String, String>) -> Value {
@@ -47,17 +47,17 @@ fn headers_obj(map: HashMap<String, String>) -> Value {
     let entries: Vec<Value> = map
         .iter()
         .map(|(k, v)| {
-            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
                 Value::String(Arc::from(k.as_str())),
                 Value::String(Arc::from(v.as_str())),
-            ]))))
+            ])))
         })
         .collect();
     obj.properties.insert(
         "__entries".into(),
-        Value::Object(Arc::new(Mutex::new(Object::new_array(entries)))),
+        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(entries))),
     );
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn make_response(
@@ -79,7 +79,7 @@ fn make_response(
         .insert("headers".into(), headers_obj(headers));
     obj.properties
         .insert("__body".into(), Value::String(Arc::from(body.as_str())));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 pub fn register(vm: &mut VM) {
@@ -142,7 +142,7 @@ pub fn register(vm: &mut VM) {
                 .insert("url".into(), Value::String(Arc::from(url.as_str())));
             obj.properties
                 .insert("method".into(), Value::String(Arc::from(method.as_str())));
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 
@@ -168,7 +168,7 @@ pub fn register(vm: &mut VM) {
             } else {
                 (200, "OK".into())
             };
-            Value::Object(Arc::new(Mutex::new({
+            Value::Object(vybe_bytecode::heap::alloc({
                 let mut obj = Object::new();
                 obj.properties
                     .insert("__type".into(), Value::String(Arc::from("Response")));
@@ -185,7 +185,7 @@ pub fn register(vm: &mut VM) {
                 obj.properties
                     .insert("headers".into(), headers_obj(HashMap::new()));
                 obj
-            })))
+            }))
         }),
     );
 

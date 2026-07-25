@@ -3,7 +3,7 @@
 //! Reference: <https://nodejs.org/api/querystring.html>.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 
@@ -87,11 +87,11 @@ fn qs_parse(input: &str, sep: char, eq: char) -> Value {
             let arr: Vec<Value> = vals.into_iter().map(|v| s(&v)).collect();
             obj.properties.insert(
                 k,
-                Value::Object(Arc::new(Mutex::new(Object::new_array(arr)))),
+                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(arr))),
             );
         }
     }
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn qs_stringify(obj: &Value, sep: char, eq: char) -> String {

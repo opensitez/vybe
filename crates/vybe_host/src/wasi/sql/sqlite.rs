@@ -49,14 +49,14 @@ fn row_to_obj(row: &rusqlite::Row, col_names: &[String]) -> Value {
     }
     obj.properties.insert(
         "__col_names".into(),
-        Value::Object(Arc::new(Mutex::new(Object::new_array(
+        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(
             col_names
                 .iter()
                 .map(|name| Value::String(Arc::from(name.as_str())))
                 .collect(),
-        )))),
+        ))),
     );
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 impl SqlDriver for SqliteDriver {

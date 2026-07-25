@@ -20,7 +20,7 @@ static BOOLEAN_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 pub(crate) fn shared_boolean_prototype() -> Value {
     Value::Object(
         BOOLEAN_PROTOTYPE
-            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .get_or_init(|| vybe_bytecode::heap::alloc(Object::new()))
             .clone(),
     )
 }
@@ -33,7 +33,7 @@ pub(crate) fn boxed_boolean(value: bool) -> Value {
         .insert("__primitive".into(), Value::Bool(value));
     obj.properties
         .insert("__proto__".into(), shared_boolean_prototype());
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 pub fn register(vm: &mut VM) {

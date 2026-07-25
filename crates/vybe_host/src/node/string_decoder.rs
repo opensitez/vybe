@@ -6,7 +6,7 @@
 //! across `write()` calls. State is stored as Object properties.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 
@@ -58,12 +58,12 @@ fn set_buf_bytes(decoder: &Value, bytes: Vec<u8>) {
     if let Value::Object(obj) = decoder {
         let mut obj = obj.lock().unwrap();
         let elems: Vec<Value> = bytes.into_iter().map(|b| Value::I32(b as i32)).collect();
-        let buf = Value::Object(Arc::new(Mutex::new(Object {
+        let buf = Value::Object(vybe_bytecode::heap::alloc(Object {
             kind: ObjectKind::Array(elems),
             properties: HashMap::new(),
             type_id: 0,
             fields: Vec::new(),
-        })));
+        }));
         obj.properties.insert("__buf".into(), buf);
     }
 }
@@ -208,14 +208,14 @@ pub fn register(vm: &mut VM) {
             let empty: Vec<Value> = vec![];
             obj.properties.insert(
                 "__buf".into(),
-                Value::Object(Arc::new(Mutex::new(Object {
+                Value::Object(vybe_bytecode::heap::alloc(Object {
                     kind: ObjectKind::Array(empty),
                     properties: HashMap::new(),
                     type_id: 0,
                     fields: Vec::new(),
-                }))),
+                })),
             );
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 

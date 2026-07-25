@@ -3,7 +3,6 @@
 //! Reference: <https://nodejs.org/api/zlib.html>.
 
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 
@@ -30,12 +29,12 @@ fn bytes_from_value(v: &Value) -> Vec<u8> {
 
 fn buf_from_bytes(bytes: Vec<u8>) -> Value {
     let elems = bytes.into_iter().map(|b| Value::I32(b as i32)).collect();
-    Value::Object(Arc::new(Mutex::new(Object {
+    Value::Object(vybe_bytecode::heap::alloc(Object {
         kind: ObjectKind::Array(elems),
         properties: std::collections::HashMap::new(),
         type_id: 0,
         fields: Vec::new(),
-    })))
+    }))
 }
 
 fn compression_level(opts: Option<&Value>) -> flate2::Compression {
@@ -129,7 +128,7 @@ fn unzip_sync(input: &[u8]) -> Vec<u8> {
 }
 
 fn stub_stream() -> Value {
-    Value::Object(Arc::new(Mutex::new(Object::new())))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new()))
 }
 
 pub fn register(vm: &mut VM) {
@@ -276,7 +275,7 @@ pub fn register(vm: &mut VM) {
                 .insert("BROTLI_PARAM_QUALITY".into(), Value::I32(1));
             o.properties
                 .insert("BROTLI_PARAM_LGWIN".into(), Value::I32(2));
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 

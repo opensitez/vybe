@@ -76,7 +76,7 @@ impl VM {
         let table_idx = self.func_table.len();
         obj.properties
             .insert("__table_idx".into(), Value::F64(table_idx as f64));
-        let func_val = Value::Object(Arc::new(Mutex::new(obj)));
+        let func_val = Value::Object(crate::heap::alloc(obj));
         self.func_table.push(func_val.clone());
         self.funcref_cache.insert(func_idx, func_val.clone());
         func_val
@@ -104,7 +104,7 @@ fn make_operation_cancelled_error() -> Value {
         "message".into(),
         Value::String(Arc::from("The operation was canceled.")),
     );
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(crate::heap::alloc(obj))
 }
 
 // ── Block table ──────────────────────────────────────────────────────────────
@@ -2377,7 +2377,7 @@ impl VM {
                     let table_idx = self.func_table.len();
                     obj.properties
                         .insert("__table_idx".into(), Value::F64(table_idx as f64));
-                    let func_val = Value::Object(Arc::new(Mutex::new(obj)));
+                    let func_val = Value::Object(crate::heap::alloc(obj));
                     self.func_table.push(func_val.clone());
                     // Intern the canonical capture-free funcref for reuse.
                     if uv_count == 0 {
@@ -2458,7 +2458,7 @@ impl VM {
                             };
                             let mut obj = crate::value::Object::new();
                             obj.kind = crate::value::ObjectKind::Function(func);
-                            let func_val = Value::Object(Arc::new(Mutex::new(obj)));
+                            let func_val = Value::Object(crate::heap::alloc(obj));
                             let args_start = self.stack.len() - argc;
                             self.stack.insert(args_start, func_val);
                             self.call_value(argc)?;
@@ -2512,7 +2512,7 @@ impl VM {
                         obj.set(key, val);
                     }
                     self.stack.truncate(start);
-                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
+                    self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
                 // `array.new_fixed $t N` — pops N values off the stack
                 // and allocates an N-element array initialised from them.
@@ -2522,9 +2522,9 @@ impl VM {
                     let start = self.stack.len() - count;
                     let elems: Vec<Value> = self.stack[start..].to_vec();
                     self.stack.truncate(start);
-                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(
+                    self.push(Value::Object(crate::heap::alloc(Object::new_array(
                         elems,
-                    )))))?;
+                    ))))?;
                 }
                 // `array.new $t` — [value, length] -> [array of length,
                 // every lane = value].
@@ -2544,7 +2544,7 @@ impl VM {
                     let elems = vec![value; len];
                     let mut obj = Object::new_array(elems);
                     obj.type_id = self.resolve_gc_array_rtt(typeidx);
-                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
+                    self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
                 // `array.new_default $t` — [length] -> [array of length,
                 // zero-initialised]. We use `Value::Null` as the default
@@ -2559,7 +2559,7 @@ impl VM {
                     let elems = vec![Value::Null; len];
                     let mut obj = Object::new_array(elems);
                     obj.type_id = self.resolve_gc_array_rtt(typeidx);
-                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
+                    self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
                 // `array.new_data $t $d` / `array.new_elem $t $e` — allocate
                 // a new array initialised from a data or element segment.
@@ -2588,9 +2588,9 @@ impl VM {
                         .iter()
                         .map(|b| Value::I32(*b as i32))
                         .collect();
-                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(
+                    self.push(Value::Object(crate::heap::alloc(Object::new_array(
                         elems,
-                    )))))?;
+                    ))))?;
                 }
                 _ if op == Op::ARRAY_NEW_ELEM => {
                     let _typeidx = self.read_u16();
@@ -2608,9 +2608,9 @@ impl VM {
                     if end > elems.len() {
                         return Err(VMError::new("array.new_elem: out of bounds"));
                     }
-                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(
+                    self.push(Value::Object(crate::heap::alloc(Object::new_array(
                         elems[offset..end].to_vec(),
-                    )))))?;
+                    ))))?;
                 }
                 // `array.get_s $t` / `array.get_u $t` — only applicable to
                 // arrays of packed element types (i8/i16). Our array model
@@ -2798,7 +2798,7 @@ impl VM {
                 // produce an all-null struct. Matches our externref model.
                 _ if op == Op::STRUCT_NEW_DEFAULT => {
                     let _typeidx = self.read_u16();
-                    self.push(Value::Object(Arc::new(Mutex::new(Object::new()))))?;
+                    self.push(Value::Object(crate::heap::alloc(Object::new())))?;
                 }
                 // ── Custom Descriptors proposal ───────────────────────────
                 // See `proposals/custom-descriptors/`.
@@ -2829,14 +2829,14 @@ impl VM {
                     // prefer STRUCT_NEW.
                     let mut obj = Object::new();
                     obj.properties.insert("__descriptor".into(), descriptor);
-                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
+                    self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
                 _ if op == Op::STRUCT_NEW_DEFAULT_DESC => {
                     let _typeidx = self.read_u16();
                     let descriptor = self.pop();
                     let mut obj = Object::new();
                     obj.properties.insert("__descriptor".into(), descriptor);
-                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
+                    self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
                 _ if op == Op::REF_GET_DESC => {
                     let _typeidx = self.read_u16();
@@ -4370,9 +4370,9 @@ impl VM {
                 _ if op == Op::ARRAY_NEW_DEFAULT => {
                     let len = self.pop().as_i32().max(0) as usize;
                     let elems = vec![Value::Null; len];
-                    self.push(Value::Object(Arc::new(Mutex::new(Object::new_array(
+                    self.push(Value::Object(crate::heap::alloc(Object::new_array(
                         elems,
-                    )))))?;
+                    ))))?;
                 }
                 _ if op == Op::ARRAY_FILL => {
                     // Spec `array.fill $t`: stack `[arrayref, index, value, count]`,
@@ -4487,7 +4487,7 @@ impl VM {
                         &self.globals,
                         entry_async,
                     );
-                    self.push(Value::Object(Arc::new(Mutex::new(obj))))?;
+                    self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
                 _ if op == Op::SUSPEND => {
                     let tag = self.read_u16();
@@ -4785,9 +4785,9 @@ impl VM {
                             };
                             new_obj.properties.insert(
                                 "__bound_args".into(),
-                                Value::Object(Arc::new(Mutex::new(bound))),
+                                Value::Object(crate::heap::alloc(bound)),
                             );
-                            Value::Object(Arc::new(Mutex::new(new_obj)))
+                            Value::Object(crate::heap::alloc(new_obj))
                         } else {
                             return Err(VMError::new("cont.bind: not a continuation"));
                         }
@@ -5023,7 +5023,7 @@ impl VM {
                         obj.properties.insert("result".into(), Value::Null);
                         obj.properties
                             .insert("status".into(), Value::String(Arc::from("Running")));
-                        let task_obj = Arc::new(Mutex::new(obj));
+                        let task_obj = crate::heap::alloc(obj);
                         let task_for_child = task_obj.clone();
 
                         // Share directly — Value is Send+Sync now
@@ -7574,7 +7574,7 @@ impl VM {
                                 let nonenum_arr = Object::new_array(nonenum_fields);
                                 obj_mut.properties.insert(
                                     "__nonenum".to_string(),
-                                    Value::Object(Arc::new(Mutex::new(nonenum_arr))),
+                                    Value::Object(crate::heap::alloc(nonenum_arr)),
                                 );
                             }
                         }

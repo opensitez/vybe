@@ -2,7 +2,6 @@
 //!
 //! Reference: <https://nodejs.org/api/stream.html>.
 
-use std::sync::{Arc, Mutex};
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 
@@ -47,7 +46,7 @@ fn make_readable() -> Value {
     ] {
         o.properties.insert(m.into(), Value::Undefined);
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn make_writable() -> Value {
@@ -71,7 +70,7 @@ fn make_writable() -> Value {
     ] {
         o.properties.insert(m.into(), Value::Undefined);
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn make_duplex() -> Value {
@@ -106,7 +105,7 @@ fn make_duplex() -> Value {
     ] {
         o.properties.insert(m.into(), Value::Undefined);
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn is_readable_val(v: &Value) -> bool {
@@ -164,7 +163,7 @@ pub fn register(vm: &mut VM) {
             for m in ["pipe", "destroy", "pause", "resume"] {
                 o.properties.insert(m.into(), Value::Undefined);
             }
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 
@@ -209,7 +208,7 @@ pub fn register(vm: &mut VM) {
             for m in ["pipe", "read", "push", "destroy", "pause", "resume"] {
                 s.properties.insert(m.into(), Value::Undefined);
             }
-            Value::Object(Arc::new(Mutex::new(s)))
+            Value::Object(vybe_bytecode::heap::alloc(s))
         }),
     );
 
@@ -231,7 +230,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "node:stream",
         "compose",
-        Box::new(|_ctx, _args| Value::Object(Arc::new(Mutex::new(Object::new())))),
+        Box::new(|_ctx, _args| Value::Object(vybe_bytecode::heap::alloc(Object::new()))),
     );
 }
 

@@ -43,7 +43,7 @@ fn make_promise_fulfilled(value: Value) -> Value {
     obj.properties
         .insert("__state".into(), Value::String(Arc::from("fulfilled")));
     obj.properties.insert("__value".into(), value);
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 pub fn register(vm: &mut VM) {
@@ -107,7 +107,7 @@ pub fn register(vm: &mut VM) {
             };
             let mut buf_obj = Object::new();
             buf_obj.kind = ObjectKind::ArrayBuffer(make_buffer_state(digest_bytes));
-            let buffer = Value::Object(Arc::new(Mutex::new(buf_obj)));
+            let buffer = Value::Object(vybe_bytecode::heap::alloc(buf_obj));
             make_promise_fulfilled(buffer)
         }),
     );

@@ -23,7 +23,7 @@ static NUMBER_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 pub(crate) fn shared_number_prototype() -> Value {
     Value::Object(
         NUMBER_PROTOTYPE
-            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .get_or_init(|| vybe_bytecode::heap::alloc(Object::new()))
             .clone(),
     )
 }
@@ -35,7 +35,7 @@ pub(crate) fn boxed_number(value: Value) -> Value {
     obj.properties.insert("__primitive".into(), value);
     obj.properties
         .insert("__proto__".into(), shared_number_prototype());
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn f_arg(args: &[Value], idx: usize) -> Option<f64> {

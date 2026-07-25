@@ -3,7 +3,7 @@
 //! Reference: <https://nodejs.org/api/https.html>.
 //! Surface-level stubs — TLS not actually performed.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, Value};
 
@@ -16,7 +16,7 @@ fn stub() -> Value {
 }
 
 fn make_empty_obj() -> Value {
-    Value::Object(Arc::new(Mutex::new(Object::new())))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new()))
 }
 
 fn make_client_request(method: &str, host: &str, path: &str) -> Value {
@@ -43,7 +43,7 @@ fn make_client_request(method: &str, host: &str, path: &str) -> Value {
     ] {
         o.properties.insert(m.into(), stub());
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn make_server() -> Value {
@@ -67,7 +67,7 @@ fn make_server() -> Value {
     ] {
         o.properties.insert(m.into(), stub());
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn make_agent(opts: Option<&Value>) -> Value {
@@ -109,7 +109,7 @@ fn make_agent(opts: Option<&Value>) -> Value {
     ] {
         o.properties.insert(m.into(), stub());
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn parse_url(url: &str) -> (String, String) {

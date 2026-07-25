@@ -6,7 +6,6 @@
 //! a fresh plain object via `ecma:globalThis.get` so user code can
 //! detect its existence and bind properties on it.
 
-use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::Object;
 use vybe_bytecode::{HostContext, VM, Value};
 
@@ -17,7 +16,7 @@ static GLOBAL_THIS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
 
 fn global_this() -> Value {
     GLOBAL_THIS
-        .get_or_init(|| Value::Object(Arc::new(Mutex::new(Object::new()))))
+        .get_or_init(|| Value::Object(vybe_bytecode::heap::alloc(Object::new())))
         .clone()
 }
 

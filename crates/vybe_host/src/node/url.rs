@@ -2,7 +2,7 @@
 //!
 //! Reference: <https://nodejs.org/api/url.html>.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use url::Url;
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
@@ -16,12 +16,12 @@ fn empty_array() -> Value {
 }
 
 fn arr_val(elems: Vec<Value>) -> Value {
-    Value::Object(Arc::new(Mutex::new(Object {
+    Value::Object(vybe_bytecode::heap::alloc(Object {
         kind: ObjectKind::Array(elems),
         properties: std::collections::HashMap::new(),
         type_id: 0,
         fields: Vec::new(),
-    })))
+    }))
 }
 
 fn parse_url(input: &str, base: Option<&str>) -> Option<Url> {
@@ -83,7 +83,7 @@ fn build_url_obj(url: &Url) -> Value {
     // searchParams placeholder
     let sp = build_search_params(url.query().unwrap_or(""));
     o.properties.insert("searchParams".into(), sp);
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 /// Parse a query string into parallel __keys/__vals arrays stored on an Object.
@@ -107,7 +107,7 @@ fn build_search_params(query: &str) -> Value {
     let mut o = Object::new();
     o.properties.insert("__keys".into(), arr_val(keys));
     o.properties.insert("__vals".into(), arr_val(vals));
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn decode_param(s: &str) -> String {
@@ -598,7 +598,7 @@ pub fn register(vm: &mut VM) {
                     o.properties.insert("href".into(), s(&file_url));
                     o.properties.insert("protocol".into(), s("file:"));
                     o.properties.insert("pathname".into(), s(&path));
-                    Value::Object(Arc::new(Mutex::new(o)))
+                    Value::Object(vybe_bytecode::heap::alloc(o))
                 }
             }
         }),

@@ -38,7 +38,7 @@ pub(crate) fn shared_object_prototype() -> Value {
     let proto = OBJECT_PROTOTYPE.get_or_init(|| {
         let mut obj = Object::new();
         obj.properties.insert(PROTO_KEY.into(), Value::Null);
-        Arc::new(Mutex::new(obj))
+        vybe_bytecode::heap::alloc(obj)
     });
     Value::Object(proto.clone())
 }
@@ -47,7 +47,7 @@ pub(crate) fn new_ordinary_object_with_proto() -> Value {
     let mut obj = Object::new();
     obj.properties
         .insert(PROTO_KEY.into(), shared_object_prototype());
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 /// Resolve a value's `[[Prototype]]` — ECMA-262 OrdinaryGetPrototypeOf and
@@ -126,7 +126,7 @@ fn to_object_for_object_static(
                 .insert("__primitive".into(), Value::Symbol(desc.clone()));
             obj.properties
                 .insert(PROTO_KEY.into(), shared_object_prototype());
-            Some(Value::Object(Arc::new(Mutex::new(obj))))
+            Some(Value::Object(vybe_bytecode::heap::alloc(obj)))
         }
         Value::BigInt(value) => {
             let mut obj = Object::new();
@@ -136,7 +136,7 @@ fn to_object_for_object_static(
                 .insert("__primitive".into(), Value::BigInt(value.clone()));
             obj.properties
                 .insert(PROTO_KEY.into(), shared_object_prototype());
-            Some(Value::Object(Arc::new(Mutex::new(obj))))
+            Some(Value::Object(vybe_bytecode::heap::alloc(obj)))
         }
         _ => Some(new_ordinary_object_with_proto()),
     }
@@ -490,7 +490,7 @@ pub(crate) fn track_key(obj: &Arc<Mutex<Object>>, key: &str) {
     let keys_arc = match o.properties.get("__keys") {
         Some(Value::Object(arr)) => arr.clone(),
         _ => {
-            let arc = Arc::new(Mutex::new(Object::new_array(Vec::new())));
+            let arc = vybe_bytecode::heap::alloc(Object::new_array(Vec::new()));
             o.properties
                 .insert("__keys".into(), Value::Object(arc.clone()));
             arc
@@ -511,7 +511,7 @@ pub(crate) fn track_nonenum(obj: &Arc<Mutex<Object>>, key: &str) {
     let arr = match o.properties.get("__nonenum") {
         Some(Value::Object(a)) => a.clone(),
         _ => {
-            let a = Arc::new(Mutex::new(Object::new_array(Vec::new())));
+            let a = vybe_bytecode::heap::alloc(Object::new_array(Vec::new()));
             o.properties
                 .insert("__nonenum".into(), Value::Object(a.clone()));
             a
@@ -535,7 +535,7 @@ pub(crate) fn track_nonconfig(obj: &Arc<Mutex<Object>>, key: &str) {
     let arr = match o.properties.get("__nonconfig") {
         Some(Value::Object(a)) => a.clone(),
         _ => {
-            let a = Arc::new(Mutex::new(Object::new_array(Vec::new())));
+            let a = vybe_bytecode::heap::alloc(Object::new_array(Vec::new()));
             o.properties
                 .insert("__nonconfig".into(), Value::Object(a.clone()));
             a
@@ -562,7 +562,7 @@ fn track_sym_key(obj: &Arc<Mutex<Object>>, key: Value) {
     let arr = match o.properties.get("__sym_keys") {
         Some(Value::Object(a)) => a.clone(),
         _ => {
-            let a = Arc::new(Mutex::new(Object::new_array(Vec::new())));
+            let a = vybe_bytecode::heap::alloc(Object::new_array(Vec::new()));
             o.properties
                 .insert("__sym_keys".into(), Value::Object(a.clone()));
             a
@@ -752,9 +752,9 @@ pub(crate) fn collect_protocol_iterable_result(
         out.push(value);
     }
 
-    Some(Ok(Value::Object(Arc::new(Mutex::new(Object::new_array(
+    Some(Ok(Value::Object(vybe_bytecode::heap::alloc(Object::new_array(
         out,
-    ))))))
+    )))))
 }
 
 fn await_or_reject(value: Value) -> Result<Value, Value> {
@@ -1031,7 +1031,7 @@ pub(crate) fn install_noop_setter(o: &mut Object, key: &str) {
     }
     let mut noop_obj = Object::new();
     noop_obj.kind = ObjectKind::HostFunction(noop_idx);
-    let noop_val = Value::Object(Arc::new(Mutex::new(noop_obj)));
+    let noop_val = Value::Object(vybe_bytecode::heap::alloc(noop_obj));
     let setter_key = format!("__set_{}", key);
     if !o.properties.contains_key(&setter_key) {
         o.properties.insert(setter_key, noop_val);
@@ -1139,7 +1139,7 @@ pub fn register(vm: &mut VM) {
             f.properties
                 .insert("__vybe_method_receiver".into(), Value::Bool(true));
             p.properties
-                .insert(name.into(), Value::Object(Arc::new(Mutex::new(f))));
+                .insert(name.into(), Value::Object(vybe_bytecode::heap::alloc(f)));
         }
     }
 }
@@ -1173,7 +1173,7 @@ fn register_construction(vm: &mut VM) {
                         .insert("__primitive".into(), Value::Symbol(desc));
                     obj.properties
                         .insert(PROTO_KEY.into(), shared_object_prototype());
-                    Value::Object(Arc::new(Mutex::new(obj)))
+                    Value::Object(vybe_bytecode::heap::alloc(obj))
                 }
                 Value::BigInt(value) => {
                     let mut obj = Object::new();
@@ -1183,7 +1183,7 @@ fn register_construction(vm: &mut VM) {
                         .insert("__primitive".into(), Value::BigInt(value));
                     obj.properties
                         .insert(PROTO_KEY.into(), shared_object_prototype());
-                    Value::Object(Arc::new(Mutex::new(obj)))
+                    Value::Object(vybe_bytecode::heap::alloc(obj))
                 }
                 _ => new_ordinary_object_with_proto(),
             },
@@ -1205,7 +1205,7 @@ fn register_construction(vm: &mut VM) {
             // finds inherited members; also stash the parent under
             // `__proto__` so reflective ops like `getPrototypeOf` work.
             // Internal `__`-prefixed metadata is skipped during copy.
-            let arc = Arc::new(Mutex::new(Object::new()));
+            let arc = vybe_bytecode::heap::alloc(Object::new());
             match args.first() {
                 Some(proto @ Value::Object(_)) => {
                     let mut o = arc.lock().unwrap();
@@ -1436,10 +1436,10 @@ fn register_construction(vm: &mut VM) {
             if !order.is_empty() {
                 obj.properties.insert(
                     "__keys".to_string(),
-                    Value::Object(Arc::new(Mutex::new(Object::new_array(order)))),
+                    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(order))),
                 );
             }
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 
@@ -1916,7 +1916,7 @@ fn register_access(vm: &mut VM) {
                             let holes_arc = match o.properties.get("__holes") {
                                 Some(Value::Object(a)) => a.clone(),
                                 _ => {
-                                    let a = Arc::new(Mutex::new(Object::new_array(Vec::new())));
+                                    let a = vybe_bytecode::heap::alloc(Object::new_array(Vec::new()));
                                     o.properties
                                         .insert("__holes".into(), Value::Object(a.clone()));
                                     a
@@ -2131,18 +2131,18 @@ fn register_enumeration(vm: &mut VM) {
                             .filter(|index| !is_array_hole(&o, *index as i32))
                             .map(|i| Value::String(Arc::from(i.to_string().as_str())))
                             .collect();
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
+                        return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(keys)));
                     }
                     ObjectKind::Map(m) => {
                         let keys: Vec<Value> = m.keys().cloned().collect();
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
+                        return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(keys)));
                     }
                     // Set keys() iterator yields each element (key === value
                     // for Sets per spec); for-of uses values() but keys() is
                     // also reachable for the symmetry used by entries().
                     ObjectKind::Set(s) => {
                         let keys: Vec<Value> = s.iter().cloned().collect();
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
+                        return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(keys)));
                     }
                     _ => {}
                 }
@@ -2150,9 +2150,9 @@ fn register_enumeration(vm: &mut VM) {
                     .into_iter()
                     .map(|k| Value::String(Arc::from(k.as_str())))
                     .collect();
-                return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
+                return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(keys)));
             }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))
         }),
     );
 
@@ -2218,9 +2218,9 @@ fn register_enumeration(vm: &mut VM) {
                         None => break,
                     }
                 }
-                return Value::Object(Arc::new(Mutex::new(Object::new_array(out))));
+                return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(out)));
             }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))
         }),
     );
 
@@ -2248,28 +2248,28 @@ fn register_enumeration(vm: &mut VM) {
                                 }
                             })
                             .collect();
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(values))));
+                        return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(values)));
                     }
                     ObjectKind::Map(m) => {
                         let entries: Vec<Value> = m
                             .iter()
                             .map(|(k, v)| {
                                 let pair = vec![k.clone(), v.clone()];
-                                Value::Object(Arc::new(Mutex::new(Object::new_array(pair))))
+                                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(pair)))
                             })
                             .collect();
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(entries))));
+                        return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(entries)));
                     }
                     ObjectKind::Set(s) => {
                         let vals: Vec<Value> = s.iter().cloned().collect();
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(vals))));
+                        return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vals)));
                     }
                     ObjectKind::TypedArray(ta) => {
                         let len = crate::ecma::typedarray::ta_live_length(ta);
                         let vals: Vec<Value> = (0..len)
                             .map(|i| crate::ecma::typedarray::read_element(ta, i))
                             .collect();
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(vals))));
+                        return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vals)));
                     }
                     _ => {}
                 }
@@ -2300,13 +2300,13 @@ fn register_enumeration(vm: &mut VM) {
                                 .unwrap_or(Value::Undefined),
                         );
                     }
-                    return Value::Object(Arc::new(Mutex::new(Object::new_array(values))));
+                    return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(values)));
                 }
                 let values: Vec<Value> = ordinary_ordered_keys(&o)
                     .into_iter()
                     .filter_map(|k| o.properties.get(&k).cloned())
                     .collect();
-                return Value::Object(Arc::new(Mutex::new(Object::new_array(values))));
+                return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(values)));
             }
             // Strings are iterable per code-point — for-of of a string
             // yields each character. Match here so emit_iter_values can
@@ -2316,9 +2316,9 @@ fn register_enumeration(vm: &mut VM) {
                     .chars()
                     .map(|c| Value::String(Arc::from(c.to_string().as_str())))
                     .collect();
-                return Value::Object(Arc::new(Mutex::new(Object::new_array(chars))));
+                return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(chars)));
             }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))
         }),
     );
 
@@ -2336,18 +2336,18 @@ fn register_enumeration(vm: &mut VM) {
                             .filter(|(index, _)| !is_array_hole(&o, *index as i32))
                             .map(|(_, value)| value.clone())
                             .collect();
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(values))));
+                        return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(values)));
                     }
                     ObjectKind::Map(m) => {
                         let vals: Vec<Value> = m.values().cloned().collect();
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(vals))));
+                        return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vals)));
                     }
                     // Set iteration order = insertion order; values() of a Set
                     // returns its elements (matches ECMA-262 §24.2.3.10 and is
                     // what `for...of s` lowers to via emit_iter_values).
                     ObjectKind::Set(s) => {
                         let vals: Vec<Value> = s.iter().cloned().collect();
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(vals))));
+                        return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vals)));
                     }
                     _ => {}
                 }
@@ -2357,9 +2357,9 @@ fn register_enumeration(vm: &mut VM) {
                     .into_iter()
                     .map(|k| assign_source_get(ctx, &obj, &k))
                     .collect();
-                return Value::Object(Arc::new(Mutex::new(Object::new_array(values))));
+                return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(values)));
             }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))
         }),
     );
 
@@ -2377,20 +2377,20 @@ fn register_enumeration(vm: &mut VM) {
                             .filter(|(index, _)| !is_array_hole(&o, *index as i32))
                             .map(|(i, val)| {
                                 let pair = vec![Value::I32(i as i32), val.clone()];
-                                Value::Object(Arc::new(Mutex::new(Object::new_array(pair))))
+                                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(pair)))
                             })
                             .collect();
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(entries))));
+                        return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(entries)));
                     }
                     ObjectKind::Map(m) => {
                         let entries: Vec<Value> = m
                             .iter()
                             .map(|(k, v)| {
                                 let pair = vec![k.clone(), v.clone()];
-                                Value::Object(Arc::new(Mutex::new(Object::new_array(pair))))
+                                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(pair)))
                             })
                             .collect();
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(entries))));
+                        return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(entries)));
                     }
                     // Set entries() per spec yields [value, value] pairs.
                     ObjectKind::Set(s) => {
@@ -2398,10 +2398,10 @@ fn register_enumeration(vm: &mut VM) {
                             .iter()
                             .map(|v| {
                                 let pair = vec![v.clone(), v.clone()];
-                                Value::Object(Arc::new(Mutex::new(Object::new_array(pair))))
+                                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(pair)))
                             })
                             .collect();
-                        return Value::Object(Arc::new(Mutex::new(Object::new_array(entries))));
+                        return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(entries)));
                     }
                     _ => {}
                 }
@@ -2412,12 +2412,12 @@ fn register_enumeration(vm: &mut VM) {
                     .map(|k| {
                         let v = assign_source_get(ctx, &obj, &k);
                         let pair = vec![Value::String(Arc::from(k.as_str())), v];
-                        Value::Object(Arc::new(Mutex::new(Object::new_array(pair))))
+                        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(pair)))
                     })
                     .collect();
-                return Value::Object(Arc::new(Mutex::new(Object::new_array(entries))));
+                return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(entries)));
             }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))
         }),
     );
 
@@ -2443,9 +2443,9 @@ fn register_enumeration(vm: &mut VM) {
                     .into_iter()
                     .map(|k| Value::String(Arc::from(k.as_str())))
                     .collect();
-                return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
+                return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(keys)));
             }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))
         }),
     );
 
@@ -2475,9 +2475,9 @@ fn register_enumeration(vm: &mut VM) {
                     }
                     _ => Vec::new(),
                 };
-                return Value::Object(Arc::new(Mutex::new(Object::new_array(syms))));
+                return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(syms)));
             }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))
         }),
     );
 
@@ -2648,7 +2648,7 @@ fn register_descriptors(vm: &mut VM) {
                             if noop_idx > 0 {
                                 let mut noop_obj = Object::new();
                                 noop_obj.kind = ObjectKind::HostFunction(noop_idx);
-                                let noop_val = Value::Object(Arc::new(Mutex::new(noop_obj)));
+                                let noop_val = Value::Object(vybe_bytecode::heap::alloc(noop_obj));
                                 let setter_key = format!("__set_{}", key);
                                 if !o.properties.contains_key(&setter_key) {
                                     o.properties.insert(setter_key, noop_val);
@@ -2685,7 +2685,7 @@ fn register_descriptors(vm: &mut VM) {
                             if noop_idx > 0 {
                                 let mut noop_obj = Object::new();
                                 noop_obj.kind = ObjectKind::HostFunction(noop_idx);
-                                let noop_val = Value::Object(Arc::new(Mutex::new(noop_obj)));
+                                let noop_val = Value::Object(vybe_bytecode::heap::alloc(noop_obj));
                                 let setter_key = format!("__set_{}", key);
                                 if !o.properties.contains_key(&setter_key) {
                                     o.properties.insert(setter_key, noop_val);
@@ -2801,7 +2801,7 @@ fn register_descriptors(vm: &mut VM) {
                                 if noop_idx > 0 {
                                     let mut noop_obj = Object::new();
                                     noop_obj.kind = ObjectKind::HostFunction(noop_idx);
-                                    let noop_val = Value::Object(Arc::new(Mutex::new(noop_obj)));
+                                    let noop_val = Value::Object(vybe_bytecode::heap::alloc(noop_obj));
                                     o.properties.insert(format!("__set_{}", k), noop_val);
                                 }
                             }
@@ -2912,7 +2912,7 @@ fn register_descriptors(vm: &mut VM) {
                 ));
                 return Value::Undefined;
             }
-            let result = Arc::new(Mutex::new(Object::new()));
+            let result = vybe_bytecode::heap::alloc(Object::new());
             if let Some(obj) = obj_of(args, 0) {
                 let o = obj.lock().unwrap();
                 let keys = descriptor_own_keys(&o);
@@ -2960,7 +2960,7 @@ fn own_property_descriptor(obj: &Arc<Mutex<Object>>, key: &str) -> Value {
                 .insert("enumerable".into(), Value::Bool(false));
             desc.properties
                 .insert("configurable".into(), Value::Bool(false));
-            return Value::Object(Arc::new(Mutex::new(desc)));
+            return Value::Object(vybe_bytecode::heap::alloc(desc));
         }
         if let Ok(index) = key.parse::<usize>() {
             if index < values.len() && !is_array_hole(&o, index as i32) {
@@ -2972,7 +2972,7 @@ fn own_property_descriptor(obj: &Arc<Mutex<Object>>, key: &str) -> Value {
                     .insert("enumerable".into(), Value::Bool(true));
                 desc.properties
                     .insert("configurable".into(), Value::Bool(true));
-                return Value::Object(Arc::new(Mutex::new(desc)));
+                return Value::Object(vybe_bytecode::heap::alloc(desc));
             }
         }
     }
@@ -2999,7 +2999,7 @@ fn own_property_descriptor(obj: &Arc<Mutex<Object>>, key: &str) -> Value {
                 .insert("enumerable".into(), Value::Bool(!is_nonenum(&o, key)));
             desc.properties
                 .insert("configurable".into(), Value::Bool(!is_nonconfig(&o, key)));
-            return Value::Object(Arc::new(Mutex::new(desc)));
+            return Value::Object(vybe_bytecode::heap::alloc(desc));
         }
     }
     if o.properties.contains_key(&getter_key) || o.properties.contains_key(&setter_key) {
@@ -3022,7 +3022,7 @@ fn own_property_descriptor(obj: &Arc<Mutex<Object>>, key: &str) -> Value {
             .insert("enumerable".into(), Value::Bool(!is_nonenum(&o, key)));
         desc.properties
             .insert("configurable".into(), Value::Bool(!is_nonconfig(&o, key)));
-        return Value::Object(Arc::new(Mutex::new(desc)));
+        return Value::Object(vybe_bytecode::heap::alloc(desc));
     }
     Value::Undefined
 }
@@ -3043,7 +3043,7 @@ fn string_length_descriptor(value: &Value, key: &str) -> Value {
         .insert("enumerable".into(), Value::Bool(false));
     desc.properties
         .insert("configurable".into(), Value::Bool(false));
-    Value::Object(Arc::new(Mutex::new(desc)))
+    Value::Object(vybe_bytecode::heap::alloc(desc))
 }
 
 fn descriptor_own_keys(o: &Object) -> Vec<String> {
@@ -3327,7 +3327,7 @@ fn register_locking(vm: &mut VM) {
                 if noop_idx > 0 {
                     let mut noop_obj = Object::new();
                     noop_obj.kind = ObjectKind::HostFunction(noop_idx);
-                    let noop_val = Value::Object(Arc::new(Mutex::new(noop_obj)));
+                    let noop_val = Value::Object(vybe_bytecode::heap::alloc(noop_obj));
                     for k in &keys {
                         if is_accessor_backing_slot_write(&o, k) {
                             continue;
@@ -3732,7 +3732,7 @@ fn register_prototype_methods(vm: &mut VM) {
             else {
                 return Value::Undefined;
             };
-            let result = Arc::new(Mutex::new(Object::new()));
+            let result = vybe_bytecode::heap::alloc(Object::new());
             {
                 let mut out = result.lock().unwrap();
                 out.properties.insert(PROTO_KEY.into(), Value::Null);
@@ -3763,7 +3763,7 @@ fn register_prototype_methods(vm: &mut VM) {
                 }
                 let mut out = result.lock().unwrap();
                 let group = out.properties.entry(key).or_insert_with(|| {
-                    Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+                    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))
                 });
                 if let Value::Object(arr) = group {
                     let mut group = arr.lock().unwrap();

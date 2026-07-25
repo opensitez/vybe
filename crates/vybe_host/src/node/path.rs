@@ -7,7 +7,7 @@
 //! on Windows.
 
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{VM, Value};
 
@@ -239,7 +239,7 @@ fn parse(path: &str) -> Value {
     o.properties.insert("base".into(), s_val(&base));
     o.properties.insert("ext".into(), s_val(&ext));
     o.properties.insert("name".into(), s_val(&name));
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 /// Node `format(pathObject)` — opposite of parse.
@@ -404,7 +404,7 @@ pub fn register(vm: &mut VM) {
             let mut o = Object::new();
             o.properties.insert("sep".into(), s_val("/"));
             o.properties.insert("delimiter".into(), s_val(":"));
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 
@@ -415,7 +415,7 @@ pub fn register(vm: &mut VM) {
             let mut o = Object::new();
             o.properties.insert("sep".into(), s_val("\\"));
             o.properties.insert("delimiter".into(), s_val(";"));
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 

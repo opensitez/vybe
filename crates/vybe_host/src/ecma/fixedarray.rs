@@ -52,7 +52,7 @@ pub fn register(vm: &mut VM) {
                 .unwrap_or(0);
             let mut obj = Object::new_array(vec![Value::Null; n]);
             obj.properties.insert(FROZEN_MARK.into(), Value::I32(1));
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 
@@ -74,7 +74,7 @@ pub fn register(vm: &mut VM) {
             };
             let mut obj = Object::new_array(elements);
             obj.properties.insert(FROZEN_MARK.into(), Value::I32(1));
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 
@@ -95,7 +95,7 @@ pub fn register(vm: &mut VM) {
                 _ => Vec::new(),
             };
             // No FROZEN_MARK — growable.
-            Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elements)))
         }),
     );
 

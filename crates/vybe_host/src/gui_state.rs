@@ -91,6 +91,15 @@ impl GuiState {
         }
     }
 
+    /// VM hot-reset (bucket D): drop all script-created GUI state — controls,
+    /// event handlers, the property store, the form object, canvases — back to
+    /// a pristine post-boot form. The runner calls this on its shared
+    /// `Arc<Mutex<GuiState>>` as part of `reset_to`, so a reused VM never leaks
+    /// the previous run's window/controls. See `vmhotresetplan.md` bucket D.
+    pub fn reset(&mut self) {
+        *self = GuiState::new();
+    }
+
     /// Resolve a control name to the canonical spelling stored by the live form.
     ///
     /// Exact match wins. If not found, we do a case-insensitive match so VB-style
@@ -478,6 +487,17 @@ impl GuiState {
                         .send_command(&name, &WidgetCommand::SetSelectedIndex(i));
                 }
             }
+            // Item-list population for combobox/listbox/tabcontrol/datagrid —
+            // routes to the AddItem/ClearItems commands the widgets already
+            // implement. The Flutter adapter clears then adds each item's
+            // caption when it realizes a DropdownButton/ListView/TabBar.
+            "clearitems" => {
+                self.form.send_command(&name, &WidgetCommand::ClearItems);
+            }
+            "additem" => {
+                self.form
+                    .send_command(&name, &WidgetCommand::AddItem(value.to_string()));
+            }
             other => {
                 self.form.send_command(
                     &name,
@@ -773,6 +793,42 @@ mod adapter_tests {
         assert!(
             (slider_actual(&mut gui, "pb1") - 0.6).abs() < 0.001,
             "LinearProgressIndicator(value:0.6) must fill to 0.6"
+        );
+    }
+
+    /// TextField, control side: forwarded text lands on the real text box.
+    /// (The `controller.text` → `text` extraction is Dart-side in the realizer,
+    /// verified end-to-end via the debugger on the gallery.)
+    #[test]
+    fn textfield_text_applies_to_control() {
+        let mut gui = GuiState::new();
+        gui.stage_control("textbox", "tf1", "", 200, 24, "", true);
+        gui.set_property("tf1", "text", "hello");
+        match gui.form.send_command("tf1", &WidgetCommand::GetText) {
+            CommandValue::Text(s) => assert_eq!(s, "hello"),
+            other => panic!("TextField GetText returned {other:?}"),
+        }
+    }
+
+    /// Radio, control side: the adapter reflects `value == groupValue` as a
+    /// programmatic `checked` — the radio shows selected and does NOT queue a
+    /// spurious `onChanged` (only a user click emits `RadioSelected`).
+    #[test]
+    fn radio_programmatic_select_is_silent() {
+        let mut gui = GuiState::new();
+        gui.stage_control("radiobutton", "rb1", "", 20, 20, "", true);
+        gui.set_property("rb1", "checked", "true");
+        assert!(
+            matches!(
+                gui.form.send_command("rb1", &WidgetCommand::GetValue),
+                CommandValue::Bool(true)
+            ),
+            "value==groupValue must select the radio"
+        );
+        let events = gui.form.drain_events();
+        assert!(
+            events.is_empty(),
+            "programmatic radio select must not emit onChanged; got {events:?}"
         );
     }
 }

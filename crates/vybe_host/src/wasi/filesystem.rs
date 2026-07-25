@@ -117,7 +117,7 @@ fn make_resource(kind: &str, id: u32) -> Value {
         .insert("__wasi_kind".into(), Value::String(Arc::from(kind)));
     o.properties
         .insert("__wasi_id".into(), Value::F64(id as f64));
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 pub(super) fn resource_id(value: &Value, expected_kind: &str) -> Option<u32> {
@@ -143,7 +143,7 @@ pub(super) fn err(code: &str) -> Value {
     let mut o = Object::new();
     o.properties
         .insert("__wasi_error".into(), Value::String(Arc::from(code)));
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 pub(super) fn map_io_error(e: &std::io::Error) -> &'static str {
@@ -228,7 +228,7 @@ fn build_stat(meta: &std::fs::Metadata) -> Value {
             Value::F64(ms_since_epoch(t)),
         );
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 // ── path resolution ───────────────────────────────────────────────
@@ -343,8 +343,8 @@ fn register_preopens(vm: &mut VM) {
                 make_resource(KIND_DESCRIPTOR, id),
                 Value::String(Arc::from(".")),
             ];
-            let pair = Value::Object(Arc::new(Mutex::new(Object::new_array(pair_elements))));
-            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![pair]))))
+            let pair = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(pair_elements)));
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![pair])))
         }),
     );
 }
@@ -546,7 +546,7 @@ fn register_types(vm: &mut VM) {
                         .insert("type".into(), Value::String(Arc::from(entry_type)));
                     o.properties
                         .insert("name".into(), Value::String(Arc::from(name.as_str())));
-                    Value::Object(Arc::new(Mutex::new(o)))
+                    Value::Object(vybe_bytecode::heap::alloc(o))
                 }
             }
         }),
@@ -858,7 +858,7 @@ fn register_types(vm: &mut VM) {
             flags
                 .properties
                 .insert("mutate-directory".into(), Value::Bool(false));
-            Value::Object(Arc::new(Mutex::new(flags)))
+            Value::Object(vybe_bytecode::heap::alloc(flags))
         }),
     );
 
@@ -959,9 +959,9 @@ fn register_types(vm: &mut VM) {
                     buf.truncate(n);
                     let eof = n == 0 || n < cap;
                     let bytes: Vec<Value> = buf.into_iter().map(|b| Value::I32(b as i32)).collect();
-                    let bytes_val = Value::Object(Arc::new(Mutex::new(Object::new_array(bytes))));
+                    let bytes_val = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(bytes)));
                     let tuple = Object::new_array(vec![bytes_val, Value::Bool(eof)]);
-                    Value::Object(Arc::new(Mutex::new(tuple)))
+                    Value::Object(vybe_bytecode::heap::alloc(tuple))
                 }
                 Err(e) => err(map_io_error(&e)),
             }
@@ -1179,7 +1179,7 @@ fn register_types(vm: &mut VM) {
                         .insert("lower".into(), Value::F64((hash & 0xffff_ffff) as f64));
                     o.properties
                         .insert("upper".into(), Value::F64((hash >> 32) as f64));
-                    Value::Object(Arc::new(Mutex::new(o)))
+                    Value::Object(vybe_bytecode::heap::alloc(o))
                 }
                 Err(e) => err(map_io_error(&e)),
             }
@@ -1210,7 +1210,7 @@ fn register_types(vm: &mut VM) {
                         .insert("lower".into(), Value::F64((hash & 0xffff_ffff) as f64));
                     o.properties
                         .insert("upper".into(), Value::F64((hash >> 32) as f64));
-                    Value::Object(Arc::new(Mutex::new(o)))
+                    Value::Object(vybe_bytecode::heap::alloc(o))
                 }
                 Err(e) => err(map_io_error(&e)),
             }
@@ -1273,7 +1273,7 @@ fn register_io_streams(vm: &mut VM) {
                             *position += n as u64;
                             let elements: Vec<Value> =
                                 buf.into_iter().map(|b| Value::I32(b as i32)).collect();
-                            Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
+                            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elements)))
                         }
                         Err(e) => err(map_io_error(&e)),
                     }
@@ -1285,7 +1285,7 @@ fn register_io_streams(vm: &mut VM) {
                     let elements: Vec<Value> =
                         slice.iter().map(|b| Value::I32(*b as i32)).collect();
                     *position += cap;
-                    Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
+                    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elements)))
                 }
             }
         }),
@@ -1313,7 +1313,7 @@ fn register_io_streams(vm: &mut VM) {
                             *position += n as u64;
                             let elements: Vec<Value> =
                                 buf.into_iter().map(|b| Value::I32(b as i32)).collect();
-                            Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
+                            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elements)))
                         }
                         Err(e) => err(map_io_error(&e)),
                     }
@@ -1325,7 +1325,7 @@ fn register_io_streams(vm: &mut VM) {
                     let elements: Vec<Value> =
                         slice.iter().map(|b| Value::I32(*b as i32)).collect();
                     *position += cap;
-                    Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
+                    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elements)))
                 }
             }
         }),
@@ -1458,7 +1458,7 @@ fn register_io_streams(vm: &mut VM) {
             obj.properties
                 .insert("__type".into(), Value::String(Arc::from("Pollable")));
             obj.properties.insert("__ready".into(), Value::Bool(true));
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 }

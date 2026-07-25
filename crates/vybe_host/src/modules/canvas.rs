@@ -94,7 +94,7 @@ mod canvas_impl {
                         "__control_name".into(),
                         Value::String(Arc::from(ctrl_name.to_lowercase().as_str())),
                     );
-                    Value::Object(Arc::new(Mutex::new(o)))
+                    Value::Object(vybe_bytecode::heap::alloc(o))
                 }),
             );
         }
@@ -601,7 +601,7 @@ mod canvas_impl {
                         .insert("__type".into(), Value::String(Arc::from("Canvas")));
                     o.properties
                         .insert("name".into(), Value::String(Arc::from(name.as_str())));
-                    Value::Object(Arc::new(Mutex::new(o)))
+                    Value::Object(vybe_bytecode::heap::alloc(o))
                 }),
             );
         }

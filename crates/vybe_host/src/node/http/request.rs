@@ -9,7 +9,7 @@
 //! auth) will land in a subsequent slice — they cache their result on the
 //! `RequestContext` via `OnceLock`.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{HostContext, VM, Value};
 
@@ -313,7 +313,7 @@ fn string_arg(args: &[Value], idx: usize) -> String {
 fn array_value(items: Vec<Value>) -> Value {
     let mut obj = Object::new();
     obj.kind = ObjectKind::Array(items);
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn pair_object(name: &str, value: &str) -> Value {
@@ -322,5 +322,5 @@ fn pair_object(name: &str, value: &str) -> Value {
         .insert("name".into(), Value::String(Arc::from(name)));
     obj.properties
         .insert("value".into(), Value::String(Arc::from(value)));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }

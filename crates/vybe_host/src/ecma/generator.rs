@@ -12,18 +12,18 @@ fn new_generator(items: Vec<Value>) -> Value {
     obj.properties.insert(GEN_TAG.into(), Value::I32(1));
     obj.properties.insert(
         GEN_ITEMS.into(),
-        Value::Object(Arc::new(Mutex::new(Object::new_array(items)))),
+        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(items))),
     );
     obj.properties.insert(GEN_POS.into(), Value::I32(0));
     obj.properties.insert(GEN_DONE.into(), Value::Bool(false));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn iter_result(value: Value, done: bool) -> Value {
     let mut obj = Object::new();
     obj.properties.insert("value".into(), value);
     obj.properties.insert("done".into(), Value::Bool(done));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn is_generator(v: &Value) -> Option<Arc<Mutex<Object>>> {
@@ -246,7 +246,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let src = match args.first().and_then(is_generator) {
                 Some(g) => g,
-                None => return Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new())))),
+                None => return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new()))),
             };
             let mut out = Vec::new();
             loop {
@@ -269,7 +269,7 @@ pub fn register(vm: &mut VM) {
                 }
                 out.push(val);
             }
-            Value::Object(Arc::new(Mutex::new(Object::new_array(out))))
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(out)))
         }),
     );
 

@@ -90,3 +90,36 @@ pub fn register(vm: &mut VM) {
     structured_clone::register(vm);
     value::register(vm);
 }
+
+/// Force-initialize every process-global shared prototype (and `globalThis`)
+/// so each is allocated through the tracked heap BEFORE a `VM::snapshot`, and
+/// is therefore captured as part of the baseline the reset restores.
+///
+/// These prototypes are `static OnceLock<Arc<Mutex<Object>>>` shared across
+/// every VM in the process (see `vmhotresetplan.md` bucket C, and the
+/// `delete Object.prototype` poison-pill). A prototype first *touched* by a
+/// script AFTER the snapshot would not be in the snapshot's baseline, so a
+/// later reset's `collect_since` would wipe it — breaking every following run.
+/// Priming here (on the boot thread, after `heap::enable_tracking()`, before
+/// `snapshot()`) makes every prototype baseline, so script-added own-properties
+/// on them are rolled back on reset instead of leaking across runs.
+///
+/// Complete set as of this writing — the ONLY process-global `Arc<Mutex<Object>>`
+/// statics in the host (verified host-wide). If a new shared prototype static is
+/// added, it MUST be primed here too or it will leak mutations across resets.
+pub fn prime_shared_prototypes() {
+    let _ = object::shared_object_prototype();
+    let _ = function::shared_function_prototype();
+    let _ = array::shared_array_prototype();
+    let _ = string::shared_string_prototype();
+    let _ = number::shared_number_prototype();
+    let _ = boolean::shared_boolean_prototype();
+    let _ = date::shared_date_prototype();
+    let _ = regexp::shared_regexp_prototype();
+    let _ = intl::shared_collator_prototype();
+    let _ = intl::shared_number_format_prototype();
+    let _ = intl::shared_date_time_format_prototype();
+    let _ = intl::shared_relative_time_format_prototype();
+    let _ = intl::shared_segmenter_prototype();
+    let _ = global_this::shared_singleton();
+}

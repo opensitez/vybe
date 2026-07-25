@@ -29,7 +29,7 @@ static STRING_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 pub(crate) fn shared_string_prototype() -> Value {
     Value::Object(
         STRING_PROTOTYPE
-            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .get_or_init(|| vybe_bytecode::heap::alloc(Object::new()))
             .clone(),
     )
 }
@@ -53,18 +53,18 @@ pub(crate) fn boxed_string(text: Arc<str>) -> Value {
     }
     obj.properties.insert(
         "__keys".into(),
-        Value::Object(Arc::new(Mutex::new(Object::new_array(keys)))),
+        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(keys))),
     );
     obj.properties.insert(
         "__nonenum".into(),
-        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
             Value::String(Arc::from("length")),
             Value::String(Arc::from("toString")),
             Value::String(Arc::from("valueOf")),
-        ])))),
+        ]))),
     );
 
-    let arc = Arc::new(Mutex::new(obj));
+    let arc = vybe_bytecode::heap::alloc(obj);
     if let Value::Object(proto) = shared_string_prototype() {
         let proto = proto.lock().unwrap();
         for name in ["toString", "valueOf"] {
@@ -923,7 +923,7 @@ fn register_split(vm: &mut VM) {
                 Some(n) => parts.into_iter().take(n).collect(),
                 None => parts,
             };
-            Value::Object(Arc::new(Mutex::new(Object::new_array(truncated))))
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(truncated)))
         }),
     );
 }
@@ -1404,7 +1404,7 @@ fn register_base64(vm: &mut VM) {
                             });
                         }
                     }
-                    return Value::Object(Arc::new(Mutex::new(Object::new_array(arr_vals))));
+                    return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(arr_vals)));
                 }
             }
             Value::Null

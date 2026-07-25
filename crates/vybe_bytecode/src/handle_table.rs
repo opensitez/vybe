@@ -37,7 +37,7 @@ pub enum SubtaskState {
 }
 
 /// Per-instance handle table.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct HandleTable {
     entries: HashMap<u32, HandleEntry>,
     next_id: u32,

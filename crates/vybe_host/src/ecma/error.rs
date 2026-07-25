@@ -15,7 +15,7 @@
 //! the VM. AggregateError additionally takes an iterable of errors as
 //! its first arg (message becomes arg1).
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{HostContext, VM, Value};
 
@@ -64,7 +64,7 @@ pub fn register(vm: &mut VM) {
             let mut obj = Object::new();
             stamp_error_object(&mut obj, "Error", &message, cause);
             link_error_prototype(ctx, &mut obj, "Error");
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 
@@ -77,7 +77,7 @@ pub fn register(vm: &mut VM) {
             let errors = args
                 .get(1)
                 .cloned()
-                .unwrap_or_else(|| Value::Object(Arc::new(Mutex::new(Object::new_array(vec![])))));
+                .unwrap_or_else(|| Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![]))));
             let message = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
             let cause = options_cause(args.get(3));
             if let Value::Object(ref obj) = this {
@@ -109,13 +109,13 @@ pub fn register(vm: &mut VM) {
                         drop(inner);
                         o.properties.insert(
                             "errors".into(),
-                            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![errors])))),
+                            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![errors]))),
                         );
                     }
                 } else {
                     o.properties.insert(
                         "errors".into(),
-                        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![errors])))),
+                        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![errors]))),
                     );
                 }
                 link_error_prototype(ctx, &mut o, "AggregateError");
@@ -233,7 +233,7 @@ pub(crate) fn new_error(ctx: &HostContext, kind: &str, message: &str) -> Value {
     let mut obj = Object::new();
     stamp_error_object(&mut obj, kind, message, None);
     link_error_prototype(ctx, &mut obj, kind);
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 /// Stamps-only error for the rare helper with NO HostContext in reach
@@ -242,7 +242,7 @@ pub(crate) fn new_error(ctx: &HostContext, kind: &str, message: &str) -> Value {
 pub(crate) fn new_error_flat(kind: &str, message: &str) -> Value {
     let mut obj = Object::new();
     stamp_error_object(&mut obj, kind, message, None);
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn make_error(ctx: &HostContext, kind: &str, args: &[Value]) -> Value {
@@ -262,7 +262,7 @@ fn make_error(ctx: &HostContext, kind: &str, args: &[Value]) -> Value {
     let mut obj = Object::new();
     stamp_error_object(&mut obj, kind, &message, cause);
     link_error_prototype(ctx, &mut obj, kind);
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 /// JS error class hierarchy per ECMA-262 §20.5.5. Returned in

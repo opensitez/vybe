@@ -145,7 +145,7 @@ fn make_resource(kind: &str, id: u32, type_id: usize) -> Value {
     object
         .properties
         .insert("__wasi_id".into(), Value::F64(id as f64));
-    Value::Object(Arc::new(Mutex::new(object)))
+    Value::Object(vybe_bytecode::heap::alloc(object))
 }
 
 fn resource_id(value: &Value, expected_kind: &str) -> Option<u32> {
@@ -170,7 +170,7 @@ fn err(code: &str) -> Value {
     object
         .properties
         .insert("__wasi_error".into(), Value::String(Arc::from(code)));
-    Value::Object(Arc::new(Mutex::new(object)))
+    Value::Object(vybe_bytecode::heap::alloc(object))
 }
 
 fn string_arg(args: &[Value], idx: usize) -> Option<String> {
@@ -187,7 +187,7 @@ fn header_value_bytes(value: &str) -> Value {
         .iter()
         .map(|byte| Value::F64(*byte as f64))
         .collect::<Vec<_>>();
-    Value::Object(Arc::new(Mutex::new(Object::new_array(bytes))))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(bytes)))
 }
 
 fn header_values_array(values: &[Vec<u8>]) -> Value {
@@ -195,20 +195,20 @@ fn header_values_array(values: &[Vec<u8>]) -> Value {
         .iter()
         .map(|value| header_value_bytes(&String::from_utf8_lossy(value)))
         .collect::<Vec<_>>();
-    Value::Object(Arc::new(Mutex::new(Object::new_array(arrays))))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(arrays)))
 }
 
 fn header_entries_array(entries: &[(String, Vec<u8>)]) -> Value {
     let pairs = entries
         .iter()
         .map(|(name, value)| {
-            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
                 Value::String(Arc::from(name.as_str())),
                 header_value_bytes(&String::from_utf8_lossy(value)),
-            ]))))
+            ])))
         })
         .collect::<Vec<_>>();
-    Value::Object(Arc::new(Mutex::new(Object::new_array(pairs))))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(pairs)))
 }
 
 #[derive(Debug, Clone)]
@@ -396,7 +396,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
                 return err("invalid-argument");
             };
             let Some(name) = string_arg(args, 1) else {
-                return Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))));
+                return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())));
             };
             let registry = registry().lock().unwrap();
             let Some(headers) = registry.headers.get(&headers_id) else {
@@ -613,7 +613,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             obj.properties
                 .insert("__type".into(), Value::String(Arc::from("Pollable")));
             obj.properties.insert("__ready".into(), Value::Bool(true));
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 
@@ -987,7 +987,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             );
             obj.properties
                 .insert("__wasi_id".into(), Value::F64(stream_id as f64));
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 
@@ -1021,7 +1021,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             obj.properties
                 .insert("__type".into(), Value::String(Arc::from("Pollable")));
             obj.properties.insert("__ready".into(), Value::Bool(true));
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 
@@ -1326,7 +1326,7 @@ fn register_legacy_shim(vm: &mut VM) {
                         "ok".into(),
                         Value::Bool((200..300).contains(&response.status)),
                     );
-                    Value::Object(Arc::new(Mutex::new(object)))
+                    Value::Object(vybe_bytecode::heap::alloc(object))
                 }
                 Err(error) => {
                     let mut object = Object::new();
@@ -1335,7 +1335,7 @@ fn register_legacy_shim(vm: &mut VM) {
                         .properties
                         .insert("body".into(), Value::String(Arc::from(error.as_str())));
                     object.properties.insert("ok".into(), Value::Bool(false));
-                    Value::Object(Arc::new(Mutex::new(object)))
+                    Value::Object(vybe_bytecode::heap::alloc(object))
                 }
             }
         }),
@@ -1397,9 +1397,9 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
             ctx.stream_close(stream_id);
             let (future_val, future_id) = ctx.create_future();
             ctx.resolve_future(future_id, Value::Null);
-            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
                 stream_val, future_val,
-            ]))))
+            ])))
         }),
     );
 
@@ -1454,9 +1454,9 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
             ctx.stream_close(stream_id);
             let (future_val, future_id) = ctx.create_future();
             ctx.resolve_future(future_id, Value::Null);
-            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
                 stream_val, future_val,
-            ]))))
+            ])))
         }),
     );
 }

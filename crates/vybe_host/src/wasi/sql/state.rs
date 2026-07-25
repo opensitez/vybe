@@ -35,3 +35,12 @@ pub(super) fn state() -> Arc<Mutex<SqlState>> {
     })
     .clone()
 }
+
+/// VM hot-reset (bucket C/D): drop all open connections and prepared statements
+/// so a reused VM never carries a prior run's DB handles. See `vmhotresetplan.md`.
+pub fn reset() {
+    if let Ok(mut s) = state().lock() {
+        s.conns.clear();
+        s.stmts.clear();
+    }
+}

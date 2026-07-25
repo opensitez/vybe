@@ -43,7 +43,7 @@ fn make_array(elems: Vec<Value>) -> Value {
     let mut obj = Object::new_array(elems);
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("Array")));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn utf16_units(text: &str) -> Vec<u16> {
@@ -433,7 +433,7 @@ pub(crate) fn error_constructor_for(name: &str) -> Value {
     // `const T = TypeError; new T(msg, {cause})`) builds a proper Error.
     ctor.properties
         .insert("__error_ctor_name".into(), Value::String(Arc::from(name)));
-    let value = Value::Object(Arc::new(Mutex::new(ctor)));
+    let value = Value::Object(vybe_bytecode::heap::alloc(ctor));
     map.insert(name.to_string(), value.clone());
     value
 }
@@ -1859,7 +1859,7 @@ fn array_iterator_result(value: Value, done: bool) -> Value {
     let mut obj = Object::new();
     obj.properties.insert("value".into(), value);
     obj.properties.insert("done".into(), Value::Bool(done));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn v_len_after(o: &Object) -> i32 {
@@ -3086,9 +3086,9 @@ fn bind_method_receiver(receiver: Arc<Mutex<Object>>, method: Value) -> Value {
     bound_obj.kind = kind;
     bound_obj.properties.insert(
         "__bound_args".into(),
-        Value::Object(Arc::new(Mutex::new(Object::new_array(combined)))),
+        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(combined))),
     );
-    Value::Object(Arc::new(Mutex::new(bound_obj)))
+    Value::Object(vybe_bytecode::heap::alloc(bound_obj))
 }
 
 fn js_instanceof(receiver: &Value, ctor: &Value) -> bool {

@@ -205,7 +205,7 @@ fn clone_ordinary(
 
     // Allocate empty target first, insert into seen, then copy
     // property values (so cycles resolve to the same target).
-    let target_arc = Arc::new(Mutex::new(Object::new()));
+    let target_arc = vybe_bytecode::heap::alloc(Object::new());
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());
 
@@ -293,7 +293,7 @@ fn clone_builtin_object(
                 "__proto__".into(),
                 crate::ecma::date::shared_date_prototype(),
             );
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }
         "RegExp" => {
             let (source, flags, last_index) = regexp_fields?;
@@ -337,7 +337,7 @@ fn clone_builtin_object(
                 "__proto__".into(),
                 crate::ecma::regexp::shared_regexp_prototype(),
             );
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }
         "Boolean" => match primitive {
             Some(Value::Bool(value)) => crate::ecma::boolean::boxed_boolean(value),
@@ -368,7 +368,7 @@ fn clone_array(
     seen: &mut HashMap<usize, Value>,
     active: &mut HashSet<usize>,
 ) -> Result<Value, Value> {
-    let target_arc = Arc::new(Mutex::new(Object::new_array(Vec::new())));
+    let target_arc = vybe_bytecode::heap::alloc(Object::new_array(Vec::new()));
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());
 
@@ -418,7 +418,7 @@ fn clone_map(
     target_obj
         .properties
         .insert("__type".into(), Value::String(Arc::from("Map")));
-    let target_arc = Arc::new(Mutex::new(target_obj));
+    let target_arc = vybe_bytecode::heap::alloc(target_obj);
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());
 
@@ -465,7 +465,7 @@ fn clone_set(
     target_obj
         .properties
         .insert("__type".into(), Value::String(Arc::from("Set")));
-    let target_arc = Arc::new(Mutex::new(target_obj));
+    let target_arc = vybe_bytecode::heap::alloc(target_obj);
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());
 
@@ -544,7 +544,7 @@ fn clone_arraybuffer(
         .insert("maxByteLength".into(), Value::I32(max_byte_length as i32));
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("ArrayBuffer")));
-    let out = Value::Object(Arc::new(Mutex::new(obj)));
+    let out = Value::Object(vybe_bytecode::heap::alloc(obj));
     seen.insert(id, out.clone());
     Ok(out)
 }
@@ -698,7 +698,7 @@ fn clone_dataview(
         .insert("maxByteLength".into(), Value::I32(byte_length as i32));
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("ArrayBuffer")));
-    let buffer_value = Value::Object(Arc::new(Mutex::new(obj)));
+    let buffer_value = Value::Object(vybe_bytecode::heap::alloc(obj));
     let out = crate::ecma::arraybuffer::new_dataview(buffer_value, 0, byte_length as i32);
     seen.insert(id, out.clone());
     Ok(out)
@@ -741,7 +741,7 @@ fn clone_error_like(
     active: &mut HashSet<usize>,
     source_kind: &str,
 ) -> Result<Value, Value> {
-    let target_arc = Arc::new(Mutex::new(Object::new()));
+    let target_arc = vybe_bytecode::heap::alloc(Object::new());
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());
 
@@ -809,7 +809,7 @@ fn stamp_error_clone(obj: &mut Object, kind: &str, display_name: &str, message: 
         .collect();
     obj.properties.insert(
         "__types".into(),
-        Value::Object(Arc::new(Mutex::new(Object::new_array(chain)))),
+        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(chain))),
     );
 }
 

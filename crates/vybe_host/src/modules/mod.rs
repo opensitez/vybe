@@ -22,7 +22,7 @@ pub mod sockets;
 pub mod types;
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::{VM, Value};
 
 /// Capability flags for host module access.
@@ -232,7 +232,7 @@ pub fn register_all(vm: &mut VM) {
                 collection
                     .properties
                     .insert("count".into(), Value::F64(0.0));
-                Value::Object(Arc::new(Mutex::new(collection)))
+                Value::Object(vybe_bytecode::heap::alloc(collection))
             }),
         );
         vm.register_host_fn(
@@ -252,7 +252,7 @@ pub fn register_all(vm: &mut VM) {
                 collection
                     .properties
                     .insert("count".into(), Value::F64(0.0));
-                Value::Object(Arc::new(Mutex::new(collection)))
+                Value::Object(vybe_bytecode::heap::alloc(collection))
             }),
         );
         vm.register_host_fn(
@@ -340,7 +340,7 @@ pub fn register_all(vm: &mut VM) {
                 ctrls.properties.insert("count".into(), Value::F64(0.0));
                 obj.properties.insert(
                     "controls".into(),
-                    Value::Object(Arc::new(Mutex::new(ctrls))),
+                    Value::Object(vybe_bytecode::heap::alloc(ctrls)),
                 );
                 let mut comps = Object::new_array(vec![]);
                 comps.properties.insert(
@@ -350,9 +350,9 @@ pub fn register_all(vm: &mut VM) {
                 comps.properties.insert("count".into(), Value::F64(0.0));
                 obj.properties.insert(
                     "components".into(),
-                    Value::Object(Arc::new(Mutex::new(comps))),
+                    Value::Object(vybe_bytecode::heap::alloc(comps)),
                 );
-                Value::Object(Arc::new(Mutex::new(obj)))
+                Value::Object(vybe_bytecode::heap::alloc(obj))
             }),
         );
         vm.register_host_fn("vybe:gui", "addHandler", Box::new(|_ctx, _| Value::Null));
@@ -411,7 +411,7 @@ pub fn register_all(vm: &mut VM) {
                     "__control_name".into(),
                     Value::String(Arc::from(ctrl_name.to_lowercase().as_str())),
                 );
-                Value::Object(Arc::new(Mutex::new(o)))
+                Value::Object(vybe_bytecode::heap::alloc(o))
             }),
         );
         for fn_name in &[
@@ -568,7 +568,7 @@ pub fn register_all(vm: &mut VM) {
                     );
                     obj.properties
                         .insert("name".into(), Value::String(Arc::from(name.as_str())));
-                    Value::Object(Arc::new(Mutex::new(obj)))
+                    Value::Object(vybe_bytecode::heap::alloc(obj))
                 }),
             );
         }

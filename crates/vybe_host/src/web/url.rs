@@ -52,7 +52,7 @@ fn host_fn_ref_by_idx(module: &str, name: &str, idx: usize) -> Value {
         .insert("__host_idx".into(), Value::F64(idx as f64));
     obj.properties.insert("name".into(), str_value(name));
     obj.kind = ObjectKind::HostFunction(idx);
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn bound_host_fn_ref_by_idx(module: &str, name: &str, idx: usize, bound_args: Vec<Value>) -> Value {
@@ -65,10 +65,10 @@ fn bound_host_fn_ref_by_idx(module: &str, name: &str, idx: usize, bound_args: Ve
     obj.properties.insert("name".into(), str_value(name));
     obj.properties.insert(
         "__bound_args".into(),
-        Value::Object(Arc::new(Mutex::new(Object::new_array(bound_args)))),
+        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(bound_args))),
     );
     obj.kind = ObjectKind::HostFunction(idx);
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn receiver_fn(name: &str, idx: usize) -> Value {
@@ -119,10 +119,10 @@ fn serialize_pairs(pairs: &[(String, String)]) -> String {
 }
 
 fn pair_value(key: &str, value: &str) -> Value {
-    Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
         str_value(key),
         str_value(value),
-    ]))))
+    ])))
 }
 
 fn pairs_from_params(obj: &Arc<Mutex<Object>>) -> Vec<(String, String)> {
@@ -168,7 +168,7 @@ fn sync_pairs_object(obj: &Arc<Mutex<Object>>, pairs: &[(String, String)]) {
         _ => {
             lock.properties.insert(
                 "__pairs".into(),
-                Value::Object(Arc::new(Mutex::new(Object::new_array(entries)))),
+                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(entries))),
             );
         }
     }
@@ -310,7 +310,7 @@ fn make_search_params_object(
         obj.properties
             .insert("__url_owner".into(), Value::Object(owner));
     }
-    let value = Value::Object(Arc::new(Mutex::new(obj)));
+    let value = Value::Object(vybe_bytecode::heap::alloc(obj));
     if let Value::Object(params_obj) = &value {
         let mut lock = params_obj.lock().unwrap();
         if matches!(lock.properties.get("toString"), Some(Value::Object(method)) if matches!(method.lock().unwrap().kind, ObjectKind::HostFunction(_)))
@@ -483,7 +483,7 @@ fn sync_url_object(obj: &Arc<Mutex<Object>>, url: &Url) {
 }
 
 fn make_url_object(url: &Url) -> Value {
-    let value = Value::Object(Arc::new(Mutex::new(Object::new())));
+    let value = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
     if let Value::Object(obj) = &value {
         sync_url_object(obj, url);
     }
@@ -533,7 +533,7 @@ where
 }
 
 fn params_array(values: Vec<Value>) -> Value {
-    Value::Object(Arc::new(Mutex::new(Object::new_array(values))))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(values)))
 }
 
 fn make_bound_array_iterator(values: Vec<Value>) -> Value {

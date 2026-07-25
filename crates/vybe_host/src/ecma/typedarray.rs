@@ -306,7 +306,7 @@ pub(crate) fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
     ab_obj
         .properties
         .insert("maxByteLength".into(), Value::I32(byte_length as i32));
-    let buffer_obj = Arc::new(Mutex::new(ab_obj));
+    let buffer_obj = vybe_bytecode::heap::alloc(ab_obj);
 
     let state = TypedArrayState {
         elem,
@@ -334,7 +334,7 @@ pub(crate) fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
         "tostringtag".into(),
         Value::String(Arc::from(typed_array_name(elem))),
     );
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 /// Construct a view over an existing `ArrayBuffer`.
@@ -380,7 +380,7 @@ pub(crate) fn new_view_over_buffer(
         "tostringtag".into(),
         Value::String(Arc::from(typed_array_name(elem))),
     );
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 pub(crate) fn apply_constructor_species(result: &Value, ctor: Value) {
@@ -415,7 +415,7 @@ pub(crate) fn apply_constructor_species(result: &Value, ctor: Value) {
         let types_obj = match result_lock.properties.get("__types") {
             Some(Value::Object(types)) => types.clone(),
             _ => {
-                let types = Arc::new(Mutex::new(Object::new_array(Vec::new())));
+                let types = vybe_bytecode::heap::alloc(Object::new_array(Vec::new()));
                 result_lock
                     .properties
                     .insert("__types".into(), Value::Object(types.clone()));
@@ -1597,10 +1597,10 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                     let live = ta_live_length(ta);
                     let es: Vec<Value> = (0..live)
                         .map(|i| {
-                            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
                                 Value::I32(i as i32),
                                 read_element(ta, i),
-                            ]))))
+                            ])))
                         })
                         .collect();
                     return crate::ecma::array::make_array_iterator(es);

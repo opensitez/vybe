@@ -43,7 +43,7 @@ pub(crate) fn shared_regexp_prototype() -> Value {
                     "__proto__".into(),
                     crate::ecma::object::shared_object_prototype(),
                 );
-                Arc::new(Mutex::new(proto))
+                vybe_bytecode::heap::alloc(proto)
             })
             .clone(),
     )
@@ -140,7 +140,7 @@ fn special_pattern(pattern: &str, flags: &str) -> Option<SpecialPattern> {
 }
 
 fn empty_groups_object() -> Value {
-    Value::Object(Arc::new(Mutex::new(Object::new())))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new()))
 }
 
 fn range_to_value(start: usize, end: usize) -> Value {
@@ -163,10 +163,10 @@ fn exec_span_to_value(input: &str, start: usize, end: usize, include_indices: bo
             .insert("groups".into(), empty_groups_object());
         match_obj.properties.insert(
             "indices".into(),
-            Value::Object(Arc::new(Mutex::new(indices))),
+            Value::Object(vybe_bytecode::heap::alloc(indices)),
         );
     }
-    Value::Object(Arc::new(Mutex::new(match_obj)))
+    Value::Object(vybe_bytecode::heap::alloc(match_obj))
 }
 
 fn special_match_at(input: &str, kind: SpecialPattern, start: usize) -> Option<usize> {
@@ -373,10 +373,10 @@ fn named_groups_object(m: &Match, input: &str) -> Value {
     if !group_order.is_empty() {
         groups.properties.insert(
             "__keys".into(),
-            Value::Object(Arc::new(Mutex::new(Object::new_array(group_order)))),
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(group_order))),
         );
     }
-    Value::Object(Arc::new(Mutex::new(groups)))
+    Value::Object(vybe_bytecode::heap::alloc(groups))
 }
 
 fn named_groups_indices_object(m: &Match, index_offset: usize) -> Value {
@@ -393,10 +393,10 @@ fn named_groups_indices_object(m: &Match, index_offset: usize) -> Value {
     if !group_order.is_empty() {
         groups.properties.insert(
             "__keys".into(),
-            Value::Object(Arc::new(Mutex::new(Object::new_array(group_order)))),
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(group_order))),
         );
     }
-    Value::Object(Arc::new(Mutex::new(groups)))
+    Value::Object(vybe_bytecode::heap::alloc(groups))
 }
 
 fn exec_match_to_value(
@@ -430,14 +430,14 @@ fn exec_match_to_value(
         );
         match_obj.properties.insert(
             "indices".into(),
-            Value::Object(Arc::new(Mutex::new(indices_obj))),
+            Value::Object(vybe_bytecode::heap::alloc(indices_obj)),
         );
     }
-    Value::Object(Arc::new(Mutex::new(match_obj)))
+    Value::Object(vybe_bytecode::heap::alloc(match_obj))
 }
 
 fn make_array(elements: Vec<Value>) -> Value {
-    Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elements)))
 }
 
 fn s_val(s: &str) -> Value {
@@ -569,7 +569,7 @@ fn register_constructor(vm: &mut VM) {
                 .insert("__type".into(), Value::String(Arc::from(REGEXP_TYPE)));
             obj.properties
                 .insert("__proto__".into(), shared_regexp_prototype());
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 
@@ -611,7 +611,7 @@ fn register_constructor(vm: &mut VM) {
                 .insert("__type".into(), Value::String(Arc::from(REGEXP_TYPE)));
             obj.properties
                 .insert("__proto__".into(), shared_regexp_prototype());
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 

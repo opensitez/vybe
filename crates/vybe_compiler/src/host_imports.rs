@@ -18,7 +18,6 @@
 //! for direct calls: those become `CALL_IMPORT`. This module only
 //! matters for read-as-value and namespace access.
 
-use std::sync::{Arc, Mutex};
 use vybe_bytecode::module_record::ExportEntry;
 use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{VM, Value};
@@ -103,5 +102,5 @@ fn build_namespace(vm: &VM, module: &str) -> Value {
     for (name, val) in exports {
         obj.properties.insert(name, val);
     }
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }

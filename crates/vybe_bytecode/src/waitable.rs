@@ -33,7 +33,7 @@ pub enum Waitable {
 /// A waitable set — heterogeneous pool of waitables.
 /// Created by `waitable-set.new`, populated by `waitable.join`,
 /// queried by `waitable-set.wait` / `waitable-set.poll`.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct WaitableSet {
     pub id: u32,
     pub members: Vec<Waitable>,
@@ -83,7 +83,7 @@ impl WaitableSet {
 }
 
 /// VM-level registry of all live waitable sets.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct WaitableRegistry {
     sets: HashMap<u32, WaitableSet>,
     next_id: u32,

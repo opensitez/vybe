@@ -8,7 +8,7 @@
 //!   `__ev_<name>`  → Array of regular listeners
 //!   `__evo_<name>` → Array of once listeners
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 
@@ -17,12 +17,12 @@ fn empty_array() -> Value {
 }
 
 fn arr_val(elems: Vec<Value>) -> Value {
-    Value::Object(Arc::new(Mutex::new(Object {
+    Value::Object(vybe_bytecode::heap::alloc(Object {
         kind: ObjectKind::Array(elems),
         properties: std::collections::HashMap::new(),
         type_id: 0,
         fields: Vec::new(),
-    })))
+    }))
 }
 
 fn get_array(emitter: &Object, key: &str) -> Vec<Value> {
@@ -81,7 +81,7 @@ fn make_emitter() -> Value {
     ] {
         o.properties.insert(m.into(), Value::Undefined);
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 pub fn register(vm: &mut VM) {

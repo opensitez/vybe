@@ -14,6 +14,7 @@ pub mod debugger;
 pub(crate) mod dispatch;
 pub mod error;
 pub mod event_loop;
+pub mod heap;
 pub mod fiber;
 pub mod handle_table;
 pub(crate) mod jspi;
@@ -34,7 +35,7 @@ pub use module_record::{ExportEntry, ModuleKind, ModuleRecord, ModuleRequest, Mo
 pub use opcode::Op;
 pub use typedef::{FieldDef, Method, ResourceTable, TypeDef, TypeRegistry};
 pub use value::Value;
-pub use vm::{HostContext, HostFn, ImportTarget, VM};
+pub use vm::{HostContext, HostFn, ImportTarget, VM, VmSnapshot};
 pub mod component;
 pub mod component_model;
 pub mod project;

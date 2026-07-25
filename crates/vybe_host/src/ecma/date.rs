@@ -32,7 +32,7 @@ static DATE_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 pub(crate) fn shared_date_prototype() -> Value {
     Value::Object(
         DATE_PROTOTYPE
-            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .get_or_init(|| vybe_bytecode::heap::alloc(Object::new()))
             .clone(),
     )
 }
@@ -509,7 +509,7 @@ pub fn register(vm: &mut VM) {
         obj.properties.insert("__time".into(), Value::F64(ms));
         obj.properties
             .insert("__proto__".into(), shared_date_prototype());
-        Value::Object(Arc::new(Mutex::new(obj)))
+        Value::Object(vybe_bytecode::heap::alloc(obj))
     }));
 
     // Date.parse(str) → ms since epoch, NaN on failure.

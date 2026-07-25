@@ -14,7 +14,7 @@ fn new_proxy(target: Value, handler: Value) -> Value {
     obj.properties.insert(PROXY_HANDLER.into(), handler);
     obj.properties
         .insert(PROXY_REVOKED.into(), Value::Bool(false));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn is_proxy(v: &Value) -> Option<Arc<Mutex<Object>>> {
@@ -203,9 +203,9 @@ fn target_own_keys(target: &Value) -> Value {
             .into_iter()
             .map(|key| Value::String(Arc::from(key.as_str())))
             .collect();
-        return Value::Object(Arc::new(Mutex::new(Object::new_array(keys))));
+        return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(keys)));
     }
-    Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))
 }
 
 fn array_values(value: &Value) -> Vec<Value> {
@@ -340,7 +340,7 @@ fn construct_dispatch_inner(
                     err.properties.insert("cause".into(), cause);
                 }
             }
-            return Value::Object(Arc::new(Mutex::new(err)));
+            return Value::Object(vybe_bytecode::heap::alloc(err));
         }
     }
 
@@ -382,7 +382,7 @@ fn construct_dispatch_inner(
             this_value.properties.insert("__proto__".into(), proto);
         }
     }
-    let this_obj = Value::Object(Arc::new(Mutex::new(this_value)));
+    let this_obj = Value::Object(vybe_bytecode::heap::alloc(this_value));
     let result = crate::ecma::function::invoke_with_explicit_this(
         ctx,
         constructor,
@@ -643,7 +643,7 @@ pub fn register(vm: &mut VM) {
             let target = get_target(&proxy_obj);
             let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
             let args_list = args.get(2).cloned().unwrap_or_else(|| {
-                Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))
             });
             if let Some(trap) = get_trap(&handler, "apply") {
                 if is_callable(&trap) {
@@ -661,7 +661,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let proxy_value = args.first().cloned().unwrap_or(Value::Undefined);
             let args_list = args.get(1).cloned().unwrap_or_else(|| {
-                Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))
             });
             construct_dispatch(ctx, &proxy_value, &args_list)
         }),
@@ -680,11 +680,11 @@ pub fn register(vm: &mut VM) {
             revoke_obj
                 .properties
                 .insert("__revoke_target".into(), proxy_clone);
-            let revoke = Value::Object(Arc::new(Mutex::new(revoke_obj)));
+            let revoke = Value::Object(vybe_bytecode::heap::alloc(revoke_obj));
             let mut result = Object::new();
             result.properties.insert("proxy".into(), proxy);
             result.properties.insert("revoke".into(), revoke);
-            Value::Object(Arc::new(Mutex::new(result)))
+            Value::Object(vybe_bytecode::heap::alloc(result))
         }),
     );
 

@@ -13,7 +13,7 @@
 //! per spec §10.1, or throw if `fatal: true`.
 
 use std::str;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::value::{Object, ObjectKind, TypedElemKind};
 use vybe_bytecode::{HostContext, VM, Value};
 
@@ -129,7 +129,7 @@ pub fn register(vm: &mut VM) {
                 .insert("__type".into(), Value::String(Arc::from("TextEncoder")));
             obj.properties
                 .insert("encoding".into(), Value::String(Arc::from("utf-8")));
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 
@@ -183,7 +183,7 @@ pub fn register(vm: &mut VM) {
             result
                 .properties
                 .insert("written".into(), Value::F64(written as f64));
-            Value::Object(Arc::new(Mutex::new(result)))
+            Value::Object(vybe_bytecode::heap::alloc(result))
         }),
     );
 
@@ -215,7 +215,7 @@ pub fn register(vm: &mut VM) {
                 "ignoreBOM".into(),
                 Value::Bool(option_bool(args.get(1), "ignoreBOM")),
             );
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 

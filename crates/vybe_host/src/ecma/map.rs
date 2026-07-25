@@ -43,11 +43,11 @@ fn bound_iterator_method(
         .insert("name".into(), Value::String(Arc::from(name)));
     fn_obj.properties.insert(
         "__bound_args".into(),
-        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
             Value::Object(receiver.clone()),
-        ])))),
+        ]))),
     );
-    Value::Object(Arc::new(Mutex::new(fn_obj)))
+    Value::Object(vybe_bytecode::heap::alloc(fn_obj))
 }
 
 fn new_map_value() -> Value {
@@ -59,7 +59,7 @@ fn new_map_value() -> Value {
     // it, JS-shape `m.set(k,v)` would dereference a missing property.
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("Map")));
-    let map = Arc::new(Mutex::new(obj));
+    let map = vybe_bytecode::heap::alloc(obj);
     if let Some(idx) = MAP_ITERATOR_IDX.get() {
         map.lock().unwrap().properties.insert(
             "iterator".into(),
@@ -397,10 +397,10 @@ pub fn register(vm: &mut VM) {
                     let pairs: Vec<Value> = im
                         .iter()
                         .map(|(k, v)| {
-                            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
                                 k.clone(),
                                 v.clone(),
-                            ]))))
+                            ])))
                         })
                         .collect();
                     return crate::ecma::array::make_array_iterator(pairs);
@@ -478,7 +478,7 @@ pub fn register(vm: &mut VM) {
                     let mut mo = outobj.lock().unwrap();
                     if let ObjectKind::Map(ref mut im) = mo.kind {
                         let entry = im.entry(key).or_insert_with(|| {
-                            Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+                            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))
                         });
                         if let Value::Object(group) = entry {
                             let mut g = group.lock().unwrap();

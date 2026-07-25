@@ -6,7 +6,7 @@
 //! the correct surface so code that imports it doesn't crash.
 
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, Value};
 
@@ -33,7 +33,7 @@ fn make_port() -> Value {
     ] {
         o.properties.insert(m.into(), Value::Undefined);
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn make_resource_limits() -> Value {
@@ -44,7 +44,7 @@ fn make_resource_limits() -> Value {
         .insert("maxYoungGenerationSizeMb".into(), Value::I32(0));
     o.properties.insert("codeRangeSizeMb".into(), Value::I32(0));
     o.properties.insert("stackSizeMb".into(), Value::I32(4));
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn null_stream() -> Value {
@@ -52,7 +52,7 @@ fn null_stream() -> Value {
     for m in ["write", "read", "on", "once", "off", "pipe", "destroy"] {
         o.properties.insert(m.into(), Value::Undefined);
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 pub fn register(vm: &mut VM) {
@@ -122,7 +122,7 @@ pub fn register(vm: &mut VM) {
             ] {
                 o.properties.insert(m.into(), Value::Undefined);
             }
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 
@@ -133,7 +133,7 @@ pub fn register(vm: &mut VM) {
             let mut o = Object::new();
             o.properties.insert("port1".into(), make_port());
             o.properties.insert("port2".into(), make_port());
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 
@@ -158,7 +158,7 @@ pub fn register(vm: &mut VM) {
             for m in ["postMessage", "close"] {
                 o.properties.insert(m.into(), Value::Undefined);
             }
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 

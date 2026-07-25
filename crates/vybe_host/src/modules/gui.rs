@@ -93,7 +93,7 @@ mod gui_impl {
             .properties
             .insert("contains".into(), contains_ref.clone());
         sync_collection_metadata(&mut collection);
-        Value::Object(Arc::new(Mutex::new(collection)))
+        Value::Object(vybe_bytecode::heap::alloc(collection))
     }
 
     fn push_collection_value(collection_obj: &Arc<Mutex<Object>>, value: Value) {
@@ -611,7 +611,7 @@ mod gui_impl {
                     g.form = vybe_widgets::Form::new(&title);
                     g.seed_form_identity(&name, &title);
                 }
-                let form_obj = Arc::new(Mutex::new(Object::new()));
+                let form_obj = vybe_bytecode::heap::alloc(Object::new());
                 {
                     let mut obj = form_obj.lock().unwrap();
                     obj.properties
@@ -692,7 +692,7 @@ mod gui_impl {
             Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
                 let type_name = str_arg(args, 0, "Panel");
                 let name = str_arg(args, 1, "control");
-                let obj = Arc::new(Mutex::new(Object::new()));
+                let obj = vybe_bytecode::heap::alloc(Object::new());
                 {
                     let mut o = obj.lock().unwrap();
                     let s = |v: &str| Value::String(Arc::from(v));
@@ -1302,7 +1302,7 @@ mod gui_impl {
                     static COUNTER: AtomicU32 = AtomicU32::new(1);
                     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
                     let name = format!("{}_{}", type_name, id);
-                    let obj = Arc::new(Mutex::new(vybe_bytecode::value::Object::new()));
+                    let obj = vybe_bytecode::heap::alloc(vybe_bytecode::value::Object::new());
                     {
                         let mut object = obj.lock().unwrap();
                         object.properties.insert(
@@ -1423,7 +1423,7 @@ mod gui_impl {
             .unwrap();
         let mut o = vybe_bytecode::value::Object::new();
         o.kind = vybe_bytecode::value::ObjectKind::HostFunction(idx);
-        Value::Object(Arc::new(Mutex::new(o)))
+        Value::Object(vybe_bytecode::heap::alloc(o))
     }
 
     fn capitalize_first(s: &str) -> String {
@@ -1532,7 +1532,7 @@ mod gui_impl {
             let clear_ref = Value::Null;
             let contains_ref = Value::Null;
 
-            let form = Arc::new(Mutex::new(Object::new()));
+            let form = vybe_bytecode::heap::alloc(Object::new());
             let owner = Value::Object(form.clone());
             let components = create_collection_object(
                 "components",
@@ -1546,7 +1546,7 @@ mod gui_impl {
                 .properties
                 .insert("components".into(), components.clone());
 
-            let binding_source = Arc::new(Mutex::new(Object::new()));
+            let binding_source = vybe_bytecode::heap::alloc(Object::new());
             binding_source
                 .lock()
                 .unwrap()
@@ -1557,7 +1557,7 @@ mod gui_impl {
                 .properties
                 .insert("bs1".into(), Value::Object(binding_source.clone()));
 
-            let button = Arc::new(Mutex::new(Object::new()));
+            let button = vybe_bytecode::heap::alloc(Object::new());
             button
                 .lock()
                 .unwrap()

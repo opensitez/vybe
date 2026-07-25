@@ -198,11 +198,10 @@ impl PanelWidget for Radio {
             }
             WidgetCommand::GetText => CommandValue::Text(self.label.clone()),
             WidgetCommand::SetChecked(c) => {
-                if self.selected != *c {
-                    self.selected = *c;
-                    self.pending_events
-                        .push(WidgetEvent::RadioSelected(self.name.clone(), self.selected));
-                }
+                // Programmatic set (the adapter reflecting `value == groupValue`)
+                // — no event; user selection emits via `handle_mouse`, so this
+                // won't spuriously fire `onChanged` on load / re-realize.
+                self.selected = *c;
                 CommandValue::None
             }
             WidgetCommand::GetValue => CommandValue::Bool(self.selected),

@@ -14,7 +14,7 @@ pub enum TaskPhase {
 }
 
 /// A single CM3 async task.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CMTask {
     /// Unique task ID (i32 in the handle table of the calling component).
     pub id: u32,

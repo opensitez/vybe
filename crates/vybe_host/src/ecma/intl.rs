@@ -45,10 +45,10 @@ fn bound_host_fn_ref_by_idx(module: &str, name: &str, idx: usize, bound_args: Ve
         .insert("name".into(), Value::String(Arc::from(name)));
     obj.properties.insert(
         "__bound_args".into(),
-        Value::Object(Arc::new(Mutex::new(Object::new_array(bound_args)))),
+        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(bound_args))),
     );
     obj.kind = ObjectKind::HostFunction(idx);
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 pub fn register(vm: &mut VM) {
@@ -74,7 +74,7 @@ fn s_val(text: &str) -> Value {
 pub(crate) fn shared_collator_prototype() -> Value {
     Value::Object(
         COLLATOR_PROTOTYPE
-            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .get_or_init(|| vybe_bytecode::heap::alloc(Object::new()))
             .clone(),
     )
 }
@@ -82,7 +82,7 @@ pub(crate) fn shared_collator_prototype() -> Value {
 pub(crate) fn shared_number_format_prototype() -> Value {
     Value::Object(
         NUMBER_FORMAT_PROTOTYPE
-            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .get_or_init(|| vybe_bytecode::heap::alloc(Object::new()))
             .clone(),
     )
 }
@@ -90,7 +90,7 @@ pub(crate) fn shared_number_format_prototype() -> Value {
 pub(crate) fn shared_date_time_format_prototype() -> Value {
     Value::Object(
         DATE_TIME_FORMAT_PROTOTYPE
-            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .get_or_init(|| vybe_bytecode::heap::alloc(Object::new()))
             .clone(),
     )
 }
@@ -98,7 +98,7 @@ pub(crate) fn shared_date_time_format_prototype() -> Value {
 pub(crate) fn shared_relative_time_format_prototype() -> Value {
     Value::Object(
         RELATIVE_TIME_FORMAT_PROTOTYPE
-            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .get_or_init(|| vybe_bytecode::heap::alloc(Object::new()))
             .clone(),
     )
 }
@@ -106,7 +106,7 @@ pub(crate) fn shared_relative_time_format_prototype() -> Value {
 pub(crate) fn shared_segmenter_prototype() -> Value {
     Value::Object(
         SEGMENTER_PROTOTYPE
-            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .get_or_init(|| vybe_bytecode::heap::alloc(Object::new()))
             .clone(),
     )
 }
@@ -119,7 +119,7 @@ fn make_array(elements: Vec<Value>) -> Value {
         "__proto__".into(),
         crate::ecma::array::shared_array_prototype(),
     );
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn make_object(props: Vec<(&str, Value)>) -> Value {
@@ -127,7 +127,7 @@ fn make_object(props: Vec<(&str, Value)>) -> Value {
     for (k, v) in props {
         obj.properties.insert(k.into(), v);
     }
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn part_obj(part_type: &str, value: &str) -> Value {
@@ -165,7 +165,7 @@ fn resolve_options(arg: Option<&Value>) -> Arc<Mutex<Object>> {
     if let Some(Value::Object(o)) = arg {
         o.clone()
     } else {
-        Arc::new(Mutex::new(Object::new()))
+        vybe_bytecode::heap::alloc(Object::new())
     }
 }
 

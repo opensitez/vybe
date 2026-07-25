@@ -43,11 +43,11 @@ fn bound_iterator_method(
         .insert("name".into(), Value::String(Arc::from(name)));
     fn_obj.properties.insert(
         "__bound_args".into(),
-        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
             Value::Object(receiver.clone()),
-        ])))),
+        ]))),
     );
-    Value::Object(Arc::new(Mutex::new(fn_obj)))
+    Value::Object(vybe_bytecode::heap::alloc(fn_obj))
 }
 
 /// Build a fully-formed Set object from `values`, carrying the same
@@ -66,7 +66,7 @@ pub(crate) fn make_set(values: indexmap::IndexSet<Value>) -> Value {
     // TypeRegistry-driven `STRUCT_GET s "add"` lookup misses.
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("Set")));
-    let set = Arc::new(Mutex::new(obj));
+    let set = vybe_bytecode::heap::alloc(obj);
     if let Some(idx) = SET_ITERATOR_IDX.get() {
         set.lock().unwrap().properties.insert(
             "iterator".into(),
@@ -305,10 +305,10 @@ pub fn register(vm: &mut VM) {
                     let pairs: Vec<Value> = s
                         .iter()
                         .map(|v| {
-                            Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+                            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
                                 v.clone(),
                                 v.clone(),
-                            ]))))
+                            ])))
                         })
                         .collect();
                     return crate::ecma::array::make_array_iterator(pairs);

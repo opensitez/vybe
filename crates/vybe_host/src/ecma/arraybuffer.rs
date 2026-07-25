@@ -63,7 +63,7 @@ fn new_arraybuffer(byte_length: i32, max_byte_length: i32, resizable: bool, shar
     };
     obj.properties
         .insert("__type".into(), Value::String(Arc::from(type_name)));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn is_arraybuffer(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
@@ -109,9 +109,9 @@ fn apply_arraybuffer_receiver_species(result: &Value, receiver: &Arc<Mutex<Objec
             .insert("__proto__".into(), Value::Object(proto));
     }
     if let Some(name) = name {
-        let types = Arc::new(Mutex::new(Object::new_array(vec![Value::String(
+        let types = vybe_bytecode::heap::alloc(Object::new_array(vec![Value::String(
             Arc::from(name.as_str()),
-        )])));
+        )]));
         result_lock
             .properties
             .insert("__types".into(), Value::Object(types));
@@ -309,7 +309,7 @@ fn register_arraybuffer(vm: &mut VM) {
                     new_obj
                         .properties
                         .insert("maxByteLength".into(), Value::I32(slice_len as i32));
-                    let out = Value::Object(Arc::new(Mutex::new(new_obj)));
+                    let out = Value::Object(vybe_bytecode::heap::alloc(new_obj));
                     apply_arraybuffer_receiver_species(&out, &ab);
                     return out;
                 }
@@ -413,7 +413,7 @@ fn register_arraybuffer(vm: &mut VM) {
                 new_obj
                     .properties
                     .insert("detached".into(), Value::Bool(false));
-                return Value::Object(Arc::new(Mutex::new(new_obj)));
+                return Value::Object(vybe_bytecode::heap::alloc(new_obj));
             }
             Value::Null
         }),
@@ -468,7 +468,7 @@ fn register_arraybuffer(vm: &mut VM) {
                 new_obj
                     .properties
                     .insert("detached".into(), Value::Bool(false));
-                return Value::Object(Arc::new(Mutex::new(new_obj)));
+                return Value::Object(vybe_bytecode::heap::alloc(new_obj));
             }
             Value::Null
         }),
@@ -597,7 +597,7 @@ fn register_sharedarraybuffer(vm: &mut VM) {
                     new_obj
                         .properties
                         .insert("maxByteLength".into(), Value::I32(slice_len as i32));
-                    return Value::Object(Arc::new(Mutex::new(new_obj)));
+                    return Value::Object(vybe_bytecode::heap::alloc(new_obj));
                 }
             }
             Value::Null
@@ -648,7 +648,7 @@ pub(crate) fn new_dataview(buffer: Value, byte_offset: i32, byte_length: i32) ->
         .insert("byteLength".into(), Value::I32(byte_length.max(0)));
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("DataView")));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn is_dataview(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
@@ -1379,7 +1379,7 @@ pub fn dispatch_arraybuffer_method(
                 new_obj
                     .properties
                     .insert("__type".into(), Value::String(Arc::from(type_name)));
-                let out = Value::Object(Arc::new(Mutex::new(new_obj)));
+                let out = Value::Object(vybe_bytecode::heap::alloc(new_obj));
                 apply_arraybuffer_receiver_species(&out, &obj);
                 return Some(out);
             }
@@ -1489,7 +1489,7 @@ pub fn dispatch_arraybuffer_method(
             new_obj
                 .properties
                 .insert("__type".into(), Value::String(Arc::from(type_name)));
-            Some(Value::Object(Arc::new(Mutex::new(new_obj))))
+            Some(Value::Object(vybe_bytecode::heap::alloc(new_obj)))
         }
         _ => None,
     }

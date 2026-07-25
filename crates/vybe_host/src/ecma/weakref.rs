@@ -58,7 +58,7 @@ fn new_weakref(target: Value) -> Value {
         .insert("__type".into(), Value::String(Arc::from("WeakRef")));
     obj.properties.insert(WEAKREF_TAG.into(), Value::I32(1));
     obj.properties.insert(WEAKREF_TARGET_PROP.into(), target);
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn new_finalization_registry(callback: Value) -> Value {
@@ -73,9 +73,9 @@ fn new_finalization_registry(callback: Value) -> Value {
     // Entries: Array of `[target, heldValue, unregisterToken]` tuples.
     obj.properties.insert(
         REGISTRY_ENTRIES_PROP.into(),
-        Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new())))),
+        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new()))),
     );
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 // ── Type guards ───────────────────────────────────────────────────
@@ -180,9 +180,9 @@ fn register_finalization_registry_module(vm: &mut VM, module: &'static str) {
             let held = args.get(2).cloned().unwrap_or(Value::Undefined);
             let token = args.get(3).cloned().unwrap_or(Value::Undefined);
 
-            let entry = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+            let entry = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
                 target, held, token,
-            ]))));
+            ])));
 
             let lock = registry.lock().unwrap();
             if let Some(Value::Object(entries)) = lock.properties.get(REGISTRY_ENTRIES_PROP) {
@@ -207,9 +207,9 @@ fn register_finalization_registry_module(vm: &mut VM, module: &'static str) {
             let target = args.get(1).cloned().unwrap_or(Value::Undefined);
             let held = args.get(2).cloned().unwrap_or(Value::Undefined);
             let token = args.get(3).cloned().unwrap_or(Value::Undefined);
-            let entry = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+            let entry = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
                 target, held, token,
-            ]))));
+            ])));
             let lock = registry.lock().unwrap();
             if let Some(Value::Object(entries)) = lock.properties.get(REGISTRY_ENTRIES_PROP) {
                 let entries = entries.clone();
@@ -347,9 +347,9 @@ pub fn dispatch_registry_method(
             let target = args.first().cloned().unwrap_or(Value::Undefined);
             let held = args.get(1).cloned().unwrap_or(Value::Undefined);
             let token = args.get(2).cloned().unwrap_or(Value::Undefined);
-            let entry = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
+            let entry = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
                 target, held, token,
-            ]))));
+            ])));
             let lock = registry.lock().unwrap();
             if let Some(Value::Object(entries)) = lock.properties.get(REGISTRY_ENTRIES_PROP) {
                 let entries = entries.clone();

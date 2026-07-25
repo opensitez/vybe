@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use vybe_bytecode::value::Object;
 use vybe_bytecode::{HostContext, VM, Value};
@@ -38,7 +38,7 @@ pub fn register(vm: &mut VM) {
                 .insert("__type".into(), Value::String(Arc::from("TimerPollable")));
             obj.properties
                 .insert("__ready_at_ns".into(), Value::F64(ready_at_ns));
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 
@@ -57,7 +57,7 @@ pub fn register(vm: &mut VM) {
                 .insert("__type".into(), Value::String(Arc::from("TimerPollable")));
             obj.properties
                 .insert("__ready_at_ns".into(), Value::F64(ready_at_ns));
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 
@@ -123,7 +123,7 @@ pub fn register(vm: &mut VM) {
                 .insert("seconds".into(), Value::F64(dur.as_secs() as f64));
             rec.properties
                 .insert("nanoseconds".into(), Value::F64(dur.subsec_nanos() as f64));
-            Value::Object(Arc::new(Mutex::new(rec)))
+            Value::Object(vybe_bytecode::heap::alloc(rec))
         }),
     );
 
@@ -136,7 +136,7 @@ pub fn register(vm: &mut VM) {
             let mut rec = Object::new();
             rec.properties.insert("seconds".into(), Value::F64(0.0));
             rec.properties.insert("nanoseconds".into(), Value::F64(1.0));
-            Value::Object(Arc::new(Mutex::new(rec)))
+            Value::Object(vybe_bytecode::heap::alloc(rec))
         }),
     );
 
@@ -152,7 +152,7 @@ pub fn register(vm: &mut VM) {
                 .insert("name".into(), Value::String(Arc::from("UTC")));
             rec.properties
                 .insert("in-daylight-saving-time".into(), Value::Bool(false));
-            Value::Object(Arc::new(Mutex::new(rec)))
+            Value::Object(vybe_bytecode::heap::alloc(rec))
         }),
     );
 

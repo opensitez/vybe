@@ -125,7 +125,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, _args| {
             let mut obj = Object::new();
             obj.properties.insert("__type".into(), s("DOMParser"));
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 
@@ -197,7 +197,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, _args| {
             let mut obj = Object::new();
             obj.properties.insert("__type".into(), s("XMLSerializer"));
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 
@@ -1120,7 +1120,7 @@ fn parse_error_document(xml: &str) -> Value {
         o.properties.insert("textContent".into(), s(xml));
         o.properties.insert("id".into(), s(""));
         o.properties.insert("className".into(), s(""));
-        Value::Object(Arc::new(Mutex::new(o)))
+        Value::Object(vybe_bytecode::heap::alloc(o))
     };
     if let Value::Object(d) = &doc {
         if let Value::Object(arr) = d
@@ -1195,7 +1195,7 @@ fn make_element_from_start(e: &quick_xml::events::BytesStart) -> Value {
     }
     o.properties.insert(
         "attributes".into(),
-        Value::Object(Arc::new(Mutex::new(attrs))),
+        Value::Object(vybe_bytecode::heap::alloc(attrs)),
     );
     o.properties.insert("id".into(), s(&id_val));
     o.properties.insert("className".into(), s(&class_val));
@@ -1203,7 +1203,7 @@ fn make_element_from_start(e: &quick_xml::events::BytesStart) -> Value {
     // childNodes / children populated later as parse progresses.
     o.properties.insert("childNodes".into(), make_array(vec![]));
     o.properties.insert("children".into(), make_array(vec![]));
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn make_node(node_type: i32, node_name: &str, value: Option<&str>) -> Value {
@@ -1234,7 +1234,7 @@ fn make_node(node_type: i32, node_name: &str, value: Option<&str>) -> Value {
         o.properties.insert("documentElement".into(), Value::Null);
         o.properties.insert("doctype".into(), Value::Null);
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn make_pi_node(target: &str, data: &str) -> Value {
@@ -1248,7 +1248,7 @@ fn make_pi_node(target: &str, data: &str) -> Value {
     o.properties.insert("target".into(), s(target));
     o.properties.insert("data".into(), s(data));
     o.properties.insert("nodeValue".into(), s(data));
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn push_child(stack: &[Arc<Mutex<Object>>], child: Value) {
@@ -1676,7 +1676,7 @@ fn s(v: &str) -> Value {
 }
 
 fn make_array(elems: Vec<Value>) -> Value {
-    Value::Object(Arc::new(Mutex::new(Object::new_array(elems))))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elems)))
 }
 
 fn empty_array() -> Value {
@@ -1686,7 +1686,7 @@ fn empty_array() -> Value {
 fn make_empty_object() -> Value {
     let mut o = Object::new();
     o.properties.insert("__type".into(), s("NamedNodeMap"));
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 // ── Selectors API Level 1 — parser + matcher ──────────────────────
@@ -2272,7 +2272,7 @@ fn new_element_node(tag: &str, owner: Option<&Arc<Mutex<Object>>>) -> Value {
     attrs.properties.insert("__type".into(), s("NamedNodeMap"));
     o.properties.insert(
         "attributes".into(),
-        Value::Object(Arc::new(Mutex::new(attrs))),
+        Value::Object(vybe_bytecode::heap::alloc(attrs)),
     );
     o.properties.insert("id".into(), s(""));
     o.properties.insert("className".into(), s(""));
@@ -2292,7 +2292,7 @@ fn new_element_node(tag: &str, owner: Option<&Arc<Mutex<Object>>>) -> Value {
             .map(|d| Value::Object(d.clone()))
             .unwrap_or(Value::Null),
     );
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn detach_from_parent(node: &Arc<Mutex<Object>>) {
@@ -2557,7 +2557,7 @@ fn clone_node(node: &Arc<Mutex<Object>>, deep: bool) -> Value {
         }
         clone.properties.insert(
             "attributes".into(),
-            Value::Object(Arc::new(Mutex::new(attrs_clone))),
+            Value::Object(vybe_bytecode::heap::alloc(attrs_clone)),
         );
     }
     clone
@@ -2568,7 +2568,7 @@ fn clone_node(node: &Arc<Mutex<Object>>, deep: bool) -> Value {
         .insert("children".into(), make_array(vec![]));
     drop(n);
 
-    let clone_arc = Arc::new(Mutex::new(clone));
+    let clone_arc = vybe_bytecode::heap::alloc(clone);
     if deep {
         let kids = {
             let n = node.lock().unwrap();
@@ -2625,7 +2625,7 @@ fn new_document_fragment(owner: Option<&Arc<Mutex<Object>>>) -> Value {
             .map(|d| Value::Object(d.clone()))
             .unwrap_or(Value::Null),
     );
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn find_by_local_name(node: &Arc<Mutex<Object>>, local: &str, out: &mut Vec<Value>) {

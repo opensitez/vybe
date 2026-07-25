@@ -135,7 +135,7 @@ fn invoke_magic_callback(callback: &Value, args: &[Value]) -> Option<Value> {
     }
     if o.properties.contains_key("__flatmap_dup") {
         let arr = Object::new_array(vec![x.clone(), x]);
-        return Some(Value::Object(Arc::new(Mutex::new(arr))));
+        return Some(Value::Object(vybe_bytecode::heap::alloc(arr)));
     }
     if o.properties.contains_key("__from_map_double_index") {
         let i = idx.as_i32();
@@ -152,7 +152,7 @@ static ARRAY_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 pub(crate) fn shared_array_prototype() -> Value {
     Value::Object(
         ARRAY_PROTOTYPE
-            .get_or_init(|| Arc::new(Mutex::new(Object::new())))
+            .get_or_init(|| vybe_bytecode::heap::alloc(Object::new()))
             .clone(),
     )
 }
@@ -183,7 +183,7 @@ fn make_array(elements: Vec<Value>) -> Value {
         .insert("__type".into(), Value::String(Arc::from("Array")));
     obj.properties
         .insert("__proto__".into(), shared_array_prototype());
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 /// Marker property set by `ecma:fixedarray.freeze` to forbid
@@ -235,7 +235,7 @@ pub(crate) fn store_hole_indices(object: &mut Object, holes: &BTreeSet<usize>) {
     let holes_obj = match object.properties.get("__holes") {
         Some(Value::Object(existing)) => existing.clone(),
         _ => {
-            let created = Arc::new(Mutex::new(Object::new_array(Vec::new())));
+            let created = vybe_bytecode::heap::alloc(Object::new_array(Vec::new()));
             object
                 .properties
                 .insert("__holes".into(), Value::Object(created.clone()));
@@ -598,7 +598,7 @@ fn array_proto_method(vm: &VM, name: &str) -> Option<Value> {
     fn_obj
         .properties
         .insert("__vybe_method_receiver".into(), Value::Bool(true));
-    Some(Value::Object(Arc::new(Mutex::new(fn_obj))))
+    Some(Value::Object(vybe_bytecode::heap::alloc(fn_obj)))
 }
 
 /// Populate the shared `Array.prototype` with the ECMA-262 §23.1.3
@@ -2235,7 +2235,7 @@ fn iter_result(value: Value, done: bool) -> Value {
     let mut obj = Object::new();
     obj.properties.insert("value".into(), value);
     obj.properties.insert("done".into(), Value::Bool(done));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 /// Build an Array Iterator (§23.1.5) backed by a materialized Vec.
@@ -2254,7 +2254,7 @@ pub(crate) fn make_array_iterator(materialized: Vec<Value>) -> Value {
             receiver_host_fn_ref("ecma:array", "iterNext", *idx),
         );
     }
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn register_iteration(vm: &mut VM) {
@@ -2927,7 +2927,7 @@ fn register_iteration(vm: &mut VM) {
             for (k, v) in groups {
                 out.properties.insert(k, make_array(v));
             }
-            Value::Object(Arc::new(Mutex::new(out)))
+            Value::Object(vybe_bytecode::heap::alloc(out))
         }),
     );
 
@@ -2969,7 +2969,7 @@ fn register_iteration(vm: &mut VM) {
             obj.kind = ObjectKind::Map(map_im);
             obj.properties
                 .insert("size".into(), Value::I32(obj_map_len(&obj) as i32));
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }),
     );
 

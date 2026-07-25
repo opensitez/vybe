@@ -7,7 +7,6 @@
 //! no-ops for the clear* functions.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, Value};
 
@@ -22,7 +21,7 @@ fn make_handle() -> Value {
     o.properties.insert("unref".into(), Value::Undefined);
     o.properties.insert("hasRef".into(), Value::Undefined);
     o.properties.insert("refresh".into(), Value::Undefined);
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 pub fn register(vm: &mut VM) {

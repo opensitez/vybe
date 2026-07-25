@@ -777,6 +777,64 @@ pub struct VM {
     pub context_slots: Vec<Value>,
 }
 
+/// A restorable post-boot baseline for [`VM::snapshot`] / [`VM::reset_to`].
+///
+/// Captures every script-mutable ("bucket B") field's value right after boot,
+/// so a reset returns the VM to a pristine warm state without re-running the
+/// prelude. Code / host-fn / type-registry fields ("bucket A") are never
+/// captured — they don't change per run. The heap portion requires
+/// `heap::enable_tracking()` BEFORE boot to reclaim the script generation
+/// (including cycles); without it the heap restore is a no-op and only the
+/// VM-owned fields reset.
+///
+/// Every field here is captured by VALUE from the live post-boot VM (not
+/// assumed empty), so `reset_to` is a structural restore, not a per-field
+/// "clear on the belief it was empty at boot" guess.
+pub struct VmSnapshot {
+    heap: crate::heap::HeapSnapshot,
+    globals: HashMap<String, Value>,
+    memory: Vec<u8>,
+    extra_memories: Vec<Vec<u8>>,
+    wasm_tables: Vec<Vec<Value>>,
+    dropped_data: HashSet<u32>,
+    dropped_elems: HashSet<u32>,
+    active_memory: usize,
+    handle_table: crate::handle_table::HandleTable,
+    waitable_sets: crate::waitable::WaitableRegistry,
+    cm_tasks: Vec<crate::cm_task::CMTask>,
+    context_slots: Vec<Value>,
+    try_group_counter: u64,
+    cur_fiber_id: u64,
+    next_fiber_id: u64,
+    next_thread_id: i32,
+    next_cm_task_id: u32,
+    // ── Chunk-parallel structures that ACCUMULATE per `run()` (append, not
+    // replace). Truncating them back to boot length on reset drops the prior
+    // run's code — and, security-critically, its embedded string/data CONSTANTS
+    // — so no earlier tenant's script bytes survive in a reused VM.
+    chunks_len: usize,
+    chunk_tag_maps_len: usize,
+    tag_entities_len: usize,
+    // Data-carrying "code-adjacent" fields a script run can extend: the funcref
+    // index space (script closures), cross-language name aliases, and the import
+    // table. Restored by value so a reset leaves them byte-identical to boot.
+    func_table: Vec<Value>,
+    case_aliases: HashMap<String, String>,
+    import_table: Vec<ImportTarget>,
+    // Per-run module payloads that `run()` overwrites only when the new script
+    // HAS them (`if !empty`) — so a later run without segments would otherwise
+    // inherit the prior tenant's embedded data/element bytes. Security: restore
+    // to boot so no earlier script's bytes survive.
+    data_segments: Vec<Vec<u8>>,
+    elem_segments: Vec<Vec<Value>>,
+    module_type_names: Vec<String>,
+    module_prefix: Option<String>,
+    // Coupled with `tag_entities` (maps imported-tag name → index into it). Must
+    // restore together: truncating tag_entities without this would leave a
+    // dangling index a later lookup could read out of bounds.
+    imported_tag_registry: HashMap<String, usize>,
+}
+
 /// A registered finalizer for an object.
 #[derive(Clone)]
 pub(crate) struct FinalizerEntry {
@@ -917,6 +975,132 @@ impl VM {
             waitable_sets: crate::waitable::WaitableRegistry::new(),
             context_slots: Vec::new(),
         }
+    }
+
+    /// Capture the current state as a restorable warm baseline (VM hot-reset,
+    /// Tier 1). Call once right after boot (register_all + prelude run) with
+    /// `heap::enable_tracking()` already on. Cheap: clones `globals` + the small
+    /// component/data fields and snapshots the heap registry (a shallow clone of
+    /// each baseline object's contents). See `vmhotresetplan.md`.
+    pub fn snapshot(&self) -> VmSnapshot {
+        VmSnapshot {
+            heap: crate::heap::snapshot(),
+            globals: self.globals.clone(),
+            memory: self.memory.with_buffer(|b| b.to_vec()),
+            extra_memories: self.extra_memories.clone(),
+            wasm_tables: self.wasm_tables.clone(),
+            dropped_data: self.dropped_data.clone(),
+            dropped_elems: self.dropped_elems.clone(),
+            active_memory: self.active_memory,
+            handle_table: self.handle_table.clone(),
+            waitable_sets: self.waitable_sets.clone(),
+            cm_tasks: self.cm_tasks.clone(),
+            context_slots: self.context_slots.clone(),
+            try_group_counter: self.try_group_counter,
+            cur_fiber_id: self.cur_fiber_id,
+            next_fiber_id: self.next_fiber_id,
+            next_thread_id: self.next_thread_id,
+            next_cm_task_id: self.next_cm_task_id,
+            chunks_len: self.chunks.len(),
+            chunk_tag_maps_len: self.chunk_tag_maps.len(),
+            tag_entities_len: self.tag_entities.len(),
+            func_table: self.func_table.clone(),
+            case_aliases: self.case_aliases.clone(),
+            import_table: self.import_table.clone(),
+            data_segments: self.data_segments.clone(),
+            elem_segments: self.elem_segments.clone(),
+            module_type_names: self.module_type_names.clone(),
+            module_prefix: self.module_prefix.clone(),
+            imported_tag_registry: self.imported_tag_registry.clone(),
+        }
+    }
+
+    /// Restore the VM to a [`snapshot`](VM::snapshot) baseline: free the whole
+    /// post-snapshot script generation (objects + cycles, via `heap::restore`),
+    /// drop script-added globals / restore reassigned ones, reset wasm memory &
+    /// tables to boot bytes, and clear all transient execution state. Leaves the
+    /// VM byte-indistinguishable from a freshly-booted one. Code, host fns, type
+    /// registry, modules, and the debugger/eval/reload hooks are untouched.
+    pub fn reset_to(&mut self, snap: &VmSnapshot) {
+        // 1. Heap: force-clear the script generation (breaks cycles so refcounts
+        //    collapse to 0) and rewire baseline objects to their boot contents.
+        //    Runs FIRST: collect_since clears contents regardless of live roots,
+        //    so cycles break here; steps 2/5 then drop the roots.
+        crate::heap::restore(&snap.heap);
+        // 2. Globals: script-added keys vanish; reassigned baseline keys restored.
+        self.globals = snap.globals.clone();
+        // 3. Wasm linear memory + tables + segment-drop state → boot.
+        self.memory.with_buffer_mut(|b| {
+            b.clear();
+            b.extend_from_slice(&snap.memory);
+        });
+        self.extra_memories = snap.extra_memories.clone();
+        self.wasm_tables = snap.wasm_tables.clone();
+        self.dropped_data = snap.dropped_data.clone();
+        self.dropped_elems = snap.dropped_elems.clone();
+        self.active_memory = snap.active_memory;
+        // 4. Component-model data state — restored from the captured baseline,
+        //    not assumed empty (handle_table can root Values).
+        self.handle_table = snap.handle_table.clone();
+        self.waitable_sets = snap.waitable_sets.clone();
+        self.cm_tasks = snap.cm_tasks.clone();
+        self.context_slots = snap.context_slots.clone();
+        // 4b. Drop the prior run's appended CODE (and its embedded string/data
+        //     constants — security: no earlier tenant's bytes survive) + the
+        //     chunk-parallel structures that grow with it. Everything below the
+        //     boot length is baseline (prelude) and stays. Other per-chunk caches
+        //     keyed by index (block_tables, funcref_cache) are cleared in step 5.
+        self.chunks.truncate(snap.chunks_len);
+        self.chunk_tag_maps.truncate(snap.chunk_tag_maps_len);
+        self.tag_entities.truncate(snap.tag_entities_len);
+        // Restore code-adjacent data fields a run can extend (script funcrefs,
+        // name aliases, resolved imports) to their exact boot value.
+        self.func_table = snap.func_table.clone();
+        self.case_aliases = snap.case_aliases.clone();
+        self.import_table = snap.import_table.clone();
+        // Security: restore per-run module payloads to boot (else a prior
+        // script's data/element bytes or module identity could survive a reset
+        // whose next script happens not to declare its own).
+        self.data_segments = snap.data_segments.clone();
+        self.elem_segments = snap.elem_segments.clone();
+        self.module_type_names = snap.module_type_names.clone();
+        self.module_prefix = snap.module_prefix.clone();
+        self.imported_tag_registry = snap.imported_tag_registry.clone();
+        // 5. Transient execution state — always empty between top-level runs.
+        self.stack.clear();
+        self.frames.clear();
+        self.open_upvalues.clear();
+        self.exception_handlers.clear();
+        self.exec_floors.clear();
+        self.async_floors.clear();
+        self.label_stack.clear();
+        self.active_continuations.clear();
+        self.finalizers.clear();
+        // Detaches (does NOT join) any threads the script spawned — acceptable
+        // for reset-between-runs; a hung script thread is the embedder's concern.
+        self.thread_handles.clear();
+        self.funcref_cache.clear();
+        self.block_tables.clear(); // code-derived cache; rebuilds lazily.
+        // 6. Event loop: reset the SHARED RefCell contents in place so host fns
+        //    holding an `Rc` clone see the drained loop (reassigning the Rc would
+        //    desync them). Drops all queued micro/macrotasks + pending fibers.
+        *self.event_loop.borrow_mut() = EventLoop::new();
+        // 7. Fiber / async scalars back to baseline; per-run flags cleared.
+        self.cur_fiber_id = snap.cur_fiber_id;
+        self.next_fiber_id = snap.next_fiber_id;
+        self.cur_fiber_result_promise = None;
+        self.pending_settled_await = None;
+        self.last_fiber_completion = None;
+        self.last_exception = None;
+        self.pending_exit = false;
+        self.dbg_last_import = None;
+        // 8. A stale callback invoker can root Values across a reset — drop it
+        //    (re-installed on demand by the next host callback).
+        self.callback_invoker = None;
+        // 9. Counters.
+        self.try_group_counter = snap.try_group_counter;
+        self.next_thread_id = snap.next_thread_id;
+        self.next_cm_task_id = snap.next_cm_task_id;
     }
 
     /// Enable or disable execution tracing. When enabled, every opcode
@@ -1310,7 +1494,7 @@ impl VM {
                     };
                     let mut obj = Object::new();
                     obj.kind = ObjectKind::Function(func);
-                    Value::Object(Arc::new(Mutex::new(obj)))
+                    Value::Object(crate::heap::alloc(obj))
                 } else {
                     Value::Null
                 }
@@ -1572,7 +1756,7 @@ impl VM {
         // Store as a lightweight marker — call_indirect will recognize host fn indices
         let mut obj = Object::new();
         obj.kind = ObjectKind::HostFunction(idx);
-        self.func_table[idx] = Value::Object(Arc::new(Mutex::new(obj)));
+        self.func_table[idx] = Value::Object(crate::heap::alloc(obj));
 
         // Mirror the registration into the Module Records registry.
         // First registration under a given specifier auto-creates a
@@ -1922,12 +2106,12 @@ impl VM {
                                 type_id: 0,
                                 fields: Vec::new(),
                             };
-                            Value::Object(Arc::new(Mutex::new(obj)))
+                            Value::Object(crate::heap::alloc(obj))
                         }
                         crate::component::ExportImpl::HostFn(idx) => {
                             let mut obj = crate::value::Object::new();
                             obj.kind = crate::value::ObjectKind::HostFunction(*idx);
-                            Value::Object(Arc::new(Mutex::new(obj)))
+                            Value::Object(crate::heap::alloc(obj))
                         }
                     };
                     // Store in module-scoped globals
@@ -1972,12 +2156,12 @@ impl VM {
                                 type_id: 0,
                                 fields: Vec::new(),
                             };
-                            Value::Object(Arc::new(Mutex::new(obj)))
+                            Value::Object(crate::heap::alloc(obj))
                         }
                         crate::component::ExportImpl::HostFn(idx) => {
                             let mut obj = crate::value::Object::new();
                             obj.kind = crate::value::ObjectKind::HostFunction(*idx);
-                            Value::Object(Arc::new(Mutex::new(obj)))
+                            Value::Object(crate::heap::alloc(obj))
                         }
                     };
                     // Available to this module via its prefix
@@ -2281,7 +2465,7 @@ impl VM {
                                     };
                                     let mut obj = Object::new();
                                     obj.kind = ObjectKind::Function(func);
-                                    Value::Object(Arc::new(Mutex::new(obj)))
+                                    Value::Object(crate::heap::alloc(obj))
                                 } else {
                                     Value::Null
                                 }
@@ -2790,5 +2974,117 @@ impl VM {
                 e
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod reset_tests {
+    use super::*;
+    use crate::value::Object;
+
+    /// End-to-end proof of VM hot-reset: after `reset_to`, a baseline global
+    /// survives with its boot contents, a script-added global is gone, a
+    /// script mutation to a baseline object is undone, and cyclic script
+    /// garbage (which pure Arc refcounting can NEVER free) is reclaimed.
+    #[test]
+    fn reset_to_frees_script_state_including_cycles_and_restores_baseline() {
+        crate::heap::enable_tracking();
+        let mut vm = VM::new();
+
+        // Baseline: a global bound to a tracked heap object with one property.
+        let base_obj = crate::heap::alloc(Object::new());
+        base_obj
+            .lock()
+            .unwrap()
+            .properties
+            .insert("boot".into(), Value::I32(7));
+        vm.globals
+            .insert("baseline".into(), Value::Object(base_obj.clone()));
+
+        let snap = vm.snapshot();
+
+        // Script mutations: (a) a new global, (b) a mutation of the baseline
+        // object, (c) a reference cycle rooted in a new global.
+        let a = crate::heap::alloc(Object::new());
+        let b = crate::heap::alloc(Object::new());
+        a.lock()
+            .unwrap()
+            .properties
+            .insert("b".into(), Value::Object(b.clone()));
+        b.lock()
+            .unwrap()
+            .properties
+            .insert("a".into(), Value::Object(a.clone()));
+        let (wa, wb) = (Arc::downgrade(&a), Arc::downgrade(&b));
+        vm.globals.insert("script".into(), Value::Object(a.clone()));
+        base_obj
+            .lock()
+            .unwrap()
+            .properties
+            .insert("mutated".into(), Value::I32(1));
+        drop(a);
+        drop(b);
+        // Under pure refcounting the cycle is still alive here.
+        assert!(wa.upgrade().is_some() && wb.upgrade().is_some());
+
+        vm.reset_to(&snap);
+
+        // Baseline global survives, boot contents intact, script mutation gone.
+        assert!(vm.globals.contains_key("baseline"));
+        let base = base_obj.lock().unwrap();
+        assert_eq!(base.properties.get("boot"), Some(&Value::I32(7)));
+        assert!(!base.properties.contains_key("mutated"));
+        drop(base);
+        // Script-added global gone.
+        assert!(!vm.globals.contains_key("script"));
+        // Cyclic script garbage reclaimed.
+        assert!(
+            wa.upgrade().is_none() && wb.upgrade().is_none(),
+            "reset_to must free cyclic script garbage"
+        );
+        // Transient state clean.
+        assert!(vm.stack.is_empty() && vm.frames.is_empty());
+    }
+
+    /// Cycle-leak proof: N cyclic structures rooted in script globals are fully
+    /// reclaimed by `reset_to` — the live-object count returns to the post-boot
+    /// baseline, not N-leaked (pure refcounting would leak every cycle forever).
+    #[test]
+    fn reset_to_returns_live_count_to_baseline_after_cycles() {
+        crate::heap::enable_tracking();
+        let mut vm = VM::new();
+        // A baseline object so the baseline count is a real, non-trivial number.
+        let _base = crate::heap::alloc(Object::new());
+        vm.globals
+            .insert("keep".into(), Value::Object(_base.clone()));
+        let snap = vm.snapshot();
+        let baseline = crate::heap::live_count();
+
+        // Allocate 500 independent a↔b cycles, each rooted in its own global.
+        for i in 0..500 {
+            let a = crate::heap::alloc(Object::new());
+            let b = crate::heap::alloc(Object::new());
+            a.lock()
+                .unwrap()
+                .properties
+                .insert("b".into(), Value::Object(b.clone()));
+            b.lock()
+                .unwrap()
+                .properties
+                .insert("a".into(), Value::Object(a.clone()));
+            vm.globals.insert(format!("cyc{i}"), Value::Object(a));
+        }
+        assert!(
+            crate::heap::live_count() >= baseline + 1000,
+            "the 1000 cycle objects must be live before reset"
+        );
+
+        vm.reset_to(&snap);
+
+        assert_eq!(
+            crate::heap::live_count(),
+            baseline,
+            "reset_to must reclaim every cyclic structure — live count back to baseline"
+        );
     }
 }

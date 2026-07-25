@@ -2,7 +2,6 @@
 //!
 //! Reference: <https://nodejs.org/api/tty.html>.
 
-use std::sync::{Arc, Mutex};
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, Value};
 
@@ -39,7 +38,7 @@ fn make_read_stream(fd: i32) -> Value {
     ] {
         o.properties.insert(m.into(), Value::Undefined);
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn make_write_stream(fd: i32) -> Value {
@@ -66,7 +65,7 @@ fn make_write_stream(fd: i32) -> Value {
     ] {
         o.properties.insert(m.into(), Value::Undefined);
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 pub fn register(vm: &mut VM) {

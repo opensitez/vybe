@@ -5,7 +5,7 @@
 //! Phase 1 covers always-available reads + a few mutators. Streams,
 //! event listeners, and `nextTick` are deferred.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{VM, Value};
@@ -30,12 +30,12 @@ fn versions_value() -> Value {
     object
         .properties
         .insert("node".into(), s_val(env!("CARGO_PKG_VERSION")));
-    Value::Object(Arc::new(Mutex::new(object)))
+    Value::Object(vybe_bytecode::heap::alloc(object))
 }
 
 fn argv_value() -> Value {
     let items: Vec<Value> = std::env::args().map(|arg| s_val(&arg)).collect();
-    Value::Object(Arc::new(Mutex::new(Object::new_array(items))))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(items)))
 }
 
 fn argv0_value() -> Value {
@@ -57,7 +57,7 @@ fn env_value() -> Value {
     for (key, value) in std::env::vars() {
         object.properties.insert(key, s_val(&value));
     }
-    Value::Object(Arc::new(Mutex::new(object)))
+    Value::Object(vybe_bytecode::heap::alloc(object))
 }
 
 /// Process start time, captured once at module init so `uptime()`
@@ -158,7 +158,7 @@ pub fn register(vm: &mut VM) {
                 Value::F64(elapsed.as_secs() as f64),
                 Value::F64(elapsed.subsec_nanos() as f64),
             ];
-            Value::Object(Arc::new(Mutex::new(Object::new_array(pair))))
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(pair)))
         }),
     );
 
@@ -177,13 +177,13 @@ pub fn register(vm: &mut VM) {
             o.properties.insert("heapUsed".into(), Value::F64(0.0));
             o.properties.insert("external".into(), Value::F64(0.0));
             o.properties.insert("arrayBuffers".into(), Value::F64(0.0));
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 
     vm.register_host_value("node:process", "title", s_val("vybex"));
     vm.register_host_value("node:process", "execArgv", {
-        Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))))
+        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![])))
     });
     vm.register_host_value("node:process", "exitCode", Value::Undefined);
 
@@ -205,7 +205,7 @@ pub fn register(vm: &mut VM) {
             let mut o = Object::new();
             o.properties.insert("user".into(), Value::F64(0.0));
             o.properties.insert("system".into(), Value::F64(0.0));
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 
@@ -234,7 +234,7 @@ pub fn register(vm: &mut VM) {
             ] {
                 o.properties.insert(key.into(), Value::F64(0.0));
             }
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 
@@ -251,7 +251,7 @@ pub fn register(vm: &mut VM) {
         ] {
             o.properties.insert(key.into(), Value::Bool(false));
         }
-        Value::Object(Arc::new(Mutex::new(o)))
+        Value::Object(vybe_bytecode::heap::alloc(o))
     });
 
     vm.register_host_value("node:process", "release", {
@@ -260,7 +260,7 @@ pub fn register(vm: &mut VM) {
         o.properties.insert("lts".into(), Value::Bool(false));
         o.properties.insert("sourceUrl".into(), s_val(""));
         o.properties.insert("headersUrl".into(), s_val(""));
-        Value::Object(Arc::new(Mutex::new(o)))
+        Value::Object(vybe_bytecode::heap::alloc(o))
     });
 }
 

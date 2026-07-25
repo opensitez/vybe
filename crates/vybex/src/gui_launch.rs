@@ -416,6 +416,49 @@ impl FormApp {
         }
     }
 
+    /// Fire a value-bearing input event (checkbox toggle, radio select, text
+    /// change, slider change). The control's NEW value becomes the handler's
+    /// FIRST argument for an arity-1 handler — matching Flutter's
+    /// `onChanged(v)`. Arity-2+ handlers keep the framework-agnostic
+    /// `(sender, e)` shape (`.NET`/VB), so no language is special-cased.
+    fn fire_value_event(&mut self, control_name: &str, value: vybe_bytecode::Value) {
+        let callback = {
+            let g = self.gui.lock().unwrap();
+            g.get_event_handler(control_name, "Click").cloned()
+        };
+        if let Some(cb) = callback {
+            self.invoke_callback_with_value(&cb, control_name, value);
+        }
+    }
+
+    fn invoke_callback_with_value(
+        &mut self,
+        cb: &vybe_bytecode::Value,
+        control_name: &str,
+        value: vybe_bytecode::Value,
+    ) {
+        let mut vm = self.vm.borrow_mut();
+        let me = vm
+            .globals
+            .get("__f")
+            .cloned()
+            .unwrap_or(vybe_bytecode::Value::Null);
+        let arity = fn_arity(cb);
+        let sender = vybe_bytecode::Value::String(Arc::from(control_name));
+        let result = match arity {
+            0 => vm.invoke(cb, &[]),
+            // Flutter `onChanged(value)` — the new value is the sole argument.
+            1 => vm.invoke(cb, &[value]),
+            // .NET/VB `(sender, e)` — unchanged.
+            2 => vm.invoke(cb, &[me, sender]),
+            _ => vm.invoke(cb, &[me, sender, value]),
+        };
+        if let Err(e) = result {
+            eprintln!("Event handler error: {e}");
+        }
+        drop(vm);
+    }
+
     fn invoke_callback(&mut self, cb: &vybe_bytecode::Value, control_name: &str) {
         let mut vm = self.vm.borrow_mut();
         let me = vm
@@ -528,12 +571,24 @@ impl FormApp {
         }
         for event in events {
             match &event {
-                WidgetEvent::ButtonClicked(name)
-                | WidgetEvent::CheckboxToggled(name, _)
-                | WidgetEvent::RadioSelected(name, _)
-                | WidgetEvent::TextChanged(name, _)
-                | WidgetEvent::LinkClicked(name) => {
+                WidgetEvent::ButtonClicked(name) | WidgetEvent::LinkClicked(name) => {
                     self.fire_click(name);
+                }
+                // Value-bearing input events carry the control's NEW value
+                // (checkbox/radio bool, text string, slider number). Deliver
+                // that value as the handler's first argument so Flutter's
+                // `onChanged(v)` receives it (see `fire_value_event`).
+                WidgetEvent::CheckboxToggled(name, v) | WidgetEvent::RadioSelected(name, v) => {
+                    self.fire_value_event(name, vybe_bytecode::Value::Bool(*v));
+                }
+                WidgetEvent::TextChanged(name, s) => {
+                    self.fire_value_event(
+                        name,
+                        vybe_bytecode::Value::String(Arc::from(s.as_str())),
+                    );
+                }
+                WidgetEvent::SliderChanged(name, v) => {
+                    self.fire_value_event(name, vybe_bytecode::Value::F64(*v as f64));
                 }
                 WidgetEvent::SelectChanged(name, _) | WidgetEvent::ListBoxSelected(name, _) => {
                     let callback = {
@@ -738,7 +793,7 @@ pub(crate) fn fn_arity(val: &vybe_bytecode::Value) -> usize {
 // ── Dialog registration ────────────────────────────────────────────────
 
 fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use vybe_bytecode::Value;
     use vybe_bytecode::value::{Object, ObjectKind};
     use vybe_widgets::dialogs::{FileDialog, FolderDialog};
@@ -842,7 +897,7 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
     let dlg_show_ref = {
         let mut o = Object::new();
         o.kind = ObjectKind::HostFunction(dlg_show_idx);
-        Value::Object(Arc::new(Mutex::new(o)))
+        Value::Object(vybe_bytecode::heap::alloc(o))
     };
     vm.globals.insert("__dlg_show_ref".into(), dlg_show_ref);
 }

@@ -41,6 +41,17 @@ pub(crate) fn get_state() -> Arc<Mutex<SocketState>> {
         .clone()
 }
 
+/// VM hot-reset (bucket C/D): close/drop all open sockets so a reused VM never
+/// carries a prior run's OS socket handles. See `vmhotresetplan.md`.
+pub fn reset() {
+    if let Ok(mut s) = get_state().lock() {
+        s.tcp_streams.clear();
+        s.tcp_listeners.clear();
+        s.pending_accepts.clear();
+        s.udp_sockets.clear();
+    }
+}
+
 fn make_obj(type_name: &str, id: u64) -> Value {
     let mut obj = Object::new();
     obj.properties
@@ -48,7 +59,7 @@ fn make_obj(type_name: &str, id: u64) -> Value {
     obj.properties
         .insert("__socket_id".into(), Value::F64(id as f64));
     obj.properties.insert("connected".into(), Value::Bool(true));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn get_id(args: &[Value]) -> u64 {
@@ -92,7 +103,7 @@ fn tcp_listener_new(args: &[Value]) -> Value {
                 .unwrap()
                 .tcp_listeners
                 .insert(id, listener);
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }
         Err(e) => {
             eprintln!("TcpListener bind error on port {}: {}", requested_port, e);
@@ -211,7 +222,7 @@ fn tcp_connect(args: &[Value]) -> Value {
             obj.properties
                 .insert("port".into(), Value::F64(port as f64));
             get_state().lock().unwrap().tcp_streams.insert(id, stream);
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }
         Err(e) => {
             eprintln!("TcpClient connect error: {}", e);
@@ -248,7 +259,7 @@ fn udp_new(args: &[Value]) -> Value {
             obj.properties
                 .insert("port".into(), Value::F64(port as f64));
             get_state().lock().unwrap().udp_sockets.insert(id, socket);
-            Value::Object(Arc::new(Mutex::new(obj)))
+            Value::Object(vybe_bytecode::heap::alloc(obj))
         }
         Err(e) => {
             eprintln!("UdpClient bind error: {}", e);
@@ -1019,7 +1030,7 @@ fn make_network_handle() -> Value {
     let mut obj = Object::new();
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("Network")));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn make_tcp_socket_resource(family: &str) -> Value {
@@ -1030,7 +1041,7 @@ fn make_tcp_socket_resource(family: &str) -> Value {
         .insert("__state".into(), Value::String(Arc::from("unbound")));
     obj.properties
         .insert("__address_family".into(), Value::String(Arc::from(family)));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn make_udp_socket_resource(family: &str) -> Value {
@@ -1041,7 +1052,7 @@ fn make_udp_socket_resource(family: &str) -> Value {
         .insert("__state".into(), Value::String(Arc::from("unbound")));
     obj.properties
         .insert("__address_family".into(), Value::String(Arc::from(family)));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn make_input_stream(socket_id: u64) -> Value {
@@ -1050,7 +1061,7 @@ fn make_input_stream(socket_id: u64) -> Value {
         .insert("__type".into(), Value::String(Arc::from("InputStream")));
     obj.properties
         .insert("__socket_id".into(), Value::F64(socket_id as f64));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn make_output_stream(socket_id: u64) -> Value {
@@ -1059,7 +1070,7 @@ fn make_output_stream(socket_id: u64) -> Value {
         .insert("__type".into(), Value::String(Arc::from("OutputStream")));
     obj.properties
         .insert("__socket_id".into(), Value::F64(socket_id as f64));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn make_resolve_address_stream(addresses: Vec<Value>) -> Value {
@@ -1071,7 +1082,7 @@ fn make_resolve_address_stream(addresses: Vec<Value>) -> Value {
     obj.properties
         .insert("__addresses".into(), value_array_inner(addresses));
     obj.properties.insert("__pos".into(), Value::F64(0.0));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn make_incoming_datagram_stream(socket: Value) -> Value {
@@ -1081,7 +1092,7 @@ fn make_incoming_datagram_stream(socket: Value) -> Value {
         Value::String(Arc::from("IncomingDatagramStream")),
     );
     obj.properties.insert("__socket".into(), socket);
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn make_outgoing_datagram_stream(socket: Value) -> Value {
@@ -1091,7 +1102,7 @@ fn make_outgoing_datagram_stream(socket: Value) -> Value {
         Value::String(Arc::from("OutgoingDatagramStream")),
     );
     obj.properties.insert("__socket".into(), socket);
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn make_dns_host_entry(host: &str) -> Value {
@@ -1107,7 +1118,7 @@ fn make_dns_host_entry(host: &str) -> Value {
                 .collect(),
         ),
     );
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn resolve_name_strings(host: &str) -> Vec<String> {
@@ -1130,7 +1141,7 @@ pub(crate) fn make_pollable(target: Arc<Mutex<Object>>) -> Value {
         .insert("__type".into(), Value::String(Arc::from("Pollable")));
     obj.properties
         .insert("__target".into(), Value::Object(target));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn write_dotnet_stream_text(target: Option<&Value>, text: &str) -> Value {
@@ -1209,7 +1220,7 @@ fn load_file_reader_state(obj: &mut Object, path: &Arc<str>) {
                 .collect();
             obj.properties.insert(
                 "__lines".into(),
-                Value::Object(Arc::new(Mutex::new(Object::new_array(lines)))),
+                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(lines))),
             );
             obj.properties.insert("__pos".into(), Value::F64(0.0));
         }
@@ -1761,7 +1772,7 @@ fn make_ip_socket_address(host: &str, port: u16, family: &str) -> Value {
         .insert("port".into(), Value::F64(port as f64));
     obj.properties
         .insert("address".into(), ip_address_value(host, family));
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(vybe_bytecode::heap::alloc(obj))
 }
 
 fn ip_address_value(host: &str, family: &str) -> Value {
@@ -1788,7 +1799,7 @@ fn ip_address_value(host: &str, family: &str) -> Value {
 }
 
 pub(crate) fn value_array(elements: Vec<Value>) -> Value {
-    Value::Object(Arc::new(Mutex::new(Object::new_array(elements))))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elements)))
 }
 
 fn value_array_inner(elements: Vec<Value>) -> Value {
@@ -2488,7 +2499,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
                                 "remote-address".into(),
                                 make_ip_socket_address(&addr.ip().to_string(), addr.port(), family),
                             );
-                            datagrams.push(Value::Object(Arc::new(Mutex::new(dg))));
+                            datagrams.push(Value::Object(vybe_bytecode::heap::alloc(dg)));
                         }
                         Err(_) => break,
                     }

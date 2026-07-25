@@ -131,7 +131,7 @@ fn make_stack_overflow_error() -> Value {
         "message".into(),
         Value::String(Arc::from("Maximum call stack size exceeded")),
     );
-    Value::Object(Arc::new(Mutex::new(obj)))
+    Value::Object(crate::heap::alloc(obj))
 }
 
 impl VM {
@@ -537,7 +537,7 @@ impl VM {
                 type_id: 0,
                 fields: Vec::new(),
             };
-            let entry = Value::Object(Arc::new(Mutex::new(fn_obj)));
+            let entry = Value::Object(crate::heap::alloc(fn_obj));
             let state = ContinuationState {
                 entry,
                 saved: std::sync::Mutex::new(None),
@@ -561,10 +561,10 @@ impl VM {
                 };
                 cont.properties.insert(
                     "__bound_args".into(),
-                    Value::Object(Arc::new(Mutex::new(bound))),
+                    Value::Object(crate::heap::alloc(bound)),
                 );
             }
-            self.push(Value::Object(Arc::new(Mutex::new(cont))))?;
+            self.push(Value::Object(crate::heap::alloc(cont)))?;
             return Ok(());
         }
         let arity = func.arity as usize;
@@ -779,7 +779,7 @@ impl VM {
                         wrapped
                             .properties
                             .insert(RECEIVER_MARKER.into(), Value::Bool(true));
-                        Value::Object(Arc::new(Mutex::new(wrapped)))
+                        Value::Object(crate::heap::alloc(wrapped))
                     } else {
                         self.func_table[*idx].clone()
                     }
@@ -789,7 +789,7 @@ impl VM {
                     obj.kind = ObjectKind::HostFunction(*idx);
                     obj.properties
                         .insert(RECEIVER_MARKER.into(), Value::Bool(true));
-                    Value::Object(Arc::new(Mutex::new(obj)))
+                    Value::Object(crate::heap::alloc(obj))
                 }
             }
             crate::typedef::Method::ChunkFn(idx) => {
@@ -808,7 +808,7 @@ impl VM {
                     type_id: 0,
                     fields: Vec::new(),
                 };
-                Value::Object(Arc::new(Mutex::new(obj)))
+                Value::Object(crate::heap::alloc(obj))
             }
         }
     }

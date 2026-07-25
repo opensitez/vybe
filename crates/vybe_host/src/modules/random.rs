@@ -25,7 +25,7 @@
 //!
 //! [`wasi-random`/random.wit]: proposals/WASI/proposals/random/wit/random.wit
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::value::Object;
 use vybe_bytecode::{HostContext, VM, Value};
 
@@ -64,7 +64,7 @@ fn random_bytes_value(n: usize) -> Value {
     for _ in 0..n {
         bytes.push(Value::F64((next_u64() & 0xFF) as f64));
     }
-    Value::Object(Arc::new(Mutex::new(Object::new_array(bytes))))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(bytes)))
 }
 
 pub fn register(vm: &mut VM) {
@@ -116,7 +116,7 @@ pub fn register(vm: &mut VM) {
             let a = next_u64();
             let b = next_u64();
             let pair = vec![Value::F64(a as f64), Value::F64(b as f64)];
-            Value::Object(Arc::new(Mutex::new(Object::new_array(pair))))
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(pair)))
         }),
     );
 

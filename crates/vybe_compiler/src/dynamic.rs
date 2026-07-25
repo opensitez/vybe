@@ -479,7 +479,7 @@ fn eval_value_is_copyable(_v: &Value) -> bool {
 }
 
 pub fn install_chunk_globals(vm: &mut VM, chunks: &[Chunk], base_chunk_index: usize) {
-    use std::sync::{Arc, Mutex};
+    
 
     for (idx, chunk) in chunks.iter().enumerate() {
         if !should_publish_chunk_name(&chunk.name) {
@@ -494,7 +494,7 @@ pub fn install_chunk_globals(vm: &mut VM, chunks: &[Chunk], base_chunk_index: us
         };
         let mut obj = Object::new();
         obj.kind = ObjectKind::Function(func);
-        let val = Value::Object(Arc::new(Mutex::new(obj)));
+        let val = Value::Object(vybe_bytecode::heap::alloc(obj));
         vm.globals.insert(chunk.name.to_lowercase(), val);
     }
 }
@@ -1458,8 +1458,8 @@ fn throw_eval_error(ctx: &mut HostContext, kind: &str, message: &str) -> Value {
         Value::String(Arc::from("Error")),
     ]);
     obj.properties
-        .insert("__types".into(), Value::Object(Arc::new(Mutex::new(chain))));
-    ctx.throw_value(Value::Object(Arc::new(Mutex::new(obj))));
+        .insert("__types".into(), Value::Object(vybe_bytecode::heap::alloc(chain)));
+    ctx.throw_value(Value::Object(vybe_bytecode::heap::alloc(obj)));
     Value::Undefined
 }
 
@@ -1608,7 +1608,7 @@ fn ensure_js_runtime_registered(vm: &mut VM) {
             .insert("name".into(), Value::String(Arc::from("eval")));
         obj.kind = ObjectKind::HostFunction(idx);
         vm.globals
-            .insert("eval".to_string(), Value::Object(Arc::new(Mutex::new(obj))));
+            .insert("eval".to_string(), Value::Object(vybe_bytecode::heap::alloc(obj)));
     }
 }
 
@@ -1700,7 +1700,7 @@ fn dynamic_host_function_value(
         .properties
         .insert("__proto__".into(), function_proto.clone());
 
-    let function_value = Value::Object(Arc::new(Mutex::new(function_obj)));
+    let function_value = Value::Object(vybe_bytecode::heap::alloc(function_obj));
     let mut prototype = Object::new();
     prototype
         .properties
@@ -1713,7 +1713,7 @@ fn dynamic_host_function_value(
     if let Value::Object(function_obj) = &function_value {
         function_obj.lock().unwrap().properties.insert(
             "prototype".into(),
-            Value::Object(Arc::new(Mutex::new(prototype))),
+            Value::Object(vybe_bytecode::heap::alloc(prototype)),
         );
     }
 

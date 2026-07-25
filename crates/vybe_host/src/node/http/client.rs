@@ -3,7 +3,7 @@
 //! Registers STATUS_CODES, METHODS, Agent, createServer, request, get,
 //! IncomingMessage, ServerResponse and companion constants.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, Value};
 
@@ -16,11 +16,11 @@ fn stub() -> Value {
 }
 
 fn make_empty_obj() -> Value {
-    Value::Object(Arc::new(Mutex::new(Object::new())))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new()))
 }
 
 fn make_empty_arr() -> Value {
-    Value::Object(Arc::new(Mutex::new(Object::new_array(Vec::new()))))
+    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))
 }
 
 fn make_client_request(method: &str, host: &str, path: &str) -> Value {
@@ -47,7 +47,7 @@ fn make_client_request(method: &str, host: &str, path: &str) -> Value {
     ] {
         o.properties.insert(m.into(), stub());
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn make_agent(max_sockets: i32) -> Value {
@@ -72,7 +72,7 @@ fn make_agent(max_sockets: i32) -> Value {
     ] {
         o.properties.insert(m.into(), stub());
     }
-    Value::Object(Arc::new(Mutex::new(o)))
+    Value::Object(vybe_bytecode::heap::alloc(o))
 }
 
 fn parse_url(url: &str) -> (String, String) {
@@ -173,7 +173,7 @@ pub fn register(vm: &mut VM) {
                 o.properties
                     .insert((*code).into(), Value::String(Arc::from(*text)));
             }
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 
@@ -222,7 +222,7 @@ pub fn register(vm: &mut VM) {
                 .iter()
                 .map(|m| Value::String(Arc::from(*m)))
                 .collect();
-            Value::Object(Arc::new(Mutex::new(Object::new_array(elems))))
+            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elems)))
         }),
     );
 
@@ -305,7 +305,7 @@ pub fn register(vm: &mut VM) {
             ] {
                 o.properties.insert(m.into(), stub());
             }
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 
@@ -393,7 +393,7 @@ pub fn register(vm: &mut VM) {
             ] {
                 o.properties.insert(m.into(), stub());
             }
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 
@@ -434,7 +434,7 @@ pub fn register(vm: &mut VM) {
             ] {
                 o.properties.insert(m.into(), stub());
             }
-            Value::Object(Arc::new(Mutex::new(o)))
+            Value::Object(vybe_bytecode::heap::alloc(o))
         }),
     );
 }
