@@ -4,6 +4,70 @@ use vybe_emitter::instructions::{core_wasm, host};
 
 use vybe_emitter::{collections, dict, ops, strings, tuples};
 
+/// Merge every `[k, v]` entry of `src` into the Map in `recv` (Python
+/// `dict.update`). Loops `entries(src)` and calls the shared `ecma:map.set`.
+fn emit_map_merge_into(chunks: &mut [Chunk], current: usize, recv: u16, src: u16, line: u32) {
+    let c = &mut chunks[current];
+    let entries = c.alloc_scratch(1);
+    let n = c.alloc_scratch(1);
+    let i = c.alloc_scratch(1);
+    let pair = c.alloc_scratch(1);
+
+    c.emit_op_u16(Op::LOCAL_GET, src, line);
+    let ent = c.add_import("ecma:object", "entries");
+    c.emit_call(ent, 1, line);
+    c.emit_op_u16(Op::LOCAL_SET, entries, line);
+    c.emit_op_u16(Op::LOCAL_GET, entries, line);
+    c.emit_op(Op::ARRAY_LENGTH, line);
+    c.emit_op_u16(Op::LOCAL_SET, n, line);
+    c.emit_i32_const(0, line);
+    c.emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let block = c.emit_block(line);
+    let (lp, _) = c.emit_loop_s(line);
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_op_u16(Op::LOCAL_GET, n, line);
+    c.emit_op(Op::I32_GE_S, line);
+    c.emit_br_if(1, line);
+    // pair = entries[i]
+    c.emit_op_u16(Op::LOCAL_GET, entries, line);
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_op(Op::ARRAY_GET, line);
+    c.emit_op_u16(Op::LOCAL_SET, pair, line);
+    // recv.set(pair[0], pair[1])
+    c.emit_op_u16(Op::LOCAL_GET, recv, line);
+    c.emit_op_u16(Op::LOCAL_GET, pair, line);
+    c.emit_i32_const(0, line);
+    c.emit_op(Op::ARRAY_GET, line);
+    c.emit_op_u16(Op::LOCAL_GET, pair, line);
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::ARRAY_GET, line);
+    let set = c.add_import("ecma:map", "set");
+    c.emit_call(set, 3, line);
+    c.emit_op(Op::DROP, line);
+    // i += 1
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::I32_ADD, line);
+    c.emit_op_u16(Op::LOCAL_SET, i, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.patch_loop(lp);
+    c.emit_end(line);
+    c.patch_block(block);
+}
+
+/// Push i32 `1` if the value in `slot` is a `Map` (Python dicts are Maps),
+/// else `0`. Uses the ECMA `Object.prototype.toString` tag.
+fn emit_is_map(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    let tag = chunks[current].add_import("ecma:object", "toStringTag");
+    chunks[current].emit_call(tag, 1, line);
+    chunks[current].emit_string_const("[object Map]", line);
+    let eq = chunks[current].add_import("wasm:js-string", "equals");
+    chunks[current].emit_call(eq, 2, line);
+}
+
 fn call_import(
     chunks: &mut [Chunk],
     current: usize,
@@ -281,7 +345,16 @@ pub fn emit_popitem(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     dict::emit_get(chunks, current, line);
     let valv = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, valv, line);
-    // delete the property so the dict actually shrinks
+    // delete the entry so the dict actually shrinks — Map-aware. A Map-backed
+    // dict needs `ecma:map.delete` (object.delete is a no-op on a Map); the
+    // legacy Ordinary dict uses object.delete + a `__keys` trim.
+    emit_is_map(chunks, current, d, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, d, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keyv, line);
+    call_import(chunks, current, "ecma:map", "delete", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, d, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, keyv, line);
     call_import(chunks, current, "ecma:object", "delete", 2, line);
@@ -301,6 +374,7 @@ pub fn emit_popitem(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, keyv, line);
     collections::emit_remove_value(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     // return (key, val)
     chunks[current].emit_op_u16(Op::LOCAL_GET, keyv, line);
@@ -584,7 +658,9 @@ pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     let str_includes = chunk.add_import("ecma:string", "includes");
     let is_array = chunk.add_import("ecma:array", "isArray");
     let arr_includes = chunk.add_import("ecma:array", "includes");
-    let has_own = chunk.add_import("ecma:object", "hasOwn");
+    // `hasIn` is Map-aware (`ObjectKind::Map` → `contains_key`) as well as
+    // Ordinary — Python dicts are Maps, same as PHP arrays.
+    let has_own = chunk.add_import("ecma:object", "hasIn");
 
     let needle = chunk.alloc_scratch(1);
     let container = chunk.alloc_scratch(1);
@@ -682,6 +758,14 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     let keys_key =
         chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
 
+    // Map-backed dict → shared `ecma:map.clear`.
+    emit_is_map(chunks, current, recv, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    call_import(chunks, current, "ecma:map", "clear", 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_else(line);
+
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -705,6 +789,7 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     dict::emit_method_clear_stack(chunks, current, line);
     chunks[current].emit_end(line);
+    chunks[current].emit_end(line); // close the is-Map outer if
 }
 
 /// `set(iterable)` / `frozenset(iterable)`. `ecma:set.fromIterable` only
@@ -712,6 +797,15 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 /// map would yield an empty set. Normalize through `ecma:array.from` first —
 /// it materializes a set's values, a string's chars, a map's pairs, or copies
 /// an array — then build the set from that array.
+/// `__py_sort_by_key(array, key_fn)` → the array sorted by `key_fn(x)`, reusing
+/// the shared key-sort primitive. Python `sorted(x, key=f)` routes here.
+pub fn emit_sort_by_key(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line); // array
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line); // key_fn
+    collections::emit_sort_by_key_in_place(chunks, current, line);
+}
+
 pub fn emit_make_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc == 0 {
         call_import(chunks, current, "ecma:set", "new", 0, line);
@@ -719,6 +813,27 @@ pub fn emit_make_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     }
     call_import(chunks, current, "ecma:array", "from", 1, line);
     call_import(chunks, current, "ecma:set", "fromIterable", 1, line);
+}
+
+/// `frozenset(iterable)` — a real `ecma:set` (so every set op/method works),
+/// stamped `__frozenset = true` so repr renders `frozenset({...})`. Bypasses the
+/// shared-compiler `frozenset` special-case via the walker's `__py_frozenset`.
+pub fn emit_frozenset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_make_set(chunks, current, argc, line); // [set]
+    let c = &mut chunks[current];
+    // Stamp `__type = "Set"` — `ecma:set.new` (empty case) omits it, which would
+    // make repr skip the set branch and render `frozenset()` as "".
+    c.emit_dup(line);
+    c.emit_string_const("Set", line);
+    let tk = c.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__type")));
+    c.emit_op_u16(Op::STRUCT_SET, tk, line);
+    c.emit_op(Op::DROP, line);
+    // Stamp `__frozenset = true` so repr renders `frozenset({...})`.
+    c.emit_dup(line);
+    core_wasm::bool_const(c, line, true);
+    let k = c.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__frozenset")));
+    c.emit_op_u16(Op::STRUCT_SET, k, line);
+    c.emit_op(Op::DROP, line);
 }
 
 /// Set predicate methods (`issubset`/`issuperset`/`isdisjoint`) compose the
@@ -795,6 +910,14 @@ pub fn emit_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     let keys_key =
         chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
 
+    // Map-backed dict → new Map from its entries (shallow copy).
+    emit_is_map(chunks, current, recv, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    call_import(chunks, current, "ecma:object", "entries", 1, line);
+    call_import(chunks, current, "ecma:map", "fromEntries", 1, line);
+    chunks[current].emit_else(line);
+
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -826,6 +949,7 @@ pub fn emit_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:object", "assign", 2, line);
     chunks[current].emit_end(line);
+    chunks[current].emit_end(line); // close the is-Map outer if
 }
 
 pub fn emit_update(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -834,6 +958,13 @@ pub fn emit_update(chunks: &mut [Chunk], current: usize, line: u32) {
     let src = base + 1;
     let keys_key =
         chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
+
+    // Map-backed dict → merge src's entries in via shared `ecma:map.set`.
+    emit_is_map(chunks, current, recv, line);
+    chunks[current].emit_if_value(line);
+    emit_map_merge_into(chunks, current, recv, src, line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
@@ -854,6 +985,7 @@ pub fn emit_update(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_end(line);
     chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_end(line); // close the is-Map outer if
 }
 
 fn emit_set_update_call(chunks: &mut [Chunk], current: usize, func: &str, line: u32) {
@@ -988,11 +1120,21 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
             chunks[current].emit_op(Op::NULL, line);
         }
         chunks[current].emit_else(line);
-        // present → delete the property natively and return the value
+        // present → delete the entry (Map-aware, like PHP's array adapter) and
+        // return the value. A Map-backed dict needs `ecma:map.delete`;
+        // `ecma:object.delete` is a no-op on a Map.
+        emit_is_map(chunks, current, recv, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+        call_import(chunks, current, "ecma:map", "delete", 2, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_else(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
         call_import(chunks, current, "ecma:object", "delete", 2, line);
         chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_end(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
         chunks[current].emit_end(line);
 

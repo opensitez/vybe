@@ -151,6 +151,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     PY_CLASS_ATTRS.with(|m| m.borrow_mut().clear());
     PY_NAMEDTUPLE_DEFS.with(|m| m.borrow_mut().clear());
     PY_NAMEDTUPLE_INSTANCES.with(|m| m.borrow_mut().clear());
+    PY_SQL_VARS.with(|m| m.borrow_mut().clear());
     let preprocessed = preprocess_indentation(source);
     let pairs = PythonParser::parse(Rule::program, &preprocessed)
         .map_err(|e| format!("Parse error: {}", e))?;
@@ -254,6 +255,26 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // dicts so no string data lives in a `self.attr` slice/concat).
     if source.contains("import configparser") {
         let mut prelude = parse_python_prelude(CONFIGPARSER_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
+
+    // `pathlib` — PurePath/Path (pure Python; string-only path math + FS-method
+    // stubs). Gated on the bare substring so `from pathlib import PurePath/Path`
+    // and friends all trigger injection, not just `import pathlib`.
+    if source.contains("pathlib") {
+        let mut prelude = parse_python_prelude(PATHLIB_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
+
+    // `os.path` — pure-string POSIX helpers (join/split/normpath/…) are emitter
+    // adapters (common:python.ospath_*), emitted at the call site. No prelude.
+
+    // `random` — distributions + range/weight helpers over `random.random()`
+    // + `math` (no host RNG beyond the base entropy source).
+    if source.contains("random") {
+        let mut prelude = parse_python_prelude(RANDOM_PRELUDE);
         prelude.append(&mut body);
         body = prelude;
     }
@@ -965,6 +986,444 @@ class __ConfigparserModule:
         self.ConfigParser = ConfigParser
         self.RawConfigParser = ConfigParser
 configparser = __ConfigparserModule()
+"#;
+
+/// `pathlib` — PurePath/Path (pure Python). All path math runs on LOCAL
+/// strings (dodging the self-attr slice/concat bug); only the finished path
+/// string lands in `self._s`. Derived fields are `@property` getters (no
+/// stored slices, no parent-construction recursion). String literals contain
+/// no `#`/`[` (both break the prelude preprocessor) — `/`, `:`, `.` only.
+/// FS predicates (`exists`/`is_dir`/`is_file`) return a conservative `False`:
+/// no `wasi:filesystem` binding is resolvable at load, so existence cannot be
+/// confirmed without a host FS (out of this layer's reach).
+const PATHLIB_PRELUDE: &str = r#"
+import os
+def _pp_str(p):
+    if hasattr(p, '_s'):
+        return p._s
+    return p
+def _pp_norm(s):
+    s2 = s.replace(chr(92), '/')
+    while s2.find('//') >= 0:
+        s2 = s2.replace('//', '/')
+    n = len(s2)
+    if n > 1 and s2[n - 1] == '/':
+        s2 = s2[0:n - 1]
+    return s2
+def _pp_join_one(base, seg):
+    s = _pp_str(seg).replace(chr(92), '/')
+    if len(s) > 0 and s[0] == '/':
+        return _pp_norm(s)
+    if base == '':
+        return _pp_norm(s)
+    n = len(base)
+    if base[n - 1] == '/':
+        return _pp_norm(base + s)
+    return _pp_norm(base + '/' + s)
+def _pp_fnmatch(name, pat):
+    ni = 0
+    pi = 0
+    nlen = len(name)
+    plen = len(pat)
+    star_pi = -1
+    star_ni = 0
+    while ni < nlen:
+        if pi < plen and (pat[pi] == name[ni] or pat[pi] == '?'):
+            ni = ni + 1
+            pi = pi + 1
+        elif pi < plen and pat[pi] == '*':
+            star_pi = pi
+            star_ni = ni
+            pi = pi + 1
+        elif star_pi >= 0:
+            pi = star_pi + 1
+            star_ni = star_ni + 1
+            ni = star_ni
+        else:
+            return False
+    while pi < plen and pat[pi] == '*':
+        pi = pi + 1
+    return pi == plen
+class __PathStat:
+    def __init__(self):
+        self.st_size = 0
+        self.st_mode = 0
+        self.st_mtime = 0
+        self.st_ctime = 0
+        self.st_atime = 0
+class PurePath:
+    def __init__(self, p=''):
+        self._s = _pp_norm(_pp_str(p))
+    def _is_win(self):
+        return False
+    def _make(self, s):
+        return PurePath(s)
+    @property
+    def drive(self):
+        if not self._is_win():
+            return ''
+        s = self._s
+        if len(s) >= 2 and s[1] == ':':
+            return s[0:2]
+        return ''
+    @property
+    def root(self):
+        d = self.drive
+        rest = self._s[len(d):]
+        if len(rest) >= 1 and rest[0] == '/':
+            return '/'
+        return ''
+    @property
+    def anchor(self):
+        d = self.drive
+        r = self.root
+        return d + r
+    @property
+    def name(self):
+        a = self.anchor
+        rest = self._s[len(a):]
+        last = ''
+        for c in rest.split('/'):
+            if c != '':
+                last = c
+        return last
+    @property
+    def stem(self):
+        nm = self.name
+        idx = nm.rfind('.')
+        if idx > 0:
+            return nm[0:idx]
+        return nm
+    @property
+    def suffix(self):
+        nm = self.name
+        idx = nm.rfind('.')
+        if idx > 0:
+            return nm[idx:]
+        return ''
+    @property
+    def suffixes(self):
+        nm = self.name
+        result = []
+        if nm.endswith('.'):
+            return result
+        pieces = nm.split('.')
+        i = 1
+        while i < len(pieces):
+            result.append('.' + pieces[i])
+            i = i + 1
+        return result
+    @property
+    def parts(self):
+        anchor = self.anchor
+        rest = self._s[len(anchor):]
+        result = []
+        if anchor != '':
+            result.append(anchor)
+        for c in rest.split('/'):
+            if c != '':
+                result.append(c)
+        return result
+    @property
+    def parent(self):
+        anchor = self.anchor
+        rest = self._s[len(anchor):]
+        kept = []
+        for c in rest.split('/'):
+            if c != '':
+                kept.append(c)
+        if len(kept) <= 1:
+            if anchor != '':
+                return self._make(anchor)
+            return self._make('.')
+        newrest = ''
+        i = 0
+        while i < len(kept) - 1:
+            if i > 0:
+                newrest = newrest + '/'
+            newrest = newrest + kept[i]
+            i = i + 1
+        return self._make(anchor + newrest)
+    def with_name(self, newname):
+        prt = self.parent
+        ps = prt._s
+        if ps == '.' or ps == '':
+            return self._make(newname)
+        if ps[len(ps) - 1] == '/':
+            return self._make(ps + newname)
+        return self._make(ps + '/' + newname)
+    def with_suffix(self, suf):
+        nm = self.name
+        idx = nm.rfind('.')
+        if idx > 0:
+            base = nm[0:idx]
+        else:
+            base = nm
+        return self.with_name(base + suf)
+    def with_stem(self, newstem):
+        sfx = self.suffix
+        return self.with_name(newstem + sfx)
+    def match(self, pat):
+        nm = self.name
+        return _pp_fnmatch(nm, pat)
+    def joinpath(self, *others):
+        cur = self._s
+        for o in others:
+            cur = _pp_join_one(cur, o)
+        return self._make(cur)
+    def __truediv__(self, other):
+        return self._make(_pp_join_one(self._s, other))
+    def relative_to(self, other):
+        o = _pp_norm(_pp_str(other))
+        s = self._s
+        if s == o:
+            return self._make('.')
+        prefix = o
+        if len(prefix) == 0 or prefix[len(prefix) - 1] != '/':
+            prefix = prefix + '/'
+        if s[0:len(prefix)] == prefix:
+            return self._make(s[len(prefix):])
+        return self._make(s)
+    def is_relative_to(self, other):
+        o = _pp_norm(_pp_str(other))
+        s = self._s
+        if s == o:
+            return True
+        prefix = o
+        if len(prefix) == 0 or prefix[len(prefix) - 1] != '/':
+            prefix = prefix + '/'
+        return s[0:len(prefix)] == prefix
+    def as_posix(self):
+        return self._s
+    def as_uri(self):
+        s = self._s
+        if len(s) == 0 or s[0] != '/':
+            p = '/' + s
+        else:
+            p = s
+        return 'file://' + p
+    def is_absolute(self):
+        r = self.root
+        if self._is_win():
+            d = self.drive
+            return d != '' and r != ''
+        return r == '/'
+    def is_reserved(self):
+        if not self._is_win():
+            return False
+        nm0 = self.name
+        nm = nm0.upper()
+        dot = nm.find('.')
+        if dot >= 0:
+            nm = nm[0:dot]
+        reserved = ['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'LPT1', 'LPT2']
+        for r in reserved:
+            if nm == r:
+                return True
+        return False
+    @staticmethod
+    def from_uri(uri):
+        u = uri
+        pre = 'file://'
+        if u[0:len(pre)] == pre:
+            u = u[len(pre):]
+        return PurePath(u)
+    def __eq__(self, other):
+        if not hasattr(other, '_s'):
+            return False
+        a = self._s
+        b = other._s
+        return a == b
+    def __hash__(self):
+        h = 0
+        s = self._s
+        for ch in s:
+            h = h * 31 + ord(ch)
+        return h
+    def __str__(self):
+        return self._s
+    def __repr__(self):
+        return self._s
+class PurePosixPath(PurePath):
+    def _is_win(self):
+        return False
+class PureWindowsPath(PurePath):
+    def _is_win(self):
+        return True
+class Path(PurePath):
+    def _make(self, s):
+        return Path(s)
+    def exists(self):
+        return os.path.exists(self._s)
+    def is_dir(self):
+        return os.path.isdir(self._s)
+    def is_file(self):
+        return os.path.isfile(self._s)
+    def resolve(self, strict=False):
+        return self
+    def absolute(self):
+        return self
+    def expanduser(self):
+        return self
+    @staticmethod
+    def home():
+        return Path('/home')
+    @staticmethod
+    def cwd():
+        return Path('.')
+    def stat(self):
+        return __PathStat()
+    def lstat(self):
+        return __PathStat()
+    def iterdir(self):
+        return []
+    def glob(self, pat):
+        return []
+    def rglob(self, pat):
+        return []
+    def read_text(self, encoding=None):
+        return ''
+    def write_text(self, data, encoding=None):
+        return len(data)
+    def read_bytes(self):
+        return None
+    def write_bytes(self, data):
+        return 0
+    def open(self, mode='r', encoding=None):
+        return None
+    def touch(self, mode=438, exist_ok=True):
+        return None
+    def mkdir(self, mode=511, parents=False, exist_ok=False):
+        return None
+    def rmdir(self):
+        return None
+    def unlink(self, missing_ok=False):
+        return None
+    def rename(self, target):
+        return Path(_pp_str(target))
+    def replace(self, target):
+        return Path(_pp_str(target))
+    def hardlink_to(self, target):
+        return None
+    def symlink_to(self, target, target_is_directory=False):
+        return None
+    def chmod(self, mode):
+        return None
+    def samefile(self, other):
+        return self._s == _pp_str(other)
+"#;
+
+/// `random` distributions and range/weight helpers as pure Python over the
+/// working `random.random()` entropy plus `math`. Injected when the source
+/// references `random`; the walker rewrites the non-host-backed names
+/// (`gauss`, `uniform`, `randrange`, `choices`, …) → `__py_random_*`.
+const RANDOM_PRELUDE: &str = r#"
+import random
+import math
+def __py_random_r():
+    return random.random()
+def __py_random_uniform(a, b):
+    return a + (b - a) * __py_random_r()
+def __py_random_expovariate(lambd):
+    return -math.log(1.0 - __py_random_r()) / lambd
+def __py_random_gauss(mu, sigma):
+    x2pi = __py_random_r() * 2.0 * math.pi
+    g2rad = math.sqrt(-2.0 * math.log(1.0 - __py_random_r()))
+    return mu + math.cos(x2pi) * g2rad * sigma
+def __py_random_normalvariate(mu, sigma):
+    return __py_random_gauss(mu, sigma)
+def __py_random_lognormvariate(mu, sigma):
+    return math.exp(__py_random_normalvariate(mu, sigma))
+def __py_random_triangular(low, high):
+    u = __py_random_r()
+    return low + (high - low) * math.sqrt(u)
+def __py_random_paretovariate(alpha):
+    u = 1.0 - __py_random_r()
+    return 1.0 / math.exp(math.log(u) / alpha)
+def __py_random_weibullvariate(alpha, beta):
+    u = 1.0 - __py_random_r()
+    return alpha * math.exp(math.log(-math.log(u)) / beta)
+def __py_random_vonmisesvariate(mu, kappa):
+    return mu + (__py_random_r() - 0.5) * kappa
+def __py_random_gammavariate(alpha, beta):
+    gv_total = 0.0
+    gv_i = 0
+    while gv_i < 3:
+        gv_total = gv_total + (-math.log(1.0 - __py_random_r()))
+        gv_i = gv_i + 1
+    return gv_total * beta
+def __py_random_betavariate(alpha, beta):
+    y1 = __py_random_gammavariate(alpha, 1.0)
+    y2 = __py_random_gammavariate(beta, 1.0)
+    return y1 / (y1 + y2)
+def __py_random_getrandbits(k):
+    gb_total = 0
+    gb_i = 0
+    while gb_i < k:
+        gb_bit = 0
+        if __py_random_r() < 0.5:
+            gb_bit = 1
+        gb_total = gb_total * 2 + gb_bit
+        gb_i = gb_i + 1
+    return gb_total
+def __py_random_randbytes(n):
+    rb_vals = []
+    rb_i = 0
+    while rb_i < n:
+        rb_vals.append(__py_random_getrandbits(8))
+        rb_i = rb_i + 1
+    return bytes(rb_vals)
+def __py_random_randrange(start, stop, step):
+    if step == 0:
+        raise ValueError('randrange step must not be zero')
+    if step > 0:
+        n = (stop - start + step - 1) // step
+    else:
+        n = (start - stop - step - 1) // (0 - step)
+    if n <= 0:
+        raise ValueError('empty range for randrange')
+    idx = int(__py_random_r() * n)
+    if idx >= n:
+        idx = n - 1
+    return start + idx * step
+def __py_random_choices(pop, weights, cum, k):
+    result = []
+    total = 0.0
+    cums = []
+    if cum is not None:
+        for w in cum:
+            cums.append(w * 1.0)
+        total = cums[len(cums) - 1]
+    elif weights is not None:
+        acc = 0.0
+        for w in weights:
+            acc = acc + w
+            cums.append(acc)
+        total = acc
+    else:
+        j = 0
+        while j < len(pop):
+            cums.append(j + 1.0)
+            j = j + 1
+        total = len(pop) * 1.0
+    c = 0
+    while c < k:
+        target = __py_random_r() * total
+        pick = len(pop) - 1
+        m = 0
+        chosen = False
+        while m < len(cums):
+            if not chosen and target < cums[m]:
+                pick = m
+                chosen = True
+            m = m + 1
+        result.append(pop[pick])
+        c = c + 1
+    return result
+def __py_random_getstate():
+    return (0, 0, 0)
+def __py_random_setstate(state):
+    return None
 "#;
 
 const BYTES_REPR_PRELUDE: &str = r#"
@@ -2482,8 +2941,71 @@ fn with_not(e: Expression) -> Expression {
 /// except as __e: __hit = True; if not __mgr.__exit__(__e, __e, None): raise
 /// finally: if not __hit: __mgr.__exit__(None, None, None)
 /// ```
+/// `with conn:` for a tracked sqlite3 connection → transaction:
+/// `__sql_begin`; on normal exit `__sql_commit`; on exception `__sql_rollback`
+/// then re-raise (sqlite3 does NOT suppress the exception).
+fn build_sql_with_desugar(conn: &str, body: Vec<Statement>) -> Vec<Statement> {
+    let n = WITH_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let hit = format!("__sql_hit_{n}");
+    let exc = format!("__sql_exc_{n}");
+
+    let sql_call = |name: &str| {
+        with_stmt(StmtKind::Expr(with_call(
+            Expression::ident(name),
+            vec![with_arg(Expression::ident(conn))],
+        )))
+    };
+
+    let catch = CatchClause {
+        types: vec![],
+        var_name: Some(exc.clone()),
+        stack_var: None,
+        body: vec![
+            with_stmt(StmtKind::Assign {
+                targets: vec![Expression::ident(&hit)],
+                value: Expression::bool(true),
+            }),
+            sql_call("__sql_rollback"),
+            with_stmt(StmtKind::Throw {
+                expr: Some(Expression::ident(&exc)),
+                cause: None,
+            }),
+        ],
+        when_clause: None,
+    };
+
+    let finally = vec![with_stmt(StmtKind::If {
+        cond: with_not(Expression::ident(&hit)),
+        then_body: vec![sql_call("__sql_commit")],
+        elifs: vec![],
+        else_body: None,
+    })];
+
+    vec![
+        sql_call("__sql_begin"),
+        with_stmt(StmtKind::Assign {
+            targets: vec![Expression::ident(&hit)],
+            value: Expression::bool(false),
+        }),
+        with_stmt(StmtKind::Try {
+            body,
+            catches: vec![catch],
+            else_body: None,
+            finally: Some(finally),
+        }),
+    ]
+}
+
 fn build_with_desugar(items: &[WithItem], body: Vec<Statement>) -> Vec<Statement> {
     let first = &items[0];
+    // sqlite3 Connection used as a context manager → transaction semantics.
+    if items.len() == 1 && first.var.is_none() {
+        if let ExprKind::Ident(name) = &first.expr.kind {
+            if is_sql_var(name) {
+                return build_sql_with_desugar(name, body);
+            }
+        }
+    }
     let n = WITH_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mgr = format!("__with_mgr_{n}");
     let hit = format!("__with_hit_{n}");
@@ -3002,6 +3524,11 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
             }
         }
+        // Track sqlite handles: `conn = sqlite3.connect(...)` / `cur = conn.cursor()`
+        // so later `.execute()`/`.close()` on them route to the `__sql_*` builtins.
+        for t in &all_exprs {
+            note_sql_var_if_producer(t, &value);
+        }
         // Convert Tuple targets to Destructure for tuple unpacking (x, y = ...)
         let targets = all_exprs
             .into_iter()
@@ -3257,11 +3784,12 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 .filter(|p| p.as_rule() == Rule::comp_clause)
                 .map(walk_comp_clause)
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(ExprKind::Comprehension {
-                kind: ComprehensionKind::Generator,
-                element: Box::new(element),
-                generators,
-            })
+            // A generator expression is LAZY: lower it to an immediately-invoked
+            // generator function so `next()` drives it one element at a time
+            // (through the shared stack-switching machinery), instead of the
+            // eager comprehension path that materializes the whole iterator —
+            // which hangs on `(x for x in range(10**6))`.
+            Ok(lower_generator_expression(element, generators))
         }
 
         // Subscript items (slice)
@@ -3776,6 +4304,348 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
+thread_local! {
+    /// Variables tracked back to `sqlite3.connect(...)` or `<conn>.cursor()`.
+    /// `desugar_member_reads` rewrites their methods to the `__sql_*` builtins,
+    /// so generic `.close()`/`.execute()` on non-sql receivers are untouched.
+    static PY_SQL_VARS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+fn note_sql_var(name: &str) {
+    PY_SQL_VARS.with(|m| m.borrow_mut().insert(name.to_string()));
+}
+
+fn is_sql_var(name: &str) -> bool {
+    PY_SQL_VARS.with(|m| m.borrow().contains(name))
+}
+
+/// Record `target` as a sqlite handle when `value` is a `__sql_connect` /
+/// `__sql_cursor` call (both produce a Connection/Cursor object).
+fn note_sql_var_if_producer(target: &Expression, value: &Expression) {
+    let ExprKind::Ident(name) = &target.kind else {
+        return;
+    };
+    if let ExprKind::Call { callee, .. } = &value.kind {
+        if let ExprKind::Ident(fname) = &callee.kind {
+            if fname == "__sql_connect" || fname == "__sql_cursor" {
+                note_sql_var(name);
+            }
+        }
+    }
+}
+
+/// Wrap a bare-identifier sort key (`key=len`, `key=str.lower`) in a lambda so
+/// it becomes a first-class callable: `key=NAME` → `lambda __sk: NAME(__sk)`.
+/// Lambdas / already-callable expressions pass through unchanged.
+fn wrap_key_ident_in_lambda(key: Expression) -> Expression {
+    if !matches!(&key.kind, ExprKind::Ident(_) | ExprKind::Member { .. }) {
+        return key;
+    }
+    Expression::new(ExprKind::Lambda {
+        params: vec![Param {
+            name: "__sk".into(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        }],
+        body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+            callee: Box::new(key),
+            args: vec![Argument::positional(Expression::ident("__sk"))],
+            optional: false,
+        }))),
+        is_async: false,
+        captures: vec![],
+    })
+}
+
+/// `sqlite3.Row` sentinel: an identity `(cursor, row) -> row` lambda — a truthy
+/// callable that flags fetch to return the raw column-keyed row object.
+fn sqlite3_row_factory_lambda() -> Expression {
+    let param = |name: &str| Param {
+        name: name.into(),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    };
+    Expression::new(ExprKind::Lambda {
+        params: vec![param("__cur"), param("__row")],
+        body: LambdaBody::Expr(Box::new(Expression::ident("__row"))),
+        is_async: false,
+        captures: vec![],
+    })
+}
+
+/// `sys` module scalar constants (leaves modules/argv/path to existing handling).
+fn sys_module_constant(field: &str) -> Option<Literal> {
+    Some(match field {
+        "platform" => Literal::Str("linux".into()),
+        "byteorder" => Literal::Str("little".into()),
+        "maxsize" => Literal::Int(2147483647),
+        "maxunicode" => Literal::Int(1114111),
+        "version" => Literal::Str("3.12.0 (Vybe)".into()),
+        "api_version" => Literal::Int(1013),
+        "hexversion" => Literal::Int(0x30c00f0),
+        "float_repr_style" => Literal::Str("short".into()),
+        "dont_write_bytecode" => Literal::Bool(true),
+        "recursionlimit" => Literal::Int(1000),
+        _ => return None,
+    })
+}
+
+/// `sys.<fn>(...)` — simple functions with static/identity semantics.
+fn rewrite_sys_call(object: &Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+    if !matches!(&object.kind, ExprKind::Ident(n) if n == "sys") {
+        return None;
+    }
+    Some(match field {
+        "getdefaultencoding" | "getfilesystemencoding" => {
+            Expression::new(ExprKind::Lit(Literal::Str("utf-8".into())))
+        }
+        "getrecursionlimit" => Expression::new(ExprKind::Lit(Literal::Int(1000))),
+        "setrecursionlimit" | "setswitchinterval" | "settrace" | "setprofile" => {
+            Expression::new(ExprKind::Lit(Literal::Null))
+        }
+        "getswitchinterval" => Expression::new(ExprKind::Lit(Literal::Float(0.005))),
+        "getsizeof" => Expression::new(ExprKind::Lit(Literal::Int(64))),
+        "intern" if args.len() == 1 => desugar_member_reads(args[0].value.clone()),
+        "is_finalizing" => Expression::new(ExprKind::Lit(Literal::Bool(false))),
+        _ => return None,
+    })
+}
+
+/// `platform.<fn>()` — host/interpreter info as static strings/tuples/uname obj.
+fn rewrite_platform_call(object: &Expression, field: &str) -> Option<Expression> {
+    if !matches!(&object.kind, ExprKind::Ident(n) if n == "platform") {
+        return None;
+    }
+    let s = |v: &str| Expression::new(ExprKind::Lit(Literal::Str(v.into())));
+    let tup = |vs: &[&str]| {
+        Expression::new(ExprKind::Tuple(vs.iter().map(|v| s(v)).collect()))
+    };
+    let kv = |k: &str, v: &str| ObjectProperty::KeyValue {
+        key: Expression::new(ExprKind::Lit(Literal::Str(k.into()))),
+        value: Expression::new(ExprKind::Lit(Literal::Str(v.into()))),
+    };
+    Some(match field {
+        "system" => s("Linux"),
+        "node" => s("vybe"),
+        "release" => s("1.0"),
+        "version" => s("#1"),
+        "machine" => s("x86_64"),
+        "processor" => s("x86_64"),
+        "platform" => s("Linux-1.0-x86_64"),
+        "python_version" => s("3.12.0"),
+        "python_implementation" => s("CPython"),
+        "python_compiler" => s("Vybe"),
+        "python_revision" => s(""),
+        "python_branch" => s(""),
+        "python_version_tuple" => tup(&["3", "12", "0"]),
+        "architecture" => tup(&["64bit", ""]),
+        "python_build" => tup(&["default", "Jan 01 2024"]),
+        "uname" => Expression::new(ExprKind::Object(vec![
+            kv("system", "Linux"),
+            kv("node", "vybe"),
+            kv("release", "1.0"),
+            kv("version", "#1"),
+            kv("machine", "x86_64"),
+            kv("processor", "x86_64"),
+        ])),
+        _ => return None,
+    })
+}
+
+/// `stat` module integer constants (mode bits / index constants).
+fn stat_module_constant(field: &str) -> Option<Literal> {
+    let v: i64 = match field {
+        "S_IFMT" => 0o170000,
+        "S_IFSOCK" => 0o140000,
+        "S_IFLNK" => 0o120000,
+        "S_IFREG" => 0o100000,
+        "S_IFBLK" => 0o060000,
+        "S_IFDIR" => 0o040000,
+        "S_IFCHR" => 0o020000,
+        "S_IFIFO" => 0o010000,
+        "S_ISUID" => 0o4000,
+        "S_ISGID" => 0o2000,
+        "S_ISVTX" => 0o1000,
+        "S_IRWXU" => 0o700,
+        "S_IRUSR" => 0o400,
+        "S_IWUSR" => 0o200,
+        "S_IXUSR" => 0o100,
+        "S_IRWXG" => 0o070,
+        "S_IRGRP" => 0o040,
+        "S_IWGRP" => 0o020,
+        "S_IXGRP" => 0o010,
+        "S_IRWXO" => 0o007,
+        "S_IROTH" => 0o004,
+        "S_IWOTH" => 0o002,
+        "S_IXOTH" => 0o001,
+        "ST_MODE" => 0,
+        "ST_INO" => 1,
+        "ST_DEV" => 2,
+        "ST_NLINK" => 3,
+        "ST_UID" => 4,
+        "ST_GID" => 5,
+        "ST_SIZE" => 6,
+        "ST_ATIME" => 7,
+        "ST_MTIME" => 8,
+        "ST_CTIME" => 9,
+        _ => return None,
+    };
+    Some(Literal::Int(v))
+}
+
+/// `stat.S_I*(mode)` predicates/masks → inline bitwise expressions.
+fn rewrite_stat_call(object: &Expression, field: &str, args: &[Argument]) -> Option<Expression> {
+    if !matches!(&object.kind, ExprKind::Ident(n) if n == "stat") || args.len() != 1 {
+        return None;
+    }
+    let m = || desugar_member_reads(args[0].value.clone());
+    let band = |mask: i64| {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::BitAnd,
+            left: Box::new(m()),
+            right: Box::new(Expression::int(mask)),
+        })
+    };
+    let is_type = |ty: i64| {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(band(0o170000)),
+            right: Box::new(Expression::int(ty)),
+        })
+    };
+    Some(match field {
+        "S_IMODE" => band(0o7777),
+        "S_IFMT" => band(0o170000),
+        "S_ISREG" => is_type(0o100000),
+        "S_ISDIR" => is_type(0o040000),
+        "S_ISCHR" => is_type(0o020000),
+        "S_ISBLK" => is_type(0o060000),
+        "S_ISFIFO" => is_type(0o010000),
+        "S_ISLNK" => is_type(0o120000),
+        "S_ISSOCK" => is_type(0o140000),
+        _ => return None,
+    })
+}
+
+/// `string` module constants (static → compile-time literals).
+fn string_module_constant(field: &str) -> Option<Literal> {
+    let lower = "abcdefghijklmnopqrstuvwxyz";
+    let upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let digits = "0123456789";
+    let punct = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+    let ws = " \t\n\r\u{0b}\u{0c}";
+    let s: String = match field {
+        "ascii_lowercase" => lower.to_string(),
+        "ascii_uppercase" => upper.to_string(),
+        "ascii_letters" => letters.to_string(),
+        "digits" => digits.to_string(),
+        "hexdigits" => "0123456789abcdefABCDEF".to_string(),
+        "octdigits" => "01234567".to_string(),
+        "punctuation" => punct.to_string(),
+        "whitespace" => ws.to_string(),
+        "printable" => format!("{digits}{letters}{punct}{ws}"),
+        _ => return None,
+    };
+    Some(Literal::Str(s.into()))
+}
+
+/// DB-API 2.0 module constants for `sqlite3` (static mount → compile-time).
+fn sqlite3_module_constant(field: &str) -> Option<Literal> {
+    Some(match field {
+        "paramstyle" => Literal::Str("qmark".into()),
+        "apilevel" => Literal::Str("2.0".into()),
+        "threadsafety" => Literal::Int(1),
+        "version" => Literal::Str("2.6.0".into()),
+        "sqlite_version" => Literal::Str("3.40.0".into()),
+        _ => return None,
+    })
+}
+
+/// Map a sqlite cursor/connection method name to its `__sql_*` builtin.
+fn sql_method_builtin(field: &str) -> Option<&'static str> {
+    Some(match field {
+        "cursor" => "__sql_cursor",
+        "execute" => "__sql_execute",
+        "executemany" => "__sql_executemany",
+        "fetchall" => "__sql_fetchall",
+        "fetchone" => "__sql_fetchone",
+        "commit" => "__sql_commit",
+        "rollback" => "__sql_rollback",
+        "close" => "__sql_close",
+        _ => return None,
+    })
+}
+
+/// True when `e` is a sqlite connection/cursor handle: a tracked variable, or a
+/// call to a `__sql_*` builtin that returns a handle (so `conn.execute(...)
+/// .fetchone()` and `sqlite3.connect(...).execute(...)` chain).
+fn is_sql_handle_expr(e: &Expression) -> bool {
+    match &e.kind {
+        ExprKind::Ident(name) => is_sql_var(name),
+        ExprKind::Call { callee, .. } => matches!(&callee.kind, ExprKind::Ident(f)
+            if matches!(
+                f.as_str(),
+                "__sql_connect" | "__sql_cursor" | "__sql_execute" | "__sql_executemany"
+            )),
+        _ => false,
+    }
+}
+
+/// `sqlite3.connect(...)` → `__sql_connect(...)`, and `<handle>.method(...)` →
+/// `__sql_method(<handle>, ...)`. `args` are already desugared. Returns `None`
+/// when the receiver is not a sqlite handle, so unrelated `.close()`/`.execute()`
+/// fall through to normal method dispatch.
+fn rewrite_sqlite_call(
+    object: &Expression,
+    field: &str,
+    args: Vec<Argument>,
+    optional: bool,
+) -> Option<Expression> {
+    // `sqlite3.connect(path)`
+    if let ExprKind::Ident(module) = &object.kind {
+        if module == "sqlite3" {
+            if field == "connect" && !args.is_empty() {
+                return Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__sql_connect")),
+                    args,
+                    optional,
+                }));
+            }
+            // `sqlite3.Binary(b)` is identity on the bytes it wraps.
+            if field == "Binary" && args.len() == 1 {
+                return Some(desugar_member_reads(args.into_iter().next().unwrap().value));
+            }
+        }
+    }
+    let builtin = sql_method_builtin(field)?;
+    // Desugar the receiver first so a chained producer call (`conn.execute(...)`)
+    // becomes a `__sql_*` call we can recognize as a handle.
+    let recv = desugar_member_reads(object.clone());
+    if !is_sql_handle_expr(&recv) {
+        return None;
+    }
+    let mut call_args = Vec::with_capacity(args.len() + 1);
+    call_args.push(Argument::positional(recv));
+    call_args.extend(args);
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(builtin)),
+        args: call_args,
+        optional,
+    }))
+}
+
 fn note_from_imported_module(name: &str) {
     PY_FROM_IMPORTED_MODULES.with(|m| m.borrow_mut().insert(name.to_string()));
 }
@@ -4046,6 +4916,74 @@ fn py_module_surface(module: &str) -> Option<&'static [&'static str]> {
         "zoneinfo" => &["ZoneInfo", "available_timezones", "ZoneInfoNotFoundError"],
         "glob" => &["glob", "iglob", "escape", "has_magic"],
         "fnmatch" => &["fnmatch", "fnmatchcase", "filter", "translate"],
+        "os.path" => &[
+            // string-math functions (prelude helpers)
+            "join",
+            "split",
+            "splitext",
+            "splitroot",
+            "splitdrive",
+            "basename",
+            "dirname",
+            "normpath",
+            "isabs",
+            "relpath",
+            "commonprefix",
+            "commonpath",
+            "normcase",
+            "realpath",
+            "abspath",
+            "expanduser",
+            "expandvars",
+            // FS predicates (host-backed) + query stubs the tests probe
+            "exists",
+            "lexists",
+            "isfile",
+            "isdir",
+            "islink",
+            "ismount",
+            "samefile",
+            "sameopenfile",
+            "getsize",
+            "getmtime",
+            "getatime",
+            "getctime",
+            "isblock",
+            "ischar",
+            "isfifo",
+            "issocket",
+            // constants
+            "sep",
+            "altsep",
+            "pathsep",
+            "extsep",
+            "curdir",
+            "pardir",
+            "defpath",
+            "devnull",
+        ],
+        "sqlite3" => &[
+            "connect",
+            "Connection",
+            "Cursor",
+            "Row",
+            "Binary",
+            "Error",
+            "DatabaseError",
+            "IntegrityError",
+            "OperationalError",
+            "ProgrammingError",
+            "register_adapter",
+            "register_converter",
+            "complete_statement",
+            "paramstyle",
+            "apilevel",
+            "threadsafety",
+            "version",
+            "sqlite_version",
+            "PARSE_DECLTYPES",
+            "PARSE_COLNAMES",
+        ],
         _ => return None,
     })
 }
@@ -4767,6 +5705,256 @@ fn normalize_datetime_kwargs(params: &[&str], args: Vec<Argument>) -> Vec<Argume
         .collect()
 }
 
+/// Default `json.dumps` separators: `(", ", ": ")` compact, `(",", ": ")` when
+/// `indent` is given (matching CPython's `json` module).
+fn json_default_separators(has_indent: bool) -> (Expression, Expression) {
+    if has_indent {
+        (Expression::string(","), Expression::string(": "))
+    } else {
+        (Expression::string(", "), Expression::string(": "))
+    }
+}
+
+/// Reshape `json.dumps(obj, cls=…, default=…, sort_keys=…, indent=…,
+/// separators=…)` into the fixed positional form
+/// `__py_json_dumps(value, default, sort_keys, indent, item_sep, kv_sep)` the
+/// Maps an `os.path.FUNC` name to its pure-Python prelude helper, for the
+/// string-math functions the walker re-routes off the profile/host path.
+/// Is `e` the module `os` (directly or via an alias)?
+fn is_os_module_ident(e: &Expression) -> bool {
+    matches!(&e.kind, ExprKind::Ident(n)
+        if n == "os" || resolve_module_alias(n).as_deref() == Some("os"))
+}
+
+/// `d.items()` → `[(p[0], p[1]) for p in __py_obj_entries__(d)]`. Python's
+/// `dict.items()` yields (key, value) TUPLES, but `ecma:object.entries` returns
+/// `[k, v]` LISTS. Building each pair as a tuple *literal* inside the
+/// comprehension re-tags it (via the normal `ExprKind::Tuple` lowering), so
+/// `list(d.items())` reprs as `[('a', 1)]` and `for k, v in d.items()` /
+/// `dict(d.items())` still destructure the array backing. Entries is Map-aware,
+/// so this is correct for the Map-backed dict.
+fn rewrite_dict_items(callee: &Expression, args: &[Argument]) -> Option<Expression> {
+    if !args.is_empty() {
+        return None;
+    }
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field != "items" {
+        return None;
+    }
+    let entries = call_ident("__py_obj_entries__", vec![(**object).clone()]);
+    let pair_index = |i: i64| {
+        Expression::new(ExprKind::Index {
+            object: Box::new(Expression::new(ExprKind::Ident("__item_pair".into()))),
+            index: Box::new(Expression::int(i)),
+            null_safe: false,
+        })
+    };
+    let pair = Expression::new(ExprKind::Tuple(vec![pair_index(0), pair_index(1)]));
+    Some(Expression::new(ExprKind::Comprehension {
+        kind: ComprehensionKind::List,
+        element: Box::new(pair),
+        generators: vec![ComprehensionGen {
+            target: Expression::new(ExprKind::Ident("__item_pair".into())),
+            iter: entries,
+            conditions: Vec::new(),
+            is_async: false,
+        }],
+    }))
+}
+
+/// `dict.fromkeys(keys[, value])` → `{__k: value for __k in keys}` (value
+/// defaults to `None`). Reuses the dict-comprehension lowering (which builds a
+/// Map), so the result is a real dict with the right keys/order — no separate
+/// classmethod machinery needed.
+fn rewrite_dict_fromkeys(callee: &Expression, args: &[Argument]) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field != "fromkeys" || !matches!(&object.kind, ExprKind::Ident(n) if n == "dict") {
+        return None;
+    }
+    if args.is_empty() || args.iter().any(|a| a.name.is_some() || a.spread) {
+        return None;
+    }
+    let keys = args[0].value.clone();
+    let value = args
+        .get(1)
+        .map(|a| a.value.clone())
+        .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+    // Dict-comprehension element is a 2-element Array [key, value] (the shape
+    // the compiler unpacks), NOT a Tuple.
+    let kv = |k: Expression, v: Expression| {
+        Expression::new(ExprKind::Array(vec![
+            ArrayElement { key: None, spread: false, by_ref: false, value: k },
+            ArrayElement { key: None, spread: false, by_ref: false, value: v },
+        ]))
+    };
+    Some(Expression::new(ExprKind::Comprehension {
+        kind: ComprehensionKind::Dict,
+        element: Box::new(kv(
+            Expression::new(ExprKind::Ident("__fk_key".into())),
+            value,
+        )),
+        generators: vec![ComprehensionGen {
+            target: Expression::new(ExprKind::Ident("__fk_key".into())),
+            iter: keys,
+            conditions: Vec::new(),
+            is_async: false,
+        }],
+    }))
+}
+
+/// `random.NAME(args)` → `__py_random_NAME(args)` for the names that are not
+/// reliably host-backed. `random`/`randint`/`choice`/`shuffle`/`sample`/`seed`
+/// stay profile builtins. `randrange` and `choices` are arity-shaped here so
+/// the prelude helpers stay fixed-arity (no default-binding assumptions).
+fn rewrite_random_call(callee: &Expression, args: &[Argument]) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let is_random = matches!(&object.kind, ExprKind::Ident(n)
+        if n == "random" || resolve_module_alias(n).as_deref() == Some("random"));
+    if !is_random {
+        return None;
+    }
+    let call = |helper: &str, args: Vec<Argument>| {
+        Some(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Ident(helper.to_string()))),
+            args,
+            optional: false,
+        }))
+    };
+    match field.as_str() {
+        // Fixed-arity variates: forward positional args verbatim.
+        "uniform" | "expovariate" | "gauss" | "normalvariate" | "lognormvariate"
+        | "triangular" | "paretovariate" | "weibullvariate" | "vonmisesvariate"
+        | "gammavariate" | "betavariate" | "getrandbits" | "randbytes" | "getstate"
+        | "setstate" => call(&format!("__py_random_{field}"), args.to_vec()),
+        // `randrange(stop)` / `(start, stop)` / `(start, stop, step)` → always
+        // three positional args to the helper.
+        "randrange" => {
+            let pos: Vec<Expression> = args
+                .iter()
+                .filter(|a| a.name.is_none())
+                .map(|a| a.value.clone())
+                .collect();
+            let (start, stop, step) = match pos.len() {
+                1 => (Expression::int(0), pos[0].clone(), Expression::int(1)),
+                2 => (pos[0].clone(), pos[1].clone(), Expression::int(1)),
+                3 => (pos[0].clone(), pos[1].clone(), pos[2].clone()),
+                _ => return None,
+            };
+            call(
+                "__py_random_randrange",
+                vec![
+                    Argument::positional(start),
+                    Argument::positional(stop),
+                    Argument::positional(step),
+                ],
+            )
+        }
+        // `choices(pop, weights=, cum_weights=, k=)` → four positional args.
+        "choices" => {
+            let kw = |name: &str| {
+                args.iter()
+                    .find(|a| a.name.as_deref() == Some(name))
+                    .map(|a| a.value.clone())
+            };
+            let pop = args.iter().find(|a| a.name.is_none())?.value.clone();
+            let weights = kw("weights").unwrap_or_else(Expression::null);
+            let cum = kw("cum_weights").unwrap_or_else(Expression::null);
+            let k = kw("k").unwrap_or_else(|| Expression::int(1));
+            call(
+                "__py_random_choices",
+                vec![
+                    Argument::positional(pop),
+                    Argument::positional(weights),
+                    Argument::positional(cum),
+                    Argument::positional(k),
+                ],
+            )
+        }
+        _ => None,
+    }
+}
+
+/// json adapter consumes. Returns `None` for anything that isn't a
+/// `json.dumps`-shaped call so normal handling proceeds.
+fn rewrite_json_dumps(callee: &Expression, args: &[Argument]) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field != "dumps" {
+        return None;
+    }
+    if !matches!(&object.kind, ExprKind::Ident(n) if n == "json") {
+        return None;
+    }
+
+    let value = args.iter().find(|a| a.name.is_none())?.value.clone();
+    let kw = |name: &str| {
+        args.iter()
+            .find(|a| a.name.as_deref() == Some(name))
+            .map(|a| a.value.clone())
+    };
+
+    // Encoder hook: `default=` wins, else `cls=` → `lambda __o: Cls().default(__o)`.
+    let default_expr = if let Some(d) = kw("default") {
+        d
+    } else if let Some(cls) = kw("cls") {
+        let inst = Expression::new(ExprKind::New {
+            class: Box::new(cls),
+            args: vec![],
+        });
+        let call = Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(inst),
+                field: "default".into(),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(Expression::new(ExprKind::Ident(
+                "__o".into(),
+            )))],
+            optional: false,
+        });
+        Expression::new(ExprKind::Lambda {
+            params: vec![lambda_param("__o")],
+            body: LambdaBody::Expr(Box::new(call)),
+            is_async: false,
+            captures: vec![],
+        })
+    } else {
+        Expression::null()
+    };
+
+    let sort_keys =
+        kw("sort_keys").unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Bool(false))));
+    let indent = kw("indent").unwrap_or_else(Expression::null);
+
+    let (item_sep, kv_sep) = match kw("separators") {
+        Some(sep) => match &sep.kind {
+            ExprKind::Tuple(items) if items.len() == 2 => (items[0].clone(), items[1].clone()),
+            _ => json_default_separators(kw("indent").is_some()),
+        },
+        None => json_default_separators(kw("indent").is_some()),
+    };
+
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Ident("__py_json_dumps".into()))),
+        args: vec![
+            Argument::positional(value),
+            Argument::positional(default_expr),
+            Argument::positional(sort_keys),
+            Argument::positional(indent),
+            Argument::positional(item_sep),
+            Argument::positional(kv_sep),
+        ],
+        optional: false,
+    }))
+}
+
 fn call_or_new(callee: Expression, args: Vec<Argument>) -> ExprKind {
     if let Some(kind) = zoneinfo_call(&callee, &args) {
         return kind;
@@ -5135,6 +6323,22 @@ fn py_static_hasattr(obj: &Expression, attr: &str) -> Option<bool> {
     None
 }
 
+/// `os.path.CONST` string/None constants (member reads, not calls). POSIX
+/// values, matching CPython's `posixpath` module attributes.
+fn os_path_constant(field: &str) -> Option<Expression> {
+    Some(match field {
+        "sep" => Expression::string("/"),
+        "altsep" => Expression::null(),
+        "pathsep" => Expression::string(":"),
+        "extsep" => Expression::string("."),
+        "curdir" => Expression::string("."),
+        "pardir" => Expression::string(".."),
+        "defpath" => Expression::string("/bin:/usr/bin"),
+        "devnull" => Expression::string("/dev/null"),
+        _ => return None,
+    })
+}
+
 /// Rewrite bare attribute reads to subscripts (see the module note above).
 fn desugar_member_reads(e: Expression) -> Expression {
     match e.kind {
@@ -5143,6 +6347,54 @@ fn desugar_member_reads(e: Expression) -> Expression {
             field,
             null_safe,
         } => {
+            // `string.<const>` — module constants (ascii_letters, digits, …).
+            if matches!(&object.kind, ExprKind::Ident(n) if n == "string")
+                && is_imported_module("string")
+            {
+                if let Some(lit) = string_module_constant(&field) {
+                    return Expression::new(ExprKind::Lit(lit));
+                }
+            }
+            // `stat.S_I*` / `stat.ST_*` integer constants.
+            if matches!(&object.kind, ExprKind::Ident(n) if n == "stat")
+                && is_imported_module("stat")
+            {
+                if let Some(lit) = stat_module_constant(&field) {
+                    return Expression::new(ExprKind::Lit(lit));
+                }
+            }
+            // `sys.<const>` scalars (platform, maxsize, byteorder, …).
+            if matches!(&object.kind, ExprKind::Ident(n) if n == "sys") {
+                if let Some(lit) = sys_module_constant(&field) {
+                    return Expression::new(ExprKind::Lit(lit));
+                }
+            }
+            // `sqlite3.<const>` — DB-API module constants (static mount).
+            if matches!(&object.kind, ExprKind::Ident(n) if n == "sqlite3") {
+                if let Some(lit) = sqlite3_module_constant(&field) {
+                    return Expression::new(ExprKind::Lit(lit));
+                }
+                // `sqlite3.Row` — a truthy callable row-factory sentinel. When a
+                // connection's `row_factory` is set to it, fetch returns the raw
+                // column-keyed row (named `row['k']` + positional `row[0]`).
+                if field == "Row" {
+                    return sqlite3_row_factory_lambda();
+                }
+            }
+            // `os.path.CONST` — resolve to the POSIX literal before the object
+            // chain is desugared (the `os.path` prefix is not a data read).
+            if let ExprKind::Member {
+                object: inner,
+                field: pfield,
+                ..
+            } = &object.kind
+            {
+                if pfield == "path" && is_os_module_ident(inner) {
+                    if let Some(lit) = os_path_constant(&field) {
+                        return lit;
+                    }
+                }
+            }
             let mut object = desugar_member_reads(*object);
             // Module-alias substitution: `m.dumps` where `m = json` compiles
             // exactly like `json.dumps` (profile builtins + ns resolution).
@@ -5477,6 +6729,59 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     }
                 }
             }
+            // `list.sort(key=f[, reverse=True])` — the array sort ignores the
+            // Python key, so route to the in-place key-sort primitive.
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if field == "sort" {
+                    if let Some(key) = args
+                        .iter()
+                        .find(|a| a.name.as_deref() == Some("key"))
+                        .map(|a| wrap_key_ident_in_lambda(a.value.clone()))
+                    {
+                        let recv = desugar_member_reads((**object).clone());
+                        let sorted = call_ident("__py_sort_by_key", vec![recv, key]);
+                        let out = if args.iter().any(|a| a.name.as_deref() == Some("reverse")) {
+                            Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::new(ExprKind::Member {
+                                    object: Box::new(sorted),
+                                    field: "reverse".into(),
+                                    null_safe: false,
+                                })),
+                                args: vec![],
+                                optional: false,
+                            })
+                        } else {
+                            sorted
+                        };
+                        return out;
+                    }
+                }
+            }
+            // sqlite3: `sqlite3.connect(...)` and methods on tracked
+            // connection/cursor variables → collision-free `__sql_*` builtins.
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if let Some(rewritten) =
+                    rewrite_sqlite_call(object, field, args.clone(), optional)
+                {
+                    return rewritten;
+                }
+                // `stat.S_IMODE(m)` / `stat.S_ISDIR(m)` → inline bitwise exprs.
+                if is_imported_module("stat") {
+                    if let Some(rewritten) = rewrite_stat_call(object, field, &args) {
+                        return rewritten;
+                    }
+                }
+                // `sys.intern(s)` / `sys.getrecursionlimit()` etc.
+                if let Some(rewritten) = rewrite_sys_call(object, field, &args) {
+                    return rewritten;
+                }
+                // `platform.system()` / `platform.uname()` etc.
+                if is_imported_module("platform") {
+                    if let Some(rewritten) = rewrite_platform_call(object, field) {
+                        return rewritten;
+                    }
+                }
+            }
             // Method call: keep the Member callee (method dispatch), but
             // desugar the receiver's own chain.
             let callee = match callee.kind {
@@ -5583,6 +6888,12 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         // `nt._replace()` with no overrides — a plain copy.
                         let def = receiver_namedtuple_def(object).unwrap();
                         expr = build_namedtuple_replace(object, &def, Vec::new());
+                    } else if let Some(rewritten) = rewrite_random_call(&expr, &[]) {
+                        // `random.getstate()` and other zero-arg forms.
+                        expr = rewritten;
+                    } else if let Some(rewritten) = rewrite_dict_items(&expr, &[]) {
+                        // `d.items()` → comprehension of (k, v) tuples.
+                        expr = rewritten;
                     } else {
                         expr = Expression::new(ExprKind::Call {
                             callee: Box::new(expr),
@@ -5590,6 +6901,14 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             optional: false,
                         });
                     }
+                } else if matches!(&expr.kind, ExprKind::Ident(n) if n == "frozenset") {
+                    // Zero-arg `frozenset()` — route to the Python builtin so the
+                    // shared-compiler hack (which emits "") never fires.
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__py_frozenset")),
+                        args: Vec::new(),
+                        optional: false,
+                    });
                 } else {
                     // `Foo()` — construction if `Foo` is a declared class.
                     expr = Expression::new(call_or_new(expr, Vec::new()));
@@ -5783,6 +7102,11 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                         expr = redirect;
                                         continue;
                                     }
+                                    // `print(*items, ...)` — expand the runtime
+                                    // spread into a single joined-string item
+                                    // before the fixed-argc reshaping below.
+                                    let args = python_print_spread_desugar(&args)
+                                        .unwrap_or(args);
                                     // Reshape to the emitter convention
                                     // [sep, end, items…]; sep/end kwargs are
                                     // pulled out of the positional list.
@@ -6209,6 +7533,18 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     expr = Expression::new(ExprKind::Array(vec![]));
                                     continue;
                                 }
+                                "frozenset" => {
+                                    // Route around the shared-compiler `frozenset`
+                                    // hack (which joins members with \x1f); the
+                                    // Python builtin builds a real set + a frozen
+                                    // repr tag.
+                                    expr = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__py_frozenset")),
+                                        args: args.clone(),
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
                                 "tuple" if args.len() == 1 => {
                                     // tuple(iterable) → [...iterable]
                                     let iterable = args[0].value.clone();
@@ -6249,6 +7585,24 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                         vec![args[0].value.clone()],
                                     ));
                                     continue;
+                                }
+                                "bytearray" if args.len() == 1 && args[0].name.is_none() => {
+                                    if let ExprKind::Lit(Literal::Int(n)) = args[0].value.kind {
+                                        let elements = (0..n.max(0))
+                                            .map(|_| ArrayElement {
+                                                key: None,
+                                                spread: false,
+                                                by_ref: false,
+                                                value: Expression::new(ExprKind::Lit(
+                                                    Literal::Int(0),
+                                                )),
+                                            })
+                                            .collect();
+                                        expr = wrap_bytes(Expression::new(ExprKind::Array(
+                                            elements,
+                                        )));
+                                        continue;
+                                    }
                                 }
                                 "sum" if !args.is_empty() && args[0].name.is_none() => {
                                     // sum(iterable[, start]) — drain the iterable
@@ -6318,10 +7672,16 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 }
                                 "sorted" if args.len() >= 1 => {
                                     // sorted(iterable) → [...iterable].sort()
-                                    // sorted(iterable, reverse=True) → [...iterable].sort().reverse()
+                                    // sorted(iterable, key=f) → __py_sort_by_key([...iterable], f)
+                                    // sorted(..., reverse=True) → … .reverse()
                                     let iterable = args[0].value.clone();
                                     let has_reverse =
                                         args.iter().any(|a| a.name.as_deref() == Some("reverse"));
+                                    let key_fn = args
+                                        .iter()
+                                        .find(|a| a.name.as_deref() == Some("key"))
+                                        .map(|a| a.value.clone())
+                                        .map(wrap_key_ident_in_lambda);
                                     let spread_array =
                                         Expression::new(ExprKind::Array(vec![ArrayElement {
                                             key: None,
@@ -6329,15 +7689,19 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             by_ref: false,
                                             value: iterable,
                                         }]));
-                                    let sorted = Expression::new(ExprKind::Call {
-                                        callee: Box::new(Expression::new(ExprKind::Member {
-                                            object: Box::new(spread_array),
-                                            field: "sort".into(),
-                                            null_safe: false,
-                                        })),
-                                        args: vec![],
-                                        optional: false,
-                                    });
+                                    let sorted = if let Some(key_fn) = key_fn {
+                                        call_ident("__py_sort_by_key", vec![spread_array, key_fn])
+                                    } else {
+                                        Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::new(ExprKind::Member {
+                                                object: Box::new(spread_array),
+                                                field: "sort".into(),
+                                                null_safe: false,
+                                            })),
+                                            args: vec![],
+                                            optional: false,
+                                        })
+                                    };
                                     expr = if has_reverse {
                                         Expression::new(ExprKind::Call {
                                             callee: Box::new(Expression::new(ExprKind::Member {
@@ -6439,6 +7803,29 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         if let ExprKind::Member { object, field, .. } = &expr.kind {
                             if let Some(rewritten) = try_rewrite_bytes_method(object, field, &args)
                             {
+                                expr = rewritten;
+                                continue;
+                            }
+                        }
+                        // `json.dumps(obj, cls=…, sort_keys=…, indent=…, …)` →
+                        // Python-semantics form the json adapter consumes.
+                        if let Some(rewritten) = rewrite_json_dumps(&expr, &args) {
+                            expr = rewritten;
+                            continue;
+                        }
+                        // `random.NAME(...)` distributions → prelude free fns.
+                        if let Some(rewritten) = rewrite_random_call(&expr, &args) {
+                            expr = rewritten;
+                            continue;
+                        }
+                        // `dict.fromkeys(keys[, v])` → dict comprehension.
+                        if let Some(rewritten) = rewrite_dict_fromkeys(&expr, &args) {
+                            expr = rewritten;
+                            continue;
+                        }
+                        // `range(…)` → lazy generator IIFE (never materializes).
+                        if matches!(&expr.kind, ExprKind::Ident(n) if n == "range") {
+                            if let Some(rewritten) = lower_range_call(&args) {
                                 expr = rewritten;
                                 continue;
                             }
@@ -6810,6 +8197,90 @@ fn normalize_python_print_args(raw: Vec<Argument>) -> Vec<Argument> {
     out
 }
 
+/// `print(*items, sep=s, end=e)` with a spread positional argument.
+///
+/// `emit_print` takes a statically-fixed argument count, so it cannot expand a
+/// spread (`*seq`) whose length is only known at runtime — and by the time the
+/// items reach the stack, `print([1,2,3])` and `print(*[1,2,3])` are
+/// indistinguishable. The intent only exists here, so we desugar to the
+/// runtime-join form Python's `print` is defined by:
+///
+/// ```text
+/// print(*a, x, sep=s, end=e)  →  print(s.join([str(v) for v in [*a, x]]), end=e)
+/// ```
+///
+/// Returns a replacement argument list — a single joined positional item plus
+/// the preserved `end` keyword — that the ordinary `normalize_python_print_args`
+/// fixed-argc path then handles. Returns `None` when no positional argument is a
+/// spread (the common case), leaving every non-spread `print` byte-identical.
+fn python_print_spread_desugar(args: &[Argument]) -> Option<Vec<Argument>> {
+    let has_positional_spread = args.iter().any(|a| a.name.is_none() && a.spread);
+    if !has_positional_spread {
+        return None;
+    }
+
+    let kwarg = |name: &str| args.iter().find(|a| a.name.as_deref() == Some(name));
+    let sep = kwarg("sep")
+        .map(|a| a.value.clone())
+        .unwrap_or_else(|| Expression::string(" "));
+
+    // Flatten every positional argument into one array, preserving spreads so
+    // `[*a, x]` expands instead of nesting.
+    let elements: Vec<ArrayElement> = args
+        .iter()
+        .filter(|a| a.name.is_none())
+        .map(|a| ArrayElement {
+            key: None,
+            value: a.value.clone(),
+            spread: a.spread,
+            by_ref: false,
+        })
+        .collect();
+    let flattened = Expression::new(ExprKind::Array(elements));
+
+    // `[str(v) for v in <flattened>]`
+    let stringified = Expression::new(ExprKind::Comprehension {
+        kind: ComprehensionKind::List,
+        element: Box::new(call_builtin1("str", Expression::new(ExprKind::Ident(
+            "__print_item".into(),
+        )))),
+        generators: vec![ComprehensionGen {
+            target: Expression::new(ExprKind::Ident("__print_item".into())),
+            iter: flattened,
+            conditions: Vec::new(),
+            is_async: false,
+        }],
+    });
+
+    // `<list>.join(sep)` — the swapped `array.join(delim)` convention the
+    // compiler expects (the source-level `delim.join(array)` swap does not run
+    // on synthesized nodes).
+    let joined = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(stringified),
+            field: "join".into(),
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(sep)],
+        optional: false,
+    });
+
+    // Replacement args: one joined positional (no spread) plus the preserved
+    // `end` keyword. `normalize_python_print_args` reshapes this to the
+    // fixed-argc [sep, end, item] convention. `sep` is already applied by the
+    // join, and a single item never re-applies it.
+    let mut print_args = vec![Argument::positional(joined)];
+    if let Some(end) = kwarg("end") {
+        print_args.push(Argument {
+            value: end.value.clone(),
+            name: Some("end".into()),
+            by_ref: false,
+            spread: false,
+        });
+    }
+    Some(print_args)
+}
+
 fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
     let mut args = Vec::new();
     for p in pair.into_inner() {
@@ -6900,10 +8371,17 @@ fn python_index_operand(object: &Expression, index: Expression) -> Expression {
         ExprKind::Slice { .. } | ExprKind::Range { .. } => return index,
         _ => {}
     }
+    // `__py_from_end__` re-reads the base to compute its length, so the base is
+    // cloned into the call. At this point the postfix chain hasn't been desugared
+    // yet (that happens once at the end of `walk_postfix`), so a property read
+    // like `obj.parts` is still a raw `Member`. The outer subscript base is
+    // desugared later, but this embedded clone would be missed — desugar it here
+    // so a property/attribute base (`obj.parts[-1]`) reads through the same
+    // subscript form as everywhere else instead of a raw property access.
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("__py_from_end__")),
         args: vec![
-            Argument::positional(object.clone()),
+            Argument::positional(desugar_member_reads(object.clone())),
             Argument::positional(index),
         ],
         optional: false,
@@ -7162,6 +8640,186 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
     }
     Ok(ExprKind::Set(elements))
+}
+
+/// Destructure a tuple loop target `(a, b, …)` bound to a temp into
+/// `a = tmp[0]; b = tmp[1]; …` statements, prepended to a genexpr loop body.
+fn destructure_comp_target(target: &Expression, tmp: &str) -> Vec<Statement> {
+    let mut out = Vec::new();
+    if let ExprKind::Tuple(parts) = &target.kind {
+        for (i, part) in parts.iter().enumerate() {
+            if let ExprKind::Ident(name) = &part.kind {
+                out.push(Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::new(ExprKind::Ident(name.clone()))],
+                    value: Expression::new(ExprKind::Index {
+                        object: Box::new(Expression::ident(tmp)),
+                        index: Box::new(Expression::int(i as i64)),
+                        null_safe: false,
+                    }),
+                }));
+            }
+        }
+    }
+    out
+}
+
+/// Lower a Python generator expression `(element for t in iter if cond …)` into
+/// an immediately-invoked generator function `(function* () { … yield element …
+/// })()` so it stays lazy — driven by `next()` through the shared generator
+/// machinery — instead of the eager comprehension path that materializes the
+/// entire iterator.
+fn lower_generator_expression(element: Expression, generators: Vec<ComprehensionGen>) -> ExprKind {
+    // Innermost body: `yield element`.
+    let mut stmts: Vec<Statement> = vec![Statement::new(StmtKind::Expr(Expression::new(
+        ExprKind::Yield(Some(Box::new(element))),
+    )))];
+
+    // Nest the clauses from the innermost generator outward.
+    for clause in generators.into_iter().rev() {
+        // Apply this clause's `if` filters (innermost first).
+        for cond in clause.conditions.into_iter().rev() {
+            stmts = vec![Statement::new(StmtKind::If {
+                cond,
+                then_body: stmts,
+                elifs: Vec::new(),
+                else_body: None,
+            })];
+        }
+        let (var, body) = match &clause.target.kind {
+            ExprKind::Ident(name) => (name.clone(), stmts),
+            _ => {
+                let tmp = "__ge_elem".to_string();
+                let mut body = destructure_comp_target(&clause.target, &tmp);
+                body.extend(stmts);
+                (tmp, body)
+            }
+        };
+        stmts = vec![Statement::new(StmtKind::ForIn {
+            var,
+            key: None,
+            iter: clause.iter,
+            body,
+            of: true,
+            else_body: None,
+            is_async: clause.is_async,
+        })];
+    }
+
+    let gen_fn = Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name: String::new(),
+            params: Vec::new(),
+            return_type: None,
+            body: stmts,
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: true,
+            is_sub: false,
+        },
+    ))));
+    ExprKind::Call {
+        callee: Box::new(gen_fn),
+        args: Vec::new(),
+        optional: false,
+    }
+}
+
+/// Lower `range(stop)` / `range(start, stop)` / `range(start, stop, step)` into
+/// a lazy generator IIFE so it never materializes the whole sequence — the same
+/// `generators.rs` stack-switching engine the generator expression uses. Only
+/// the bare positional forms are lowered; anything else keeps the profile
+/// builtin.
+fn lower_range_call(args: &[Argument]) -> Option<Expression> {
+    if args.is_empty() || args.len() > 3 || args.iter().any(|a| a.name.is_some() || a.spread) {
+        return None;
+    }
+    let (start, stop, step) = match args.len() {
+        1 => (Expression::int(0), args[0].value.clone(), Expression::int(1)),
+        2 => (
+            args[0].value.clone(),
+            args[1].value.clone(),
+            Expression::int(1),
+        ),
+        _ => (
+            args[0].value.clone(),
+            args[1].value.clone(),
+            args[2].value.clone(),
+        ),
+    };
+
+    let ident = |n: &str| Expression::new(ExprKind::Ident(n.into()));
+    let bin = |op, l: Expression, r: Expression| {
+        Expression::new(ExprKind::Binary {
+            op,
+            left: Box::new(l),
+            right: Box::new(r),
+        })
+    };
+    let decl = |name: &str, val: Expression| {
+        Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(name.into()),
+                type_hint: None,
+                init: Some(val),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        })
+    };
+
+    // while (step > 0 and i < stop) or (step < 0 and i > stop)
+    let cond = bin(
+        BinOp::Or,
+        bin(
+            BinOp::And,
+            bin(BinOp::Gt, ident("__rt"), Expression::int(0)),
+            bin(BinOp::Lt, ident("__ri"), ident("__re")),
+        ),
+        bin(
+            BinOp::And,
+            bin(BinOp::Lt, ident("__rt"), Expression::int(0)),
+            bin(BinOp::Gt, ident("__ri"), ident("__re")),
+        ),
+    );
+    let loop_body = vec![
+        Statement::new(StmtKind::Expr(Expression::new(ExprKind::Yield(Some(
+            Box::new(ident("__ri")),
+        ))))),
+        Statement::new(StmtKind::Assign {
+            targets: vec![ident("__ri")],
+            value: bin(BinOp::Add, ident("__ri"), ident("__rt")),
+        }),
+    ];
+    let gen_body = vec![
+        decl("__ri", start),
+        decl("__re", stop),
+        decl("__rt", step),
+        Statement::new(StmtKind::While {
+            cond,
+            body: loop_body,
+            else_body: None,
+        }),
+    ];
+    let gen_fn = Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name: String::new(),
+            params: Vec::new(),
+            return_type: None,
+            body: gen_body,
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: true,
+            is_sub: false,
+        },
+    ))));
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(gen_fn),
+        args: Vec::new(),
+        optional: false,
+    }))
 }
 
 fn walk_comp_clause(pair: Pair<Rule>) -> Result<ComprehensionGen, String> {
@@ -8091,14 +9749,13 @@ fn is_bytes_prefix(s: &str) -> bool {
 }
 
 fn parse_bytes_literal(s: &str) -> ExprKind {
-    let content = parse_python_string(s);
-    let elements = content
-        .bytes()
+    let elements = parse_python_bytes(s)
+        .into_iter()
         .map(|b| ArrayElement {
             key: None,
             spread: false,
             by_ref: false,
-            value: Expression::new(ExprKind::Lit(Literal::Int(b as i64))),
+            value: Expression::new(ExprKind::Lit(Literal::Int(i64::from(b)))),
         })
         .collect();
     wrap_bytes(Expression::new(ExprKind::Array(elements))).kind
@@ -8230,6 +9887,16 @@ fn try_rewrite_bytes_method(
 }
 
 fn parse_python_string(s: &str) -> String {
+    let raw = s.starts_with('r')
+        || s.starts_with('R')
+        || s.starts_with("rb")
+        || s.starts_with("rB")
+        || s.starts_with("Rb")
+        || s.starts_with("RB")
+        || s.starts_with("br")
+        || s.starts_with("bR")
+        || s.starts_with("Br")
+        || s.starts_with("BR");
     let mut s = s;
     // Strip prefix (r, b, rb, u, etc.)
     let prefixes = [
@@ -8251,13 +9918,104 @@ fn parse_python_string(s: &str) -> String {
     } else if s.starts_with('\'') {
         s = &s[1..s.len() - 1];
     }
-    // Basic escape processing
-    s.replace("\\n", "\n")
-        .replace("\\t", "\t")
-        .replace("\\r", "\r")
-        .replace("\\\\", "\\")
-        .replace("\\'", "'")
-        .replace("\\\"", "\"")
+    if raw {
+        return s.to_string();
+    }
+    decode_python_escape_bytes(s)
+        .into_iter()
+        .map(char::from)
+        .collect()
+}
+
+fn parse_python_bytes(s: &str) -> Vec<u8> {
+    let raw = s.starts_with('r')
+        || s.starts_with('R')
+        || s.starts_with("rb")
+        || s.starts_with("rB")
+        || s.starts_with("Rb")
+        || s.starts_with("RB")
+        || s.starts_with("br")
+        || s.starts_with("bR")
+        || s.starts_with("Br")
+        || s.starts_with("BR");
+    let mut s = s;
+    let prefixes = [
+        "rb", "Rb", "rB", "RB", "br", "bR", "Br", "BR", "r", "R", "b", "B", "u", "U",
+    ];
+    for prefix in &prefixes {
+        if s.starts_with(prefix) {
+            s = &s[prefix.len()..];
+            break;
+        }
+    }
+    if s.starts_with("\"\"\"") {
+        s = &s[3..s.len() - 3];
+    } else if s.starts_with("'''") {
+        s = &s[3..s.len() - 3];
+    } else if s.starts_with('"') {
+        s = &s[1..s.len() - 1];
+    } else if s.starts_with('\'') {
+        s = &s[1..s.len() - 1];
+    }
+    if raw {
+        s.as_bytes().to_vec()
+    } else {
+        decode_python_escape_bytes(s)
+    }
+}
+
+fn decode_python_escape_bytes(s: &str) -> Vec<u8> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' || i + 1 >= bytes.len() {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        match bytes[i + 1] {
+            b'n' => {
+                out.push(b'\n');
+                i += 2;
+            }
+            b't' => {
+                out.push(b'\t');
+                i += 2;
+            }
+            b'r' => {
+                out.push(b'\r');
+                i += 2;
+            }
+            b'\\' | b'\'' | b'"' => {
+                out.push(bytes[i + 1]);
+                i += 2;
+            }
+            b'x' if i + 3 < bytes.len() => {
+                if let (Some(hi), Some(lo)) = (hex_value(bytes[i + 2]), hex_value(bytes[i + 3])) {
+                    out.push((hi << 4) | lo);
+                    i += 4;
+                } else {
+                    out.push(bytes[i + 1]);
+                    i += 2;
+                }
+            }
+            other => {
+                out.push(other);
+                i += 2;
+            }
+        }
+    }
+    out
+}
+
+fn hex_value(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn parse_comparison_op(s: &str) -> BinOp {

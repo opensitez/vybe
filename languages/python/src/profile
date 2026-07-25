@@ -31,6 +31,12 @@ dynamic_add = true
 # the string key to f64 and traps. Same flag JS uses.
 dynamic_member_access = true
 materialize_bool_results = true
+# `for k in dict` iterates KEYS (a dict is the same Map/Ordinary type as a JS
+# object; iterating an object yields its keys). Sequences still yield values.
+for_in_object_yields_keys = true
+# Dict literals build a Map so int/tuple keys keep their type and insertion
+# order is preserved (`{1: 'a'}` → key `1`, not `'1'`).
+dict_literals_as_map = true
 class_introspection_metadata = true
 class_multiple_inheritance = true
 # NOTE: Python's `a[-1]` (offset-from-end) is NOT handled by the shared
@@ -109,6 +115,21 @@ __py_bytes_new__ = { emit = "host:ecma:uint8array:new",       min_args = 1, max_
 __py_bytes_hex__    = { emit = "host:ecma:uint8array:toHex",   min_args = 1, max_args = 1 }
 __py_bytes_fromhex__ = { emit = "host:ecma:uint8array:fromHex", min_args = 1, max_args = 1 }
 
+# ── sqlite3 (adapter over wasi:sql; walker rewrites cursor/conn methods) ──────
+# Collision-free internal builtins: the walker only emits these for variables it
+# has tracked back to `sqlite3.connect(...)`/`.cursor()`, so generic `.close()`/
+# `.execute()` on files/sockets are never intercepted.
+__sql_connect     = { emit = "common:python.sql_connect",     min_args = 1, max_args = 1 }
+__sql_cursor      = { emit = "common:python.sql_cursor",      min_args = 1, max_args = 1 }
+__sql_execute     = { emit = "common:python.sql_execute",     min_args = 2, max_args = 3 }
+__sql_executemany = { emit = "common:python.sql_executemany", min_args = 3, max_args = 3 }
+__sql_fetchall    = { emit = "common:python.sql_fetchall",    min_args = 1, max_args = 1 }
+__sql_fetchone    = { emit = "common:python.sql_fetchone",    min_args = 1, max_args = 1 }
+__sql_commit      = { emit = "common:python.sql_commit",      min_args = 1, max_args = 1 }
+__sql_rollback    = { emit = "common:python.sql_rollback",    min_args = 1, max_args = 1 }
+__sql_close       = { emit = "common:python.sql_close",       min_args = 1, max_args = 1 }
+__sql_begin       = { emit = "common:python.sql_begin",       min_args = 1, max_args = 1 }
+
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
 print           = { emit = "common:python.print",            min_args = 0, max_args = 255 }
@@ -138,6 +159,11 @@ tuple           = { emit = "host:ecma:array:from",          min_args = 0, max_ar
 dict            = { emit = "host:ecma:object:create",       min_args = 0, max_args = 1 }
 set             = { emit = "common:python.make_set",        min_args = 0, max_args = 1 }
 frozenset       = { emit = "common:python.make_set",        min_args = 0, max_args = 1 }
+# Walker reroutes `frozenset(...)` here to dodge the shared-compiler hack; builds
+# a real set + a `__frozenset` tag so repr renders `frozenset({...})`.
+__py_frozenset  = { emit = "common:python.frozenset",       min_args = 0, max_args = 1 }
+# `sorted(x, key=f)` → sort the (spread) array by key_fn via the shared primitive.
+__py_sort_by_key = { emit = "common:python.sort_by_key",    min_args = 2, max_args = 2 }
 sorted          = { emit = "host:ecma:array:toSorted",        min_args = 1, max_args = 3 }
 reversed        = { emit = "host:ecma:array:reversed",      min_args = 1, max_args = 1 }
 enumerate       = { emit = "common:python.enumerate",              min_args = 1, max_args = 2 }
@@ -321,6 +347,14 @@ __py_dt_pad               = { emit = "common:python.dt_pad",     min_args = 2, m
 # `operator.contains(a, b)` is `b in a` — same argument order as the lowering.
 "operator.contains" = { emit = "common:python.contains",    min_args = 2, max_args = 2 }
 
+"struct.pack"     = { emit = "common:python.struct_pack",     min_args = 1, max_args = 255 }
+"struct.unpack"   = { emit = "common:python.struct_unpack",   min_args = 2, max_args = 2 }
+"struct.calcsize" = { emit = "common:python.struct_calcsize", min_args = 1, max_args = 1 }
+"struct.unpack_from" = { emit = "common:python.struct_unpack_from", min_args = 2, max_args = 3 }
+"struct.pack_into"   = { emit = "common:python.struct_pack_into",   min_args = 4, max_args = 255 }
+"struct.iter_unpack" = { emit = "common:python.struct_iter_unpack", min_args = 2, max_args = 2 }
+"struct.Struct"      = { emit = "common:python.struct_new",         min_args = 1, max_args = 1 }
+
 # `functools.reduce(f, xs[, init])` IS Array.prototype.reduce.
 # `functools.reduce(f, xs)` IS Array.prototype.reduce, but Python puts the
 # function first — the adapter swaps them.
@@ -423,14 +457,29 @@ open            = { emit = "host:wasi:filesystem:open",       min_args = 1, max_
 "os.remove"         = { emit = "host:wasi:filesystem:remove",          min_args = 1, max_args = 1 }
 "os.unlink"         = { emit = "host:wasi:filesystem:remove",          min_args = 1, max_args = 1 }
 "os.rename"         = { emit = "host:wasi:filesystem:rename",          min_args = 2, max_args = 2 }
-"os.path.join"      = { emit = "host:wasi:filesystem:pathCombine",     min_args = 2, max_args = 255 }
+# FS predicates stay host-backed; the pure-string POSIX helpers are emitter
+# adapters (common:python.ospath_*), emitted at the call site (no prelude).
 "os.path.exists"    = { emit = "host:wasi:filesystem:exists",          min_args = 1, max_args = 1 }
+"os.path.lexists"   = { emit = "host:wasi:filesystem:exists",          min_args = 1, max_args = 1 }
 "os.path.isfile"    = { emit = "host:wasi:filesystem:isFile",          min_args = 1, max_args = 1 }
-"os.path.isdir"     = { emit = "host:wasi:filesystem:isDirectory",     min_args = 1, max_args = 1 }
-"os.path.basename"  = { emit = "host:wasi:filesystem:pathGetFileName", min_args = 1, max_args = 1 }
-"os.path.dirname"   = { emit = "host:wasi:filesystem:pathGetDirectory", min_args = 1, max_args = 1 }
-"os.path.abspath"   = { emit = "host:wasi:filesystem:pathGetFullPath", min_args = 1, max_args = 1 }
-"os.path.splitext"  = { emit = "host:wasi:filesystem:pathSplitExt",    min_args = 1, max_args = 1 }
+"os.path.isdir"     = { emit = "host:wasi:filesystem:isDir",           min_args = 1, max_args = 1 }
+"os.path.join"        = { emit = "common:python.ospath_join",         min_args = 1, max_args = 255 }
+"os.path.split"       = { emit = "common:python.ospath_split",        min_args = 1, max_args = 1 }
+"os.path.splitext"    = { emit = "common:python.ospath_splitext",     min_args = 1, max_args = 1 }
+"os.path.basename"    = { emit = "common:python.ospath_basename",     min_args = 1, max_args = 1 }
+"os.path.dirname"     = { emit = "common:python.ospath_dirname",      min_args = 1, max_args = 1 }
+"os.path.normpath"    = { emit = "common:python.ospath_normpath",     min_args = 1, max_args = 1 }
+"os.path.realpath"    = { emit = "common:python.ospath_realpath",     min_args = 1, max_args = 1 }
+"os.path.abspath"     = { emit = "common:python.ospath_abspath",      min_args = 1, max_args = 1 }
+"os.path.isabs"       = { emit = "common:python.ospath_isabs",        min_args = 1, max_args = 1 }
+"os.path.normcase"    = { emit = "common:python.ospath_normcase",     min_args = 1, max_args = 1 }
+"os.path.expandvars"  = { emit = "common:python.ospath_expandvars",   min_args = 1, max_args = 1 }
+"os.path.expanduser"  = { emit = "common:python.ospath_expanduser",   min_args = 1, max_args = 1 }
+"os.path.islink"      = { emit = "common:python.ospath_islink",       min_args = 1, max_args = 1 }
+"os.path.ismount"     = { emit = "common:python.ospath_ismount",      min_args = 1, max_args = 1 }
+"os.path.relpath"     = { emit = "common:python.ospath_relpath",      min_args = 2, max_args = 2 }
+"os.path.commonprefix" = { emit = "common:python.ospath_commonprefix", min_args = 1, max_args = 1 }
+"os.path.commonpath"  = { emit = "common:python.ospath_commonpath",   min_args = 1, max_args = 1 }
 "os.environ"        = { emit = "host:wasi:cli:environment",            min_args = 0, max_args = 0 }
 
 # ── sys module ───────────────────────────────────────────────────────────────
@@ -443,6 +492,10 @@ open            = { emit = "host:wasi:filesystem:open",       min_args = 1, max_
 
 "json.dumps"     = { emit = "host:ecma:json:stringify",       min_args = 1, max_args = 3 }
 "json.loads"     = { emit = "host:ecma:json:parse",           min_args = 1, max_args = 1 }
+# Walker reshapes `json.dumps(obj, cls=…, sort_keys=…, indent=…, …)` into this
+# fixed positional form so the adapter gets Python semantics (encoder hook +
+# `", "` / `": "` separators) that bare `ecma:json.stringify` can't provide.
+"__py_json_dumps" = { emit = "common:python.json_dumps",      min_args = 6, max_args = 6 }
 
 # ── re module ────────────────────────────────────────────────────────────────
 

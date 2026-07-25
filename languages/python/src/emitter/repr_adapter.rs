@@ -302,6 +302,14 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_if(line);
         {
             let set_arr = c.alloc_scratch(1);
+            // frozen = truthy(value.__frozenset) — `frozenset(...)` reprs as
+            // `frozenset({...})` / `frozenset()`; a plain set as `{...}` / `set()`.
+            let frozen = c.alloc_scratch(1);
+            lget(&mut c, value, line);
+            struct_get(&mut c, "__frozenset", line);
+            vybe_emitter::ops::emit_dyn_to_bool(&mut c, line);
+            lset(&mut c, frozen, line);
+
             lget(&mut c, value, line);
             let from = c.add_import("ecma:array", "from");
             c.emit_call(from, 1, line);
@@ -309,15 +317,26 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             lget(&mut c, set_arr, line);
             c.emit_op(Op::ARRAY_LENGTH, line);
             lset(&mut c, n, line);
-            // empty set → `set()` (Python has no `{}` empty-set literal)
+            // empty set → `set()` / `frozenset()` (Python has no `{}` empty-set)
             lget(&mut c, n, line);
             emit_i32_const(&mut c, 0, line);
             c.emit_op(Op::I32_EQ, line);
             c.emit_if(line);
+            lget(&mut c, frozen, line);
+            c.emit_if_value(line);
+            str_const(&mut c, "frozenset()", line);
+            c.emit_else(line);
             str_const(&mut c, "set()", line);
+            c.emit_end(line);
             c.emit_op(Op::RETURN, line);
             c.emit_end(line);
+            // non-empty: brace-join, wrapping in `frozenset(...)` when frozen
+            lget(&mut c, frozen, line);
+            c.emit_if(line);
+            emit_join(&mut c, self_idx, set_arr, out, i, n, "frozenset({", "})", line);
+            c.emit_else(line);
             emit_join(&mut c, self_idx, set_arr, out, i, n, "{", "}", line);
+            c.emit_end(line);
             lget(&mut c, out, line);
             c.emit_op(Op::RETURN, line);
         }
@@ -350,10 +369,13 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_end(line);
     }
 
-    // ── dict (ordinary object) → {k: v, …} ──────────────────────────────
+    // ── dict → {k: v, …} ─────────────────────────────────────────────────
+    // Iterate ENTRIES ([k, v] pairs), not keys-then-index: a Map's key does not
+    // round-trip through `d[key]` (int keys), and `entries` works for both
+    // Map-backed dicts and Ordinary objects.
     lget(&mut c, value, line);
     {
-        let idx = c.add_import("ecma:object", "keys");
+        let idx = c.add_import("ecma:object", "entries");
         c.emit_call(idx, 1, line);
     }
     lset(&mut c, keys, line);
@@ -366,20 +388,22 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let lp = loop_start(&mut c, line);
     loop_break_if_ge(&mut c, i, n, line);
     emit_sep_comma(&mut c, out, i, line);
-    // key = keys[i]; out += repr(key) + ": " + repr(value[key])
+    // pair = entries[i]; out += repr(pair[0]) + ": " + repr(pair[1])
     lget(&mut c, keys, line);
     lget(&mut c, i, line);
     c.emit_op(Op::ARRAY_GET, line);
     lset(&mut c, key, line);
     lget(&mut c, out, line);
     lget(&mut c, key, line);
+    c.emit_i32_const(0, line);
+    c.emit_op(Op::ARRAY_GET, line);
     recurse(&mut c, self_idx, line);
     concat(&mut c, line);
     str_const(&mut c, ": ", line);
     concat(&mut c, line);
-    lget(&mut c, value, line);
     lget(&mut c, key, line);
-    emit_dyn_index(&mut c, line);
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::ARRAY_GET, line);
     recurse(&mut c, self_idx, line);
     concat(&mut c, line);
     lset(&mut c, out, line);

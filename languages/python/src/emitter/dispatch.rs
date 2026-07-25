@@ -5,8 +5,41 @@ use vybe_bytecode::Chunk;
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     match name {
+        "python.json_dumps" => {
+            crate::emitter::json_adapter::emit_json_dumps(chunks, current, argc, line);
+        }
         "python.enumerate" => {
             crate::emitter::collections_adapter::emit_enumerate(chunks, current, argc, line)
+        }
+        "python.sql_connect" => {
+            crate::emitter::sql_adapter::emit_connect(chunks, current, argc, line)
+        }
+        "python.sql_cursor" => {
+            crate::emitter::sql_adapter::emit_cursor(chunks, current, argc, line)
+        }
+        "python.sql_execute" => {
+            crate::emitter::sql_adapter::emit_execute(chunks, current, argc, line)
+        }
+        "python.sql_executemany" => {
+            crate::emitter::sql_adapter::emit_executemany(chunks, current, argc, line)
+        }
+        "python.sql_fetchall" => {
+            crate::emitter::sql_adapter::emit_fetchall(chunks, current, argc, line)
+        }
+        "python.sql_fetchone" => {
+            crate::emitter::sql_adapter::emit_fetchone(chunks, current, argc, line)
+        }
+        "python.sql_commit" => {
+            crate::emitter::sql_adapter::emit_commit(chunks, current, argc, line)
+        }
+        "python.sql_rollback" => {
+            crate::emitter::sql_adapter::emit_rollback(chunks, current, argc, line)
+        }
+        "python.sql_close" => {
+            crate::emitter::sql_adapter::emit_close(chunks, current, argc, line)
+        }
+        "python.sql_begin" => {
+            crate::emitter::sql_adapter::emit_begin(chunks, current, argc, line)
         }
         "python.math_factorial" => {
             crate::emitter::math_adapter::emit_factorial(chunks, current, argc, line)
@@ -366,6 +399,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.gen_throw" => {
             crate::emitter::collections_adapter::emit_gen_throw(chunks, current, argc, line)
         }
+        "python.frozenset" => {
+            crate::emitter::collections_adapter::emit_frozenset(chunks, current, argc, line)
+        }
+        "python.sort_by_key" => {
+            crate::emitter::collections_adapter::emit_sort_by_key(chunks, current, argc, line)
+        }
         "python.make_set" => {
             crate::emitter::collections_adapter::emit_make_set(chunks, current, argc, line)
         }
@@ -461,6 +500,27 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.bytes_decode" => {
             crate::emitter::runtime_adapter::emit_bytes_decode(chunks, current, argc, line)
         }
+        "python.struct_pack" => {
+            crate::emitter::struct_adapter::emit_struct_pack(chunks, current, argc, line)
+        }
+        "python.struct_unpack" => {
+            crate::emitter::struct_adapter::emit_struct_unpack(chunks, current, argc, line)
+        }
+        "python.struct_calcsize" => {
+            crate::emitter::struct_adapter::emit_struct_calcsize(chunks, current, argc, line)
+        }
+        "python.struct_unpack_from" => {
+            crate::emitter::struct_adapter::emit_struct_unpack_from(chunks, current, argc, line)
+        }
+        "python.struct_pack_into" => {
+            crate::emitter::struct_adapter::emit_struct_pack_into(chunks, current, argc, line)
+        }
+        "python.struct_iter_unpack" => {
+            crate::emitter::struct_adapter::emit_struct_iter_unpack(chunks, current, argc, line)
+        }
+        "python.struct_new" => {
+            crate::emitter::struct_adapter::emit_struct_new(chunks, current, argc, line)
+        }
         "python.pyneg" => crate::emitter::runtime_adapter::emit_pyneg(chunks, current, line),
         "python.pylt" => crate::emitter::runtime_adapter::emit_pylt(chunks, current, line),
         "python.pygt" => crate::emitter::runtime_adapter::emit_pygt(chunks, current, line),
@@ -485,6 +545,57 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.pypow" => crate::emitter::runtime_adapter::emit_pypow(chunks, current, line),
         "python.range" => crate::emitter::runtime_adapter::emit_range(chunks, current, argc, line),
+        "python.ospath_join" => {
+            crate::emitter::os_path_adapter::emit_join(chunks, current, argc, line)
+        }
+        "python.ospath_split" => {
+            crate::emitter::os_path_adapter::emit_split(chunks, current, argc, line)
+        }
+        "python.ospath_splitext" => {
+            crate::emitter::os_path_adapter::emit_splitext(chunks, current, argc, line)
+        }
+        "python.ospath_basename" => {
+            crate::emitter::os_path_adapter::emit_basename(chunks, current, argc, line)
+        }
+        "python.ospath_dirname" => {
+            crate::emitter::os_path_adapter::emit_dirname(chunks, current, argc, line)
+        }
+        "python.ospath_normpath" => {
+            crate::emitter::os_path_adapter::emit_normpath(chunks, current, argc, line)
+        }
+        "python.ospath_realpath" => {
+            crate::emitter::os_path_adapter::emit_realpath(chunks, current, argc, line)
+        }
+        "python.ospath_abspath" => {
+            crate::emitter::os_path_adapter::emit_realpath(chunks, current, argc, line)
+        }
+        "python.ospath_isabs" => {
+            crate::emitter::os_path_adapter::emit_isabs(chunks, current, argc, line)
+        }
+        "python.ospath_normcase" => {
+            crate::emitter::os_path_adapter::emit_normcase(chunks, current, argc, line)
+        }
+        "python.ospath_expandvars" => {
+            crate::emitter::os_path_adapter::emit_expandvars(chunks, current, argc, line)
+        }
+        "python.ospath_expanduser" => {
+            crate::emitter::os_path_adapter::emit_expanduser(chunks, current, argc, line)
+        }
+        "python.ospath_islink" => {
+            crate::emitter::os_path_adapter::emit_islink(chunks, current, argc, line)
+        }
+        "python.ospath_ismount" => {
+            crate::emitter::os_path_adapter::emit_ismount(chunks, current, argc, line)
+        }
+        "python.ospath_relpath" => {
+            crate::emitter::os_path_adapter::emit_relpath(chunks, current, argc, line)
+        }
+        "python.ospath_commonprefix" => {
+            crate::emitter::os_path_adapter::emit_commonprefix(chunks, current, argc, line)
+        }
+        "python.ospath_commonpath" => {
+            crate::emitter::os_path_adapter::emit_commonpath(chunks, current, argc, line)
+        }
         name if crate::emitter::runtime_adapter::emit_helper(name, chunks, current, argc, line) => {
         }
 
