@@ -1,13 +1,13 @@
 pub mod builtin_types;
 pub mod controls;
-pub mod ecma; // ecma:*    — ECMA-262 JS runtime (Vybe mirror)
+pub use vybe_platform_ecma as ecma; // ecma:*    — ECMA-262 JS runtime (extracted crate)
 pub mod modules;
 pub mod namespaces;
-pub mod node; // node:*    — Node.js built-in modules (de facto JS standard)
+pub use vybe_platform_node as node; // node:*    — Node.js built-in modules (extracted crate)
 pub mod stdlib_aliases;
-pub mod wasi; // wasi:*    — real WASI 0.2.8 proposals (descriptor-based)
+pub use vybe_platform_wasi as wasi; // wasi:*    — real WASI 0.2.8 proposals (extracted crate; incl. sockets)
 pub mod wasm; // wasm:*    — real WebAssembly CG proposals
-pub mod web; // web:*     — WHATWG / W3C web platform APIs
+pub use vybe_platform_web as web; // web:*     — WHATWG / W3C web platform APIs (extracted crate)
 
 #[cfg(feature = "gui")]
 pub mod gui_state;
@@ -40,5 +40,5 @@ pub use ecma::prime_shared_prototypes;
 /// See `vmhotresetplan.md`.
 pub fn reset_host_globals() {
     wasi::sql::reset();
-    modules::sockets::reset();
+    wasi::sockets::reset();
 }

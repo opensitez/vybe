@@ -1,0 +1,24 @@
+[package]
+name = "vybe_platform_node"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+vybe_bytecode = { workspace = true }
+vybe_platform_wasi = { workspace = true } # node:crypto reuses wasi:crypto md5/sha256
+
+# Node.js compat support crates (moved from vybe_host).
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+md-5 = { workspace = true }
+hmac = { workspace = true }
+brotli = { workspace = true }
+flate2 = { workspace = true }
+form_urlencoded = { workspace = true }
+percent-encoding = { workspace = true }
+httpdate = { workspace = true }
+indexmap = { workspace = true }
+regex = { workspace = true }
+url = { workspace = true }

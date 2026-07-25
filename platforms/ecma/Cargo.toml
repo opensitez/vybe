@@ -1,0 +1,25 @@
+[package]
+name = "vybe_platform_ecma"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+vybe_bytecode = { workspace = true }
+vybe_plugin = { workspace = true }
+
+# ECMA-262 / Intl support crates (moved from vybe_host).
+regex = { workspace = true }
+regress = { workspace = true }
+chrono = { workspace = true }
+indexmap = { workspace = true }
+intl_pluralrules = "7"
+unicode-segmentation = "1"
+unicode-normalization = "0.1"
+unic-langid = "0.9"
+icu = { version = "2.2", features = ["compiled_data"] }
+icu_relativetime = { version = "0.1", features = ["compiled_data"] }
+icu_displaynames = { version = "0.11", features = ["compiled_data"] }
+icu_locid = "1"
+fixed_decimal = "0.5"

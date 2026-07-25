@@ -1,0 +1,16 @@
+[package]
+name = "vybe_platform_wasi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+vybe_bytecode = { workspace = true }
+
+# WASI 0.2.x support crates (moved from vybe_host, incl. the sockets module).
+rusqlite = { workspace = true }
+postgres = { workspace = true }
+mysql = { workspace = true }
+sha2 = { workspace = true }
+md-5 = { workspace = true }

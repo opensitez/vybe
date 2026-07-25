@@ -182,67 +182,9 @@ pub(crate) fn host_fn_ref(vm: &VM, module: &str, name: &str) -> Value {
     }
 }
 
-/// Create a HostFunction Value for a receiver-style instance method.
-///
-/// The `__vybe_method_receiver` marker keeps property-resolved host methods
-/// on the same calling convention as TypeRegistry-resolved methods: the VM
-/// passes the receiver as the first argument when the function is invoked.
-pub(crate) fn receiver_host_fn_ref(module: &str, name: &str, idx: usize) -> Value {
-    let mut obj = Object::new();
-    obj.properties
-        .insert("__host_module".into(), Value::String(Arc::from(module)));
-    obj.properties
-        .insert("__host_name".into(), Value::String(Arc::from(name)));
-    obj.properties
-        .insert("__host_idx".into(), Value::F64(idx as f64));
-    obj.properties
-        .insert("__vybe_method_receiver".into(), Value::Bool(true));
-    obj.properties.insert(
-        "__proto__".into(),
-        crate::ecma::function::shared_function_prototype(),
-    );
-    obj.properties
-        .insert("name".into(), Value::String(Arc::from(name)));
-    obj.kind = ObjectKind::HostFunction(idx);
-    Value::Object(vybe_bytecode::heap::alloc(obj))
-}
-
-/// Create a HostFunction Value with bound args (Function.prototype.bind
-/// shape). When the resulting ref is called, `bound_args` are prepended
-/// to the runtime args before the host fn runs. Standard ECMA-262
-/// §20.2.3.2 semantics. The VM-side dispatch lives in
-/// `vybe_bytecode/src/calls.rs` HostFunction arm.
-#[allow(dead_code)]
-pub(crate) fn bound_host_fn_ref(
-    vm: &VM,
-    module: &str,
-    name: &str,
-    bound_args: Vec<Value>,
-) -> Value {
-    if let Some(&idx) = vm
-        .host_registry
-        .get(&(module.to_string(), name.to_string()))
-    {
-        let mut obj = Object::new();
-        obj.properties
-            .insert("__host_module".into(), Value::String(Arc::from(module)));
-        obj.properties
-            .insert("__host_name".into(), Value::String(Arc::from(name)));
-        obj.properties
-            .insert("__host_idx".into(), Value::F64(idx as f64));
-        obj.properties.insert(
-            "__proto__".into(),
-            crate::ecma::function::shared_function_prototype(),
-        );
-        obj.properties
-            .insert("name".into(), Value::String(Arc::from(name)));
-        obj.properties.insert(
-            "__bound_args".into(),
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(bound_args))),
-        );
-        obj.kind = ObjectKind::HostFunction(idx);
-        Value::Object(vybe_bytecode::heap::alloc(obj))
-    } else {
-        Value::Null
-    }
-}
+// `receiver_host_fn_ref` / `bound_host_fn_ref` moved into `vybe_platform_ecma`
+// (they stamp the shared ecma function prototype, so they belong with ecma).
+// `receiver_host_fn_ref` is re-exported here so existing `crate::namespaces::…`
+// call sites keep resolving; `bound_host_fn_ref` has no remaining vybe_host
+// consumer (its only user moved into the ecma crate).
+pub(crate) use crate::ecma::receiver_host_fn_ref;

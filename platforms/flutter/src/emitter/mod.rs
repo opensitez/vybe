@@ -3,4 +3,4 @@
 pub mod catalog;
 pub mod tree_register;
 
-pub use catalog::{FlutterClass, FlutterField, flutter_classes};
+pub use catalog::{FlutterClass, FlutterField, field_type_seed, flutter_classes};

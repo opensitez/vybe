@@ -1,0 +1,17 @@
+[package]
+name = "vybe_platform_web"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+vybe_bytecode = { workspace = true }
+vybe_platform_ecma = { workspace = true }
+
+# WHATWG / W3C web-platform support crates (moved from vybe_host).
+sha2 = { workspace = true }
+md-5 = { workspace = true }
+url = { workspace = true }
+quick-xml = { workspace = true }
+form_urlencoded = { workspace = true }

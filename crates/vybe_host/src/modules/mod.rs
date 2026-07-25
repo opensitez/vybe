@@ -18,7 +18,6 @@ pub mod env;
 pub mod fs;
 pub mod gui;
 pub mod random;
-pub mod sockets;
 pub mod types;
 
 use std::collections::HashSet;
@@ -655,7 +654,7 @@ pub fn register_with_capabilities(vm: &mut VM, caps: &Capabilities) {
         crate::wasi::http::register(vm);
     }
     if caps.has(Capability::Sockets) {
-        sockets::register(vm);
+        crate::wasi::sockets::register(vm);
         // `register_dotnet_net` / `register_dotnet_sockets` retired —
         // .NET Dns / TcpClient / TcpListener / UdpClient now lower to
         // `wasi:sockets/*` via `emitter::dotnet::core::sockets_adapter`.

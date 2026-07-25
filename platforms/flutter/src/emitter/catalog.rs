@@ -72,6 +72,59 @@ pub fn flutter_classes() -> &'static [FlutterClass] {
     CLASSES
 }
 
+/// Field names that are `double` in Flutter wherever they appear on a widget.
+/// Unambiguous only — deliberately EXCLUDES polymorphic names like `value`
+/// (double on Slider, bool on Checkbox, generic on DropdownButton).
+const DOUBLE_FIELD_NAMES: &[&str] = &[
+    "width", "height", "left", "top", "right", "bottom", "elevation", "opacity",
+    "fontSize", "letterSpacing", "wordSpacing", "dx", "dy", "widthFactor",
+    "heightFactor", "aspectRatio", "thickness", "indent", "endIndent", "angle",
+    "radius", "spacing", "runSpacing", "strokeWidth", "blurRadius", "spreadRadius",
+    "scale", "textScaleFactor", "cacheExtent", "itemExtent", "minWidth", "maxWidth",
+    "minHeight", "maxHeight", "toolbarHeight", "leadingWidth", "titleSpacing",
+    "borderRadius", "minValue", "maxValue", "progress", "spaceRadius",
+];
+
+/// Value-typed fields whose type is another value type — needed so a CHAINED
+/// double read resolves (`Padding.padding` → `EdgeInsets`, then
+/// `EdgeInsets.left` → `double`). `(OwnerType, field, fieldType)`.
+const VALUE_FIELD_TYPES: &[(&str, &str, &str)] = &[
+    ("Padding", "padding", "EdgeInsets"),
+    ("Container", "padding", "EdgeInsets"),
+    ("Container", "margin", "EdgeInsets"),
+    ("AnimatedPadding", "padding", "EdgeInsets"),
+    ("SliverPadding", "padding", "EdgeInsets"),
+    ("ListView", "padding", "EdgeInsets"),
+    ("Card", "margin", "EdgeInsets"),
+    ("Offset", "dx", "double"),
+    ("Offset", "dy", "double"),
+    ("Size", "width", "double"),
+    ("Size", "height", "double"),
+    ("Radius", "x", "double"),
+    ("Radius", "y", "double"),
+    ("Slider", "value", "double"),
+    ("Slider", "min", "double"),
+    ("Slider", "max", "double"),
+];
+
+/// Static `(OwnerType, field) → fieldType` seed for the Dart frontend's type
+/// tracker, so `double` fields render Dart-style (`10.0`) and chained value
+/// reads resolve. Derived from the catalog (every widget's double-named
+/// fields) plus the explicit value-type chains. Data lives HERE with the
+/// catalog; the walker only consumes it.
+pub fn field_type_seed() -> Vec<(&'static str, &'static str, &'static str)> {
+    let mut out: Vec<(&'static str, &'static str, &'static str)> = Vec::new();
+    for class in CLASSES {
+        for field in class.fields {
+            if DOUBLE_FIELD_NAMES.contains(&field.name) {
+                out.push((class.name, field.name, "double"));
+            }
+        }
+    }
+    out.extend_from_slice(VALUE_FIELD_TYPES);
+    out
+}
+
 /// The `is`/`instanceof` ancestry for `class`, self first: e.g. `Scaffold` →
 /// `["Scaffold", "StatefulWidget", "Widget"]`. Stamped as the object's
 /// `__types` array so `x is StatefulWidget` matches by membership.
@@ -322,6 +375,15 @@ const F_RECOGNIZER: &[FlutterField] =
 const F_DEFTEXTSTYLE: &[FlutterField] = &[FlutterField::named("style"), FlutterField::named("child")];
 
 // Simple positional/named value types (no computed getters, no control).
+// EdgeInsets carries four resolved edge insets; its named constructors
+// (`all`/`symmetric`/`only`/`fromLTRB`) are desugared in the Dart walker to
+// this four-field construction.
+const F_EDGEINSETS: &[FlutterField] = &[
+    FlutterField::named("left"),
+    FlutterField::named("top"),
+    FlutterField::named("right"),
+    FlutterField::named("bottom"),
+];
 const F_OFFSET: &[FlutterField] = &[FlutterField::positional("dx", 0), FlutterField::positional("dy", 1)];
 const F_SIZE: &[FlutterField] = &[FlutterField::positional("width", 0), FlutterField::positional("height", 1)];
 const F_ICONDATA: &[FlutterField] = &[FlutterField::positional("codePoint", 0), FlutterField::named("fontFamily")];
@@ -353,7 +415,7 @@ const F_TABBAR: &[FlutterField] = &[FlutterField::children_list("tabs"), Flutter
 const F_TEXTBUTTON: &[FlutterField] = &[FlutterField::named("onPressed"), FlutterField::named("child"), FlutterField::named("enabled"), FlutterField::named("style"), FlutterField::named("autofocus"), FlutterField::named("icon"), FlutterField::named("label")];
 const F_TEXTFIELD: &[FlutterField] = &[FlutterField::named("controller"), FlutterField::named("focusNode"), FlutterField::named("decoration"), FlutterField::named("keyboardType"), FlutterField::named("obscureText"), FlutterField::named("maxLines"), FlutterField::named("onChanged")];
 const F_TEXTFORMFIELD: &[FlutterField] = &[FlutterField::named("controller"), FlutterField::named("initialValue"), FlutterField::named("validator"), FlutterField::named("onSaved"), FlutterField::named("decoration"), FlutterField::named("obscureText")];
-const F_FAB: &[FlutterField] = &[FlutterField::named("onPressed"), FlutterField::named("child"), FlutterField::named("tooltip"), FlutterField::named("backgroundColor")];
+const F_FAB: &[FlutterField] = &[FlutterField::named("onPressed"), FlutterField::named("child"), FlutterField::named("tooltip"), FlutterField::named("backgroundColor"), FlutterField::named("elevation"), FlutterField::named("foregroundColor"), FlutterField::named("mini"), FlutterField::named("shape")];
 const F_BOTTOMNAV: &[FlutterField] = &[FlutterField::children_list("items"), FlutterField::named("currentIndex"), FlutterField::named("onTap"), FlutterField::named("type")];
 const F_TAB: &[FlutterField] = &[FlutterField::named("text"), FlutterField::named("icon"), FlutterField::named("child")];
 const F_FLEXSPACEBAR: &[FlutterField] = &[FlutterField::named("title"), FlutterField::named("background"), FlutterField::named("centerTitle")];
@@ -632,6 +694,8 @@ static CLASSES: &[FlutterClass] = &[
     // ── Value types (no backing control; construction + field read-back) ──
     data_class!("Color", None, COLOR_FIELDS),
     data_class!("FocusNode", None, F_FOCUSNODE),
+    data_class!("EdgeInsets", None, F_EDGEINSETS),
+    data_class!("EdgeInsetsDirectional", None, F_EDGEINSETS),
     data_class!("Offset", None, F_OFFSET),
     data_class!("Size", None, F_SIZE),
     data_class!("FractionalOffset", None, F_OFFSET),
