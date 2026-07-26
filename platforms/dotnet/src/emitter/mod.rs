@@ -474,7 +474,22 @@ impl DotnetSurface {
         if requested_short.eq_ignore_ascii_case("Stopwatch") && !want_setter {
             let emit = match property_name.to_ascii_lowercase().as_str() {
                 "elapsedmilliseconds" => Some("dotnet.stopwatch_elapsed_ms"),
+                "elapsedticks" => Some("dotnet.stopwatch_elapsed_ticks"),
+                "elapsed" => Some("dotnet.stopwatch_elapsed"),
                 "isrunning" => Some("dotnet.stopwatch_is_running"),
+                _ => None,
+            };
+            if let Some(emit) = emit {
+                return Some(InstancePropertyTarget::Common {
+                    emit: emit.to_string(),
+                });
+            }
+        }
+        if requested_short.eq_ignore_ascii_case("Task") && !want_setter {
+            let emit = match property_name.to_ascii_lowercase().as_str() {
+                "result" => Some("dotnet.task_result"),
+                "iscompleted" => Some("dotnet.task_is_completed"),
+                "iscanceled" => Some("dotnet.task_is_canceled"),
                 _ => None,
             };
             if let Some(emit) = emit {
@@ -702,6 +717,9 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
     }
     if class.eq_ignore_ascii_case("ValueTask") && method_name.eq_ignore_ascii_case("AsTask") {
         return Some("Task".into());
+    }
+    if class.eq_ignore_ascii_case("Process") && method_name.eq_ignore_ascii_case("WaitForExit") {
+        return Some("Boolean".into());
     }
     // LINQ deferred (sequence-returning) operators stay `IEnumerable<T>`, so a
     // chain like `xs.OrderBy(k).Distinct().Where(p)` keeps resolving each step
@@ -984,6 +1002,12 @@ pub fn static_member_parameterless_call(prefix: &str, member_name: &str) -> bool
         || ((normalized.eq_ignore_ascii_case("TimeSpan")
             || normalized.eq_ignore_ascii_case("System.TimeSpan"))
             && member_name.eq_ignore_ascii_case("Zero"))
+        || ((normalized.eq_ignore_ascii_case("Stopwatch")
+            || normalized.eq_ignore_ascii_case("System.Diagnostics.Stopwatch"))
+            && matches!(
+                member_name.to_ascii_lowercase().as_str(),
+                "frequency" | "ishighresolution"
+            ))
         || ((normalized.eq_ignore_ascii_case("Encoding")
             || normalized.eq_ignore_ascii_case("System.Text.Encoding"))
             && matches!(
@@ -995,7 +1019,13 @@ pub fn static_member_parameterless_call(prefix: &str, member_name: &str) -> bool
 pub fn canonical_type_name(raw: &str) -> String {
     let trimmed = raw.trim().trim_end_matches('?').trim();
     let trimmed = trimmed.strip_suffix("()").unwrap_or(trimmed).trim();
-    let leaf = trimmed.rsplit('.').next().unwrap_or(trimmed).trim();
+    let base = trimmed
+        .split_once("(Of ")
+        .map(|(base, _)| base)
+        .or_else(|| trimmed.split_once('<').map(|(base, _)| base))
+        .unwrap_or(trimmed)
+        .trim();
+    let leaf = base.rsplit('.').next().unwrap_or(base).trim();
     match leaf.to_ascii_lowercase().as_str() {
         "short" | "int16" => "Int16",
         "integer" | "int" | "int32" => "Int32",
@@ -1042,13 +1072,25 @@ pub fn lookup_component_static_property(
 
 pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<&'static str> {
     let class = class_name.rsplit('.').next().unwrap_or(class_name);
+    if class.eq_ignore_ascii_case("Object")
+        && matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "equals" | "referenceequals"
+        )
+    {
+        return Some("Boolean");
+    }
     if class.eq_ignore_ascii_case("TimeSpan")
         && matches!(
             method_name.to_ascii_lowercase().as_str(),
-            "fromdays" | "fromhours" | "fromminutes" | "fromseconds" | "frommilliseconds" | "zero"
+            "fromdays" | "fromhours" | "fromminutes" | "fromseconds" | "frommilliseconds"
+                | "parse" | "zero" | "add" | "subtract"
         )
     {
         return Some("TimeSpan");
+    }
+    if class.eq_ignore_ascii_case("TimeSpan") && method_name.eq_ignore_ascii_case("Compare") {
+        return Some("Int32");
     }
     if class.eq_ignore_ascii_case("DateTime")
         && matches!(
@@ -1058,8 +1100,39 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     {
         return Some("DateTime");
     }
+    if class.eq_ignore_ascii_case("DateTime") && method_name.eq_ignore_ascii_case("Compare") {
+        return Some("Int32");
+    }
+    if class.eq_ignore_ascii_case("Stopwatch") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "startnew" => Some("Stopwatch"),
+            "gettimestamp" | "frequency" => Some("Int64"),
+            "ishighresolution" => Some("Boolean"),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("BitConverter") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "tochar" => Some("Char"),
+            "toboolean" => Some("Boolean"),
+            "todouble" | "tosingle" => Some("Double"),
+            "toint16" | "toint32" | "touint16" | "touint32" => Some("Int32"),
+            "toint64" | "touint64" => Some("Int64"),
+            "tostring" => Some("String"),
+            "getbytes" => Some("Array"),
+            _ => None,
+        };
+    }
     if class.eq_ignore_ascii_case("Convert") && method_name.eq_ignore_ascii_case("ToDateTime") {
         return Some("DateTime");
+    }
+    if class.eq_ignore_ascii_case("Uri") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "trycreate" | "makerelativeuri" => Some("Uri"),
+            "isbaseof" | "iswellformeduristring" => Some("Boolean"),
+            "escapedatastring" | "unescapedatastring" => Some("String"),
+            _ => None,
+        };
     }
     if class.eq_ignore_ascii_case("Guid")
         && matches!(
@@ -1071,6 +1144,20 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     }
     if class.eq_ignore_ascii_case("Version") && method_name.eq_ignore_ascii_case("Parse") {
         return Some("Version");
+    }
+    if class.eq_ignore_ascii_case("Version") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "compareto" => Some("Int32"),
+            "equals" => Some("Boolean"),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("Process") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "getcurrentprocess" | "getprocessbyid" | "start" => Some("Process"),
+            "getprocesses" | "getprocessesbyname" => Some("Array"),
+            _ => None,
+        };
     }
     if class.eq_ignore_ascii_case("CancellationToken") && method_name.eq_ignore_ascii_case("None") {
         return Some("CancellationToken");
@@ -1102,6 +1189,80 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
         )
     {
         return Some("Encoding");
+    }
+    None
+}
+
+pub fn static_property_type(class_name: &str, property_name: &str) -> Option<&'static str> {
+    let class = class_name.rsplit('.').next().unwrap_or(class_name);
+    if class.eq_ignore_ascii_case("DateTime")
+        && matches!(
+            property_name.to_ascii_lowercase().as_str(),
+            "now" | "utcnow" | "today"
+        )
+    {
+        return Some("DateTime");
+    }
+    if class.eq_ignore_ascii_case("TimeSpan") && property_name.eq_ignore_ascii_case("Zero") {
+        return Some("TimeSpan");
+    }
+    if class.eq_ignore_ascii_case("Guid") && property_name.eq_ignore_ascii_case("Empty") {
+        return Some("Guid");
+    }
+    if class.eq_ignore_ascii_case("Stopwatch") {
+        return match property_name.to_ascii_lowercase().as_str() {
+            "frequency" => Some("Int64"),
+            "ishighresolution" => Some("Boolean"),
+            _ => None,
+        };
+    }
+    None
+}
+
+pub fn instance_property_type(class_name: &str, property_name: &str) -> Option<&'static str> {
+    let class = class_name.rsplit('.').next().unwrap_or(class_name);
+    if class.eq_ignore_ascii_case("StringBuilder") {
+        return match property_name.to_ascii_lowercase().as_str() {
+            "length" | "capacity" | "maxcapacity" => Some("Int32"),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("Process") {
+        return match property_name.to_ascii_lowercase().as_str() {
+            "hasexited" => Some("Boolean"),
+            "id" | "handle" => Some("Int32"),
+            "processname" | "priorityclass" => Some("String"),
+            "workingset64" | "peakworkingset64" | "virtualmemorysize64"
+            | "privatememorysize64" => Some("Int64"),
+            "starttime" => Some("DateTime"),
+            "totalprocessortime" | "userprocessortime" => Some("TimeSpan"),
+            "threads" | "modules" | "mainmodule" => Some("Object"),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("TimeSpan") {
+        return match property_name.to_ascii_lowercase().as_str() {
+            "ticks" => Some("Int64"),
+            "totalmilliseconds" | "totalseconds" | "totalminutes" | "totalhours"
+            | "totaldays" => Some("Double"),
+            "days" | "hours" | "minutes" | "seconds" => Some("Int32"),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("Stopwatch") {
+        return match property_name.to_ascii_lowercase().as_str() {
+            "isrunning" => Some("Boolean"),
+            "elapsedmilliseconds" | "elapsedticks" => Some("Int64"),
+            "elapsed" => Some("TimeSpan"),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("Task") {
+        return match property_name.to_ascii_lowercase().as_str() {
+            "iscompleted" | "iscanceled" => Some("Boolean"),
+            "result" => Some("Object"),
+            _ => None,
+        };
     }
     None
 }

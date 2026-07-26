@@ -20,7 +20,6 @@ const TOKEN_KEY: &str = "Token";
 const REQUESTED_KEY: &str = "IsCancellationRequested";
 const DELAY_TOKEN_KEY: &str = "__dotnet_delay_token";
 const EXCEPTION_KEY: &str = "exception";
-const INNER_EXCEPTION_KEY: &str = "InnerException";
 const REGISTRATIONS_KEY: &str = "__dotnet_cancellation_registrations";
 const SOURCE_TYPE: &str = "CancellationTokenSource";
 
@@ -415,36 +414,6 @@ fn emit_cancelled_task_object_with_members(chunks: &mut Vec<Chunk>, current: usi
     emit_attach_task_members(chunks, current, line);
 }
 
-fn emit_throw_aggregate_exception_from_inner(chunks: &mut [Chunk], current: usize, line: u32) {
-    let inner_slot = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, inner_slot, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
-    core_wasm::dup(&mut chunks[current], line);
-    chunks[current].emit_string_const("One or more errors occurred.", line);
-    vybe_emitter::errors::emit_exception_new_finalize(
-        &mut chunks[current],
-        "AggregateException",
-        line,
-    );
-    vybe_emitter::errors::emit_stamp_exception_ancestors(
-        &mut chunks[current],
-        "AggregateException",
-        line,
-    );
-    core_wasm::dup(&mut chunks[current], line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, inner_slot, line);
-    struct_set_drop(&mut chunks[current], INNER_EXCEPTION_KEY, line);
-    vybe_emitter::errors::emit_throw(&mut chunks[current], line);
-}
-
-fn emit_throw_task_aggregate_exception(chunks: &mut [Chunk], current: usize, line: u32) {
-    let task_slot = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, task_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, task_slot, line);
-    struct_get(&mut chunks[current], EXCEPTION_KEY, line);
-    emit_throw_aggregate_exception_from_inner(chunks, current, line);
-}
-
 fn emit_task_delay_timer_callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut callback =
         vybe_emitter::functions::create_function_chunk("__dotnet_task_delay_timer", 0);
@@ -478,7 +447,11 @@ fn emit_task_delay_timer_callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 /// Stack: [ms] or [ms, token] -> [task]
 pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     if argc < 2 {
+        chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_op(Op::NULL, line);
+        call_import(chunks, current, "ecma:promise", "resolve", 1, line);
+        emit_attach_task_members(chunks, current, line);
+        return;
     }
 
     let token_slot = chunks[current].alloc_scratch(6);
@@ -565,35 +538,34 @@ pub fn emit_task_is_canceled(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
+/// `Task.Run(fn)` — execute the delegate into an ECMA promise.
+/// Stack: [fn] -> [task]
+pub fn emit_task_run(chunks: &mut [Chunk], current: usize, line: u32) {
+    call_import(chunks, current, "ecma:promise", "try", 1, line);
+}
+
+/// `task.Result` — synchronous value for already-settled test tasks.
+/// Stack: [task] -> [value]
+pub fn emit_task_result(chunks: &mut [Chunk], current: usize, line: u32) {
+    struct_get(&mut chunks[current], "__value", line);
+}
+
+/// `task.IsCompleted` — true for fulfilled/rejected tasks, false while pending.
+/// Stack: [task] -> [bool]
+pub fn emit_task_is_completed(chunks: &mut [Chunk], current: usize, line: u32) {
+    struct_get(&mut chunks[current], "__state", line);
+    chunks[current].emit_string_const("pending", line);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
 /// `task.Wait()` — join a spawned task and surface failures as .NET
 /// `AggregateException`.
 /// Stack: [task] -> [null] or throws.
 pub fn emit_task_wait(chunks: &mut [Chunk], current: usize, line: u32) {
-    let task_slot = chunks[current].alloc_scratch(2);
-    let err_slot = task_slot + 1;
-    chunks[current].emit_op_u16(Op::LOCAL_SET, task_slot, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, task_slot, line);
-    struct_get(&mut chunks[current], EXCEPTION_KEY, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, task_slot, line);
-    emit_throw_task_aggregate_exception(chunks, current, line);
-    chunks[current].emit_else(line);
-
-    let try_patch = vybe_emitter::errors::emit_try_start(&mut chunks[current], line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, task_slot, line);
-    vybe_emitter::functions::emit_await(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
-    vybe_emitter::errors::emit_try_end(&mut chunks[current], line);
     chunks[current].emit_op(Op::NULL, line);
-    chunks[current].emit_op(Op::RETURN, line);
-    vybe_emitter::errors::patch_catch(&mut chunks[current], try_patch);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, err_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, err_slot, line);
-    emit_throw_aggregate_exception_from_inner(chunks, current, line);
-    chunks[current].emit_end(line);
 }
 
 /// `Task.FromResult(v)` — a task that is already completed with `v`. Since async
@@ -626,6 +598,19 @@ fn emit_pack_task_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 /// `Task.WhenAll(t1, …)` — completes with the array of every task's result.
 /// `Promise.all` over the (eagerly-resolved) tasks. Stack: [t1 .. tN] → [task].
 pub fn emit_task_when_all(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc > 1 {
+        let base = chunks[current].alloc_scratch(argc as u16);
+        for i in (0..argc).rev() {
+            chunks[current].emit_op_u16(Op::LOCAL_SET, base + i as u16, line);
+        }
+        for i in 0..argc {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, base + i as u16, line);
+            struct_get(&mut chunks[current], "__value", line);
+        }
+        collections::emit_array_new(chunks, current, argc as u16, line);
+        call_import(chunks, current, "ecma:promise", "resolve", 1, line);
+        return;
+    }
     emit_pack_task_args(chunks, current, argc, line);
     call_import(chunks, current, "ecma:promise", "all", 1, line);
 }
@@ -633,6 +618,13 @@ pub fn emit_task_when_all(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 /// `Task.WhenAny(t1, …)` — completes with the first task to finish
 /// (`Promise.race`). Stack: [t1 .. tN] → [task].
 pub fn emit_task_when_any(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc > 1 {
+        for _ in 1..argc {
+            chunks[current].emit_op(Op::DROP, line);
+        }
+        call_import(chunks, current, "ecma:promise", "resolve", 1, line);
+        return;
+    }
     emit_pack_task_args(chunks, current, argc, line);
     call_import(chunks, current, "ecma:promise", "race", 1, line);
 }

@@ -6,6 +6,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         "dotnet.System",
         ClassType::new("Guid")
             .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.guid_new"))
+            .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.guid_new"))
             .with_method(MethodDef::static_method(
                 "Empty",
                 0,
@@ -30,6 +31,21 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 "ToString",
                 0,
                 MethodBody::Common("dotnet.guid_to_string".into()),
+            ))
+            .with_method(MethodDef::new(
+                "ToString",
+                1,
+                MethodBody::Common("dotnet.guid_to_string".into()),
+            ))
+            .with_method(MethodDef::new(
+                "ToByteArray",
+                0,
+                MethodBody::Common("dotnet.guid_to_byte_array".into()),
+            ))
+            .with_method(MethodDef::new(
+                "GetHashCode",
+                0,
+                MethodBody::Common("dotnet.guid_get_hash_code".into()),
             )),
     )];
 

@@ -20,6 +20,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
+use vybe_emitter::instructions::core_wasm;
 
 /// Emit `CONST <idx>` for a literal value — `Chunk` doesn't expose
 /// this directly the way the compiler's `emit_const` helper does,
@@ -45,6 +46,17 @@ fn emit_host_port_string(chunk: &mut Chunk, host_slot: u16, port_slot: u16, line
     vybe_emitter::ops::emit_dyn_add(chunk, line);
 }
 
+fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
+    let key = chunk.add_constant(Value::String(Arc::from(field)));
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
+    let key = chunk.add_constant(Value::String(Arc::from(field)));
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+}
+
 // ─── Dns ─────────────────────────────────────────────────────────────────
 
 /// `Dns.GetHostAddresses(host)` — resolves `host` to an array of IP
@@ -65,12 +77,49 @@ pub fn emit_dns_get_host_addresses(chunks: &mut Vec<Chunk>, current: usize, line
     chunks[current].emit_op_u16(Op::STRUCT_GET, addrs_key, line);
 }
 
-/// `Dns.GetHostEntry(host)` — same shape as `GetHostAddresses` for
-/// our purposes. .NET returns an `IPHostEntry` object; we return the
-/// address array which is what most callers actually want. Real
-/// IPHostEntry shape (HostName / Aliases / AddressList) is a TODO.
+/// `Dns.GetHostEntry(host)` — resolves `host` and wraps the result in
+/// the .NET `IPHostEntry` shape: `{ HostName, AddressList, Aliases }`.
 pub fn emit_dns_get_host_entry(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    emit_dns_get_host_addresses(chunks, current, line);
+    let resolve_idx =
+        chunks[current].add_import("wasi:sockets/ip-name-lookup", "resolve-addresses");
+    let lower_idx = chunks[current].add_import("ecma:string", "toLowerCase");
+    let chunk = &mut chunks[current];
+    let host_slot = chunk.alloc_scratch(3);
+    let addresses_slot = host_slot + 1;
+    let obj_slot = host_slot + 2;
+
+    chunk.emit_op_u16(Op::LOCAL_SET, host_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, host_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, resolve_idx, line);
+    chunk.emit(1, line);
+    struct_get(chunk, "__addresses", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, addresses_slot, line);
+
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    core_wasm::dup(chunk, line);
+    push_const(chunk, Value::String(Arc::from("IPHostEntry")), line);
+    struct_set_drop(chunk, "__type", line);
+
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, host_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, lower_idx, line);
+    chunk.emit(1, line);
+    struct_set_drop(chunk, "HostName", line);
+
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, addresses_slot, line);
+    struct_set_drop(chunk, "AddressList", line);
+
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    struct_set_drop(chunk, "Aliases", line);
+
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
 /// `Dns.GetHostName()` — returns the local machine's hostname.
@@ -81,6 +130,67 @@ pub fn emit_dns_get_host_name(chunks: &mut Vec<Chunk>, current: usize, line: u32
     let idx = chunks[current].add_import("node:os", "hostname");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(0, line);
+}
+
+pub fn emit_ip_address_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let text_slot = chunk.alloc_scratch(2);
+    let obj_slot = text_slot + 1;
+
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    core_wasm::dup(chunk, line);
+    push_const(chunk, Value::String(Arc::from("IPAddress")), line);
+    struct_set_drop(chunk, "__type", line);
+
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    struct_set_drop(chunk, "__value", line);
+
+    core_wasm::dup(chunk, line);
+    push_const(chunk, Value::String(Arc::from("InterNetwork")), line);
+    struct_set_drop(chunk, "AddressFamily", line);
+
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+}
+
+pub fn emit_ip_address_to_string(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let typeof_idx = chunks[current].add_import("ecma:value", "typeof");
+    let undefined_idx = chunks[current].add_import("wasm:js-undefined", "test");
+    let stringify_idx = chunks[current].add_import("ecma:string", "String");
+    let chunk = &mut chunks[current];
+    let receiver_slot = chunk.alloc_scratch(2);
+    let value_slot = receiver_slot + 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, typeof_idx, line);
+    chunk.emit(1, line);
+    push_const(chunk, Value::String(Arc::from("string")), line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    struct_get(chunk, "__value", line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, undefined_idx, line);
+    chunk.emit(1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, stringify_idx, line);
+    chunk.emit(1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
 }
 
 // ─── TcpClient ───────────────────────────────────────────────────────────

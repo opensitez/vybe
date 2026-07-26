@@ -15,6 +15,36 @@ use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 use vybe_emitter::instructions::{core_wasm, host};
 
+fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_dup(line);
+    chunk.emit_string_const(message, line);
+    vybe_emitter::errors::emit_exception_new_finalize(chunk, exception_name, line);
+    vybe_emitter::errors::emit_throw(chunk, line);
+}
+
+fn emit_index_bounds_check(
+    chunk: &mut Chunk,
+    arr_slot: u16,
+    index_slot: u16,
+    exception_name: &str,
+    message: &str,
+    line: u32,
+) {
+    chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    chunk.emit_i32_const(0, line);
+    vybe_emitter::ops::emit_dyn_ge(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    emit_throw_dotnet_exception(chunk, exception_name, message, line);
+    chunk.emit_end(line);
+}
+
 /// `Array.Clear(arr, idx, count)` — reset `count` elements starting at
 /// `idx` to a .NET-style default. Until the runtime carries per-array
 /// element metadata, infer the default from the current element's
@@ -103,6 +133,38 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 ///
 /// Stack on entry: `[src, dst, count]` ; Stack on exit: `[null]`
 pub fn emit_array_copy(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let count_slot = chunk.alloc_scratch(3);
+    let dst_slot = count_slot + 1;
+    let src_slot = count_slot + 2;
+    chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, dst_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, src_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunk.emit_i32_const(0, line);
+    vybe_emitter::ops::emit_dyn_ge(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, src_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    vybe_emitter::ops::emit_dyn_le(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, dst_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    vybe_emitter::ops::emit_dyn_le(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    emit_throw_dotnet_exception(
+        chunk,
+        "ArgumentException",
+        "Destination array was not long enough.",
+        line,
+    );
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, src_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, dst_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
     vybe_emitter::collections::emit_runtime_helper_call(
         chunks,
         current,
@@ -111,6 +173,116 @@ pub fn emit_array_copy(chunks: &mut [Chunk], current: usize, line: u32) {
         line,
     );
     // Stdlib chunk returns null; leave it on stack.
+}
+
+/// Bounds-checked `Array.GetValue(index)` / VB array read.
+/// Stack: `[arr, index]` -> `[value]`.
+pub fn emit_array_get_checked(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let index_slot = chunk.alloc_scratch(2);
+    let arr_slot = index_slot + 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, index_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    emit_index_bounds_check(
+        chunk,
+        arr_slot,
+        index_slot,
+        "IndexOutOfRangeException",
+        "Index was outside the bounds of the array.",
+        line,
+    );
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+}
+
+/// Bounds-checked `List<T>.Item(index)`.
+/// Stack: `[list, index]` -> `[value]`.
+pub fn emit_list_get_checked(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let index_slot = chunk.alloc_scratch(2);
+    let arr_slot = index_slot + 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, index_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    emit_index_bounds_check(
+        chunk,
+        arr_slot,
+        index_slot,
+        "ArgumentOutOfRangeException",
+        "Index was out of range. Must be non-negative and less than the size of the collection.",
+        line,
+    );
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+}
+
+/// Bounds-checked .NET range slice.
+/// Stack: `[array, start, length]` -> `[array_slice]`.
+pub fn emit_get_range_checked(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let len_slot = chunk.alloc_scratch(4);
+    let start_slot = len_slot + 1;
+    let arr_slot = len_slot + 2;
+    let end_slot = len_slot + 3;
+    chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, start_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+    chunk.emit_i32_const(0, line);
+    vybe_emitter::ops::emit_dyn_ge(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunk.emit_i32_const(0, line);
+    vybe_emitter::ops::emit_dyn_ge(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    vybe_emitter::ops::emit_dyn_le(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    emit_throw_dotnet_exception(
+        chunk,
+        "ArgumentOutOfRangeException",
+        "Specified argument was out of the range of valid values.",
+        line,
+    );
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    vybe_emitter::collections::emit_get_range(chunks, current, line);
+}
+
+/// Bounds-checked `Array.SetValue(value, index)`.
+/// Stack: `[arr, value, index]` -> `[null]`.
+pub fn emit_array_set_checked(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let index_slot = chunk.alloc_scratch(3);
+    let value_slot = index_slot + 1;
+    let arr_slot = index_slot + 2;
+    chunk.emit_op_u16(Op::LOCAL_SET, index_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    emit_index_bounds_check(
+        chunk,
+        arr_slot,
+        index_slot,
+        "IndexOutOfRangeException",
+        "Index was outside the bounds of the array.",
+        line,
+    );
+    chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op(Op::ARRAY_SET, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::NULL, line);
 }
 
 /// `Array.Resize(arr, newSize)` — extend or truncate `arr` to

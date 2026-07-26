@@ -36,6 +36,31 @@ fn emit_monotonic_now(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit(0u8, line);
 }
 
+fn emit_stopwatch_elapsed_ns_value(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let sw_slot = chunk.alloc_scratch(2);
+    let now_slot = sw_slot + 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, sw_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
+    struct_get(chunk, "isrunning", line);
+    chunk.emit_if(line);
+    emit_monotonic_now(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_SET, now_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, now_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
+    struct_get(chunk, "__start_ns", line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
+    struct_get(chunk, "__accumulated_ns", line);
+    chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
+    struct_get(chunk, "__accumulated_ns", line);
+    chunk.emit_end(line);
+}
+
 /// Create a stopped Stopwatch object. Stack: `[]` → `[sw]`.
 pub fn emit_stopwatch_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
@@ -57,10 +82,10 @@ pub fn emit_stopwatch_new(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `Stopwatch.StartNew()` — create and immediately start. Stack: `[]` → `[sw]`.
 pub fn emit_stopwatch_start_new(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_stopwatch_new(chunks, current, line);
-    // sw is on stack; DUP and start it
+    // Keep the original stopwatch as the return value while Start consumes
+    // the duplicate receiver.
     core_wasm::dup(&mut chunks[current], line);
     emit_stopwatch_start_impl(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
 }
 
 /// `sw.Start()` — start if not already running. Stack: `[sw]` → `[]`.
@@ -160,33 +185,29 @@ pub fn emit_stopwatch_restart(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// `sw.ElapsedMilliseconds` — total elapsed ms. Stack: `[sw]` → `[ms]`.
 pub fn emit_stopwatch_elapsed_ms(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_stopwatch_elapsed_ns_value(chunks, current, line);
     let chunk = &mut chunks[current];
-    let sw_slot = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::LOCAL_SET, sw_slot, line);
-
-    // if running: (now - __start_ns + __accumulated_ns) / 1e6
-    // else: __accumulated_ns / 1e6
-    chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
-    struct_get(chunk, "isrunning", line);
-    chunk.emit_if(line);
-    emit_monotonic_now(chunks, current, line);
-    let chunk = &mut chunks[current];
-    let now_slot = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::LOCAL_SET, now_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, now_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
-    struct_get(chunk, "__start_ns", line);
-    chunk.emit_op(Op::F64_SUB, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
-    struct_get(chunk, "__accumulated_ns", line);
-    chunk.emit_op(Op::F64_ADD, line);
-    chunk.emit_else(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, sw_slot, line);
-    struct_get(chunk, "__accumulated_ns", line);
-    chunk.emit_end(line);
-    // convert ns → ms
     chunk.emit_f64_const(1_000_000.0, line);
     chunk.emit_op(Op::F64_DIV, line);
+}
+
+/// `sw.ElapsedTicks` — total elapsed .NET ticks (100 ns units).
+/// Stack: `[sw]` → `[ticks]`.
+pub fn emit_stopwatch_elapsed_ticks(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_stopwatch_elapsed_ns_value(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_f64_const(100.0, line);
+    chunk.emit_op(Op::F64_DIV, line);
+}
+
+/// `sw.Elapsed` — total elapsed duration as a TimeSpan object.
+/// Stack: `[sw]` → `[TimeSpan]`.
+pub fn emit_stopwatch_elapsed(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_stopwatch_elapsed_ns_value(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_f64_const(1_000_000.0, line);
+    chunk.emit_op(Op::F64_DIV, line);
+    crate::emitter::core::timespan_adapter::emit_build_timespan_from_total_ms(chunk, line);
 }
 
 /// `sw.IsRunning` — Stack: `[sw]` → `[bool]`.
@@ -194,4 +215,22 @@ pub fn emit_stopwatch_is_running(chunks: &mut [Chunk], current: usize, line: u32
     let chunk = &mut chunks[current];
     let key = chunk.add_constant(Value::String(Arc::from("isrunning")));
     chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+}
+
+/// `Stopwatch.Frequency` — nanosecond source expressed as ticks per second.
+pub fn emit_stopwatch_frequency(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_f64_const(10_000_000.0, line);
+}
+
+/// `Stopwatch.IsHighResolution`.
+pub fn emit_stopwatch_is_high_resolution(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_bool_const(true, line);
+}
+
+/// `Stopwatch.GetTimestamp()` — monotonic timestamp in .NET tick units.
+pub fn emit_stopwatch_get_timestamp(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_monotonic_now(chunks, current, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_f64_const(100.0, line);
+    chunk.emit_op(Op::F64_DIV, line);
 }

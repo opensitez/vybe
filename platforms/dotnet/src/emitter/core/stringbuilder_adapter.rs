@@ -305,7 +305,7 @@ pub fn emit_sb_append_line(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let s_slot = reserve_slot(chunk);
     let sb_slot = reserve_slot(chunk);
 
-    if argc > 1 {
+    if argc > 0 {
         chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
     } else {
         push_const(chunk, Value::String(Arc::from("")), line);
@@ -317,7 +317,7 @@ pub fn emit_sb_append_line(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
     emit_format_append_value(chunk, s_slot, line);
     vybe_emitter::ops::emit_dyn_add(chunk, line);
-    push_const(chunk, Value::String(Arc::from("\r\n")), line);
+    push_const(chunk, Value::String(Arc::from("\n")), line);
     vybe_emitter::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
     chunk.emit_op(Op::DROP, line);

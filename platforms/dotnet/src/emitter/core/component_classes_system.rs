@@ -22,7 +22,13 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         ),
         DotnetClassExport::with_wrapper(
             "dotnet.System",
-            ClassType::new("Enum").with_parent("ValueType"),
+            ClassType::new("Enum").with_parent("ValueType").with_method(
+                MethodDef::static_method(
+                    "IsDefined",
+                    2,
+                    MethodBody::Common("dotnet.enum_is_defined".into()),
+                ),
+            ),
             DotnetClass {
                 name: "Enum",
                 parent: Some("ValueType"),
@@ -55,6 +61,97 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "ReferenceEquals",
                     2,
                     MethodBody::Common("dotnet.object_reference_equals".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("BitConverter")
+                .with_method(MethodDef::static_method(
+                    "IsLittleEndian",
+                    0,
+                    MethodBody::Common("dotnet.bitconverter_is_little_endian".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetBytes",
+                    1,
+                    MethodBody::Common("dotnet.bitconverter_get_bytes".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToInt32",
+                    2,
+                    MethodBody::Common("dotnet.bitconverter_to_number".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToInt64",
+                    2,
+                    MethodBody::Common("dotnet.bitconverter_to_number".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToDouble",
+                    2,
+                    MethodBody::Common("dotnet.bitconverter_to_number".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToBoolean",
+                    2,
+                    MethodBody::Common("dotnet.bitconverter_to_boolean".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToChar",
+                    2,
+                    MethodBody::Common("dotnet.bitconverter_to_char".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToString",
+                    1,
+                    MethodBody::Common("dotnet.bitconverter_to_string".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("Buffer").with_method(MethodDef::static_method(
+                "BlockCopy",
+                5,
+                MethodBody::Common("dotnet.buffer_block_copy".into()),
+            )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("GC")
+                .with_method(MethodDef::static_method(
+                    "MaxGeneration",
+                    0,
+                    MethodBody::Common("dotnet.gc_zero".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Collect",
+                    0,
+                    MethodBody::Common("dotnet.gc_noop".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Collect",
+                    1,
+                    MethodBody::Common("dotnet.gc_noop".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WaitForPendingFinalizers",
+                    0,
+                    MethodBody::Common("dotnet.gc_noop".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetTotalMemory",
+                    1,
+                    MethodBody::Common("dotnet.gc_total_memory".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "CollectionCount",
+                    1,
+                    MethodBody::Common("dotnet.gc_zero".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetGeneration",
+                    1,
+                    MethodBody::Common("dotnet.gc_generation".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -162,6 +259,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System",
             ClassType::new("Random")
                 .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.random_new"))
+                .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.random_new"))
                 .with_method(MethodDef::new(
                     "Next",
                     0,
@@ -181,6 +279,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "NextDouble",
                     0,
                     MethodBody::Common("dotnet.random_next_double".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "NextBytes",
+                    1,
+                    MethodBody::Common("dotnet.random_next_bytes".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -222,6 +325,21 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     2,
                     MethodBody::Common("dotnet.timespan_compare".into()),
                 ))
+                .with_method(MethodDef::static_method(
+                    "Add",
+                    2,
+                    MethodBody::Common("dotnet.timespan_add".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Subtract",
+                    2,
+                    MethodBody::Common("dotnet.timespan_sub".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Parse",
+                    1,
+                    MethodBody::Common("dotnet.timespan_parse".into()),
+                ))
                 .with_method(MethodDef::new(
                     "Negate",
                     0,
@@ -236,6 +354,26 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System",
             ClassType::new("Array")
+                .with_method(MethodDef::new(
+                    "GetValue",
+                    1,
+                    MethodBody::Common("dotnet.array_get_checked".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "SetValue",
+                    2,
+                    MethodBody::Common("dotnet.array_set_checked".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetValue",
+                    2,
+                    MethodBody::Common("dotnet.array_get_checked".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SetValue",
+                    3,
+                    MethodBody::Common("dotnet.array_set_checked".into()),
+                ))
                 .with_method(MethodDef::static_method(
                     "Clear",
                     3,
@@ -775,6 +913,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.string_substring".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "Chars",
+                    1,
+                    MethodBody::Common("dotnet.string_char_at_checked".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Chars",
+                    2,
+                    MethodBody::Common("dotnet.string_char_at_checked".into()),
+                ))
+                .with_method(MethodDef::new(
                     "PadLeft",
                     1,
                     MethodBody::Common("dotnet.string_pad_left".into()),
@@ -904,6 +1052,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.environment_version".into()),
                 ))
                 .with_method(MethodDef::static_method(
+                    "ExitCode",
+                    0,
+                    MethodBody::Common("dotnet.environment_exit_code".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SetExitCode",
+                    1,
+                    MethodBody::Common("dotnet.environment_set_exit_code".into()),
+                ))
+                .with_method(MethodDef::static_method(
                     "SystemDirectory",
                     0,
                     MethodBody::Common("dotnet.environment_system_directory".into()),
@@ -924,9 +1082,34 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.environment_get".into()),
                 ))
                 .with_method(MethodDef::static_method(
+                    "GetEnvironmentVariable",
+                    2,
+                    MethodBody::Common("dotnet.environment_get".into()),
+                ))
+                .with_method(MethodDef::static_method(
                     "SetEnvironmentVariable",
                     2,
                     MethodBody::Common("dotnet.environment_set".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SetEnvironmentVariable",
+                    3,
+                    MethodBody::Common("dotnet.environment_set".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetEnvironmentVariables",
+                    0,
+                    MethodBody::Common("dotnet.environment_get_all".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetEnvironmentVariables",
+                    1,
+                    MethodBody::Common("dotnet.environment_get_all".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ExpandEnvironmentVariables",
+                    1,
+                    MethodBody::Common("dotnet.environment_expand".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "GetFolderPath",
@@ -937,6 +1120,25 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "GetCommandLineArgs",
                     0,
                     MethodBody::Common("dotnet.environment_get_command_line_args".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("EnvironmentVariableTarget")
+                .with_method(MethodDef::static_method(
+                    "Process",
+                    0,
+                    MethodBody::Common("dotnet.environment_target_process".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "User",
+                    0,
+                    MethodBody::Common("dotnet.environment_target_user".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Machine",
+                    0,
+                    MethodBody::Common("dotnet.environment_target_machine".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -987,6 +1189,185 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Mid",
                     3,
                     MethodBody::Common("dotnet.vb_strings_mid".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.Microsoft.VisualBasic",
+            ClassType::new("FileSystem")
+                .with_method(MethodDef::static_method(
+                    "FreeFile",
+                    0,
+                    MethodBody::Common("dotnet.vb_freefile".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FileOpen",
+                    3,
+                    MethodBody::Common("dotnet.vb_fileopen".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FileClose",
+                    0,
+                    MethodBody::Common("dotnet.vb_fileclose".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FileClose",
+                    1,
+                    MethodBody::Common("dotnet.vb_fileclose".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "PrintLine",
+                    1,
+                    MethodBody::Common("dotnet.vb_printline".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "PrintLine",
+                    2,
+                    MethodBody::Common("dotnet.vb_printline".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "PrintLine",
+                    3,
+                    MethodBody::Common("dotnet.vb_printline".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "PrintLine",
+                    4,
+                    MethodBody::Common("dotnet.vb_printline".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteLine",
+                    1,
+                    MethodBody::Common("dotnet.vb_writeline".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteLine",
+                    2,
+                    MethodBody::Common("dotnet.vb_writeline".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteLine",
+                    3,
+                    MethodBody::Common("dotnet.vb_writeline".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteLine",
+                    4,
+                    MethodBody::Common("dotnet.vb_writeline".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "LineInput",
+                    1,
+                    MethodBody::Common("dotnet.vb_lineinput".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Input",
+                    1,
+                    MethodBody::Common("dotnet.vb_input_value".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "EOF",
+                    1,
+                    MethodBody::Common("dotnet.vb_eof".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "LOF",
+                    1,
+                    MethodBody::Common("dotnet.vb_lof".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Loc",
+                    1,
+                    MethodBody::Common("dotnet.vb_loc".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FileAttr",
+                    1,
+                    MethodBody::Common("dotnet.vb_fileattr".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetAttr",
+                    1,
+                    MethodBody::Common("dotnet.vb_getattr".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SetAttr",
+                    2,
+                    MethodBody::Common("dotnet.vb_setattr".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Seek",
+                    2,
+                    MethodBody::Common("dotnet.vb_seek".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Dir",
+                    0,
+                    MethodBody::Common("dotnet.vb_dir".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Dir",
+                    1,
+                    MethodBody::Common("dotnet.vb_dir".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FileCopy",
+                    2,
+                    MethodBody::Common("dotnet.vb_filecopy".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Kill",
+                    1,
+                    MethodBody::Common("dotnet.vb_kill".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FileLen",
+                    1,
+                    MethodBody::Common("dotnet.vb_filelen".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FileDateTime",
+                    1,
+                    MethodBody::Common("dotnet.vb_filedatetime".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "CurDir",
+                    0,
+                    MethodBody::Common("dotnet.vb_curdir".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ChDir",
+                    1,
+                    MethodBody::Common("dotnet.vb_chdir".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "MkDir",
+                    1,
+                    MethodBody::Common("dotnet.vb_mkdir".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "RmDir",
+                    1,
+                    MethodBody::Common("dotnet.vb_rmdir".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Name",
+                    2,
+                    MethodBody::Common("dotnet.vb_name".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Rename",
+                    2,
+                    MethodBody::Common("dotnet.vb_name".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Get",
+                    1,
+                    MethodBody::Common("dotnet.vb_get".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Put",
+                    1,
+                    MethodBody::Common("dotnet.vb_put".into()),
                 )),
         ),
     ]);

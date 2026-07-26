@@ -1,6 +1,6 @@
 use super::super::super::class_exports::DotnetClassExport;
 use vybe_bytecode::component_model::{
-    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
+    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef, PropertyDef,
 };
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
@@ -311,15 +311,44 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.IO",
             ClassType::new("Path")
+                .with_property(
+                    PropertyDef::new("DirectorySeparatorChar")
+                        .with_getter(HostTarget::new("node:path", "sep")),
+                )
                 .with_method(MethodDef::static_method(
                     "Combine",
                     2,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathCombine")),
+                    MethodBody::Common("dotnet.path_combine".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Combine",
+                    3,
+                    MethodBody::Common("dotnet.path_combine".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Combine",
+                    4,
+                    MethodBody::Common("dotnet.path_combine".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Join",
+                    2,
+                    MethodBody::Common("dotnet.path_combine".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Join",
+                    3,
+                    MethodBody::Common("dotnet.path_combine".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Join",
+                    4,
+                    MethodBody::Common("dotnet.path_combine".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "GetFileName",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathGetFileName")),
+                    MethodBody::Common("dotnet.path_get_file_name".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "GetExtension",
@@ -329,25 +358,27 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "GetDirectoryName",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathGetDirectory")),
+                    MethodBody::Common("dotnet.path_get_directory_name".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "GetFileNameWithoutExtension",
                     1,
-                    MethodBody::HostCall(HostTarget::new(
-                        "wasi:filesystem",
-                        "pathGetFileNameWithoutExt",
-                    )),
+                    MethodBody::Common("dotnet.path_get_file_name_without_extension".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "ChangeExtension",
                     2,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathChangeExtension")),
+                    MethodBody::Common("dotnet.path_change_extension".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "GetFullPath",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathGetFullPath")),
+                    MethodBody::Common("dotnet.path_get_full_path".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetPathRoot",
+                    1,
+                    MethodBody::Common("dotnet.path_get_path_root".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "GetTempPath",
@@ -355,14 +386,44 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathGetTempPath")),
                 ))
                 .with_method(MethodDef::static_method(
+                    "GetTempFileName",
+                    0,
+                    MethodBody::Common("dotnet.path_get_temp_file_name".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetRandomFileName",
+                    0,
+                    MethodBody::Common("dotnet.path_get_random_file_name".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetInvalidFileNameChars",
+                    0,
+                    MethodBody::Common("dotnet.path_get_invalid_file_name_chars".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetInvalidPathChars",
+                    0,
+                    MethodBody::Common("dotnet.path_get_invalid_path_chars".into()),
+                ))
+                .with_method(MethodDef::static_method(
                     "HasExtension",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathHasExtension")),
+                    MethodBody::Common("dotnet.path_has_extension".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "IsPathRooted",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "pathIsRooted")),
+                    MethodBody::Common("dotnet.path_is_path_rooted".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetRelativePath",
+                    2,
+                    MethodBody::Common("dotnet.path_get_relative_path".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "TrimEndingDirectorySeparator",
+                    1,
+                    MethodBody::Common("dotnet.path_trim_ending_directory_separator".into()),
                 )),
         ),
     ]

@@ -76,10 +76,16 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
         "system.diagnostics.debug" | "system.diagnostics.trace" | "system.diagnostics" => {
             Some("wasi:logging/logging")
         }
-        "system.net" => Some("wasi:http"),
+        // System.Net has no single backing host module: `wasi:http` is a WASI
+        // *package*, not an interface (the interfaces are `wasi:http/types`,
+        // `wasi:http/outgoing-handler`, `wasi:http/incoming-handler`), and the
+        // spec surface is resource-based with no one-call `fetch`. So the
+        // classes lower through `http_adapter`, which emits the real
+        // request -> outgoing-handler.handle -> consume-body sequence. Return
+        // None so the FQN resolver falls through to the type registry.
+        "system.net" => None,
         // Networking no longer falls through to a monolithic `.NET`
-        // host namespace. `System.Net.Http` maps directly to
-        // `wasi:http`, while `System.Net.Dns` and
+        // host namespace. `System.Net.Dns` and
         // `System.Net.Sockets.*` resolve through explicit component
         // metadata and lower via emitter adapters that compose
         // `wasi:sockets/*` + `node:os`.
@@ -132,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_network_namespaces_do_not_fall_back_to_retired_dotnet_host_modules() {
-        assert_eq!(namespace_to_host_module("system.net"), Some("wasi:http"));
+        assert_eq!(namespace_to_host_module("system.net"), None);
         assert_eq!(namespace_to_host_module("system.net.dns"), None);
         assert_eq!(namespace_to_host_module("system.net.sockets"), None);
     }

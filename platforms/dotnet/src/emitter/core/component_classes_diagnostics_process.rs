@@ -15,6 +15,21 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     0,
                     MethodBody::Common("dotnet.stopwatch_start_new".into()),
                 ))
+                .with_method(MethodDef::static_method(
+                    "GetTimestamp",
+                    0,
+                    MethodBody::Common("dotnet.stopwatch_get_timestamp".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Frequency",
+                    0,
+                    MethodBody::Common("dotnet.stopwatch_frequency".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "IsHighResolution",
+                    0,
+                    MethodBody::Common("dotnet.stopwatch_is_high_resolution".into()),
+                ))
                 .with_method(MethodDef::new(
                     "Start",
                     0,
@@ -39,6 +54,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "ElapsedMilliseconds",
                     0,
                     MethodBody::Common("dotnet.stopwatch_elapsed_ms".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ElapsedTicks",
+                    0,
+                    MethodBody::Common("dotnet.stopwatch_elapsed_ticks".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Elapsed",
+                    0,
+                    MethodBody::Common("dotnet.stopwatch_elapsed".into()),
                 ))
                 .with_method(MethodDef::new(
                     "IsRunning",
@@ -79,11 +104,35 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     0,
                     MethodBody::Common("dotnet.process_get_current".into()),
                 ))
+                .with_method(MethodDef::static_method(
+                    "GetProcessById",
+                    1,
+                    MethodBody::Common("dotnet.process_get_by_id".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetProcesses",
+                    0,
+                    MethodBody::Common("dotnet.process_get_processes".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetProcessesByName",
+                    1,
+                    MethodBody::Common("dotnet.process_get_processes_by_name".into()),
+                ))
                 .with_method(MethodDef::new(
                     "WaitForExit",
                     0,
                     MethodBody::Common("dotnet.process_wait_for_exit".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "WaitForExit",
+                    1,
+                    MethodBody::Common("dotnet.process_wait_for_exit_timeout".into()),
                 )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.Diagnostics",
+            ClassType::new("ProcessPriorityClass"),
         ),
     ]
 }

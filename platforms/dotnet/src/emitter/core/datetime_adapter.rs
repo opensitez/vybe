@@ -50,6 +50,11 @@ fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
 }
 
+fn struct_set_named_field_drop(chunk: &mut Chunk, key: &str, line: u32) {
+    struct_set_named_field(chunk, key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
 fn struct_get_named_field(chunk: &mut Chunk, key: &str, line: u32) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::STRUCT_GET, key_idx, line);
@@ -171,7 +176,7 @@ fn emit_wrap_ms_internal(
     include_composites: bool,
 ) {
     let chunk = &mut chunks[current];
-    let ms_slot = chunk.alloc_scratch(8);
+    let ms_slot = chunk.alloc_scratch(9);
     let year_slot = ms_slot + 1;
     let month_slot = ms_slot + 2;
     let day_slot = ms_slot + 3;
@@ -179,6 +184,7 @@ fn emit_wrap_ms_internal(
     let minute_slot = ms_slot + 5;
     let second_slot = ms_slot + 6;
     let dow_slot = ms_slot + 7;
+    let obj_slot = ms_slot + 8;
 
     chunk.emit_op_u16(Op::LOCAL_SET, ms_slot, line);
 
@@ -209,25 +215,27 @@ fn emit_wrap_ms_internal(
     let object_new = chunk.add_import("ecma:object", "new");
     chunk.emit_op_u16(Op::CALL_IMPORT, object_new, line);
     chunk.emit(0, line);
-    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     push_const(chunk, Value::String(Arc::from("DateTime")), line);
-    struct_set_named_field(chunk, TYPE_KEY, line);
+    struct_set_named_field_drop(chunk, TYPE_KEY, line);
 
-    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
-    struct_set_named_field(chunk, TIME_KEY, line);
+    struct_set_named_field_drop(chunk, TIME_KEY, line);
 
-    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     push_const(chunk, Value::String(Arc::from("Unspecified")), line);
-    struct_set_named_field(chunk, "Kind", line);
+    struct_set_named_field_drop(chunk, "Kind", line);
 
-    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(10_000.0), line);
     chunk.emit_op(Op::F64_MUL, line);
     push_const(chunk, Value::F64(621_355_968_000_000_000.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    struct_set_named_field(chunk, "Ticks", line);
+    struct_set_named_field_drop(chunk, "Ticks", line);
 
     for (field, slot) in [
         ("Year", year_slot),
@@ -237,25 +245,25 @@ fn emit_wrap_ms_internal(
         ("Minute", minute_slot),
         ("Second", second_slot),
     ] {
-        core_wasm::dup(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-        struct_set_named_field(chunk, field, line);
+        struct_set_named_field_drop(chunk, field, line);
     }
 
-    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     emit_day_of_week_string(chunk, dow_slot, line);
-    struct_set_named_field(chunk, "DayOfWeek", line);
+    struct_set_named_field_drop(chunk, "DayOfWeek", line);
 
     if include_composites {
-        core_wasm::dup(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         emit_utc_from_slots(
             chunks, current, year_slot, month_slot, day_slot, None, None, None, line,
         );
         emit_wrap_ms_internal(chunks, current, line, false);
-        struct_set_named_field(&mut chunks[current], "Date", line);
+        struct_set_named_field_drop(&mut chunks[current], "Date", line);
 
         let chunk = &mut chunks[current];
-        core_wasm::dup(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, hour_slot, line);
         push_const(chunk, Value::F64(3_600_000.0), line);
         chunk.emit_op(Op::F64_MUL, line);
@@ -268,14 +276,22 @@ fn emit_wrap_ms_internal(
         chunk.emit_op(Op::F64_MUL, line);
         chunk.emit_op(Op::F64_ADD, line);
         timespan_adapter::emit_build_timespan_from_total_ms(chunk, line);
-        struct_set_named_field(chunk, "TimeOfDay", line);
+        struct_set_named_field_drop(chunk, "TimeOfDay", line);
     }
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
 /// Wrap a millisecond timestamp on stack-top as a DateTime object.
 /// Stack on entry: `[ms]` ; Stack on exit: `[datetime_obj]`.
 fn emit_wrap_ms(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_wrap_ms_internal(chunks, current, line, true);
+}
+
+/// Wrap a millisecond timestamp on stack-top as a DateTime object for
+/// other .NET adapters.
+pub fn emit_datetime_from_millis(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_wrap_ms(chunks, current, line);
 }
 
 /// `DateTime.Now` / `DateTime.UtcNow` — read `ecma:date.now` (which

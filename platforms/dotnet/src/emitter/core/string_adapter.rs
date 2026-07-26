@@ -6,6 +6,14 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
+fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_dup(line);
+    chunk.emit_string_const(message, line);
+    vybe_emitter::errors::emit_exception_new_finalize(chunk, exception_name, line);
+    vybe_emitter::errors::emit_throw(chunk, line);
+}
+
 fn emit_ignore_case_flag(chunk: &mut Chunk, comparison_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, comparison_slot, line);
     chunk.emit_bool_const(true, line);
@@ -494,22 +502,117 @@ pub fn emit_string_substring(chunks: &mut [Chunk], current: usize, argc: u8, lin
         let len_slot = reserve_slot(chunk);
         let start_slot = reserve_slot(chunk);
         let value_slot = reserve_slot(chunk);
+        let str_len_slot = reserve_slot(chunk);
+        let end_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, start_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+        emit_string_len(chunk, value_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, str_len_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
+        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
+        emit_substring_bounds_check(chunk, start_slot, len_slot, end_slot, str_len_slot, line);
         emit_string_substr_from_slots(chunk, value_slot, start_slot, len_slot, line);
     } else {
         let start_slot = reserve_slot(chunk);
         let value_slot = reserve_slot(chunk);
+        let str_len_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, start_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
         emit_string_len(chunk, value_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, str_len_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+        chunk.emit_i32_const(0, line);
+        vybe_emitter::ops::emit_dyn_ge(chunk, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, str_len_slot, line);
+        vybe_emitter::ops::emit_dyn_le(chunk, line);
+        chunk.emit_op(Op::I32_AND, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if(line);
+        emit_throw_dotnet_exception(
+            chunk,
+            "ArgumentOutOfRangeException",
+            "startIndex cannot be larger than length of string.",
+            line,
+        );
+        chunk.emit_end(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, str_len_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
         chunk.emit_op(Op::I32_SUB, line);
         let len_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
         emit_string_substr_from_slots(chunk, value_slot, start_slot, len_slot, line);
     }
+}
+
+pub fn emit_string_char_at_checked(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let index_slot = reserve_slot(chunk);
+    let value_slot = reserve_slot(chunk);
+    let len_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, index_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    emit_string_len(chunk, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    chunk.emit_i32_const(0, line);
+    vybe_emitter::ops::emit_dyn_ge(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    emit_throw_dotnet_exception(
+        chunk,
+        "IndexOutOfRangeException",
+        "Index was outside the bounds of the string.",
+        line,
+    );
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    chunk.emit_i32_const(1, line);
+    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
+}
+
+fn emit_substring_bounds_check(
+    chunk: &mut Chunk,
+    start_slot: u16,
+    len_slot: u16,
+    end_slot: u16,
+    str_len_slot: u16,
+    line: u32,
+) {
+    chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+    chunk.emit_i32_const(0, line);
+    vybe_emitter::ops::emit_dyn_ge(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunk.emit_i32_const(0, line);
+    vybe_emitter::ops::emit_dyn_ge(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, str_len_slot, line);
+    vybe_emitter::ops::emit_dyn_le(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, str_len_slot, line);
+    vybe_emitter::ops::emit_dyn_le(chunk, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    emit_throw_dotnet_exception(
+        chunk,
+        "ArgumentOutOfRangeException",
+        "Index and length must refer to a location within the string.",
+        line,
+    );
+    chunk.emit_end(line);
 }
 
 pub fn emit_string_pad_left(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

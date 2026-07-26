@@ -21,6 +21,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
+        Value::Null => chunk.emit_op(Op::NULL, line),
         _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
     }
 }
@@ -91,6 +92,58 @@ fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32
     slot
 }
 
+fn set_handle_map_null(
+    chunks: &mut [Chunk],
+    current: usize,
+    name: &str,
+    handle_slot: u16,
+    line: u32,
+) {
+    let map_slot = ensure_global_map(chunks, current, name, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, map_slot, line);
+    lget(chunk, handle_slot, line);
+    chunk.emit_op(Op::NULL, line);
+    chunk.emit_op(Op::ARRAY_SET, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn load_next_input_record(
+    chunks: &mut [Chunk],
+    current: usize,
+    handle_slot: u16,
+    values_slot: u16,
+    idx_slot: u16,
+    line: u32,
+) {
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, handle_slot, line);
+    }
+    emit_host_call(chunks, current, "wasi:filesystem", "inputFile", 1, line);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, values_slot, line);
+        push_const(chunk, Value::I32(0), line);
+        lset(chunk, idx_slot, line);
+    }
+
+    let values_map_slot = ensure_global_map(chunks, current, VB_RECORD_ROWS_BY_HANDLE, line);
+    let next_map_slot = ensure_global_map(chunks, current, VB_RECORD_NEXT_INDEX_BY_HANDLE, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, values_map_slot, line);
+    lget(chunk, handle_slot, line);
+    lget(chunk, values_slot, line);
+    chunk.emit_op(Op::ARRAY_SET, line);
+    chunk.emit_op(Op::DROP, line);
+
+    lget(chunk, next_map_slot, line);
+    lget(chunk, handle_slot, line);
+    lget(chunk, idx_slot, line);
+    chunk.emit_op(Op::ARRAY_SET, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
 pub fn emit_vb_filecopy(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_host_call(chunks, current, "wasi:filesystem", "copy", argc, line);
 }
@@ -105,6 +158,207 @@ pub fn emit_vb_fileexists(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 
 pub fn emit_vb_filelen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_host_call(chunks, current, "wasi:filesystem", "fileSize", argc, line);
+}
+
+pub fn emit_vb_freefile(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    push_const(&mut chunks[current], Value::I32(1), line);
+}
+
+pub fn emit_vb_fileopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc < 3 {
+        push_const(&mut chunks[current], Value::Null, line);
+        return;
+    }
+
+    let mode_slot = alloc_local(&mut chunks[current]);
+    let path_slot = alloc_local(&mut chunks[current]);
+    let handle_slot = alloc_local(&mut chunks[current]);
+    let path_map_slot = ensure_global_map(chunks, current, VB_FILE_PATH_BY_HANDLE, line);
+    let eof_map_slot = ensure_global_map(chunks, current, VB_FILE_EOF_BY_HANDLE, line);
+
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, mode_slot, line);
+        lset(chunk, path_slot, line);
+        lset(chunk, handle_slot, line);
+
+        lget(chunk, path_slot, line);
+        lget(chunk, mode_slot, line);
+        lget(chunk, handle_slot, line);
+    }
+    emit_host_call(chunks, current, "wasi:filesystem", "openFile", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, path_map_slot, line);
+        lget(chunk, handle_slot, line);
+        lget(chunk, path_slot, line);
+        chunk.emit_op(Op::ARRAY_SET, line);
+        chunk.emit_op(Op::DROP, line);
+
+        lget(chunk, eof_map_slot, line);
+        lget(chunk, handle_slot, line);
+        push_const(chunk, Value::Bool(false), line);
+        chunk.emit_op(Op::ARRAY_SET, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    set_handle_map_null(chunks, current, VB_RECORD_ROWS_BY_HANDLE, handle_slot, line);
+    set_handle_map_null(chunks, current, VB_RECORD_NEXT_INDEX_BY_HANDLE, handle_slot, line);
+    push_const(&mut chunks[current], Value::Null, line);
+}
+
+pub fn emit_vb_fileclose(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        push_const(&mut chunks[current], Value::Null, line);
+        emit_host_call(chunks, current, "wasi:filesystem", "closeFile", 1, line);
+        return;
+    }
+
+    let handle_slot = alloc_local(&mut chunks[current]);
+    let path_map_slot = ensure_global_map(chunks, current, VB_FILE_PATH_BY_HANDLE, line);
+    let eof_map_slot = ensure_global_map(chunks, current, VB_FILE_EOF_BY_HANDLE, line);
+
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, handle_slot, line);
+        lget(chunk, handle_slot, line);
+    }
+    emit_host_call(chunks, current, "wasi:filesystem", "closeFile", 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, path_map_slot, line);
+        lget(chunk, handle_slot, line);
+        chunk.emit_op(Op::NULL, line);
+        chunk.emit_op(Op::ARRAY_SET, line);
+        chunk.emit_op(Op::DROP, line);
+
+        lget(chunk, eof_map_slot, line);
+        lget(chunk, handle_slot, line);
+        push_const(chunk, Value::Bool(false), line);
+        chunk.emit_op(Op::ARRAY_SET, line);
+        chunk.emit_op(Op::DROP, line);
+    }
+
+    set_handle_map_null(chunks, current, VB_RECORD_ROWS_BY_HANDLE, handle_slot, line);
+    set_handle_map_null(chunks, current, VB_RECORD_NEXT_INDEX_BY_HANDLE, handle_slot, line);
+    push_const(&mut chunks[current], Value::Null, line);
+}
+
+pub fn emit_vb_printline(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:filesystem", "printFile", argc, line);
+}
+
+pub fn emit_vb_writeline(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:filesystem", "writeFile_handle", argc, line);
+}
+
+pub fn emit_vb_lineinput(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_host_call(chunks, current, "wasi:filesystem", "lineInput", 1, line);
+}
+
+pub fn emit_vb_input_value(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let handle_slot = alloc_local(&mut chunks[current]);
+    let values_slot = alloc_local(&mut chunks[current]);
+    let idx_slot = alloc_local(&mut chunks[current]);
+    let len_slot = alloc_local(&mut chunks[current]);
+    let result_slot = alloc_local(&mut chunks[current]);
+    let values_map_slot = ensure_global_map(chunks, current, VB_RECORD_ROWS_BY_HANDLE, line);
+    let next_map_slot = ensure_global_map(chunks, current, VB_RECORD_NEXT_INDEX_BY_HANDLE, line);
+
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, handle_slot, line);
+
+        lget(chunk, values_map_slot, line);
+        lget(chunk, handle_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        lset(chunk, values_slot, line);
+
+        lget(chunk, next_map_slot, line);
+        lget(chunk, handle_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        lset(chunk, idx_slot, line);
+
+        lget(chunk, values_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+    }
+    chunks[current].emit_if(line);
+    load_next_input_record(chunks, current, handle_slot, values_slot, idx_slot, line);
+    chunks[current].emit_else(line);
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, values_slot, line);
+        chunk.emit_op(Op::ARRAY_LENGTH, line);
+        lset(chunk, len_slot, line);
+        lget(chunk, idx_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+    }
+    chunks[current].emit_if(line);
+    load_next_input_record(chunks, current, handle_slot, values_slot, idx_slot, line);
+    chunks[current].emit_else(line);
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, idx_slot, line);
+        lget(chunk, len_slot, line);
+        vybe_emitter::ops::emit_dyn_ge(chunk, line);
+    }
+    chunks[current].emit_if(line);
+    load_next_input_record(chunks, current, handle_slot, values_slot, idx_slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    {
+        let chunk = &mut chunks[current];
+        lget(chunk, values_slot, line);
+        lget(chunk, idx_slot, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+        lset(chunk, result_slot, line);
+
+        lget(chunk, idx_slot, line);
+        push_const(chunk, Value::I32(1), line);
+        chunk.emit_op(Op::I32_ADD, line);
+        lset(chunk, idx_slot, line);
+
+        lget(chunk, next_map_slot, line);
+        lget(chunk, handle_slot, line);
+        lget(chunk, idx_slot, line);
+        chunk.emit_op(Op::ARRAY_SET, line);
+        chunk.emit_op(Op::DROP, line);
+
+        lget(chunk, result_slot, line);
+    }
+}
+
+pub fn emit_vb_loc(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    push_const(&mut chunks[current], Value::I32(0), line);
+}
+
+pub fn emit_vb_fileattr(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_vb_loc(chunks, current, argc, line);
+}
+
+pub fn emit_vb_getattr(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_vb_loc(chunks, current, argc, line);
+}
+
+pub fn emit_vb_setattr(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    push_const(&mut chunks[current], Value::Null, line);
+}
+
+pub fn emit_vb_seek(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_vb_setattr(chunks, current, argc, line);
 }
 
 pub fn emit_vb_curdir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -203,8 +457,8 @@ pub fn emit_vb_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         return;
     }
 
-    let exists = chunks[0].add_import("wasi:filesystem", "exists");
-    let file_name = chunks[0].add_import("wasi:filesystem", "pathGetFileName");
+    let exists = chunks[current].add_import("wasi:filesystem", "exists");
+    let file_name = chunks[current].add_import("wasi:filesystem", "pathGetFileName");
     let path_slot = {
         let chunk = &mut chunks[current];
         alloc_local(chunk)
@@ -232,8 +486,7 @@ pub fn emit_vb_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 }
 
 pub fn emit_vb_filedatetime(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let stat = chunks[0].add_import("wasi:filesystem", "stat");
-    let to_iso = chunks[0].add_import("ecma:date", "toISOString");
+    let stat = chunks[current].add_import("wasi:filesystem", "stat");
     let modified_key = chunks[current].add_constant(Value::String(Arc::from("modified")));
     let path_slot = {
         let chunk = &mut chunks[current];
@@ -261,14 +514,13 @@ pub fn emit_vb_filedatetime(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     {
         let chunk = &mut chunks[current];
         chunk.emit_op_u16(Op::STRUCT_GET, modified_key, line);
-        chunk.emit_op_u16(Op::CALL_IMPORT, to_iso, line);
-        chunk.emit(1, line);
     }
+    super::datetime_adapter::emit_datetime_from_millis(chunks, current, line);
     chunks[current].emit_end(line);
 }
 
 pub fn emit_vb_lof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let stat = chunks[0].add_import("wasi:filesystem", "stat");
+    let stat = chunks[current].add_import("wasi:filesystem", "stat");
     let size_key = chunks[current].add_constant(Value::String(Arc::from("size")));
     let handle_slot = {
         let chunk = &mut chunks[current];
@@ -411,7 +663,7 @@ pub fn emit_vb_eof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
 }
 
 pub fn emit_vb_shell_pid(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let spawn_sync = chunks[0].add_import("node:child_process", "spawnSync");
+    let spawn_sync = chunks[current].add_import("node:child_process", "spawnSync");
     let pid_key = chunks[current].add_constant(Value::String(Arc::from("pid")));
     let command_slot = {
         let chunk = &mut chunks[current];

@@ -10,8 +10,6 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::classes::emit_bind_method;
-use vybe_emitter::functions::create_function_chunk;
 use vybe_emitter::instructions::{core_wasm, host};
 
 const FILENAME_KEY: &str = "filename";
@@ -32,21 +30,205 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
-fn bind_process_wait_for_exit(chunks: &mut Vec<Chunk>, current: usize, this_slot: u16, line: u32) {
-    let mut method = create_function_chunk("__process_waitforexit", 1);
-    method.emit_op(Op::DROP, line);
-    method.emit_op(Op::NULL, line);
-    method.emit_op(Op::RETURN, line);
-    method.local_count = 1;
-    chunks.push(method);
-    let method_idx = chunks.len() - 1;
-    emit_bind_method(
-        &mut chunks[current],
-        this_slot,
-        "waitforexit",
-        method_idx,
+fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
+    let key = chunk.add_constant(Value::String(Arc::from(field)));
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn set_local_field_from_value(
+    chunk: &mut Chunk,
+    object_slot: u16,
+    field: &str,
+    value: Value,
+    line: u32,
+) {
+    chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
+    push_const(chunk, value, line);
+    struct_set_drop(chunk, field, line);
+}
+
+fn set_count_object(chunk: &mut Chunk, object_slot: u16, field: &str, count: i32, line: u32) {
+    let count_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    set_local_field_from_value(chunk, count_slot, "Count", Value::I32(count), line);
+    set_local_field_from_value(chunk, count_slot, "count", Value::I32(count), line);
+    chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    struct_set_drop(chunk, field, line);
+}
+
+fn set_main_module_object(chunk: &mut Chunk, object_slot: u16, line: u32) {
+    let module_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, module_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    set_local_field_from_value(
+        chunk,
+        module_slot,
+        "ModuleName",
+        Value::String(Arc::from("vybex")),
         line,
     );
+    set_local_field_from_value(
+        chunk,
+        module_slot,
+        "moduleName",
+        Value::String(Arc::from("vybex")),
+        line,
+    );
+    set_local_field_from_value(
+        chunk,
+        module_slot,
+        "modulename",
+        Value::String(Arc::from("vybex")),
+        line,
+    );
+    set_local_field_from_value(
+        chunk,
+        module_slot,
+        "FileName",
+        Value::String(Arc::from("vybex")),
+        line,
+    );
+    set_local_field_from_value(
+        chunk,
+        module_slot,
+        "fileName",
+        Value::String(Arc::from("vybex")),
+        line,
+    );
+    set_local_field_from_value(
+        chunk,
+        module_slot,
+        "filename",
+        Value::String(Arc::from("vybex")),
+        line,
+    );
+
+    chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, module_slot, line);
+    struct_set_drop(chunk, "MainModule", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, module_slot, line);
+    struct_set_drop(chunk, "mainModule", line);
+}
+
+fn emit_build_current_process(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let process_slot = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, process_slot, line);
+    chunk.emit_op(Op::DROP, line);
+    set_local_field_from_value(
+        chunk,
+        process_slot,
+        TYPE_KEY,
+        Value::String(Arc::from("Process")),
+        line,
+    );
+    set_local_field_from_value(chunk, process_slot, "Id", Value::I32(1), line);
+    set_local_field_from_value(chunk, process_slot, "id", Value::I32(1), line);
+    set_local_field_from_value(chunk, process_slot, "pid", Value::I32(1), line);
+    set_local_field_from_value(
+        chunk,
+        process_slot,
+        "ProcessName",
+        Value::String(Arc::from("vybex")),
+        line,
+    );
+    set_local_field_from_value(
+        chunk,
+        process_slot,
+        "processName",
+        Value::String(Arc::from("vybex")),
+        line,
+    );
+    set_local_field_from_value(
+        chunk,
+        process_slot,
+        "processname",
+        Value::String(Arc::from("vybex")),
+        line,
+    );
+    set_local_field_from_value(chunk, process_slot, "HasExited", Value::Bool(false), line);
+    set_local_field_from_value(chunk, process_slot, "hasExited", Value::Bool(false), line);
+    set_local_field_from_value(chunk, process_slot, "hasexited", Value::Bool(false), line);
+    set_local_field_from_value(chunk, process_slot, "Handle", Value::I32(1), line);
+    set_local_field_from_value(chunk, process_slot, "handle", Value::I32(1), line);
+    set_local_field_from_value(
+        chunk,
+        process_slot,
+        "PriorityClass",
+        Value::String(Arc::from("Normal")),
+        line,
+    );
+    set_local_field_from_value(
+        chunk,
+        process_slot,
+        "priorityClass",
+        Value::String(Arc::from("Normal")),
+        line,
+    );
+    set_local_field_from_value(
+        chunk,
+        process_slot,
+        "priorityclass",
+        Value::String(Arc::from("Normal")),
+        line,
+    );
+    set_local_field_from_value(chunk, process_slot, "WorkingSet64", Value::I32(0), line);
+    set_local_field_from_value(chunk, process_slot, "workingSet64", Value::I32(0), line);
+    set_local_field_from_value(chunk, process_slot, "workingset64", Value::I32(0), line);
+    set_local_field_from_value(chunk, process_slot, "PeakWorkingSet64", Value::I32(0), line);
+    set_local_field_from_value(chunk, process_slot, "peakWorkingSet64", Value::I32(0), line);
+    set_local_field_from_value(chunk, process_slot, "peakworkingset64", Value::I32(0), line);
+    set_local_field_from_value(chunk, process_slot, "VirtualMemorySize64", Value::I32(0), line);
+    set_local_field_from_value(chunk, process_slot, "virtualMemorySize64", Value::I32(0), line);
+    set_local_field_from_value(chunk, process_slot, "virtualmemorysize64", Value::I32(0), line);
+    set_local_field_from_value(chunk, process_slot, "PrivateMemorySize64", Value::I32(0), line);
+    set_local_field_from_value(chunk, process_slot, "privateMemorySize64", Value::I32(0), line);
+    set_local_field_from_value(chunk, process_slot, "privatememorysize64", Value::I32(0), line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, process_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    crate::emitter::core::datetime_adapter::emit_datetime_from_millis(chunks, current, line);
+    let chunk = &mut chunks[current];
+    struct_set_drop(chunk, "StartTime", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, process_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    crate::emitter::core::datetime_adapter::emit_datetime_from_millis(chunks, current, line);
+    let chunk = &mut chunks[current];
+    struct_set_drop(chunk, "startTime", line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, process_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    crate::emitter::core::timespan_adapter::emit_build_timespan_from_total_ms(chunk, line);
+    struct_set_drop(chunk, "TotalProcessorTime", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, process_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    crate::emitter::core::timespan_adapter::emit_build_timespan_from_total_ms(chunk, line);
+    struct_set_drop(chunk, "totalProcessorTime", line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, process_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    crate::emitter::core::timespan_adapter::emit_build_timespan_from_total_ms(chunk, line);
+    struct_set_drop(chunk, "UserProcessorTime", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, process_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    crate::emitter::core::timespan_adapter::emit_build_timespan_from_total_ms(chunk, line);
+    struct_set_drop(chunk, "userProcessorTime", line);
+
+    set_count_object(chunk, process_slot, "Threads", 1, line);
+    set_count_object(chunk, process_slot, "threads", 1, line);
+    set_count_object(chunk, process_slot, "Modules", 1, line);
+    set_count_object(chunk, process_slot, "modules", 1, line);
+    set_main_module_object(chunk, process_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, process_slot, line);
 }
 
 /// `new ProcessStartInfo()` / `new ProcessStartInfo(cmd)` /
@@ -112,12 +294,12 @@ pub fn emit_process_new(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line
     let process_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, process_slot, line);
+    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, process_slot, line);
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Process")), line);
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
     chunk.emit_op(Op::DROP, line);
-    bind_process_wait_for_exit(chunks, current, process_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, process_slot, line);
 }
 
@@ -235,7 +417,7 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_SET, ec_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, process_slot, line);
-    bind_process_wait_for_exit(chunks, current, process_slot, line);
+    chunk.emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, process_slot, line);
     // Stack: [Process struct]
 }
@@ -246,26 +428,7 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 ///
 /// Stack on entry: `[]` ; Stack on exit: `[process_info]`
 pub fn emit_process_get_current(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
-    let pid_idx = chunks[current].add_import("node:process", "pid");
-    let chunk = &mut chunks[current];
-    let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
-    let pid_key = chunk.add_constant(Value::String(Arc::from("pid")));
-    let process_slot = reserve_slot(chunk);
-
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, process_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, process_slot, line);
-    core_wasm::dup(chunk, line);
-    push_const(chunk, Value::String(Arc::from("Process")), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
-    chunk.emit_op(Op::DROP, line);
-    core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, pid_idx, line);
-    chunk.emit(0, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, pid_key, line);
-    chunk.emit_op(Op::DROP, line);
-    bind_process_wait_for_exit(chunks, current, process_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, process_slot, line);
+    emit_build_current_process(chunks, current, line);
 }
 
 /// `process.WaitForExit()` — `node:child_process.spawnSync` is already
@@ -276,4 +439,41 @@ pub fn emit_process_get_current(chunks: &mut Vec<Chunk>, current: usize, line: u
 pub fn emit_process_wait_for_exit(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_process_wait_for_exit_timeout(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::DROP, line);
+    core_wasm::bool_const(&mut chunks[current], line, false);
+}
+
+pub fn emit_process_get_by_id(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let id_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, id_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, id_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("Process not found.", line);
+    vybe_emitter::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        "ArgumentException",
+        line,
+    );
+    vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    emit_build_current_process(chunks, current, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_process_get_processes(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_build_current_process(chunks, current, line);
+    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
+}
+
+pub fn emit_process_get_processes_by_name(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    chunks[current].emit_op(Op::DROP, line);
+    emit_process_get_processes(chunks, current, line);
 }

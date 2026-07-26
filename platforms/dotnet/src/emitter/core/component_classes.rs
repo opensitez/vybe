@@ -29,6 +29,8 @@ mod component_classes_system_version;
 mod component_classes_text;
 #[path = "component_classes_threading.rs"]
 mod component_classes_threading;
+#[path = "component_classes_uri.rs"]
+mod component_classes_uri;
 #[path = "component_classes_xml.rs"]
 mod component_classes_xml;
 
@@ -52,6 +54,7 @@ pub fn class_exports() -> &'static [DotnetClassExport] {
         exports.extend(component_classes_data_drawing::exports());
         exports.extend(component_classes_diagnostics_process::exports());
         exports.extend(component_classes_network::exports());
+        exports.extend(component_classes_uri::exports());
         exports.extend(component_classes_io::exports());
         exports.extend(component_classes_xml::exports());
         exports

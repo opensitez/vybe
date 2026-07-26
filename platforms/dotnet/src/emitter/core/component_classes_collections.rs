@@ -28,7 +28,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ("Sort", 0, "dotnet.array_sort"),
                 ("Reverse", 0, "collections.reverse"),
                 ("ToArray", 0, "collections.clone"),
-                ("Item", 1, "collections.get"),
+                ("Item", 1, "dotnet.list_get_checked"),
                 ("Insert", 2, "collections.insert"),
                 ("AddRange", 1, "dotnet.list_add_range"),
                 ("InsertRange", 2, "collections.insert_range"),
@@ -872,7 +872,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ("Move", 2, "dotnet.observable_collection_move"),
                 ("Clear", 0, "dotnet.observable_collection_clear"),
                 ("Count", 0, "collections.length"),
-                ("Item", 1, "collections.get"),
+                ("Item", 1, "dotnet.list_get_checked"),
                 ("ToArray", 0, "collections.clone"),
                 ("Items", 0, "dotnet.observable_collection_items"),
                 (
@@ -888,7 +888,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.readonly_observable_collection_new",
             &[
                 ("Count", 0, "collections.length"),
-                ("Item", 1, "collections.get"),
+                ("Item", 1, "dotnet.list_get_checked"),
                 ("ToArray", 0, "collections.clone"),
             ],
         ),

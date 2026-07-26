@@ -277,14 +277,24 @@ pub fn try_parse_desugar(
     let core = call_expr(callee.clone(), vec![Argument::positional(input.clone())]);
     let assign_core = Expression::new(ExprKind::Assign {
         target: Box::new(out_target.clone()),
-        value: Box::new(core),
+        value: Box::new(core.clone()),
     });
 
     if recv.eq_ignore_ascii_case("Guid") || recv.eq_ignore_ascii_case("System.Guid") {
-        return Some(Expression::new(ExprKind::Binary {
+        let success = Expression::new(ExprKind::Binary {
+            op: BinOp::NotEq,
+            left: Box::new(core.clone()),
+            right: Box::new(null_lit()),
+        });
+        let assign_success = Expression::new(ExprKind::Binary {
             op: BinOp::NotEq,
             left: Box::new(assign_core),
             right: Box::new(null_lit()),
+        });
+        return Some(Expression::new(ExprKind::Ternary {
+            cond: Box::new(success),
+            then: Box::new(assign_success),
+            else_: Box::new(Expression::bool(false)),
         }));
     }
     if recv.eq_ignore_ascii_case("Integer")
@@ -312,6 +322,36 @@ pub fn try_parse_desugar(
         }));
     }
     None
+}
+
+/// `Uri.TryCreate(input, kind, result)` out-param normalization.
+pub fn try_create_desugar(
+    recv: Option<&str>,
+    callee: &Expression,
+    input: &Expression,
+    kind: &Expression,
+    out_target: &Expression,
+) -> Option<Expression> {
+    let recv = recv?;
+    if !(recv.eq_ignore_ascii_case("Uri") || recv.eq_ignore_ascii_case("System.Uri")) {
+        return None;
+    }
+    let core = call_expr(
+        callee.clone(),
+        vec![
+            Argument::positional(input.clone()),
+            Argument::positional(kind.clone()),
+        ],
+    );
+    let assign_core = Expression::new(ExprKind::Assign {
+        target: Box::new(out_target.clone()),
+        value: Box::new(core),
+    });
+    Some(Expression::new(ExprKind::Binary {
+        op: BinOp::NotEq,
+        left: Box::new(assign_core),
+        right: Box::new(null_lit()),
+    }))
 }
 
 /// `d.TryGetValue(k, v)` out-param normalization.

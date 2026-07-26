@@ -1,7 +1,5 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_bytecode::component_model::{
-    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
-};
+use vybe_bytecode::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     vec![
@@ -9,46 +7,46 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System.Net",
             ClassType::new("WebRequest")
                 .with_constructor(
-                    ConstructorDef::new(1).with_backing(HostTarget::new("wasi:http", "fetch")),
+                    ConstructorDef::new(1).with_common_backing("dotnet.http_client_new"),
                 )
                 .with_method(MethodDef::static_method(
                     "Create",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:http", "fetch")),
+                    MethodBody::Common("dotnet.http_fetch".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetResponse",
                     0,
-                    MethodBody::HostCall(HostTarget::new("wasi:http", "fetch")),
+                    MethodBody::Common("dotnet.http_fetch".into()),
                 )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Net",
             ClassType::new("WebClient")
                 .with_constructor(
-                    ConstructorDef::new(0).with_backing(HostTarget::new("wasi:http", "fetch")),
+                    ConstructorDef::new(0).with_common_backing("dotnet.http_client_new"),
                 )
                 .with_method(MethodDef::new(
                     "DownloadString",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:http", "fetch")),
+                    MethodBody::Common("dotnet.http_fetch".into()),
                 )),
         ),
         DotnetClassExport::new(
             "dotnet.System.Net.Http",
             ClassType::new("HttpClient")
                 .with_constructor(
-                    ConstructorDef::new(0).with_backing(HostTarget::new("wasi:http", "fetch")),
+                    ConstructorDef::new(0).with_common_backing("dotnet.http_client_new"),
                 )
                 .with_method(MethodDef::new(
                     "GetStringAsync",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:http", "fetch")),
+                    MethodBody::Common("dotnet.http_fetch".into()),
                 ))
                 .with_method(MethodDef::new(
                     "GetAsync",
                     1,
-                    MethodBody::HostCall(HostTarget::new("wasi:http", "fetch")),
+                    MethodBody::Common("dotnet.http_fetch".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -134,6 +132,21 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "GetHostName",
                     0,
                     MethodBody::Common("dotnet.dns_get_host_name".into()),
+                )),
+        ),
+        DotnetClassExport::new("dotnet.System.Net", ClassType::new("IPHostEntry")),
+        DotnetClassExport::new(
+            "dotnet.System.Net",
+            ClassType::new("IPAddress")
+                .with_method(MethodDef::static_method(
+                    "Parse",
+                    1,
+                    MethodBody::Common("dotnet.ip_address_parse".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.ip_address_to_string".into()),
                 )),
         ),
     ]

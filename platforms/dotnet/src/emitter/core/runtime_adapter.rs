@@ -50,8 +50,12 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         return true;
     }
 
+    if name == "dotnet.cchar" {
+        emit_cchar(&mut chunks[current], line);
+        return true;
+    }
+
     let global = match name {
-        "dotnet.cchar" => "__vybe_cchar",
         "dotnet.newline" => "__vybe_newline",
         "dotnet.str_insert" => "__vybe_str_insert",
         "dotnet.str_remove_start" => "__vybe_str_remove_start",
@@ -75,6 +79,42 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
     };
     collections::emit_runtime_helper_call(chunks, current, global, argc, line);
     true
+}
+
+/// .NET `CChar` / `Convert.ToChar`.
+///
+/// Numeric inputs are Unicode code points; string inputs return the first
+/// UTF-16 code unit as a one-character string. Keeping this in the dotnet
+/// adapter avoids VB-only coercion rules and lets every dotnet language share
+/// the same conversion semantics.
+fn emit_cchar(chunk: &mut Chunk, line: u32) {
+    let value = chunk.alloc_scratch(3);
+    let ty = value + 1;
+    let result = value + 2;
+
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    host::emit(chunk, "ecma:value", "typeof", 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, ty, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, ty, line);
+    chunk.emit_string_const("string", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_i32_const(1, line);
+    host::emit(chunk, "wasm:js-string", "substring", 3, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result, line);
+    chunk.emit_else(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    host::emit(chunk, "ecma:string", "fromCharCode", 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, result, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, result, line);
 }
 
 /// Runtime `ToString([format])` dispatch for receivers whose type is unknown at

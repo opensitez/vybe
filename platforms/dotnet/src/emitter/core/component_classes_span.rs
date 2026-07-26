@@ -53,7 +53,7 @@ const VIEW_HOST_METHODS: &[(&str, u8, &str, &str)] = &[
 /// shared primitives in `span_adapter.rs`; none of them adds a `collections.*`
 /// name to the shared dispatcher.
 const VIEW_COMMON_METHODS: &[(&str, u8, &str)] = &[
-    ("Slice", 2, "collections.get_range"),
+    ("Slice", 2, "dotnet.get_range_checked"),
     ("SequenceEqual", 1, "collections.sequence_equal"),
     ("IsEmpty", 0, "dotnet.span_is_empty"),
     ("Clear", 0, "dotnet.span_clear"),
@@ -128,7 +128,7 @@ fn memory_extensions_class() -> ClassType {
         .with_method(MethodDef::static_method(
             "AsSpan",
             3,
-            MethodBody::Common("collections.get_range".into()),
+            MethodBody::Common("dotnet.get_range_checked".into()),
         ))
         .with_method(MethodDef::static_method(
             "Mismatch",
@@ -162,7 +162,7 @@ pub(super) fn add_array_extension_methods(class: &mut ClassType) {
     class.methods.push(MethodDef::new(
         "AsSpan",
         2,
-        MethodBody::Common("collections.get_range".into()),
+        MethodBody::Common("dotnet.get_range_checked".into()),
     ));
 }
 

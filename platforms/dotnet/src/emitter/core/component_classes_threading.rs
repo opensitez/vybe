@@ -17,7 +17,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         .with_method(MethodDef::static_method(
             "Run",
             1,
-            MethodBody::Common("threading.task_run".to_string()),
+            MethodBody::Common("dotnet.task_run".to_string()),
         ))
         .with_method(MethodDef::static_method(
             "Delay",
@@ -43,6 +43,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "IsCanceled",
             0,
             MethodBody::Common("dotnet.task_is_canceled".into()),
+        ))
+        .with_method(MethodDef::new(
+            "IsCompleted",
+            0,
+            MethodBody::Common("dotnet.task_is_completed".into()),
+        ))
+        .with_method(MethodDef::new(
+            "Result",
+            0,
+            MethodBody::Common("dotnet.task_result".into()),
         ))
         .with_method(MethodDef::new(
             "ContinueWith",

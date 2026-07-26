@@ -69,7 +69,20 @@ fn emit_buffer_to_base64(
     end_slot: Option<u16>,
     line: u32,
 ) {
+    let buffer_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+    host::emit(chunk, "wasm:js-string", "test", 1, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+    chunk.emit_string_const("utf-8", line);
+    host::emit(chunk, "node:buffer", "from", 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, buffer_slot, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, buffer_slot, line);
+    chunk.emit_end(line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, buffer_slot, line);
     chunk.emit_string_const("base64", line);
     if let (Some(start_slot), Some(end_slot)) = (start_slot, end_slot) {
         chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);

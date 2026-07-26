@@ -6,15 +6,38 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         "dotnet.System",
         ClassType::new("Version")
             .with_constructor(ConstructorDef::new(0).with_common_backing("dotnet.version_new"))
+            .with_constructor(ConstructorDef::new(2).with_common_backing("dotnet.version_new"))
+            .with_constructor(ConstructorDef::new(3).with_common_backing("dotnet.version_new"))
+            .with_constructor(ConstructorDef::new(4).with_common_backing("dotnet.version_new"))
             .with_method(MethodDef::static_method(
                 "Parse",
                 1,
                 MethodBody::Common("dotnet.version_parse".into()),
             ))
+            .with_method(MethodDef::static_method(
+                "CompareTo",
+                2,
+                MethodBody::Common("dotnet.version_compare_instance".into()),
+            ))
+            .with_method(MethodDef::static_method(
+                "Equals",
+                2,
+                MethodBody::Common("dotnet.version_equals".into()),
+            ))
             .with_method(MethodDef::new(
                 "ToString",
                 0,
                 MethodBody::Common("dotnet.version_to_string".into()),
+            ))
+            .with_method(MethodDef::new(
+                "ToString",
+                1,
+                MethodBody::Common("dotnet.version_to_string".into()),
+            ))
+            .with_method(MethodDef::new(
+                "Clone",
+                0,
+                MethodBody::Common("dotnet.version_clone".into()),
             ))
             .with_method(MethodDef::new(
                 "Equals",
@@ -24,7 +47,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             .with_method(MethodDef::new(
                 "CompareTo",
                 1,
-                MethodBody::Common("dotnet.version_compare".into()),
+                MethodBody::Common("dotnet.version_compare_instance".into()),
             )),
     )]
 }

@@ -16,7 +16,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::instructions::core_wasm;
+use vybe_emitter::instructions::{core_wasm, host};
 
 use vybe_emitter::math;
 
@@ -61,6 +61,37 @@ fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
     chunk.emit_op(Op::DROP, line);
 }
 
+fn emit_array_get_const_index(chunk: &mut Chunk, array_slot: u16, index: f64, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, array_slot, line);
+    push_const(chunk, Value::F64(index), line);
+    chunk.emit_op(Op::ARRAY_GET, line);
+}
+
+fn emit_parse_number_from_slot(chunks: &mut [Chunk], current: usize, text_slot: u16, line: u32) {
+    let parse_int_idx = chunks[current].add_import("ecma:number", "parseInt");
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, parse_int_idx, line);
+    chunk.emit(1, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+}
+
+fn emit_store_array_part_as_number(
+    chunks: &mut [Chunk],
+    current: usize,
+    array_slot: u16,
+    index: f64,
+    out_slot: u16,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    emit_array_get_const_index(chunk, array_slot, index, line);
+    let text_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    emit_parse_number_from_slot(chunks, current, text_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
+}
+
 fn emit_total_ms_from_obj(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     push_const(chunk, Value::String(Arc::from("TotalMilliseconds")), line);
@@ -86,6 +117,7 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
     let total_min_key = string_key(chunk, "totalminutes");
     let total_hr_key = string_key(chunk, "totalhours");
     let total_day_key = string_key(chunk, "totaldays");
+    let ticks_key = string_key(chunk, "ticks");
 
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(86_400_000.0), line);
@@ -147,6 +179,18 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     struct_set_named_field(chunk, "TotalMilliseconds", line);
+
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+    push_const(chunk, Value::F64(10_000.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    struct_set_field(chunk, ticks_key, line);
+
+    core_wasm::dup(chunk, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
+    push_const(chunk, Value::F64(10_000.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    struct_set_named_field(chunk, "Ticks", line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
@@ -252,6 +296,43 @@ pub fn emit_timespan_from_milliseconds(chunks: &mut [Chunk], current: usize, lin
 pub fn emit_timespan_zero(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(0.0), line);
+    emit_build_timespan_from_total_ms(chunk, line);
+}
+
+pub fn emit_timespan_parse(chunks: &mut [Chunk], current: usize, line: u32) {
+    let to_str_idx = chunks[current].add_import("ecma:string", "String");
+    let chunk = &mut chunks[current];
+    let text_slot = chunk.alloc_scratch(5);
+    let parts_slot = text_slot + 1;
+    let hours_slot = text_slot + 2;
+    let minutes_slot = text_slot + 3;
+    let seconds_slot = text_slot + 4;
+
+    chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
+    chunk.emit(1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    push_const(chunk, Value::String(Arc::from(":")), line);
+    host::emit(chunk, "ecma:string", "split", 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, parts_slot, line);
+
+    emit_store_array_part_as_number(chunks, current, parts_slot, 0.0, hours_slot, line);
+    emit_store_array_part_as_number(chunks, current, parts_slot, 1.0, minutes_slot, line);
+    emit_store_array_part_as_number(chunks, current, parts_slot, 2.0, seconds_slot, line);
+
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, hours_slot, line);
+    push_const(chunk, Value::F64(3600.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, minutes_slot, line);
+    push_const(chunk, Value::F64(60.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, seconds_slot, line);
+    chunk.emit_op(Op::F64_ADD, line);
+    push_const(chunk, Value::F64(1000.0), line);
+    chunk.emit_op(Op::F64_MUL, line);
     emit_build_timespan_from_total_ms(chunk, line);
 }
 
