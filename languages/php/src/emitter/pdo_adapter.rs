@@ -67,11 +67,13 @@ fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     chunk.emit_op(Op::DROP, line);
 }
 
+#[allow(dead_code)]
 fn global_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::GLOBAL_SET, idx, line);
 }
 
+#[allow(dead_code)]
 fn global_get_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);

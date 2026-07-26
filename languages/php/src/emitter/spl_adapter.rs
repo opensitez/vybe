@@ -21,6 +21,14 @@ fn sconst(c: &mut Chunk, s: &str) -> u16 {
     c.add_constant(Value::String(Arc::from(s)))
 }
 
+fn lget(c: &mut Chunk, slot: u16, line: u32) {
+    c.emit_op_u16(Op::LOCAL_GET, slot, line);
+}
+
+fn lset(c: &mut Chunk, slot: u16, line: u32) {
+    c.emit_op_u16(Op::LOCAL_SET, slot, line);
+}
+
 // ── Array-backed method builders (this = the array itself) ──────────────
 
 /// Emit, at the start of the method chunk `idx`, a guard that throws
@@ -450,6 +458,201 @@ fn build_map_count_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     chunks.len() - 1
 }
 
+fn build_map_attach_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_attach");
+    c.arity = 3;
+    c.local_count = c.local_count.max(3);
+    let set_i = c.add_import("ecma:map".to_string(), "set".to_string());
+    lget(&mut c, 0, line);
+    lget(&mut c, 1, line);
+    lget(&mut c, 2, line);
+    c.emit_call(set_i, 3, line);
+    c.emit_op(Op::DROP, line);
+    lget(&mut c, 0, line);
+    lget(&mut c, 2, line);
+    let current = sconst(&mut c, "__spl_current");
+    c.emit_op_u16(Op::STRUCT_SET, current, line);
+    c.emit_op(Op::DROP, line);
+    c.emit_op(Op::NULL, line);
+    c.emit_op(Op::RETURN, line);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
+fn build_map_rewind_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_map_rewind");
+    c.arity = 1;
+    c.local_count = c.local_count.max(1);
+    chunks.push(c);
+    let idx = chunks.len() - 1;
+    let entries_slot = chunks[idx].alloc_scratch(1);
+    let value_slot = chunks[idx].alloc_scratch(1);
+    {
+        let c = &mut chunks[idx];
+        lget(c, 0, line);
+        let entries_i = c.add_import("ecma:map".to_string(), "entries".to_string());
+        c.emit_call(entries_i, 1, line);
+        lset(c, entries_slot, line);
+        lget(c, entries_slot, line);
+        c.emit_op(Op::ARRAY_LENGTH, line);
+        c.emit_f64_const(0.0, line);
+        vybe_emitter::ops::emit_dyn_gt(c, line);
+        vybe_emitter::ops::emit_dyn_to_bool(c, line);
+        c.emit_if_value(line);
+        lget(c, entries_slot, line);
+        c.emit_f64_const(0.0, line);
+        c.emit_op(Op::ARRAY_GET, line);
+        c.emit_f64_const(1.0, line);
+        c.emit_op(Op::ARRAY_GET, line);
+        lset(c, value_slot, line);
+        c.emit_else(line);
+        c.emit_op(Op::NULL, line);
+        lset(c, value_slot, line);
+        c.emit_end(line);
+        lget(c, 0, line);
+        lget(c, value_slot, line);
+        let current = sconst(c, "__spl_current");
+        c.emit_op_u16(Op::STRUCT_SET, current, line);
+        c.emit_op(Op::DROP, line);
+        c.emit_op(Op::NULL, line);
+        c.emit_op(Op::RETURN, line);
+    }
+    idx
+}
+
+fn build_map_add_all_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let mut c = Chunk::new("__spl_add_all");
+    c.arity = 2;
+    c.local_count = c.local_count.max(2);
+    chunks.push(c);
+    let current = chunks.len() - 1;
+    let entries_slot = chunks[current].alloc_scratch(1);
+    let len_slot = chunks[current].alloc_scratch(1);
+    let index_slot = chunks[current].alloc_scratch(1);
+    let pair_slot = chunks[current].alloc_scratch(1);
+    let key_slot = chunks[current].alloc_scratch(1);
+    let value_slot = chunks[current].alloc_scratch(1);
+    {
+        let c = &mut chunks[current];
+        lget(c, 1, line);
+        let entries_i = c.add_import("ecma:map".to_string(), "entries".to_string());
+        c.emit_call(entries_i, 1, line);
+        lset(c, entries_slot, line);
+        lget(c, entries_slot, line);
+        c.emit_op(Op::ARRAY_LENGTH, line);
+        lset(c, len_slot, line);
+        c.emit_f64_const(0.0, line);
+        lset(c, index_slot, line);
+    }
+    let loop_state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, index_slot, line);
+        lget(c, len_slot, line);
+        vybe_emitter::ops::emit_dyn_lt(c, line);
+    }
+    vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, entries_slot, line);
+        lget(c, index_slot, line);
+        c.emit_op(Op::ARRAY_GET, line);
+        lset(c, pair_slot, line);
+        lget(c, pair_slot, line);
+        c.emit_f64_const(0.0, line);
+        c.emit_op(Op::ARRAY_GET, line);
+        lset(c, key_slot, line);
+        lget(c, pair_slot, line);
+        c.emit_f64_const(1.0, line);
+        c.emit_op(Op::ARRAY_GET, line);
+        lset(c, value_slot, line);
+        lget(c, 0, line);
+        lget(c, key_slot, line);
+        lget(c, value_slot, line);
+        let set_i = c.add_import("ecma:map".to_string(), "set".to_string());
+        c.emit_call(set_i, 3, line);
+        c.emit_op(Op::DROP, line);
+        lget(c, index_slot, line);
+        c.emit_f64_const(1.0, line);
+        vybe_emitter::ops::emit_dyn_add(c, line);
+        lset(c, index_slot, line);
+    }
+    vybe_emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_op(Op::RETURN, line);
+    current
+}
+
+fn build_map_remove_all_method(chunks: &mut Vec<Chunk>, keep_matches: bool, line: u32) -> usize {
+    let mut c = Chunk::new(if keep_matches {
+        "__spl_remove_all_except"
+    } else {
+        "__spl_remove_all"
+    });
+    c.arity = 2;
+    c.local_count = c.local_count.max(2);
+    chunks.push(c);
+    let current = chunks.len() - 1;
+    let entries_slot = chunks[current].alloc_scratch(1);
+    let len_slot = chunks[current].alloc_scratch(1);
+    let index_slot = chunks[current].alloc_scratch(1);
+    let pair_slot = chunks[current].alloc_scratch(1);
+    let key_slot = chunks[current].alloc_scratch(1);
+    {
+        let c = &mut chunks[current];
+        lget(c, 0, line);
+        let entries_i = c.add_import("ecma:map".to_string(), "entries".to_string());
+        c.emit_call(entries_i, 1, line);
+        lset(c, entries_slot, line);
+        lget(c, entries_slot, line);
+        c.emit_op(Op::ARRAY_LENGTH, line);
+        lset(c, len_slot, line);
+        c.emit_f64_const(0.0, line);
+        lset(c, index_slot, line);
+    }
+    let loop_state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, index_slot, line);
+        lget(c, len_slot, line);
+        vybe_emitter::ops::emit_dyn_lt(c, line);
+    }
+    vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, entries_slot, line);
+        lget(c, index_slot, line);
+        c.emit_op(Op::ARRAY_GET, line);
+        lset(c, pair_slot, line);
+        lget(c, pair_slot, line);
+        c.emit_f64_const(0.0, line);
+        c.emit_op(Op::ARRAY_GET, line);
+        lset(c, key_slot, line);
+        lget(c, 1, line);
+        lget(c, key_slot, line);
+        let has_i = c.add_import("ecma:map".to_string(), "has".to_string());
+        c.emit_call(has_i, 2, line);
+        if keep_matches {
+            vybe_emitter::ops::emit_dyn_not(c, line);
+        }
+        c.emit_if(line);
+        lget(c, 0, line);
+        lget(c, key_slot, line);
+        let del_i = c.add_import("ecma:map".to_string(), "delete".to_string());
+        c.emit_call(del_i, 2, line);
+        c.emit_op(Op::DROP, line);
+        c.emit_end(line);
+        lget(c, index_slot, line);
+        c.emit_f64_const(1.0, line);
+        vybe_emitter::ops::emit_dyn_add(c, line);
+        lset(c, index_slot, line);
+    }
+    vybe_emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_op(Op::RETURN, line);
+    current
+}
+
 /// `new SplObjectStorage()` / `new WeakMap()`. The instance IS an `ecma:map`
 /// (ObjectKind::Map) with methods bound as named props. `$m[$key] = v` goes
 /// through `ecma:array.set` which dispatches to the Map path natively.
@@ -461,10 +664,7 @@ pub fn emit_spl_objectstorage_new(
     line: u32,
 ) {
     let binds: Vec<(&'static str, usize)> = vec![
-        (
-            "attach",
-            build_map_method(chunks, "__spl_attach", "set", 3, true, line),
-        ),
+        ("attach", build_map_attach_method(chunks, line)),
         (
             "detach",
             build_map_method(chunks, "__spl_detach", "delete", 2, true, line),
@@ -478,16 +678,39 @@ pub fn emit_spl_objectstorage_new(
             build_map_method(chunks, "__spl_offexists", "has", 2, false, line),
         ),
         (
+            "offsetExists",
+            build_map_method(chunks, "__spl_offexists_camel", "has", 2, false, line),
+        ),
+        (
             "offsetget",
             build_map_method(chunks, "__spl_offget", "get", 2, false, line),
+        ),
+        (
+            "offsetGet",
+            build_map_method(chunks, "__spl_offget_camel", "get", 2, false, line),
         ),
         (
             "offsetset",
             build_map_method(chunks, "__spl_offset", "set", 3, true, line),
         ),
         (
+            "offsetSet",
+            build_map_method(chunks, "__spl_offset_camel", "set", 3, true, line),
+        ),
+        (
             "offsetunset",
             build_map_method(chunks, "__spl_offunset", "delete", 2, true, line),
+        ),
+        (
+            "offsetUnset",
+            build_map_method(chunks, "__spl_offunset_camel", "delete", 2, true, line),
+        ),
+        ("rewind", build_map_rewind_method(chunks, line)),
+        ("addall", build_map_add_all_method(chunks, line)),
+        ("removeall", build_map_remove_all_method(chunks, false, line)),
+        (
+            "removeallexcept",
+            build_map_remove_all_method(chunks, true, line),
         ),
         ("count", build_map_count_method(chunks, line)),
     ];

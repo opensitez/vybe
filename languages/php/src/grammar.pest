@@ -904,7 +904,7 @@ closure_expression = {
 }
 
 closure_use = {
-    kw_use ~ "(" ~ closure_use_var ~ ("," ~ closure_use_var)* ~ ","? ~ ")"
+    kw_use ~ "(" ~ (closure_use_var ~ ("," ~ closure_use_var)* ~ ","?)? ~ ")"
 }
 
 closure_use_var = { "&"? ~ variable }

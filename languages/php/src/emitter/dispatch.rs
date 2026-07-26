@@ -374,6 +374,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.datetime_get_timezone" => {
             crate::emitter::datetime_adapter::emit_datetime_get_timezone(chunks, current, line)
         }
+        "php.datetime_clone" => {
+            crate::emitter::datetime_adapter::emit_datetime_clone(chunks, current, line)
+        }
         "php.datetime_get_offset" => {
             crate::emitter::datetime_adapter::emit_datetime_get_offset(chunks, current, argc, line)
         }

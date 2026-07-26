@@ -89,6 +89,7 @@ __php_is_int        = { emit = "common:php.is_int",          min_args = 1, max_a
 __php_is_float      = { emit = "common:php.is_float",        min_args = 1, max_args = 1 }
 __php_abs           = { emit = "common:php.abs",             min_args = 1, max_args = 1 }
 __php_intdiv        = { emit = "common:php.intdiv",          min_args = 2, max_args = 2 }
+__php_object_hash   = { emit = "common:object.hash_code",    min_args = 1, max_args = 1 }
 
 # ── String functions ─────────────────────────────────────────────────────────
 
@@ -510,6 +511,7 @@ array_count_values  = { emit = "common:php.array_count_values",   min_args = 1, 
 array_column        = { emit = "common:php.array_column",         min_args = 2, max_args = 3 }
 array_key_first     = { emit = "common:php.array_key_first",      min_args = 1, max_args = 1 }
 array_key_last      = { emit = "common:php.array_key_last",       min_args = 1, max_args = 1 }
+key                 = { emit = "common:php.array_key_first",      min_args = 1, max_args = 1 }
 
 # Assoc-array sort family — mutates the object in place, preserving
 # the caller's reference (PHP arrays are JS objects in our model).
@@ -776,6 +778,7 @@ __php_dt_new           = { emit = "common:php.datetime_new",            min_args
 __php_dt_imm_new       = { emit = "common:php.datetime_immutable_new",  min_args = 1, max_args = 2 }
 __php_datetimezone_new = { emit = "common:php.datetimezone_new",        min_args = 1, max_args = 1 }
 __php_dt_get_timezone  = { emit = "common:php.datetime_get_timezone",   min_args = 1, max_args = 1 }
+__php_dt_clone         = { emit = "common:php.datetime_clone",          min_args = 1, max_args = 1 }
 __php_dt_get_offset    = { emit = "common:php.datetime_get_offset",     min_args = 1, max_args = 2 }
 __php_dt_set_timezone  = { emit = "common:php.datetime_set_timezone",   min_args = 2, max_args = 2 }
 __php_dt_set_date      = { emit = "common:php.datetime_set_date",       min_args = 4, max_args = 4 }
@@ -875,6 +878,9 @@ mysqli = ["common", "php.mysqli_init"]
 [value_methods]
 
 toFixed          = { emit = "host:ecma:number:toFixed",           min_args = 0, max_args = 1 }
+shift            = { emit = "host:ecma:array:shift",              min_args = 0, max_args = 0 }
+unshift          = { emit = "host:ecma:array:unshift",            min_args = 1, max_args = 255 }
+splice           = { emit = "host:ecma:array:splice",             min_args = 1, max_args = 255 }
 
 query            = { emit = "common:php.pdo_query",              min_args = 1, max_args = 1 }
 exec             = { emit = "common:php.pdo_exec",               min_args = 1, max_args = 1 }

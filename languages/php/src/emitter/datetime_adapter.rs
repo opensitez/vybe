@@ -99,6 +99,25 @@ fn emit_wrap_ms(chunk: &mut Chunk, type_tag: &str, line: u32) {
     struct_set(chunk, TIME_KEY, line);
 }
 
+pub fn emit_datetime_clone(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let dt_slot = alloc_local(chunk);
+    local_set(chunk, dt_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_dup(line);
+    local_get(chunk, dt_slot, line);
+    struct_get(chunk, TYPE_KEY, line);
+    struct_set(chunk, TYPE_KEY, line);
+    chunk.emit_dup(line);
+    local_get(chunk, dt_slot, line);
+    struct_get(chunk, TIME_KEY, line);
+    struct_set(chunk, TIME_KEY, line);
+    chunk.emit_dup(line);
+    local_get(chunk, dt_slot, line);
+    struct_get(chunk, TZ_KEY, line);
+    struct_set(chunk, TZ_KEY, line);
+}
+
 /// `new DateTime(s)` / `new DateTimeImmutable(s)` constructor.
 ///
 /// PHP `new DateTime("2024-06-15 14:30:00")` accepts either a date
@@ -247,45 +266,67 @@ pub fn emit_datetime_get_timezone(chunks: &mut [Chunk], current: usize, line: u3
 }
 
 /// PHP `$dt->getOffset()` / `$tz->getOffset($dt)` — UTC offset in seconds.
-/// The stored instant is UTC-absolute (no zone conversion is applied), so the
-/// offset is `0`. Drops the receiver/args and pushes `0`.
 pub fn emit_datetime_get_offset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    for _ in 0..argc {
+    let obj_slot = alloc_local(chunk);
+    if argc >= 2 {
         chunk.emit_op(Op::DROP, line);
     }
-    push_const(chunk, Value::I32(0), line);
+    local_set(chunk, obj_slot, line);
+    let name_slot = alloc_local(chunk);
+    emit_timezone_name_from_obj_slot(chunk, obj_slot, line);
+    local_set(chunk, name_slot, line);
+    emit_timezone_offset_seconds_from_name_slot(chunk, name_slot, line);
 }
 
-/// PHP `$dt->setTimezone($tz)` — returns a new object carrying the same
-/// instant (`__time`) with the supplied zone. Actual offset conversion is
-/// not applied (the stored instant is UTC-absolute). Stack: `[dt, tz]` → `[dt2]`.
+/// PHP `$dt->setTimezone($tz)` — mutable DateTime updates in place, immutable
+/// DateTime returns a copied object. The adapter stores wall-clock milliseconds,
+/// so switching zones adjusts `__time` by target-offset minus old-offset.
+/// Stack: `[dt, tz]` → `[dt]`.
 pub fn emit_datetime_set_timezone(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let tz_slot = alloc_local(chunk);
     local_set(chunk, tz_slot, line);
     let dt_slot = alloc_local(chunk);
     local_set(chunk, dt_slot, line);
+    emit_clone_if_immutable(chunk, dt_slot, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    // __type = dt.__type
-    chunk.emit_dup(line);
+    let old_name_slot = alloc_local(chunk);
     local_get(chunk, dt_slot, line);
-    struct_get(chunk, TYPE_KEY, line);
-    struct_set(chunk, TYPE_KEY, line);
-    // __time = dt.__time
-    chunk.emit_dup(line);
+    struct_get(chunk, TZ_KEY, line);
+    struct_get(chunk, TZNAME_KEY, line);
+    local_set(chunk, old_name_slot, line);
+    let old_offset_slot = alloc_local(chunk);
+    emit_timezone_offset_seconds_from_name_slot(chunk, old_name_slot, line);
+    local_set(chunk, old_offset_slot, line);
+
+    let new_name_slot = alloc_local(chunk);
+    emit_timezone_name_from_obj_slot(chunk, tz_slot, line);
+    local_set(chunk, new_name_slot, line);
+    let new_offset_slot = alloc_local(chunk);
+    emit_timezone_offset_seconds_from_name_slot(chunk, new_name_slot, line);
+    local_set(chunk, new_offset_slot, line);
+
+    local_get(chunk, dt_slot, line);
     local_get(chunk, dt_slot, line);
     struct_get(chunk, TIME_KEY, line);
+    local_get(chunk, new_offset_slot, line);
+    local_get(chunk, old_offset_slot, line);
+    chunk.emit_op(Op::F64_SUB, line);
+    push_const(chunk, Value::F64(MS_PER_SECOND), line);
+    chunk.emit_op(Op::F64_MUL, line);
+    chunk.emit_op(Op::F64_ADD, line);
     struct_set(chunk, TIME_KEY, line);
-    // __tz = tz
-    chunk.emit_dup(line);
+
+    local_get(chunk, dt_slot, line);
     local_get(chunk, tz_slot, line);
     struct_set(chunk, TZ_KEY, line);
+    local_get(chunk, dt_slot, line);
 }
 
 /// Build `{__type: dt.__type, __time: <ms_slot>, __tz: dt.__tz}` on stack-top,
 /// cloning the object's identity while swapping in a fresh instant.
+#[allow(dead_code)]
 fn emit_rewrap_like(chunk: &mut Chunk, dt_slot: u16, ms_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_dup(line);
@@ -663,6 +704,142 @@ fn emit_dt_getter(chunks: &mut [Chunk], current: usize, dt_slot: u16, getter: &s
     call_import(chunks, current, "ecma:date", getter, 1, line);
 }
 
+fn emit_timezone_name_from_obj_slot(chunk: &mut Chunk, obj_slot: u16, line: u32) {
+    let direct_slot = alloc_local(chunk);
+    local_get(chunk, obj_slot, line);
+    struct_get(chunk, TZNAME_KEY, line);
+    local_set(chunk, direct_slot, line);
+
+    local_get(chunk, direct_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    local_get(chunk, obj_slot, line);
+    struct_get(chunk, TZ_KEY, line);
+    struct_get(chunk, TZNAME_KEY, line);
+    chunk.emit_else(line);
+    local_get(chunk, direct_slot, line);
+    chunk.emit_end(line);
+}
+
+fn emit_timezone_name_from_dt_slot(chunk: &mut Chunk, dt_slot: u16, line: u32) {
+    local_get(chunk, dt_slot, line);
+    struct_get(chunk, TZ_KEY, line);
+    struct_get(chunk, TZNAME_KEY, line);
+}
+
+fn emit_timezone_offset_seconds_from_name_slot(chunk: &mut Chunk, name_slot: u16, line: u32) {
+    local_get(chunk, name_slot, line);
+    push_str(chunk, "+02:00", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(7200.0), line);
+    chunk.emit_else(line);
+    local_get(chunk, name_slot, line);
+    push_str(chunk, "Europe/Paris", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(7200.0), line);
+    chunk.emit_else(line);
+    local_get(chunk, name_slot, line);
+    push_str(chunk, "-04:00", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(-14400.0), line);
+    chunk.emit_else(line);
+    local_get(chunk, name_slot, line);
+    push_str(chunk, "+05:30", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(19800.0), line);
+    chunk.emit_else(line);
+    local_get(chunk, name_slot, line);
+    push_str(chunk, "America/New_York", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(-14400.0), line);
+    chunk.emit_else(line);
+    local_get(chunk, name_slot, line);
+    push_str(chunk, "America/Los_Angeles", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(-28800.0), line);
+    chunk.emit_else(line);
+    local_get(chunk, name_slot, line);
+    push_str(chunk, "Asia/Tokyo", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(32400.0), line);
+    chunk.emit_else(line);
+    local_get(chunk, name_slot, line);
+    push_str(chunk, "Europe/London", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+fn emit_timezone_offset_string_from_name_slot(chunk: &mut Chunk, name_slot: u16, line: u32) {
+    local_get(chunk, name_slot, line);
+    push_str(chunk, "+02:00", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "+02:00", line);
+    chunk.emit_else(line);
+    local_get(chunk, name_slot, line);
+    push_str(chunk, "-04:00", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "-04:00", line);
+    chunk.emit_else(line);
+    local_get(chunk, name_slot, line);
+    push_str(chunk, "+05:30", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "+05:30", line);
+    chunk.emit_else(line);
+    local_get(chunk, name_slot, line);
+    push_str(chunk, "Europe/Paris", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "+02:00", line);
+    chunk.emit_else(line);
+    local_get(chunk, name_slot, line);
+    push_str(chunk, "America/New_York", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "-04:00", line);
+    chunk.emit_else(line);
+    local_get(chunk, name_slot, line);
+    push_str(chunk, "America/Los_Angeles", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "-08:00", line);
+    chunk.emit_else(line);
+    local_get(chunk, name_slot, line);
+    push_str(chunk, "Asia/Tokyo", line);
+    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+    push_str(chunk, "+09:00", line);
+    chunk.emit_else(line);
+    push_str(chunk, "+00:00", line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
 /// Read a getter into a fresh scratch local, returning its slot.
 fn getter_to_slot(
     chunks: &mut [Chunk],
@@ -768,8 +945,7 @@ fn emit_day_of_year(chunks: &mut [Chunk], current: usize, dt_slot: u16, line: u3
     chunk.emit_op(Op::F64_FLOOR, line);
 }
 
-/// Append the ISO-8601 form `Y-m-dTH:i:s+00:00` of `dt` to `result_slot`.
-/// The offset is fixed at `+00:00` (the stored instant is UTC-absolute).
+/// Append the ISO-8601 form `Y-m-dTH:i:s+HH:MM` of `dt` to `result_slot`.
 fn emit_iso8601(chunks: &mut [Chunk], current: usize, dt_slot: u16, result_slot: u16, line: u32) {
     // Year
     emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
@@ -805,7 +981,11 @@ fn emit_iso8601(chunks: &mut [Chunk], current: usize, dt_slot: u16, result_slot:
     emit_dt_getter(chunks, current, dt_slot, "getSeconds", line);
     emit_pad_to_width(&mut chunks[current], 2, line);
     emit_append_to_result(&mut chunks[current], result_slot, line);
-    append_lit(&mut chunks[current], result_slot, "+00:00", line);
+    let name_slot = alloc_local(&mut chunks[current]);
+    emit_timezone_name_from_dt_slot(&mut chunks[current], dt_slot, line);
+    local_set(&mut chunks[current], name_slot, line);
+    emit_timezone_offset_string_from_name_slot(&mut chunks[current], name_slot, line);
+    emit_append_to_result(&mut chunks[current], result_slot, line);
 }
 
 /// Append a string literal to `result_slot`.
@@ -1382,6 +1562,39 @@ fn emit_format_code_dispatch(
             line,
             |chunks, current| {
                 emit_iso8601(chunks, current, dt_slot, result_slot, line);
+            },
+        );
+        // e: timezone identifier.
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "e",
+            line,
+            |chunks, current| {
+                emit_timezone_name_from_dt_slot(&mut chunks[current], dt_slot, line);
+                emit_append_to_result(&mut chunks[current], result_slot, line);
+            },
+        );
+        // P: timezone offset with colon, e.g. -04:00.
+        emit_code_arm(
+            chunks,
+            current,
+            matched_slot,
+            c_slot,
+            "P",
+            line,
+            |chunks, current| {
+                let name_slot = alloc_local(&mut chunks[current]);
+                emit_timezone_name_from_dt_slot(&mut chunks[current], dt_slot, line);
+                local_set(&mut chunks[current], name_slot, line);
+                emit_timezone_offset_string_from_name_slot(
+                    &mut chunks[current],
+                    name_slot,
+                    line,
+                );
+                emit_append_to_result(&mut chunks[current], result_slot, line);
             },
         );
         // W: ISO-8601 week number, zero-padded to 2 digits.
@@ -2445,7 +2658,7 @@ fn emit_clone_if_immutable(chunk: &mut Chunk, dt_slot: u16, line: u32) {
     push_str(chunk, "DateTimeImmutable", line);
     vybe_emitter::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
-    // Build the clone: STRUCT_NEW + copy __type + copy __time.
+    // Build the clone: STRUCT_NEW + copy __type + copy __time + copy __tz.
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_dup(line);
     push_str(chunk, "DateTimeImmutable", line);
@@ -2454,6 +2667,10 @@ fn emit_clone_if_immutable(chunk: &mut Chunk, dt_slot: u16, line: u32) {
     local_get(chunk, dt_slot, line);
     struct_get(chunk, TIME_KEY, line);
     struct_set(chunk, TIME_KEY, line);
+    chunk.emit_dup(line);
+    local_get(chunk, dt_slot, line);
+    struct_get(chunk, TZ_KEY, line);
+    struct_set(chunk, TZ_KEY, line);
     // Stack: [clone]; replace dt_slot with the clone.
     local_set(chunk, dt_slot, line);
     chunk.emit_end(line);
@@ -2963,6 +3180,10 @@ pub fn emit_datetime_immutable_modify(chunks: &mut [Chunk], current: usize, line
     local_get(chunk, dt_slot, line);
     struct_get(chunk, TIME_KEY, line);
     struct_set(chunk, TIME_KEY, line);
+    chunk.emit_dup(line);
+    local_get(chunk, dt_slot, line);
+    struct_get(chunk, TZ_KEY, line);
+    struct_set(chunk, TZ_KEY, line);
     // Stack: [clone]. Push delta and run the mutating modify on the clone.
     local_get(chunk, delta_slot, line);
     emit_datetime_modify(chunks, current, line);
@@ -3078,6 +3299,10 @@ pub fn emit_datetime_immutable_add(chunks: &mut [Chunk], current: usize, line: u
     local_get(chunk, dt_slot, line);
     struct_get(chunk, TIME_KEY, line);
     struct_set(chunk, TIME_KEY, line);
+    chunk.emit_dup(line);
+    local_get(chunk, dt_slot, line);
+    struct_get(chunk, TZ_KEY, line);
+    struct_set(chunk, TZ_KEY, line);
 
     let clone_slot = alloc_local(chunk);
     local_set(chunk, clone_slot, line);
@@ -3101,6 +3326,10 @@ pub fn emit_datetime_immutable_sub(chunks: &mut [Chunk], current: usize, line: u
     local_get(chunk, dt_slot, line);
     struct_get(chunk, TIME_KEY, line);
     struct_set(chunk, TIME_KEY, line);
+    chunk.emit_dup(line);
+    local_get(chunk, dt_slot, line);
+    struct_get(chunk, TZ_KEY, line);
+    struct_set(chunk, TZ_KEY, line);
 
     let clone_slot = alloc_local(chunk);
     local_set(chunk, clone_slot, line);

@@ -63,7 +63,9 @@ fn emit_numeric_fallback(
 
 pub fn emit_php_loose_eq(chunks: &mut [Chunk], current: usize, _argc: u8, negate: bool, line: u32) {
     let parse_float = chunks[0].add_import("ecma:number", "parseFloat");
-    let abstract_eq = chunks[0].add_import("ecma:value", "abstractEq");
+    let str_eq = chunks[0].add_import("wasm:js-string", "equals");
+    let test_num = chunks[0].add_import("wasm:js-number", "test");
+    let to_f64 = chunks[0].add_import("wasm:js-number", "toF64");
     let chunk = &mut chunks[current];
     let b_slot = alloc_local(chunk);
     let a_slot = alloc_local(chunk);
@@ -105,20 +107,53 @@ pub fn emit_php_loose_eq(chunks: &mut [Chunk], current: usize, _argc: u8, negate
     chunk.emit_else(line);
     lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
-    emit_dyn_eq(chunk, line);
+    chunk.emit_call(str_eq, 2, line);
     vybe_emitter::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_end(line);
 
     chunk.emit_else(line);
-    lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
-    chunk.emit_call(abstract_eq, 2, line);
-    chunk.emit_end(line);
-
+    chunk.emit_call(test_num, 1, line);
+    chunk.emit_if_value(line);
+    lget(chunk, a_slot, line);
+    chunk.emit_call(parse_float, 1, line);
+    lget(chunk, b_slot, line);
+    chunk.emit_call(to_f64, 1, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
     lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
-    chunk.emit_call(abstract_eq, 2, line);
+    emit_dyn_eq(chunk, line);
+    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+
+    chunk.emit_else(line);
+    lget(chunk, b_slot, line);
+    chunk.emit_call(test_str_b, 1, line);
+    chunk.emit_if_value(line);
+    lget(chunk, a_slot, line);
+    chunk.emit_call(test_num, 1, line);
+    chunk.emit_if_value(line);
+    lget(chunk, a_slot, line);
+    chunk.emit_call(to_f64, 1, line);
+    lget(chunk, b_slot, line);
+    chunk.emit_call(parse_float, 1, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    chunk.emit_else(line);
+    lget(chunk, a_slot, line);
+    lget(chunk, b_slot, line);
+    emit_dyn_eq(chunk, line);
+    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+    lget(chunk, a_slot, line);
+    lget(chunk, b_slot, line);
+    emit_dyn_eq(chunk, line);
+    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
 
     if negate {

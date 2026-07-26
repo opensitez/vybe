@@ -512,6 +512,7 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 /// Object first. Arrays recurse on elements; nested Maps recurse too. Key order
 /// is the Map's native (`ecma:object.keys`) insertion order — no `__keys`/CSV
 /// side-band. The helper self-recurses via its own func ref.
+#[allow(dead_code)]
 fn build_php_json_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let helper_idx = chunks.len();
     let mut helper = create_function_chunk("__php_json_normalize", 1);
@@ -1376,6 +1377,30 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_end(line);
     chunk.emit_else(line);
 
+    lget(chunk, value_slot, line);
+    struct_get_key(chunk, "__type", line);
+    let type_slot = alloc_local(chunk);
+    lset(chunk, type_slot, line);
+    lget(chunk, type_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::Bool(false), line);
+    chunk.emit_else(line);
+    lget(chunk, type_slot, line);
+    {
+        let undef_idx = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_call(undef_idx, 1, line);
+    }
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::Bool(false), line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::Bool(true), line);
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::Bool(false), line);
+    chunk.emit_else(line);
+
     // array test via ecma:array.isArray
     lget(chunk, value_slot, line);
     let _ = chunk;
@@ -1416,6 +1441,7 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_else(line);
 
     push_const(chunk, Value::Bool(false), line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
