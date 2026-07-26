@@ -317,6 +317,81 @@ pub enum CommandValue {
     Color(u8, u8, u8, u8),
 }
 
+/// Read a `Custom` command payload as a number. Commands cross the host
+/// boundary as text (`set_property` stringifies every value), so a numeric
+/// payload arrives as either `Number` or a `Text` that parses.
+pub fn command_number(val: &CommandValue) -> Option<f64> {
+    match val {
+        CommandValue::Number(n) => Some(*n),
+        CommandValue::Index(i) => Some(*i as f64),
+        CommandValue::Text(s) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+/// Read a `Custom` command payload as an RGBA colour: a `Color` payload, a
+/// `#RRGGBB`/`#AARRGGBB` string, a named colour, or a packed ARGB integer
+/// (what Flutter's `Color(0xFF2196F3)` carries).
+pub fn command_color(val: &CommandValue) -> Option<(u8, u8, u8, u8)> {
+    match val {
+        CommandValue::Color(r, g, b, a) => Some((*r, *g, *b, *a)),
+        CommandValue::Number(n) => Some(argb_u32_to_rgba(*n as u32)),
+        CommandValue::Text(s) => parse_color(s),
+        _ => None,
+    }
+}
+
+/// Split a packed `0xAARRGGBB` integer into RGBA components.
+fn argb_u32_to_rgba(v: u32) -> (u8, u8, u8, u8) {
+    let a = ((v >> 24) & 0xFF) as u8;
+    let r = ((v >> 16) & 0xFF) as u8;
+    let g = ((v >> 8) & 0xFF) as u8;
+    let b = (v & 0xFF) as u8;
+    // A packed value with no alpha byte (`0x2196F3`) means fully opaque
+    // rather than fully transparent.
+    (r, g, b, if a == 0 { 255 } else { a })
+}
+
+/// Parse a colour string: `#RRGGBB`, `#AARRGGBB`, a decimal/hex ARGB integer,
+/// or one of the common colour names.
+pub fn parse_color(s: &str) -> Option<(u8, u8, u8, u8)> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            return Some((r, g, b, 255));
+        }
+        if hex.len() == 8 {
+            return Some(argb_u32_to_rgba(u32::from_str_radix(hex, 16).ok()?));
+        }
+        return None;
+    }
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        return Some(argb_u32_to_rgba(u32::from_str_radix(hex, 16).ok()?));
+    }
+    // A bare integer is a packed ARGB value (Flutter `Color.value`).
+    if let Ok(v) = s.parse::<u32>() {
+        return Some(argb_u32_to_rgba(v));
+    }
+    match s.to_lowercase().as_str() {
+        "red" => Some((255, 0, 0, 255)),
+        "green" => Some((0, 128, 0, 255)),
+        "blue" => Some((0, 0, 255, 255)),
+        "white" => Some((255, 255, 255, 255)),
+        "black" => Some((0, 0, 0, 255)),
+        "yellow" => Some((255, 255, 0, 255)),
+        "orange" => Some((255, 165, 0, 255)),
+        "purple" => Some((128, 0, 128, 255)),
+        "gray" | "grey" => Some((128, 128, 128, 255)),
+        "lightgray" | "lightgrey" => Some((211, 211, 211, 255)),
+        "darkgray" | "darkgrey" => Some((169, 169, 169, 255)),
+        "transparent" => Some((0, 0, 0, 0)),
+        _ => None,
+    }
+}
+
 /// Tri-state check state for checkboxes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckState {

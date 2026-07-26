@@ -6,7 +6,7 @@
 use super::WidgetColors;
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
-    WidgetEvent, WidgetId,
+    WidgetEvent, WidgetId, command_color, command_number,
 };
 use tiny_skia::*;
 
@@ -339,6 +339,48 @@ impl PanelWidget for FlowLayoutPanel {
                 }
                 CommandValue::None
             }
+            // The panel already carries padding/spacing/size/colour; these
+            // expose them so a container adapter (Flutter `Padding`/`Container`/
+            // `SizedBox`, WinForms `Panel.Padding`) can drive them.
+            WidgetCommand::Custom(key, val) => match key.as_str() {
+                "SetPadding" => {
+                    if let Some(p) = command_number(val) {
+                        self.padding = p as f32;
+                    }
+                    CommandValue::None
+                }
+                "SetSpacing" => {
+                    if let Some(s) = command_number(val) {
+                        self.spacing = s as f32;
+                    }
+                    CommandValue::None
+                }
+                "SetWidth" => {
+                    if let Some(w) = command_number(val) {
+                        self.width = w as f32;
+                        // A container given an explicit size is no longer
+                        // free to absorb leftover space.
+                        self.flex = 0.0;
+                        self.fixed_main = w as f32;
+                    }
+                    CommandValue::None
+                }
+                "SetHeight" => {
+                    if let Some(h) = command_number(val) {
+                        self.height = h as f32;
+                        self.flex = 0.0;
+                        self.fixed_main = h as f32;
+                    }
+                    CommandValue::None
+                }
+                "SetBackColor" => {
+                    if let Some(rgba) = command_color(val) {
+                        self.colors.background = rgba;
+                    }
+                    CommandValue::None
+                }
+                _ => CommandValue::None,
+            },
             _ => CommandValue::None,
         }
     }

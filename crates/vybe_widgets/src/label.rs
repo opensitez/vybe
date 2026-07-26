@@ -3,7 +3,7 @@
 use super::WidgetColors;
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, TextAlign,
-    WidgetCommand, WidgetId,
+    WidgetCommand, WidgetId, command_color, command_number,
 };
 use cosmic_text::Color as CosmicColor;
 use tiny_skia::*;
@@ -233,6 +233,47 @@ impl PanelWidget for Label {
                 CommandValue::None
             }
             WidgetCommand::GetText => CommandValue::Text(self.text.clone()),
+            // Text styling and explicit sizing — a `Text(style: TextStyle(…))`
+            // adapter drives colour/size here, and a rule-like label (a
+            // `Divider`) gets its thickness from an explicit height.
+            WidgetCommand::Custom(key, val) => match key.as_str() {
+                "SetForeColor" => {
+                    if let Some(rgba) = command_color(val) {
+                        self.colors.foreground = rgba;
+                    }
+                    CommandValue::None
+                }
+                "SetBackColor" => {
+                    if let Some(rgba) = command_color(val) {
+                        self.colors.background = rgba;
+                        // An explicit background is only visible if the label
+                        // stops painting itself as transparent.
+                        self.transparent = false;
+                    }
+                    CommandValue::None
+                }
+                "SetFontSize" => {
+                    if let Some(s) = command_number(val) {
+                        self.font_size = s as f32;
+                    }
+                    CommandValue::None
+                }
+                "SetWidth" => {
+                    if let Some(w) = command_number(val) {
+                        self.width = w as f32;
+                        self.auto_size = false;
+                    }
+                    CommandValue::None
+                }
+                "SetHeight" => {
+                    if let Some(h) = command_number(val) {
+                        self.height = h as f32;
+                        self.auto_size = false;
+                    }
+                    CommandValue::None
+                }
+                _ => CommandValue::None,
+            },
             _ => CommandValue::None,
         }
     }
