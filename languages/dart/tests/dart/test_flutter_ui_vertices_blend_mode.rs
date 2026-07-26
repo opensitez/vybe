@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 use super::helpers::run_prints;
 
 // ═══════════════════════════════════════════════════════════
