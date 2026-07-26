@@ -16,7 +16,6 @@ vybe_emitter = { workspace = true }
 uuid = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }
-vybe_platform_dotnet = { workspace = true }
 vybe_language_c = { workspace = true }
 
 [dev-dependencies]
