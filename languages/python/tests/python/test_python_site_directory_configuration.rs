@@ -17,7 +17,7 @@ fn test_site_getuserbase_returns_non_empty_path_str() {
     let out = run_python(r#"
 import site
 base = site.getuserbase()
-print(base.startswith("/") or len(base) > 0)
+print(base.startswith('/') or len(base) > 0)
 "#);
     assert_eq!(out, vec!["True"]);
 }
@@ -64,7 +64,6 @@ print(site.USER_SITE == site.getusersitepackages())
 fn test_site_addsitedir_adds_to_sys_path() {
     let out = run_python(r#"
 import site, sys, tempfile
-
 with tempfile.TemporaryDirectory() as tmpdir:
     site.addsitedir(tmpdir)
     print(tmpdir in sys.path)
@@ -76,14 +75,12 @@ with tempfile.TemporaryDirectory() as tmpdir:
 fn test_site_addsitedir_processes_pth_file() {
     let out = run_python(r#"
 import site, sys, tempfile, os
-
 with tempfile.TemporaryDirectory() as tmpdir:
-    sub_dir = os.path.join(tmpdir, "added_via_pth")
+    sub_dir = os.path.join(tmpdir, 'added_via_pth')
     os.makedirs(sub_dir)
-    pth_file = os.path.join(tmpdir, "package.pth")
-    with open(pth_file, "w") as f:
-        f.write("added_via_pth\n")
-    
+    pth_file = os.path.join(tmpdir, 'package.pth')
+    with open(pth_file, 'w') as f:
+        f.write('added_via_pth\n')
     site.addsitedir(tmpdir)
     print(sub_dir in sys.path)
 "#);
@@ -94,14 +91,12 @@ with tempfile.TemporaryDirectory() as tmpdir:
 fn test_site_addsitedir_pth_file_import_exec() {
     let out = run_python(r#"
 import site, sys, tempfile, os
-
 with tempfile.TemporaryDirectory() as tmpdir:
-    pth_file = os.path.join(tmpdir, "exec_code.pth")
-    with open(pth_file, "w") as f:
+    pth_file = os.path.join(tmpdir, 'exec_code.pth')
+    with open(pth_file, 'w') as f:
         f.write("import sys; sys._pth_test_var = 'executed'\n")
-    
     site.addsitedir(tmpdir)
-    print(getattr(sys, "_pth_test_var", None))
+    print(getattr(sys, '_pth_test_var', None))
 "#);
     assert_eq!(out, vec!["executed"]);
 }
@@ -110,10 +105,10 @@ with tempfile.TemporaryDirectory() as tmpdir:
 fn test_site_getsitepackages_with_custom_prefixes() {
     let out = run_python(r#"
 import site
-prefixes = ["/custom/prefix1", "/custom/prefix2"]
+prefixes = ['/custom/prefix1', '/custom/prefix2']
 res = site.getsitepackages(prefixes)
-print(any("/custom/prefix1" in p for p in res))
-print(any("/custom/prefix2" in p for p in res))
+print(any('/custom/prefix1' in p for p in res))
+print(any('/custom/prefix2' in p for p in res))
 "#);
     assert_eq!(out, vec!["True", "True"]);
 }
@@ -122,13 +117,11 @@ print(any("/custom/prefix2" in p for p in res))
 fn test_site_addsitedir_duplicate_prevention() {
     let out = run_python(r#"
 import site, sys, tempfile
-
 with tempfile.TemporaryDirectory() as tmpdir:
     site.addsitedir(tmpdir)
     count1 = sys.path.count(tmpdir)
     site.addsitedir(tmpdir)
     count2 = sys.path.count(tmpdir)
-
 print(count1 == 1)
 print(count2 == 1)
 "#);
@@ -141,7 +134,7 @@ fn test_site_set_quit_helper_creates_quit_and_exit() {
 import site, builtins
 site.setquit()
 q = str(builtins.quit)
-print("Use quit() or Ctrl-D" in q or "exit" in q)
+print('Use quit()' in q or 'exit' in q)
 "#);
     assert_eq!(out, vec!["True"]);
 }
@@ -152,7 +145,7 @@ fn test_site_set_copyright_helper() {
 import site, builtins
 site.setcopyright()
 c = str(builtins.copyright)
-print("Copyright" in c)
+print('Copyright' in c)
 "#);
     assert_eq!(out, vec!["True"]);
 }
@@ -163,7 +156,7 @@ fn test_site_set_helper_creates_help() {
 import site, builtins
 site.sethelper()
 h = str(builtins.help)
-print("Type help()" in h or "interactive help" in h)
+print('Type help()' in h or 'interactive help' in h)
 "#);
     assert_eq!(out, vec!["True"]);
 }
@@ -172,8 +165,8 @@ print("Type help()" in h or "interactive help" in h)
 fn test_site_makepath_helper_joins_and_normalizes() {
     let out = run_python(r#"
 import site, os
-path, norm = site.makepath("foo", "bar")
-print(path == os.path.join("foo", "bar"))
+path, norm = site.makepath('foo', 'bar')
+print(path == os.path.join('foo', 'bar'))
 print(norm == os.path.normcase(path))
 "#);
     assert_eq!(out, vec!["True", "True"]);
@@ -183,16 +176,14 @@ print(norm == os.path.normcase(path))
 fn test_site_addpackage_reads_and_adds_relative_path() {
     let out = run_python(r#"
 import site, sys, tempfile, os
-
 with tempfile.TemporaryDirectory() as tmpdir:
-    sub_dir = os.path.join(tmpdir, "rel_pkg")
+    sub_dir = os.path.join(tmpdir, 'rel_pkg')
     os.makedirs(sub_dir)
-    pth_file = os.path.join(tmpdir, "rel.pth")
-    with open(pth_file, "w") as f:
-        f.write("rel_pkg\n")
-    
+    pth_file = os.path.join(tmpdir, 'rel.pth')
+    with open(pth_file, 'w') as f:
+        f.write('rel_pkg\n')
     known_paths = set()
-    site.addpackage(tmpdir, "rel.pth", known_paths)
+    site.addpackage(tmpdir, 'rel.pth', known_paths)
     print(sub_dir in sys.path)
 "#);
     assert_eq!(out, vec!["True"]);
@@ -201,15 +192,13 @@ with tempfile.TemporaryDirectory() as tmpdir:
 #[test]
 fn test_site_addpackage_ignores_comment_lines() {
     let out = run_python(r#"
-import site, sys, tempfile, os
-
+import site, tempfile, os
 with tempfile.TemporaryDirectory() as tmpdir:
-    pth_file = os.path.join(tmpdir, "comment.pth")
-    with open(pth_file, "w") as f:
-        f.write("# This is a comment\n")
-    
+    pth_file = os.path.join(tmpdir, 'comment.pth')
+    with open(pth_file, 'w') as f:
+        f.write('# this is a comment\n')
     known_paths = set()
-    site.addpackage(tmpdir, "comment.pth", known_paths)
+    site.addpackage(tmpdir, 'comment.pth', known_paths)
     print(tmpdir in known_paths)
 "#);
     assert_eq!(out, vec!["False"]);
@@ -219,14 +208,12 @@ with tempfile.TemporaryDirectory() as tmpdir:
 fn test_site_addpackage_ignores_blank_lines() {
     let out = run_python(r#"
 import site, tempfile, os
-
 with tempfile.TemporaryDirectory() as tmpdir:
-    pth_file = os.path.join(tmpdir, "blank.pth")
-    with open(pth_file, "w") as f:
-        f.write("\n\n\n")
-    
+    pth_file = os.path.join(tmpdir, 'blank.pth')
+    with open(pth_file, 'w') as f:
+        f.write('\n\n\n')
     known_paths = set()
-    site.addpackage(tmpdir, "blank.pth", known_paths)
+    site.addpackage(tmpdir, 'blank.pth', known_paths)
     print(len(known_paths))
 "#);
     assert_eq!(out, vec!["0"]);
@@ -236,7 +223,6 @@ with tempfile.TemporaryDirectory() as tmpdir:
 fn test_site_addsitedir_appends_to_end_of_sys_path() {
     let out = run_python(r#"
 import site, sys, tempfile
-
 with tempfile.TemporaryDirectory() as tmpdir:
     site.addsitedir(tmpdir)
     print(sys.path[-1] == tmpdir)
@@ -255,7 +241,7 @@ try:
     site.main()
 finally:
     sys.stdout = orig
-print("sys.path" in buf.getvalue())
+print('sys.path' in buf.getvalue())
 "#);
     assert_eq!(out, vec!["True"]);
 }

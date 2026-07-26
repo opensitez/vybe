@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 use super::helpers::run_python;
 
 // http.cookies — SimpleCookie, Morsel, CookieError, Set-Cookie header generation, attributes (max-age, expires, path, domain, secure, httponly, samesite), raw cookie string parsing
@@ -244,7 +245,7 @@ print(c.output(sep="; "))
 }
 
 #[test]
-fn test_http_cookies_morsel_OutputString() {
+fn test_http_cookies_morsel_output_string() {
     let out = run_python(r#"
 from http.cookies import SimpleCookie
 c = SimpleCookie()

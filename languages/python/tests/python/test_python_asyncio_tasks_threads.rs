@@ -11,7 +11,7 @@ def blocking_io(msg):
     time.sleep(0.01)
     return f"processed: {msg}"
 
-async fn():
+async def fn():
     res = await asyncio.to_thread(blocking_io, "data")
     print(res)
 
@@ -25,7 +25,7 @@ fn test_asyncio_task_group_concurrent_execution() {
     let out = run_python(r#"
 import asyncio, sys
 
-async fn():
+async def fn():
     if sys.version_info >= (3, 11):
         res = []
         async def worker(n):
@@ -49,7 +49,7 @@ fn test_asyncio_timeout_context_manager() {
     let out = run_python(r#"
 import asyncio, sys
 
-async fn():
+async def fn():
     if sys.version_info >= (3, 11):
         try:
             async with asyncio.timeout(0.02):
@@ -69,7 +69,7 @@ fn test_asyncio_wait_for_timeout() {
     let out = run_python(r#"
 import asyncio
 
-async fn():
+async def fn():
     try:
         await asyncio.wait_for(asyncio.sleep(0.5), timeout=0.02)
     except asyncio.TimeoutError:
@@ -89,7 +89,7 @@ async def f1(): return 1
 async def f2(): return 2
 async def f3(): return 3
 
-async fn():
+async def fn():
     res = await asyncio.gather(f1(), f2(), f3())
     print(list(res))
 
@@ -106,7 +106,7 @@ import asyncio
 async def ok(): return "success"
 async def fail(): raise ValueError("boom")
 
-async fn():
+async def fn():
     res = await asyncio.gather(ok(), fail(), return_exceptions=True)
     print(res[0])
     print(type(res[1]).__name__)
@@ -121,7 +121,7 @@ fn test_asyncio_queue_put_get() {
     let out = run_python(r#"
 import asyncio
 
-async fn():
+async def fn():
     q = asyncio.Queue()
     await q.put("item1")
     await q.put("item2")
@@ -139,7 +139,7 @@ fn test_asyncio_event_set_wait() {
     let out = run_python(r#"
 import asyncio
 
-async fn():
+async def fn():
     evt = asyncio.Event()
     print(evt.is_set())
 
@@ -169,7 +169,7 @@ async def fast():
     await asyncio.sleep(0.005)
     return "fast"
 
-async fn():
+async def fn():
     results = []
     for coro in asyncio.as_completed([slow(), fast()]):
         val = await coro
@@ -186,7 +186,7 @@ fn test_asyncio_lock_mutual_exclusion() {
     let out = run_python(r#"
 import asyncio
 
-async fn():
+async def fn():
     lock = asyncio.Lock()
     counter = [0]
 
@@ -209,7 +209,7 @@ fn test_asyncio_semaphore_acquire_release() {
     let out = run_python(r#"
 import asyncio
 
-async fn():
+async def fn():
     sem = asyncio.Semaphore(2)
     await sem.acquire()
     await sem.acquire()
@@ -229,7 +229,7 @@ import asyncio, sys
 
 async def dummy(): pass
 
-async fn():
+async def fn():
     t = asyncio.create_task(dummy(), name="custom_task_name")
     print(t.get_name())
     await t
@@ -247,7 +247,7 @@ import asyncio
 async def endless():
     await asyncio.sleep(10)
 
-async fn():
+async def fn():
     t = asyncio.create_task(endless())
     await asyncio.sleep(0.01)
     t.cancel()
@@ -266,7 +266,7 @@ fn test_asyncio_current_task() {
     let out = run_python(r#"
 import asyncio
 
-async fn():
+async def fn():
     t = asyncio.current_task()
     print(t is not None)
     print(isinstance(t, asyncio.Task))
@@ -281,7 +281,7 @@ fn test_asyncio_all_tasks() {
     let out = run_python(r#"
 import asyncio
 
-async fn():
+async def fn():
     t = asyncio.create_task(asyncio.sleep(0.1))
     tasks = asyncio.all_tasks()
     print(t in tasks)
@@ -303,7 +303,7 @@ async def important():
     await asyncio.sleep(0.01)
     return "saved"
 
-async fn():
+async def fn():
     task = asyncio.create_task(important())
     shielded = asyncio.shield(task)
     shielded.cancel()
@@ -346,7 +346,7 @@ def thread_worker(loop, fut):
     f = asyncio.run_coroutine_threadsafe(coro, loop)
     fut.set_result(f.result())
 
-async fn():
+async def fn():
     loop = asyncio.get_running_loop()
     fut = loop.create_future()
     t = threading.Thread(target=thread_worker, args=(loop, fut))
@@ -365,7 +365,7 @@ fn test_asyncio_future_callbacks() {
     let out = run_python(r#"
 import asyncio
 
-async fn():
+async def fn():
     fut = asyncio.Future()
     res = []
     fut.add_done_callback(lambda f: res.append(f.result()))
@@ -393,7 +393,7 @@ async def t1():
 async def t2():
     order.append(2)
 
-async fn():
+async def fn():
     asyncio.create_task(t1())
     asyncio.create_task(t2())
     await asyncio.sleep(0.01)

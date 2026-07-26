@@ -7,7 +7,7 @@ fn test_contextlib_async_exit_stack_callbacks() {
     let out = run_python(r#"
 import asyncio, contextlib
 
-async fn():
+async def fn():
     cleaned_up = []
     async with contextlib.AsyncExitStack() as stack:
         stack.callback(lambda: cleaned_up.append("sync_cb"))
@@ -34,7 +34,7 @@ async def async_gen():
     finally:
         closed[0] = True
 
-async fn():
+async def fn():
     async with contextlib.aclosing(async_gen()) as gen:
         v1 = await anext(gen) if hasattr(__builtins__, 'anext') else await gen.__anext__()
         print(v1)
@@ -60,7 +60,7 @@ async def resource():
     finally:
         events.append("exit")
 
-async fn():
+async def fn():
     async with resource() as r:
         events.append(r)
     print(events)
@@ -261,7 +261,7 @@ class DummyAsyncCM(contextlib.AbstractAsyncContextManager):
     async def __aenter__(self): return "async_ok"
     async def __aexit__(self, exc_type, exc_val, exc_tb): return False
 
-async fn():
+async def fn():
     async with DummyAsyncCM() as val:
         print(val)
 
@@ -309,7 +309,7 @@ fn test_contextlib_nullcontext_async_use() {
     let out = run_python(r#"
 import asyncio, contextlib
 
-async fn():
+async def fn():
     async with contextlib.nullcontext("async_val") as val:
         print(val)
 
@@ -342,7 +342,7 @@ import asyncio, contextlib
 async def async_res(name):
     yield f"active_{name}"
 
-async fn():
+async def fn():
     async with contextlib.AsyncExitStack() as stack:
         r1 = await stack.enter_async_context(async_res("res1"))
         r2 = await stack.enter_async_context(async_res("res2"))

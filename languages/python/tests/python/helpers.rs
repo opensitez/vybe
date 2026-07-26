@@ -138,12 +138,27 @@ pub fn compile_ok(src: &str) {
 /// source, is not a real line break and keeps the single-expression form.)
 pub fn run_print(expr: &str) -> String {
     let trimmed = expr.strip_suffix('\n').unwrap_or(expr);
-    match trimmed.rfind('\n') {
-        Some(split) => {
-            let (stmts, last) = trimmed.split_at(split);
-            let last = &last[1..]; // drop the separating newline
-            run_python_one(&format!("{stmts}\nprint({last})\n"))
-        }
-        None => run_python_one(&format!("print({trimmed})\n")),
+
+    // Peel leading `import …;` / `from … import …;` prefixes onto their own
+    // lines. Tests write one-liners like "import re; re.findall(…)" meaning
+    // "run the import, print the trailing expression" — wrapping the whole
+    // thing gives `print(import re; …)`, which is not Python.
+    let mut prelude = String::new();
+    let mut rest = trimmed;
+    while rest.starts_with("import ") || rest.starts_with("from ") {
+        let Some(semi) = rest.find(';') else { break };
+        prelude.push_str(rest[..semi].trim());
+        prelude.push('\n');
+        rest = rest[semi + 1..].trim_start();
     }
+
+    let src = match rest.rfind('\n') {
+        Some(split) => {
+            let (stmts, last) = rest.split_at(split);
+            let last = &last[1..]; // drop the separating newline
+            format!("{prelude}{stmts}\nprint({last})\n")
+        }
+        None => format!("{prelude}print({rest})\n"),
+    };
+    run_python_one(&src)
 }

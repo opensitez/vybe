@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 use super::helpers::run_python;
 
 // zlib — compress/decompress, compressobj/decompressobj flush modes, wbits, adler32, crc32
@@ -213,7 +214,7 @@ print(d.unused_data == trailing)
 }
 
 #[test]
-fn test_zlib_compressobj_memLevel() {
+fn test_zlib_compressobj_mem_level() {
     let out = run_python(r#"
 import zlib
 data = b"memory level test " * 50

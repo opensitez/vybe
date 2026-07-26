@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 use super::helpers::run_python;
 
 // ═══════════════════════════════════════════════════════════
@@ -206,7 +207,7 @@ asyncio.run(main())
 }
 
 #[test]
-fn test_py_async_wait_FIRST_COMPLETED() {
+fn test_py_async_wait_first_completed() {
     let src = r#"
 import asyncio
 

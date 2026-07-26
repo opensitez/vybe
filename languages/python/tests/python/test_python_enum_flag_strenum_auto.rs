@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 use super::helpers::run_python;
 
 // enum — Enum, IntEnum, StrEnum, Flag, IntFlag, auto, unique, verify, member, nonmember, enum bitwise operators, iteration, value/name lookup
@@ -310,7 +311,7 @@ print(bool(empty))
 }
 
 #[test]
-fn test_enum_verify_decorator_STRICT() {
+fn test_enum_verify_decorator_strict() {
     let out = run_python(r#"
 from enum import Enum, verify, UNIQUE, sys
 
