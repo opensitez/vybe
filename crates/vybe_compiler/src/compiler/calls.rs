@@ -647,13 +647,29 @@ impl Compiler {
             Self::normalize_type_hint(strip_generic_suffix(param_type).trim_end_matches('?'));
         let normalized_arg =
             Self::normalize_type_hint(strip_generic_suffix(arg_type).trim_end_matches('?'));
+        self.normalized_overload_type_matches(&normalized_param, &normalized_arg)
+    }
+
+    fn overload_type_exact_matches(&self, param_type: &str, arg_type: &str) -> bool {
+        let normalized_param =
+            Self::normalize_type_hint(strip_generic_suffix(param_type).trim_end_matches('?'));
+        let normalized_arg =
+            Self::normalize_type_hint(strip_generic_suffix(arg_type).trim_end_matches('?'));
         normalized_param == normalized_arg
             || (Self::is_string_type_hint(&normalized_param)
                 && Self::is_string_type_hint(&normalized_arg))
             || (matches!(normalized_param.as_str(), "bool" | "boolean")
                 && matches!(normalized_arg.as_str(), "bool" | "boolean"))
-            || (is_numeric_overload_type(&normalized_param)
-                && is_numeric_overload_type(&normalized_arg))
+    }
+
+    fn normalized_overload_type_matches(&self, normalized_param: &str, normalized_arg: &str) -> bool {
+        normalized_param == normalized_arg
+            || (Self::is_string_type_hint(&normalized_param)
+                && Self::is_string_type_hint(&normalized_arg))
+            || (matches!(normalized_param, "bool" | "boolean")
+                && matches!(normalized_arg, "bool" | "boolean"))
+            || (is_numeric_overload_type(normalized_param)
+                && is_numeric_overload_type(normalized_arg))
     }
 
     pub(super) fn resolve_pending_class_name_for_type_hint(
@@ -693,6 +709,14 @@ impl Compiler {
             .map(|overload| overload.chunk_idx)
     }
 
+    pub(super) fn overload_storage_name(&self, method_name: &str, param_types: &[String]) -> String {
+        if param_types.is_empty() {
+            format!("{method_name}$sig0")
+        } else {
+            format!("{method_name}$sig{}", param_types.join("$"))
+        }
+    }
+
     fn match_method_overload(
         &self,
         overloads: &[PendingMethodOverload],
@@ -706,24 +730,32 @@ impl Compiler {
         };
         let actual_arity = effective_args.len();
 
-        'overload_search: for overload in overloads {
-            let signature = &overload.signature;
-            let param_count = overload.param_types.len();
-            let arity_ok = actual_arity >= signature.min_arity
-                && (signature.has_rest || actual_arity <= param_count);
-            if !arity_ok {
-                continue;
-            }
+        for exact_only in [true, false] {
+            'overload_search: for overload in overloads {
+                let signature = &overload.signature;
+                let param_count = overload.param_types.len();
+                let arity_ok = actual_arity >= signature.min_arity
+                    && (signature.has_rest || actual_arity <= param_count);
+                if !arity_ok {
+                    continue;
+                }
 
-            for (arg_expr, param_type) in effective_args.iter().zip(overload.param_types.iter()) {
-                if let Some(arg_type) = self.infer_expr_type_hint(arg_expr) {
-                    if !self.overload_type_matches(param_type, &arg_type) {
-                        continue 'overload_search;
+                for (arg_expr, param_type) in effective_args.iter().zip(overload.param_types.iter())
+                {
+                    if let Some(arg_type) = self.infer_expr_type_hint(arg_expr) {
+                        let matches = if exact_only {
+                            self.overload_type_exact_matches(param_type, &arg_type)
+                        } else {
+                            self.overload_type_matches(param_type, &arg_type)
+                        };
+                        if !matches {
+                            continue 'overload_search;
+                        }
                     }
                 }
-            }
 
-            return Some(overload.clone());
+                return Some(overload.clone());
+            }
         }
 
         None
@@ -741,37 +773,17 @@ impl Compiler {
     /// falls through to the dynamic path, which already resolves overrides
     /// correctly for untyped receivers and casts.
     ///
-    /// Two guards keep the decline safe, both because the dynamic path
-    /// resolves by member NAME alone:
+    /// One guard keeps the decline safe because the dynamic path resolves by
+    /// member NAME alone:
     ///
     /// - Only single-overload names may decline. An overloaded name has one
     ///   runtime slot, so declining would silently pick the last-registered
     ///   signature and turn a dispatch bug into an overload bug. An overloaded
     ///   virtual keeps its declared-type bind: no better, but no worse.
-    /// - A method some descendant HIDES (C# `new`, VB `Shadows`) may not
-    ///   decline: the shared slot holds the hiding body, but the declared type's
-    ///   body is the one that must run.
-    fn resolve_instance_method_overload_chunk(
-        &self,
-        object: &Expression,
-        method_name: &str,
-        arg_exprs: &[&Expression],
-    ) -> Option<usize> {
-        let receiver_type = resolve_receiver_type_hint(self, object)?;
-        let class_name = self.resolve_pending_class_name_for_type_hint(&receiver_type)?;
-        let pending = self.pending_classes.get(&class_name)?;
-        let method_key = self.js_member_storage_name_for_class(&class_name, method_name);
-        let overloads = pending.instance_method_overloads.get(&method_key)?;
-        let overload = self.match_method_overload(overloads, arg_exprs, false)?;
-        if overload.is_virtual
-            && overloads.len() == 1
-            && !self.method_hidden_by_descendant(&class_name, &method_key)
-        {
-            return None;
-        }
-        Some(overload.chunk_idx)
-    }
-
+    ///
+    /// Hidden methods (C# `new`, VB `Shadows`) bind into class-qualified
+    /// storage slots, so they do not overwrite the virtual slot and no longer
+    /// need to suppress dynamic dispatch here.
     fn resolve_instance_method_overload(
         &self,
         object: &Expression,
@@ -956,7 +968,17 @@ impl Compiler {
         self.chunk().emit(0, line);
         let fn_tmp = self.define_local("__direct_instance_method_fn");
         self.emit_u16(Op::LOCAL_SET, fn_tmp);
+        self.emit_instance_method_call_from_fn_slot(fn_tmp, method_name, obj_tmp, args, arg_exprs)
+    }
 
+    fn emit_instance_method_call_from_fn_slot(
+        &mut self,
+        fn_tmp: u16,
+        method_name: &str,
+        obj_tmp: u16,
+        args: &[Argument],
+        arg_exprs: &[&Expression],
+    ) -> Result<(), String> {
         if let Some(param_modes) = self
             .function_param_modes
             .get(&self.canon(method_name))
@@ -5212,15 +5234,17 @@ impl Compiler {
         // when the field is defined on a user class so user methods
         // named `call`/`apply` keep working.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
-            let receiver_is_java_member_apply = self.profile.name == "java"
-                && field == "apply"
-                && matches!(
-                    object.kind,
-                    ExprKind::This | ExprKind::Super | ExprKind::Ident(_)
-                );
+            // Whether `.call`/`.apply` on a receiver means "invoke this
+            // callable" is a LANGUAGE PROPERTY, declared in the profile.
+            // Previously this was carved out as `profile.name == "java"`,
+            // which both violated the no-language-names rule for shared code
+            // and hid the general defect: every language that does NOT have
+            // these members still routed them to the function builtins, so a
+            // user method named `apply` returned null and one named `call`
+            // panicked the host — in Dart, PHP, Python and JS alike.
+            let invocation_members = self.profile.function_invocation_members;
             if self.profile.has_function_prototype_bind
                 && !self.direct_receiver_has_own_pending_method(object, field)
-                && !receiver_is_java_member_apply
                 && (field == "call" || field == "apply" || field == "bind")
             {
                 // §20.2.3.{1,2,3}: call/apply/bind live on
@@ -5236,8 +5260,8 @@ impl Compiler {
                 self.emit_host_call(idx, (arg_exprs.len() + 1) as u8);
                 return Ok(());
             }
-            if !self.direct_receiver_has_own_pending_method(object, field)
-                && !receiver_is_java_member_apply
+            if invocation_members
+                && !self.direct_receiver_has_own_pending_method(object, field)
                 && (field == "call" || field == "apply")
             {
                 self.compile_expr(object)?;
@@ -7852,16 +7876,41 @@ impl Compiler {
                 return Ok(());
             }
 
-            if let Some(chunk_idx) =
-                self.resolve_instance_method_overload_chunk(object, field, &arg_exprs)
+            if let Some(overload) =
+                self.resolve_instance_method_overload(object, field, &arg_exprs, false)
             {
-                // Must re-resolve with the SAME include_receiver=false the
-                // chunk lookup used — `arg_exprs` here never contains the
-                // receiver, and mismatched flags strip a real argument
-                // (and can select a different overload than `chunk_idx`).
-                let overload = self
-                    .resolve_instance_method_overload(object, field, &arg_exprs, false)
-                    .ok_or_else(|| format!("failed to resolve method overload for {}", field))?;
+                let chunk_idx = overload.chunk_idx;
+                if overload.is_virtual {
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    self.emit_autoderef_pointer_cell();
+                    let overload_field =
+                        self.overload_storage_name(&field_name, &overload.param_types);
+                    let overload_prop = self.str_const(&overload_field);
+                    self.emit_u16(Op::STRUCT_GET, overload_prop);
+                    let virtual_fn_tmp = self.define_local("__virtual_instance_method_fn");
+                    self.emit_u16(Op::LOCAL_SET, virtual_fn_tmp);
+                    if overload.signature.has_rest {
+                        self.emit_known_rest_call_from_local(
+                            virtual_fn_tmp,
+                            if self.class_prototype_dispatch() {
+                                None
+                            } else {
+                                Some(obj_tmp)
+                            },
+                            args,
+                            &overload.signature,
+                        )?;
+                    } else {
+                        self.emit_instance_method_call_from_fn_slot(
+                            virtual_fn_tmp,
+                            field,
+                            obj_tmp,
+                            args,
+                            &arg_exprs,
+                        )?;
+                    }
+                    return Ok(());
+                }
                 if overload.signature.has_rest {
                     let line = self.line;
                     self.emit_u16(Op::REF_FUNC, chunk_idx as u16);

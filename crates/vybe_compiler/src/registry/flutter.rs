@@ -19,7 +19,14 @@ pub(crate) fn module_uses_flutter(module: &Module) -> bool {
         ImportKind::Simple { path, .. }
         | ImportKind::Named { path, .. }
         | ImportKind::Wildcard { path, .. }
-        | ImportKind::Default { path, .. } => path.starts_with("package:flutter/"),
+        // `dart:ui` is the lower half of the same surface — `Rect`, `Color`,
+        // `Offset`, `Size`, `Paint`, `Path` all live in the Flutter catalog, so
+        // a module importing it needs the same ambient root. Widget code
+        // reaches these types through `package:flutter/…`; `dart:ui` code
+        // imports them directly.
+        | ImportKind::Default { path, .. } => {
+            path.starts_with("package:flutter/") || path == "dart:ui"
+        }
     })
 }
 

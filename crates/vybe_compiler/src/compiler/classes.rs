@@ -6,10 +6,42 @@
 //! crate-private for the `dotnet_register` bridge.
 
 use super::*;
-use crate::compiler::ArrayBindingMetadata;
 use crate::compiler::class_normalize::{BaseCall, NormalConstructor, NormalMethod};
+use crate::compiler::ArrayBindingMetadata;
 
 impl Compiler {
+    fn qualified_nested_type_name(enclosing: &str, nested: &str) -> String {
+        if nested.contains('.') {
+            nested.to_string()
+        } else {
+            format!("{enclosing}.{nested}")
+        }
+    }
+
+    fn qualify_nested_type_stmt(stmt: &Statement, enclosing: &str) -> Statement {
+        let mut stmt = stmt.clone();
+        match &mut stmt.kind {
+            StmtKind::ClassDecl { name, members, .. }
+            | StmtKind::StructDecl { name, members, .. } => {
+                *name = Self::qualified_nested_type_name(enclosing, name);
+                let owner = name.clone();
+                for member in members {
+                    if let ClassMember::NestedType(nested) = member {
+                        **nested = Self::qualify_nested_type_stmt(nested, &owner);
+                    }
+                }
+            }
+            StmtKind::InterfaceDecl { name, .. } => {
+                *name = Self::qualified_nested_type_name(enclosing, name);
+            }
+            StmtKind::EnumDecl { name, .. } => {
+                *name = Self::qualified_nested_type_name(enclosing, name);
+            }
+            _ => {}
+        }
+        stmt
+    }
+
     fn fixed_array_zero_expr(type_hint: &str) -> Option<Expression> {
         let trimmed = type_hint.trim();
         if !trimmed.starts_with('[') {
@@ -209,7 +241,25 @@ impl Compiler {
     /// compile-time bindings, not vm globals, so a plain GLOBAL_GET yields
     /// null and silently breaks the prototype chain.
     fn emit_parent_ctor_value(&mut self, parent_name: &str) {
+        self.emit_parent_value(parent_name, false);
+    }
+
+    /// Emit the parent CLASS OBJECT for prototype-chain wiring.
+    ///
+    /// Same resolution as `emit_parent_ctor_value` except the `$arity0`
+    /// arity-helper global is never taken: that global holds a bare
+    /// allocate-and-return function, not the class object, so it carries
+    /// neither the real `.prototype` nor the statics. Linking
+    /// `C.prototype.__proto__` / `C.__proto__` through it silently breaks
+    /// `super.m()` and static inheritance for every parent that has a
+    /// zero-argument constructor (i.e. every parent that declares none).
+    fn emit_parent_class_value(&mut self, parent_name: &str) {
+        self.emit_parent_value(parent_name, true);
+    }
+
+    fn emit_parent_value(&mut self, parent_name: &str, want_class_object: bool) {
         let pname = self.canon(parent_name);
+        let default_ctor = format!("{pname}$arity0");
         let bound = self.scope().resolve(parent_name).is_some()
             || self.defined_globals.contains(&pname)
             || self.defined_classes.contains(&pname);
@@ -240,6 +290,9 @@ impl Compiler {
             && !self.shadows_builtin_type(parent_name)
         {
             let key = self.str_const(&format!("__ctor_{parent_name}"));
+            self.emit_u16(Op::GLOBAL_GET, key);
+        } else if !want_class_object && self.defined_globals.contains(&default_ctor) {
+            let key = self.str_const(&default_ctor);
             self.emit_u16(Op::GLOBAL_GET, key);
         } else {
             self.emit_var_get(&pname);
@@ -1496,7 +1549,10 @@ impl Compiler {
                 } => (nn, nm, None),
                 _ => continue,
             };
-            let nested_canon = self.canon(nested_name);
+            let qualified_nested_name = Self::qualified_nested_type_name(enclosing, nested_name);
+            let nested_canon = self.canon(&qualified_nested_name);
+            let nested_leaf_canon =
+                self.canon(nested_name.rsplit('.').next().unwrap_or(nested_name));
             if !self.pending_classes.contains_key(&nested_canon) {
                 let mut static_method_names: Vec<String> = Vec::new();
                 let mut static_fields: Vec<String> = Vec::new();
@@ -1571,6 +1627,8 @@ impl Compiler {
                 }
                 self.defined_globals.insert(nested_canon.clone());
                 self.defined_classes.insert(nested_canon.clone());
+                self.defined_globals.insert(nested_leaf_canon.clone());
+                self.defined_classes.insert(nested_leaf_canon.clone());
                 self.note_pending_class(&nested_canon, nested_parent);
                 if let Some(pc) = self.pending_classes.get_mut(&nested_canon) {
                     pc.enclosing_class = Some(enclosing.to_string());
@@ -1841,7 +1899,9 @@ impl Compiler {
                                 StmtKind::ClassDecl { name, .. }
                                 | StmtKind::StructDecl { name, .. }
                                 | StmtKind::InterfaceDecl { name, .. }
-                                | StmtKind::EnumDecl { name, .. } => Some(name.clone()),
+                                | StmtKind::EnumDecl { name, .. } => {
+                                    Some(Self::qualified_nested_type_name(&class.name, name))
+                                }
                                 _ => None,
                             }
                         } else {
@@ -1885,6 +1945,7 @@ impl Compiler {
         for m in class
             .instance_methods
             .iter()
+            .chain(class.destructor.iter())
             .chain(class.static_methods.iter())
         {
             // Use `source_name` so existing compile paths that look up
@@ -1977,11 +2038,26 @@ impl Compiler {
             } else {
                 cc.canon(mname)
             };
+            let storage_name = if !is_static
+                && !m.is_override
+                && m.raw_modifiers.is_not_overridable
+                && cc.method_hides_ancestor(class.parent.as_deref(), &bound_name)
+            {
+                format!("__hide_{}${}", cc.canon(&class.name), bound_name)
+            } else {
+                bound_name.clone()
+            };
             let qualified_name = cc.canon(&format!("{}.{}", class.name, mname));
             cc.function_param_modes.insert(
                 bound_name.clone(),
                 user_params.iter().map(|param| param.pass_by).collect(),
             );
+            if storage_name != bound_name {
+                cc.function_param_modes.insert(
+                    storage_name.clone(),
+                    user_params.iter().map(|param| param.pass_by).collect(),
+                );
+            }
             cc.function_param_modes.insert(
                 qualified_name.clone(),
                 user_params.iter().map(|param| param.pass_by).collect(),
@@ -1998,6 +2074,10 @@ impl Compiler {
             if let Some(return_type) = m.return_type.as_ref() {
                 cc.function_return_types
                     .insert(bound_name.clone(), return_type.clone());
+                if storage_name != bound_name {
+                    cc.function_return_types
+                        .insert(storage_name.clone(), return_type.clone());
+                }
                 cc.function_return_types
                     .insert(qualified_name, return_type.clone());
                 cc.function_return_types.insert(
@@ -2431,7 +2511,7 @@ impl Compiler {
                     .entry(bound_name.clone())
                     .or_default()
                     .push(PendingMethodOverload {
-                        param_types,
+                        param_types: param_types.clone(),
                         chunk_idx: ci,
                         return_type: m.return_type.clone(),
                         signature: CallSignature::from_params(&if uses_js_arguments {
@@ -2454,12 +2534,21 @@ impl Compiler {
                         is_virtual,
                     });
             }
-            method_chunks.push((bound_name, ci, is_ctor, is_static));
+            method_chunks.push((storage_name.clone(), ci, is_ctor, is_static));
+            if !is_static && !is_ctor && storage_name == bound_name {
+                let overload_storage_name = cc.overload_storage_name(&bound_name, &param_types);
+                if overload_storage_name != storage_name {
+                    method_chunks.push((overload_storage_name, ci, is_ctor, is_static));
+                }
+            }
             Ok(())
         };
 
         for m in &class.instance_methods {
             compile_normal_method(self, m, false)?;
+        }
+        if let Some(destructor) = &class.destructor {
+            compile_normal_method(self, destructor, false)?;
         }
         for m in &class.static_methods {
             compile_normal_method(self, m, true)?;
@@ -2479,7 +2568,43 @@ impl Compiler {
                 }
                 ClassMember::Event { .. } => { /* type-level only */ }
                 ClassMember::NestedType(stmt) => {
-                    self.compile_stmt(stmt)?;
+                    let nested = Self::qualify_nested_type_stmt(stmt, name);
+                    let (qualified_nested, leaf_nested) = match &nested.kind {
+                        StmtKind::ClassDecl {
+                            name: nested_name, ..
+                        }
+                        | StmtKind::StructDecl {
+                            name: nested_name, ..
+                        }
+                        | StmtKind::InterfaceDecl {
+                            name: nested_name, ..
+                        }
+                        | StmtKind::EnumDecl {
+                            name: nested_name, ..
+                        } => (
+                            self.canon(nested_name),
+                            self.canon(nested_name.rsplit('.').next().unwrap_or(nested_name)),
+                        ),
+                        _ => (String::new(), String::new()),
+                    };
+                    self.compile_stmt(&nested)?;
+                    if !qualified_nested.is_empty() && qualified_nested != leaf_nested {
+                        let qualified_idx = self.str_const(&qualified_nested);
+                        let leaf_idx = self.str_const(&leaf_nested);
+                        self.emit_u16(Op::GLOBAL_GET, qualified_idx);
+                        self.emit_u16(Op::GLOBAL_SET, leaf_idx);
+                        for arity in 0..=IMPLICIT_CTOR_FORWARD_ARGS {
+                            let qualified_ctor = format!("{qualified_nested}$arity{arity}");
+                            if self.defined_globals.contains(&qualified_ctor) {
+                                let leaf_ctor = format!("{leaf_nested}$arity{arity}");
+                                let qualified_idx = self.str_const(&qualified_ctor);
+                                let leaf_idx = self.str_const(&leaf_ctor);
+                                self.emit_u16(Op::GLOBAL_GET, qualified_idx);
+                                self.emit_u16(Op::GLOBAL_SET, leaf_idx);
+                                self.defined_globals.insert(leaf_ctor);
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -3069,7 +3194,27 @@ impl Compiler {
                         }
                     }
 
-                    if has_explicit_base || auto_base_needed || ctor_body.is_none() {
+                    let no_base_derived_body =
+                        ctor_body.as_ref().is_some_and(|(body, _, base_args)| {
+                            base_args.is_none() && !body_has_super_call(body)
+                        }) && !has_explicit_base
+                            && !auto_base_needed
+                            && !self.profile.ecma_new_dispatch;
+                    if no_base_derived_body {
+                        let canon_name = self.canon(name);
+                        common::classes::emit_new_typed_object(
+                            self.chunk(),
+                            this_slot,
+                            &canon_name,
+                            line,
+                        );
+                    }
+
+                    if has_explicit_base
+                        || auto_base_needed
+                        || ctor_body.is_none()
+                        || no_base_derived_body
+                    {
                         self.emit_u16(Op::LOCAL_GET, this_slot);
                         self.emit_const(Value::String(Arc::from(name)));
                         let type_key = self.str_const("__type");
@@ -3653,7 +3798,7 @@ impl Compiler {
                 .as_deref()
                 .filter(|p| !self.is_framework_control_parent(p));
             if let Some(parent_name) = proto_parent {
-                self.emit_parent_ctor_value(parent_name);
+                self.emit_parent_class_value(parent_name);
                 let parent_proto_key = self.str_const("prototype");
                 self.emit_u16(Op::STRUCT_GET, parent_proto_key);
                 let parent_proto_local = self.define_local(&format!("__{}_parent_prototype", name));
@@ -3724,7 +3869,7 @@ impl Compiler {
                 // link — matching how a control resolves as a leaf class.
                 if let Some(parent_name) = proto_parent {
                     self.emit_u16(Op::LOCAL_GET, ctor_local);
-                    self.emit_parent_ctor_value(parent_name);
+                    self.emit_parent_class_value(parent_name);
                     let proto_link_key = self.str_const("__proto__");
                     self.emit_u16(Op::STRUCT_SET, proto_link_key);
                     self.emit(Op::DROP);
@@ -3738,7 +3883,7 @@ impl Compiler {
                         self.emit(Op::DROP);
                         for static_name in ["from", "of"] {
                             self.emit_u16(Op::LOCAL_GET, ctor_local);
-                            self.emit_parent_ctor_value(parent_name);
+                            self.emit_parent_class_value(parent_name);
                             let static_key = self.str_const(static_name);
                             self.emit_u16(Op::STRUCT_GET, static_key);
                             self.emit_u16(Op::LOCAL_GET, ctor_local);
@@ -3839,38 +3984,43 @@ impl Compiler {
 
         // Initialize static fields on the constructor object
         for (fname, type_hint, init, array_bounds) in &static_field_inits {
-            self.emit_u16(Op::LOCAL_GET, ctor_local);
             let saved_member_static = self.current_member_is_static;
             self.current_member_is_static = true;
-            if let Some(init_expr) = init {
-                self.compile_expr(init_expr)?;
-            } else if let Some(extent) = array_bounds
-                .as_deref()
-                .and_then(Self::array_bounds_extent_expr)
-            {
-                let init_expr = Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident("Array")),
-                    args: vec![
-                        Argument::positional(extent),
-                        Argument::positional(Self::array_default_element_expr(
-                            type_hint.as_deref(),
-                        )),
-                    ],
-                    optional: false,
-                });
-                self.compile_expr(&init_expr)?;
-            } else if self.profile.has_undefined_value {
-                inst!(self, core_wasm::undefined);
-            } else {
-                self.emit(Op::NULL);
-            }
-            self.current_member_is_static = saved_member_static;
             if self.profile.name == "js" && fname.starts_with("__static_block_") {
+                self.emit_u16(Op::LOCAL_GET, ctor_local);
+                if let Some(init_expr) = init {
+                    self.compile_expr(init_expr)?;
+                } else {
+                    inst!(self, core_wasm::undefined);
+                }
+                self.current_member_is_static = saved_member_static;
                 self.emit(Op::DROP);
                 self.emit(Op::DROP);
                 continue;
             }
             if self.profile.name == "js" && !fname.starts_with("__js_private_") {
+                self.emit_u16(Op::LOCAL_GET, ctor_local);
+                if let Some(init_expr) = init {
+                    self.compile_expr(init_expr)?;
+                } else if let Some(extent) = array_bounds
+                    .as_deref()
+                    .and_then(Self::array_bounds_extent_expr)
+                {
+                    let init_expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("Array")),
+                        args: vec![
+                            Argument::positional(extent),
+                            Argument::positional(Self::array_default_element_expr(
+                                type_hint.as_deref(),
+                            )),
+                        ],
+                        optional: false,
+                    });
+                    self.compile_expr(&init_expr)?;
+                } else {
+                    inst!(self, core_wasm::undefined);
+                }
+                self.current_member_is_static = saved_member_static;
                 let value_slot = self.define_local("__js_static_field_value");
                 self.emit_u16(Op::LOCAL_SET, value_slot);
                 self.emit(Op::DROP);
@@ -3899,9 +4049,16 @@ impl Compiler {
                 self.emit(Op::DROP);
                 continue;
             }
-            let fk = self.str_const(fname);
-            self.emit_u16(Op::STRUCT_SET, fk);
-            self.emit(Op::DROP);
+            self.emit_class_field_initializer(
+                ctor_local,
+                fname,
+                type_hint.as_deref(),
+                init.as_ref(),
+                array_bounds.as_deref(),
+                class.is_value_type,
+                self.line,
+            )?;
+            self.current_member_is_static = saved_member_static;
         }
 
         if let Some(saved) = saved_static_js_this {
@@ -3974,13 +4131,18 @@ impl Compiler {
             .map(|pc| pc.nested_types.clone())
             .unwrap_or_default();
         for nested in nested_types {
-            self.emit_u16(Op::LOCAL_GET, ctor_local);
             let nested_canon = self.canon(&nested);
             let nested_idx = self.str_const(&nested_canon);
-            self.emit_u16(Op::GLOBAL_GET, nested_idx);
-            let key = self.str_const(&nested_canon);
-            self.emit_u16(Op::STRUCT_SET, key);
-            self.emit(Op::DROP);
+            for key_name in [
+                nested_canon.clone(),
+                self.canon(nested.rsplit('.').next().unwrap_or(&nested)),
+            ] {
+                self.emit_u16(Op::LOCAL_GET, ctor_local);
+                self.emit_u16(Op::GLOBAL_GET, nested_idx);
+                let key = self.str_const(&key_name);
+                self.emit_u16(Op::STRUCT_SET, key);
+                self.emit(Op::DROP);
+            }
         }
 
         // Attach static methods to the constructor object

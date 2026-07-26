@@ -1157,14 +1157,23 @@ impl VM {
                     if idx < self.stack.len() {
                         self.stack[idx] = val;
                     } else {
+                        // Locals exist (zero-initialized) from function entry
+                        // (spec §4.4.9) — grow to the declared local frame, as
+                        // LOCAL_TEE does. A slot still out of range after that
+                        // is an out-of-bounds local index: trap rather than
+                        // silently discarding the write (LOCAL_GET/LOCAL_TEE
+                        // both trap, and a dropped store would corrupt the
+                        // frame's value semantics invisibly).
                         let ci = self.frame().chunk_index;
                         let need = base + self.chunks[ci].local_count as usize;
                         if self.stack.len() < need {
                             self.stack.resize(need, Value::Null);
                         }
-                        if idx < self.stack.len() {
-                            self.stack[idx] = val;
-                        }
+                        let dst = self
+                            .stack
+                            .get_mut(idx)
+                            .ok_or_else(|| VMError::new("trap: local index out of bounds"))?;
+                        *dst = val;
                     }
                 }
                 _ if op == Op::LOCAL_TEE => {

@@ -247,6 +247,7 @@ pub(crate) struct ReflectionTypeMetadata {
     pub nested_types: Vec<String>,
     pub constructors: Vec<ReflectionConstructorMetadata>,
     pub is_value_type: bool,
+    pub is_sealed: bool,
     pub methods: HashMap<String, ReflectionMethodMetadata>,
     pub properties: HashMap<String, ReflectionMemberMetadata>,
     pub fields: HashMap<String, ReflectionMemberMetadata>,
@@ -272,6 +273,8 @@ pub(crate) enum ReflectionBinding {
         type_name: String,
         field_name: String,
     },
+    Assembly,
+    AssemblyName,
     Parameter {
         type_name: String,
         method_name: String,

@@ -12,6 +12,12 @@
 use std::sync::Arc;
 use crate::{HostContext, VM, Value};
 
+/// Raise a WASM trap from a host builtin (spec `trap()`), matching the
+/// `wasm:js-string` convention.
+fn trap(ctx: &mut HostContext, msg: &str) {
+    ctx.throw_value(Value::String(Arc::from(msg)));
+}
+
 fn is_neg_zero(n: f64) -> bool {
     n == 0.0 && n.is_sign_negative()
 }
@@ -213,48 +219,23 @@ fn register_boolean(vm: &mut VM) {
         }),
     );
 
-    // cast(externref) -> i32 — extract as 0/1
-    // Spec traps on non-boolean, but Vybe's internal Bool/I32 duality means
-    // CALL_IMPORT cast may receive I32(0/1) from WASM comparison ops.
-    // Follow wasm:js-boolean.cast semantics: Bool extracts value, I32 passes through,
-    // other falsy values (null, undefined, 0, "", NaN) return 0, truthy return 1.
+    // cast(externref) -> i32 — extract as 0/1.
+    // Spec (js-primitive-builtins, "wasm:js-boolean" "cast"):
+    //     if (typeof x !== "boolean") trap();
+    //     return x ? 1 : 0;
+    // Traps on every non-boolean. This is safe for the emitter because `cast`
+    // is only ever emitted inside an `if test(v)` guard (see
+    // `vybe_emitter::ops::emit_dyn_to_bool`), and `test` returns 1 *only* for
+    // Value::Bool — so a non-boolean never reaches this call.
     vm.register_host_fn(
         "wasm:js-boolean",
         "cast",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let bit = match args.first() {
-                Some(Value::Bool(b)) => {
-                    if *b {
-                        1
-                    } else {
-                        0
-                    }
-                }
-                Some(Value::I32(n)) => {
-                    if *n != 0 {
-                        1
-                    } else {
-                        0
-                    }
-                }
-                Some(Value::F64(n)) => {
-                    if *n != 0.0 && !n.is_nan() {
-                        1
-                    } else {
-                        0
-                    }
-                }
-                Some(Value::String(s)) => {
-                    if !s.is_empty() {
-                        1
-                    } else {
-                        0
-                    }
-                }
-                Some(Value::Null) | Some(Value::Undefined) | None => 0,
-                _ => 1, // objects, symbols, etc. are truthy
-            };
-            Value::I32(bit)
+        Box::new(|ctx: &mut HostContext, args: &[Value]| match args.first() {
+            Some(Value::Bool(b)) => Value::I32(if *b { 1 } else { 0 }),
+            _ => {
+                trap(ctx, "TypeError: wasm:js-boolean.cast — not a boolean");
+                Value::Null
+            }
         }),
     );
 

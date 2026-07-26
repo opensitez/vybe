@@ -109,6 +109,11 @@ fn return_call_indirect_via_function_table() {
     // Chunk 1: triple(x) = x * 3
     let mut triple_fn = Chunk::new("triple");
     triple_fn.arity = 1;
+    // `param_count`/`result_arity` are the WASM type *shape* the
+    // `(return_)call_indirect` runtime check compares against the call site.
+    // `arity` alone is not enough — it may include an implicit receiver.
+    triple_fn.param_count = 1;
+    triple_fn.result_arity = 1;
     triple_fn.local_count = 1;
     {
         let three = triple_fn.add_constant(Value::I32(3));
@@ -126,26 +131,38 @@ fn return_call_indirect_via_function_table() {
     let mut main = Chunk::new("<main>");
     main.local_count = 0;
     {
-        let tidx_key = main.add_constant(Value::String(Arc::from("__table_idx")));
         let arg = main.add_constant(Value::I32(14));
+
+        // Populate WASM table 0 slot 0 with the funcref, exactly as the spec
+        // value model prescribes: `ref.func` yields a value, `table.set` stores
+        // it, `return_call_indirect` dispatches through the table. The
+        // `__table_idx` on the func object indexes `func_table`, a *different*
+        // space from `wasm_tables` — `(return_)call_indirect` resolves only
+        // against `wasm_tables`.
+        let zero = main.add_constant(Value::I32(0));
+        main.emit_op_u16(opcode::Op::CONST, zero, 0); // table slot
+        main.emit_op_u16(opcode::Op::REF_FUNC, 1, 0);
+        main.emit(0u8, 0); // upvalue_count = 0
+        main.emit_op_u8(opcode::Op::TABLE_SET, 0, 0);
 
         // Spec `return_call_indirect`: `[args… i32]` — the table index is on
         // TOP of the stack, above the args. Push the argument first, then the
         // table index.
         main.emit_op_u16(opcode::Op::CONST, arg, 0);
-
-        // REF_FUNC 1 (triple_fn) with 0 upvalues → pushes func object, registers in func_table
-        main.emit_op_u16(opcode::Op::REF_FUNC, 1, 0);
-        main.emit(0u8, 0); // upvalue_count = 0
-
-        // STRUCT_GET __table_idx → pops func object, pushes table index (F64)
-        main.emit_op_u16(opcode::Op::STRUCT_GET, tidx_key, 0);
+        main.emit_op_u16(opcode::Op::CONST, zero, 0);
 
         // Stack: [arg_14, table_idx_f64] — table index on top (spec).
+        // `return_call_indirect` is U8_U8_U8: argc, tableidx, expected_results.
+        // All three operand bytes are required — the VM reads them in order and
+        // compares `expected_results` against the callee's `result_arity`.
         main.emit_op_u8(opcode::Op::RETURN_CALL_INDIRECT, 1, 0);
+        main.emit(0u8, 0); // tableidx 0
+        main.emit(1u8, 0); // expected_results: `triple` returns one value
     }
 
-    let r = VM::new().run(vec![main, triple_fn]).expect("run failed");
+    let mut vm = VM::new();
+    vm.wasm_tables = vec![vec![Value::Null]];
+    let r = vm.run(vec![main, triple_fn]).expect("run failed");
     assert_eq!(r.as_i32(), 42);
 }
 
@@ -156,6 +173,8 @@ fn return_call_indirect_oob_table_index_traps() {
     let table_idx = main.add_constant(Value::I32(99));
     main.emit_op_u16(opcode::Op::CONST, table_idx, 0);
     main.emit_op_u8(opcode::Op::RETURN_CALL_INDIRECT, 0, 0);
+    main.emit(0u8, 0); // tableidx 0
+    main.emit(1u8, 0); // expected_results
 
     let err = VM::new().run(vec![main]).unwrap_err().to_string();
     assert!(err.contains("call_indirect") || err.contains("table"));

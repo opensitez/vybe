@@ -4736,6 +4736,18 @@ impl Compiler {
                     let frac_slot = self.define_local("__cint_frac");
 
                     self.emit_u16(Op::LOCAL_SET, rounded_value_slot);
+                    if self.profile.name == "vb" {
+                        self.emit_u16(Op::LOCAL_GET, rounded_value_slot);
+                        self.emit_u16(Op::LOCAL_GET, rounded_value_slot);
+                        self.emit(Op::F64_NE);
+                        self.chunk().emit_if(line);
+                        self.emit_const(Value::String(Arc::from(
+                            "Conversion from string to type 'Integer' is not valid.",
+                        )));
+                        self.emit_js_exception_ctor_from_message_value("InvalidCastException")?;
+                        common::errors::emit_throw(self.chunk(), line);
+                        self.chunk().emit_end(line);
+                    }
 
                     self.emit_u16(Op::LOCAL_GET, rounded_value_slot);
                     self.emit(Op::F64_FLOOR);

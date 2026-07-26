@@ -37,6 +37,42 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
     }
 }
 
+/// Load one or more paths given on the command line.
+///
+/// A single path keeps the existing behaviour exactly (project files dispatch
+/// by extension; a bare source file becomes a one-file bundle). Several paths
+/// link together into one multi-source bundle via
+/// [`single_file::load_many`] — the entry file is first.
+///
+/// Project files describe their own source list, so they cannot be combined
+/// with additional paths on the command line.
+pub fn load_many(paths: &[std::path::PathBuf]) -> Result<Bundle, String> {
+    match paths {
+        [] => Err("no input files".to_string()),
+        [single] => load(single),
+        _ => {
+            for path in paths {
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_lowercase())
+                    .unwrap_or_default();
+                if matches!(
+                    ext.as_str(),
+                    "vybe" | "vbproj" | "csproj" | "pyproj" | "ipyproj"
+                ) {
+                    return Err(format!(
+                        "{} is a project file and already lists its sources; \
+pass it on its own.",
+                        path.display()
+                    ));
+                }
+            }
+            single_file::load_many(paths)
+        }
+    }
+}
+
 /// List all supported extensions (languages + project formats).
 pub fn supported_extensions() -> Vec<String> {
     let mut exts = crate::languages::supported_extensions();

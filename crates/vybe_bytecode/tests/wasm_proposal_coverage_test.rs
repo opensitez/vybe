@@ -157,7 +157,19 @@ fn every_upstream_proposal_has_explicit_local_test_mapping() {
 
 #[test]
 fn mapped_proposal_test_files_exist() {
-    let test_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    // Proposal suites live in one of two places: this crate's own `tests/`
+    // (VM-level semantics) or `platforms/wasm/tests/` (binary reader/writer),
+    // since the `.wasm` codec was split out into its own platform crate.
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let search_dirs = [
+        manifest.join("tests"),
+        manifest
+            .join("..")
+            .join("..")
+            .join("platforms")
+            .join("wasm")
+            .join("tests"),
+    ];
     for coverage in PROPOSAL_COVERAGE {
         assert!(
             !coverage.tests.is_empty(),
@@ -165,12 +177,15 @@ fn mapped_proposal_test_files_exist() {
             coverage.proposal
         );
         for test in coverage.tests {
-            let path = test_dir.join(test);
             assert!(
-                path.is_file(),
-                "{} maps to missing local test file {}",
+                search_dirs.iter().any(|dir| dir.join(test).is_file()),
+                "{} maps to missing test file {test} (looked in {})",
                 coverage.proposal,
-                path.display()
+                search_dirs
+                    .iter()
+                    .map(|d| d.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
     }

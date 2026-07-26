@@ -1801,7 +1801,13 @@ impl Compiler {
                     self.enum_members.insert(mname, cname.clone());
                     value_names.insert(next_val - 1, m.name.clone());
                 }
-                self.enum_value_names.insert(cname.clone(), value_names);
+                self.enum_value_names
+                    .insert(cname.clone(), value_names.clone());
+                if let Some((_, leaf)) = cname.rsplit_once('.') {
+                    self.enum_value_names
+                        .entry(leaf.to_string())
+                        .or_insert(value_names);
+                }
                 self.compile_shared_enum_decl(name, interfaces, body_members, members, stmt.span)?;
                 self.defined_globals.insert(cname);
             }
@@ -1952,6 +1958,16 @@ impl Compiler {
                         }
                         _ => {}
                     }
+                }
+
+                if member_names
+                    .iter()
+                    .any(|mn| mn.eq_ignore_ascii_case("__static_init__"))
+                {
+                    let init_idx = self.str_const("__static_init__");
+                    self.emit_u16(Op::GLOBAL_GET, init_idx);
+                    self.emit_u8(Op::CALL_REF, 0);
+                    self.emit(Op::DROP);
                 }
 
                 // Second pass: build namespace struct { member1: global, member2: global, ... }
@@ -4606,22 +4622,23 @@ impl Compiler {
 
                 // Implicit self field write (only if NOT a local)
                 if !is_local && self.is_class_field(name) {
-                    let self_kw = self.profile.self_keyword.clone();
-                    if let Some(slot) = self
-                        .scope()
-                        .resolve(&self_kw)
-                        .or_else(|| self.scope().resolve_ci(&self_kw))
-                    {
-                        let tmp = self.define_local("__field_tmp");
-                        self.emit_u16(Op::LOCAL_SET, tmp);
-                        self.emit_u16(Op::LOCAL_GET, slot);
+                    let tmp = self.define_local("__field_tmp");
+                    self.emit_u16(Op::LOCAL_SET, tmp);
+                    if self.emit_self_ref() {
                         self.emit_u16(Op::LOCAL_GET, tmp);
-                        let field_name = self.canon(name);
+                        let field_name = self
+                            .current_class
+                            .as_deref()
+                            .and_then(|class_name| {
+                                self.visible_instance_field_storage_name_for_class(class_name, name)
+                            })
+                            .unwrap_or_else(|| self.canon(name));
                         let idx = self.str_const(&field_name);
                         self.emit_u16(Op::STRUCT_SET, idx);
                         self.emit(Op::DROP);
                         return Ok(());
                     }
+                    self.emit_u16(Op::LOCAL_GET, tmp);
                 }
                 let stored_type_hint = self.lookup_var_type_hint(name).map(str::to_string);
                 self.coerce_c_value_for_type_hint(stored_type_hint.as_deref())?;
@@ -4651,10 +4668,10 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, class_tmp);
                         self.emit_const(Value::String(Arc::from(setter_name.as_str())));
                         // `has` (proto-walk, raw key) not `hasOwn`: the private
-                    // accessor key is `__get_/__set___js_private_*` — a `__`
-                    // key that `hasOwn` hides, and under prototype dispatch the
-                    // accessor lives on the class prototype, not the instance.
-                    let has_own_idx = self.import("ecma:object", "has");
+                        // accessor key is `__get_/__set___js_private_*` — a `__`
+                        // key that `hasOwn` hides, and under prototype dispatch the
+                        // accessor lives on the class prototype, not the instance.
+                        let has_own_idx = self.import("ecma:object", "has");
                         let line = self.line;
                         self.emit_host_call(has_own_idx, 2);
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);

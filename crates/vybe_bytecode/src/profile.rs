@@ -161,6 +161,19 @@ pub struct LanguageProfile {
     /// the function-object path instead of instance-method dispatch.
     pub has_function_prototype_bind: bool,
 
+    /// `.call(…)` / `.apply(…)` written on an arbitrary receiver mean
+    /// "invoke this callable", not "call the member of that name". Languages
+    /// that declare this route such calls to the function-object path when the
+    /// receiver has no own method of that name.
+    ///
+    /// Off by default, because in most languages `apply`/`call` are perfectly
+    /// ordinary method names: routing them to the function builtins made a
+    /// user method named `apply` return null, and one named `call` panic the
+    /// host (`ecma` function slicing `args[2..]`) — in Dart, PHP, Python and
+    /// JS alike. This is a PROPERTY precisely so the behaviour is declared by
+    /// each language rather than carved out by name in shared code.
+    pub function_invocation_members: bool,
+
     /// The global `Function` is a constructor that builds a function from
     /// string arguments (ECMAScript §20.2.1.1). JS-only today.
     pub has_function_constructor: bool,
@@ -1118,6 +1131,10 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("has_function_prototype_bind")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let function_invocation_members = compiler
+        .get("function_invocation_members")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let string_aware_relational = compiler
         .get("string_aware_relational")
         .and_then(|v| v.as_bool())
@@ -1594,6 +1611,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         reflection_type_naming,
         supports_private_fields,
         has_function_prototype_bind,
+        function_invocation_members,
         has_function_constructor,
         async_wraps_body_in_try,
         ecma_error_object_shape,

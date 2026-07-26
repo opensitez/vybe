@@ -1,4 +1,9 @@
-//! Loader for a single source file — wraps it into a one-file `Bundle`.
+//! Loader for source files given directly on the command line.
+//!
+//! One file wraps into a one-file `Bundle`; several files link together into a
+//! single multi-source `Bundle`, the same shape the project loaders
+//! (`.vybe`/`.vbproj`/`.csproj`) produce — so `vybex a.c b.c` links like a C
+//! compiler invocation rather than compiling only the first file.
 
 use crate::bundle::{Bundle, EntryPoint, SourceFile};
 use std::path::Path;
@@ -31,4 +36,59 @@ pub fn load(path: &Path, ext: &str) -> Result<Bundle, String> {
         wasm_files: vec![],
         entry_point: EntryPoint::Auto,
     })
+}
+
+/// Load several source files as ONE bundle, linked together.
+///
+/// The first path is the entry file: it names the bundle and fixes the
+/// language. Every other file must share that language — mixing front-ends in
+/// a single link step has no defined semantics (each language lowers through
+/// its own walker/profile), so it's rejected with a clear error rather than
+/// silently compiling the first one.
+///
+/// `EntryPoint::Auto` still applies: the entry is inferred from the code
+/// (`main()`, `Sub Main`, top-level statements) exactly as for one file.
+pub fn load_many(paths: &[std::path::PathBuf]) -> Result<Bundle, String> {
+    let Some((first, rest)) = paths.split_first() else {
+        return Err("no source files given".to_string());
+    };
+
+    let ext_of = |p: &Path| -> String {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default()
+    };
+
+    // The entry file fixes the language for the whole link step.
+    let entry_ext = ext_of(first);
+    let mut bundle = load(first, &entry_ext)?;
+
+    for path in rest {
+        let ext = ext_of(path);
+        let lang = crate::languages::find_by_extension(&ext).ok_or_else(|| {
+            format!(
+                "Unknown file extension: .{ext} ({})",
+                path.display()
+            )
+        })?;
+        if lang.name != bundle.language.name {
+            return Err(format!(
+                "Cannot link {} ({}) with {} ({}): all source files in one command must \
+be the same language. Use a project file (.vybe) to combine languages.",
+                path.display(),
+                lang.name,
+                first.display(),
+                bundle.language.name,
+            ));
+        }
+        let code = std::fs::read_to_string(path)
+            .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
+        bundle.sources.push(SourceFile {
+            path: path.to_path_buf(),
+            code,
+        });
+    }
+
+    Ok(bundle)
 }

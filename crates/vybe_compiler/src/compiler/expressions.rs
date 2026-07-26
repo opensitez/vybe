@@ -1804,6 +1804,11 @@ impl Compiler {
                             inst!(self, core_wasm::bool_const, v);
                             return Ok(());
                         }
+                        (ReflectionBinding::Type(type_name), "IsSealed") => {
+                            let v = self.reflection_is_sealed_type(&type_name);
+                            inst!(self, core_wasm::bool_const, v);
+                            return Ok(());
+                        }
                         (ReflectionBinding::Type(type_name), "IsSerializable") => {
                             let attrs = self.reflection_attributes_for_type(
                                 &type_name,
@@ -1819,6 +1824,20 @@ impl Compiler {
                             } else {
                                 self.emit(Op::NULL);
                             }
+                            return Ok(());
+                        }
+                        (ReflectionBinding::Type(type_name), "DeclaringType") => {
+                            if let Some(parent_type) =
+                                self.reflection_declaring_type_name(&type_name)
+                            {
+                                self.compile_reflection_type_value(&parent_type)?;
+                            } else {
+                                self.emit(Op::NULL);
+                            }
+                            return Ok(());
+                        }
+                        (ReflectionBinding::AssemblyName, "Name") => {
+                            self.compile_expr(&Expression::string("main"))?;
                             return Ok(());
                         }
                         (
@@ -2481,6 +2500,7 @@ impl Compiler {
                         ExprKind::Ident(_)
                         | ExprKind::New { .. }
                         | ExprKind::Call { .. }
+                        | ExprKind::Cast { .. }
                         | ExprKind::Index { .. } => receiver_type_hint
                             .as_deref()
                             .map(is_collection_like_type)
@@ -2627,31 +2647,17 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.emit_common("dotnet.observable_collection_items", 1, self.line);
                     return Ok(());
-                } else {
-                    self.compile_expr(object)?;
-                    if !Self::is_pointer_runtime_field(field) {
-                        self.emit_autoderef_pointer_cell();
-                    }
-                }
-
-                let dotnet_instance_property = if self.profile.namespaces.use_dotnet
-                    && self.profile.namespaces.use_dotnet
+                } else if self.profile.namespaces.use_dotnet
                     && !*null_safe
-                {
-                    receiver_type_hint.as_deref().and_then(|type_hint| {
+                    && let Some(target) = receiver_type_hint.as_deref().and_then(|type_hint| {
                         let class_name = Self::normalize_type_hint(type_hint);
                         common::dotnet::surface().lookup_instance_property(&class_name, field)
                     })
-                } else {
-                    None
-                };
-
-                if let Some(target) = dotnet_instance_property {
+                {
+                    self.compile_expr(object)?;
                     match target {
                         common::dotnet::InstancePropertyTarget::Host { module, func, key } => {
                             let idx = self.import(&module, &func);
-                            // Generic `vybe:gui` getter takes (this, "Key");
-                            // dedicated getters take just (this).
                             if let Some(key) = key {
                                 self.emit_const(Value::String(Arc::from(key.as_str())));
                                 self.emit_host_call(idx, 2);
@@ -2661,11 +2667,14 @@ impl Compiler {
                             return Ok(());
                         }
                         common::dotnet::InstancePropertyTarget::Common { emit } => {
-                            let line = self.line;
-                            self.compile_expr(object)?;
-                            self.emit_common(&emit, 1, line);
+                            self.emit_common(&emit, 1, self.line);
                             return Ok(());
                         }
+                    }
+                } else {
+                    self.compile_expr(object)?;
+                    if !Self::is_pointer_runtime_field(field) {
+                        self.emit_autoderef_pointer_cell();
                     }
                 }
 
@@ -3971,7 +3980,8 @@ impl Compiler {
                     {
                         if let Some(super::resolver::Resolution::Tree(
                             crate::emitter::namespaces::ResolutionTarget::Ctor {
-                                spec: Some(spec), ..
+                                spec: Some(spec),
+                                ..
                             },
                         )) = self.resolve_profile_namespace_chain(&[type_name.to_string()])
                         {
@@ -4720,7 +4730,7 @@ impl Compiler {
                                 let l = self.line;
                                 common::collections::emit_set(&mut self.chunks, self.current, l);
                                 self.emit(Op::DROP); // drop returned null
-                                // Track dynamic key in __keys (stringified)
+                                                     // Track dynamic key in __keys (stringified)
                                 inst!(self, core_wasm::dup);
                                 let keys_key = self.str_const("__keys");
                                 self.emit_u16(Op::STRUCT_GET, keys_key);
@@ -4900,9 +4910,9 @@ impl Compiler {
                             let l = self.line;
                             common::collections::emit_set(&mut self.chunks, self.current, l);
                             self.emit(Op::DROP); // drop returned null
-                            // Track key — host fn checks if it's a
-                            // Symbol and routes to `__sym_keys` so
-                            // Object.keys excludes it (ECMA-262 §7.3.22).
+                                                 // Track key — host fn checks if it's a
+                                                 // Symbol and routes to `__sym_keys` so
+                                                 // Object.keys excludes it (ECMA-262 §7.3.22).
                             inst!(self, core_wasm::dup);
                             self.emit_u16(Op::LOCAL_GET, key_tmp);
                             let track_idx = self.import("ecma:object", "trackKey");
@@ -6568,10 +6578,10 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, class_slot);
                         self.emit_const(Value::String(Arc::from(getter_name.as_str())));
                         // `has` (proto-walk, raw key) not `hasOwn`: the private
-                    // accessor key is `__get_/__set___js_private_*` — a `__`
-                    // key that `hasOwn` hides, and under prototype dispatch the
-                    // accessor lives on the class prototype, not the instance.
-                    let has_own_idx = self.import("ecma:object", "has");
+                        // accessor key is `__get_/__set___js_private_*` — a `__`
+                        // key that `hasOwn` hides, and under prototype dispatch the
+                        // accessor lives on the class prototype, not the instance.
+                        let has_own_idx = self.import("ecma:object", "has");
                         let line = self.line;
                         self.emit_host_call(has_own_idx, 2);
                         crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);

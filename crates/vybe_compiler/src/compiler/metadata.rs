@@ -211,6 +211,7 @@ impl Compiler {
                 interfaces,
                 members,
                 decorators,
+                modifiers,
                 ..
             } => {
                 let runtime_name = self.reflection_runtime_type_name(name, parent_runtime_name);
@@ -221,6 +222,7 @@ impl Compiler {
                     decorators,
                     members,
                     false,
+                    modifiers.is_sealed,
                 );
             }
             StmtKind::StructDecl {
@@ -238,6 +240,7 @@ impl Compiler {
                     decorators,
                     members,
                     true,
+                    false,
                 );
             }
             StmtKind::InterfaceDecl {
@@ -278,6 +281,7 @@ impl Compiler {
                     decorators,
                     body_members,
                     true,
+                    false,
                 );
             }
             StmtKind::NamespaceDecl { name, body } => {
@@ -304,6 +308,7 @@ impl Compiler {
         decorators: &[Expression],
         members: &[ClassMember],
         is_value_type: bool,
+        is_sealed: bool,
     ) {
         let mut metadata = ReflectionTypeMetadata {
             parents: parents
@@ -316,6 +321,7 @@ impl Compiler {
                 .collect(),
             decorators: decorators.to_vec(),
             is_value_type,
+            is_sealed,
             ..ReflectionTypeMetadata::default()
         };
         let mut nested_types: Vec<&Statement> = Vec::new();
@@ -554,7 +560,10 @@ impl Compiler {
                     known
                         .rsplit('.')
                         .next()
-                        .is_some_and(|leaf| leaf == raw_name)
+                        .is_some_and(|leaf| {
+                            leaf.eq_ignore_ascii_case(&raw_name)
+                                || leaf.eq_ignore_ascii_case(&format!("{raw_name}Attribute"))
+                        })
                 })
                 .cloned()
                 .collect();
@@ -657,6 +666,21 @@ impl Compiler {
     pub(crate) fn reflection_base_type_name(&self, type_name: &str) -> Option<String> {
         self.reflection_type_metadata(type_name)
             .and_then(|meta| meta.parents.first().cloned())
+    }
+
+    pub(crate) fn reflection_is_sealed_type(&self, type_name: &str) -> bool {
+        let lookup = self.reflection_type_lookup_name(type_name);
+        self.reflection_types
+            .get(&lookup)
+            .is_some_and(|meta| meta.is_sealed)
+    }
+
+    pub(crate) fn reflection_declaring_type_name(&self, type_name: &str) -> Option<String> {
+        let lookup = self.reflection_type_lookup_name(type_name);
+        let parent = lookup.rsplit_once('.')?.0;
+        self.reflection_types
+            .contains_key(parent)
+            .then(|| parent.to_string())
     }
 
     pub(crate) fn reflection_nested_type_name(
@@ -914,49 +938,28 @@ impl Compiler {
         false
     }
 
-    /// Whether `class_key` is a descendant of `ancestor_key`.
-    fn class_descends_from(&self, class_key: &str, ancestor_key: &str) -> bool {
-        let mut current = self
-            .pending_classes
-            .get(class_key)
-            .and_then(|pending| pending.parent.as_ref())
-            .map(|p| self.canon(p));
+    pub(super) fn method_hides_ancestor(&self, parent: Option<&str>, method_canon: &str) -> bool {
+        let mut current = parent.map(|p| self.canon(p));
         let mut guard = 0;
-        while let Some(key) = current {
+        while let Some(class_key) = current {
             guard += 1;
             if guard > 64 {
                 break;
             }
-            if key == ancestor_key {
-                return true;
-            }
-            let Some(pending) = self.pending_classes.get(&key) else {
+            let Some(pending) = self.pending_classes.get(&class_key) else {
                 break;
             };
+            if pending.instance_method_overloads.contains_key(method_canon)
+                || pending
+                    .instance_member_names
+                    .iter()
+                    .any(|name| name == method_canon)
+            {
+                return true;
+            }
             current = pending.parent.as_ref().map(|p| self.canon(p));
         }
         false
-    }
-
-    /// Whether any descendant of `class_key` declares `method_key`
-    /// NON-virtually — hiding the ancestor's method (C# `new`, VB `Shadows`)
-    /// instead of overriding it.
-    ///
-    /// A hiding method shares the ancestor's runtime slot, so a call through a
-    /// declared-ancestor reference cannot be left to dynamic dispatch: the slot
-    /// holds the hiding body, but the language says the DECLARED type's body
-    /// must run (`Base b = new Derived(); b.Speak()` → Base's). Such a call
-    /// keeps its direct bind. The method analogue of
-    /// [`Self::field_hides_ancestor`] — same static-type rule, same reason.
-    pub(super) fn method_hidden_by_descendant(&self, class_key: &str, method_key: &str) -> bool {
-        self.pending_classes.iter().any(|(name, pending)| {
-            name != class_key
-                && pending
-                    .instance_method_overloads
-                    .get(method_key)
-                    .is_some_and(|overloads| overloads.iter().any(|ov| !ov.is_virtual))
-                && self.class_descends_from(name, class_key)
-        })
     }
 
     /// The storage-slot name a class uses for `field`, when it differs from
@@ -1106,6 +1109,27 @@ impl Compiler {
     }
 
     pub(super) fn emit_js_current_this_value(&mut self) {
+        // Inside a class method under ambient `this`, the live receiver is the
+        // `__js_this` global — exactly what `ExprKind::This` reads
+        // (expressions.rs). Falling through to the local/upvalue search here
+        // instead synthesizes an upvalue over a closure env the method never
+        // allocated, so `super.m()` handed the callee an undefined receiver
+        // whenever the method body had no closure to force a real `this`
+        // local. Constructors keep the slot-based path (derived-ctor TDZ);
+        // lambdas keep the upvalue path (they capture the enclosing `this`).
+        if self.profile.ambient_this_binding
+            && self.current_class.is_some()
+            && self.current_func_name.as_deref() != Some("<lambda>")
+            && self
+                .current_func_name
+                .as_deref()
+                .is_some_and(|name| !name.eq_ignore_ascii_case(&self.profile.constructor_name))
+        {
+            let idx = self.str_const("__js_this");
+            self.emit_u16(Op::GLOBAL_GET, idx);
+            return;
+        }
+
         let self_kw = self.profile.self_keyword.clone();
         if let Some(slot) = self
             .scope()

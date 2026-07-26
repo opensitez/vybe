@@ -899,12 +899,14 @@ fn array_fill() {
     }
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 5, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    // array_fill: stack [array, value, start, len]
+    // `array.fill $t : [(ref null $t) i32 t i32] -> []` — the operand order is
+    // arrayref, INDEX, VALUE, count (WASM GC spec). Pushing value before the
+    // index silently fills an out-of-range slice instead of trapping.
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let val = chunk.add_constant(Value::I32(7));
-    chunk.emit_op_u16(Op::CONST, val, 0);
     let start = chunk.add_constant(Value::I32(1));
     chunk.emit_op_u16(Op::CONST, start, 0);
+    let val = chunk.add_constant(Value::I32(7));
+    chunk.emit_op_u16(Op::CONST, val, 0);
     let len = chunk.add_constant(Value::I32(3));
     chunk.emit_op_u16(Op::CONST, len, 0);
     chunk.emit_op(Op::ARRAY_FILL, 0);

@@ -176,7 +176,7 @@ impl Compiler {
 
         self.event_receiver_type_hint(control)
             .map(|type_hint| self.type_uses_winforms_event_host(&type_hint))
-            .unwrap_or(true)
+            .unwrap_or(false)
     }
 
     fn compile_delegate_event_invoke(
@@ -255,7 +255,17 @@ impl Compiler {
         args: &[Expression],
     ) -> Result<(), String> {
         let event_field = self.canon(event_name);
-        let target = if self.current_class.is_some() {
+        let target = if self.current_member_is_static {
+            if let Some(class_name) = self.current_class.as_deref() {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(class_name)),
+                    field: event_field,
+                    null_safe: false,
+                })
+            } else {
+                Expression::ident(&event_field)
+            }
+        } else if self.current_class.is_some() {
             Expression::new(ExprKind::Member {
                 object: Box::new(Expression::new(ExprKind::This)),
                 field: event_field,

@@ -126,7 +126,7 @@ fn all_caps_registers_wasi_io() {
 fn all_caps_registers_http() {
     let mut vm = VM::new();
     register_platforms(&mut vm, &Capabilities::all());
-    let has_http = vm.host_registry.keys().any(|(m, _)| m == "wasi:http");
+    let has_http = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:http/"));
     assert!(has_http, "Full caps should register HTTP");
 }
 
@@ -190,7 +190,7 @@ fn safe_blocks_wasi_io() {
 fn safe_blocks_http() {
     let mut vm = VM::new();
     register_platforms(&mut vm, &Capabilities::safe());
-    let has_http = vm.host_registry.keys().any(|(m, _)| m == "wasi:http");
+    let has_http = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:http/"));
     assert!(!has_http, "Safe mode should NOT have HTTP");
 }
 
@@ -266,7 +266,7 @@ fn custom_database_only() {
         .keys()
         .any(|(m, _)| m.starts_with("wasi:sql"));
     let has_fs = vm.host_registry.keys().any(|(m, _)| m == "wasi:filesystem");
-    let has_http = vm.host_registry.keys().any(|(m, _)| m == "wasi:http");
+    let has_http = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:http/"));
 
     assert!(has_db, "Should have database");
     assert!(!has_fs, "Should NOT have filesystem");
@@ -279,7 +279,7 @@ fn custom_network_only() {
     let mut vm = VM::new();
     register_platforms(&mut vm, &caps);
 
-    let has_http = vm.host_registry.keys().any(|(m, _)| m == "wasi:http");
+    let has_http = vm.host_registry.keys().any(|(m, _)| m.starts_with("wasi:http/"));
     let has_sock = vm
         .host_registry
         .keys()

@@ -31,6 +31,10 @@ impl Compiler {
                     (ReflectionBinding::Type(type_name), "BaseType") => self
                         .reflection_base_type_name(&type_name)
                         .map(ReflectionBinding::Type),
+                    (ReflectionBinding::Type(type_name), "DeclaringType") => self
+                        .reflection_declaring_type_name(&type_name)
+                        .map(ReflectionBinding::Type),
+                    (ReflectionBinding::Type(_), "Assembly") => Some(ReflectionBinding::Assembly),
                     _ => None,
                 }
             }
@@ -73,6 +77,9 @@ impl Compiler {
                         let param_types =
                             self.resolve_reflection_type_array_expr(&args.first()?.value)?;
                         self.reflection_constructor_for_types(&type_name, &param_types)
+                    }
+                    (ReflectionBinding::Assembly, "GetName") if args.is_empty() => {
+                        Some(ReflectionBinding::AssemblyName)
                     }
                     _ => None,
                 }
@@ -187,6 +194,7 @@ impl Compiler {
             (ReflectionBinding::Type(type_name), "FullName") => {
                 Some(self.reflection_type_full_name(&type_name))
             }
+            (ReflectionBinding::AssemblyName, "Name") => Some("main".to_string()),
             _ => None,
         }
     }
@@ -212,6 +220,11 @@ impl Compiler {
         let full_name = self.reflection_type_full_name(type_name);
         let is_enum = self.reflection_is_enum_type(type_name);
         let is_value_type = self.reflection_is_value_type(type_name);
+        let is_sealed = self.reflection_is_sealed_type(type_name);
+        let declaring_type = self
+            .reflection_declaring_type_name(type_name)
+            .map(|parent| self.reflection_class_expr(&parent))
+            .unwrap_or_else(Expression::null);
         self.compile_expr(&Expression::new(ExprKind::Object(vec![
             ObjectProperty::KeyValue {
                 key: Expression::string("Name"),
@@ -228,6 +241,14 @@ impl Compiler {
             ObjectProperty::KeyValue {
                 key: Expression::string("IsValueType"),
                 value: Expression::bool(is_value_type),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("IsSealed"),
+                value: Expression::bool(is_sealed),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("DeclaringType"),
+                value: declaring_type,
             },
         ])))
     }
@@ -258,6 +279,7 @@ impl Compiler {
                 self.reflection_attributes_for_type(type_name, attribute_type, inherit)
             }
             ReflectionBinding::Constructor { .. } => Vec::new(),
+            ReflectionBinding::Assembly | ReflectionBinding::AssemblyName => Vec::new(),
             ReflectionBinding::Method {
                 type_name,
                 method_name,
@@ -461,6 +483,22 @@ impl Compiler {
                     ObjectProperty::KeyValue {
                         key: Expression::string("Name"),
                         value: Expression::string(field_name),
+                    },
+                ])))?;
+            }
+            ReflectionBinding::Assembly => {
+                self.compile_expr(&Expression::new(ExprKind::Object(vec![
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("Name"),
+                        value: Expression::string("main"),
+                    },
+                ])))?;
+            }
+            ReflectionBinding::AssemblyName => {
+                self.compile_expr(&Expression::new(ExprKind::Object(vec![
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("Name"),
+                        value: Expression::string("main"),
                     },
                 ])))?;
             }

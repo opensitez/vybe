@@ -122,16 +122,6 @@ impl Compiler {
     pub(crate) fn note_defined_class(&mut self, name: &str) {
         self.defined_classes.insert(name.to_string());
     }
-    /// Register a named-arg call signature under `name` (platform adapters
-    /// register installed-global ctors so `Widget(named: v, …)` reorders via
-    /// the shared named-arg path).
-    pub(crate) fn register_call_signature(&mut self, name: &str, params: &[crate::ast::Param]) {
-        self.function_signatures
-            .entry(name.to_string())
-            .or_default()
-            .push(super::CallSignature::from_params(params));
-    }
-
     /// Mount a namespace-tree root as ambient (unqualified names resolve under
     /// it) — used when a module imports a platform surface (`flutter.*`).
     pub(crate) fn mount_ambient_root(&mut self, root: &str) {

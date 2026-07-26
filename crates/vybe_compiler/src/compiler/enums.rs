@@ -27,6 +27,11 @@ impl Compiler {
                 .and_then(|hint| self.resolve_known_enum_type(hint))
                 .or_else(|| self.resolve_known_enum_type(name)),
             ExprKind::Member { object, .. } => {
+                if let Some(hint) = self.infer_expr_type_hint(expr) {
+                    if let Some(enum_type) = self.resolve_known_enum_type(&hint) {
+                        return Some(enum_type);
+                    }
+                }
                 let enum_type = terminal_type_name(object)?;
                 self.resolve_known_enum_type(strip_generic_suffix(&enum_type))
             }

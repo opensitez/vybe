@@ -86,7 +86,12 @@ impl Target {
                 "wasi:cli/environment".into(),
                 "wasi:logging/logging".into(),
                 "wasi:filesystem".into(),
-                "wasi:http".into(),
+                // WASI 0.3 HTTP interfaces (`wasi:http` alone is the
+                // *package* name, not an importable interface).
+                "wasi:http/types".into(),
+                "wasi:http/client".into(),
+                "wasi:http/handler".into(),
+                "wasi:http/outgoing-handler".into(),
                 "wasi:random/random".into(),
                 "wasi:random/insecure".into(),
                 "wasi:random/insecure-seed".into(),
@@ -130,7 +135,12 @@ impl Target {
                 "wasi:cli/environment".into(),
                 "wasi:logging/logging".into(),
                 "wasi:filesystem".into(),
-                "wasi:http".into(),
+                // WASI 0.3 HTTP interfaces (`wasi:http` alone is the
+                // *package* name, not an importable interface).
+                "wasi:http/types".into(),
+                "wasi:http/client".into(),
+                "wasi:http/handler".into(),
+                "wasi:http/outgoing-handler".into(),
                 "wasi:random/random".into(),
                 "wasi:random/insecure".into(),
                 "wasi:random/insecure-seed".into(),

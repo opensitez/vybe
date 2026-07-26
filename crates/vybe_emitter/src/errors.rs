@@ -102,13 +102,16 @@ pub fn canonical_exception_name(name: &str) -> &str {
         "runtimeerror" | "runtimeexception" => "RuntimeError",
         "stopiteration" | "stateexception" => "StopIteration",
         "attributeerror" | "nosuchmethoderror" => "AttributeError",
-        "zerodivisionerror" | "integerdivisionbyzeroexception" => "ZeroDivisionError",
+        "zerodivisionerror" | "integerdivisionbyzeroexception" | "dividebyzeroexception" => {
+            "ZeroDivisionError"
+        }
         "filenotfounderror" | "filenotfoundexception" => "FileNotFoundError",
         "importerror" => "ImportError",
         "notimplementederror" | "unimplementederror" => "NotImplementedError",
         "overflowerror" | "overflowexception" | "stackoverflowerror" => "OverflowError",
         "operationcanceledexception" | "taskcanceledexception" => "OperationCanceledException",
         "aggregateexception" => "AggregateException",
+        "uriformatexception" => "UriFormatException",
         "ioerror" | "ioexception" => "IOError",
         "oserror" => "OSError",
         "exception" | "error" => "Exception",
@@ -239,10 +242,11 @@ pub fn is_exception_type(name: &str) -> bool {
         | "notsupportedexception" | "nullreferenceexception"
         | "indexoutofrangeexception" | "keynotfoundexception"
         | "formatexception" | "stackoverflowerror" | "stackoverflowexception"
-        | "integerdivisionbyzeroexception" | "rangerror" | "stateexception"
+        | "integerdivisionbyzeroexception" | "dividebyzeroexception" | "rangerror" | "stateexception"
         | "filenotfoundexception" | "ioexception" | "formaterror"
         | "nosuchmethoderror" | "unimplementederror" | "overflowexception"
         | "operationcanceledexception" | "taskcanceledexception"
+        | "uriformatexception"
         // PHP
         | "runtimeexception" | "logicexception" | "domainexception"
         | "lengthexception" | "outofboundsexception" | "outofrangeexception"
