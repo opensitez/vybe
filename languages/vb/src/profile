@@ -100,7 +100,7 @@ cdbl    = { emit = "common:dotnet.vb_to_number",   min_args = 1, max_args = 1 }
 cbool   = { emit = "common:dyn_to_bool",           min_args = 1, max_args = 1 }
 clng    = { emit = "intrinsic:clng",       min_args = 1, max_args = 1 }
 csng    = { emit = "common:dotnet.vb_to_number",    min_args = 1, max_args = 1 }
-cbyte   = { emit = "intrinsic:cbyte",              min_args = 1, max_args = 1 }
+cbyte   = { emit = "common:dotnet.to_byte",        min_args = 1, max_args = 1 }
 cchar   = { emit = "common:dotnet.cchar",          min_args = 1, max_args = 1 }
 
 # `Integer.TryParse(s, r)` is normalized in the walker to the out-param desugar
@@ -108,6 +108,12 @@ cchar   = { emit = "common:dotnet.cchar",          min_args = 1, max_args = 1 }
 # compiler only ever sees the 1-arg core, which parses to int-or-null.
 "integer.tryparse" = { emit = "common:dotnet.try_parse_int", min_args = 1, max_args = 1 }
 "int32.tryparse"   = { emit = "common:dotnet.try_parse_int", min_args = 1, max_args = 1 }
+"integer.parse" = { emit = "common:dotnet.parse_int", min_args = 1, max_args = 1 }
+"int32.parse"   = { emit = "common:dotnet.parse_int", min_args = 1, max_args = 1 }
+"byte.parse"    = { emit = "common:dotnet.parse_byte", min_args = 1, max_args = 1 }
+"double.parse"  = { emit = "common:dotnet.parse_double", min_args = 1, max_args = 1 }
+"single.parse"  = { emit = "common:dotnet.parse_double", min_args = 1, max_args = 1 }
+"boolean.parse" = { emit = "common:dotnet.parse_bool", min_args = 1, max_args = 1 }
 cshort  = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
 cushort = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
 cuint   = { emit = "opcode:i32_from_f64",          min_args = 1, max_args = 1 }
@@ -286,14 +292,14 @@ lof          = { emit = "common:dotnet.vb_lof",            min_args = 1, max_arg
 chdir        = { emit = "common:dotnet.vb_chdir",        min_args = 1, max_args = 1 }
 mkdir        = { emit = "common:dotnet.vb_mkdir",        min_args = 1, max_args = 1 }
 rmdir        = { emit = "common:dotnet.vb_rmdir",        min_args = 1, max_args = 1 }
-freefile     = { emit = "intrinsic:cint",         min_args = 0, max_args = 0 }
+freefile     = { emit = "common:dotnet.vb_freefile",      min_args = 0, max_args = 0 }
 "name"       = { emit = "common:dotnet.vb_name",         min_args = 2, max_args = 2 }
-loc          = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
-fileattr     = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
-getattr      = { emit = "intrinsic:cint",         min_args = 1, max_args = 1 }
-setattr      = { emit = "noop",                           min_args = 2, max_args = 2 }
+loc          = { emit = "common:dotnet.vb_loc",           min_args = 1, max_args = 1 }
+fileattr     = { emit = "common:dotnet.vb_fileattr",      min_args = 1, max_args = 1 }
+getattr      = { emit = "common:dotnet.vb_getattr",       min_args = 1, max_args = 1 }
+setattr      = { emit = "common:dotnet.vb_setattr",       min_args = 2, max_args = 2 }
 eof          = { emit = "common:dotnet.vb_eof",            min_args = 1, max_args = 1 }
-seek         = { emit = "noop",                           min_args = 2, max_args = 2 }
+seek         = { emit = "common:dotnet.vb_seek",           min_args = 2, max_args = 2 }
 get          = { emit = "common:dotnet.vb_get",           min_args = 1, max_args = 3 }
 put          = { emit = "common:dotnet.vb_put",           min_args = 1, max_args = 3 }
 
@@ -451,6 +457,10 @@ equals        = [
 ]
 compareto     = { emit = "common:dotnet.string_compare", min_args = 1, max_args = 1 }
 tostring      = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
+gettype       = { emit = "common:dotnet.get_type", min_args = 0, max_args = 0 }
+getvalue      = { emit = "common:dotnet.array_get_checked", min_args = 1, max_args = 1 }
+setvalue      = { emit = "common:dotnet.array_set_checked", min_args = 2, max_args = 2 }
+chars         = { emit = "common:dotnet.string_char_at_checked", min_args = 1, max_args = 1 }
 padleft       = { emit = "common:dotnet.string_pad_left", min_args = 1, max_args = 2 }
 padright      = { emit = "common:dotnet.string_pad_right", min_args = 1, max_args = 2 }
 replace       = { emit = "common:dotnet.string_replace", min_args = 2, max_args = 2 }

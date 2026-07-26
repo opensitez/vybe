@@ -13,7 +13,7 @@ line_continuation = _{ "_" ~ (" " | "\t")* ~ ("\r\n" | "\n" | "\r") }
 
 // Program structure
 program = { SOI ~ line* ~ EOI }
-line = _{ xml_namespace_imports_statement | imports_statement | option_directive | statement_line | NEWLINE | COMMENT }
+line = _{ xml_namespace_imports_statement | imports_statement | option_directive | attribute_line | statement_line | NEWLINE | COMMENT }
 option_directive = {
     ^"Option" ~ (
         ((^"Explicit" | ^"Strict" | ^"Infer") ~ (^"On" | ^"Off"))
@@ -30,7 +30,7 @@ statement_line = {
 // Attributes: <Extension()> is captured; all other attributes are silently consumed
 extension_attribute = { "<" ~ (^"Runtime.CompilerServices.")? ~ ^"Extension" ~ "(" ~ ")" ~ ">" ~ (WHITESPACE* ~ "_" ~ WHITESPACE* ~ (NEWLINE | EOI))? }
 attribute = _{ "<" ~ (!(">" ~ WHITESPACE* ~ ("_" ~ WHITESPACE* ~ (NEWLINE | EOI))?) ~ ANY)* ~ ">" ~ (WHITESPACE* ~ "_" ~ WHITESPACE* ~ (NEWLINE | EOI))? }
-attribute_line = _{ (extension_attribute ~ (NEWLINE | EOI)?) | (attribute ~ (NEWLINE | EOI)?) }
+attribute_line = { (extension_attribute ~ (NEWLINE | EOI)?) | (attribute ~ (NEWLINE | EOI)?) }
 
 // Imports statement — captured for namespace resolution
 // Supports: Imports System.IO
@@ -342,11 +342,12 @@ nullable_marker = { "?" }
 
 // Module declarations (VB.NET style - members are implicitly shared)
 module_decl = {
+    attribute_line* ~
     (^"Public" | ^"Private" | ^"Friend")? ~ ^"Module" ~ identifier
     ~ (module_inline_body | module_block_body)
 }
-module_member = _{ property_decl | auto_property_line | sub_decl | function_decl | const_statement_line | event_line | delegate_line | field_line | dim_line | class_decl | interface_decl | structure_decl | enum_decl | NEWLINE | COMMENT }
-module_inline_member = _{ property_decl | auto_property_decl | sub_decl | function_decl | const_statement | event_decl | delegate_sub_decl | delegate_function_decl | field_decl | dim_statement | class_decl | interface_decl | structure_decl | enum_decl }
+module_member = _{ property_decl | auto_property_line | sub_decl | function_decl | const_statement_line | custom_event_decl | event_line | delegate_line | field_line | dim_line | class_decl | interface_decl | structure_decl | enum_decl | NEWLINE | COMMENT }
+module_inline_member = _{ property_decl | auto_property_decl | sub_decl | function_decl | const_statement | custom_event_decl | event_decl | delegate_sub_decl | delegate_function_decl | field_decl | dim_statement | class_decl | interface_decl | structure_decl | enum_decl }
 module_inline_body = _{ (":" ~ module_end) | (":" ~ module_inline_member ~ (":" ~ module_inline_member)* ~ ":" ~ module_end) }
 module_block_body = _{ (NEWLINE | EOI) ~ (!module_end ~ module_member)* ~ module_end }
 module_end = { ^"End" ~ ^"Module" }
@@ -363,8 +364,8 @@ class_decl = {
     class_modifier* ~ ^"Class" ~ identifier ~ generic_suffix?
     ~ (class_inline_body | class_block_body)
 }
-class_member = _{ class_decl | structure_decl | property_decl | auto_property_line | operator_decl | sub_decl | function_decl | const_statement_line | event_line | delegate_line | field_line | dim_line | enum_decl | imports_statement | attribute_line | NEWLINE | COMMENT }
-class_inline_clause = _{ inherits_statement | implements_statement | class_decl | structure_decl | property_decl | auto_property_decl | operator_decl | sub_decl | function_decl | const_statement | event_decl | delegate_sub_decl | delegate_function_decl | field_decl | dim_statement | enum_decl | imports_statement }
+class_member = _{ class_decl | interface_decl | structure_decl | property_decl | auto_property_line | operator_decl | sub_decl | function_decl | const_statement_line | custom_event_decl | event_line | delegate_line | field_line | dim_line | enum_decl | imports_statement | attribute_line | NEWLINE | COMMENT }
+class_inline_clause = _{ inherits_statement | implements_statement | class_decl | interface_decl | structure_decl | property_decl | auto_property_decl | operator_decl | sub_decl | function_decl | const_statement | custom_event_decl | event_decl | delegate_sub_decl | delegate_function_decl | field_decl | dim_statement | enum_decl | imports_statement }
 class_inline_body = _{ (":" ~ class_end) | (":" ~ class_inline_clause ~ (":" ~ class_inline_clause)* ~ ":" ~ class_end) }
 class_block_body = _{
     (NEWLINE | EOI)
@@ -385,7 +386,7 @@ implements_statement = { ^"Implements" ~ type_name ~ ("," ~ type_name)* }
 implements_line = _{ implements_statement ~ (NEWLINE | EOI) }
 
 interface_decl = {
-    visibility_modifier? ~ ^"Interface" ~ identifier ~ generic_suffix? ~ (NEWLINE | EOI | ":")
+    attribute_line* ~ visibility_modifier? ~ ^"Interface" ~ identifier ~ generic_suffix? ~ (NEWLINE | EOI | ":")
     ~ inherits_line?
     ~ (!interface_end ~ (inherits_statement ~ ":" | interface_sub | interface_function | interface_property | interface_event | NEWLINE | COMMENT))*
     ~ interface_end
@@ -399,11 +400,11 @@ interface_event = { ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ param_lis
 
 // Structure declarations
 structure_decl = {
-    visibility_modifier? ~ ^"Structure" ~ identifier ~ generic_suffix?
+    attribute_line* ~ visibility_modifier? ~ ^"Structure" ~ identifier ~ generic_suffix?
     ~ (structure_inline_body | structure_block_body)
 }
-structure_member = _{ property_decl | auto_property_line | operator_decl | sub_decl | function_decl | const_statement_line | field_line | dim_line | enum_decl | NEWLINE | COMMENT }
-structure_inline_clause = _{ implements_statement | property_decl | auto_property_decl | operator_decl | sub_decl | function_decl | const_statement | field_decl | dim_statement | enum_decl }
+structure_member = _{ property_decl | auto_property_line | operator_decl | sub_decl | function_decl | const_statement_line | custom_event_decl | event_line | field_line | dim_line | enum_decl | NEWLINE | COMMENT }
+structure_inline_clause = _{ implements_statement | property_decl | auto_property_decl | operator_decl | sub_decl | function_decl | const_statement | custom_event_decl | event_decl | field_decl | dim_statement | enum_decl }
 structure_inline_body = _{ (":" ~ structure_end) | (":" ~ structure_inline_clause ~ (":" ~ structure_inline_clause)* ~ ":" ~ structure_end) }
 structure_block_body = _{ (NEWLINE | EOI) ~ implements_line? ~ (!structure_end ~ structure_member)* ~ structure_end }
 structure_end = { ^"End" ~ ^"Structure" }
@@ -417,8 +418,16 @@ namespace_decl = {
 namespace_end = { ^"End" ~ ^"Namespace" }
 
 // Event declarations
-event_decl = { visibility_modifier? ~ ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ param_list? ~ ")")? ~ implements_member_clause? }
+event_header = { sub_modifier* ~ (^"Custom")? ~ ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ param_list? ~ ")")? ~ implements_member_clause? }
+event_decl = { event_header }
 event_line = _{ event_decl ~ (NEWLINE | EOI) }
+custom_event_decl = { event_header ~ (NEWLINE | EOI | ":") ~ custom_event_accessor* ~ ^"End" ~ ^"Event" }
+custom_event_accessor = {
+    visibility_modifier? ~ (^"AddHandler" | ^"RemoveHandler" | ^"RaiseEvent") ~ "(" ~ param_list? ~ ")" ~ (NEWLINE | EOI | ":")
+    ~ (!custom_event_accessor_end ~ line)*
+    ~ custom_event_accessor_end ~ (NEWLINE | EOI | ":")?
+}
+custom_event_accessor_end = _{ ^"End" ~ (^"AddHandler" | ^"RemoveHandler" | ^"RaiseEvent") }
 
 // Delegate declarations
 delegate_sub_decl = { visibility_modifier? ~ ^"Delegate" ~ ^"Sub" ~ identifier ~ "(" ~ param_list? ~ ")" }
@@ -438,7 +447,7 @@ enum_end = { ^"End" ~ ^"Enum" }
 
 // Field declarations: now support Friend, WithEvents, and dotted type names
 withevents_keyword = { ^"WithEvents" }
-field_modifier = _{ visibility_modifier | sub_modifier_keyword | withevents_keyword }
+field_modifier = _{ visibility_modifier | sub_modifier_keyword | withevents_keyword | ^"ReadOnly" }
 field_decl = { field_modifier* ~ identifier ~ array_rank_spec? ~ (^"As" ~ dim_new_keyword? ~ type_name ~ ("(" ~ argument_list? ~ ")")?)? ~ ("=" ~ expression)? }
 field_line = _{ field_decl ~ (NEWLINE | EOI) }
 
@@ -447,6 +456,8 @@ property_modifier = _{
     default_keyword
     | visibility_modifier
     | sub_modifier_keyword
+    | withevents_keyword
+    | ^"Custom"
     | ^"ReadOnly"
     | ^"WriteOnly"
 }
@@ -459,8 +470,7 @@ auto_property_line = _{ auto_property_decl ~ (NEWLINE | EOI) }
 
 property_decl = {
     attribute_line* ~ property_modifier* ~ ^"Property" ~ identifier ~ ("(" ~ param_list? ~ ")")? ~ (^"As" ~ type_name)? ~ implements_member_clause? ~ (NEWLINE | EOI | ":")
-    ~ (property_get | property_set | NEWLINE)*
-    ~ property_end
+    ~ ((property_get | property_set | NEWLINE)* ~ property_end)?
 }
 
 property_get = {
@@ -486,7 +496,7 @@ set_end = { ^"End" ~ ^"Set" }
 // Lambda Expressions
 lambda_expression = {
     (^"Function" ~ "(" ~ param_list? ~ ")" ~ (expression | (NEWLINE | EOI) ~ (!func_end ~ line)* ~ func_end))
-    | (^"Sub" ~ "(" ~ param_list? ~ ")" ~ (statement | (NEWLINE | EOI) ~ (!sub_end ~ line)* ~ sub_end))
+    | (^"Sub" ~ "(" ~ param_list? ~ ")" ~ (sub_end | statement | (NEWLINE | EOI) ~ (!sub_end ~ line)* ~ sub_end))
 }
 
 expression = { logical_imp }
@@ -560,6 +570,7 @@ primary = _{
     | mybase_keyword
     | dot_member_access
     | member_call
+    | generic_type_reference
     | call_expression
     | member_access
     | addressof_expr
@@ -590,14 +601,15 @@ aggregate_call = { identifier ~ "(" ~ argument_list? ~ ")" }
 // Also supports array initializers: New Task() {task1, task2}
 // Also supports collection initializers: New List(Of T) From { expr, ... }
 // Also supports object initializers: New Type() With { .Prop = expr, ... }
-anonymous_new_expression = { "New" ~ WHITESPACE* ~ with_initializer }
-new_expression = { "New" ~ WHITESPACE* ~ dotted_identifier ~ generic_suffix? ~ ("(" ~ argument_list? ~ ")")? ~ (from_initializer | with_initializer | array_literal)? }
+anonymous_new_expression = { ^"New" ~ WHITESPACE* ~ with_initializer }
+new_expression = { ^"New" ~ WHITESPACE* ~ dotted_identifier ~ generic_suffix? ~ ("(" ~ argument_list? ~ ")")? ~ array_type_suffix* ~ (from_initializer | with_initializer | array_literal)? }
 from_initializer = { ^"From" ~ "{" ~ NEWLINE* ~ (expression ~ (NEWLINE* ~ "," ~ NEWLINE* ~ expression)*)? ~ NEWLINE* ~ "}" }
 with_initializer = { ^"With" ~ "{" ~ NEWLINE* ~ (member_initializer ~ (NEWLINE* ~ "," ~ NEWLINE* ~ member_initializer)*)? ~ NEWLINE* ~ "}" }
 key_initializer_modifier = { ^"Key" }
 member_initializer = { key_initializer_modifier? ~ "." ~ member_identifier ~ "=" ~ expression }
 
 call_expression = { identifier ~ generic_suffix? ~ "(" ~ argument_list? ~ ")" }
+generic_type_reference = { dotted_identifier ~ generic_suffix }
 member_chain_invoke = { "(" ~ argument_list? ~ ")" }
 member_chain_call = { "." ~ member_identifier ~ generic_suffix? ~ "(" ~ argument_list? ~ ")" }
 member_chain_xml_descendant_axis = { "..." ~ "<" ~ xml_name ~ ">" }
