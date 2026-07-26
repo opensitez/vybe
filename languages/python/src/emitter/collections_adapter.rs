@@ -959,6 +959,14 @@ pub fn emit_update(chunks: &mut [Chunk], current: usize, line: u32) {
     let keys_key =
         chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
 
+    // A hashlib/hmac digest object also has `.update(data)` — feed the host
+    // digest instead of merging keys. Detected by `__algo`, which only
+    // node:crypto's digest objects carry.
+    crate::emitter::hash_adapter::emit_is_digest(chunks, current, recv, line);
+    chunks[current].emit_if_value(line);
+    crate::emitter::hash_adapter::emit_update_slots(chunks, current, recv, src, line);
+    chunks[current].emit_else(line);
+
     // Map-backed dict → merge src's entries in via shared `ecma:map.set`.
     emit_is_map(chunks, current, recv, line);
     chunks[current].emit_if_value(line);
@@ -986,6 +994,7 @@ pub fn emit_update(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
     chunks[current].emit_op(Op::NULL, line);
     chunks[current].emit_end(line); // close the is-Map outer if
+    chunks[current].emit_end(line); // close the is-digest outer if
 }
 
 fn emit_set_update_call(chunks: &mut [Chunk], current: usize, func: &str, line: u32) {

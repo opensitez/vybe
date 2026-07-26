@@ -115,6 +115,25 @@ __py_bytes_new__ = { emit = "host:ecma:uint8array:new",       min_args = 1, max_
 __py_bytes_hex__    = { emit = "host:ecma:uint8array:toHex",   min_args = 1, max_args = 1 }
 __py_bytes_fromhex__ = { emit = "host:ecma:uint8array:fromHex", min_args = 1, max_args = 1 }
 
+# TEMP cross-check hooks
+__py_crypto_hash__ = { emit = "host:node:crypto:createHash",  min_args = 1, max_args = 1 }
+__py_crypto_hmac__ = { emit = "host:node:crypto:createHmac",  min_args = 2, max_args = 2 }
+__py_hash_update__ = { emit = "host:node:crypto:_hashUpdate", min_args = 2, max_args = 2 }
+__py_hash_digest__ = { emit = "host:node:crypto:_hashDigest", min_args = 2, max_args = 2 }
+__py_hmac_update__ = { emit = "host:node:crypto:_hmacUpdate", min_args = 2, max_args = 2 }
+__py_hmac_digest__ = { emit = "host:node:crypto:_hmacDigest", min_args = 2, max_args = 2 }
+__py_wasi_sha256__ = { emit = "host:wasi:crypto/hashes:sha256", min_args = 1, max_args = 1 }
+# ── hashlib / hmac → node:crypto streaming digests (hash_adapter.rs) ─────────
+# No prelude: the digest state lives in the host object and the adapter emits
+# the receiver-taking `_hashUpdate`/`_hashDigest`/`_hashCopy` calls directly.
+"hashlib.sha256"       = { emit = "common:python.hash_sha256", min_args = 0, max_args = 1 }
+"hashlib.sha512"       = { emit = "common:python.hash_sha512", min_args = 0, max_args = 1 }
+"hashlib.sha1"         = { emit = "common:python.hash_sha1",   min_args = 0, max_args = 1 }
+"hashlib.md5"          = { emit = "common:python.hash_md5",    min_args = 0, max_args = 1 }
+"hashlib.new"          = { emit = "common:python.hash_new",    min_args = 1, max_args = 2 }
+"hmac.new"             = { emit = "common:python.hmac_new",    min_args = 1, max_args = 3 }
+"hmac.compare_digest"  = { emit = "common:python.hmac_compare_digest", min_args = 2, max_args = 2 }
+
 # ── sqlite3 (adapter over wasi:sql; walker rewrites cursor/conn methods) ──────
 # Collision-free internal builtins: the walker only emits these for variables it
 # has tracked back to `sqlite3.connect(...)`/`.cursor()`, so generic `.close()`/
@@ -615,6 +634,11 @@ throw           = { emit = "common:python.gen_throw",         min_args = 0, max_
 sort            = { emit = "host:ecma:array:sort",            min_args = 0, max_args = 2 }
 reverse         = { emit = "common:collections.reverse",      min_args = 0, max_args = 0 }
 copy            = { emit = "common:python.copy",            min_args = 0, max_args = 0 }
+# hashlib/hmac digest objects (hash_adapter.rs). `hexdigest`/`digest` are
+# unique to them; `update`/`copy` above stay dict/set-first and branch on the
+# receiver inside the shared adapter.
+hexdigest       = { emit = "common:python.hash_hexdigest",  min_args = 0, max_args = 0 }
+digest          = { emit = "common:python.hash_digest",     min_args = 0, max_args = 0 }
 
 # Dict instance methods. Polymorphic iteration shares ecma:object.*
 # with PHP array_keys/values and JS Object.keys/values/entries —

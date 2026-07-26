@@ -29,6 +29,19 @@ use vybe_bytecode::class_normalize::{
     types::*,
 };
 
+/// `<ClassName>.<field>` — the read an instance-side mirror of a class
+/// attribute initialises from, so the value object is shared rather than
+/// re-constructed per instance.
+fn class_attr_read(class_name: &str, field: &str) -> vybe_ast::Expression {
+    vybe_ast::Expression::new(vybe_ast::ExprKind::Member {
+        object: Box::new(vybe_ast::Expression::new(vybe_ast::ExprKind::Ident(
+            class_name.to_string(),
+        ))),
+        field: field.to_string(),
+        null_safe: false,
+    })
+}
+
 pub fn normalize_class(
     span: Span,
     name: &str,
@@ -67,6 +80,20 @@ pub fn normalize_class(
                     readonly: false,
                 };
                 if m.is_static {
+                    // Python class attributes are readable through instances
+                    // (`a.kind` falls back to `type(a).kind`), so the class
+                    // body's `kind = ...` needs BOTH a static field (for
+                    // `A.kind`) and an instance field (for `a.kind`).
+                    //
+                    // The instance copy initialises from the class attribute
+                    // rather than re-evaluating the initialiser, so a mutable
+                    // class attribute stays one shared object across
+                    // instances (`A.items` is the classic Python gotcha) and
+                    // `a.kind = x` shadows without touching `A.kind`.
+                    instance_fields.push(NormalField {
+                        init: Some(class_attr_read(name, fname)),
+                        ..field.clone()
+                    });
                     static_fields.push(field);
                 } else {
                     instance_fields.push(field);

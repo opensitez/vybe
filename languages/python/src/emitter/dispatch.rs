@@ -5,6 +5,28 @@ use vybe_bytecode::Chunk;
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     match name {
+        // hashlib / hmac over node:crypto — see hash_adapter.rs
+        "python.hash_sha256" => {
+            crate::emitter::hash_adapter::emit_sha256(chunks, current, argc, line)
+        }
+        "python.hash_sha512" => {
+            crate::emitter::hash_adapter::emit_sha512(chunks, current, argc, line)
+        }
+        "python.hash_sha1" => crate::emitter::hash_adapter::emit_sha1(chunks, current, argc, line),
+        "python.hash_md5" => crate::emitter::hash_adapter::emit_md5(chunks, current, argc, line),
+        "python.hash_new" => crate::emitter::hash_adapter::emit_new(chunks, current, argc, line),
+        "python.hash_hexdigest" => {
+            crate::emitter::hash_adapter::emit_hexdigest(chunks, current, argc, line)
+        }
+        "python.hash_digest" => {
+            crate::emitter::hash_adapter::emit_digest(chunks, current, argc, line)
+        }
+        "python.hmac_new" => {
+            crate::emitter::hash_adapter::emit_hmac_new(chunks, current, argc, line)
+        }
+        "python.hmac_compare_digest" => {
+            crate::emitter::hash_adapter::emit_compare_digest(chunks, current, argc, line)
+        }
         "python.json_dumps" => {
             crate::emitter::json_adapter::emit_json_dumps(chunks, current, argc, line);
         }

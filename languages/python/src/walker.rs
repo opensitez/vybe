@@ -12,22 +12,91 @@ use vybe_ast::*;
 //   ⇥ (U+21E5) = INDENT
 //   ⇤ (U+21E4) = DEDENT
 
+/// Update bracket depth for one physical line, skipping string literals.
+/// `in_triple` carries an open triple-quoted string across lines (holding its
+/// quote char while one is open).
+///
+/// Brackets and `#` inside a string literal are content, not syntax. Counting
+/// them makes logical-line resolution glue unrelated statements together —
+/// `s = "{"` would swallow every following line up to the next `}`.
+fn scan_line_brackets(line: &str, bracket_depth: &mut i32, in_triple: &mut Option<char>) {
+    let b: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if let Some(q) = *in_triple {
+            if c == '\\' {
+                i += 2;
+                continue;
+            }
+            if c == q && b.get(i + 1) == Some(&q) && b.get(i + 2) == Some(&q) {
+                *in_triple = None;
+                i += 3;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            // Rest of the line is a comment.
+            '#' => return,
+            '(' | '[' | '{' => *bracket_depth += 1,
+            ')' | ']' | '}' => *bracket_depth -= 1,
+            '\'' | '"' => {
+                if b.get(i + 1) == Some(&c) && b.get(i + 2) == Some(&c) {
+                    *in_triple = Some(c);
+                    i += 3;
+                    continue;
+                }
+                // Single-quoted: consume through the closing quote. An
+                // unterminated one just ends at EOL; the grammar reports it.
+                i += 1;
+                while i < b.len() {
+                    if b[i] == '\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if b[i] == c {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+}
+
 fn preprocess_indentation(source: &str) -> String {
     // Phase 1: Resolve physical lines into logical lines.
     // Handles explicit continuation (backslash) and implicit continuation (unclosed brackets).
     let mut logical_lines: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut bracket_depth: i32 = 0;
+    let mut in_triple: Option<char> = None;
 
     for line in source.lines() {
         let trimmed = line.trim();
 
-        // During continuation, skip blank/comment lines
-        if !current.is_empty() && (trimmed.is_empty() || trimmed.starts_with('#')) {
+        // During continuation, skip blank/comment lines — but never inside a
+        // triple-quoted string, where both are literal content.
+        if in_triple.is_none()
+            && !current.is_empty()
+            && (trimmed.is_empty() || trimmed.starts_with('#'))
+        {
             continue;
         }
 
+        let was_in_triple = in_triple.is_some();
+
         if current.is_empty() {
+            current.push_str(line);
+        } else if was_in_triple {
+            // Inside a triple-quoted string the physical newline and the
+            // leading whitespace are literal content — joining with a space
+            // would rewrite the value (`print(f"""a\nb""")`).
+            current.push('\n');
             current.push_str(line);
         } else {
             // Continuation: join with space + trimmed content
@@ -35,18 +104,11 @@ fn preprocess_indentation(source: &str) -> String {
             current.push_str(trimmed);
         }
 
-        // Update bracket depth (skip chars after # comment marker)
-        for c in line.chars() {
-            match c {
-                '(' | '[' | '{' => bracket_depth += 1,
-                ')' | ']' | '}' => bracket_depth -= 1,
-                '#' => break,
-                _ => {}
-            }
-        }
+        scan_line_brackets(line, &mut bracket_depth, &mut in_triple);
 
-        // Explicit continuation: backslash at end of line
-        if line.trim_end().ends_with('\\') {
+        // Explicit continuation: backslash at end of line (string content is
+        // not a continuation marker).
+        if !was_in_triple && in_triple.is_none() && line.trim_end().ends_with('\\') {
             if let Some(pos) = current.rfind('\\') {
                 current.truncate(pos);
             }
@@ -1850,10 +1912,12 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
 
         Rule::return_stmt | Rule::return_inline => walk_return(pair)?,
         Rule::raise_stmt | Rule::raise_inline => walk_raise(pair)?,
-        Rule::del_stmt => walk_del(pair)?,
-        Rule::assert_stmt => walk_assert(pair)?,
-        Rule::global_stmt => walk_scope_decl(pair, ScopeDeclKind::Global)?,
-        Rule::nonlocal_stmt => walk_scope_decl(pair, ScopeDeclKind::Nonlocal)?,
+        Rule::del_stmt | Rule::del_inline => walk_del(pair)?,
+        Rule::assert_stmt | Rule::assert_inline => walk_assert(pair)?,
+        Rule::global_stmt | Rule::global_inline => walk_scope_decl(pair, ScopeDeclKind::Global)?,
+        Rule::nonlocal_stmt | Rule::nonlocal_inline => {
+            walk_scope_decl(pair, ScopeDeclKind::Nonlocal)?
+        }
 
         Rule::import_stmt => {
             // Nested imports (inside try/if bodies) still mount the module
@@ -1957,173 +2021,6 @@ fn expr_has_yield(expr: &Expression) -> bool {
         ExprKind::Index { object, index, .. } => expr_has_yield(object) || expr_has_yield(index),
         _ => false,
     }
-}
-
-/// Rewrite a generator body: prepend `__gen_result = []`, replace `yield X` with
-/// `__gen_result.push(X)`, append `return __gen_result`.
-fn rewrite_generator_body(stmts: Vec<Statement>) -> Vec<Statement> {
-    let gen_var = "__gen_result";
-    let mut out = Vec::new();
-
-    // __gen_result = []
-    out.push(Statement::new(StmtKind::Assign {
-        targets: vec![Expression::ident(gen_var)],
-        value: Expression::new(ExprKind::Array(Vec::new())),
-    }));
-
-    // Transform body
-    for stmt in stmts {
-        out.extend(rewrite_stmt_yields(stmt, gen_var));
-    }
-
-    // return __gen_result
-    out.push(Statement::new(StmtKind::Return(Some(Expression::ident(
-        gen_var,
-    )))));
-
-    out
-}
-
-fn rewrite_stmt_yields(stmt: Statement, gen_var: &str) -> Vec<Statement> {
-    match stmt.kind {
-        // Bare `yield X` as expression statement → __gen_result.push(X)
-        StmtKind::Expr(ref e) => {
-            if let ExprKind::Yield(Some(val)) = &e.kind {
-                return vec![make_push(gen_var, *val.clone())];
-            }
-            if let ExprKind::Yield(None) = &e.kind {
-                return vec![make_push(gen_var, Expression::null())];
-            }
-            vec![stmt]
-        }
-        StmtKind::If {
-            cond,
-            then_body,
-            elifs,
-            else_body,
-        } => {
-            vec![Statement::new(StmtKind::If {
-                cond,
-                then_body: then_body
-                    .into_iter()
-                    .flat_map(|s| rewrite_stmt_yields(s, gen_var))
-                    .collect(),
-                elifs: elifs
-                    .into_iter()
-                    .map(|(c, b)| {
-                        (
-                            c,
-                            b.into_iter()
-                                .flat_map(|s| rewrite_stmt_yields(s, gen_var))
-                                .collect(),
-                        )
-                    })
-                    .collect(),
-                else_body: else_body.map(|eb| {
-                    eb.into_iter()
-                        .flat_map(|s| rewrite_stmt_yields(s, gen_var))
-                        .collect()
-                }),
-            })]
-        }
-        StmtKind::While {
-            cond,
-            body,
-            else_body,
-        } => {
-            vec![Statement::new(StmtKind::While {
-                cond,
-                body: body
-                    .into_iter()
-                    .flat_map(|s| rewrite_stmt_yields(s, gen_var))
-                    .collect(),
-                else_body,
-            })]
-        }
-        StmtKind::ForIn {
-            var,
-            key,
-            iter,
-            body,
-            of,
-            else_body,
-            is_async,
-        } => {
-            vec![Statement::new(StmtKind::ForIn {
-                var,
-                key,
-                iter,
-                of,
-                is_async,
-                body: body
-                    .into_iter()
-                    .flat_map(|s| rewrite_stmt_yields(s, gen_var))
-                    .collect(),
-                else_body: else_body.map(|eb| {
-                    eb.into_iter()
-                        .flat_map(|s| rewrite_stmt_yields(s, gen_var))
-                        .collect()
-                }),
-            })]
-        }
-        StmtKind::Try {
-            body,
-            catches,
-            else_body,
-            finally,
-        } => {
-            vec![Statement::new(StmtKind::Try {
-                body: body
-                    .into_iter()
-                    .flat_map(|s| rewrite_stmt_yields(s, gen_var))
-                    .collect(),
-                catches: catches
-                    .into_iter()
-                    .map(|cb| CatchClause {
-                        body: cb
-                            .body
-                            .into_iter()
-                            .flat_map(|s| rewrite_stmt_yields(s, gen_var))
-                            .collect(),
-                        ..cb
-                    })
-                    .collect(),
-                else_body,
-                finally: finally.map(|fb| {
-                    fb.into_iter()
-                        .flat_map(|s| rewrite_stmt_yields(s, gen_var))
-                        .collect()
-                }),
-            })]
-        }
-        StmtKind::With {
-            items,
-            body,
-            is_async,
-        } => {
-            vec![Statement::new(StmtKind::With {
-                items,
-                is_async,
-                body: body
-                    .into_iter()
-                    .flat_map(|s| rewrite_stmt_yields(s, gen_var))
-                    .collect(),
-            })]
-        }
-        _ => vec![stmt],
-    }
-}
-
-fn make_push(gen_var: &str, val: Expression) -> Statement {
-    Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new(Expression::ident(gen_var)),
-            field: "append".to_string(),
-            null_safe: false,
-        })),
-        args: vec![Argument::positional(val)],
-        optional: false,
-    })))
 }
 
 // ── Function def ────────────────────────────────────────────────────────────
@@ -2311,7 +2208,182 @@ fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
 
 // ── Class def ───────────────────────────────────────────────────────────────
 
-fn walk_class_def(pair: Pair<Rule>, _decorators: Vec<Expression>) -> Result<StmtKind, String> {
+
+
+fn str_lit(text: &str) -> Expression {
+    Expression::new(ExprKind::Lit(Literal::Str(text.into())))
+}
+
+/// `a + b` using Python's dynamic add, matching what the walker emits for a
+/// source-level `+` (plain `BinOp::Add` coerces operands to f64).
+fn py_add(a: Expression, b: Expression) -> Expression {
+    call_ident("__pyadd__", vec![a, b])
+}
+
+fn other_attr(field: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(Expression::new(ExprKind::Ident("other".into()))),
+        field: field.to_string(),
+        null_safe: false,
+    })
+}
+
+fn binop(op: BinOp, left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+/// `__repr__` as `@dataclass` generates it: `ClassName(field=repr, ...)`.
+fn dataclass_repr(class_name: &str, fields: &[(String, Option<Expression>)]) -> Statement {
+    let mut expr = str_lit(&format!("{class_name}("));
+    for (i, (name, _)) in fields.iter().enumerate() {
+        let sep = if i == 0 {
+            format!("{name}=")
+        } else {
+            format!(", {name}=")
+        };
+        expr = py_add(expr, str_lit(&sep));
+        expr = py_add(expr, call_ident("repr", vec![self_attr(name)]));
+    }
+    expr = py_add(expr, str_lit(")"));
+    fn_decl(
+        "__repr__",
+        vec![plain_param("self", None)],
+        vec![Statement::new(StmtKind::Return(Some(expr)))],
+    )
+}
+
+/// `__eq__` as `@dataclass` generates it: field-by-field, and only against
+/// the same class — CPython returns `NotImplemented` for a foreign type,
+/// which makes `==` fall back to identity and yield False.
+fn dataclass_eq(class_name: &str, fields: &[(String, Option<Expression>)]) -> Statement {
+    let same_class = binop(
+        BinOp::Eq,
+        call_ident("type", vec![Expression::new(ExprKind::Ident("other".into()))]),
+        Expression::new(ExprKind::Ident(class_name.to_string())),
+    );
+    let mut cond = same_class;
+    for (name, _) in fields {
+        cond = binop(
+            BinOp::And,
+            cond,
+            binop(BinOp::Eq, self_attr(name), other_attr(name)),
+        );
+    }
+    fn_decl(
+        "__eq__",
+        vec![plain_param("self", None), plain_param("other", None)],
+        vec![Statement::new(StmtKind::Return(Some(cond)))],
+    )
+}
+
+/// `@dataclass` or `@dataclass(...)` (the parametrised form).
+fn is_dataclass_decorator(d: &Expression) -> bool {
+    match &d.kind {
+        ExprKind::Ident(n) => n == "dataclass",
+        ExprKind::Call { callee, .. } => matches!(&callee.kind, ExprKind::Ident(n) if n == "dataclass"),
+        ExprKind::Member { field, .. } => field == "dataclass",
+        _ => false,
+    }
+}
+
+/// The annotated class-level declarations, in source order — exactly what
+/// CPython's `@dataclass` treats as fields. A bare `x = 5` with no annotation
+/// is NOT a field, which is why the type hint (threaded through
+/// `VarDeclarator.type_hint`) is the marker.
+fn dataclass_fields(body: &[Statement]) -> Vec<(String, Option<Expression>)> {
+    let mut fields = Vec::new();
+    for stmt in body {
+        let StmtKind::VarDecl { declarations, .. } = &stmt.kind else {
+            continue;
+        };
+        for d in declarations {
+            if d.type_hint.is_none() {
+                continue;
+            }
+            if let BindingPattern::Ident(name) = &d.pattern {
+                fields.push((name.clone(), d.init.clone()));
+            }
+        }
+    }
+    fields
+}
+
+fn self_attr(field: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(Expression::new(ExprKind::Ident("self".into()))),
+        field: field.to_string(),
+        null_safe: false,
+    })
+}
+
+fn plain_param(name: &str, default: Option<Expression>) -> Param {
+    Param {
+        name: name.to_string(),
+        type_hint: None,
+        default,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    }
+}
+
+fn has_method(body: &[Statement], want: &str) -> bool {
+    body.iter().any(|s| matches!(&s.kind, StmtKind::FunctionDecl { name, .. } if name == want))
+}
+
+fn fn_decl(name: &str, params: Vec<Param>, body: Vec<Statement>) -> Statement {
+    Statement::new(StmtKind::FunctionDecl {
+        name: name.to_string(),
+        params,
+        return_type: None,
+        body,
+        modifiers: Modifiers::default(),
+        handles: Vec::new(),
+        is_async: false,
+        is_generator: false,
+        is_sub: false,
+    })
+}
+
+/// Append the `__init__` a `@dataclass` generates: one positional parameter
+/// per annotated field, in declaration order, carrying that field's default,
+/// with a body that assigns each onto `self`.
+///
+/// An explicitly written `__init__` wins — CPython only generates what the
+/// class does not already define.
+fn synthesize_dataclass_members(class_name: &str, body: &mut Vec<Statement>) {
+    let fields = dataclass_fields(body);
+    if fields.is_empty() {
+        return;
+    }
+
+    if !has_method(body, "__init__") {
+        let mut params = vec![plain_param("self", None)];
+        let mut init_body = Vec::new();
+        for (name, default) in &fields {
+            params.push(plain_param(name, default.clone()));
+            init_body.push(Statement::new(StmtKind::Assign {
+                targets: vec![self_attr(name)],
+                value: Expression::new(ExprKind::Ident(name.clone())),
+            }));
+        }
+        body.push(fn_decl("__init__", params, init_body));
+    }
+    if !has_method(body, "__repr__") {
+        body.push(dataclass_repr(class_name, &fields));
+    }
+    if !has_method(body, "__eq__") {
+        body.push(dataclass_eq(class_name, &fields));
+    }
+}
+
+fn walk_class_def(pair: Pair<Rule>, decorators: Vec<Expression>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut parents = Vec::new();
     let mut body_stmts = Vec::new();
@@ -2373,6 +2445,15 @@ fn walk_class_def(pair: Pair<Rule>, _decorators: Vec<Expression>) -> Result<Stmt
     note_class_attrs(&name, attrs);
     if has_call_method {
         note_callable_class(&name);
+    }
+
+    // `@dataclass` — synthesize the members CPython's decorator generates at
+    // runtime. Done here, in the walker, because decorators never reach
+    // `normalize_class` (the shared signature carries modifiers, not
+    // decorators) and because synthesizing real AST members keeps the shared
+    // class pipeline language-neutral.
+    if decorators.iter().any(is_dataclass_decorator) {
+        synthesize_dataclass_members(&name, &mut body_stmts);
     }
 
     // Convert body statements into ClassMembers
@@ -2517,6 +2598,26 @@ fn stmts_to_class_members(stmts: Vec<Statement>) -> Vec<ClassMember> {
                         is_sub: false,
                     },
                 ))));
+            }
+            // Annotated class-level declaration (`x: int = 0`, or bare
+            // `x: int`). The type hint is what marks it a dataclass field, so
+            // it is carried onto the member rather than dropped.
+            StmtKind::VarDecl { declarations, .. } => {
+                for d in declarations {
+                    let BindingPattern::Ident(field_name) = &d.pattern else {
+                        continue;
+                    };
+                    let mut mods = Modifiers::default();
+                    mods.is_static = true; // Python class-level vars are class attributes
+                    members.push(ClassMember::Field {
+                        name: field_name.clone(),
+                        type_hint: d.type_hint.clone(),
+                        init: d.init.clone(),
+                        modifiers: mods,
+                        with_events: false,
+                        array_bounds: None,
+                    });
+                }
             }
             StmtKind::Assign { targets, value } => {
                 // Class-level assignment → static Field (Python class variables)
@@ -3586,13 +3687,55 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
         return Ok(StmtKind::Expr(expr));
     }
 
-    // Multiple items => assignment (a = b = c) or annotation (x: int = val)
-    // For now, collect all expression_lists and treat last as value
+    // Multiple items => chained assignment (`a = b = c`) or an annotated
+    // assignment (`x: int = val`). `type_annotation` is skipped rather than
+    // collected: it is a TYPE, not an assignment target. Treating it as one
+    // made `x: int = 5` compile as `x = int = 5`, rebinding the name `int`.
+    let mut annotation: Option<String> = None;
     let mut all_exprs = Vec::new();
     for p in inner {
+        if p.as_rule() == Rule::type_annotation {
+            annotation = Some(p.as_str().trim().to_string());
+            continue;
+        }
         if is_expression_rule(p.as_rule()) || p.as_rule() == Rule::expression_list {
             all_exprs.push(walk_expr_list_or_single(p)?);
         }
+    }
+
+    // A bare annotation with no value (`x: int`) binds nothing at runtime in
+    // CPython — it only records `__annotations__`. In a class body it still
+    // declares a field, so keep it as a value-less declaration; the class
+    // walker turns it into a member and other scopes drop it.
+    if let Some(hint) = annotation {
+        let (target, init) = if all_exprs.len() >= 2 {
+            let value = all_exprs.pop().unwrap();
+            (all_exprs.remove(0), Some(value))
+        } else if let Some(target) = all_exprs.pop() {
+            (target, None)
+        } else {
+            return Ok(StmtKind::Empty);
+        };
+        let ExprKind::Ident(name) = &target.kind else {
+            // `obj.attr: T = v` — the annotation is inert, keep the assignment.
+            return Ok(match init {
+                Some(value) => StmtKind::Assign {
+                    targets: vec![target],
+                    value,
+                },
+                None => StmtKind::Empty,
+            });
+        };
+        return Ok(StmtKind::VarDecl {
+            declarations: vec![vybe_ast::VarDeclarator {
+                pattern: BindingPattern::Ident(name.clone()),
+                type_hint: Some(hint),
+                init,
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: VarDeclKind::Let,
+        });
     }
 
     if all_exprs.len() >= 2 {
@@ -9791,21 +9934,43 @@ fn walk_fstring(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 let mut base: Option<Expression> = None;
                 let mut conv: Option<char> = None;
                 let mut spec: Option<String> = None;
+                // `{expr=}` — the self-documenting form echoes the expression's
+                // source text plus `=` before the value.
+                let mut debug_src: Option<String> = None;
+                let mut is_debug = false;
                 for fp in p.into_inner() {
                     match fp.as_rule() {
+                        Rule::fstring_debug => is_debug = true,
                         Rule::fstring_conversion => {
                             conv = fp.as_str().trim_start_matches('!').chars().next();
+                        }
+                        Rule::fstring_spec => {
+                            spec = fp
+                                .into_inner()
+                                .find(|s| s.as_rule() == Rule::fstring_format_spec)
+                                .map(|s| s.as_str().to_string());
                         }
                         Rule::fstring_format_spec => {
                             spec = Some(fp.as_str().to_string());
                         }
                         r if is_expression_rule(r) => {
+                            debug_src = Some(fp.as_str().to_string());
                             base = Some(walk_expression(fp)?);
                         }
                         _ => {}
                     }
                 }
                 let Some(base) = base else { continue };
+                // Emit `<source>=` as literal text; the value then renders with
+                // `repr` unless a conversion or format spec was given.
+                if is_debug {
+                    if let Some(src) = &debug_src {
+                        parts.push(InterpolPart::Text(format!("{src}=")));
+                    }
+                    if conv.is_none() && spec.is_none() {
+                        conv = Some('r');
+                    }
+                }
 
                 // Conversion first (Python order: convert, then format).
                 let converted = match conv {

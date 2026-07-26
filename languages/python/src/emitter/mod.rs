@@ -10,6 +10,7 @@ pub mod collections_adapter;
 pub mod datetime_adapter;
 pub mod dispatch;
 pub mod float_adapter;
+pub mod hash_adapter;
 pub mod heapq_adapter;
 pub mod itertools_adapter;
 pub mod json_adapter;

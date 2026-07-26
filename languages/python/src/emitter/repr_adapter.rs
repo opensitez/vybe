@@ -442,13 +442,6 @@ fn bump(chunk: &mut Chunk, slot: u16, line: u32) {
     lset(chunk, slot, line);
 }
 
-/// `d[key]` where key may be a string — the dynamic-collection get.
-fn emit_dyn_index(chunk: &mut Chunk, line: u32) {
-    // ecma:object.get(obj, key) handles string keys.
-    let idx = chunk.add_import("ecma:object", "get");
-    chunk.emit_call(idx, 2, line);
-}
-
 fn loop_start(chunk: &mut Chunk, line: u32) -> vybe_emitter::loops::LoopState {
     let block_patch = chunk.emit_block(line);
     let (loop_patch, _) = chunk.emit_loop_s(line);

@@ -161,7 +161,9 @@ group_pattern = { "(" ~ or_pattern ~ ")" }
 value_pattern = { identifier ~ ("." ~ identifier)+ }
 class_pattern = { identifier ~ "(" ~ (class_pattern_arg ~ ("," ~ class_pattern_arg)*)? ~ ","? ~ ")" }
 class_pattern_arg = { identifier ~ "=" ~ pattern | pattern }
-tuple_pattern = { "(" ~ pattern ~ ("," ~ pattern)+ ~ ","? ~ ")" }
+// `(a, b)` and the 1-tuple `(a,)` — the trailing comma is what distinguishes
+// the latter from a parenthesised group pattern.
+tuple_pattern = { "(" ~ pattern ~ (("," ~ pattern)+ ~ ","? | ",") ~ ")" }
 sequence_pattern = { "[" ~ (pattern ~ ("," ~ pattern)*)? ~ ","? ~ "]" }
 mapping_pattern = { "{" ~ ((mapping_pair | mapping_rest) ~ ("," ~ (mapping_pair | mapping_rest))*)? ~ ","? ~ "}" }
 mapping_pair = { expression ~ ":" ~ pattern }
@@ -212,10 +214,16 @@ assert_stmt = { "assert" ~ expression ~ ("," ~ expression)? ~ terminator }
 expr_or_assign_stmt = {
     expression_list ~ (
         aug_assign_op ~ expression_list     // augmented assign: x += 1
-        | ":" ~ expression ~ ("=" ~ expression_list)?   // annotated assign: x: int = 1
+        // Annotated assign: `x: int = 1`. The annotation is its own rule so
+        // the walker can tell it from a chained `x = int = 1` — the pair list
+        // alone looks identical, and treating it as a target made `x: int = 5`
+        // rebind the name `int` to 5.
+        | ":" ~ type_annotation ~ ("=" ~ expression_list)?
         | ("=" ~ expression_list)+          // regular assign: a = b = c
     )? ~ terminator
 }
+
+type_annotation = { expression }
 
 aug_assign_op = {
     "**=" | "//=" | "<<=" | ">>=" |
@@ -238,6 +246,10 @@ simple_stmt = _{
     | break_inline
     | continue_inline
     | pass_inline
+    | global_inline
+    | nonlocal_inline
+    | del_inline
+    | assert_inline
     | expr_or_assign_inline
 }
 
@@ -245,6 +257,20 @@ return_inline = { "return" ~ expression_list? }
 raise_inline = { "raise" ~ (expression ~ (from_kw ~ expression)?)? }
 break_inline = { "break" }
 continue_inline = { "continue" }
+// Simple statements that are legal in a `;`-separated inline suite
+// (`def f(d): global v; v = d`). The block forms consume a `terminator`,
+// which would swallow the `;` separator.
+// PEG has no backtracking out of an ordered choice once a branch commits, so
+// each keyword needs its own word boundary — without it `del_me = 1` starts
+// down `del_inline` and the whole suite fails to parse.
+global_inline = { global_kw ~ identifier ~ ("," ~ identifier)* }
+nonlocal_inline = { nonlocal_kw ~ identifier ~ ("," ~ identifier)* }
+del_inline = { del_kw ~ expression ~ ("," ~ expression)* }
+assert_inline = { assert_kw ~ expression ~ ("," ~ expression)? }
+global_kw = @{ "global" ~ !(ASCII_ALPHANUMERIC | "_") }
+nonlocal_kw = @{ "nonlocal" ~ !(ASCII_ALPHANUMERIC | "_") }
+del_kw = @{ "del" ~ !(ASCII_ALPHANUMERIC | "_") }
+assert_kw = @{ "assert" ~ !(ASCII_ALPHANUMERIC | "_") }
 pass_inline = { "pass" }
 expr_or_assign_inline = {
     expression_list ~ (
@@ -277,7 +303,9 @@ lambda_param = {
 named_expr = { ternary_expr ~ (":=" ~ named_expr)? }
 
 // Python ternary: body if test else orelse
-ternary_expr = { or_expr ~ (if_kw ~ or_expr ~ else_kw ~ ternary_expr)? }
+// CPython: `conditional: or_test 'if' or_test 'else' expression` — the else
+// branch is a full expression, so `x if c else lambda: None` is legal.
+ternary_expr = { or_expr ~ (if_kw ~ or_expr ~ else_kw ~ (lambda_expr | ternary_expr))? }
 
 // ── Logical ────────────────────────────────────────────────────────────────────
 or_expr = { and_expr ~ (or_kw ~ and_expr)* }
@@ -420,13 +448,20 @@ target = {
 
 // ── F-strings ──────────────────────────────────────────────────────────────────
 fstring = ${ fstring_start ~ (fstring_escaped_brace | fstring_expr | fstring_text)* ~ fstring_end }
-fstring_start = @{ ("rf" | "Rf" | "rF" | "RF" | "fr" | "fR" | "Fr" | "FR" | "f" | "F") ~ ("'''" | "\"\"\"" | "'" | "\"") }
-fstring_end = @{ "'''" | "\"\"\"" | "'" | "\"" }
+// The opening delimiter is pushed on the parser stack so `fstring_text` and
+// `fstring_end` match only THAT delimiter — otherwise the other quote char
+// terminates the string early (`f'"{k}": {v}'` ended at the first `"`).
+fstring_start = @{ ("rf" | "Rf" | "rF" | "RF" | "fr" | "fR" | "Fr" | "FR" | "f" | "F") ~ PUSH("'''" | "\"\"\"" | "'" | "\"") }
+fstring_end = @{ POP }
 fstring_escaped_brace = @{ "{{" | "}}" }
-fstring_expr = !{ "{" ~ expression ~ fstring_conversion? ~ (":" ~ fstring_format_spec)? ~ "}" }
+// `{ expr [=] [!conv] [:spec] }`. The spec is compound-atomic so the implicit
+// COMMENT rule cannot swallow a `#` inside it (`f"{255:#x}"`).
+fstring_expr = !{ "{" ~ expression ~ fstring_debug? ~ fstring_conversion? ~ fstring_spec? ~ "}" }
+fstring_debug = @{ "=" ~ !"=" }
 fstring_conversion = @{ "!" ~ ("r" | "s" | "a") }
-fstring_text = @{ (!("{" | "}" | "'" | "\"") ~ ANY)+ }
-fstring_format_spec = @{ (!("}") ~ ANY)+ }
+fstring_spec = ${ ":" ~ fstring_format_spec }
+fstring_text = @{ ("\\" ~ ANY | !(PEEK | "{" | "}") ~ ANY)+ }
+fstring_format_spec = @{ (!("}") ~ ANY)* }
 
 // ── Keyword atoms — all atomic for word boundary ──────────────────────────────
 true_kw = @{ "True" ~ !(ASCII_ALPHANUMERIC | "_") }
