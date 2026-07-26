@@ -54,6 +54,22 @@ fn mb_strtolower_unicode() {
         vec!["héllo"]
     );
 }
+
+#[test]
+fn mb_strtolower_empty_string() {
+    assert_eq!(
+        run_prints(r#"<?php echo var_export(mb_strtolower(''), true); "#),
+        vec!["''"]
+    );
+}
+
+#[test]
+fn mb_strtoupper_with_digits_and_spaces() {
+    assert_eq!(
+        run_prints(r#"<?php echo mb_strtoupper('x y 1a b'); "#),
+        vec!["X Y 1A B"]
+    );
+}
 #[test]
 fn mb_strtoupper_unicode() {
     assert_eq!(
@@ -66,6 +82,20 @@ fn mb_convert_case_title() {
     assert_eq!(
         run_prints(r#"<?php echo mb_convert_case('hello world', MB_CASE_TITLE); "#),
         vec!["Hello World"]
+    );
+}
+
+#[test]
+fn mb_convert_case_lower_and_upper_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo mb_convert_case('AbC', MB_CASE_LOWER);
+echo '|';
+echo mb_convert_case('AbC', MB_CASE_UPPER);
+"#
+        ),
+        vec!["abc|ABC"]
     );
 }
 
@@ -89,6 +119,28 @@ if (function_exists('mb_str_pad')) {
     );
 }
 
+#[test]
+fn mb_str_pad_custom_padding() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+if (function_exists('mb_str_pad')) {
+    echo mb_str_pad('é', 3, '0', STR_PAD_LEFT);
+} else {
+    echo str_pad('é', 3, '0', STR_PAD_LEFT);
+}
+echo '|';
+if (function_exists('mb_str_pad')) {
+    echo mb_str_pad('é', 2, '*', STR_PAD_BOTH);
+} else {
+    echo str_pad('é', 2, '*', STR_PAD_BOTH);
+}
+"#
+        ),
+        vec!["00é|*é"]
+    );
+}
+
 // ── mb_strlen vs strlen ───────────────────────────────────────
 
 #[test]
@@ -102,6 +154,40 @@ echo "\n";
 "#
         ),
         vec!["6:5"]
+    );
+}
+
+#[test]
+fn mb_strlen_empty_and_numeric() {
+    assert_eq!(
+        run_prints(r#"<?php echo mb_strlen('') . '|' . mb_strlen('123'); "#),
+        vec!["0|3"]
+    );
+}
+
+#[test]
+fn mb_strlen_zero_width_subject() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$s = "\0";
+echo mb_strlen($s);
+"#
+        ),
+        vec!["1"]
+    );
+}
+
+#[test]
+fn mb_strlen_of_multiline_unicode() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$s = "hé\n";
+echo strlen($s) . "|" . mb_strlen($s);
+"#
+        ),
+        vec!["4|3"]
     );
 }
 
@@ -183,6 +269,29 @@ fn mb_str_split_with_length() {
     assert_eq!(
         run_prints(r#"<?php echo implode('|', mb_str_split('abcdef', 2)); "#),
         vec!["ab|cd|ef"]
+    );
+}
+
+#[test]
+fn mb_str_split_longer_length_returns_single_chunk() {
+    assert_eq!(
+        run_prints(r#"<?php echo count(mb_str_split('hey', 10)); echo '|'; echo mb_str_split('hey', 10)[0]; "#),
+        vec!["1|hey"]
+    );
+}
+
+#[test]
+fn mb_check_encoding_false_branch() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$invalid = chr(255);
+echo mb_check_encoding($invalid, 'UTF-8') ? 'ok' : 'bad';
+echo '|';
+echo mb_check_encoding('test', 'ISO-8859-1') ? 'lat' : 'no';
+"#
+        ),
+        vec!["bad|lat"]
     );
 }
 

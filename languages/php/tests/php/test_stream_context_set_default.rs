@@ -1,4 +1,3 @@
-use super::helpers::run_prints;
 
 crate::php_cases! {
     stream_context_set_default_opts => {

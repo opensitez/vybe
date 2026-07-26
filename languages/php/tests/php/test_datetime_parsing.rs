@@ -160,4 +160,52 @@ echo $dt === false ? 'bad-time' : 'ok';
 "#,
         ["bad-time"]
     };
+
+    date_parse_provides_component_map => {
+        r#"<?php
+$p = date_parse('2024-11-30 13:45:10');
+echo isset($p['hour']) && isset($p['minute']) && isset($p['second']) ? 'has' : 'no';
+"#,
+        ["has"]
+    };
+
+    date_parse_from_format_timezone => {
+        r#"<?php
+$p = date_parse_from_format('d/m/Y H:i O', '15/08/2024 09:30 +0300');
+echo $p['error_count'] === 0 ? 'ok' : 'bad';
+echo '|';
+echo isset($p['zone']) && is_string($p['zone']) ? 'zone' : 'nozone';
+"#,
+        ["ok|zone"]
+    };
+
+    datetime_create_from_format_with_timezone_object => {
+        r#"<?php
+$dt = DateTime::createFromFormat(
+    'Y-m-d H:i:s',
+    '2024-03-01 10:00:00',
+    new DateTimeZone('Asia/Tokyo')
+);
+echo $dt !== false ? $dt->getTimezone()->getName() : 'bad';
+"#,
+        ["Asia/Tokyo"]
+    };
+
+    strtotime_with_rfc3339 => {
+        r#"<?php
+$ts = strtotime('2024-03-01T13:45:00+00:00');
+echo $ts === false ? 'bad' : 'ok';
+echo '|';
+echo date('Y-m-d H:i', $ts);
+"#,
+        ["ok|2024-03-01 13:45"]
+    };
+
+    datetime_create_from_format_weekday_name => {
+        r#"<?php
+$dt = DateTime::createFromFormat('D, d M Y H:i:s O', 'Tue, 01 Jan 2024 09:00:00 +0000');
+echo $dt !== false ? $dt->format('l') : 'bad';
+"#,
+        ["Tuesday"]
+    };
 }

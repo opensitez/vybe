@@ -343,4 +343,67 @@ echo $o->pair(b: 2, a: 3);
 "#,
         ["5"]
     };
+
+    anonymous_class_nested_calls_with_parent_variable => {
+        r#"<?php
+$tag = 'ok';
+$o = new class($tag) {
+    public function __construct(private string $prefix) {}
+    public function msg(string $s): string {
+        return $this->prefix . ':' . $s;
+    }
+};
+echo $o->msg('done');
+"#,
+        ["ok:done"]
+    };
+
+    anonymous_class_implements_array_access => {
+        r#"<?php
+$o = new class implements ArrayAccess {
+    private array $d = ['a' => 1];
+    public function offsetExists(mixed $o): bool { return array_key_exists($o, $this->d); }
+    public function offsetGet(mixed $o): mixed { return $this->d[$o]; }
+    public function offsetSet(mixed $o, mixed $v): void { $this->d[$o] = $v; }
+    public function offsetUnset(mixed $o): void { unset($this->d[$o]); }
+};
+$o['b'] = 2;
+echo $o['a'] . $o['b'];
+"#,
+        ["12"]
+    };
+
+    anonymous_class_magic_to_string => {
+        r#"<?php
+$o = new class {
+    public function __toString(): string { return 'anon'; }
+};
+echo (string)$o;
+"#,
+        ["anon"]
+    };
+
+anonymous_class_with_magic_call_static => {
+    r#"<?php
+$o = new class {
+    public static function __callStatic(string $name, array $args): mixed {
+        return $name . '(' . implode(',', $args) . ')';
+    }
+};
+$cn = get_class($o);
+echo $cn::missing('x', 'y');
+"#,
+    ["missing(x,y)"]
+};
+
+    anonymous_class_with_constructor_and_type_union => {
+        r#"<?php
+$cfg = new class(7) {
+    public function __construct(public int|string $id) {}
+    public function as_string(): string { return (string)$this->id; }
+};
+echo $cfg->as_string();
+"#,
+        ["7"]
+    };
 }

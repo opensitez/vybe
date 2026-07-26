@@ -1,4 +1,3 @@
-use super::helpers::run_prints;
 
 crate::php_cases! {
     mb_parse_str_basic => {

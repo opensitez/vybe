@@ -1,6 +1,5 @@
 use super::helpers::{compile_ok, run_prints};
 
-// ── PDO style ───────────────────────────────────────────────
 #[test]
 fn pdo_connect_sqlite() {
     compile_ok(r#"<?php $pdo = new PDO('sqlite:test.db');"#);
@@ -522,5 +521,281 @@ try {
 }
 "#,
         ["pdo"]
+    };
+
+    pdo_fetch_num_mode_indexes => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE users (id INTEGER, name TEXT)');
+$pdo->exec("INSERT INTO users VALUES (1, 'Ana')");
+$row = $pdo->query('SELECT id, name FROM users')->fetch(PDO::FETCH_NUM);
+echo $row[0];
+echo ':';
+echo $row[1];
+"#,
+        ["1:Ana"]
+    };
+
+    pdo_fetch_both_mode_returns_assoc_and_indexed => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE users (id INTEGER, name TEXT)');
+$pdo->exec("INSERT INTO users VALUES (2, 'Ben')");
+$row = $pdo->query('SELECT id, name FROM users')->fetch(PDO::FETCH_BOTH);
+echo $row['id'];
+echo '|';
+echo $row[1];
+"#,
+        ["2|Ben"]
+    };
+
+    pdo_fetch_column_collection => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE nums (n INTEGER)');
+$pdo->exec('INSERT INTO nums VALUES (1), (2), (3)');
+$rows = $pdo->query('SELECT n FROM nums')->fetchAll(PDO::FETCH_COLUMN, 0);
+echo implode('|', $rows);
+"#,
+        ["1|2|3"]
+    };
+
+    pdo_execute_bind_value_types => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE metrics (id INTEGER, score REAL, ok INTEGER)');
+$stmt = $pdo->prepare('INSERT INTO metrics (id, score, ok) VALUES (:id, :score, :ok)');
+$id = 7;
+$score = 3.5;
+$ok = true;
+$stmt->bindValue(':id', $id, PDO::PARAM_INT);
+$stmt->bindValue(':score', $score, PDO::PARAM_STR);
+$stmt->bindValue(':ok', $ok, PDO::PARAM_BOOL);
+$stmt->execute();
+$row = $pdo->query('SELECT score, ok FROM metrics')->fetch(PDO::FETCH_NUM);
+echo $row[0];
+echo '|';
+echo ($row[1] === 1 ? 'one' : 'zero');
+"#,
+        ["3.5|one"]
+    };
+
+    pdo_last_insert_id_is_string => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)');
+$pdo->exec("INSERT INTO t(name) VALUES ('z')");
+$id = $pdo->lastInsertId();
+echo is_string($id) ? 'str' : 'num';
+echo '|';
+echo ((int)$id > 0) ? 'yes' : 'no';
+"#,
+        ["str|yes"]
+    };
+
+    pdo_prepare_execute_empty_and_rebind => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE logs (msg TEXT, level INTEGER)');
+$stmt = $pdo->prepare('INSERT INTO logs (msg, level) VALUES (?, ?)');
+$msg = 'start';
+$lvl = 1;
+$stmt->execute([$msg, $lvl]);
+$msg = 'next';
+$lvl = 2;
+$stmt->execute([$msg, $lvl]);
+echo $pdo->query('SELECT COUNT(*) FROM logs')->fetchColumn();
+"#,
+        ["2"]
+    };
+
+    pdo_error_mode_exception_on_bad_query => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+try {
+    $pdo->exec('INSERT INTO missing_table VALUES (1)');
+    echo 'ok';
+} catch (PDOException $e) {
+    echo 'err';
+}
+"#,
+        ["err"]
+    };
+
+    pdo_fetch_column_offset => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE items (a INTEGER, b INTEGER, c INTEGER)');
+$pdo->exec('INSERT INTO items VALUES (1, 2, 3)');
+$stmt = $pdo->query('SELECT a, b, c FROM items');
+echo $stmt->fetchColumn(0);
+echo '|';
+echo $stmt->fetchColumn(2);
+"#,
+        ["1|3"]
+    };
+
+    pdo_query_or_fail_with_error => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+try {
+    $pdo->query('SELEC bad');
+    echo 'ok';
+} catch (PDOException $e) {
+    echo 'caught';
+}
+"#,
+        ["caught"]
+    };
+
+    pdo_pragma_user_version => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$row = $pdo->query('PRAGMA user_version')->fetch(PDO::FETCH_NUM);
+echo is_array($row) ? 'arr' : 'na';
+echo '|';
+echo $row[0];
+"#,
+        ["arr|0"]
+    };
+
+    pdo_bind_param_by_reference_updates_on_reuse => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE audit (n INTEGER)');
+$stmt = $pdo->prepare('INSERT INTO audit (n) VALUES (:n)');
+$n = 4;
+$stmt->bindParam(':n', $n, PDO::PARAM_INT);
+$stmt->execute();
+$n = 5;
+$stmt->execute();
+echo $pdo->query('SELECT COUNT(*) FROM audit')->fetchColumn();
+echo '|';
+echo $pdo->query('SELECT SUM(n) FROM audit')->fetchColumn();
+"#,
+        ["2|9"]
+    };
+
+    pdo_bound_null_is_ignored_param_type => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE logs (note TEXT)');
+$stmt = $pdo->prepare('INSERT INTO logs (note) VALUES (?)');
+$v = null;
+$stmt->bindValue(1, $v, PDO::PARAM_STR);
+$stmt->execute();
+$row = $pdo->query('SELECT note IS NULL FROM logs')->fetch(PDO::FETCH_NUM);
+echo $row[0];
+"#,
+        ["1"]
+    };
+
+    pdo_fetch_with_fetch_column_index => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE t (x INTEGER, y INTEGER)');
+$pdo->exec('INSERT INTO t VALUES (11, 22), (33, 44)');
+$stmt = $pdo->prepare('SELECT x, y FROM t ORDER BY x');
+$stmt->execute();
+echo $stmt->fetchColumn(1);
+echo '|';
+echo $stmt->fetchColumn(1);
+"#,
+        ["22|44"]
+    };
+
+    pdo_fetch_keypair_with_primitive_values => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE kv (k TEXT, v TEXT)');
+$pdo->exec("INSERT INTO kv VALUES ('a', 'x'), ('b', 'y')");
+$row = $pdo->query('SELECT k, v FROM kv')->fetchAll(PDO::FETCH_KEY_PAIR);
+echo is_array($row) ? 'arr' : 'bad';
+echo '|';
+echo $row['a'];
+"#,
+        ["arr|x"]
+    };
+
+    pdo_driver_name_reported_for_sqlite_memory => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+echo $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+"#,
+        ["sqlite"]
+    };
+
+    pdo_set_fetch_mode_default_assoc => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+$pdo->exec('CREATE TABLE m (k TEXT, v INTEGER)');
+$pdo->exec("INSERT INTO m VALUES ('alpha', 7)");
+$row = $pdo->query('SELECT k, v FROM m')->fetch();
+echo $row['k'];
+echo '|';
+echo $row['v'];
+"#,
+        ["alpha|7"]
+    };
+
+    pdo_prepare_execute_with_reused_statement => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->exec('CREATE TABLE items (id INTEGER, tag TEXT)');
+$stmt = $pdo->prepare('INSERT INTO items (id, tag) VALUES (?, ?)');
+$stmt->execute([1, 'first']);
+$stmt->execute([2, 'second']);
+echo $pdo->query('SELECT COUNT(*) FROM items')->fetchColumn();
+"#,
+        ["2"]
+    };
+
+    pdo_statement_error_info_for_bad_bind => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+try {
+    $pdo->prepare('SELECT * FROM bad')->execute([]);
+    echo 'ok';
+} catch (PDOException $e) {
+    echo 'err';
+}
+"#,
+        ["err"]
+    };
+
+    pdo_roll_back_without_active_transaction => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+echo $pdo->rollBack() ? 'rolled' : 'not';
+"#,
+        ["not"]
+    };
+
+    pdo_quote_double_with_numbers => {
+        r#"<?php
+$pdo = new PDO('sqlite::memory:');
+$q = $pdo->quote('123');
+echo str_starts_with($q, "'") ? 'quoted' : $q;
+"#,
+        ["quoted"]
     };
 }

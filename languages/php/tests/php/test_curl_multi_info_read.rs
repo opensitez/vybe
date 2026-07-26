@@ -1,4 +1,3 @@
-use super::helpers::run_prints;
 
 crate::php_cases! {
     curl_multi_info_read_messages => {

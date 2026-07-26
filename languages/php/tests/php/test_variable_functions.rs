@@ -1,4 +1,8 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
+
+fn assert_output(src: &str, expected: &[&str]) {
+    assert_eq!(run_prints(src), expected.iter().map(|s| (*s).to_string()).collect::<Vec<_>>());
+}
 
 // ── isset on chained array key access ────────────────────────────
 #[test]
@@ -297,5 +301,89 @@ unset($b->item);
 echo isset($b->item) ? 'set' : 'gone';
 echo $b->qty;
 "#,
+    );
+}
+
+#[test]
+fn variable_function_call_runtime_result() {
+    assert_output(
+        r#"<?php
+$fn = 'strlen';
+echo $fn('php') . '|';
+$fn = 'strrev';
+echo $fn('php');
+"#,
+        &["3|hor"],
+    );
+}
+
+#[test]
+fn variable_function_with_callable_array_runtime() {
+    assert_output(
+        r#"<?php
+class Logger {
+    public function label(string $name): string { return "log:$name"; }
+}
+$obj = new Logger();
+$callable = [$obj, 'label'];
+echo is_callable($callable) . '|';
+echo $callable('trace');
+"#,
+        &["1|log:trace"],
+    );
+}
+
+#[test]
+fn dynamic_property_method_invocation_runtime() {
+    assert_output(
+        r#"<?php
+class Greeter {
+    public string $method = 'greet';
+    public function greet(string $name): string { return "hi $name"; }
+}
+$g = new Greeter();
+$method = $g->method;
+echo $g->$method('world');
+"#,
+        &["hi world"],
+    );
+}
+
+#[test]
+fn dynamic_property_reference_and_unset_runtime() {
+    assert_output(
+        r#"<?php
+$bag = [];
+$name = 'value';
+$bag[$name] = 42;
+echo $bag['value'] . '|';
+unset($bag[$name]);
+echo array_key_exists('value', $bag) ? 'set' : 'missing';
+"#,
+        &["42|missing"],
+    );
+}
+
+#[test]
+fn call_user_func_with_anonymous_runtime() {
+    assert_output(
+        r#"<?php
+$op = fn(int $x, int $y): int => $x + $y;
+echo call_user_func($op, 2, 3) . '|';
+echo call_user_func_array($op, [4, 5]);
+"#,
+        &["5|9"],
+    );
+}
+
+#[test]
+fn variable_function_edge_with_magic_constants_runtime() {
+    assert_output(
+        r#"<?php
+function marker() { return __FUNCTION__; }
+$func = 'marker';
+echo $func();
+"#,
+        &["marker"],
     );
 }

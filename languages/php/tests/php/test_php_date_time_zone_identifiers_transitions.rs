@@ -114,3 +114,41 @@ echo "Y=" . idate("Y", $ts) . " m=" . idate("m", $ts) . " d=" . idate("d", $ts);
 "#,
     );
 }
+
+#[test]
+fn test_php_datetimezone_transitions_minmax_range() {
+    let out = run_prints(
+        r#"<?php
+$tz = new DateTimeZone("America/Sao_Paulo");
+$transitions = $tz->getTransitions(strtotime("2024-01-01"), strtotime("2024-12-31"));
+echo is_array($transitions) ? 'array' : 'no';
+echo '|';
+echo count($transitions) > 0 ? 'has' : 'no';
+"#,
+    );
+    assert_eq!(out, vec!["array|has"]);
+}
+
+#[test]
+fn test_php_datetimezone_default_timezone_switch() {
+    let out = run_prints(
+        r#"<?php
+$before = date_default_timezone_get();
+date_default_timezone_set('UTC');
+echo date_default_timezone_get() === 'UTC' ? 'utc' : 'no';
+date_default_timezone_set($before);
+"#,
+    );
+    assert_eq!(out, vec!["utc"]);
+}
+
+#[test]
+fn test_php_datetimezone_identifier_country_case() {
+    let out = run_prints(
+        r#"<?php
+$zones = DateTimeZone::listIdentifiers(DateTimeZone::PER_COUNTRY, 'fr');
+echo is_array($zones) && count($zones) === 0 ? 'none' : 'has';
+"#,
+    );
+    assert_eq!(out, vec!["has"]);
+}

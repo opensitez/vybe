@@ -114,4 +114,22 @@ echo md5('x') === md5_file($uri) ? 'match' : 'diff';
 "#,
         ["match"]
     };
+
+    hash_hmac_algos_returns_array => {
+        r#"<?php
+echo is_array(hash_hmac_algos()) && in_array('sha256', hash_hmac_algos(), true) ? 'hmac_algos_ok' : 'err';
+"#,
+        ["hmac_algos_ok"]
+    };
+
+    hash_init_update_final_incremental => {
+        r#"<?php
+$ctx = hash_init('sha256');
+hash_update($ctx, 'hello ');
+hash_update($ctx, 'world');
+echo hash_final($ctx);
+"#,
+        ["b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"]
+    };
 }
+

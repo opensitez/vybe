@@ -195,6 +195,39 @@ echo ($v ?: 'falsy') . '|' . ($v ?? 'null');
     );
 }
 
+#[test]
+fn null_coalesce_and_elvis_precedence_chain() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$v = null;
+echo ($v ?: 'fallback') . '|';
+echo ($v ?? 'fallback') . '|';
+$empty = '';
+echo $empty ?: 'fallback';
+"#
+        ),
+        vec!["fallback|fallback|fallback"]
+    );
+}
+
+#[test]
+fn nullsafe_then_null_coalesce_precedence() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Profile { public ?string $city = null; }
+class User { public ?Profile $profile = null; }
+$u = new User;
+echo ($u?->profile?->city ?? 'none') . '|';
+$u->profile = new Profile();
+echo ($u->profile?->city ?? 'none');
+"#
+        ),
+        vec!["none|none"]
+    );
+}
+
 crate::php_cases! {
     nullsafe_operator_calls_method_when_present => {
         r#"<?php
@@ -215,4 +248,56 @@ echo $u->profile?->missing ?? 'none';
 "#,
         ["none"]
     };
+}
+
+#[test]
+fn nullsafe_on_null_then_fallback_with_parentheses() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Container {
+    public ?string $value = null;
+}
+$x = null;
+echo ($x?->value) ?? 'missing';
+$y = new Container();
+echo '|';
+echo ($y?->value) ?? 'missing';
+"#,
+        ),
+        vec!["missing|missing"]
+    );
+}
+
+#[test]
+fn null_coalescing_falsey_numeric_and_empty_string_matrix() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo (0 ?? 'zero') . '|';
+echo ('0' ?? 'zero') . '|';
+echo ('' ?? 'empty');
+"#,
+        ),
+        vec!["0|0|"]
+    );
+}
+
+#[test]
+fn nullsafe_and_ternary_precedence_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Profile {
+    public function city(): ?string { return null; }
+}
+class User { public ?Profile $profile = null; }
+$u = new User();
+echo ($u?->profile?->city() ?: 'fallback') . '|';
+$u->profile = new Profile();
+echo ($u?->profile?->city() ?: 'fallback');
+"#,
+        ),
+        vec!["fallback|fallback"]
+    );
 }

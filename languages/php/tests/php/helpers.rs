@@ -122,9 +122,19 @@ fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
         R.call_once(vybe_language_php::register);
     }
     let module = vybe_language_php::parse(src)?;
-    let profile = vybe_compiler::profile::parse_profile(vybe_language_php::profile_source())
-        .map_err(|e| format!("profile parse failed: {}", e))?;
+    let profile = php_profile();
     vybe_compiler::compiler::Compiler::with_profile(profile).compile(&module)
+}
+
+fn php_profile() -> vybe_compiler::profile::LanguageProfile {
+    static PROFILE: std::sync::OnceLock<vybe_compiler::profile::LanguageProfile> =
+        std::sync::OnceLock::new();
+    PROFILE
+        .get_or_init(|| {
+            vybe_compiler::profile::parse_profile(vybe_language_php::profile_source())
+                .expect("php profile parse failed")
+        })
+        .clone()
 }
 
 /// Asserts that `src` parses + compiles cleanly. Used by ~all PHP test

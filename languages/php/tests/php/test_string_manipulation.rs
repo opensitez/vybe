@@ -225,3 +225,129 @@ fn mb_strpos_unicode() {
         vec!["6"]
     );
 }
+
+#[test]
+fn strpos_offset_negative_returns_from_end() {
+    assert_eq!(
+        run_prints(r#"<?php echo strpos("abcabc", "c", -3); "#),
+        vec!["5"]
+    );
+}
+
+#[test]
+fn substr_negative_length_cutoff() {
+    assert_eq!(
+        run_prints(r#"<?php echo substr("abcdef", 1, -1); "#),
+        vec!["bcde"]
+    );
+}
+
+#[test]
+fn substr_with_zero_length_is_empty() {
+    assert_eq!(
+        run_prints(r#"<?php echo substr("abcdef", 2, 0) === "" ? "empty" : "full"; "#),
+        vec!["empty"]
+    );
+}
+
+#[test]
+fn str_repeat_zero_and_one() {
+    assert_eq!(
+        run_prints(r#"<?php echo str_repeat("x", 0); echo "|"; echo str_repeat("y", 1); "#),
+        vec!["|y"]
+    );
+}
+
+#[test]
+fn strtr_map_multiple_overlaps_runtime() {
+    assert_eq!(
+        run_prints(r#"<?php echo strtr("abcabc", ["ab"=>"XY", "c"=>"Z"]); "#),
+        vec!["XYZXYZ"]
+    );
+}
+
+#[test]
+fn strpbrk_no_match_runtime() {
+    assert_eq!(
+        run_prints(r#"<?php echo var_export(strpbrk("hello", "123"), true); "#),
+        vec!["false"]
+    );
+}
+
+#[test]
+fn mb_substr_with_negative_offset_runtime() {
+    assert_eq!(
+        run_prints(r#"<?php echo mb_substr('héllo', -3); "#),
+        vec!["llo"]
+    );
+}
+
+#[test]
+fn mb_strtolower_preserves_multibyte_runtime() {
+    assert_eq!(
+        run_prints(r#"<?php echo mb_strtolower('ÄBCÖ'); "#),
+        vec!["äbcö"]
+    );
+}
+
+#[test]
+fn str_word_count_mode_ordered_positions_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$m = str_word_count("blue green red", 2);
+echo implode(',', array_keys($m));
+echo "|";
+echo implode('|', array_values($m));
+"#
+        ),
+        vec!["0,5,11|blue|green|red"]
+    );
+}
+
+#[test]
+fn str_repeat_boundaries_and_composition_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo str_repeat("x", 3);
+echo "|";
+echo strlen(str_repeat("ab", 0));
+echo "|";
+echo str_repeat(" ", 2);
+"#
+        ),
+        vec!["xxx|0|  "]
+    );
+}
+
+#[test]
+fn explode_and_join_with_negative_limit_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$parts = explode("/", "a/b/c/d", -1);
+echo count($parts);
+echo "|";
+echo $parts[2];
+"#
+        ),
+        vec!["3|c"]
+    );
+}
+
+#[test]
+fn strtok_reseed_and_delimiter_variants_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strtok("x|y;z,w", "|,;");
+echo "|";
+echo strtok("|,;");
+echo "|";
+echo strtok("|,;");
+"#
+        ),
+        vec!["x|y|z"]
+    );
+}

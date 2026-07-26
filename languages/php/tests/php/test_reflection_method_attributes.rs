@@ -1,4 +1,3 @@
-use super::helpers::run_prints;
 
 crate::php_cases! {
     reflection_method_get_attributes => {

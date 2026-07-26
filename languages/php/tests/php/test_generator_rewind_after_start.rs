@@ -1,4 +1,3 @@
-use super::helpers::run_prints;
 
 crate::php_cases! {
     generator_rewind_after_start_throws => {

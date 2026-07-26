@@ -184,4 +184,59 @@ finally { fclose($fp); }
 "#,
         ["clone-res"]
     };
+
+    instantiate_self_from_static_scope => {
+        r#"<?php
+class Seed {
+    public function __construct(public string $name) {}
+    public static function make(string $name): self {
+        return new self($name);
+    }
+}
+echo Seed::make('root')->name;
+"#,
+        ["root"]
+    };
+
+    instantiate_via_variable_with_qualifier => {
+        r#"<?php
+namespace Demo;
+class Worker { public string $role = 'ok'; }
+$class_name = __NAMESPACE__ . '\\\\' . 'Worker';
+$obj = new $class_name;
+echo $obj->role;
+"#,
+        ["ok"]
+    };
+
+    instantiate_with_parenthesized_new_class_name => {
+        r#"<?php
+class Boxy {
+    public function __construct(public string $v) {}
+}
+$parts = ['B', 'o', 'x', 'y'];
+$name = implode('', $parts);
+$obj = new $name('x');
+echo $obj->v;
+"#,
+        ["x"]
+    };
+
+    instantiate_from_eval_defined_class => {
+        r#"<?php
+eval('class RuntimeBuilt {}');
+echo (new RuntimeBuilt()) instanceof RuntimeBuilt ? 'run' : 'no';
+"#,
+        ["run"]
+    };
+
+    instantiate_trait_string_as_class_must_fail => {
+        r#"<?php
+trait TraitLike {}
+$name = 'TraitLike';
+try { new $name(); echo 'ok'; }
+catch (Error $e) { echo 'trait-var'; }
+"#,
+        ["trait-var"]
+    };
 }

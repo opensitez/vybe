@@ -145,4 +145,133 @@ echo is_string($lc['decimal_point']) ? 'dp' : 'no';
 "#,
         ["dp"]
     };
+
+    number_format_negative_value => {
+        r#"<?php
+echo number_format(-1234.56, 2, '.', ',');
+"#,
+        ["-1,234.56"]
+    };
+
+    number_format_zero_pad_width => {
+        r#"<?php
+echo sprintf('%08d', 1234);
+"#,
+        ["00001234"]
+    };
+
+    vsprintf_supports_multiple_types => {
+        r#"<?php
+echo vsprintf('%s-%d-%.2f', ['item', 7, 2.5]);
+"#,
+        ["item-7-2.50"]
+    };
+
+    sscanf_with_mismatched_input_still_parses_prefix => {
+        r#"<?php
+[$a, $b] = sscanf('1:2:3', '%d:%d');
+echo "$a|$b";
+"#,
+        ["1|2"]
+    };
+
+    htmlspecialchars_disables_double_encode => {
+        r#"<?php
+echo htmlspecialchars('<b>safe</b>', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8', false);
+"#,
+        ["&lt;b&gt;safe&lt;/b&gt;"]
+    };
+
+    html_entity_decode_double_quotes => {
+        r#"<?php
+echo html_entity_decode('&quot;x&quot;');
+"#,
+        ["\"x\""]
+    };
+
+    quotemeta_escapes_slash_chars => {
+        r#"<?php
+echo quotemeta('a/b|c');
+"#,
+        ["a/b\\|c"]
+    };
+
+    nl2br_with_xhtml_true => {
+        r#"<?php
+echo nl2br("x\n", true);
+"#,
+        ["x<br />\n"]
+    };
+
+    number_format_custom_thousands_sep => {
+        r#"<?php
+echo number_format(1234567.89, 2, ',', '.');
+"#,
+        ["1.234.567,89"]
+    };
+
+    sscanf_parses_prefixed_sign => {
+        r#"<?php
+[$a, $b] = sscanf('+007:abc', '%d:%s');
+echo $a . '|' . $b;
+"#,
+        ["7|abc"]
+    };
+
+    str_repeat_zero => {
+        r#"<?php
+echo str_repeat('x', 0) === '' ? 'empty' : 'filled';
+"#,
+        ["empty"]
+    };
+
+    stripcslashes_addslashes_roundtrip => {
+        r#"<?php
+$s = addslashes("a\\nb\\'c\\\"d");
+echo stripcslashes($s);
+"#,
+        ["a\nb'cd"]
+    };
+
+    html_entity_decode_without_double_quotes => {
+        r#"<?php
+echo html_entity_decode('&quot;x&quot;', ENT_COMPAT, 'UTF-8');
+"#,
+        ["\"x\""]
+    };
+
+    number_format_uses_optional_precision => {
+        r#"<?php
+echo number_format(12.34567, 3, ',', '');
+"#,
+        ["12,346"]
+    };
+
+    str_word_count_mode2_returns_positions => {
+        r#"<?php
+$m = str_word_count('ab cd ef', 2);
+echo implode(',', array_keys($m));
+"#,
+        ["0,3,6"]
+    };
+
+    quoted_printable_encoded_decode_roundtrip => {
+        r#"<?php
+$encoded = quoted_printable_encode('Cafe: Crème');
+$decoded = quoted_printable_decode($encoded);
+echo strpos($encoded, '=') !== false ? 'quoted' : 'plain';
+echo '|';
+echo $decoded;
+"#,
+        ["quoted|Cafe: Crème"]
+    };
+
+    urlencode_and_rawurlencode_different_spaces => {
+        r#"<?php
+echo urlencode('a b');
+echo '|';
+echo rawurlencode('a b');
+"#,
+        ["a+b|a%20b"]
+    };
 }

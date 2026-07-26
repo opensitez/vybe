@@ -192,3 +192,97 @@ echo count($ul->users);
 "#,
     );
 }
+
+#[test]
+fn test_php_readonly_class_with_runtime_property_reading() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+readonly class SessionState {
+    public function __construct(
+        public int $id,
+        public string $name,
+        public bool $active = true
+    ) {}
+}
+
+$state = new SessionState(1, "auth");
+echo $state->id . "|" . $state->name . "|" . ($state->active ? "yes" : "no");
+"#,
+        ),
+        vec!["1|auth|yes"]
+    );
+}
+
+#[test]
+fn test_php_readonly_property_reassignment_is_rejected() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class ImmutableCounter {
+    public function __construct(public readonly int $value) {}
+
+    public function safeSet(int $next): string {
+        try {
+            $this->value = $next;
+            return "ok";
+        } catch (Error $e) {
+            return "error";
+        }
+    }
+}
+
+$counter = new ImmutableCounter(4);
+echo $counter->value . "|" . $counter->safeSet(7) . "|" . $counter->value;
+"#,
+        ),
+        vec!["4|error|4"]
+    );
+}
+
+#[test]
+fn test_php_final_factory_of_readonly_instance() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+final class Builder {
+    private function __construct(
+        public readonly string $token,
+        public readonly int $ttl
+    ) {}
+
+    public static function fromDate(string $prefix, int $year): self {
+        return new self("$prefix-$year", 900);
+    }
+}
+
+$builder = Builder::fromDate("token", 2026);
+echo $builder->token . "|" . $builder->ttl;
+"#,
+        ),
+        vec!["token-2026|900"]
+    );
+}
+
+#[test]
+fn test_php_readonly_class_with_parent_readonly_property() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+readonly class BaseConfig {
+    public function __construct(public readonly string $env) {}
+}
+
+readonly class ServiceConfig extends BaseConfig {
+    public function __construct(string $env, public readonly string $region) {
+        parent::__construct($env);
+    }
+}
+
+$cfg = new ServiceConfig("prod", "eu");
+echo $cfg->env . "|" . $cfg->region;
+"#,
+        ),
+        vec!["prod|eu"]
+    );
+}

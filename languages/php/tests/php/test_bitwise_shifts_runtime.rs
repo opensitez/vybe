@@ -195,4 +195,35 @@ echo unpack('n', $bytes)[1];
 "#,
         ["258"]
     };
+
+    shift_after_addition => {
+        r#"<?php
+echo 1 + 2 << 2;
+echo '|';
+echo (1 + 2) << 2;
+"#,
+        ["8|12"]
+    };
+
+    shift_before_addition => {
+        r#"<?php
+echo 1 << 2 + 1;
+echo '|';
+echo (1 << 2) + 1;
+"#,
+        ["8|5"]
+    };
+
+    xor_swap_no_temp_with_precedence => {
+        r#"<?php
+$a = 3;
+$b = 10;
+$a ^= $b;
+$b ^= $a;
+$a ^= $b;
+echo $a;
+echo $b;
+"#,
+        ["1010"]
+    };
 }

@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Variable scoping ────────────────────────────────────────
 #[test]
@@ -74,4 +74,118 @@ fn class_constants() {
     compile_ok(
         "<?php class Config { const DB = 'mysql'; const PORT = 3306; } echo Config::DB . ':' . Config::PORT;",
     );
+}
+
+#[test]
+fn static_property_scope() {
+    compile_ok(
+        "<?php class Counter { public static int $count = 0; public static function next(): int { return self::$count++; } }\nCounter::$count = 5;\necho Counter::next();\necho '|';\necho Counter::next();",
+    );
+}
+
+#[test]
+fn closure_by_reference_capture() {
+    compile_ok(
+        "<?php $value = 1; $inc = function() use (&$value) { $value++; }; $inc(); $inc(); echo $value;",
+    );
+}
+
+#[test]
+fn nested_closure_capture_from_arrow_function() {
+    compile_ok(
+        "<?php $factor = 2; $double = fn(int $n) => $n * $factor; $twice = function(int $n) use ($double): int { return $double($n); }; echo $twice(4);",
+    );
+}
+
+#[test]
+fn static_vars_in_functions_isolated() {
+    compile_ok(
+        "<?php function next_id(): int { static $id = 0; return ++$id; } echo next_id(); echo '-'; echo next_id();",
+    );
+}
+
+#[test]
+fn dynamic_variable_reference_and_functions() {
+    compile_ok(
+        "<?php $name = 'target'; $fn = function() use ($name) { return $name; }; echo $fn();\n$var = 'name'; echo '|' . $$var;",
+    );
+}
+
+#[test]
+fn global_scope_runtime_bridge() {
+    let out = run_prints(
+        r#"<?php
+$count = 10;
+function increment_global(): int {
+    global $count;
+    return ++$count;
+}
+echo $count . '|';
+echo increment_global() . '|';
+echo $count;
+"#,
+    );
+    assert_eq!(out, vec!["10|11|11"]);
+}
+
+#[test]
+fn closure_capture_by_value_and_by_reference_runtime() {
+    let out = run_prints(
+        r#"<?php
+$base = 5;
+$value_copy = $base;
+$value_ref = &$base;
+$f = function() use ($value_copy) { return $value_copy + 1; };
+$g = function() use (&$value_ref) { return ++$value_ref; };
+echo $base . '|';
+echo $f() . '|';
+$base = 8;
+echo $g() . '|';
+echo $base;
+"#,
+    );
+    assert_eq!(out, vec!["5|6|9|9"]);
+}
+
+#[test]
+fn static_scope_retains_between_calls_runtime() {
+    let out = run_prints(
+        r#"<?php
+function stepper(): int {
+    static $counter = 0;
+    return ++$counter;
+}
+echo stepper() . '|' . stepper() . '|' . stepper();
+"#,
+    );
+    assert_eq!(out, vec!["1|2|3"]);
+}
+
+#[test]
+fn nested_function_visibility_runtime() {
+    let out = run_prints(
+        r#"<?php
+$prefix = 'outer';
+function outer_scope(): string {
+    function inner_scope_fn(): string { return 'inner'; }
+    return inner_scope_fn();
+}
+echo outer_scope() . '|' . inner_scope_fn();
+"#,
+    );
+    assert_eq!(out, vec!["inner|inner"]);
+}
+
+#[test]
+fn for_loop_index_scoping_runtime() {
+    let out = run_prints(
+        r#"<?php
+$sum = 0;
+for ($i = 0; $i < 3; $i++) {
+    $sum += $i;
+}
+echo $sum . '|' . $i;
+"#,
+    );
+    assert_eq!(out, vec!["3|3"]);
 }

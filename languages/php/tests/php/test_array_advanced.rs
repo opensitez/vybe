@@ -809,3 +809,220 @@ echo $result["b"];
         &["199310"]
     );
 }
+
+#[test]
+fn array_fill_negative_start_with_string_value() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$vals = array_fill(-2, 4, "z");
+echo implode(",", $vals);
+echo array_key_first($vals);
+echo array_key_last($vals);
+"#
+        ),
+        &["z,z,z,z-24"]
+    );
+}
+
+#[test]
+fn array_keys_with_search_and_strict_mode() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$values = ["a" => "1", "b" => 1, "c" => "1"];
+$foundLoose = array_keys($values, "1");
+echo count($foundLoose);
+$foundStrict = array_keys($values, 1, true);
+echo count($foundStrict);
+"#
+        ),
+        &["3|2"]
+    );
+}
+
+#[test]
+fn array_chunk_empty_and_one_size() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$empty = array_chunk([], 3);
+echo count($empty);
+$single = array_chunk([1], 3, true);
+echo count($single);
+echo array_key_first($single[0]);
+echo $single[0][0];
+"#
+        ),
+        &["0101"]
+    );
+}
+
+#[test]
+fn array_replace_allows_non_string_keys() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$base = [1 => "one", "2" => "string-two", 3.0 => "float-three"];
+$patch = [true => "bool-key", 2 => "int-two"];
+$result = array_replace($base, $patch);
+echo $result[1];
+echo "|";
+echo $result[2];
+echo "|";
+echo $result[3];
+"#
+        ),
+        &["bool-key|int-two|float-three"]
+    );
+}
+
+#[test]
+fn array_slice_offsets_and_flags() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$data = ["a" => 1, "b" => 2, "c" => 3, "d" => 4];
+$tail = array_slice($data, -3, 2, true);
+echo implode(",", array_keys($tail)) . "|" . implode(",", $tail);
+echo "|";
+$values = array_slice($data, 1, 2, false);
+echo implode("", $values);
+"#
+        ),
+        &["b,c|2,3|23"]
+    );
+}
+
+#[test]
+fn array_splice_string_offset_and_preserve_values() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$data = ["a" => 1, "b" => 2, "c" => 3, "d" => 4];
+$removed = array_splice($data, "1", 2, [9, 10]);
+echo implode(",", $data);
+echo "|";
+echo implode(",", $removed);
+"#
+        ),
+        &["1,9,10,4|2,3"]
+    );
+}
+
+#[test]
+fn array_multisort_with_multiple_arrays_and_descending_order() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$scores = [4, 2, 5];
+$names = ["Bob", "Alice", "Cara"];
+array_multisort($scores, SORT_DESC, $names, SORT_ASC);
+echo implode(",", $scores);
+echo "|";
+echo implode(",", $names);
+"#
+        ),
+        &["5,4,2|Alice,Bob,Cara"]
+    );
+}
+
+#[test]
+fn array_values_reindexes_preserving_values() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$data = ["x" => "a", "y" => "b", 5 => "c"];
+$values = array_values($data);
+echo implode(",", $values);
+echo "|";
+echo $values[0];
+echo $values[1];
+echo $values[2];
+"#
+        ),
+        &["a,b,c|abc"]
+    );
+}
+
+#[test]
+fn array_sum_string_numbers_and_floats() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$values = ["1", 2, 3.5, "4.5"];
+echo array_sum($values);
+"#
+        ),
+        &["11"]
+    );
+}
+
+#[test]
+fn array_product_empty_or_unit() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo array_product([]);
+echo "|";
+echo array_product([5]);
+echo "|";
+echo array_product([2, 2.5, 4]);
+"#
+        ),
+        &["10|10|20"]
+    );
+}
+
+#[test]
+fn array_search_offset_search_for_duplicates() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$values = ["zero", "needle", "skip", "needle", "end"];
+echo array_search("needle", $values, true);
+echo "|";
+echo array_search("needle", $values, true, 3);
+"#
+        ),
+        &["1|3"]
+    );
+}
+
+#[test]
+fn array_combine_with_numeric_string_keys() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$keys = ["10", 20, "30.0"];
+$vals = ["a", "b", "c"];
+$combined = array_combine($keys, $vals);
+echo $combined["10"];
+echo $combined["20"];
+echo isset($combined[30.0]) ? "has30" : "no30";
+echo $combined[0] ?? "missing0";
+"#
+        ),
+        &["abhas30missing0"]
+    );
+}
+
+#[test]
+fn array_key_last_with_all_reference_keys() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$data = [];
+$data[] = 10;
+$data["1"] = 20;
+$data["alpha"] = 30;
+echo array_key_first($data);
+echo "|";
+echo array_key_last($data);
+echo "|";
+echo count($data);
+"#
+        ),
+        &["0|alpha|3"]
+    );
+}

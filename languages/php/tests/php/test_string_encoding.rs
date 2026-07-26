@@ -171,6 +171,80 @@ fn ctype_upper_lower() {
     );
 }
 
+#[test]
+fn base64url_safe_characters_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$data = "a+b/c=d?&";
+echo base64_encode($data);
+echo "\n";
+echo base64_decode(base64_encode($data));
+"#
+        ),
+        vec!["YStiL2M9ZD8m|a+b/c=d?&"]
+    );
+}
+
+#[test]
+fn bin2hex_and_hex2bin_roundtrip_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$raw = "\x00\x01\xffABC";
+echo bin2hex($raw);
+echo "\n";
+echo hex2bin(bin2hex($raw)) === $raw ? 'same' : 'diff';
+"#
+        ),
+        vec!["0001ff414243|same"]
+    );
+}
+
+#[test]
+fn urldecode_respects_plus_as_space_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo urldecode("a+b+c");
+echo "\n";
+echo rawurldecode("a%2Bb%2Bc");
+"#
+        ),
+        vec!["a b c|a+b+c"]
+    );
+}
+
+#[test]
+fn json_encode_escape_avoids_control() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$value = ["path" => "café", "n" => 2];
+$json = json_encode($value, JSON_UNESCAPED_UNICODE);
+echo $json;
+echo "\n";
+echo json_decode($json, true)['path'];
+"#
+        ),
+        vec!["{\"path\":\"café\",\"n\":2}|café"]
+    );
+}
+
+#[test]
+fn base64_decode_with_strict_false_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo base64_decode('@@', false) === false ? 'invalid' : 'valid';
+echo "\n";
+echo base64_decode('@@', true) === false ? 'invalid' : 'valid';
+"#
+        ),
+        vec!["valid|invalid"]
+    );
+}
+
 // ── Hash functions ────────────────────────────────────────────
 
 #[test]
@@ -199,5 +273,91 @@ fn hash_hmac() {
     assert_eq!(
         run_prints(r#"<?php $hmac = hash_hmac('sha256', 'message', 'key'); echo strlen($hmac); "#),
         vec!["64"]
+    );
+}
+
+#[test]
+fn urlencode_preserves_tilde_literal() {
+    assert_eq!(
+        run_prints(r#"<?php echo urlencode('~'); "#),
+        vec!["~"]
+    );
+}
+
+#[test]
+fn urlencode_space_and_plus_are_encoded_differently_by_variant() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$raw = 'a b+c';
+echo urlencode($raw);
+echo '|';
+echo rawurlencode($raw);
+"#
+        ),
+        vec!["a+b%2Bc|a%20b%2Bc"]
+    );
+}
+
+#[test]
+fn rawurlencode_percent_sign_and_plus() {
+    assert_eq!(
+        run_prints(r#"<?php echo rawurlencode('%2B'); "#),
+        vec!["%252B"]
+    );
+}
+
+#[test]
+fn html_entity_decode_hex_numeric_reference() {
+    assert_eq!(
+        run_prints(r#"<?php echo html_entity_decode('&#x41;'); "#),
+        vec!["A"]
+    );
+}
+
+#[test]
+fn base64_decode_strict_with_newline_is_valid() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$with_newline = "SGVsbG8K" . "\n" . "V29ybGQ=";
+echo base64_decode($with_newline, true) === false ? 'invalid' : 'valid';
+echo '|';
+echo base64_decode($with_newline, false) !== false ? 'valid' : 'invalid';
+"#
+        ),
+        vec!["invalid|valid"]
+    );
+}
+
+#[test]
+fn ctype_alpha_empty_string_runtime() {
+    assert_eq!(
+        run_prints(r#"<?php echo ctype_alpha('') ? 'yes' : 'no'; "#),
+        vec!["no"]
+    );
+}
+
+#[test]
+fn ctype_alnum_underscore_is_false_runtime() {
+    assert_eq!(
+        run_prints(r#"<?php echo ctype_alnum('hello_world') ? 'yes' : 'no'; "#),
+        vec!["no"]
+    );
+}
+
+#[test]
+fn base64_encode_empty_runtime() {
+    assert_eq!(
+        run_prints(r#"<?php echo base64_encode(''); "#),
+        vec![""]
+    );
+}
+
+#[test]
+fn md5_empty_string_runtime() {
+    assert_eq!(
+        run_prints(r#"<?php echo md5(''); "#),
+        vec!["d41d8cd98f00b204e9800998ecf8427e"]
     );
 }

@@ -340,4 +340,216 @@ $f->resume('2');
 "#,
         ["12end"]
     };
+
+    fiber_start_only_once_throws_on_second_start => {
+        r#"<?php
+$f = new Fiber(function (): void {
+    Fiber::suspend('first');
+});
+$f->start();
+try {
+    $f->start();
+    echo 'double';
+} catch (FiberError) {
+    echo 'blocked';
+}
+"#,
+        ["blocked"]
+    };
+
+    fiber_resume_when_terminated_throws => {
+        r#"<?php
+$f = new Fiber(function (): int { return 4; });
+$f->start();
+try {
+    $f->resume();
+    echo 'ok';
+} catch (FiberError $e) {
+    echo 'stopped';
+}
+"#,
+        ["stopped"]
+    };
+
+    fiber_throw_from_within_calls_caller_exception => {
+        r#"<?php
+$f = new Fiber(function (): void {
+    throw new Exception('inside');
+});
+try {
+    $f->start();
+    echo 'unreached';
+} catch (Exception $e) {
+    echo $e->getMessage();
+}
+"#,
+        ["inside"]
+    };
+
+    fiber_suspend_can_return_null => {
+        r#"<?php
+$f = new Fiber(function (): void {
+    $v = Fiber::suspend();
+    echo $v === null ? 'null' : 'set';
+});
+$f->start();
+$f->resume('payload');
+"#,
+        ["nullnull"]
+    };
+
+    fiber_nested_within_fiber => {
+        r#"<?php
+$inner = new Fiber(function (): string {
+    return 'inner';
+});
+$outer = new Fiber(function () use ($inner): string {
+    $inner->start();
+    return $inner->getReturn() . '-outer';
+});
+$outer->start();
+echo $outer->getReturn();
+"#,
+        ["inner-outer"]
+    };
+
+    generator_yield_key_preserved_in_foreach => {
+        r#"<?php
+function gen_keys() {
+    yield 0 => 'zero';
+    yield 2 => 'two';
+}
+$out = [];
+foreach (gen_keys() as $k => $v) {
+    $out[] = $k . ':' . $v;
+}
+echo implode('|', $out);
+"#,
+        ["0:zero|2:two"]
+    };
+
+    generator_send_after_suspend => {
+        r#"<?php
+function gen_values() {
+    $first = yield 'a';
+    echo $first;
+    yield $first . 'b';
+}
+$g = gen_values();
+$x = $g->current();
+echo $x;
+$x = $g->send('z');
+echo $x;
+"#,
+        ["azb"]
+    };
+
+    generator_rewind_and_iter => {
+        r#"<?php
+function nums() { yield 1; yield 2; yield 3; }
+$g = nums();
+$vals = [];
+$g->rewind();
+while ($g->valid()) {
+    $vals[] = $g->current();
+    $g->next();
+}
+echo implode(',', $vals);
+"#,
+        ["1,2,3"]
+    };
+
+    fiber_double_resume_without_start_is_error => {
+        r#"<?php
+$f = new Fiber(function (): void {
+    Fiber::suspend('first');
+});
+$f->start();
+echo '|';
+try {
+    $f->resume();
+    echo 'running';
+} catch (FiberError $e) {
+    echo 'err1';
+}
+$f->resume();
+echo '|';
+try {
+    $f->resume();
+    echo 'second';
+} catch (FiberError $e) {
+    echo 'stopped';
+}
+"#,
+        ["first|running|stopped"]
+    };
+
+    fiber_get_return_after_exception_is_error => {
+        r#"<?php
+$f = new Fiber(function (): void {
+    throw new RuntimeException('boom');
+});
+try {
+    $f->start();
+} catch (RuntimeException $e) {
+    echo $e->getMessage();
+}
+try {
+    $f->getReturn();
+    echo '|bad';
+} catch (FiberError) {
+    echo '|blocked';
+}
+"#,
+        ["boom|blocked"]
+    };
+
+    fiber_resume_to_throw_exception_to_fiber => {
+        r#"<?php
+$f = new Fiber(function (): void {
+    try {
+        Fiber::suspend('enter');
+    } catch (Throwable $e) {
+        echo 'caught:' . $e->getMessage();
+    }
+});
+echo $f->start();
+try {
+    $f->throw(new RuntimeException('from-caller'));
+} catch (FiberError) {
+    echo '|throw-failed';
+}
+"#,
+        ["enter|caught:from-caller"]
+    };
+
+    fiber_suspend_then_terminate_flow => {
+        r#"<?php
+$f = new Fiber(function (): int {
+    echo Fiber::suspend('a');
+    Fiber::suspend('b');
+    return 42;
+});
+echo $f->start();
+echo '|';
+echo $f->resume('x');
+echo '|';
+echo $f->resume('y');
+"#,
+        ["a|x|42"]
+    };
+
+    generator_send_after_start => {
+        r#"<?php
+function chain() {
+    $v = yield 'start';
+    yield $v . '-next';
+}
+$g = chain();
+echo $g->current();
+echo '|';
+echo $g->send('sent');
+"#,
+        ["start|sent-next"]
+    };
 }

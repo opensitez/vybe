@@ -680,6 +680,112 @@ echo $bob->name . ":" . $bob->address->city, "\n";
     );
 }
 
+#[test]
+fn final_class_cannot_override_runtime_signal() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class BaseFormatter {
+    final public function format(string $value): string { return strtoupper($value); }
+}
+class AppFormatter extends BaseFormatter {
+    public function title(string $value): string { return $this->format($value); }
+}
+echo (new AppFormatter())->title("ok");
+"#,
+        ),
+        &["OK"]
+    );
+}
+
+#[test]
+fn object_final_property_behavior() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Packet {
+    public readonly string $id;
+    public function __construct(string $id) { $this->id = $id; }
+}
+$p = new Packet("p-1");
+echo $p->id;
+"#,
+        ),
+        &["p-1"]
+    );
+}
+
+#[test]
+fn trait_with_static_property_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+trait Counter {
+    protected static int $count = 0;
+    public function next(): int {
+        return ++self::$count;
+    }
+}
+class A {
+    use Counter;
+}
+class B {
+    use Counter;
+}
+$a = new A();
+$b = new B();
+echo $a->next();
+echo $b->next();
+"#,
+        ),
+        &["1", "2"]
+    );
+}
+
+#[test]
+fn magic_property_hooks_runtime_check() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Box {
+    private array $store = [];
+    public function __set(string $name, mixed $value): void { $this->store[$name] = $value; }
+    public function __get(string $name): mixed { return $this->store[$name] ?? null; }
+    public function has(string $name): bool { return array_key_exists($name, $this->store); }
+}
+$b = new Box();
+$b->x = 10;
+echo $b->has('x') ? 'yes' : 'no';
+echo $b->x;
+"#,
+        ),
+        &["yes10"]
+    );
+}
+
+#[test]
+fn interface_runtime_dispatch_with_instanceof() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Processor {
+    public function process(string $v): string;
+}
+class TrimProcessor implements Processor {
+    public function process(string $v): string { return trim($v); }
+}
+function execute(Processor $processor, string $value): string {
+    return $processor->process($value);
+}
+$p = new TrimProcessor();
+echo ($p instanceof Processor) ? 'ok' : 'bad';
+echo execute($p, "  x ");
+"#,
+        ),
+        &["ok x "]
+    );
+}
+
 // ── Object identity ──────────────────────────────────────────────
 #[test]
 fn object_identity_vs_equality() {
@@ -1415,5 +1521,192 @@ echo $result["y"], "\n";
 "#
         ),
         &["1", "2"]
+    );
+}
+
+// ── Interface dispatch plus instanceof in one runtime path ───────
+#[test]
+fn interface_dispatch_with_runtime_check() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Transform {
+    public function apply(string $value): string;
+}
+class JsonTransform implements Transform {
+    public function apply(string $value): string {
+        return json_encode(["value" => $value]);
+    }
+}
+$transform = new JsonTransform();
+echo ($transform instanceof Transform) ? "yes" : "no";
+echo "|";
+echo $transform->apply("x"), "\n";
+"#
+        ),
+        &["yes|\"value\":\"x\""]
+    );
+}
+
+// ── Named constructor and protected constructor mixin ───────────
+#[test]
+fn protected_constructor_with_static_factory() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Node {
+    protected function __construct(public int $value) {}
+    public static function from(int $value): self {
+        return new self($value);
+    }
+    public function double(): int { return $this->value * 2; }
+}
+echo Node::from(7)->double(), "\n";
+"#
+        ),
+        &["14"]
+    );
+}
+
+#[test]
+fn trait_private_property_visibility_with_public_method() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+trait Store {
+    private string $value = "x";
+    public function value(): string { return $this->value; }
+}
+class Holder {
+    use Store;
+}
+echo (new Holder())->value(), "\n";
+"#
+        ),
+        &["x"]
+    );
+}
+
+#[test]
+fn method_exists_runtime_on_instance() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Box {
+    public function open(): void {}
+}
+$box = new Box();
+echo method_exists($box, "open") ? "yes" : "no";
+echo method_exists($box, "close") ? "yes" : "no";
+"#
+        ),
+        &["yesno"]
+    );
+}
+
+#[test]
+fn dynamic_method_call_on_object() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Worker {
+    public function run(string $task): string { return "run:$task"; }
+    public function stop(): string { return "stop"; }
+}
+$w = new Worker();
+$method = "run";
+echo $w->$method("build");
+echo "|";
+echo $w->{"stop"}();
+"#
+        ),
+        &["run:build|stop"]
+    );
+}
+
+#[test]
+fn static_method_dynamic_name_call() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Codec {
+    public static function encode(string $v): string { return strtoupper($v); }
+    public static function decode(string $v): string { return strtolower($v); }
+}
+$step = "encode";
+$class = Codec::class;
+echo $class::$step("ab");
+echo "|";
+$step = "decode";
+echo $class::$step("XY");
+"#
+        ),
+        &["AB|xy"]
+    );
+}
+
+#[test]
+fn chaining_with_arrow_and_returned_object() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Chain {
+    public int $value = 1;
+    public function inc(int $n): self {
+        $this->value += $n;
+        return $this;
+    }
+    public function scale(int $n): self {
+        $this->value *= $n;
+        return $this;
+    }
+}
+$c = new Chain();
+echo $c->inc(2)->scale(3)->value;
+"#
+        ),
+        &["9"]
+    );
+}
+
+#[test]
+fn magic_call_allows_deferred_methods() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Broker {
+    public function __call(string $name, array $args): string {
+        return $name . ":" . implode(",", $args);
+    }
+}
+$b = new Broker();
+echo $b->enqueue("a", 1);
+echo "|";
+echo $b->flush();
+"#
+        ),
+        &["enqueue:a,1|flush:"]
+    );
+}
+
+#[test]
+fn readonly_property_assignment_raises_error() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Snapshot {
+    public readonly string $name;
+    public function __construct(string $name) { $this->name = $name; }
+}
+$s = new Snapshot("init");
+try {
+    $s->name = "bad";
+    echo "changed";
+} catch (Error $e) {
+    echo "readonly";
+}
+"#
+        ),
+        &["readonly"]
     );
 }

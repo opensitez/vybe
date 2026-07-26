@@ -115,3 +115,63 @@ echo implode(",", $replaced);
 "#,
     );
 }
+
+#[test]
+fn test_php_strstr_false_when_needle_missing() {
+    let out = run_prints(
+        r#"<?php
+echo strstr("hello", "z") === false ? "missing" : "found";
+echo "|";
+echo strstr("hello", "", true) === false ? "empty-before-false" : "empty-before-ok";
+"#,
+    );
+    assert_eq!(out, vec!["missing|empty-before-false"]);
+}
+
+#[test]
+fn test_php_strrpos_missing_and_before_offset_behaviour() {
+    let out = run_prints(
+        r#"<?php
+echo var_export(strrpos("banana", "zz"), true);
+echo "|";
+echo strrpos("ababa", "ba", -3);
+"#,
+    );
+    assert_eq!(out, vec!["false|1"]);
+}
+
+#[test]
+fn test_php_strripos_with_offset_and_case_miss() {
+    let out = run_prints(
+        r#"<?php
+echo var_export(strripos("Alpha", "Z"), true);
+echo "|";
+echo strripos("fooABCabc", "ABC", 0);
+"#,
+    );
+    assert_eq!(out, vec!["false|3"]);
+}
+
+#[test]
+fn test_php_strpbrk_no_match_returns_false() {
+    let out = run_prints(
+        r#"<?php
+echo var_export(strpbrk("hello", "0123"), true);
+echo "|";
+echo strpbrk("hello", "xol");
+"#,
+    );
+    assert_eq!(out, vec!["false|lo"]);
+}
+
+#[test]
+fn test_php_substr_compare_boundary_and_negative_offset() {
+    let out = run_prints(
+        r#"<?php
+echo substr_compare("abcdef", "ef", -2);
+echo "|";
+echo substr_compare("abcdef", "bcd", 1, 3, false);
+"#,
+    );
+    assert_eq!(out, vec!["0|0"]);
+}

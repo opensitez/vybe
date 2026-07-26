@@ -168,3 +168,114 @@ echo $stmt->fetchColumn();
 "#,
     );
 }
+
+#[test]
+fn test_php_pdo_statement_execute_returns_bool() {
+    let out = run_prints(
+        r#"<?php
+$pdo = new PDO("sqlite::memory:");
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->exec("CREATE TABLE queue (name TEXT)");
+$stmt = $pdo->prepare("INSERT INTO queue VALUES (?)");
+$ok = $stmt->execute(['first']);
+echo $ok ? 'ok' : 'no';
+"#,
+    );
+    assert_eq!(out, vec!["ok"]);
+}
+
+#[test]
+fn test_php_pdo_bind_param_preserves_reference() {
+    let out = run_prints(
+        r#"<?php
+$pdo = new PDO("sqlite::memory:");
+$pdo->exec("CREATE TABLE t (n INTEGER)");
+$stmt = $pdo->prepare("INSERT INTO t VALUES (?)");
+$n = 1;
+$stmt->bindParam(1, $n, PDO::PARAM_INT);
+$stmt->execute();
+$n = 2;
+$stmt->execute();
+$sum = $pdo->query("SELECT SUM(n) FROM t")->fetchColumn();
+echo $sum;
+"#,
+    );
+    assert_eq!(out, vec!["3"]);
+}
+
+#[test]
+fn test_php_pdo_fetch_key_pair_stable_order() {
+    let out = run_prints(
+        r#"<?php
+$pdo = new PDO("sqlite::memory:");
+$pdo->exec("CREATE TABLE map (k TEXT, v TEXT)");
+$pdo->exec("INSERT INTO map VALUES ('a', '1'), ('b', '2'), ('c', '3')");
+$rows = $pdo->query("SELECT k, v FROM map")->fetchAll(PDO::FETCH_KEY_PAIR);
+ksort($rows);
+echo implode('|', array_keys($rows));
+"#,
+    );
+    assert_eq!(out, vec!["a|b|c"]);
+}
+
+#[test]
+fn test_php_pdo_fetch_column_with_offset_runtime() {
+    let out = run_prints(
+        r#"<?php
+$pdo = new PDO("sqlite::memory:");
+$pdo->exec("CREATE TABLE t (a INTEGER, b INTEGER, c INTEGER)");
+$pdo->exec("INSERT INTO t VALUES (1, 2, 3)");
+$stmt = $pdo->query("SELECT a, b, c FROM t");
+echo $stmt->fetchColumn(0);
+echo '|';
+echo $stmt->fetchColumn(2);
+"#,
+    );
+    assert_eq!(out, vec!["1|3"]);
+}
+
+#[test]
+fn test_php_pdo_set_fetch_mode_assoc_runtime() {
+    let out = run_prints(
+        r#"<?php
+$pdo = new PDO("sqlite::memory:");
+$pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+$pdo->exec("CREATE TABLE nums (n INTEGER)");
+$pdo->exec("INSERT INTO nums VALUES (7)");
+$stmt = $pdo->query("SELECT n FROM nums");
+$row = $stmt->fetch();
+echo $row["n"];
+"#,
+    );
+    assert_eq!(out, vec!["7"]);
+}
+
+#[test]
+fn test_php_pdo_last_insert_id_after_failing_autoinc() {
+    let out = run_prints(
+        r#"<?php
+$pdo = new PDO("sqlite::memory:");
+$pdo->exec("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)");
+$pdo->exec("INSERT INTO t(v) VALUES ('x')");
+$pdo->exec("INSERT INTO t(v) VALUES ('y')");
+echo $pdo->lastInsertId();
+"#,
+    );
+    assert_eq!(out, vec!["2"]);
+}
+
+#[test]
+fn test_php_pdo_column_count_and_error_code_runtime() {
+    let out = run_prints(
+        r#"<?php
+$pdo = new PDO("sqlite::memory:");
+$stmt = $pdo->prepare("SELECT * FROM t");
+$stmt->execute();
+echo $stmt->columnCount();
+
+@$stmt2 = $pdo->query("SELECT * FROM nope");
+echo $pdo->errorCode();
+"#,
+    );
+    assert_eq!(out, vec!["0", "42S02"]);
+}

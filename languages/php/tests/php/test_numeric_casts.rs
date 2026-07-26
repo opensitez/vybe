@@ -146,4 +146,50 @@ echo deg2rad(180) > 3.14 ? 'pi' : 'small';
 "#,
         ["pi"]
     };
+
+    intval_parses_whitespace_and_sign => {
+        r#"<?php
+echo intval('  42');
+echo '|';
+echo intval(" \t -17");
+echo '|';
+echo intval(" +12");
+"#,
+        ["42|-17|12"]
+    };
+
+    intval_with_explicit_base => {
+        r#"<?php
+echo intval('10', 2);
+echo '|';
+echo intval('10', 8);
+echo '|';
+echo intval('10', 16);
+echo '|';
+echo intval('0b101', 2);
+"#,
+        ["2|8|16|5"]
+    };
+
+    intval_autodetect_base => {
+        r#"<?php
+echo intval('0x10', 0);
+echo '|';
+echo intval('010', 0);
+"#,
+        ["16|8"]
+    };
+
+    numeric_string_strictness => {
+        r#"<?php
+echo is_numeric('1_000') ? 'yes' : 'no';
+echo '|';
+echo is_numeric('0x10') ? 'yes' : 'no';
+echo '|';
+echo is_numeric('0') ? 'yes' : 'no';
+echo '|';
+echo is_numeric('  ') ? 'yes' : 'no';
+"#,
+        ["no|no|yes|no"]
+    };
 }

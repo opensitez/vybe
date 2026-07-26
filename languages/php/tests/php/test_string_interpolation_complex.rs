@@ -389,3 +389,140 @@ echo "\n";
         vec!["first: zero"]
     );
 }
+
+#[test]
+fn interpolation_adjacent_after_identifier() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$id = "item";
+echo "${id}_label";
+echo "\n";
+echo "{$id}-suffix";
+echo "\n";
+"#
+        ),
+        vec!["item_label|item-suffix"]
+    );
+}
+
+#[test]
+fn interpolation_nested_property_in_braces_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$node = (object)[
+    'child' => (object)['value' => 42]
+];
+$obj = (object)['node' => $node];
+echo "value={$obj->node->child->value}";
+echo "\n";
+echo "nested={$node->child->value}";
+echo "\n";
+"#
+        ),
+        vec!["value=42|nested=42"]
+    );
+}
+
+#[test]
+fn interpolation_nested_property_key_hyphen() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$bag = ['user-name' => 'alice', 'meta' => ['tag-line' => 'dev']];
+$payload = ['bag' => $bag];
+echo "u: {$payload['bag']['user-name']}";
+echo "|";
+echo "m: {$payload['bag']['meta']['tag-line']}";
+"#
+        ),
+        vec!["u: alice|m: dev"]
+    );
+}
+
+#[test]
+fn interpolation_complex_variable_variable_chain() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$name = "value";
+$value = "ok";
+$scope = "name";
+echo "${$scope}";
+echo "|";
+echo "{$$name}";
+"#
+        ),
+        vec!["ok|ok"]
+    );
+}
+
+#[test]
+fn interpolation_heredoc_vs_nowdoc_behavior_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$name = "Alice";
+$doc = <<<TXT
+Hello $name
+TXT;
+
+$raw = <<<'TXT'
+Hello $name
+TXT;
+
+echo $doc;
+echo "\n";
+echo $raw;
+"#
+        ),
+        vec!["Hello Alice|Hello $name"]
+    );
+}
+
+#[test]
+fn interpolation_heredoc_with_indent_and_trailing_newline() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$n = 3;
+$text = <<<TXT
+count=$n
+TXT;
+echo substr_count($text, "\n");
+echo "|";
+echo trim($text);
+"#
+        ),
+        vec!["1|count=3"]
+    );
+}
+
+#[test]
+fn interpolation_escaped_dollar_in_interpolated_string() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$name = "A";
+echo "price \$${name}";
+"#
+        ),
+        vec!["price $A"]
+    );
+}
+
+#[test]
+fn interpolation_escaping_single_quote_does_not_interpolate_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$value = "abc";
+echo '$value\\n';
+echo "\n";
+echo '$value';
+"#
+        ),
+        vec!["$value\\n|$value"]
+    );
+}

@@ -256,4 +256,116 @@ echo str_decrement('b0');
 "#,
         ["a9"]
     };
+
+    substr_count_with_offset_and_length => {
+        r#"<?php
+echo substr_count('abcabcabc', 'abc', 1, 6);
+"#,
+        ["2"]
+    };
+
+    str_pad_both_alignment => {
+        r#"<?php
+echo str_pad('pad', 9, '-', STR_PAD_BOTH);
+"#,
+        ["---pad---"]
+    };
+
+    str_repeat_zero_returns_empty => {
+        r#"<?php
+echo strlen(str_repeat('x', 0));
+"#,
+        ["0"]
+    };
+
+    strncmp_zero_length => {
+        r#"<?php
+echo strncmp('hello', 'anything', 0) === 0 ? 'zero' : 'nonzero';
+"#,
+        ["zero"]
+    };
+
+    strspn_empty_mask => {
+        r#"<?php
+echo strspn('abc', '') === 0 ? 'empty' : 'nonempty';
+"#,
+        ["empty"]
+    };
+
+    strcspn_empty_mask => {
+        r#"<?php
+echo strcspn('abc', '') ;
+"#,
+        ["0"]
+    };
+
+    substr_compare_negative_offset => {
+        r#"<?php
+echo substr_compare('abcdef', 'ef', -2, 2) === 0 ? 'match' : 'nomatch';
+"#,
+        ["match"]
+    };
+
+    strcmp_empty_prefix_relation => {
+        r#"<?php
+echo strcmp('', 'a') < 0 ? 'lt' : 'ge';
+"#,
+        ["lt"]
+    };
+
+    str_ends_with_runtime_false_negative => {
+        r#"<?php
+echo str_ends_with('abcdef', 'gh') ? 'yes' : 'no';
+"#,
+        ["no"]
+    };
+
+    locale_collation_fallback_bytes => {
+        r#"<?php
+echo strcoll('b', 'a') > 0 ? 'gt' : 'le';
+"#,
+        ["gt"]
+    };
+
+    string_contains_needle_empty_is_true => {
+        r#"<?php
+echo str_contains('sample', '') ? 'yes' : 'no';
+"#,
+        ["yes"]
+    };
+
+    string_starts_with_empty_needle => {
+        r#"<?php
+echo str_starts_with('sample', '') ? 'yes' : 'no';
+"#,
+        ["yes"]
+    };
+
+    string_ends_with_empty_needle => {
+        r#"<?php
+echo str_ends_with('sample', '') ? 'yes' : 'no';
+"#,
+        ["yes"]
+    };
+
+    stripos_with_offset_zero => {
+        r#"<?php
+echo stripos('AbCde', 'BC', 0);
+"#,
+        ["1"]
+    };
+
+    strcasecmp_empty_first => {
+        r#"<?php
+echo strcasecmp('', 'abc') < 0 ? 'lt' : 'ge';
+"#,
+        ["lt"]
+    };
+
+    strncmp_zero_length_is_equal => {
+        r#"<?php
+echo strncmp('abc', 'abd', 0);
+"#,
+        ["0"]
+    };
 }

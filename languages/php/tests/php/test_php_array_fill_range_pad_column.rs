@@ -120,3 +120,66 @@ echo count($res) === 0 ? "ZERO_NUM_OK" : "FAIL";
 "##,
     );
 }
+
+#[test]
+fn test_php_range_negative_step_descending() {
+    let out = run_prints(
+        r##"<?php
+$r = range(9, 1, -3);
+echo implode("|", $r);
+"##,
+    );
+    assert_eq!(out, vec!["9|6|3"]);
+}
+
+#[test]
+fn test_php_range_float_endpoints() {
+    let out = run_prints(
+        r##"<?php
+$r = range(0.5, 2.5, 1);
+echo implode("|", $r);
+"##,
+    );
+    assert_eq!(out, vec!["0.5|1.5|2.5"]);
+}
+
+#[test]
+fn test_php_array_fill_negative_num_raises() {
+    let out = run_prints(
+        r##"<?php
+try {
+    array_fill(0, -1, "x");
+    echo "unexpected";
+} catch (ValueError $e) {
+    echo "value_error";
+}
+"##,
+    );
+    assert_eq!(out, vec!["value_error"]);
+}
+
+#[test]
+fn test_php_array_fill_key_negative_start() {
+    let out = run_prints(
+        r##"<?php
+$a = array_fill(-2, 3, "z");
+echo $a[-2] . "|" . $a[-1] . "|" . $a[0];
+"##,
+    );
+    assert_eq!(out, vec!["z|z|z"]);
+}
+
+#[test]
+fn test_php_array_column_default_value_missing_keys() {
+    let out = run_prints(
+        r##"<?php
+$rows = [
+    ["id" => 1, "name" => "A"],
+    ["id" => 2],
+];
+$names = array_column($rows, "name", "id");
+echo (array_key_exists(2, $names) ? "has2" : "no2") . "|" . (array_key_exists(3, $names) ? "has3" : "no3");
+"##,
+    );
+    assert_eq!(out, vec!["no2|no3"]);
+}

@@ -263,3 +263,179 @@ echo implode(',', array_column($rows, 'name'));
         vec!["Alice,Bob,Charlie"]
     );
 }
+
+#[test]
+fn usort_stable_behavior_with_equal_keys() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$rows = [
+    ['id' => 1, 'group' => 'a'],
+    ['id' => 2, 'group' => 'a'],
+    ['id' => 3, 'group' => 'b'],
+];
+usort($rows, fn($x, $y) => strcmp($x['group'], $y['group']));
+echo $rows[0]['id'] . ':' . $rows[1]['id'] . ':' . $rows[2]['id'];
+"#,
+        ),
+        vec!["1:2:3"]
+    );
+}
+
+#[test]
+fn array_multisort_secondary_sort_by_name() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$scores = [10, 10, 10, 5];
+$names = ['d','a','c','b'];
+array_multisort($scores, SORT_DESC, $names, SORT_ASC);
+echo implode(',', $scores) . '|' . implode(',', $names);
+"#,
+        ),
+        vec!["10,10,10,5|a,c,d,b"]
+    );
+}
+
+#[test]
+fn ksort_with_numeric_string_keys() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = ['2' => 'b', 10 => 'a', '1' => 'c'];
+ksort($a, SORT_STRING);
+echo implode('|', array_keys($a));
+"#,
+        ),
+        vec!["1|10|2"]
+    );
+}
+
+#[test]
+fn sort_regular_keeps_numeric_string_ordering() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = ['2', 1, '10', 3];
+sort($a, SORT_REGULAR);
+echo implode(',', $a);
+"#,
+        ),
+        vec!["1,2,3,10"]
+    );
+}
+
+#[test]
+fn natsort_with_hyphenated_strings() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$labels = ['item-2a', 'item-10b', 'item-1c'];
+natsort($labels);
+echo implode(',', $labels);
+"#,
+        ),
+        vec!["item-1c,item-2a,item-10b"]
+    );
+}
+
+#[test]
+fn sort_empty_array_stays_empty() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = [];
+sort($a);
+echo count($a);
+echo '|';
+echo is_array($a) ? 'array' : 'no';
+"#,
+        ),
+        vec!["0|array"]
+    );
+}
+
+#[test]
+fn asort_with_float_keys_and_values_preserves_pairs() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = ['2' => 'b', '10' => 'a', '1' => 'c'];
+asort($a, SORT_STRING);
+echo implode(',', array_keys($a)) . '|' . implode(',', $a);
+"#,
+        ),
+        vec!["10,2,1|a,b,c"]
+    );
+}
+
+#[test]
+fn rsort_regulates_reverse_numeric() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = ['2', 10, 1];
+rsort($a, SORT_NUMERIC);
+echo implode(',', $a);
+"#,
+        ),
+        vec!["10,2,1"]
+    );
+}
+
+#[test]
+fn usort_string_compare_ascii_order() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = ['z', 'a', 'b'];
+usort($a, fn($x, $y) => strcmp($x, $y));
+echo implode(',', $a);
+"#,
+        ),
+        vec!["a,b,z"]
+    );
+}
+
+#[test]
+fn arsort_with_ties_still_stable() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = ['first' => 1, 'second' => 1, 'third' => 2];
+arsort($a);
+echo array_key_first($a) . '|' . array_key_last($a);
+"#,
+        ),
+        vec!["third|second"]
+    );
+}
+
+#[test]
+fn usort_desc_callback_uses_callback() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = [3,1,2];
+usort($a, fn($x,$y) => $y <=> $x);
+echo implode(',', $a);
+"#,
+        ),
+        vec!["3,2,1"]
+    );
+}
+
+#[test]
+fn array_multisort_with_same_values_and_payload_reordered_by_secondary() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$scores = [1,1,1,2];
+$labels = ['d','a','c','b'];
+array_multisort($scores, SORT_ASC, SORT_NUMERIC, $labels, SORT_ASC, SORT_STRING);
+echo implode(',', $labels);
+"#,
+        ),
+        vec!["a,c,d,b"]
+    );
+}

@@ -97,6 +97,15 @@ echo date_format($dt, 'Y-m');
         ["2024-04"]
     };
 
+    datetime_timezone_conversion_keeps_instant => {
+        r#"<?php
+$source = new DateTime('2024-03-01 12:00:00', new DateTimeZone('UTC'));
+$local = $source->setTimezone(new DateTimeZone('Europe/Paris'));
+echo $source->format('H:i') . '|' . $local->format('H:i');
+"#,
+        ["12:00|13:00"]
+    };
+
     date_diff_counts_days_between_dates => {
         r#"<?php
 $d1 = date_create('2024-01-01');
@@ -151,12 +160,42 @@ echo date_format($dt, 'Y-m-d');
         ["2024-06-15"]
     };
 
+    datetime_parsed_from_timezoneaware_iso_string => {
+        r#"<?php
+date_default_timezone_set('UTC');
+$dt = new DateTime('2024-07-01T10:15:00+02:00');
+echo $dt->format('Y-m-d H:i');
+echo '|';
+echo $dt->getTimezone()->getName();
+"#,
+        ["2024-07-01 10:15|+02:00"]
+    };
+
+    datetime_set_timezone_preserves_instant => {
+        r#"<?php
+$dt = new DateTime('2024-01-01 12:00:00', new DateTimeZone('Europe/Paris'));
+echo $dt->format('H') . '|';
+$dt->setTimezone(new DateTimeZone('UTC'));
+echo $dt->format('H') . '|' . $dt->getTimezone()->getName();
+"#,
+        ["12|11|UTC"]
+    };
+
     datetime_createfromformat_parses_dmy => {
         r#"<?php
 $dt = DateTime::createFromFormat('d/m/Y', '25/12/2024');
 echo $dt->format('Y-m-d');
 "#,
         ["2024-12-25"]
+    };
+
+    datetime_modify_hours_crossing_midnight => {
+        r#"<?php
+$dt = new DateTime('2024-06-01 23:30:00');
+$dt->modify('+90 minutes');
+echo $dt->format('Y-m-d H:i');
+"#,
+        ["2024-06-02 01:00"]
     };
 
     datetime_format_day_name_for_known_date => {
@@ -265,5 +304,117 @@ echo is_string(date_default_timezone_get()) ? 'tz' : 'no';
 echo microtime(true) > 1_000_000_000 ? 'float' : 'small';
 "#,
         ["float"]
+    };
+
+    date_parse_strictly_parses_rfc3339_string => {
+        r#"<?php
+$dt = date_parse('2024-07-01T15:30:00Z');
+echo $dt['year'] . '-' . str_pad((string) $dt['month'], 2, '0', STR_PAD_LEFT) . '-' . str_pad((string) $dt['day'], 2, '0', STR_PAD_LEFT);
+"#,
+        ["2024-07-01"]
+    };
+
+    date_parse_invalid_input_reports_error_count => {
+        r#"<?php
+$parsed = date_parse('not-a-date');
+echo is_array($parsed) && ($parsed['error_count'] ?? 0) > 0 ? 'err' : 'ok';
+"#,
+        ["err"]
+    };
+
+    timezone_name_from_abbr_lookup => {
+        r#"<?php
+echo timezone_name_from_abbr('UTC') === 'UTC' ? 'UTC' : 'wrong';
+"#,
+        ["UTC"]
+    };
+
+    date_timestamp_get_of_local_datetime => {
+        r#"<?php
+date_default_timezone_set('UTC');
+$dt = new DateTime('2024-01-01 00:00:00');
+echo (int)($dt->getTimestamp() === 1704067200 ? 1 : 0);
+"#,
+        ["1"]
+    };
+
+    timezone_identifier_is_listed_or_ignored => {
+        r#"<?php
+$ids = DateTimeZone::listIdentifiers(DateTimeZone::AFRICA);
+echo in_array('Africa/Casablanca', $ids) ? 'has' : 'missing';
+"#,
+        ["has"]
+    };
+
+    date_weekday_name_for_iso_monday => {
+        r#"<?php
+date_default_timezone_set('UTC');
+echo date('l', strtotime('2024-02-05'));
+"#,
+        ["Monday"]
+    };
+
+    date_idate_weekday_number => {
+        r#"<?php
+date_default_timezone_set('UTC');
+echo idate('w', strtotime('2024-02-03'));
+"#,
+        ["6"]
+    };
+
+    date_get_last_errors_empty_for_valid => {
+        r#"<?php
+date_parse('2024-12-01');
+echo is_array(date_get_last_errors()) ? 'ok' : 'bad';
+echo '|';
+echo date_get_last_errors()['warning_count'];
+echo '|';
+echo date_get_last_errors()['error_count'];
+"#,
+        ["ok|0|0"]
+    };
+
+    date_create_from_format_with_timezone_object => {
+        r#"<?php
+date_default_timezone_set('UTC');
+$tz = new DateTimeZone('America/Los_Angeles');
+$dt = date_create_from_format('Y-m-d H:i', '2024-11-05 01:30', $tz);
+echo $dt->format('e');
+echo '|';
+echo $dt->format('H:i');
+"#,
+        ["America/Los_Angeles|01:30"]
+    };
+
+    strtotime_with_trailing_timezone_abbr => {
+        r#"<?php
+date_default_timezone_set('UTC');
+$ts = strtotime('2024-06-01 12:00 UTC');
+echo date('H', $ts);
+"#,
+        ["12"]
+    };
+
+    gmmktime_vs_mktime_unix_midday => {
+        r#"<?php
+date_default_timezone_set('America/New_York');
+$g = gmmktime(12, 0, 0, 1, 1, 2024);
+$l = mktime(12, 0, 0, 1, 1, 2024);
+echo date('H', $g);
+echo '|';
+echo date('H', $l);
+"#,
+        ["12|17"]
+    };
+
+    timezone_transitions_for_single_range => {
+        r#"<?php
+$tz = new DateTimeZone('America/New_York');
+$transitions = $tz->getTransitions(1704067200, 1706745600);
+echo is_array($transitions) ? 'array' : 'bad';
+echo '|';
+echo count($transitions) > 1 ? 'many' : 'few';
+"#,
+        ["array|many"]
     };
 }

@@ -721,4 +721,877 @@ echo \App\pick();
 "#,
         ["LM"]
     };
+
+    namespace_rootless_class_lookup_in_parent_segment => {
+        r#"<?php
+namespace App\Core {
+    class Engine {
+        public function version(): string { return 'v1'; }
+    }
+}
+namespace App {
+    function getEngineVersion(): string {
+        $e = new Core\Engine();
+        return $e->version();
+    }
+}
+echo \App\getEngineVersion();
+"#,
+        ["v1"]
+    };
+
+    namespace_current_namespace_prefers_local_function => {
+        r#"<?php
+namespace Lib {
+    function format(string $s): string { return 'local:' . $s; }
+}
+namespace App {
+    function format(string $s): string { return 'app:' . $s; }
+    function run(): string {
+        return \Lib\format('a') . '|' . format('b');
+    }
+}
+echo \App\run();
+"#,
+        ["local:a|app:b"]
+    };
+
+    namespace_fully_qualified_trait_use => {
+        r#"<?php
+namespace Framework\Traits {
+    trait Timestamped {
+        public function timestamp(): string { return 'ts'; }
+    }
+}
+namespace App {
+    class Entity {
+        use \Framework\Traits\Timestamped;
+    }
+}
+echo (new \App\Entity())->timestamp();
+"#,
+        ["ts"]
+    };
+
+    namespace_aliasing_function_chain => {
+        r#"<?php
+namespace Math {
+    function add(int $a, int $b): int { return $a + $b; }
+}
+namespace App {
+    use Math\add as plus;
+    echo plus(2, 5);
+}
+"#,
+        ["7"]
+    };
+
+    namespace_dynamic_fully_qualified_function_call => {
+        r#"<?php
+namespace Runtime {
+    function toString(int $v): string { return 'v=' . $v; }
+}
+namespace App {
+    $fqn = 'Runtime\\toString';
+    $name = '\\\\' . $fqn;
+    echo $name(9);
+}
+"#,
+        ["v=9"]
+    };
+
+    namespace_relative_vs_global_function_resolution => {
+        r#"<?php
+function marker(string $s): string { return 'global:' . $s; }
+namespace App {
+    function marker(string $s): string { return 'local:' . $s; }
+    function check(): string {
+        return marker('x') . '|' . \marker('y');
+    }
+}
+echo \App\check();
+"#,
+        ["local:x|global:y"]
+    };
+
+    namespace_subnamespace_trait_conflict => {
+        r#"<?php
+namespace A {
+    trait HasName { public function name(): string { return 'A'; } }
+}
+namespace B {
+    trait HasName { public function name(): string { return 'B'; } }
+}
+namespace App {
+    use A\HasName as AName;
+    class C {
+        use AName;
+    }
+    class D {
+        use \B\HasName;
+    }
+}
+echo (new \App\C())->name() . (new \App\D())->name();
+"#,
+        ["AB"]
+    };
+
+    namespace_variable_class_name_with_fqcn => {
+        r#"<?php
+namespace Domain {
+    class Service {
+        public function handle(): string { return 'service'; }
+    }
+}
+namespace App {
+    $fqcn = 'Domain\\Service';
+    $obj = new $fqcn();
+    echo $obj->handle();
+}
+"#,
+        ["service"]
+    };
+
+    namespace_variable_function_name_from_current_ns => {
+        r#"<?php
+namespace Runtime {
+    function emit(int $n): string { return 'ok:' . $n; }
+}
+namespace App {
+    $f = '\\Runtime\\emit';
+    echo $f(3);
+}
+"#,
+        ["ok:3"]
+    };
+
+    namespace_alias_collision_prefers_imported_alias => {
+        r#"<?php
+namespace Local {
+    class Logger { public function tag(): string { return 'local'; } }
+}
+namespace Shared {
+    class Logger { public function tag(): string { return 'shared'; } }
+}
+namespace App {
+    use Shared\Logger;
+    function pick(): string {
+        $a = new Logger();
+        $b = new \Local\Logger();
+        return $a->tag() . '|' . $b->tag();
+    }
+}
+echo \App\pick();
+"#,
+        ["shared|local"]
+    };
+
+    namespace_root_block_can_create_qualified_and_unqualified_classes => {
+        r#"<?php
+namespace App {
+    class User { public function role(): string { return 'app'; } }
+}
+namespace {
+    function make(): string {
+        $user = new App\User();
+        $plain = new \App\User();
+        return $user->role() . '|' . $plain->role();
+    }
+    echo make();
+}
+"#,
+        ["app|app"]
+    };
+
+    namespace_dynamic_current_namespace_prefix => {
+        r#"<?php
+namespace Lib {
+    class Thing { public function id(): string { return 'thing'; } }
+}
+namespace App {
+    $base = __NAMESPACE__;
+    $fqn = $base . '\\Thing';
+    $o = new $fqn();
+    echo $o->id();
+}
+"#,
+        ["thing"]
+    };
+
+    namespace_use_function_alias_chain_and_unprefixed_call => {
+        r#"<?php
+namespace Tools {
+    function normalize(string $s): string { return "n:$s"; }
+}
+namespace App {
+    use function Tools\normalize as norm;
+    echo norm('x');
+}
+"#,
+        ["n:x"]
+    };
+
+    namespace_function_exists_across_namespaces => {
+        r#"<?php
+namespace Plugin {
+    function enabled(): string { return 'yes'; }
+}
+namespace App {
+    function check(): string {
+        return (function_exists('\\Plugin\\enabled') ? 'exists' : 'missing') . '|' . function_exists('Plugin\\enabled');
+    }
+}
+echo \App\check();
+"#,
+        ["exists|0"]
+    };
+
+    namespace_class_exists_with_relative_vs_fqcn => {
+        r#"<?php
+namespace Core {
+    class Engine {}
+}
+namespace App {
+function check(): string {
+    $same = class_exists('Engine');
+    $fqcn = class_exists('Core\\Engine');
+    $withSlash = class_exists('\\Core\\Engine');
+        return ($same ? 'same:' : 'same=no:') . ($fqcn ? 'fqcn' : 'nfqcn') . '|' . ($withSlash ? 'slash' : 'nslash');
+    }
+}
+echo \App\check();
+"#,
+        ["same=no:fqcn|slash"]
+    };
+
+    namespace_fully_qualify_current_via_fqn_concat => {
+        r#"<?php
+namespace Runtime {
+    class Worker {
+        public function run(): string { return 'ok'; }
+    }
+}
+namespace App {
+    $name = __NAMESPACE__ . '\\\\Runtime\\Worker';
+    $class = '\\\\' . $name;
+    $worker = new $class();
+    echo $worker->run();
+}
+"#,
+        ["ok"]
+    };
+
+    namespace_relative_to_global_function_lookup_with_use => {
+        r#"<?php
+function global_marker(string $v): string { return 'g:' . $v; }
+namespace App {
+    use function global_marker as marker;
+    function local(string $v): string { return marker($v); }
+    echo local('x');
+}
+"#,
+        ["g:x"]
+    };
+
+    namespace_dynamic_function_via_variable_fqcn => {
+        r#"<?php
+namespace Utils {
+    function build(string $s): string { return 'u:' . $s; }
+}
+namespace App {
+    $f = '\\\\Utils\\\\build';
+    echo $f('z');
+}
+"#,
+        ["u:z"]
+    };
+
+    namespace_trait_prefixed_fully_qualified_use => {
+        r#"<?php
+namespace Core {
+    trait HasToken {
+        public function token(): string { return 'tok'; }
+    }
+}
+namespace App {
+    class Item {
+        use \Core\HasToken;
+    }
+    echo (new Item())->token();
+}
+"#,
+        ["tok"]
+    };
+
+    namespace_aliasing_class_from_subnamespace => {
+        r#"<?php
+namespace Tools\Data {
+    class Payload {
+        public function id(): string { return 'payload'; }
+    }
+}
+namespace App {
+    use Tools\Data\Payload as DataPayload;
+    echo (new DataPayload())->id();
+}
+"#,
+        ["payload"]
+    };
+
+    namespace_dynamic_fqcn_variable_reference => {
+        r#"<?php
+namespace Domain {
+    class Worker {
+        public function role(): string { return 'worker'; }
+    }
+}
+namespace App {
+    $class = 'Domain\\Worker';
+    $worker = new $class();
+    echo $worker->role();
+}
+"#,
+        ["worker"]
+    };
+
+    namespace_nested_resolution_with_current_namespace_prefix => {
+        r#"<?php
+namespace Infra {
+    class Handler {
+        public function run(): string { return 'run'; }
+    }
+}
+namespace App\Runtime {
+    function make(): string {
+        $class = __NAMESPACE__ . '\\\\Handler';
+        return (new $class())->run();
+    }
+    echo make();
+}
+"#,
+        ["run"]
+    };
+
+    namespace_variable_function_name_resolves_global_when_qualified => {
+        r#"<?php
+function marker(string $v): string { return 'global-' . $v; }
+namespace App {
+    function marker(string $v): string { return 'local-' . $v; }
+    $fn = '\\\\marker';
+    echo $fn('x');
+    echo '|';
+    echo function_exists($fn) ? 'exists' : 'missing';
+}
+"#,
+        ["global-x|exists"]
+    };
+
+    namespace_function_alias_from_namespace_for_array_walk => {
+        r#"<?php
+namespace Utility {
+    function normalize(string $s): string { return strtoupper($s); }
+}
+namespace App {
+    use function Utility\normalize;
+    $items = ['a', 'b'];
+    $f = normalize::class;
+    $tag = normalize('ok');
+    echo $tag;
+}
+"#,
+        ["OK"]
+    };
+
+    namespace_invoke_static_call_via_variable_class_name => {
+        r#"<?php
+namespace Tools {
+    class Maker {
+        public static function id(string $v): string { return 'tools:' . $v; }
+    }
+}
+namespace App {
+    $class = '\\\\Tools\\\\Maker';
+    $method = 'id';
+    echo $class::$method('x');
+}
+"#,
+        ["tools:x"]
+    };
+
+    namespace_class_exists_with_leading_backslash_and_relative => {
+        r#"<?php
+namespace Core {
+    class Engine {}
+}
+namespace App {
+    function check(): string {
+        return (
+            class_exists('\\Core\\Engine') ? 'leading' : 'noleading'
+        ) . '|' . (
+            class_exists('Core\\Engine', false) ? 'local' : 'nolocal'
+        );
+    }
+    echo check();
+}
+"#,
+        ["leading|nolocal"]
+    };
+
+    namespace_class_reference_from_variable_name => {
+        r#"<?php
+namespace Domain {
+    class Service {
+        public function id(): string { return 'service'; }
+    }
+}
+namespace App {
+    $class = 'Domain\\Service';
+    $svc = new $class();
+    echo $svc->id();
+}
+"#,
+        ["service"]
+    };
+
+    namespace_call_fully_qualified_name_from_runtime_string => {
+        r#"<?php
+namespace Shared {
+    function helper(int $n): string { return 'n:' . $n; }
+}
+namespace App {
+    $fn = '\\\\Shared\\\\helper';
+    echo $fn(7);
+}
+"#,
+        ["n:7"]
+    };
+
+    namespace_class_import_does_not_override_function_lookup => {
+        r#"<?php
+namespace Core {
+    function marker(): string { return 'function'; }
+    class marker {
+        public function value(): string { return 'class'; }
+    }
+}
+namespace App {
+    use Core\marker;
+    $obj = new marker();
+    echo $obj->value();
+    echo '|';
+    echo \Core\marker();
+}
+"#,
+        ["class|function"]
+    };
+
+    namespace_local_and_global_function_resolution => {
+        r#"<?php
+function marker(): string { return 'global-marker'; }
+namespace App {
+    function marker(): string { return 'local-marker'; }
+    echo marker();
+    echo '|';
+    echo \marker();
+}
+"#,
+        ["local-marker|global-marker"]
+    };
+
+    namespace_trait_alias_and_alias_resolution => {
+        r#"<?php
+namespace Core {
+    trait Marker {
+        public function flag(): string { return 'on'; }
+    }
+}
+namespace App {
+    use Core\Marker as FlagTrait;
+    class Thing {
+        use FlagTrait;
+    }
+    echo (new Thing())->flag();
+}
+"#,
+        ["on"]
+    };
+
+    namespace_use_function_alias_chain => {
+        r#"<?php
+namespace Tools {
+    function normalize(string $s): string { return "[$s]"; }
+}
+namespace App {
+    use function Tools\normalize as wrap;
+    echo wrap('x');
+}
+        "#,
+        ["[x]"]
+    };
+
+    namespace_dynamic_class_lookup_in_block => {
+        r#"<?php
+namespace Runtime\Loader {
+    class Service { public function version(): string { return 'v1'; } }
+}
+namespace App {
+    use Runtime\Loader\Service;
+    $name = Service::class;
+    $instance = new $name();
+    echo $instance->version();
+}
+"#,
+        ["v1"]
+    };
+
+    namespace_fully_qualified_function_isolation => {
+        r#"<?php
+namespace Local {
+    function format(string $v): string { return "local:$v"; }
+}
+namespace {
+    function format(string $v): string { return "global:$v"; }
+    echo \Local\format('a');
+    echo '|';
+    echo format('b');
+}
+"#,
+        ["local:a|global:b"]
+    };
+
+    namespace_backslash_fqcn_with_class_exists_check => {
+        r#"<?php
+namespace Services {
+    class Worker { public static function ok(): string { return 'yes'; } }
+}
+namespace App {
+    echo class_exists('Services\\\\Worker') ? 'yes' : 'no';
+}
+"#,
+        ["yes"]
+    };
+
+    namespace_backslash_global_function_call_from_namespaced => {
+        r#"<?php
+namespace App {
+    echo \strlen('hey');
+}
+"#,
+        ["3"]
+    };
+
+    namespace_group_use_with_class_and_function => {
+        r#"<?php
+namespace Core {
+    class Box { public function name(): string { return 'box'; } }
+    function helper(string $name): string { return "h:$name"; }
+}
+namespace App {
+    use Core\{Box, function helper};
+    $b = new Box();
+    echo $b->name();
+    echo '|';
+    echo helper('x');
+}
+"#,
+        ["box|h:x"]
+    };
+
+    namespace_imported_trait_method_visibility => {
+        r#"<?php
+namespace Core\Traits {
+    trait Logger {
+        protected function tag(): string { return 'tag'; }
+    }
+}
+namespace App {
+    class Thing {
+        use Core\Traits\Logger {
+            tag as public;
+        }
+    }
+    echo (new Thing())->tag();
+}
+"#,
+        ["tag"]
+    };
+
+    namespace_nested_alias_stack => {
+        r#"<?php
+namespace Infra {
+    class Handler { public function id(): string { return 'handler'; } }
+}
+namespace App\Services {
+    use Infra\Handler as InfraHandler;
+    class Facade {
+        public function make(): string {
+            return (new InfraHandler())->id();
+        }
+    }
+}
+namespace App {
+    use App\Services\Facade;
+    echo (new Facade())->make();
+}
+"#,
+        ["handler"]
+    };
+
+    namespace_function_alias_chain_with_local_shadow => {
+        r#"<?php
+namespace Utils {
+    function ping(string $value): string { return "u:$value"; }
+}
+namespace App {
+    function ping(string $value): string { return "a:$value"; }
+    use function Utils\ping as util_ping;
+    function run(string $value): string {
+        return ping($value) . '|' . util_ping($value);
+    }
+    echo run('x');
+}
+"#,
+        ["a:x|u:x"]
+    };
+
+    namespace_constant_alias_and_unqualified_use => {
+        r#"<?php
+namespace Config {
+    const MODE = 'live';
+}
+namespace App {
+    use const Config\MODE as CurrentMode;
+    function status(): string {
+        return "mode:" . CurrentMode;
+    }
+    echo status();
+}
+"#,
+        ["mode:live"]
+    };
+
+    namespace_class_alias_between_namespaces => {
+        r#"<?php
+namespace Domain {
+    class Repo { public function type(): string { return 'repo'; } }
+}
+namespace App {
+    use Domain\Repo as Repository;
+    echo (new Repository())->type();
+}
+"#,
+        ["repo"]
+    };
+
+    namespace_qualified_call_via_fully_qualified_function_string => {
+        r#"<?php
+namespace Library {
+    function label(string $value): string { return "label:$value"; }
+}
+namespace App {
+    $f = '\\\\Library\\\\label';
+    echo $f('abc');
+}
+"#,
+        ["label:abc"]
+    };
+
+    namespace_local_namespace_prefers_local_class_without_use => {
+        r#"<?php
+namespace Shared {
+    class Logger { public function channel(): string { return 'shared'; } }
+}
+namespace App {
+    class Logger { public function channel(): string { return 'app'; } }
+    $local = new Logger();
+    $global = new \Shared\Logger();
+    echo $local->channel() . '|' . $global->channel();
+}
+"#,
+        ["app|shared"]
+    };
+
+    namespace_function_call_resolution_with_use_as_alias_chain => {
+        r#"<?php
+namespace Runtime {
+    function normalize(string $value): string { return strtoupper($value); }
+}
+namespace App {
+    use function Runtime\normalize as up;
+    echo up('ok');
+}
+"#,
+        ["OK"]
+    };
+
+    namespace_class_exists_for_leading_backslash_current_ns => {
+        r#"<?php
+namespace Tooling {
+    class Engine {}
+}
+namespace App {
+    function check(): string {
+        $local = class_exists('Tooling\\Engine', false);
+        $global = class_exists('\\Tooling\\Engine');
+        return ($local ? 'local' : 'nolocal') . '|' . ($global ? 'global' : 'noglobal');
+    }
+    echo check();
+}
+"#,
+        ["local|global"]
+    };
+
+    namespace_dynamic_fqcn_constructor_in_rooted_namespace => {
+        r#"<?php
+namespace Workers {
+    class Agent {
+        public function job(): string { return 'done'; }
+    }
+}
+namespace App {
+    $fqn = '\\\\Workers\\\\Agent';
+    $agent = new $fqn();
+    echo $agent->job();
+}
+"#,
+        ["done"]
+    };
+
+    namespace_fqcn_variable_static_call => {
+        r#"<?php
+namespace Services {
+    class Factory {
+        public static function make(int $n): int { return $n + 100; }
+    }
+}
+namespace App {
+    $class = '\\Services\\Factory';
+    $method = 'make';
+    echo $class::$method(9);
+}
+"#,
+        ["109"]
+    };
+
+    namespace_function_name_from_namespace_context => {
+        r#"<?php
+namespace Tools {
+    function label(string $s): string { return 'tool:' . $s; }
+}
+namespace App {
+    $fn = '\\Tools\\\\label';
+    echo $fn('x');
+}
+"#,
+        ["tool:x"]
+    };
+
+    namespace_dynamic_function_from_variable_namespace_string => {
+        r#"<?php
+namespace Util {
+    function stamp(string $s): string { return 'stamp:' . $s; }
+}
+namespace App {
+    $ns = '\\\\Util';
+    $fn = $ns . '\\\\stamp';
+    echo $fn('done');
+}
+"#,
+        ["stamp:done"]
+    };
+
+    namespace_alias_chain_with_global_fallback => {
+        r#"<?php
+function marker(string $v): string { return 'global:' . $v; }
+namespace Package {
+    function marker(string $v): string { return 'local:' . $v; }
+}
+namespace App {
+    use function Package\\marker as local_marker;
+    echo local_marker('x') . '|' . \Package\marker('y');
+}
+"#,
+        ["local:x|package:y"]
+    };
+
+    namespace_group_use_mixed_and_nested_aliases => {
+        r#"<?php
+namespace Core {
+    function lower(string $s): string { return strtolower($s); }
+    const CODE = 'ok';
+}
+namespace App {
+    use function Core\lower as down;
+    use const Core\CODE;
+    echo down(CODE);
+}
+"#,
+        ["ok"]
+    };
+}
+
+#[test]
+fn namespace_current_constant_from_nested_block() {
+    compile_ok(
+        r#"<?php
+namespace Shop\Models {
+    class Product {
+        public function scope(): string { return __NAMESPACE__; }
+    }
+}
+namespace App {
+    $obj = new \Shop\Models\Product();
+    echo $obj->scope();
+}
+"#,
+    );
+}
+
+#[test]
+fn namespace_fully_qualified_calls_from_root() {
+    compile_ok(
+        r#"<?php
+namespace App {
+    function tag(string $v): string { return "app:$v"; }
+}
+function tag(string $v): string { return "global:$v"; }
+echo \App\tag('x') === 'app:x' ? 'app' : 'no';
+echo '|' . tag('y') === 'global:y' ? 'global' : 'noglobal';
+"#,
+    );
+}
+
+#[test]
+fn namespace_use_import_in_anonymous_function_scope() {
+    compile_ok(
+        r#"<?php
+namespace Lib {
+    function norm(string $v): string { return "[$v]"; }
+}
+namespace App {
+    use function Lib\norm;
+    $render = function() use () {
+        return norm('x');
+    };
+    echo $render();
+}
+"#,
+    );
+}
+
+#[test]
+fn namespace_dynamic_class_name_with_braces() {
+    compile_ok(
+        r#"<?php
+namespace Domain {
+    class Service { public function label(): string { return 'service'; } }
+}
+namespace App {
+    $c = 'Service';
+    $fqcn = "\\Domain\\$c";
+    $obj = new $fqcn();
+    echo $obj->label();
+}
+"#,
+    );
 }

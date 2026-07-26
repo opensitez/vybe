@@ -217,4 +217,141 @@ if ($i < 2) goto again;
         // echo emits no newline → the two iterations concatenate (verified vs php).
         ["01"]
     };
+
+    goto_in_if_else_branches => {
+        r#"<?php
+$flag = true;
+$result = '';
+if ($flag) {
+    goto positive;
+} else {
+    goto negative;
+}
+positive:
+$result .= 'yes';
+goto done;
+negative:
+$result .= 'no';
+done:
+echo $result;
+"#,
+        ["yes"]
+    };
+
+    goto_from_foreach_with_counter_break => {
+        r#"<?php
+$sum = 0;
+$i = 0;
+foreach ([1, 2, 3] as $v) {
+    if ($v === 2) {
+        $sum += 5;
+        goto after_loop;
+    }
+    $sum += $v;
+}
+after_loop:
+echo $sum;
+"#,
+        ["6"]
+    };
+
+    goto_to_top_like_manual_loop => {
+        r#"<?php
+$i = 0;
+$sum = 0;
+loop:
+$sum += $i;
+$i++;
+if ($i <= 3) {
+    goto loop;
+}
+echo $sum;
+"#,
+        ["6"]
+    };
+
+    goto_label_after_try_catch_block => {
+        r#"<?php
+$result = '';
+try {
+    throw new Exception('skip');
+} catch (Exception $e) {
+    $result .= 'caught';
+}
+goto done;
+$result .= ' never';
+done:
+echo $result;
+"#,
+        ["caught"]
+    };
+
+    goto_nested_condition_branches => {
+        r#"<?php
+$value = 0;
+$out = '';
+if (true) {
+    goto left;
+} else {
+    $out .= 'bad';
+}
+left:
+if (false) {
+    goto skip;
+}
+$out .= 'left';
+skip:
+echo $out;
+"#,
+        ["left"]
+    };
+
+    goto_in_nested_foreach => {
+        r#"<?php
+$sum = 0;
+foreach ([1, 2, 3] as $v) {
+    if ($v === 2) {
+        $sum += 5;
+        goto after_foreach;
+    }
+    $sum += $v;
+}
+after_foreach:
+echo $sum;
+"#,
+        ["6"]
+    };
+
+    goto_with_switch_control => {
+        r#"<?php
+$state = 'x';
+$out = '';
+switch ($state) {
+    case 'x':
+        $out .= 'x';
+        goto done;
+    case 'y':
+        $out .= 'y';
+        break;
+}
+done:
+echo $out;
+"#,
+        ["x"]
+    };
+
+    goto_reentry_loop_without_infinite_spin => {
+        r#"<?php
+$i = 0;
+$out = '';
+start:
+$out .= $i;
+$i++;
+if ($i < 3) {
+    goto start;
+}
+echo $out;
+"#,
+        ["012"]
+    };
 }

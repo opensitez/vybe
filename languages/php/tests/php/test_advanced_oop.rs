@@ -251,3 +251,127 @@ echo $result;
         vec!["value:10"]
     );
 }
+
+#[test]
+fn dynamic_dispatch_to_callables_on_trait_object() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Executor {
+    public function execute(string $task): string;
+}
+class SyncExecutor implements Executor {
+    public function execute(string $task): string { return "sync:$task"; }
+}
+class AsyncLikeExecutor implements Executor {
+    public function execute(string $task): string { return "async:$task"; }
+}
+$executors = [new SyncExecutor(), new AsyncLikeExecutor()];
+echo $executors[0]->execute('build') . '|' . $executors[1]->execute('build');
+"#
+        ),
+        vec!["sync:build|async:build"]
+    );
+}
+
+#[test]
+fn constructor_visibility_chain() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Base {
+    public function __construct(public string $name) {}
+}
+class Child extends Base {
+    public function __construct(string $name, public int $id) {
+        parent::__construct($name);
+    }
+}
+$child = new Child('worker', 7);
+echo $child->name . ':' . $child->id;
+"#
+        ),
+        vec!["worker:7"]
+    );
+}
+
+#[test]
+fn static_property_per_class_hierarchy() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class CounterA {
+    public static int $count = 1;
+    public static function bump(): void { self::$count += 1; }
+}
+class CounterB {
+    public static int $count = 10;
+    public static function bump(): void { self::$count += 10; }
+}
+CounterA::bump();
+CounterB::bump();
+echo CounterA::$count . '|' . CounterB::$count;
+"#
+        ),
+        vec!["2|20"]
+    );
+}
+
+#[test]
+fn property_hooks_getter_setter_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Counter {
+    private int $count = 0;
+    public int $value {
+        get { return $this->count; }
+        set { $this->count = $value; }
+    }
+}
+$c = new Counter();
+$c->value = 9;
+echo $c->value;
+"#
+        ),
+        vec!["9"]
+    );
+}
+
+#[test]
+fn object_clone_preserves_immutability_by_design() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Snapshot {
+    public function __construct(public readonly string $label) {}
+    public function __clone(): void {}
+}
+$s = new Snapshot('v');
+$c = clone $s;
+echo $s->label . '|' . $c->label;
+"#
+        ),
+        vec!["v|v"]
+    );
+}
+
+#[test]
+fn __call_static_dispatch_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class HandlerRegistry {
+    public static function __callStatic(string $name, array $args): mixed {
+        return match($name) {
+            'make' => 'created:' . ($args[0] ?? 'default'),
+            default => null,
+        };
+    }
+}
+echo HandlerRegistry::make('report');
+"#
+        ),
+        vec!["created:report"]
+    );
+}

@@ -1,4 +1,3 @@
-use super::helpers::run_prints;
 
 crate::php_cases! {
     array_intersect_ukey_basic => {
@@ -26,5 +25,24 @@ $result = array_intersect_ukey($array1, $array2, 'strcasecmp');
 echo implode(',', array_keys($result));
 "#,
         ["apple"]
+    };
+
+    array_intersect_ukey_preserves_input_order => {
+        r#"<?php
+$a = ['z' => 1, 'a' => 2, 'm' => 3];
+$b = ['A' => 9, 'm' => 8];
+$r = array_intersect_ukey($a, $b, 'strcasecmp');
+echo implode('|', array_keys($r));
+"#,
+        ["a|m"]
+    };
+
+    array_intersect_ukey_empty_right => {
+        r#"<?php
+$a = ['x' => 1, 'y' => 2];
+$r = array_intersect_ukey($a, [], 'strcmp');
+echo count($r) . '|' . (empty($r) ? 'empty' : 'not');
+"#,
+        ["0|empty"]
     };
 }

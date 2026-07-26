@@ -369,3 +369,159 @@ echo createUser(...$args);
         vec!["Alice/25/user"]
     );
 }
+
+#[test]
+fn spread_with_duplicate_numeric_keys_is_reindexed() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = [2 => 'a', 3 => 'b'];
+$b = [0 => 'c', 1 => 'd'];
+$merged = [...$a, ...$b];
+echo $merged[0] . '|' . $merged[1] . '|' . $merged[2] . '|' . $merged[3];
+"#,
+        ),
+        vec!["a|b|c|d"]
+    );
+}
+
+#[test]
+fn spread_with_non_contiguous_int_keys_and_assoc_overlap() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$left = [1 => 'a', 3 => 'b'];
+$right = ['x' => 100, 2 => 'c'];
+$result = [...$left, ...$right];
+echo $result[0] . '|' . $result[1] . '|' . $result[2];
+"#,
+        ),
+        vec!["a|b|c"]
+    );
+}
+
+#[test]
+fn spread_preserves_assoc_override_for_same_keys() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$base = ['k' => 1, 'u' => 9];
+$extra = ['k' => 7, 'v' => 8];
+$result = [...$base, ...$extra];
+echo $result['k'] . '|' . $result['u'] . '|' . $result['v'];
+"#,
+        ),
+        vec!["7|9|8"]
+    );
+}
+
+#[test]
+fn spread_in_named_arg_with_callable_array() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+function join3(string $a, string $b, string $c): string {
+    return $a . $b . $c;
+}
+$parts = ['a' => 'X', 'b' => 'Y', 'c' => 'Z'];
+echo join3(...$parts);
+"#,
+        ),
+        vec!["XYZ"]
+    );
+}
+
+#[test]
+fn spread_generator_with_nested_call() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+function gen(): Generator { yield from [1, 2, 3]; }
+function sum3(int $a, int $b, int $c): int { return $a + $b + $c; }
+echo sum3(...gen());
+"#,
+        ),
+        vec!["6"]
+    );
+}
+
+#[test]
+fn spread_does_not_mutate_original_arrays() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = [1, 2];
+$b = [3, 4];
+$c = [...$a, ...$b];
+$a[] = 99;
+echo implode(',', $c);
+"#,
+        ),
+        vec!["1,2,3,4"]
+    );
+}
+
+#[test]
+fn spread_preserves_duplicate_named_keys_from_later_array() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$first = ['x' => 1, 'x' => 2];
+$second = ['x' => 3];
+$merged = [...$first, ...$second];
+echo $merged['x'];
+"#,
+        ),
+        vec!["3"]
+    );
+}
+
+#[test]
+fn spread_with_unpacking_non_array_throws() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+try {
+    $x = [...1];
+    echo 'ok';
+} catch (Throwable $e) {
+    echo 'throw';
+}
+"#,
+        ),
+        vec!["throw"]
+    );
+}
+
+#[test]
+fn spread_in_ternary_call_position() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+function f(int $a, int $b, int $c): int { return $a + $b + $c; }
+$args = true ? [1,2] : [];
+$sum = f(0, ...$args);
+echo $sum;
+"#,
+        ),
+        vec!["3"]
+    );
+}
+
+#[test]
+fn spread_in_constructor_with_assoc_then_numeric() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Pair {
+    public function __construct(public int $a, public int $b, public int $c = 0) {}
+}
+$base = ['a' => 1];
+$more = [2, 3];
+$p = new Pair(...$base, ...$more);
+echo $p->a . ',' . $p->b . ',' . $p->c;
+"#,
+        ),
+        vec!["1,2,3"]
+    );
+}

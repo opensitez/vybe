@@ -247,3 +247,196 @@ echo implode(',', array_keys(array_diff_key($a, $b)));
         vec!["b"]
     );
 }
+
+#[test]
+fn array_merge_reindexes_numeric_and_preserves_strings() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = [0 => 'a', 3 => 'b', 'k' => 'v'];
+$b = ['c', 'd'];
+$m = array_merge($a, $b);
+echo implode(',', $m);
+echo '|';
+echo $m['k'];
+"#,
+        ),
+        vec!["a,b,v,c,d|v"]
+    );
+}
+
+#[test]
+fn array_intersect_assoc_strict_match() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = ['x' => 1, 'y' => '2', 'z' => 2];
+$b = ['x' => 1, 'y' => 2, 'z' => '2'];
+$r = array_intersect_assoc($a, $b);
+echo implode('|', array_keys($r));
+"#,
+        ),
+        vec!["x"]
+    );
+}
+
+#[test]
+fn array_udiff_with_callback() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = [1,2,3];
+$b = ['2'];
+$r = array_udiff($a, $b, fn($x, $y) => $x <=> (int)$y);
+echo implode(',', $r);
+"#,
+        ),
+        vec!["1,3"]
+    );
+}
+
+#[test]
+fn array_pop_from_empty_is_null() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = [];
+$v = array_pop($a);
+echo is_null($v) ? 'null' : 'notnull';
+echo '|';
+echo is_array($a) ? 'is_array' : 'no';
+echo '|';
+echo count($a);
+"#,
+        ),
+        vec!["null|is_array|0"]
+    );
+}
+
+#[test]
+fn array_shift_from_empty_is_null() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = [];
+$v = array_shift($a);
+echo is_null($v) ? 'null' : 'notnull';
+echo '|';
+echo count($a);
+"#,
+        ),
+        vec!["null|0"]
+    );
+}
+
+#[test]
+fn array_push_and_unshift_return_counts() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = [1];
+$pushed = array_push($a, 2, 3);
+$unshifted = array_unshift($a, 0);
+echo $pushed;
+echo '|';
+echo $unshifted;
+echo '|';
+echo implode(',', $a);
+"#,
+        ),
+        vec!["3|4|0,1,2,3"]
+    );
+}
+
+#[test]
+fn array_slice_length_zero_or_negative() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = [1, 2, 3];
+$zero = array_slice($a, 1, 0);
+$neg = array_slice($a, 0, -1);
+echo count($zero);
+echo '|';
+echo implode(',', $neg);
+"#,
+        ),
+        vec!["0|1,2"]
+    );
+}
+
+#[test]
+fn array_splice_replace_empty_removal_is_noop_when_count_zero() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = [1, 2, 3, 4];
+$removed = array_splice($a, 1, 0, [9, 9]);
+echo count($removed);
+echo '|';
+echo implode(',', $a);
+"#,
+        ),
+        vec!["0|1,9,9,2,3,4"]
+    );
+}
+
+#[test]
+fn array_splice_zero_offset_negative_length_takes_tail() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = [1, 2, 3, 4];
+$removed = array_splice($a, 0, -1, [9]);
+echo count($removed);
+echo '|';
+echo implode(',', $a);
+"#,
+        ),
+        vec!["3|9,4"]
+    );
+}
+
+#[test]
+fn array_search_with_offset_starts_after_index() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = ['a', 'b', 'a', 'c', 'a'];
+echo array_search('a', $a, true, 2);
+"#,
+        ),
+        vec!["4"]
+    );
+}
+
+#[test]
+fn array_key_exists_with_missing_and_existing_string_false_keys() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = ['' => 'empty', '0' => 'zero', false => 'false-key'];
+echo array_key_exists('', $a) ? 'yes' : 'no';
+echo '|';
+echo array_key_exists(0, $a) ? 'zero' : 'nozero';
+echo '|';
+echo array_key_exists('0', $a) ? 'zero2' : 'nozero2';
+"#,
+        ),
+        vec!["yes|zero|zero2"]
+    );
+}
+
+#[test]
+fn array_map_with_key_mode_not_supported_keeps_single_column() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = [1, 2, 3];
+$mapped = array_map(fn($value) => $value * 2, $a);
+echo implode(',', $mapped);
+"#,
+        ),
+        vec!["2,4,6"]
+    );
+}

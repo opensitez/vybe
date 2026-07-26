@@ -174,4 +174,202 @@ echo match (true) {
 "#,
         ["first"]
     };
+
+    match_expression_precedence_with_arithmetic => {
+        r#"<?php
+echo match (1 + 2 * 2) {
+    5 => 'ok',
+    default => 'bad',
+};
+echo '|';
+echo match (1 + 2 > 4) {
+    true => 'gt',
+    false => 'le',
+};
+"#,
+        ["ok|gt"]
+    };
+
+    match_null_coalesce_and_fallback => {
+        r#"<?php
+$value = null;
+echo match ($value ?? 'fallback') {
+    '' => 'empty',
+    'fallback' => 'coalesced',
+    default => 'other',
+};
+"#,
+        ["coalesced"]
+    };
+
+    match_guard_like_logical_operators => {
+        r#"<?php
+$score = 78;
+echo match (true) {
+    $score > 90 && $score <= 100 => 'A',
+    $score > 80 && $score <= 90 => 'B',
+    $score > 70 && $score <= 80 => 'C',
+    default => 'D',
+};
+"#,
+        ["C"]
+    };
+
+    match_uses_nullsafe_expression => {
+        r#"<?php
+class Item {
+    public function tag(): ?string { return null; }
+}
+$item = new Item();
+echo match ($item?->tag()) {
+    null => 'none',
+    default => 'set',
+};
+"#,
+        ["none"]
+    };
+
+    match_multiple_guards_for_same_condition => {
+        r#"<?php
+$x = 12;
+echo match (12) {
+    0, 1 => 'tiny',
+    $x > 10 => 'bigger',
+    12 => 'exact',
+    default => 'none',
+};
+"#,
+        ["bigger"]
+    };
+
+    match_with_falsy_subject_and_true_subject => {
+        r#"<?php
+echo match ('') {
+    '' => 'empty-string',
+    default => 'other',
+};
+echo '|';
+echo match (false) {
+    false => 'falsey',
+    default => 'other-false',
+};
+"#,
+        ["empty-string|falsey"]
+    };
+
+    match_on_bitwise_result => {
+        r#"<?php
+$left = (3 & 1) === 1;
+$right = (3 | 1) === 4;
+echo match (true) {
+    $left => 'left-true',
+    $right => 'right-true',
+    default => 'none',
+};
+echo '|';
+echo match (3 & 1) {
+    1 => 'and-ok',
+    default => 'and-fail',
+};
+"#,
+        ["left-true|and-ok"]
+    };
+
+    match_nested_arrays_strict_key_matching => {
+        r#"<?php
+$payload = ['kind' => 'event', 'id' => 0];
+echo match ($payload) {
+    ['kind' => 'event'] => 'evt',
+    ['kind' => 'log'] => 'log',
+    default => 'other',
+};
+echo '|';
+echo match ($payload['id'] ?? null) {
+    0 => 'zero',
+    null => 'null-id',
+    default => 'other-id',
+};
+"#,
+        ["evt|zero"]
+    };
+
+    match_with_function_call_in_arm => {
+        r#"<?php
+function score(string $name): int { return strlen($name); }
+echo match (score('php')) {
+    2 => 'two',
+    3 => 'three',
+    default => 'other',
+};
+"#,
+        ["three"]
+    };
+
+    match_unary_negation_condition => {
+        r#"<?php
+$value = 0;
+echo match ($value) {
+    !$value => 'zero-true',
+    default => 'nonzero',
+};
+"#,
+        ["zero-true"]
+    };
+
+    match_subject_side_effect_only_once => {
+        r#"<?php
+$calls = 0;
+$next = function() use (&$calls) { $calls++; return 2; };
+echo match ($next()) {
+    1 => 'one',
+    2 => 'two',
+    3 => 'three',
+    default => 'other',
+};
+echo '|';
+echo $calls;
+"#,
+        ["two|1"]
+    };
+
+    match_arms_evaluate_until_first_match => {
+        r#"<?php
+$log = [];
+$first = function() use (&$log) { $log[] = 'first'; return 10; };
+$second = function() use (&$log) { $log[] = 'second'; return 20; };
+$third = function() use (&$log) { $log[] = 'third'; return 30; };
+echo match (20) {
+    $first() => '10',
+    $second() => '20',
+    $third() => '30',
+    default => 'none',
+};
+echo '|';
+echo implode(',', $log);
+"#,
+        ["20|first,second"]
+    };
+
+    match_subject_parenthesized_arithmetic => {
+        r#"<?php
+echo match (((1 + 2) * 4) - 5) {
+    5 => 'five',
+    7 => 'seven',
+    default => 'other',
+};
+"#,
+        ["seven"]
+    };
+
+    match_subject_via_ternary_expression => {
+        r#"<?php
+$is_primary = true;
+echo match ($is_primary ? 2 : 1) {
+    1 => 'primary-false',
+    2 => 'primary-true',
+    default => 'fallback',
+};
+"#,
+        ["primary-true"]
+    };
 }

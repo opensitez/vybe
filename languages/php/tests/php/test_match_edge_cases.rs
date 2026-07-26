@@ -392,3 +392,148 @@ echo "$result,$calls";
         vec!["two,0"]
     );
 }
+
+#[test]
+fn match_subject_with_nested_nullsafe_expression() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Node {
+    public ?Node $next = null;
+    public function label(): string { return 'leaf'; }
+}
+$node = new Node();
+echo match($node->next?->label()) {
+    null => 'empty',
+    default => 'filled',
+};
+"#
+        ),
+        vec!["empty"]
+    );
+}
+
+#[test]
+fn match_multiple_arms_with_precedence_guard() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$score = 72;
+echo match (true) {
+    $score >= 90 => 'A',
+    ($score >= 80 && $score < 90) => 'B',
+    ($score >= 70 && $score < 80) => 'C',
+    $score >= 60 => 'D',
+    default => 'F',
+};
+"#
+        ),
+        vec!["C"]
+    );
+}
+
+#[test]
+fn match_default_omitted_and_throws_when_empty() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+try {
+    echo match (false) { true => 'yes' };
+} catch (\UnhandledMatchError $e) {
+    echo 'unhandled';
+}
+"#
+        ),
+        vec!["unhandled"]
+    );
+}
+
+#[test]
+fn match_array_subject_strict_typing() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo match ([1,2]) {
+    [1] => 'single',
+    [1,2] => 'pair',
+    default => 'other',
+};
+"#
+        ),
+        vec!["pair"]
+    );
+}
+
+#[test]
+fn match_subject_with_nested_ternary_and_precedence() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$priority = true;
+$mode = $priority ? 10 : 20;
+echo match ($mode > 5 ? $mode : 0) {
+    0 => 'zero',
+    10 => 'high',
+    20 => 'low',
+    default => 'other',
+};
+"#
+        ),
+        vec!["high"]
+    );
+}
+
+#[test]
+fn match_arm_result_executed_only_for_selected_arm() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$hits = [];
+$result = match (3) {
+    1 => (fn() use (&$hits) { $hits[] = 'a'; return 'one'; })(),
+    2 => (function() use (&$hits) { $hits[] = 'b'; return 'two'; })(),
+    3 => 'three',
+    default => (function() use (&$hits) { $hits[] = 'd'; return 'other'; })(),
+};
+echo $result;
+echo '|';
+echo implode('|', $hits);
+"#
+        ),
+        vec!["three|"]
+    );
+}
+
+#[test]
+fn match_falsy_vs_zero_subject_in_match_true_style() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo match (true) {
+    '' => 'empty',
+    0 => 'integer-zero',
+    false => 'false-boolean',
+    null => 'null',
+    default => 'other',
+};
+"#
+        ),
+        vec!["other"]
+    );
+}
+
+#[test]
+fn match_strict_type_checks_around_array_subject() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo match (['1']) {
+    [1] => 'int-key',
+    ['1'] => 'string-key',
+    default => 'other',
+};
+"#
+        ),
+        vec!["string-key"]
+    );
+}

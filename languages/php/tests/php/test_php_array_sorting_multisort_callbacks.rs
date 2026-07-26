@@ -23,6 +23,29 @@ echo implode(", ", $sortedNames);
 }
 
 #[test]
+fn test_php_usort_by_priority_then_name() {
+    let out = run_prints(
+        r#"<?php
+$tasks = [
+    ["name" => "db", "priority" => 2],
+    ["name" => "api", "priority" => 2],
+    ["name" => "jobs", "priority" => 1],
+];
+
+usort($tasks, function($a, $b) {
+    if ($a["priority"] === $b["priority"]) {
+        return strcmp($a["name"], $b["name"]);
+    }
+    return $a["priority"] <=> $b["priority"];
+});
+
+echo $tasks[0]["name"] . "|" . $tasks[1]["name"] . "|" . $tasks[2]["name"];
+"#,
+    );
+    assert_eq!(out, vec!["jobs|api|db"]);
+}
+
+#[test]
 fn test_php_asort_and_ksort_association_preservation() {
     let out = run_prints(
         r#"<?php
@@ -46,6 +69,33 @@ echo "v0={$volume[0]} e0={$edition[0]} | v1={$volume[1]} e1={$edition[1]}";
 "#,
     );
     assert_eq!(out, vec!["v0=98 e0=2 | v1=86 e1=1"]);
+}
+
+#[test]
+fn test_php_array_multisort_preserves_parallel_rows() {
+    let out = run_prints(
+        r#"<?php
+$name = ["a", "b", "c", "d"];
+$scores = [20, 10, 20, 5];
+$age = [30, 40, 25, 50];
+
+array_multisort($scores, SORT_ASC, SORT_NUMERIC, $age, SORT_DESC, SORT_NUMERIC, $name);
+echo "{$scores[0]}:{$age[0]}:{$name[0]}|{$scores[1]}:{$age[1]}:{$name[1]}|{$scores[2]}:{$age[2]}:{$name[2]}";
+"#,
+    );
+    assert_eq!(out, vec!["5:50:d|10:40:b|20:30:a"]);
+}
+
+#[test]
+fn test_php_array_multisort_string_numeric_flags() {
+    let out = run_prints(
+        r#"<?php
+$weights = ["10", "2", "1", "03", "20"];
+array_multisort($weights, SORT_ASC, SORT_NUMERIC, $weights, SORT_ASC, SORT_STRING);
+echo implode(",", $weights);
+"#,
+    );
+    assert_eq!(out, vec!["1,2,03,10,20"]);
 }
 
 #[test]
@@ -125,4 +175,60 @@ uasort($data, fn($v1, $v2) => $v1 <=> $v2);
 echo array_key_first($data);
 "#,
     );
+}
+
+#[test]
+fn test_php_asort_falsey_values_compare_as_expected() {
+    let out = run_prints(
+        r#"<?php
+$values = ["a" => 0, "b" => false, "c" => "00", "d" => 1];
+asort($values, SORT_REGULAR);
+echo implode("|", array_keys($values));
+"#,
+    );
+    assert_eq!(out, vec!["a,b,c,d"]);
+}
+
+#[test]
+fn test_php_arsort_boolean_and_string_sorting() {
+    let out = run_prints(
+        r#"<?php
+$values = ["alpha" => "10", "beta" => "2", "gamma" => "A", "delta" => "9", "epsilon" => "0"];
+arsort($values, SORT_NUMERIC);
+echo implode("|", array_values($values));
+"#,
+    );
+    assert_eq!(out, vec!["10|9|2|0|0"]);
+}
+
+#[test]
+fn test_php_usort_empty_array_and_singleton_stability() {
+    let out_empty = run_prints(
+        r#"<?php
+$a = [];
+usort($a, fn($x, $y) => $x <=> $y);
+echo count($a);
+"#,
+    );
+    let out_one = run_prints(
+        r#"<?php
+$a = [5];
+usort($a, fn($x, $y) => $x <=> $y);
+echo $a[0];
+"#,
+    );
+    assert_eq!(out_empty, vec!["0"]);
+    assert_eq!(out_one, vec!["5"]);
+}
+
+#[test]
+fn test_php_uksort_locale_string_comparison() {
+    let out = run_prints(
+        r#"<?php
+$data = ["éclair" => 1, "apple" => 2, "Éclair" => 3, "banana" => 4];
+uksort($data, fn($a, $b) => strcmp($a, $b));
+echo implode("|", array_keys($data));
+"#,
+    );
+    assert_eq!(out, vec!["Éclair|apple|banana|éclair"]);
 }

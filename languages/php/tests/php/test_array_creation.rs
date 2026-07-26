@@ -111,4 +111,96 @@ echo array_is_list([1, 2, 3]) ? 'list' : 'map';
 "#,
         ["list"]
     };
+
+    array_fill_with_zero_count => {
+        r#"<?php
+echo implode(',', array_fill(5, 0, 'x')) . '|' . count(array_fill(5, 0, 'x'));
+"#,
+        ["|0"]
+    };
+
+    array_fill_start_index_negative => {
+        r#"<?php
+echo implode(',', array_fill(-3, 4, 'z')) . '|' . array_key_first(array_fill(-3, 4, 'z'));
+"#,
+        ["z,z,z,z|-3"]
+    };
+
+    range_float_step_with_inclusive_end => {
+        r#"<?php
+echo implode(',', range(0.0, 1.0, 0.25));
+"#,
+        ["0,0.25,0.5,0.75,1"]
+    };
+
+    array_merge_preserves_earlier_string_keys => {
+        r#"<?php
+$a = ['x' => 1, 'y' => 2];
+$b = ['y' => 9, 'z' => 3];
+$m = array_merge($a, $b);
+echo $m['x'] . '|' . $m['y'] . '|' . $m['z'];
+"#,
+        ["1|2|3"]
+    };
+
+    array_change_key_case_upper => {
+        r#"<?php
+echo json_encode(array_change_key_case(['foo' => 1, 'Bar' => 2], CASE_UPPER));
+"#,
+        ["{\"FOO\":1,\"BAR\":2}"]
+    };
+
+    array_reverse_preserve_keys_false => {
+        r#"<?php
+$rev = array_reverse(['a' => 1, 'b' => 2], false);
+echo implode(',', $rev) . '|' . array_key_first($rev);
+"#,
+        ["2,1|0"]
+    };
+
+    array_sum_with_non_scalar_throws_zero => {
+        r#"<?php
+echo array_sum([1, '2', 'bad', 3]);
+"#,
+        ["6"]
+    };
+
+    array_fill_replaces_reference_values_for_non_scalars => {
+        r#"<?php
+$a = array_fill(0, 2, []);
+$a[0][] = 'x';
+echo json_encode($a);
+"#,
+        ["[[\"x\"],[]]"]
+    };
+
+    range_descending_no_step => {
+        r#"<?php
+echo implode(',', range(5, 1));
+"#,
+        ["5,4,3,2,1"]
+    };
+
+    range_negative_step_with_float => {
+        r#"<?php
+echo implode('|', range(4.0, 0.0, -1.5));
+"#,
+        ["4|2.5|1|-0.5"]
+    };
+
+    array_rand_multiple_ordered_without_shuffle => {
+        r#"<?php
+$r = array_rand(['a' => 1, 'b' => 2, 'c' => 3], 2);
+sort($r);
+echo $r[0] . $r[1];
+"#,
+        ["ab"]
+    };
+
+    array_key_exists_empty_string_key => {
+        r#"<?php
+echo array_key_exists('', ['' => 1, 0 => 2]) ? 'empty' : 'miss', '|', array_key_exists('0', ['' => 1, 0 => 2]) ? 'zero' : 'zmiss';
+"#,
+        ["empty|zero"]
+    };
 }

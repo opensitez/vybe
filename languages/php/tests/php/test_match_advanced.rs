@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Match basics (complement to existing coverage) ─────────────
 
@@ -252,5 +252,237 @@ function mapErrorCode(int $code): string {
 echo mapErrorCode(1);
 echo mapErrorCode(99);
 "#,
+    );
+}
+
+#[test]
+fn match_subject_with_computation_precedence() {
+    compile_ok(
+        r#"<?php
+$n = 3;
+$v = match (1 + 2 * $n) {
+    5 => 'ok',
+    7 => 'oops',
+    default => 'other',
+};
+echo $v;
+"#,
+    );
+}
+
+#[test]
+fn match_with_guarding_logical_conditions() {
+    compile_ok(
+        r#"<?php
+$score = 92;
+$v = match (true) {
+    $score >= 90 && $score < 100 => 'high',
+    $score >= 100 => 'perfect',
+    default => 'low',
+};
+echo $v;
+"#,
+    );
+}
+
+#[test]
+fn match_on_array_element_and_missing_key_fallback() {
+    compile_ok(
+        r#"<?php
+$payload = ['status' => 'ok'];
+$label = match ($payload['status'] ?? 'unknown') {
+    'ok' => 'good',
+    'fail' => 'bad',
+    default => 'unknown',
+};
+echo $label;
+echo '|';
+$label2 = match ($payload['retry'] ?? null) {
+    null => 'no-retry',
+    0 => 'zero',
+    default => 'has',
+};
+echo $label2;
+"#,
+    );
+}
+
+#[test]
+fn match_with_exhaustive_boolean_chain() {
+    compile_ok(
+        r#"<?php
+$v = match (true) {
+    true === true => 'true-branch',
+    false => 'false-branch',
+};
+echo $v;
+"#,
+    );
+}
+
+#[test]
+fn match_only_executes_selected_arm() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+function side_effect(string &$log, string $label): string {
+    $log .= $label;
+    return $label;
+}
+$log = '';
+$value = 2;
+$out = match ($value) {
+    1 => side_effect($log, 'A'),
+    2 => 'selected',
+    default => side_effect($log, 'Z'),
+};
+echo $out;
+echo '|';
+echo $log;
+"#,
+        ),
+        vec!["selected|"]
+    );
+}
+
+#[test]
+fn match_stops_after_first_matching_condition_in_true_subject() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$value = 10;
+$log = '';
+function mark(array &$log, string $value): string {
+    $log[] = $value;
+    return $value;
+}
+$label = match (true) {
+    $value > 5 && mark($log, 'high') => 'high',
+    $value > 0 && mark($log, 'positive') => 'positive',
+    default => 'zero',
+};
+echo $label;
+echo '|';
+echo implode(',', $log);
+"#,
+        ),
+        vec!["high|high"]
+    );
+}
+
+#[test]
+fn match_uses_fallthrough_facts_of_ternary_subject_precedence() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$status = 3;
+$label = match (1 + 1 === 2 ? $status : 0) {
+    1 => 'one',
+    3 => 'three',
+    5 => 'five',
+    default => 'other',
+};
+echo $label;
+"#,
+        ),
+        vec!["three"]
+    );
+}
+
+#[test]
+fn match_subject_is_evaluated_once_with_side_effect() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$count = 0;
+$next = function() use (&$count) {
+    $count++;
+    return 2;
+};
+$result = match ($next()) {
+    1 => 'one',
+    2 => 'two',
+    default => 'other',
+};
+echo $result;
+echo '|';
+echo $count;
+"#,
+        ),
+        vec!["two|1"]
+    );
+}
+
+#[test]
+fn match_all_arms_with_logical_operators_and_short_circuit() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$calls = 0;
+$mark = function() use (&$calls) { $calls++; return true; };
+$label = match (true) {
+    false && $mark() => 'never',
+    true && $mark()  => 'hit',
+    default => 'none',
+};
+echo $label;
+echo '|';
+echo $calls;
+"#,
+        ),
+        vec!["hit|1"]
+    );
+}
+
+#[test]
+fn match_expression_subject_with_nested_ternary() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$n = 4;
+$label = match (($n > 3) ? 'big' : 'small') {
+    'small' => 'S',
+    'big' => 'B',
+    default => 'U',
+};
+echo $label;
+"#,
+        ),
+        vec!["B"]
+    );
+}
+
+#[test]
+fn match_default_after_earlier_default_not_taken_when_match_found() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$result = match (7) {
+    1, 2, 3 => 'low',
+    7, 8 => 'mid',
+    default => 'fallback',
+};
+echo $result;
+"#,
+        ),
+        vec!["mid"]
+    );
+}
+
+#[test]
+fn match_with_subject_on_expression_with_error_value() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$x = ['v' => 0];
+$label = match ($x['v'] ?? null) {
+    1 => 'one',
+    null => 'missing',
+    default => 'other',
+};
+echo $label;
+"#,
+        ),
+        vec!["other"]
     );
 }

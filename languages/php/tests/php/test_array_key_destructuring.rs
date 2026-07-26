@@ -366,3 +366,213 @@ echo $arr['x'] . ',' . $arr['y'];
         vec!["5,10"]
     );
 }
+
+#[test]
+fn list_assignment_ignores_excess_values() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+[$a, $b] = [1, 2, 3, 4];
+echo "$a,$b";
+"#
+        ),
+        vec!["1,2"]
+    );
+}
+
+#[test]
+fn list_assignment_with_reference_and_spread_mutation() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$values = [1, 2, 3];
+[$first, &$second, $third] = $values;
+$second = 9;
+echo $values[1] . "|" . $first . "|" . $third;
+"#
+        ),
+        vec!["9|1|3"]
+    );
+}
+
+#[test]
+fn nested_destructuring_in_ternary_expression() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$payload = true ? [10, 20] : [1, 2];
+[$min, $max] = $payload;
+echo $min > 5 ? "$min,$max" : "fallback";
+"#
+        ),
+        vec!["10,20"]
+    );
+}
+
+#[test]
+fn key_destructuring_with_string_numeric_like_keys() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$data = ["0" => "zero", 1 => "one", "2" => "two", "name" => "n"];
+["0" => $a, 1 => $b, "2" => $c] = $data;
+echo "$a|$b|$c|{$data['name']}";
+"#
+        ),
+        vec!["zero|one|two|n"]
+    );
+}
+
+#[test]
+fn list_with_single_element_and_spread_empty_tail() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+[$first, ...$rest] = [10];
+echo $first . '|' . json_encode($rest);
+"#
+        ),
+        vec!["10|[]"]
+    );
+}
+
+#[test]
+fn nested_list_with_fewer_values_keeps_defaults_via_null_coalesce() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+[$a, $b] = [1];
+echo "$a|" . ($b ?? 'null');
+"#
+        ),
+        vec!["1|null"]
+    );
+}
+
+#[test]
+fn list_with_duplicate_pattern_position_is_last_win() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+[$a, $a] = [1, 2];
+echo $a;
+"#
+        ),
+        vec!["2"]
+    );
+}
+
+#[test]
+fn foreach_list_with_reference_updates_source() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$pairs = [[1], [2], [3]];
+$sum = 0;
+foreach ($pairs as &$pair) {
+    $pair[0] *= 10;
+    $sum += $pair[0];
+}
+echo $sum;
+"#
+        ),
+        vec!["60"]
+    );
+}
+
+#[test]
+fn destructuring_via_nested_access() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$shape = [[1, 2], [3, 4]];
+[$first, $second] = $shape;
+[$x, $y] = $first;
+echo "$x,$y|" . ($second[0] + $second[1]);
+"#
+        ),
+        vec!["1,2|7"]
+    );
+}
+
+#[test]
+fn destructuring_generator_to_list() {
+    assert_eq!(
+        run_prints(
+r#"<?php
+function gen() {
+    yield 10;
+    yield 20;
+}
+[$a, $b] = iterator_to_array(gen());
+echo "$a|$b";
+"#,
+        ),
+        vec!["10|20"]
+    );
+}
+
+#[test]
+fn list_with_reference_target_without_ampersand_is_copy() {
+    assert_eq!(
+        run_prints(
+r#"<?php
+$src = [1, 2];
+[$a, $b] = $src;
+$a = 9;
+echo $src[0] . '|' . $a;
+"#,
+        ),
+        vec!["1|9"]
+    );
+}
+
+#[test]
+fn list_with_reference_target_mutates_source() {
+    assert_eq!(
+        run_prints(
+r#"<?php
+$src = [1, 2];
+[$a, &$b] = $src;
+$b = 9;
+echo $src[1] . '|' . $b;
+"#,
+        ),
+        vec!["9|9"]
+    );
+}
+
+#[test]
+fn list_with_more_targets_than_values_stays_missing_with_coalesce() {
+    assert_eq!(
+        run_prints(
+r#"<?php
+[$first, $second, $third] = [5];
+echo $first . '|' . ($second ?? 'nil') . '|' . ($third ?? 'nil');
+"#,
+        ),
+        vec!["5|nil|nil"]
+    );
+}
+
+#[test]
+fn foreach_list_with_nullable_pairs_skips_invalid_values() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$rows = [[1, 2], null, [3, 4]];
+$out = [];
+foreach ($rows as $row) {
+    if (!is_array($row)) {
+        $out[] = 'skip';
+        continue;
+    }
+    [$a, $b] = $row;
+    $out[] = $a + $b;
+}
+echo implode('|', $out);
+"#,
+        ),
+        vec!["3|skip|7"]
+    );
+}

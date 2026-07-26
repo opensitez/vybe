@@ -463,3 +463,53 @@ echo $fn('hello');
 "#,
     );
 }
+
+#[test]
+fn first_class_callable_from_variable_function_name() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$name = 'strlen';
+$fn = $name(...);
+echo $fn('hello');
+echo '|';
+echo $fn('');
+"#
+        ),
+        vec!["5", "0"]
+    );
+}
+
+#[test]
+fn first_class_callable_with_ternary_selection() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$select = true;
+$fn = $select ? trim(... ) : strtoupper(...);
+echo $fn('  php  ') . '|';
+$select = false;
+$fn = $select ? trim(... ) : strtoupper(...);
+echo $fn('  php  ');
+"#
+        ),
+        vec!["php|PHP"]
+    );
+}
+
+#[test]
+fn first_class_callable_runtime_fallback_chain() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$strategy = null;
+$fn = $strategy ? $strategy : strtoupper(...);
+echo $fn('a') . '|';
+$strategy = 'strtolower';
+$fn = $strategy(...);
+echo $fn('A');
+"#
+        ),
+        vec!["A|a"]
+    );
+}

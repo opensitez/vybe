@@ -288,4 +288,169 @@ echo array_sum([1.5, 2.5]);
 "#,
         ["4"]
     };
+
+    array_search_loose_prefers_first_match => {
+        r#"<?php
+echo array_search('2', [1, '2', 2, '2'], false);
+"#,
+        ["1"]
+    };
+
+    array_search_strict_with_type_mismatch => {
+        r#"<?php
+echo array_search('2', [1, '2', 2, '2'], true) === false ? 'no' : 'yes';
+"#,
+        ["no"]
+    };
+
+    in_array_with_default_mode_skips_type => {
+        r#"<?php
+echo in_array(0, [false, '0', null], false) ? 'yes' : 'no';
+"#,
+        ["yes"]
+    };
+
+    array_key_exists_false_for_missing_key => {
+        r#"<?php
+echo array_key_exists('missing', ['a' => 1, 'b' => 2]) ? 'yes' : 'no';
+"#,
+        ["no"]
+    };
+
+    array_rand_multiple_keys => {
+        r#"<?php
+$r = array_rand(['a' => 1, 'b' => 2, 'c' => 3], 2);
+sort($r);
+echo count($r) . '|' . implode(',', $r);
+"#,
+        ["2|a,b"]
+    };
+
+    array_unique_preserves_first_numeric_index => {
+        r#"<?php
+$u = array_unique([10 => 'a', 11 => 'b', 12 => 'a']);
+echo array_key_first($u) . ':' . implode(',', array_values($u));
+"#,
+        ["10|a,b"]
+    };
+
+    array_slice_preserve_keys_false_reindex => {
+        r#"<?php
+$s = ['a' => 1, 'b' => 2, 'c' => 3];
+$t = array_slice($s, 1, 2, false);
+echo implode(',', array_keys($t)) . ':' . implode(',', $t);
+"#,
+        ["0,1|2,3"]
+    };
+
+    array_rand_one_key_returns_scalar => {
+        r#"<?php
+$r = array_rand(['only' => 1], 1);
+echo is_array($r) ? 'array' : 'scalar';
+if (!is_array($r)) echo '|' . $r;
+"#,
+        ["scalar|only"]
+    };
+
+    array_key_first_empty => {
+        r#"<?php
+$first = array_key_first([]);
+echo is_null($first) ? 'null' : 'value';
+"#,
+        ["null"]
+    };
+
+    array_key_last_empty => {
+        r#"<?php
+$last = array_key_last([]);
+echo is_null($last) ? 'null' : 'value';
+"#,
+        ["null"]
+    };
+
+    array_search_prefers_last_matching_key_with_loose_and_strict_mix => {
+        r#"<?php
+$r = array_search('2', [1, '2', 2, '2']);
+echo is_int($r) ? $r : gettype($r);
+"#,
+        ["1"]
+    };
+
+    array_fill_with_zero_count => {
+        r#"<?php
+echo count(array_fill(0, 0, 9)) . '|' . json_encode(array_fill(1, 0, 'x'));
+"#,
+        ["0|[]"]
+    };
+
+    array_search_offset_starts_after_index => {
+        r#"<?php
+echo array_search('2', ['2', 3, '2', 4], false, 2);
+"#,
+        ["2"]
+    };
+
+    array_search_null_needle_strict => {
+        r#"<?php
+$a = [null, 0, ''];
+echo array_search(null, $a, true);
+"#,
+        ["0"]
+    };
+
+    in_array_on_nested_array_loose => {
+        r#"<?php
+echo in_array([1, 2], [[1, 2], [3, 4]]) ? 'yes' : 'no';
+"#,
+        ["yes"]
+    };
+
+    in_array_on_nested_array_strict => {
+        r#"<?php
+echo in_array([1, '2'], [[1, 2], [3, 4]], true) ? 'yes' : 'no';
+"#,
+        ["no"]
+    };
+
+    array_key_exists_on_numeric_string_key_collisions => {
+        r#"<?php
+$a = ['0' => 'zero', 0 => 'int0', '01' => 'leading'];
+echo array_key_exists(0, $a) . '|' . array_key_exists('0', $a) . '|' . array_key_exists('01', $a);
+"#,
+        ["1|1|1"]
+    };
+
+    array_flip_duplicate_values_last_value_keeps_last_key => {
+        r#"<?php
+$f = array_flip(['a', 'b', 'a', 'c']);
+echo $f['a'];
+"#,
+        ["3"]
+    };
+
+    array_merge_recursive_with_scalar_and_array => {
+        r#"<?php
+$x = ['a' => [1], 'b' => 2];
+$y = ['a' => 3];
+$m = array_merge_recursive($x, $y);
+echo is_array($m['a']) ? implode('|', $m['a']) : 'not-array';
+"#,
+        ["1|3"]
+    };
+
+    array_values_empty_input => {
+        r#"<?php
+$v = array_values([]);
+echo json_encode($v);
+"#,
+        ["[]"]
+    };
+
+    array_keys_search_value_strict => {
+        r#"<?php
+$a = ['a' => '1', 'b' => 1, 'c' => '1'];
+echo implode('|', array_keys($a, '1', true));
+"#,
+        ["b"]
+    };
 }

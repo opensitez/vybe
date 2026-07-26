@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Outer variable invisible inside function ──────────────────
 
@@ -296,5 +296,308 @@ class Config {
 echo getSite();
 echo (new Config())->name();
 "#,
+    );
+}
+
+#[test]
+fn scope_global_modification_persists_across_calls_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$count = 1;
+function bump_global(): int {
+    global $count;
+    return ++$count;
+}
+echo bump_global();
+echo bump_global();
+bump_global();
+echo $count;
+"#,
+        ),
+        vec!["234"]
+    );
+}
+
+#[test]
+fn scope_static_function_retains_value_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+function seq(): int {
+    static $n = 0;
+    return ++$n;
+}
+echo seq();
+echo seq();
+echo seq();
+"#,
+        ),
+        vec!["123"]
+    );
+}
+
+#[test]
+fn scope_closure_by_ref_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$value = 1;
+$inc = function(int $n) use (&$value): void { $value += $n; };
+$inc(2);
+$inc(3);
+echo $value;
+"#,
+        ),
+        vec!["6"]
+    );
+}
+
+#[test]
+fn scope_global_reference_alias_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$count = 2;
+function bump_by_alias(): void {
+    global $count;
+    $alias = &$count;
+    $alias += 3;
+}
+bump_by_alias();
+echo $count;
+"#,
+        ),
+        vec!["5"]
+    );
+}
+
+#[test]
+fn scope_global_inside_closure_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$label = 'outer';
+$writer = function(string $value): void {
+    global $label;
+    $label = $value;
+};
+$writer('inner');
+echo $label;
+"#,
+        ),
+        vec!["inner"]
+    );
+}
+
+#[test]
+fn scope_static_recurse_counter_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+function walk(int $n): int {
+    static $calls = 0;
+    $calls++;
+    if ($n <= 0) return $calls;
+    return walk($n - 1);
+}
+echo walk(2);
+echo walk(0);
+"#,
+        ),
+        vec!["34"]
+    );
+}
+
+#[test]
+fn scope_function_name_resolution_with_variable_function_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+function dynamicScopeTarget(): string { return 'scope'; }
+$fn = 'dynamicScopeTarget';
+echo $fn();
+"#,
+        ),
+        vec!["scope"]
+    );
+}
+
+#[test]
+fn scope_eval_defines_function_at_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+eval('function scope_eval_target(): string { return "evaled"; }');
+echo scope_eval_target();
+"#,
+        ),
+        vec!["evaled"]
+    );
+}
+
+#[test]
+fn scope_arrow_function_reads_outer_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$base = 10;
+$double = fn(int $n) => $n * 2;
+$read = fn() => $double($base);
+echo $double(3);
+echo '|';
+echo $read();
+"#,
+        ),
+        vec!["6|20"]
+    );
+}
+
+#[test]
+fn scope_global_keyword_with_shadowed_local_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$counter = 10;
+function increment_global(): int {
+    global $counter;
+    $counter += 5;
+    return $counter;
+}
+function read_local_counter(): int {
+    $counter = 2;
+    return $counter;
+}
+echo read_local_counter();
+echo '|';
+echo increment_global();
+echo '|';
+echo increment_global();
+"#,
+        ),
+        vec!["2|15|20"]
+    );
+}
+
+#[test]
+fn scope_static_var_isolation_between_references_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+function first(): int {
+    static $n = 1;
+    $n++;
+    return $n;
+}
+function second(): int {
+    static $n = 100;
+    $n += 2;
+    return $n;
+}
+echo first();
+echo '|';
+echo first();
+echo '|';
+echo second();
+"#,
+        ),
+        vec!["2|3|102"]
+    );
+}
+
+#[test]
+fn scope_closure_parameter_shadowing_outer_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$value = 'outer';
+$fn = function(string $arg) use (&$value): void {
+    $value = 'inner';
+};
+$fn('ignored');
+echo $value;
+"#,
+        ),
+        vec!["outer"]
+    );
+}
+
+#[test]
+fn scope_dynamic_variable_name_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$name = 'color';
+$color = 'blue';
+$$name = 'green';
+echo $$name;
+echo '|';
+echo $color;
+"#,
+        ),
+        vec!["green|blue"]
+    );
+}
+
+#[test]
+fn scope_variable_variables_in_nested_scope_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$prefix = 'ns';
+function make_value(): void {
+    $local = 'secret';
+    $k = 'local';
+    $prefix = 'local_prefix';
+    echo $$k;
+    echo '|';
+    echo ${$k};
+}
+make_value();
+echo 'done';
+"#,
+        ),
+        vec!["secret|secret|done"]
+    );
+}
+
+#[test]
+fn scope_nested_function_definition_visibility_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+function define_inner(): void {
+    $flag = true;
+    if ($flag) {
+        function nested_scoped_fn(): string { return 'ok'; }
+    }
+}
+define_inner();
+echo function_exists('nested_scoped_fn') ? nested_scoped_fn() : 'missing';
+"#,
+        ),
+        vec!["ok"]
+    );
+}
+
+#[test]
+fn scope_static_property_access_from_closure_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Counter {
+    public static int $count = 0;
+}
+$inc = function(): int {
+    return ++Counter::$count;
+};
+echo $inc();
+echo '|';
+echo $inc();
+echo '|';
+echo Counter::$count;
+"#,
+        ),
+        vec!["1|2|2"]
     );
 }

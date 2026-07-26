@@ -179,4 +179,133 @@ catch (\Error $e) { echo 'inc-scalar'; }
 "#,
         ["inc-scalar"]
     };
+
+    isset_offset_on_array_key => {
+        r#"<?php
+$x = [0 => 'a', 1 => null];
+echo (isset($x[0]) ? 'a' : 'na') . '|';
+echo (isset($x[1]) ? 'b' : 'nb') . '|';
+echo (isset($x[2]) ? 'c' : 'nc');
+"#,
+        ["a|b|nc"]
+    };
+
+    empty_offset_on_array_key => {
+        r#"<?php
+$x = ['k' => 0];
+echo (empty($x['k']) ? 'empty' : 'not');
+"#,
+        ["empty"]
+    };
+
+    isset_offset_on_scalar_returns_false => {
+        r#"<?php
+$x = 42;
+echo (isset($x[0]) ? 'set' : 'unset') . '|';
+echo (isset($x['a']) ? 'set' : 'unset');
+"#,
+        ["unset|unset"]
+    };
+
+    unset_offset_on_array_removes_key => {
+        r#"<?php
+$x = ['a' => 1, 'b' => 2];
+unset($x['a']);
+echo (array_key_exists('a', $x) ? 'yes' : 'no');
+"#,
+        ["no"]
+    };
+
+    read_negative_offset_on_string => {
+        r#"<?php
+echo 'xyz'[-2];
+"#,
+        ["y"]
+    };
+
+    write_string_offset_mutates_byte => {
+        r#"<?php
+$s = 'abc';
+$s[1] = 'Z';
+echo $s;
+"#,
+        ["aZc"]
+    };
+
+    append_string_offset_out_of_range_raises => {
+        r#"<?php
+$s = 'ab';
+try { $s[] = 'c'; echo $s; }
+catch (TypeError $e) { echo 'err'; }
+catch (\Error $e) { echo 'err'; }
+"#,
+        ["err"]
+    };
+
+    read_missing_array_offset_returns_null => {
+        r#"<?php
+$x = ['a' => 1];
+echo array_key_exists('b', $x) ? 'yes' : 'no';
+echo '|';
+$v = $x['b'];
+echo $v === null ? 'null' : 'set';
+"#,
+        ["no|null"]
+    };
+
+    isset_missing_numeric_offset_in_array => {
+        r#"<?php
+$x = [1, 2, 3];
+echo isset($x[4]) ? 'yes' : 'no';
+"#,
+        ["no"]
+    };
+
+    read_array_offset_on_truthy_string_key => {
+        r#"<?php
+$x = ['10' => 'ten', 'foo' => 'bar'];
+echo $x['10'];
+echo '|';
+echo $x[10];
+"#,
+        ["ten|ten"]
+    };
+
+    unset_string_offset_throws => {
+        r#"<?php
+$x = 'hello';
+try { unset($x[1]); echo 'ok'; }
+catch (\Error $e) { echo 'unset-string'; }
+catch (TypeError $e) { echo 'unset-string'; }
+"#,
+        ["unset-string"]
+    };
+
+    string_offset_out_of_range_read_returns_null => {
+        r#"<?php
+$x = 'hi';
+echo $x[5] === null ? 'null' : 'set';
+"#,
+        ["null"]
+    };
+
+    write_string_offset_with_non_scalar_throws => {
+        r#"<?php
+$x = 'ab';
+try { $x[0] = [1]; echo 'ok'; }
+catch (TypeError $e) { echo 'type'; }
+catch (\Error $e) { echo 'type'; }
+"#,
+        ["type"]
+    };
+
+    foreach_on_array_with_numeric_string_keys => {
+        r#"<?php
+$x = ['0' => 'zero', 1 => 'one', '2' => 'two'];
+$out = [];
+foreach ($x as $v) { $out[] = $v; }
+echo implode('|', $out);
+"#,
+        ["zero|one|two"]
+    };
 }

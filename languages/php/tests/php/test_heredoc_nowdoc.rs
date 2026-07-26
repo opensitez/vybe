@@ -404,3 +404,87 @@ fn heredoc_with_tab_indentation() {
         vec!["indented"]
     );
 }
+
+#[test]
+fn heredoc_with_interpolated_function_call() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$name = 'alice';
+$s = <<<EOT
+HELLO {$name}
+EOT;
+echo trim($s);
+"#
+        ),
+        vec!["HELLO alice"]
+    );
+}
+
+#[test]
+fn heredoc_with_object_method_in_interpolation() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class User {
+    public function __construct(private string $name) {}
+    public function label(): string { return $this->name; }
+}
+$u = new User('Bob');
+$s = <<<EOT
+User: {$u->label()}
+EOT;
+echo trim($s);
+"#
+        ),
+        vec!["User: Bob"]
+    );
+}
+
+#[test]
+fn nowdoc_multiple_lines_and_quotes() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$s = <<<'EOT'
+'single' "double" \$value
+line two
+EOT;
+echo str_replace("\n", "|", trim($s));
+"#
+        ),
+        vec!["'single' \"double\" \\$value|line two"]
+    );
+}
+
+#[test]
+fn heredoc_preserves_trailing_spaces() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$s = <<<EOT
+line-one  
+line-two   
+EOT;
+echo str_replace("\n", "|", $s);
+"#
+        ),
+        vec!["line-one  |line-two   "]
+    );
+}
+
+#[test]
+fn heredoc_in_array_map_context() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$rows = [1,2];
+$labels = array_map(fn($n) => <<<EOT
+item-$n
+EOT, $rows);
+echo implode(',', $labels);
+"#
+        ),
+        vec!["item-1,item-2"]
+    );
+}

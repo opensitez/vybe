@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── addcslashes ──────────────────────────────────────────────────
 #[test]
@@ -12,6 +12,20 @@ echo is_string($escaped) ? "ok" : "fail";
     );
 }
 
+#[test]
+fn addcslashes_character_range_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo addcslashes("AZ", "A");
+echo '|';
+echo addcslashes("abc", "a..z");
+"#
+        ),
+        vec!["\\A\\Z|\\a\\b\\c"]
+    );
+}
+
 // ── stripcslashes ────────────────────────────────────────────────
 #[test]
 fn stripcslashes_remove_c_style_escapes() {
@@ -21,6 +35,20 @@ $escaped = 'He said \\"hello\\"';
 $s = stripcslashes($escaped);
 echo is_string($s) ? "ok" : "fail";
 "#,
+    );
+}
+
+#[test]
+fn stripcslashes_revert_escapes_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo stripcslashes('tab\\tchar');
+echo '|';
+echo stripcslashes('back\\\\slash');
+"#
+        ),
+        vec!["tab\tchar|back\\slash"]
     );
 }
 
@@ -47,6 +75,25 @@ $decoded = html_entity_decode($encoded);
 echo strpos($decoded, "<p>") !== false ? "has-tag" : "no-tag";
 echo strpos($decoded, "&") !== false ? "has-amp" : "no-amp";
 "#,
+    );
+}
+
+#[test]
+fn htmlentities_and_decode_quote_modes_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$encoded = htmlentities('<a>"&\'', ENT_QUOTES);
+echo str_contains($encoded, '&lt;') ? 'lt' : 'no';
+echo '|';
+echo str_contains($encoded, '&quot;') ? 'dq' : 'no';
+echo '|';
+echo str_contains($encoded, '&#039;') ? 'sq' : 'no';
+echo '|';
+echo html_entity_decode($encoded, ENT_QUOTES);
+"#
+        ),
+        vec!["lt|dq|sq|<a>\"'"]
     );
 }
 
@@ -132,6 +179,69 @@ echo $output["city"];
     );
 }
 
+#[test]
+fn parse_str_nested_brackets_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+parse_str('user[name]=john&user[age]=32&tags[]=a&tags[]=b', $out);
+echo $out['user']['name'];
+echo '|';
+echo $out['user']['age'];
+echo '|';
+echo $out['tags'][0] . ',' . $out['tags'][1];
+"#
+        ),
+        vec!["john|32|a,b"]
+    );
+}
+
+#[test]
+fn str_shuffle_keeps_length_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$s = "abcdefgh";
+$shuffled = str_shuffle($s);
+echo strlen($s);
+echo "|";
+echo strlen($shuffled);
+echo "|";
+echo is_string($shuffled) ? "string" : "not";
+"#
+        ),
+        vec!["8|8|string"]
+    );
+}
+
+#[test]
+fn stripcslashes_escapes_quotes_backslashes_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo stripcslashes("a\\nb\\\"c\\'d\\\\e");
+echo "|";
+echo stripcslashes("line1\\nline2");
+"#
+        ),
+        vec!["a\nb\"c\\d|line1\nline2"]
+    );
+}
+
+#[test]
+fn preg_filter_returns_null_when_no_match_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$input = ["a", "b", "c"];
+$result = preg_filter('/z/', 'X$0', $input);
+echo var_export($result, true);
+"#
+        ),
+        vec!["NULL"]
+    );
+}
+
 // ── preg_filter ──────────────────────────────────────────────────
 #[test]
 fn preg_filter_return_only_matched_replaced() {
@@ -154,6 +264,35 @@ $numbers = [1, 15, 3, 200, 42, 7, 100];
 $large = preg_grep('/^[0-9]{3}/', array_map('strval', $numbers));
 echo is_array($large) ? "array" : "not";
 "#,
+    );
+}
+
+#[test]
+fn preg_grep_with_integer_and_string_filter_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$values = ["a1", "b2", "a3", "c4"];
+$matches = preg_grep('/^a/', $values);
+echo count($matches);
+echo '|';
+echo implode(',', $matches);
+"#
+        ),
+        vec!["2|a1,a3"]
+    );
+}
+
+#[test]
+fn preg_match_error_code_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+preg_match('/(/', 'abc');
+echo preg_last_error() > 0 ? 'error' : 'ok';
+"#
+        ),
+        vec!["error"]
     );
 }
 

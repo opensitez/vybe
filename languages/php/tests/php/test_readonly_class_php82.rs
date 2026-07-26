@@ -356,6 +356,82 @@ echo count($c->options);
     );
 }
 
+#[test]
+fn readonly_nested_object_reference_still_readonly_on_reassignment() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+readonly class Node {
+    public function __construct(public array $data) {}
+}
+$n = new Node(['k' => 1]);
+$n->data['k'] = 2;
+$n->data['v'] = 3;
+echo $n->data['k'] . ',' . $n->data['v'];
+"#,
+        ),
+        vec!["2,3"]
+    );
+}
+
+#[test]
+fn readonly_class_clone_keeps_property_identity() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+readonly class Box {
+    public function __construct(public int $x, public int $y) {}
+}
+$a = new Box(1, 2);
+$b = clone $a;
+echo $a->x . $a->y . '|' . $b->x . $b->y;
+"#,
+        ),
+        vec!["12|12"]
+    );
+}
+
+#[test]
+fn readonly_property_with_default_not_settable_via_init() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Dto {
+    public readonly string $id;
+    public function __construct() {}
+    public function init(string $id): void { $this->id = $id; }
+}
+$d = new Dto();
+$d->init("X1");
+echo $d->id;
+"#,
+        ),
+        vec!["X1"]
+    );
+}
+
+#[test]
+fn readonly_class_with_magic_readonly_property_access() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+readonly class Profile {
+    public function __construct(public string $name) {}
+    public function __get(string $n): mixed {
+        if ($n === 'label') return strtoupper($this->name);
+        return null;
+    }
+}
+$p = new Profile('alice');
+echo $p->name;
+echo '|';
+echo $p->label;
+"#,
+        ),
+        vec!["alice|ALICE"]
+    );
+}
+
 // ── readonly with intersection type ──────────────────────────
 
 #[test]

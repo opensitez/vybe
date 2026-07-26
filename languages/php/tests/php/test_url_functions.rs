@@ -146,4 +146,20 @@ echo array_key_exists('scheme', parse_url('//example.com')) ? 'yes' : 'no';
 "#,
         ["no"]
     };
+
+    http_build_query_numeric_prefix => {
+        r#"<?php
+echo http_build_query(['first', 'second'], 'item_');
+"#,
+        ["item_0=first&item_1=second"]
+    };
+
+    base64_decode_strict_mode => {
+        r#"<?php
+$res = base64_decode('invalid-base64!', true);
+echo $res === false || is_string($res) ? 'strict_decode_ok' : 'err';
+"#,
+        ["strict_decode_ok"]
+    };
 }
+

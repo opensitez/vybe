@@ -121,3 +121,50 @@ try {
 "##,
     );
 }
+
+#[test]
+fn test_php_array_splice_returns_reindexed_removed() {
+    let out = run_prints(
+        r##"<?php
+$input = ["a", "b", "c", "d"];
+$removed = array_splice($input, 1, 2);
+echo implode("-", $removed) . "|" . count($removed) . "|" . $removed[0];
+"##,
+    );
+    assert_eq!(out, vec!["b-c|2|b"]);
+}
+
+#[test]
+fn test_php_array_slice_negative_length() {
+    let out = run_prints(
+        r##"<?php
+$arr = [1, 2, 3, 4, 5];
+$s = array_slice($arr, 1, -1);
+echo implode(",", $s);
+"##,
+    );
+    assert_eq!(out, vec!["2,3,4"]);
+}
+
+#[test]
+fn test_php_array_chunk_non_divisible_chunk_size() {
+    let out = run_prints(
+        r##"<?php
+$chunks = array_chunk([1,2,3,4,5], 2, false);
+echo count($chunks) . "|" . implode("|", array_map("count", $chunks));
+"##,
+    );
+    assert_eq!(out, vec!["3|2|2|1"]);
+}
+
+#[test]
+fn test_php_array_slice_preserve_keys_false_reindex() {
+    let out = run_prints(
+        r##"<?php
+$arr = ["x" => 10, "y" => 20, "z" => 30];
+$s = array_slice($arr, 1, 2, false);
+echo implode(",", array_keys($s)) . "|" . implode(",", $s);
+"##,
+    );
+    assert_eq!(out, vec!["0,1|20,30"]);
+}

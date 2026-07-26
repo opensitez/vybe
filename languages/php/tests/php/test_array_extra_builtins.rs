@@ -199,3 +199,96 @@ echo $a[5];
 "#,
     );
 }
+
+#[test]
+fn array_rand_with_count_one_returns_scalar() {
+    compile_ok(
+        r#"<?php
+$a = [1, 2, 3, 4];
+$key = array_rand($a, 1);
+echo is_array($key) ? "array" : "scalar";
+echo $a[$key];
+"#,
+    );
+}
+
+#[test]
+fn array_rand_with_non_numeric_count_falls_back_to_scalar() {
+    compile_ok(
+        r#"<?php
+$a = ["a" => 1, "b" => 2, "c" => 3];
+$key = array_rand($a, 2);
+echo is_array($key) ? "array" : "scalar";
+echo count($key);
+"#,
+    );
+}
+
+#[test]
+fn array_map_with_static_callables() {
+    compile_ok(
+        r#"<?php
+$vals = [" 1", " 2", " 3"];
+$trimmed = array_map("trim", $vals);
+echo implode(",", $trimmed);
+"#,
+    );
+}
+
+#[test]
+fn array_reduce_without_initial_and_empty_array_compiles() {
+    compile_ok(
+        r#"<?php
+echo array_reduce([], fn($carry, $item) => $carry + $item);
+"#,
+    );
+}
+
+#[test]
+fn array_fill_keys_and_counting() {
+    compile_ok(
+        r#"<?php
+$map = array_fill_keys([1, 2, 3], "x");
+echo $map[1];
+echo $map[2];
+echo $map[3];
+echo count($map);
+"#,
+    );
+}
+
+#[test]
+fn asort_preserves_association() {
+    compile_ok(
+        r#"<?php
+$stats = ["a" => 3, "b" => 1, "c" => 2];
+asort($stats);
+echo implode(",", array_keys($stats));
+echo implode(",", $stats);
+"#,
+    );
+}
+
+#[test]
+fn array_key_exists_with_float_key_casting() {
+    compile_ok(
+        r#"<?php
+$a = [1.0 => "x", 2 => "y"];
+echo array_key_exists(1, $a) ? "one" : "missing";
+echo array_key_exists("1", $a) ? "one_str" : "missing_str";
+"#,
+    );
+}
+
+#[test]
+fn array_multisort_with_string_flag() {
+    compile_ok(
+        r#"<?php
+$scores = ["10", "2", "30"];
+$names = ["low", "mid", "high"];
+array_multisort($scores, SORT_NATURAL, SORT_ASC, $names, SORT_DESC);
+echo implode(",", $scores);
+echo implode(",", $names);
+"#,
+    );
+}

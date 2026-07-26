@@ -453,3 +453,175 @@ printf("%-18s %16.2f\n", 'Total:', $total);
 "#,
     );
 }
+
+#[test]
+fn sprintf_decimal_rounding_and_width_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo sprintf("%.1f", 1.24);
+echo "|";
+echo sprintf("%.1f", 1.25);
+echo "|";
+echo sprintf("%+08d", -42);
+echo "|";
+echo sprintf("%#.3x", 255);
+"#
+        ),
+        vec!["1.2|1.3|-0000042|0xfff"]
+    );
+}
+
+#[test]
+fn printf_and_vprintf_return_value_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = printf("A=%d\n", 3);
+echo "|";
+$b = sprintf("%s %s", "x", "y");
+echo "S=".$b;
+echo "|";
+$c = vprintf("%s:%d\n", ["p", 7]);
+echo "|";
+echo $a . "," . $c;
+"#
+        ),
+        vec!["A=3|S=x y|p:7|4,4"]
+    );
+}
+
+#[test]
+fn sprintf_positional_mix_and_flags_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo sprintf('%2$s %1$s', 'left', 'right');
+echo "\n";
+echo sprintf('%1$+d', 42);
+echo "\n";
+echo sprintf('%1$ d', 42);
+echo "\n";
+echo sprintf('%1$010.2f', 3.5);
+"#
+        ),
+        vec!["right left|+42| 42|0000003.50"]
+    );
+}
+
+#[test]
+fn sprintf_string_precision_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo sprintf('%.3s', 'abcdef');
+echo "\n";
+echo sprintf('%10.4s', 'php');
+echo "\n";
+echo sprintf('%04d', 7);
+"#
+        ),
+        vec!["abc|      php|0007"]
+    );
+}
+
+#[test]
+fn sprintf_float_rounding_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo sprintf('%.0f', 2.5);
+echo "\n";
+echo sprintf('%.2e', 1.2);
+echo "\n";
+echo sprintf('%.3f', -1.2345);
+"#
+        ),
+        vec!["3|1.20e+00|-1.235"]
+    );
+}
+
+#[test]
+fn printf_vs_sprintf_returned_length_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = sprintf('%+06d', -12);
+$b = printf('%+06d', -12);
+echo strlen($a) . "|" . $b . "|" . $a;
+"#
+        ),
+        vec!["6|6|-00012"]
+    );
+}
+
+#[test]
+fn sprintf_dynamic_width_and_precision_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo sprintf('%*s', 5, 'hi');
+echo '|';
+echo sprintf('%.*f', 3, 1.23456);
+"#
+        ),
+        vec!["   hi|1.235"]
+    );
+}
+
+#[test]
+fn sprintf_percent_escaping_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo sprintf('Discount %% %d%%', 50);
+echo '|';
+echo sprintf('%#08x', 255);
+"#
+        ),
+        vec!["Discount % 50%|0x0000ff"]
+    );
+}
+
+#[test]
+fn sscanf_mixed_types_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$parts = sscanf("X=12 Y=34.5", "X=%d Y=%f");
+echo $parts[0];
+echo '|';
+echo sprintf('%.1f', $parts[1]);
+"#
+        ),
+        vec!["12|34.5"]
+    );
+}
+
+#[test]
+fn sprintf_argument_indexing_edge_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo sprintf('%3$d-%2$s-%1$d', 7, 'beta', 3);
+echo '|';
+echo sprintf('%1$s-%1$s-%2$s', 'a', 'b');
+"#
+        ),
+        vec!["3-beta-7|a-a-b"]
+    );
+}
+
+#[test]
+fn number_format_exponent_like_input_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo number_format(1e6, 0, '.', ',');
+echo '|';
+echo number_format(-1500.5, 1, ',', '.');
+"#
+        ),
+        vec!["1.000.000|-1.500,5".to_string()]
+    );
+}

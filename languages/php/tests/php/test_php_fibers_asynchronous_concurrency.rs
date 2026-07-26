@@ -102,6 +102,74 @@ $f1->start();
 }
 
 #[test]
+fn test_php81_fiber_is_current_visible_within_task() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$label = '';
+$fiber = new Fiber(function() use (&$label): void {
+    $current = Fiber::getCurrent();
+    if ($current !== null) {
+        $label = 'has_current';
+    } else {
+        $label = 'none';
+    }
+});
+$fiber->start();
+echo $label;
+"#,
+        ),
+        vec!["has_current"]
+    );
+}
+
+#[test]
+fn test_php81_fiber_yield_resume_multiple_times() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$sequence = [];
+$fiber = new Fiber(function() use (&$sequence) {
+    $sequence[] = 'start';
+    $v = Fiber::suspend('first');
+    $sequence[] = $v;
+    $v = Fiber::suspend('second');
+    $sequence[] = $v;
+    return 'done';
+});
+$sequence[] = $fiber->start();
+$fiber->resume('r1');
+$fiber->resume('r2');
+$sequence[] = $fiber->getReturn();
+echo implode('|', $sequence);
+"#,
+        ),
+        vec!["start|first|r1|second|r2|done"]
+    );
+}
+
+#[test]
+fn test_php81_fiber_scheduler_with_exception_propagation() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+try {
+    $fiber = new Fiber(function() {
+        throw new Exception("boom");
+    });
+    $fiber->start();
+} catch (FiberError $e) {
+    echo 'fiber_error';
+} catch (Exception $e) {
+    echo 'exception:' . $e->getMessage();
+}
+"#,
+        ),
+        vec!["exception:boom"]
+    );
+}
+
+#[test]
 fn test_php81_fiber_cannot_suspend_outside_fiber_error() {
     compile_ok(
         r#"<?php

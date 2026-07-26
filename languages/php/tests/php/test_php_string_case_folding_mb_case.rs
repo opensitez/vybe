@@ -108,3 +108,41 @@ echo strncasecmp("Hello World", "hello php", 5) === 0 ? "MATCH_5" : "NO_MATCH";
 "#,
     );
 }
+
+#[test]
+fn test_php_strtolower_preserves_spaces_and_punctuation() {
+    let out = run_prints(
+        r#"<?php
+echo strtolower("  Hello, World!  ");
+echo "|";
+echo strtoupper("café");
+"#,
+    );
+    assert_eq!(out, vec!["  hello, world!  |CAFÉ"]);
+}
+
+#[test]
+fn test_php_mb_convert_case_multibyte_modes_runtime() {
+    let out = run_prints(
+        r#"<?php
+echo mb_convert_case("straße", MB_CASE_UPPER, "UTF-8");
+echo "|";
+echo mb_convert_case("İ", MB_CASE_LOWER, "UTF-8");
+"#,
+    );
+    assert_eq!(out, vec!["STRASSE|i̇"]);
+}
+
+#[test]
+fn test_php_ucfirst_empty_and_singleton() {
+    let out = run_prints(
+        r#"<?php
+echo ucfirst("") === "" ? "empty" : "no";
+echo "|";
+echo ucfirst("δ");
+echo "|";
+echo ucfirst("ß");
+"#,
+    );
+    assert_eq!(out, vec!["empty|δ|ß"]);
+}

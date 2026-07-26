@@ -236,4 +236,238 @@ echo implode(',', $r['k']);
 "#,
         ["1,2"]
     };
+
+    array_fill_and_index_base => {
+        r#"<?php
+$a = array_fill(3, 3, 7);
+echo implode(',', $a);
+"#,
+        ["7,7,7"]
+    };
+
+    array_flip_preserves_type_after_flip => {
+        r#"<?php
+$idx = array_flip(['x' => '1', 'y' => '2']);
+echo $idx['1'];
+echo ':';
+echo $idx['2'];
+"#,
+        ["x:y"]
+    };
+
+    array_fill_keys_supports_multiple_keys => {
+        r#"<?php
+$a = array_fill_keys(['a', 'b'], 4);
+echo $a['a'] . '|' . $a['b'] . '|';
+echo count($a);
+"#,
+        ["4|4|2"]
+    };
+
+    array_slice_preserves_keys_with_preserve_key_true => {
+        r#"<?php
+$a = ['a' => 1, 'b' => 2, 'c' => 3, 'd' => 4];
+$b = array_slice($a, 1, 2, true);
+echo array_key_exists('b', $b) ? 'b' : 'nb';
+echo ':';
+echo array_key_exists('c', $b) ? 'c' : 'nc';
+echo ':';
+echo count($b);
+"#,
+        ["b:c:2"]
+    };
+
+    array_filter_with_flag_preserve_keys_runtime => {
+        r#"<?php
+$a = [0 => 'keep', 1 => '', 2 => 'x'];
+$b = array_filter($a, fn($v) => $v !== '');
+echo implode('|', $b);
+echo ':';
+echo array_key_last($b);
+"#,
+        ["keep|x:2"]
+    };
+
+    array_filter_with_flag_key => {
+        r#"<?php
+$m = ['alpha' => 1, 'beta' => 0, 'gamma' => 3];
+$b = array_filter($m, fn($k) => $k !== 'beta', ARRAY_FILTER_USE_KEY);
+echo implode(',', array_keys($b));
+"#,
+        ["alpha,gamma"]
+    };
+
+    array_filter_with_flag_both => {
+        r#"<?php
+$m = ['alpha' => 1, 'beta' => 0, 'gamma' => 2];
+$b = array_filter($m, fn($v, $k) => $v === 0 || $k === 'gamma', ARRAY_FILTER_USE_BOTH);
+echo implode(',', array_keys($b)) . '|' . implode(',', $b);
+"#,
+        ["beta,gamma|0,2"]
+    };
+
+    array_search_not_found_without_strict => {
+        r#"<?php
+$a = ['a' => 1, 'b' => '1'];
+echo array_search('1', $a, false) . ':' . (array_search('2', $a, false) === false ? 'nf' : 'found');
+"#,
+        ["a:nf"]
+    };
+
+    array_search_not_found_with_strict => {
+        r#"<?php
+$a = [1, '1', 2];
+echo array_search('1', $a, true) === false ? 'nf' : 'found';
+"#,
+        ["nf"]
+    };
+
+    array_fill_mixed_value_types => {
+        r#"<?php
+$a = array_fill(1, 4, ['x' => 1]);
+$a[1]['x'] = 2;
+echo $a[1]['x'] . '|' . $a[2]['x'];
+"#,
+        ["2|1"]
+    };
+
+    array_pad_truncates_only_negative_fill => {
+        r#"<?php
+$a = [1, 2, 3];
+$b = array_pad($a, 2, 0);
+echo implode(',', $b);
+"#,
+        ["1,2,3"]
+    };
+
+    array_replace_uses_late_argument => {
+        r#"<?php
+$a = ['k' => ['v' => 1], 'm' => 2];
+$b = ['k' => ['other' => 9], 'n' => 3];
+$c = ['k' => ['v' => 7]];
+$d = array_replace($a, $b, $c);
+echo json_encode($d['k']) . '|' . $d['n'];
+"#,
+        ["{\"v\":7,\"other\":9}|3"]
+    };
+
+    array_replace_with_multiple_sources => {
+        r#"<?php
+$a = ['a' => 1, 'b' => 2];
+$b = ['b' => 20, 'c' => 30];
+$c = ['a' => 3, 'd' => 40];
+$m = array_replace($a, $b, $c);
+ksort($m);
+echo implode(',', array_keys($m)) . '|' . $m['a'] . '|' . $m['c'];
+"#,
+        ["a,b,c,d|3|30"]
+    };
+
+    array_merge_recursive_with_scalar_and_array_values => {
+        r#"<?php
+$x = ['k' => 1];
+$y = ['k' => [2, 3]];
+$r = array_merge_recursive($x, $y);
+echo is_array($r['k']) ? 'array' : 'scalar';
+echo '|' . $r['k'][0];
+"#,
+        ["array|1"]
+    };
+
+    array_diff_assoc_missing_and_extra => {
+        r#"<?php
+$a = ['a' => 1, 'b' => 2, 'c' => 2];
+$b = ['b' => 2, 'd' => 4];
+$d = array_diff_assoc($a, $b);
+ksort($d);
+echo implode(',', array_keys($d)) . '|' . $d['a'];
+"#,
+        ["a,c|1"]
+    };
+
+    array_key_exists_for_non_existent => {
+        r#"<?php
+echo array_key_exists('missing', ['x' => 1]) ? 'yes' : 'no';
+"#,
+        ["no"]
+    };
+
+    array_rand_two_keys_sorted => {
+        r#"<?php
+$r = array_rand(['a' => 1, 'b' => 2, 'c' => 3, 'd' => 4], 3);
+sort($r);
+echo implode(',', $r);
+"#,
+        ["a,b,c"]
+    };
+
+    array_sum_handles_float_integers => {
+        r#"<?php
+echo array_sum([1, 2.5, '3', 'bad']) . '|' . array_sum([true, false, null]);
+"#,
+        ["6.5|1"]
+    };
+
+    array_sum_empty_returns_0 => {
+        r#"<?php
+echo array_sum([]);
+"#,
+        ["0"]
+    };
+
+    array_product_empty_returns_1 => {
+        r#"<?php
+echo array_product([]);
+"#,
+        ["1"]
+    };
+
+    array_fill_with_zero_count_returns_empty => {
+        r#"<?php
+$a = array_fill(0, 0, 9);
+echo is_array($a) ? 'array' : 'na';
+echo '|';
+echo count($a);
+"#,
+        ["array|0"]
+    };
+
+    array_fill_negative_start_throws => {
+        r#"<?php
+try {
+    array_fill(-1, 2, 'x');
+    echo 'no-error';
+} catch (Throwable $e) {
+    echo 'error';
+}
+"#,
+        ["error"]
+    };
+
+    array_splice_length_beyond_end_keeps_tail => {
+        r#"<?php
+$a = ['a', 'b', 'c'];
+array_splice($a, 1, 99, ['x', 'y']);
+echo implode(',', $a);
+"#,
+        ["a,x,y"]
+    };
+
+    array_diff_recursive_with_nested_array => {
+        r#"<?php
+$a = ['a' => ['x' => 1], 'b' => ['y' => 2]];
+$b = ['a' => ['x' => 1]];
+$d = array_diff($a, $b, SORT_REGULAR);
+echo json_encode($d);
+"#,
+        ["{\"b\":{\"y\":2}}"]
+    };
+
+    array_rand_singleton_returns_scalar => {
+        r#"<?php
+$k = array_rand(['a' => 1, 'b' => 2, 'c' => 3], 1);
+echo is_string($k) ? 'scalar' : 'array';
+"#,
+        ["scalar"]
+    };
 }

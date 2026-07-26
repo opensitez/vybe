@@ -30,6 +30,26 @@ echo tick() . tick();
         ["12"]
     };
 
+    foreach_by_value_does_not_modify_source => {
+        r#"<?php
+$a = [1, 2];
+foreach ($a as $v) { $v = 9; }
+echo $a[0] . $a[1];
+"#,
+        ["12"]
+    };
+
+    foreach_reference_leak_prevented_with_unset => {
+        r#"<?php
+$a = [1, 2];
+foreach ($a as &$v) {}
+unset($v);
+$v = 9;
+echo $a[0] . $a[1];
+"#,
+        ["12"]
+    };
+
     static_in_method => {
         r#"<?php
 class C {
@@ -80,6 +100,17 @@ $name = 'bob';
 echo $$a;
 "#,
         ["bob"]
+    };
+
+    variable_variables_from_array_key => {
+        r#"<?php
+$vals = ['x' => 10, 'y' => 20];
+foreach ($vals as $key => $value) {
+    $$key = $value;
+}
+echo $x + $y;
+"#,
+        ["30"]
     };
 
     variable_function_call => {
@@ -345,6 +376,199 @@ echo empty($never_set) ? 'empty' : 'set';
 echo $missing ?? 'def';
 "#,
         ["def"]
+    };
+
+    closure_capture_by_value_snapshot => {
+        r#"<?php
+$value = 7;
+$reader = fn(): int => $value;
+echo $reader();
+$value = 11;
+echo $reader();
+"#,
+        ["77"]
+    };
+
+    closure_capture_by_reference_updates => {
+        r#"<?php
+$value = 7;
+$writer = function () use (&$value): void { $value = 11; };
+$writer();
+echo $value;
+"#,
+        ["11"]
+    };
+
+    closure_nested_reference_chain => {
+        r#"<?php
+$value = 0;
+$set = function () use (&$value) { $value += 1; };
+$get = function () use (&$value): int { return $value; };
+$set();
+$set();
+echo $get();
+"#,
+        ["2"]
+    };
+
+    switch_in_closure_isolated_scope => {
+        r#"<?php
+$flag = 2;
+$fn = function (int $v): int {
+    switch ($v) {
+        case 1: return 10;
+        case 2: return 20;
+        default: return 30;
+    }
+};
+echo $fn($flag);
+"#,
+        ["20"]
+    };
+
+    include_local_variable_not_globalized => {
+        r#"<?php
+$local = 'outside';
+function peek(): string { return isset($local) ? $local : 'none'; }
+echo $local;
+echo '|';
+echo peek();
+"#,
+        ["outside|none"]
+    };
+
+    local_parameter_shadows_global_name => {
+        r#"<?php
+$count = 1;
+function bump_count(int $count): void { $count = 7; }
+bump_count(3);
+echo $count;
+"#,
+        ["1"]
+    };
+
+    closure_uses_global_variable => {
+        r#"<?php
+$name = 'outer';
+$read = function (): string {
+    global $name;
+    return $name;
+};
+$name = 'updated';
+echo $read();
+"#,
+        ["updated"]
+    };
+
+    global_reference_alias_mutates_global => {
+        r#"<?php
+$value = 4;
+function bind_global_by_ref(): void {
+    global $value;
+    $alias = &$value;
+    $alias = 9;
+}
+bind_global_by_ref();
+echo $value;
+"#,
+        ["9"]
+    };
+
+    nested_recursive_static_counter => {
+        r#"<?php
+function nested_static_counter(int $n): int {
+    static $acc = 0;
+    $acc += 1;
+    if ($n <= 1) { return $acc; }
+    return $acc + nested_static_counter($n - 1);
+}
+echo nested_static_counter(1) . '|' . nested_static_counter(2);
+"#,
+        ["1|5"]
+    };
+
+    global_function_variable_and_static_property => {
+        r#"<?php
+$callback = function (): string {
+    global $tag;
+    $tag = 'from-scope';
+    return $tag;
+};
+$callback();
+echo $callback();
+echo '|';
+class Holder {
+    public static $tag = null;
+}
+Holder::$tag = 'global-tag';
+function read_holder(): string { return Holder::$tag; }
+echo read_holder();
+"#,
+        ["from-scope|from-scope|global-tag"]
+    };
+
+    include_scope_does_not_import_into_caller => {
+        r#"<?php
+$value = 'outer';
+function loader_scope(array $data): void {
+    extract($data);
+}
+loader_scope(['value' => 'inner']);
+echo $value;
+"#,
+        ["outer"]
+    };
+
+    dynamic_class_name_with_namespace_scope => {
+        r#"<?php
+namespace ScopeNs;
+class Alpha { public function ping(): string { return 'ok'; } }
+$class = 'Alpha';
+echo (new $class())->ping();
+function local(): string { return __NAMESPACE__; }
+echo '|' . local();
+"#,
+        ["ok|ScopeNs"]
+    };
+
+    variable_function_name_with_reference_args => {
+        r#"<?php
+function inc(int &$x): int { $x += 1; return $x; }
+$fn = 'inc';
+$v = 2;
+echo $fn($v);
+echo $v;
+"#,
+        ["33"]
+    };
+
+    closure_capture_superglobal_by_reference => {
+        r#"<?php
+$_REQUEST = ['k' => 'start'];
+$read = function () use (&$_REQUEST): string {
+    return $_REQUEST['k'];
+};
+echo $read();
+$_REQUEST['k'] = 'end';
+echo '|';
+echo $read();
+"#,
+        ["start|end"]
+    };
+
+    variable_variables_shadow_local_function_var => {
+        r#"<?php
+$base = 'value';
+function show(): void {
+    $base = 'local';
+    $alias = 'base';
+    echo $$alias;
+}
+show();
+echo '|';
+echo $base;
+"#,
+        ["local|value"]
     };
 }
 

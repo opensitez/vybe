@@ -120,3 +120,44 @@ echo ($dt1 <=> $dt2) < 0 ? "EARLIER" : "LATER";
 "#,
     );
 }
+
+#[test]
+fn test_php_datetime_timezone_transition_count() {
+    let out = run_prints(
+        r#"<?php
+$tz = new DateTimeZone('America/New_York');
+$transitions = $tz->getTransitions(strtotime('2024-01-01'), strtotime('2024-12-31'));
+echo is_array($transitions) ? 'arr' : 'bad';
+echo '|';
+echo count($transitions) >= 1 ? 'many' : 'few';
+"#,
+    );
+    assert_eq!(out, vec!["arr|many"]);
+}
+
+#[test]
+fn test_php_datetime_timezone_offset_for_date() {
+    let out = run_prints(
+        r#"<?php
+$tz = new DateTimeZone('Europe/Paris');
+$dt = new DateTime('2024-07-01 12:00:00', $tz);
+echo $tz->getOffset($dt);
+"#,
+    );
+    assert_eq!(out, vec!["7200"]);
+}
+
+#[test]
+fn test_php_datetime_diff_with_timezone_objects() {
+    let out = run_prints(
+        r#"<?php
+$utc = new DateTimeImmutable('2024-01-01 00:00:00', new DateTimeZone('UTC'));
+$tokyo = new DateTimeImmutable('2024-01-01 00:00:00', new DateTimeZone('Asia/Tokyo'));
+$diff = $utc->diff($tokyo, true);
+echo $diff->invert ? 'inv' : 'pos';
+echo '|';
+echo $diff->days;
+"#,
+    );
+    assert_eq!(out, vec!["pos|0"]);
+}

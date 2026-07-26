@@ -163,7 +163,7 @@ echo $attr->getName();
 }
 
 #[test]
-fn test_php_reflection_attribute_newInstance_error_handling() {
+fn test_php_reflection_attribute_new_instance_error_handling() {
     compile_ok(
         r#"<?php
 #[Attribute]

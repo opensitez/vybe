@@ -216,4 +216,50 @@ echo Child::ok();
 "#,
         ["1"]
     };
+
+    static_property_with_fully_qualified_reference => {
+        r#"<?php
+namespace Acme\\StaticA;
+class A { public static int $n = 6; }
+namespace { echo \Acme\StaticA\A::$n; }
+"#,
+        ["6"]
+    };
+
+    static_method_from_trait_alias => {
+        r#"<?php
+trait Aware { public static function base(): string { return 'base'; } }
+class Holder { use Aware { base as private innerBase; } public static function label(): string { return self::innerBase(); } }
+echo Holder::label();
+"#,
+        ["base"]
+    };
+
+    static_property_shared_between_instances => {
+        r#"<?php
+class Shared { public static int $x = 0; public function inc(): int { return ++self::$x; } }
+$a = new Shared();
+$b = new Shared();
+$a->inc();
+echo $b->inc();
+"#,
+        ["2"]
+    };
+
+    static_parent_binding_in_override => {
+        r#"<?php
+class P { public static function tag(): string { return static::class; } }
+class C extends P { public static function tag(): string { return parent::tag(); } }
+echo C::tag();
+"#,
+        ["C"]
+    };
+
+    static_isset_property_runtime => {
+        r#"<?php
+class Flags { public static string $name = 'x'; public static ?string $none = null; }
+echo (isset(Flags::$name) ? 1 : 0) . '|' . (isset(Flags::$none) ? 1 : 0);
+"#,
+        ["1|0"]
+    };
 }

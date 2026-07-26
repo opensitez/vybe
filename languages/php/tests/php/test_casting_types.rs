@@ -190,3 +190,65 @@ echo gettype(42) . ',' . gettype(3.14) . ',' . gettype('x') . ',' . gettype(true
         vec!["integer,double,string,boolean,NULL,array"]
     );
 }
+
+#[test]
+fn cast_in_arithmetic_expression_precedence() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo ((int)'8' + 2) . '|';
+echo (int)'8' + 2 . '|';
+echo (int)(8 + 2);
+"#
+        ),
+        vec!["10|10|10"]
+    );
+}
+
+#[test]
+fn cast_ternary_precedence() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo (string) true ? 't' : 'f';
+echo '|';
+echo ((string) true) ? 't' : 'f';
+echo '|';
+echo (bool)0 && true ? 't' : 'f';
+"#
+        ),
+        vec!["t|t|f"]
+    );
+}
+
+#[test]
+fn cast_minus_precedence() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo - (int) '5';
+echo '|';
+echo (-(int)'5');
+echo '|';
+echo (int)(-5.2);
+"#
+        ),
+        vec!["-5|-5|-5"]
+    );
+}
+
+#[test]
+fn cast_falsey_bool_with_equality_chain() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo ((bool)0 == false) ? 't' : 'f';
+echo '|';
+echo ((bool)'') == false ? 't' : 'f';
+echo '|';
+echo ((bool)[]) == false ? 't' : 'f';
+"#
+        ),
+        vec!["t|t|t"]
+    );
+}

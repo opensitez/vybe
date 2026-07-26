@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Interface extending multiple interfaces ────────────────────
 
@@ -343,4 +343,264 @@ $s = new Server();
 echo $s->host . ':' . $s->port;
 "#,
     );
+}
+
+#[test]
+fn interface_runtime_dispatch_by_contract() {
+    let out = run_prints(
+        r#"<?php
+interface Logger {
+    public function log(string $message): void;
+}
+class MemoryLogger implements Logger {
+    public array $events = [];
+    public function log(string $message): void {
+        $this->events[] = $message;
+    }
+}
+
+function audit(Logger $logger): void {
+    $logger->log('start');
+    $logger->log('end');
+}
+
+$logger = new MemoryLogger();
+audit($logger);
+echo implode(',', $logger->events);
+"#,
+    );
+    assert_eq!(out, vec!["start,end"]);
+}
+
+#[test]
+fn interface_implements_multiple_dispatched_order() {
+    let out = run_prints(
+        r#"<?php
+interface Reader { public function read(): string; }
+interface Writer { public function write(string $v): string; }
+
+class Document implements Reader, Writer {
+    public function read(): string { return 'read'; }
+    public function write(string $v): string { return 'write:' . $v; }
+}
+
+$doc = new Document();
+echo $doc->read() . '|' . $doc->write('v');
+"#,
+    );
+    assert_eq!(out, vec!["read|write:v"]);
+}
+
+#[test]
+fn interface_cast_after_dynamic_binding() {
+    let out = run_prints(
+        r#"<?php
+interface IAnimal { public function kind(): string; }
+interface IPet extends IAnimal { public function name(): string; }
+
+class Cat implements IPet {
+    public function __construct(private string $nameValue) {}
+    public function kind(): string { return 'cat'; }
+    public function name(): string { return $this->nameValue; }
+}
+
+$animal = new Cat('Misty');
+echo ($animal instanceof IAnimal ? 'a' : 'x') . '-' . ($animal instanceof IPet ? 'p' : 'y');
+echo '-' . $animal->kind() . ':' . $animal->name();
+"#,
+    );
+    assert_eq!(out, vec!["a-p-cat:Misty"]);
+}
+
+#[test]
+fn interface_static_constant_from_implementer() {
+    let out = run_prints(
+        r#"<?php
+interface Versioned {
+    public const string CHANNEL = 'base';
+}
+class Adapter implements Versioned {}
+echo Adapter::CHANNEL;
+"#,
+    );
+    assert_eq!(out, vec!["base"]);
+}
+
+#[test]
+fn interface_covariant_return_runtime() {
+    let out = run_prints(
+        r#"<?php
+class Base {
+    public function __construct(public string $n) {}
+}
+class Child extends Base {}
+
+interface Maker {
+    public function make(string $value): Base;
+}
+class ChildMaker implements Maker {
+    public function make(string $value): Child {
+        return new Child($value);
+    }
+}
+$maker = new ChildMaker();
+$obj = $maker->make('x');
+echo ($obj instanceof Child ? 'child' : 'other') . '|' . $obj->n;
+"#,
+    );
+    assert_eq!(out, vec!["child|x"]);
+}
+
+#[test]
+fn interface_anonymous_class_runtime() {
+    let out = run_prints(
+        r#"<?php
+interface Notifier {
+    public function notify(string $message): string;
+}
+$notifier = new class implements Notifier {
+    public function notify(string $message): string {
+        return 'notify:' . $message;
+    }
+};
+echo $notifier->notify('ping');
+"#,
+    );
+    assert_eq!(out, vec!["notify:ping"]);
+}
+
+#[test]
+fn interface_implements_and_iterator_pattern_runtime() {
+    let out = run_prints(
+        r#"<?php
+interface Seq {
+    public function next(): ?int;
+}
+class RangeSeq implements Seq {
+    private int $current;
+    public function __construct(private int $end, int $start = 1) {
+        $this->current = $start;
+    }
+    public function next(): ?int {
+        if ($this->current > $this->end) {
+            return null;
+        }
+        return $this->current++;
+    }
+}
+function takeThree(Seq $seq): array {
+    $out = [];
+    for ($i = 0; $i < 3; $i++) {
+        $value = $seq->next();
+        if ($value === null) {
+            break;
+        }
+        $out[] = $value;
+    }
+    return $out;
+}
+$seq = new RangeSeq(4, 2);
+echo implode(',', takeThree($seq));
+"#,
+    );
+    assert_eq!(out, vec!["2,3,4"]);
+}
+
+#[test]
+fn interface_union_type_accepts_contracts_runtime() {
+    let out = run_prints(
+        r#"<?php
+interface Readable { public function read(): string; }
+interface Writable { public function write(string $value): void; }
+
+class Buffer implements Readable, Writable {
+    private string $value = '';
+    public function read(): string { return $this->value; }
+    public function write(string $value): void { $this->value = $value; }
+}
+
+function appendSuffix(Readable|Writable $target): string {
+    if ($target instanceof Writable) {
+        $target->write('ok');
+    }
+    if ($target instanceof Readable) {
+        return $target->read();
+    }
+    return '';
+}
+$target = new Buffer();
+echo appendSuffix($target);
+// output reflects the write done above
+echo '|' . $target->read();
+"#,
+    );
+    assert_eq!(out, vec!["ok|ok"]);
+}
+
+#[test]
+fn interface_static_method_dispatch_inheritance_runtime() {
+    let out = run_prints(
+        r#"<?php
+interface Identifiable {
+    public static function kind(): string;
+}
+class Base implements Identifiable {
+    public static function kind(): string {
+        return 'base';
+    }
+}
+class Child extends Base {
+    public static function kind(): string {
+        return 'child';
+    }
+}
+function typeKind(string $name): string {
+    return $name::kind();
+}
+echo typeKind(Base::class) . '|' . typeKind(Child::class);
+"#,
+    );
+    assert_eq!(out, vec!["base|child"]);
+}
+
+#[test]
+fn interface_casting_and_fallback_runtime() {
+    let out = run_prints(
+        r#"<?php
+interface MarkerA { public function marker(): string; }
+interface MarkerB { public function marker(): string; }
+
+class ItemA implements MarkerA { public function marker(): string { return 'A'; } }
+class ItemB implements MarkerB { public function marker(): string { return 'B'; } }
+
+$list = [new ItemA(), new ItemB()];
+$out = [];
+foreach ($list as $item) {
+    if ($item instanceof MarkerA) {
+        $out[] = 'A';
+    } elseif ($item instanceof MarkerB) {
+        $out[] = 'B';
+    } else {
+        $out[] = 'U';
+    }
+}
+echo implode('', $out);
+"#,
+    );
+    assert_eq!(out, vec!["AB"]);
+}
+
+#[test]
+fn interface_class_implements_runtime() {
+    let out = run_prints(
+        r#"<?php
+interface A {}
+interface B {}
+class C implements A, B {}
+echo array_key_exists('A', class_implements(C::class)) ? 'A' : 'X';
+echo '|';
+echo array_key_exists('B', class_implements(C::class)) ? 'B' : 'X';
+"#,
+    );
+    assert_eq!(out, vec!["A|B"]);
 }

@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 mod helpers;
 mod test_abstract_final_patterns;
 mod test_advanced_closures;
@@ -52,6 +53,7 @@ mod test_covariant_return_types;
 mod test_cross_lang;
 mod test_database;
 mod test_database_prepared;
+mod test_php_pdo_batch_transactions;
 mod test_date_advanced;
 mod test_date_builtins;
 mod test_date_functions;
@@ -144,10 +146,15 @@ mod test_math_builtin_runtime;
 mod test_math_extended;
 mod test_math_functions;
 mod test_math_rounding;
+mod test_php_operators;
+mod test_php_arrays_constructs;
 mod test_mb_strings;
 mod test_mbstring;
 mod test_mbstring_extended;
+mod test_php_mbstring_unicode;
+mod test_php_control_flow_constructs;
 mod test_method_chaining;
+mod test_php_object_chaining;
 mod test_misc_builtins;
 mod test_mixed_programs;
 mod test_modern_php_deep;
@@ -156,6 +163,7 @@ mod test_named_args_extended;
 mod test_named_arguments;
 mod test_named_arguments_runtime;
 mod test_namespaces;
+mod test_php_namespaces_runtime;
 mod test_new_features;
 mod test_null_coalescing_patterns;
 mod test_number_format_edge;
@@ -164,6 +172,8 @@ mod test_numeric_casts;
 mod test_numeric_operations;
 mod test_object_comparison;
 mod test_object_model;
+mod test_php_oop_class_shapes;
+mod test_php_scope_rules;
 mod test_oop;
 mod test_oop_advanced;
 mod test_oop_interfaces;
@@ -174,10 +184,12 @@ mod test_operators_runtime;
 mod test_output_buffering;
 mod test_output_functions;
 mod test_output_runtime;
+mod test_php_output_buffering_capture;
 mod test_pack_unpack;
 mod test_password_hash;
 mod test_password_security;
 mod test_patterns;
+mod test_php_string_manipulation;
 mod test_pcre_advanced;
 mod test_pcre_named_groups;
 mod test_phase2;
@@ -211,6 +223,7 @@ mod test_php_callables_is_callable_call_user_func;
 mod test_php_cli_arguments_environment_vars;
 mod test_php_closures_bind_bindto_scope;
 mod test_php_compact_extract_superglobals;
+mod test_php_datetime_timezones;
 mod test_php_constants;
 mod test_php_constants_extended;
 mod test_php_control_flow_match_switch_goto;
@@ -234,6 +247,7 @@ mod test_php_exif_read_data_tag_lookup;
 mod test_php_expressions_match_nullsafe;
 mod test_php_expressions_ternary_coalescing_match;
 mod test_php_fibers_asynchronous_concurrency;
+mod test_php_fibers_runtime;
 mod test_php_file_path_resolution_canonicalization;
 mod test_php_filter_input_get_post_cookie;
 mod test_php_filter_validation_sanitization;
@@ -257,6 +271,7 @@ mod test_php_json_serialization_contracts;
 mod test_php_magic_methods_get_set_call_invoke;
 mod test_php_math_bcmath_number_precision;
 mod test_php_math_random_engines_php82;
+mod test_php_dynamic_calling;
 mod test_php_mbstring_multibyte_utf8_ops;
 mod test_php_ob_gzhandler_compression;
 mod test_php_ob_implicit_flush_auto;
@@ -267,6 +282,8 @@ mod test_php_oop_inheritance_abstract_final;
 mod test_php_oop_late_static_binding_self_static;
 mod test_php_oop_property_hooks_asymmetric_visibility;
 mod test_php_openssl_cipher_iv_length_lookup;
+mod test_php_spl_structures;
+mod test_php_autoloading;
 mod test_php_output_add_rewrite_var_urls;
 mod test_php_output_buffering_nested_handlers;
 mod test_php_output_buffering_ob_start_clean;
@@ -295,6 +312,7 @@ mod test_php_sodium_crypto_pwhash_str_verify;
 mod test_php_sodium_crypto_secretbox_easy_open;
 mod test_php_sodium_crypto_sign_detached_verify;
 mod test_php_spl_caching_iterator_lookahead;
+mod test_php_feature_coverage;
 mod test_php_spl_data_structures_fixed_array;
 mod test_php_spl_doubly_linked_list_operations;
 mod test_php_spl_fixed_array_resizing;
@@ -527,3 +545,151 @@ mod test_tmpfile_automatic_deletion;
 mod test_trigger_error_user_levels;
 mod test_vfprintf_stream_output;
 mod test_wordwrap_cut_flags;
+
+// Verified Uncovered PHP Features Batch 1 (2026-07)
+mod test_php_object_mangled_vars_inspection;
+mod test_php_string_increment_decrement_ops;
+mod test_php_spl_object_storage_set_operations;
+mod test_php_datetime_create_from_interface;
+mod test_php_array_is_list_validation;
+mod test_php_fdiv_nan_infinity_math;
+mod test_php_reflection_fiber_inspection_details;
+mod test_php_reflection_enum_unit_cases;
+mod test_php_string_str_contains_unicode;
+mod test_php_math_intdiv_fmod_edge_cases;
+
+// Verified Uncovered PHP Features Batch 2 (2026-07)
+mod test_php_hrtime_nanosecond_monotonic_clock;
+mod test_php_resource_id_type_inspection;
+mod test_php_extension_funcs_loaded_list;
+mod test_php_connection_status_user_abort_ops;
+mod test_php_script_metadata_getlastmod;
+mod test_php_net_interfaces_lookup;
+mod test_php_get_resources_inspection;
+mod test_php_gc_status_cycle_collector;
+mod test_php_ezmlm_hash_email_checksum;
+mod test_php_getmygid_group_info;
+
+// Verified Uncovered Framework & Core Features Batch 3 (2026-07)
+mod test_php_spl_filesystem_iterator_flags;
+mod test_php_spl_glob_iterator_file_matching;
+mod test_php_spl_directory_iterator_file_properties;
+mod test_php_spl_temp_file_object_memory_buffer;
+mod test_php_reflection_property_hooks_inspection;
+mod test_php_math_bcmath_powmod_scale_ops;
+mod test_php_datetime_create_from_format_errors;
+mod test_php_string_str_decrement_underflow_edge;
+mod test_php_spl_caching_iterator_full_cache;
+mod test_php_spl_regex_iterator_replacement_mode;
+
+// Verified Uncovered Core & Framework Features Batch 4 (2026-07)
+mod test_php_hash_hkdf_pbkdf2_key_derivation;
+mod test_php_string_strspn_strcspn_masks;
+mod test_php_cli_getopt_rest_index_parsing;
+mod test_php_spl_file_object_csv_iteration;
+mod test_php_spl_infinite_iterator_limit;
+mod test_php_reflection_function_return_types;
+mod test_php_reflection_named_type_inspection;
+mod test_php_array_replace_recursive_behavior;
+mod test_php_string_strtok_tokenizer_state;
+mod test_php_datetime_period_iso_specifiers;
+
+// Verified Uncovered Framework & Core Features Batch 5 (2026-07)
+mod test_php_spl_file_info_perms_timestamps;
+mod test_php_reflection_class_constants_list;
+mod test_php_reflection_class_constant_modifiers;
+mod test_php_reflection_method_get_closure;
+mod test_php_reflection_property_set_get_static;
+mod test_php_mbstring_strwidth_truncation;
+mod test_php_mbstring_ord_chr_code_points;
+mod test_php_datetime_immutable_create_from_format;
+mod test_php_fiber_get_current_state_inspection;
+mod test_php_array_chunk_preserve_keys_flag;
+
+// Verified Uncovered Framework & Core Features Batch 6 (2026-07)
+mod test_php_class_alias_autoload_parameter;
+mod test_php_is_a_string_class_allow_string;
+mod test_php_interface_exists_autoload_flag;
+mod test_php_string_strspn_offset_length;
+mod test_php_reflection_attribute_target_flags;
+mod test_php_spl_append_iterator_multiple;
+mod test_php_spl_parent_iterator_filtering;
+mod test_php_spl_file_object_seek_lines;
+mod test_php_math_number_format_separators;
+mod test_php_datetime_modify_relative_formats;
+
+// Verified Uncovered Framework & Core Features Batch 7 (2026-07)
+mod test_php_array_uassoc_callback_key_value;
+mod test_php_spl_doubly_linked_list_modes;
+mod test_php_reflection_class_is_iterable_readonly;
+mod test_php_reflection_parameter_is_passed_by_ref;
+mod test_php_string_strcspn_neg_offset_length;
+mod test_php_math_bcmath_round_precision_php84;
+mod test_php_datetime_diff_absolute_flag;
+mod test_php_spl_stack_top_bottom_peek;
+mod test_php_spl_priority_queue_extract_flags;
+mod test_php_fiber_suspend_resume_value_passing;
+
+// Verified Uncovered Framework & Core Features Batch 8 (2026-07)
+mod test_php_array_uintersect_assoc_value_callback;
+mod test_php_datetimezone_location_coordinates;
+mod test_php_reflection_enum_backed_type_inspection;
+mod test_php_reflection_generator_trace_inspection;
+mod test_php_spl_caching_iterator_string_conversion;
+mod test_php_spl_limit_iterator_seek_position;
+mod test_php_math_random_engine_secure_random;
+mod test_php_intl_error_name_lookup;
+mod test_php_string_strtok_delimiter_changes;
+mod test_php_dateperiod_include_end_date_flag;
+
+// Verified Uncovered Web App & Framework Features Batch 9 (2026-07)
+mod test_php_web_get_html_translation_table;
+mod test_php_web_http_response_code_getter_setter;
+mod test_php_web_filter_var_array_input;
+mod test_php_web_filter_input_array_get_post;
+mod test_php_web_strip_tags_html_comments;
+mod test_php_web_ini_get_all_simple_values;
+mod test_php_intl_grapheme_strpos_substr;
+mod test_php_intl_message_formatter_format;
+mod test_php_intl_number_formatter_currency;
+mod test_php_pdo_sqlite_in_memory_crud;
+
+// Verified Uncovered Web App & Framework Features Batch 10 (2026-07)
+mod test_php_pdo_last_insert_id_row_count;
+mod test_php_pdo_fetch_into_existing_object;
+mod test_php_pdo_fetch_func_custom_callback;
+mod test_php_debug_backtrace_provide_object_option;
+mod test_php_hash_equals_different_lengths_safe;
+mod test_php_hash_file_algorithm_types;
+mod test_php_web_parse_str_without_result_arg;
+mod test_php_web_addslashes_stripslashes_roundtrip;
+mod test_php_web_htmlentities_charset_quotes;
+mod test_php_oop_nullsafe_operator_chaining;
+
+// Verified Uncovered Web App & Framework Features Batch 11 (2026-07)
+mod test_php_web_setrawcookie_options_array;
+mod test_php_web_parse_url_invalid_url_handling;
+mod test_php_json_decode_object_as_array_flag;
+mod test_php_json_encode_invalid_utf8_substitute;
+mod test_php_openssl_cipher_methods_list;
+mod test_php_intl_date_formatter_custom_pattern;
+mod test_php_web_http_build_query_enc_type;
+mod test_php_session_cache_limiter_expire;
+mod test_php_serialize_allowed_classes_array;
+mod test_php_oop_property_hooks_get_set_syntax;
+
+// Verified Uncovered Web App & Framework Features Batch 12 (2026-07)
+mod test_php_web_session_id_custom_generator;
+mod test_php_web_http_response_headers_list_sent;
+mod test_php_web_filter_var_domain_url_flags;
+mod test_php_json_encode_preserve_zero_fraction;
+mod test_php_openssl_pkey_generate_export;
+mod test_php_intl_collator_attribute_settings;
+mod test_php_web_parse_str_max_input_vars;
+mod test_php_session_gc_garbage_collection;
+mod test_php_serialize_sleep_wakeup_magic_methods;
+mod test_php_oop_property_hooks_backing_field;
+mod test_php_attributes_discovery_scan;
+mod test_php_attributes_inheritance_traits;
+mod test_php_attributes_argument_forms;
+mod test_php_attributes_container_wiring;

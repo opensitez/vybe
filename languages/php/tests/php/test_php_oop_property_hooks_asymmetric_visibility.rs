@@ -63,7 +63,8 @@ echo "Balance: {$account->balance}";
 
 #[test]
 fn test_php84_property_hooks_interface_requirement() {
-    compile_ok(
+    assert_eq!(
+        run_prints(
         r#"<?php
 interface Named {
     public string $name { get; }
@@ -76,12 +77,15 @@ class Company implements Named {
 $c = new Company("Acme Corp");
 echo $c->name;
 "#,
+        ),
+        vec!["Acme Corp"]
     );
 }
 
 #[test]
 fn test_php84_asymmetric_visibility_protected_set() {
-    compile_ok(
+    assert_eq!(
+        run_prints(
         r#"<?php
 class BaseDocument {
     public protected(set) string $title = "Untitled";
@@ -97,12 +101,15 @@ $art = new ArticleDocument();
 $art->setTitle("PHP 8.4 Released");
 echo $art->title;
 "#,
+        ),
+        vec!["PHP 8.4 Released"]
     );
 }
 
 #[test]
 fn test_php84_property_hooks_get_set_block_body() {
-    compile_ok(
+    assert_eq!(
+        run_prints(
         r#"<?php
 class Counter {
     private int $count = 0;
@@ -124,6 +131,8 @@ $c = new Counter();
 $c->value = 10;
 echo $c->value;
 "#,
+        ),
+        vec!["10"]
     );
 }
 
@@ -196,5 +205,48 @@ class SecureModel {
 $sm = new SecureModel();
 echo $sm->id;
 "#,
+    );
+}
+
+#[test]
+fn test_php84_private_set_blocked_from_outside_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Ledger {
+    public private(set) int $balance = 0;
+}
+$l = new Ledger();
+try {
+    $l->balance = 10;
+    echo 'wrote';
+} catch (Error $e) {
+    echo 'error';
+}
+"#,
+        ),
+        vec!["error"]
+    );
+}
+
+#[test]
+fn test_php84_get_set_hooks_transform_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class ScoreBoard {
+    private int $value = 1;
+
+    public int $valueHooked {
+        get => $this->value * 3;
+        set => max(0, $value);
+    }
+}
+$board = new ScoreBoard();
+$board->valueHooked = 4;
+echo $board->valueHooked;
+"#,
+        ),
+        vec!["12"]
     );
 }

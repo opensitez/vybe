@@ -196,4 +196,165 @@ echo $n ? '1' : '0';
 "#,
         ["0"]
     };
+
+    coalescing_ternary_interaction => {
+        r#"<?php
+$a = '';
+echo ($a ?: 'fallback') . '|';
+$b = null;
+echo ($b ?? 'fallback');
+"#,
+        ["fallback|fallback"]
+    };
+
+    additive_vs_ternary_precedence => {
+        r#"<?php
+echo 1 + 2 ? 3 : 4;
+echo '|';
+echo (1 + 2) ? 3 : 4;
+"#,
+        ["3|3"]
+    };
+
+    and_word_vs_andor_precedence => {
+        r#"<?php
+$x = true;
+$x = false && false;
+echo $x ? 'T' : 'F';
+echo '|';
+$y = false and false;
+echo $y ? 'T' : 'F';
+"#,
+        ["F|F"]
+    };
+
+    loose_equality_falsey_chain => {
+        r#"<?php
+echo (null == 0) ? '1' : '0';
+echo '|';
+echo ('' == false) ? '1' : '0';
+echo '|';
+echo ([] == false) ? '1' : '0';
+echo '|';
+echo (0 == false) ? '1' : '0';
+echo '|';
+echo (0 === false) ? '1' : '0';
+"#,
+        ["1|1|1|1|0"]
+    };
+
+    string_numeric_spaces_and_zeros => {
+        r#"<?php
+echo (" 7" == 7) ? '1' : '0';
+echo '|';
+echo ("07" == "7") ? '1' : '0';
+echo '|';
+echo ("07" == 7) ? '1' : '0';
+echo '|';
+echo ("007" === "7") ? '1' : '0';
+echo '|';
+echo ("0" == 0) ? '1' : '0';
+"#,
+        ["1|1|1|0|1"]
+    };
+
+    string_floating_prefix_plus_suffix => {
+        r#"<?php
+echo ("2.3" == 2.3) ? '1' : '0';
+echo '|';
+echo ("2.3" === 2.3) ? '1' : '0';
+echo '|';
+echo ("+5" == 5) ? '1' : '0';
+echo '|';
+echo ("5e2" == 500) ? '1' : '0';
+echo '|';
+echo ("5e2" === 500) ? '1' : '0';
+"#,
+        ["1|0|1|1|0"]
+    };
+
+    array_loose_strict_edge_cases => {
+        r#"<?php
+echo ([1, 2] == [1, 2]) ? '1' : '0';
+echo '|';
+echo ([1, 2] === [1, 2]) ? '1' : '0';
+echo '|';
+echo (['1', '2'] == [1, 2]) ? '1' : '0';
+echo '|';
+echo (['1', '2'] === [1, 2]) ? '1' : '0';
+echo '|';
+echo (['a' => 1] == ['a' => 1]) ? '1' : '0';
+"#,
+        ["1|1|1|0|1"]
+    };
+
+    object_identity_and_equality_basics => {
+        r#"<?php
+$first = new stdClass();
+$second = new stdClass();
+$alias = $first;
+echo ($first == $second) ? '1' : '0';
+echo '|';
+echo ($first === $second) ? '1' : '0';
+echo '|';
+echo ($first == $alias) ? '1' : '0';
+echo '|';
+echo ($first === $alias) ? '1' : '0';
+"#,
+        ["0|0|1|1"]
+    };
+
+    object_to_string_numeric_comparison => {
+        r#"<?php
+class Box {
+    public function __toString(): string { return '7'; }
+}
+$box = new Box();
+echo ($box == 7) ? '1' : '0';
+echo '|';
+echo ($box === 7) ? '1' : '0';
+echo '|';
+echo ($box == '7') ? '1' : '0';
+echo '|';
+echo ((string)$box == 7) ? '1' : '0';
+"#,
+        ["1|0|1|1"]
+    };
+
+    settype_invalid_to_invalid => {
+        r#"<?php
+$value = 'abc';
+settype($value, 'integer');
+echo $value . '|';
+$value = 1.9;
+settype($value, 'string');
+echo $value;
+"#,
+        ["0|1.9"]
+    };
+
+    cast_chain_runtime_edge => {
+        r#"<?php
+echo (int)'12abc' . '|';
+echo (float)'12abc' . '|';
+echo (bool)'0' . '|';
+echo (bool)'false' . '|';
+echo (string)false . '|';
+echo (string)true;
+"#,
+        ["12|12|0|1||1"]
+    };
+
+    is_bool_and_bool_as_string => {
+        r#"<?php
+echo is_bool('true') ? 't1' : 't0';
+echo '|';
+echo is_bool((bool)'false') ? 'c1' : 'c0';
+echo '|';
+echo ((bool)0 === false) ? 'e1' : 'e0';
+echo '|';
+echo ((bool)'0' === false) ? 'f1' : 'f0';
+"#,
+        ["t0|c1|e1|f1"]
+    };
 }

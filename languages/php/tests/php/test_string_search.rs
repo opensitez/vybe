@@ -154,4 +154,97 @@ echo str_contains(wordwrap('one two three four', 7), "\n") ? 'wrap' : 'flat';
 "#,
         ["wrap"]
     };
+
+    str_contains_empty_needle => {
+        r#"<?php
+echo str_contains('abc', '') ? 'yes' : 'no';
+"#,
+        ["yes"]
+    };
+
+    strstr_with_before_needle => {
+        r#"<?php
+echo strstr('hello world', 'o', true);
+"#,
+        ["hell"]
+    };
+
+    strpos_not_found_is_false => {
+        r#"<?php
+echo var_export(strpos('abc', 'z'), true);
+"#,
+        ["false"]
+    };
+
+    strrpos_negative_offset => {
+        r#"<?php
+echo strrpos('ababa', 'ba', -4);
+"#,
+        ["3"]
+    };
+
+    str_starts_with_empty_needle_is_true => {
+        r#"<?php
+echo str_starts_with('hello', '') ? 'yes' : 'no';
+"#,
+        ["yes"]
+    };
+
+    str_ends_with_empty_needle_is_true => {
+        r#"<?php
+echo str_ends_with('hello', '') ? 'yes' : 'no';
+"#,
+        ["yes"]
+    };
+
+    str_contains_empty_haystack_is_false => {
+        r#"<?php
+echo str_contains('', 'a') ? 'yes' : 'no';
+"#,
+        ["no"]
+    };
+
+    strripos_from_offset_case_insensitive => {
+        r#"<?php
+echo strripos('Hello HeLLo', 'hello', 0);
+"#,
+        ["6"]
+    };
+
+    strpos_with_negative_offset_beyond_start => {
+        r#"<?php
+echo strpos('abcdef', 'a', -10);
+"#,
+        ["0"]
+    };
+
+    strstr_returns_false_for_missing => {
+        r#"<?php
+echo var_export(strstr('abc', 'z'), true);
+"#,
+        ["false"]
+    };
+
+    strncmp_with_length_greater_than_lengths => {
+        r#"<?php
+echo strncmp('abc', 'abcd', 99) < 0 ? 'lt' : 'ge';
+"#,
+        ["lt"]
+    };
+
+    substr_zero_length => {
+        r#"<?php
+echo var_export(substr('abcdef', 2, 0), true);
+"#,
+        ["''"]
+    };
+
+    strcmp_zero_sign_and_case => {
+        r#"<?php
+echo strcmp('abc', 'abc') === 0 ? 'eq' : 'ne';
+echo '|';
+echo strcmp('abc', 'abd');
+"#,
+        ["eq|-1"]
+    };
 }

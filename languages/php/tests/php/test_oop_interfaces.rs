@@ -231,3 +231,405 @@ echo array_sum(array_map(fn(Worker $w) => $w->work(), $workers));
         vec!["26"]
     );
 }
+
+#[test]
+fn interface_return_type_covariance_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Creator {
+    public function build(): object;
+}
+class A {}
+class B extends A {}
+class Factory implements Creator {
+    public function build(): B {
+        return new B();
+    }
+}
+$f = new Factory();
+echo $f->build() instanceof B ? 'b' : 'n';
+"#,
+        ),
+        vec!["b"]
+    );
+}
+
+#[test]
+fn interface_static_method_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Api {
+    public static function name(): string;
+}
+class Service implements Api {
+    public static function name(): string { return 'Service'; }
+}
+echo Service::name();
+"#,
+        ),
+        vec!["Service"]
+    );
+}
+
+#[test]
+fn interface_in_array_sum_via_mapped_typecheck() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Priced {
+    public function price(): float;
+}
+class Product implements Priced { public function __construct(private float $p) {} public function price(): float { return $this->p; } }
+$items = [new Product(1.2), new Product(2.8)];
+$total = array_sum(array_map(fn(Priced $x) => $x->price(), $items));
+echo $total;
+"#,
+        ),
+        vec!["4"]
+    );
+}
+
+#[test]
+fn interface_implements_multiple_via_aliasing_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface A { public function a(): string; }
+interface B { public function b(): string; }
+class C implements A, B {
+    public function a(): string { return 'a'; }
+    public function b(): string { return 'b'; }
+}
+$c = new C();
+echo $c->a() . $c->b();
+"#,
+        ),
+        vec!["ab"]
+    );
+}
+
+#[test]
+fn interface_as_function_argument_dispatch_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Handler { public function handle(string $in): string; }
+class Upper implements Handler { public function handle(string $in): string { return strtoupper($in); } }
+class Lower implements Handler { public function handle(string $in): string { return strtolower($in); } }
+function run_handler(Handler $h, string $in): string { return $h->handle($in); }
+echo run_handler(new Upper(), 'abc') . '|' . run_handler(new Lower(), 'ABC');
+"#,
+        ),
+        vec!["ABC|abc"]
+    );
+}
+
+#[test]
+fn interface_instanceof_checks_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Marked {}
+class Item implements Marked {}
+class NoMark {}
+echo (new Item) instanceof Marked ? 'yes' : 'no';
+echo '|';
+echo (new NoMark) instanceof Marked ? 'yes' : 'no';
+"#,
+        ),
+        vec!["yes|no"]
+    );
+}
+
+#[test]
+fn interface_default_method_simulated_by_trait_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Handler {
+    public function call(string $v): string;
+}
+trait DefaultHandler {
+    public function toUpper(string $v): string { return strtoupper($v); }
+}
+class Router implements Handler {
+    use DefaultHandler;
+    public function call(string $v): string { return $this->toUpper($v); }
+}
+echo (new Router())->call('ok');
+"#,
+        ),
+        vec!["OK"]
+    );
+}
+
+#[test]
+fn interface_const_aliasing_from_implementer_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Versioned { public const VERSION = '1'; }
+class Plugin implements Versioned {
+    public const VERSION = '2';
+}
+echo Plugin::VERSION;
+echo '|';
+echo Versioned::VERSION;
+"#,
+        ),
+        vec!["2|1"]
+    );
+}
+
+#[test]
+fn interface_with_nullable_return_union_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Finder {
+    public function find(string $k): ?string;
+}
+class Store implements Finder {
+    public function find(string $k): ?string { return $k === 'exists' ? 'yes' : null; }
+}
+$s = new Store();
+echo $s->find('exists') ?? 'miss';
+echo '|';
+echo $s->find('other') ?? 'miss';
+"#,
+        ),
+        vec!["yes|miss"]
+    );
+}
+
+#[test]
+fn interface_inheritance_chain_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Base { public function base(): string; }
+interface Mid extends Base { public function mid(): string; }
+interface Top extends Mid { public function top(): string; }
+class Impl implements Top {
+    public function base(): string { return 'b'; }
+    public function mid(): string { return 'm'; }
+    public function top(): string { return 't'; }
+}
+$obj = new Impl();
+echo $obj->base() . $obj->mid() . $obj->top();
+"#,
+        ),
+        vec!["bmt"]
+    );
+}
+
+#[test]
+fn interface_call_order_and_implementation_graph_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Logger {
+    public function emit(string $message): string;
+}
+interface Timestamped {
+    public function emit(string $message): string;
+}
+class Audit implements Logger, Timestamped {
+    public function emit(string $message): string {
+        return 'log:' . $message;
+    }
+}
+echo (new Audit)->emit('x');
+"#,
+            ),
+            vec!["log:x"]
+    );
+}
+
+#[test]
+fn interface_default_with_covariant_returns_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Provider {
+    public function payload(): iterable;
+}
+class StringBag implements Provider {
+    public function payload(): array {
+        return ['a', 'b'];
+    }
+}
+$p = new StringBag();
+echo json_encode($p->payload());
+"#,
+            ),
+            vec!["[\"a\",\"b\"]"]
+    );
+}
+
+#[test]
+fn interface_private_constructor_contract_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Buildable {
+    public static function build(int $v): static;
+}
+class Node implements Buildable {
+    private function __construct(private int $v) {}
+    public static function build(int $v): static {
+        return new static($v);
+    }
+    public function value(): int { return $this->v; }
+}
+echo (Node::build(8))->value();
+"#,
+        ),
+        vec!["8"]
+    );
+}
+
+#[test]
+fn interface_exists_for_declared_name_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface ExistsDemo {
+    public function ping(): string;
+}
+echo interface_exists('ExistsDemo') ? 'yes' : 'no';
+echo '|';
+echo interface_exists('DoesNotExist') ? 'yes' : 'no';
+"#,
+            ),
+            vec!["yes|no"]
+    );
+}
+
+#[test]
+fn class_implements_for_object_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Reader {
+    public function read(): string;
+}
+interface Writer {
+    public function write(string $v): void;
+}
+class Logger implements Reader, Writer {
+    public function read(): string { return 'r'; }
+    public function write(string $v): void { $this->value = $v; }
+    private string $value = '';
+    public function value(): string { return $this->value; }
+}
+$logger = new Logger();
+$impl = class_implements($logger);
+echo (isset($impl[Reader::class]) ? 'R' : '?') . (isset($impl[Writer::class]) ? 'W' : '?');
+"#,
+            ),
+            vec!["RW"]
+    );
+}
+
+#[test]
+fn interface_runtime_graph_with_parent_class_and_interface_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface A { public function a(): string; }
+interface B extends A { public function b(): string; }
+class ParentSvc {
+    public function p(): string { return 'p'; }
+}
+class ChildSvc extends ParentSvc implements B {
+    public function a(): string { return 'a'; }
+    public function b(): string { return 'b'; }
+}
+$o = new ChildSvc();
+echo $o->a() . $o->b() . $o->p();
+echo '|';
+echo ($o instanceof B) ? 'ok' : 'bad';
+"#,
+            ),
+            vec!["abp|ok"]
+    );
+}
+
+#[test]
+fn interface_static_method_called_via_class_implements_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Identifiable {
+    public static function label(): string;
+}
+class Widget implements Identifiable {
+    public static function label(): string { return 'widget'; }
+}
+echo Widget::label();
+echo '|';
+$ifaces = class_implements(Widget::class);
+echo isset($ifaces[Identifiable::class]) ? 'seen' : 'missing';
+"#,
+            ),
+            vec!["widget|seen"]
+    );
+}
+
+#[test]
+fn interface_method_dispatch_with_object_storage_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Strategy {
+    public function execute(int $x, int $y): int;
+}
+class Add implements Strategy {
+    public function execute(int $x, int $y): int { return $x + $y; }
+}
+class Mul implements Strategy {
+    public function execute(int $x, int $y): int { return $x * $y; }
+}
+function run_all(array $items): int {
+    $total = 0;
+    foreach ($items as $item) { $total += $item->execute(3, 4); }
+    return $total;
+}
+$items = [new Add(), new Mul()];
+echo run_all($items);
+"#,
+            ),
+            vec!["19"]
+    );
+}
+
+#[test]
+fn interface_default_like_methods_in_runtime_chain() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Escaper {
+    public function escape(string $v): string;
+}
+class HtmlSafe implements Escaper {
+    public function escape(string $v): string {
+        return str_replace('<', '&lt;', $v);
+    }
+}
+class NoEscape implements Escaper {
+    public function escape(string $v): string {
+        return $v;
+    }
+}
+function render(Escaper $e, string $v): string {
+    return $e->escape($v);
+}
+echo render(new HtmlSafe, "<x>") . '|' . render(new NoEscape, "<x>");
+"#,
+            ),
+            vec!["&lt;x>|<x>"]
+    );
+}

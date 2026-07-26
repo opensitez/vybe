@@ -185,3 +185,110 @@ echo get_class($reg);
 "#,
     );
 }
+
+#[test]
+fn test_php_late_static_binding_in_trait_factory() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+trait FactoryTrait {
+    public static function make(string $id): static {
+        return new static($id);
+    }
+}
+
+class Service {
+    use FactoryTrait;
+    public function __construct(public string $id) {}
+}
+
+class BillingService extends Service {}
+
+$service = BillingService::make("billing");
+echo get_class($service) . "|" . $service->id;
+"#,
+        ),
+        vec!["BillingService|billing"]
+    );
+}
+
+#[test]
+fn test_php_static_binding_parent_static_call_preserves_dynamic_class() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Base {
+    public static function resolve(): string {
+        return static::class;
+    }
+}
+
+class Mid extends Base {
+    public static function callParentResolve(): string {
+        return parent::resolve();
+    }
+}
+
+class Leaf extends Mid {}
+
+echo Leaf::resolve() . "|" . Leaf::callParentResolve();
+"#,
+        ),
+        vec!["Leaf|Leaf"]
+    );
+}
+
+#[test]
+fn test_php_forward_static_calls_static_factory_chain() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class ParentFactory {
+    public static function make(): static {
+        return new static();
+    }
+
+    public static function label(): string {
+        return "parent";
+    }
+}
+
+class ChildFactory extends ParentFactory {
+    public static function label(): string {
+        return "child";
+    }
+}
+
+$factory = ChildFactory::make();
+echo get_class($factory) . "|" . $factory::label();
+"#,
+        ),
+        vec!["ChildFactory|child"]
+    );
+}
+
+#[test]
+fn test_php_static_property_shadowing_with_parent_access() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class BaseCounter {
+    protected static int $count = 1;
+    public static function current(): int {
+        return static::$count;
+    }
+}
+
+class DerivedCounter extends BaseCounter {
+    protected static int $count = 4;
+    public static function currentFromParent(): int {
+        return parent::$count;
+    }
+}
+
+echo DerivedCounter::current() . "|" . DerivedCounter::currentFromParent();
+"#,
+        ),
+        vec!["4|1"]
+    );
+}

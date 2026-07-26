@@ -112,3 +112,51 @@ echo strlen($scrubbed) > 0 ? "SCRUBBED" : "EMPTY";
 "#,
     );
 }
+
+#[test]
+fn test_php_mb_strlen_empty_and_zero_offset_runtime() {
+    let out = run_prints(
+        r#"<?php
+echo mb_strlen("", "UTF-8");
+echo "|";
+echo mb_strlen("abc", "UTF-8");
+"#
+    );
+    assert_eq!(out, vec!["0|3"]);
+}
+
+#[test]
+fn test_php_mb_substr_start_beyond_length_runtime() {
+    let out = run_prints(
+        r#"<?php
+echo mb_substr("世界", 10, 2, "UTF-8") === "" ? "empty" : "non-empty";
+echo "|";
+echo mb_substr("世界", -10, 1, "UTF-8");
+"#
+    );
+    assert_eq!(out, vec!["empty|界"]);
+}
+
+#[test]
+fn test_php_mb_strrpos_case_fold_runtime() {
+    let out = run_prints(
+        r#"<?php
+echo mb_strripos("aĀbĀc", "ā");
+echo "|";
+echo mb_strrpos("a-b-c-a", "a", 0);
+"#
+    );
+    assert_eq!(out, vec!["3|6"]);
+}
+
+#[test]
+fn test_php_mb_strstr_needle_not_found_runtime() {
+    let out = run_prints(
+        r#"<?php
+echo mb_strstr("abcdef", "z") === false ? "missing" : "found";
+echo "|";
+echo mb_strrchr("caféc", "é") === "éc" ? "tail" : "no";
+"#
+    );
+    assert_eq!(out, vec!["missing|tail"]);
+}

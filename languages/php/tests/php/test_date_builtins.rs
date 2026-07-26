@@ -274,3 +274,92 @@ echo $dt->format('Y-m-d');
 "#,
     );
 }
+
+#[test]
+fn gmdate_with_timestamp() {
+    compile_ok(
+        r#"<?php
+echo gmdate('Y-m-d', 1704067200);
+echo ':';
+echo gmdate('H:i', 1704067200);
+"#,
+    );
+}
+
+#[test]
+fn idate_access_patterns() {
+    compile_ok(
+        r#"<?php
+$ts = mktime(0, 0, 0, 4, 25, 2024);
+echo idate('Y', $ts);
+echo idate('m', $ts);
+echo idate('d', $ts);
+echo idate('w', $ts);
+"#,
+    );
+}
+
+#[test]
+fn strftime_like_formatting() {
+    compile_ok(
+        r#"<?php
+setlocale(LC_TIME, 'C');
+echo strftime('%Y-%m-%d %H:%M:%S', mktime(12, 34, 56, 3, 4, 2024));
+"#,
+    );
+}
+
+#[test]
+fn date_parse_basic() {
+    compile_ok(
+        r#"<?php
+$info = date_parse('2024-03-15T12:30:45');
+echo is_array($info) ? 'array' : 'not array';
+echo isset($info['year']) ? ':year' : ':no year';
+"#,
+    );
+}
+
+#[test]
+fn date_parse_from_format_basic() {
+    compile_ok(
+        r#"<?php
+$info = date_parse_from_format('d/m/Y H:i', '08/11/2024 16:45');
+echo $info['error_count'] === 0 ? 'ok' : 'bad';
+echo $info['year'];
+"#,
+    );
+}
+
+#[test]
+fn date_interval_in_seconds() {
+    compile_ok(
+        r#"<?php
+$i = date_interval_create_from_date_string('2 hours 30 minutes');
+echo $i->h . ':' . $i->i;
+"#,
+    );
+}
+
+#[test]
+fn date_isodate_parse_and_serialize() {
+    compile_ok(
+        r#"<?php
+$dt = new DateTimeImmutable('2024-11-15T08:00:00+00:00');
+echo $dt->format(DateTimeInterface::ATOM);
+echo ':' . $dt->format('U');
+"#,
+    );
+}
+
+#[test]
+fn date_sunrise_sunset_compat() {
+    compile_ok(
+        r#"<?php
+$sunrise = date_sunrise(strtotime('2024-06-21'), SUNFUNCS_RET_STRING, 40.7128, -74.0060, 90, -5);
+$sunset = date_sunset(strtotime('2024-06-21'), SUNFUNCS_RET_STRING, 40.7128, -74.0060, 90, -5);
+echo is_string($sunrise) ? 'sr' : 'ns';
+echo ':' . (is_string($sunset) ? 'ss' : 'ns2');
+"#,
+    );
+}

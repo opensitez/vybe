@@ -517,4 +517,179 @@ echo $read();
 "#,
         ["anon"]
     };
+
+    variable_function_name_invocation => {
+        r#"<?php
+function dyn_greet(string $n): string { return 'hello ' . $n; }
+$name = 'dyn_greet';
+echo $name('world');
+"#,
+        ["hello world"]
+    };
+
+    variable_static_method_call => {
+        r#"<?php
+class DynService {
+    public static function status(string $tag): string { return $tag . '-ok'; }
+}
+$cls = 'DynService';
+$method = 'status';
+echo $cls::$method('x');
+"#,
+        ["x-ok"]
+    };
+
+    variable_instance_class_and_method_call => {
+        r#"<?php
+class Node {
+    public function label(string $s): string { return 'node:' . $s; }
+}
+$obj = new Node();
+$method = 'label';
+echo $obj->$method('A');
+"#,
+        ["node:A"]
+    };
+
+    variable_property_access_and_call => {
+        r#"<?php
+class Maker {
+    private string $name = 'ok';
+    public function get(): callable { return [$this, 'render']; }
+    public function render(): string { return $this->name; }
+}
+$m = new Maker();
+[$obj, $method] = $m->get();
+echo $obj->$method();
+"#,
+        ["ok"]
+    };
+
+    call_user_func_array_on_invokable => {
+        r#"<?php
+class Handler {
+    public function __invoke(int $n): string { return 'value:' . $n; }
+}
+$h = new Handler();
+echo call_user_func_array($h, [7]);
+"#,
+        ["value:7"]
+    };
+
+    variable_static_class_and_method_call => {
+        r#"<?php
+class Dispatcher {
+    public static function name(string $suffix): string { return 'ok:' . $suffix; }
+}
+$service = 'Dispatcher';
+$method = 'name';
+echo $service::$method('done');
+"#,
+        ["ok:done"]
+    };
+
+    variable_instance_method_call_with_parentheses => {
+        r#"<?php
+class Printer {
+    public function paint(string $label): string { return "paint:$label"; }
+}
+$obj = new Printer();
+$method = 'paint';
+echo $obj->{$method}('blue');
+"#,
+        ["paint:blue"]
+    };
+
+    variable_function_object_property_call => {
+        r#"<?php
+class Builder {
+    public function make(string $value): callable {
+        return [new Renderer(), 'run'];
+    }
+}
+class Renderer {
+    public function run(string $value): string { return "R:$value"; }
+}
+$b = new Builder();
+$c = $b->make('v');
+echo $c($c[0] ? 'z' : 'unused');
+"#,
+        ["R:z"]
+    };
+
+    invocation_of_magic_call_through_is_callable => {
+        r#"<?php
+class MagicApi {
+    private function hidden(string $s): string { return "h:$s"; }
+    public function __call(string $name, array $args): string { return "m:$name(" . $args[0] . ")"; }
+}
+$m = new MagicApi();
+echo is_callable([$m, 'dynamic']) ? 'yes' : 'no';
+echo '|' . $m->dynamic('x');
+"#,
+        ["yes|m:dynamic(x)"]
+    };
+
+    first_class_callable_of_namespaced_function_via_relative_name => {
+        r#"<?php
+namespace Ops {
+    function scale(int $n): int { return $n * 10; }
+}
+namespace App {
+    use function Ops\scale;
+    $f = \Ops\scale(...);
+    echo $f(3);
+}
+"#,
+        ["30"]
+    };
+
+    call_user_func_array_with_named_parameters => {
+        r#"<?php
+function format(string $prefix, string $value): string { return $prefix . '-' . $value; }
+echo call_user_func_array('format', ['tag' => 'x', 'value' => 'y']);
+"#,
+        ["x-y"]
+    };
+
+    closure_from_callable_on_magic_call => {
+        r#"<?php
+class Proxy {
+    public function __call(string $name, array $args): string { return "proxy:$name"; }
+}
+$p = new Proxy();
+try {
+    $call = Closure::fromCallable([$p, 'anything']);
+    echo $call();
+} catch (Throwable $e) {
+    echo 'err';
+}
+"#,
+        ["proxy:anything"]
+    };
+
+    callable_on_non_public_instance_method_runtime_context => {
+        r#"<?php
+class Context {
+    private function secret(): string { return 'secret'; }
+    public function expose(callable $f): string { return $f($this) . ':' . $this->secret(); }
+}
+$ctx = new Context();
+$f = fn(Context $c): string => 'open';
+echo $ctx->expose($f);
+"#,
+        ["open:secret"]
+    };
+
+    is_callable_on_array_with_string_instance => {
+        r#"<?php
+class Handler {
+    public function run(): string { return 'ok'; }
+}
+echo is_callable(['Handler', 'run']) ? 'yes' : 'no';
+echo '|';
+echo is_callable([new Handler(), 'run']) ? 'yes' : 'no';
+"#,
+        ["yes|yes"]
+    };
 }

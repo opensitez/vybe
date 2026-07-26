@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── mb_strlen ─────────────────────────────────────────────────
 
@@ -389,5 +389,68 @@ function mb_strrev(string $s): string {
 echo mb_strrev("hello");
 echo mb_strrev("日本語");
 "#,
+    );
+}
+
+#[test]
+fn mb_str_split_and_join_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$s = "こんにちは";
+$chunks = mb_str_split($s, 2);
+echo count($chunks);
+echo "|";
+echo $chunks[0];
+echo "|";
+echo $chunks[1];
+"#
+        ),
+        vec!["3|こん|にち"]
+    );
+}
+
+#[test]
+fn mb_strpos_with_empty_needle_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo mb_strpos("abc", "") === 0 ? "zero" : "nonzero";
+echo "|";
+echo mb_strrpos("banana", "na", -2);
+"#
+        ),
+        vec!["zero|4"]
+    );
+}
+
+#[test]
+fn mb_strlen_and_strlen_divergence_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$s = "café";
+echo strlen($s);
+echo "|";
+echo mb_strlen($s);
+echo "|";
+echo mb_check_encoding($s, 'ASCII') ? "ascii-ok" : "ascii-no";
+"#
+        ),
+        vec!["4|4|ascii-no"]
+    );
+}
+
+#[test]
+fn mb_substr_count_empty_needle_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo mb_substr_count("cafe", "");
+echo "|";
+echo mb_substr_count("日本語", "日");
+"#
+        ),
+        vec!["0|1"]
     );
 }

@@ -216,4 +216,126 @@ echo '4';
 "#,
         ["1234"]
     };
+
+    echo_casted_numeric_and_null_to_string => {
+        r#"<?php
+echo (string) 12;
+echo (string) 3.5;
+echo (string) null;
+echo (string) false;
+"#,
+        ["123.5"]
+    };
+
+    echo_nested_function_call_chain => {
+        r#"<?php
+echo strtoupper(trim("  abc  "));
+echo '|';
+echo strlen(sprintf('%d', 42));
+"#,
+        ["ABC|2"]
+    };
+
+    printf_float_and_width => {
+        r#"<?php
+printf('%.1f', 3.14159);
+echo '|';
+printf('%04d', 42);
+"#,
+        ["3.1|0042"]
+    };
+
+    printf_with_array_argument => {
+        r#"<?php
+vprintf('%s-%s', ['alpha', 'beta']);
+echo '|';
+printf('%s %d', 'v', 1);
+"#,
+        ["alpha-beta|v 1"]
+    };
+
+    echo_and_print_return_order => {
+        r#"<?php
+$n = print 'e';
+echo '|';
+echo print('p');
+echo '|';
+echo is_string($n) ? 'ns' : ($n === 1 ? 'n1' : 'other');
+"#,
+        ["e|p1|n1"]
+    };
+
+    sprintf_with_percent_escape => {
+        r#"<?php
+echo sprintf('percent: %%');
+echo '|';
+echo sprintf('value %% %d', 7);
+"#,
+        ["percent: %|value % 7"]
+    };
+
+    output_volatile_expression_order => {
+        r#"<?php
+function mark(string $v): string { return '<' . $v . '>'; }
+echo mark('a') . mark('b');
+"#,
+        ["<a><b>"]
+    };
+
+    echo_multiple_argument_types_and_separator => {
+        r#"<?php
+echo 'a', 1, false, null, true, "\n";
+"#,
+        ["a1 1"]
+    };
+
+    printf_numbering_and_width => {
+        r#"<?php
+printf('%2$s-%1$s', 'left', 'right');
+echo '|';
+printf('%06d', 42);
+"#,
+        ["right-left|000042"]
+    };
+
+    print_vs_printf_return_values => {
+        r#"<?php
+echo print('p') . '|';
+printf('%d', 7);
+echo '|';
+$n = printf('%s', 's');
+echo $n;
+"#,
+        ["p|7|1"]
+    };
+
+    sprintf_with_locale_like_pattern => {
+        r#"<?php
+echo sprintf('%.2f', 1.236);
+echo '|';
+echo sprintf('%s', 'abc');
+"#,
+        ["1.24|abc"]
+    };
+
+    echo_empty_and_newline_preserved => {
+        r#"<?php
+echo '';
+echo "\n";
+echo 'end';
+"#,
+        ["", "end"]
+    };
+
+    printf_boolean_and_null => {
+        r#"<?php
+printf('%b', 5);
+echo '|';
+printf('%b', true);
+echo '|';
+printf('%s', null);
+echo 'x';
+"#,
+        ["101|1x"]
+    };
 }

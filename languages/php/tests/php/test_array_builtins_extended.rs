@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── array_column ─────────────────────────────────────────────────
 #[test]
@@ -338,5 +338,150 @@ echo $username;
 echo $role;
 echo $level;
 "#,
+    );
+}
+
+#[test]
+fn array_search_finds_last_duplicate_key_preference() {
+    let out = run_prints(
+        r#"<?php
+$a = [0 => "first", 1 => "dup", 2 => "dup"];
+echo array_search("dup", $a);
+"#,
+    );
+    assert_eq!(out, vec!["1"]);
+}
+
+#[test]
+fn array_combine_mismatched_counts_throws() {
+    let out = run_prints(
+        r#"<?php
+try {
+    array_combine([1, 2], [1]);
+    echo "no-error";
+} catch (ValueError $e) {
+    echo "value-error";
+}
+"#,
+    );
+    assert_eq!(out, vec!["value-error"]);
+}
+
+#[test]
+fn array_diff_assoc_keeps_associative_only() {
+    let out = run_prints(
+        r#"<?php
+$a = ["x" => 1, "y" => 2, "z" => 3];
+$b = ["x" => 9, "y" => 2];
+$d = array_diff_assoc($a, $b);
+ksort($d);
+echo json_encode(array_keys($d)) . "|" . $d["z"];
+"#,
+    );
+    assert_eq!(out, vec!["[\"x\",\"z\"]|3"]);
+}
+
+#[test]
+fn sort_key_order_stable_on_equal_values() {
+    let out = run_prints(
+        r#"<?php
+$a = [2 => "same", 1 => "same", 0 => "low"];
+asort($a);
+echo implode(',', array_keys($a));
+"#,
+    );
+    assert_eq!(out, vec!["2,1,0"]);
+}
+
+#[test]
+fn array_search_loose_zero_matches_false_or_null_string() {
+    let out = run_prints(
+        r#"<?php
+$a = [false, null, 0, "0"];
+echo in_array("", $a) ? "yes" : "no";
+echo "|";
+echo in_array(0, $a) ? "yes0" : "no0";
+"#,
+    );
+    assert_eq!(out, vec!["no|yes0"]);
+}
+
+#[test]
+fn array_search_find_missing_with_strict() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = ["10", 20, 30];
+$first = array_search(10, $a, true);
+echo $first === false ? "f" : $first;
+echo array_search("10", $a, true);
+"#,
+        ),
+        &["f0"]
+    );
+}
+
+#[test]
+fn array_filter_use_value_and_key_modes() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$data = ["a" => 1, "b" => 0, "c" => 3, "d" => "0"];
+$vals = array_filter($data, fn($v) => $v, 0);
+$keys = array_filter($data, fn($k) => $k === "a" || $k === "d", ARRAY_FILTER_USE_KEY);
+echo count($vals) . "|" . count($keys);
+"#,
+        ),
+        &["2|2"]
+    );
+}
+
+#[test]
+fn array_fill_keys_collision_keeps_last() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$keys = ["x", "y", "x"];
+$a = array_fill_keys($keys, 0);
+$a["x"] = 9;
+echo $a["x"] . "|" . count($a);
+"#,
+        ),
+        &["9|2"]
+    );
+}
+
+#[test]
+fn array_push_pop_shift_unshift_sequence() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$q = [];
+array_push($q, 1, 2);
+array_unshift($q, 0);
+$last = array_pop($q);
+$first = array_shift($q);
+echo $last . "|" . $first . "|" . implode("-", $q);
+"#,
+        ),
+        &["2|0|1"]
+    );
+}
+
+#[test]
+fn array_merge_union_and_numeric_index_behavior() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = [0 => "a", 1 => "b", "x" => 1];
+$b = [0 => "z", 2 => "c", "y" => 2];
+$m = array_merge($a, $b);
+$u = $a + $b;
+echo $m[0] . $m[1] . $m[2] . $m[3];
+echo "|";
+echo $u[0] . $u[1] . $u["x"] . (array_key_exists("y", $u) ? "y" : "n");
+"#,
+        ),
+        &["abzc|ab1y"]
     );
 }

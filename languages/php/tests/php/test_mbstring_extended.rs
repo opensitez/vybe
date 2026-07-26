@@ -158,4 +158,36 @@ echo count(mb_str_split('a😀'));
 "#,
         ["2"]
     };
+
+    mb_get_info_returns_map => {
+        r#"<?php
+$info = mb_get_info();
+echo is_array($info) ? 'array' : 'none';
+echo '|';
+echo $info['internal_encoding'] === mb_internal_encoding() ? 'ok' : 'bad';
+"#,
+        ["array|ok"]
+    };
+
+    mb_detect_order_set_and_restore => {
+        r#"<?php
+$old = mb_detect_order();
+mb_detect_order(['ASCII', 'UTF-8']);
+$new = mb_detect_order();
+echo in_array('ASCII', $new, true) ? 'set' : 'unset';
+mb_detect_order($old);
+echo '|';
+$restored = mb_detect_order();
+echo is_array($restored) ? 'restored' : 'bad';
+"#,
+        ["set|restored"]
+    };
+
+    mb_scrub_invalid_bytes => {
+        r#"<?php
+$scrubbed = mb_scrub("\xFF", 'UTF-8');
+echo $scrubbed === "\xEF\xBF\xBD" ? 'replaced' : 'other';
+"#,
+        ["replaced"]
+    };
 }

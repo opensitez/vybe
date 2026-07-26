@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Variable variables ────────────────────────────────────────
 
@@ -340,4 +340,53 @@ $const = 'OK';
 echo constant("Status::$const");
 "#,
     );
+}
+
+#[test]
+fn variable_variables_with_nested_reference_names_runtime() {
+    let out = run_prints(
+        r#"<?php
+$field = 'state';
+$prefix = 'app';
+${$prefix . '_' . $field} = 'ready';
+echo $app_state;
+$bucket = [];
+$bucket[$field] = 7;
+$name = 'bucket';
+echo $${$name}['state'];
+"#,
+    );
+    assert_eq!(out, vec!["ready7"]);
+}
+
+#[test]
+fn variable_variables_reference_chain_runtime() {
+    let out = run_prints(
+        r#"<?php
+$value = 1;
+$nameA = 'value';
+$nameB = 'nameA';
+echo ${$nameB} . '|';
+$nameC = $nameB;
+$$nameC = 5;
+echo $value;
+"#,
+    );
+    assert_eq!(out, vec!["1|5"]);
+}
+
+#[test]
+fn variable_function_and_constant_from_namespace_runtime() {
+    let out = run_prints(
+        r#"<?php
+namespace DynVarNS;
+
+function make_value(string $value): string { return "value:$value"; }
+const VALUE = 'v';
+$factory = __NAMESPACE__ . '\\\\make_value';
+echo $factory('x') . '|';
+echo constant(__NAMESPACE__ . '\\\\VALUE');
+"#,
+    );
+    assert_eq!(out, vec!["value:x|v"]);
 }

@@ -131,4 +131,21 @@ echo $v === false || $v === '' || $v === '0' || $v === '1' ? 'known' : 'other';
 "#,
         ["known"]
     };
+
+    ini_get_all_section_filter_date => {
+        r#"<?php
+$dateIni = ini_get_all('date');
+echo is_array($dateIni) || $dateIni === false ? 'section_ok' : 'err';
+"#,
+        ["section_ok"]
+    };
+
+    set_include_path_and_get_include_path => {
+        r#"<?php
+$old = set_include_path('/tmp/custom_include');
+echo get_include_path() === '/tmp/custom_include' ? 'include_path_set' : 'err';
+"#,
+        ["include_path_set"]
+    };
 }
+

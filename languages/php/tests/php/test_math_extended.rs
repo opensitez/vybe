@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Practical geometry ───────────────────────────────────────────
 #[test]
@@ -206,5 +206,77 @@ fn fmod_float_modulo() {
 $r = fmod(10.5, 3.0);
 echo $r;
 "#,
+    );
+}
+
+#[test]
+fn math_abs_and_sign() {
+    assert_eq!(
+        run_prints(r#"<?php echo abs(-15); echo '|'; echo abs(15); "#),
+        vec!["15|15"]
+    );
+}
+
+#[test]
+fn math_round_and_floor_ceil() {
+    assert_eq!(
+        run_prints(r#"<?php echo round(3.6); echo '|'; echo floor(3.6); echo '|'; echo ceil(3.1); "#),
+        vec!["4|3|4"]
+    );
+}
+
+#[test]
+fn math_pow_and_sqrt() {
+    assert_eq!(
+        run_prints(r#"<?php echo pow(3, 4); echo '|'; echo sqrt(81); "#),
+        vec!["81|9"]
+    );
+}
+
+#[test]
+fn math_min_max() {
+    assert_eq!(
+        run_prints(r#"<?php echo min(9, 3, 7); echo '|'; echo max([4, 12, 6]); "#),
+        vec!["3|12"]
+    );
+}
+
+#[test]
+fn math_intdiv_rounding_toward_zero() {
+    assert_eq!(
+        run_prints(r#"<?php echo intdiv(-7, 2); echo '|'; echo intdiv(7, 2); "#),
+        vec!["-3|3"]
+    );
+}
+
+#[test]
+fn math_trig_hypotenuse() {
+    assert_eq!(
+        run_prints(r#"<?php echo hypot(5, 12); "#),
+        vec!["13"]
+    );
+}
+
+#[test]
+fn math_logarithms_consistent() {
+    assert_eq!(
+        run_prints(r#"<?php echo log10(1000); echo '|'; echo log(1); "#),
+        vec!["3|0"]
+    );
+}
+
+#[test]
+fn math_base_conversion_roundtrip() {
+    assert_eq!(
+        run_prints(r#"<?php echo base_convert('1010', 2, 10); echo '|'; echo base_convert('1e', 36, 10); "#),
+        vec!["10|50"]
+    );
+}
+
+#[test]
+fn math_bitwise_not_for_int() {
+    assert_eq!(
+        run_prints(r#"<?php $x = 0b1111; echo ~$x; "#),
+        vec!["-16"]
     );
 }

@@ -375,7 +375,165 @@ $dates = [];
 for ($i = 0; $i < 4; $i++) {
     $dates[] = $start->modify("+$i month")->format('Y-m-d');
 }
+echo implode('|', $dates);
+echo ':' . count($dates);
+"#,
+    );
+}
+
+#[test]
+fn dateperiod_exclude_start_date() {
+    compile_ok(
+        r#"<?php
+$start = new DateTimeImmutable('2024-01-01');
+$end = new DateTimeImmutable('2024-01-04');
+$period = new DatePeriod($start, new DateInterval('P1D'), $end, DatePeriod::EXCLUDE_START_DATE);
+$dates = [];
+foreach ($period as $dt) { $dates[] = $dt->format('Y-m-d'); }
 echo implode(',', $dates);
+"#,
+    );
+}
+
+#[test]
+fn datetime_modify_with_relative_words() {
+    compile_ok(
+        r#"<?php
+$dt = new DateTimeImmutable('2024-01-15 10:00:00');
+echo $dt->modify('first day of next month')->format('Y-m-d');
+echo '|' . $dt->modify('midnight')->format('H:i:s');
+"#,
+    );
+}
+
+#[test]
+fn datetime_interval_roundtrip_iso8601() {
+    compile_ok(
+        r#"<?php
+$interval = new DateInterval('P1Y2M3DT4H5M6S');
+$spec = $interval->format('P%yY%mM%dDT%hH%iM%sS');
+echo $spec;
+echo '|' . (DateInterval::createFromDateString('2 weeks') !== false ? 'from_string' : 'from_string_failed');
+echo '|' . (new DateTimeImmutable('2024-01-01'))->add($interval)->format('Y');
+"#,
+    );
+}
+
+#[test]
+fn datetime_timezone_list_contains_tzid() {
+    compile_ok(
+        r#"<?php
+$zones = DateTimeZone::listIdentifiers();
+echo in_array('UTC', $zones) ? 'has-utc' : 'missing-utc';
+echo '|' . (DateTimeZone::listIdentifiers(DateTimeZone::AMERICA)[0] !== '' ? 'region' : 'no-region');
+echo '|' . (new DateTimeZone('UTC'))->getName();
+"#,
+    );
+}
+
+#[test]
+fn datetime_formatting_fallback_tokens() {
+    compile_ok(
+        r#"<?php
+$dt = new DateTimeImmutable('2024-02-29 23:59:59', new DateTimeZone('UTC'));
+echo $dt->format('c');
+echo '|' . $dt->format('Y-m-d');
+echo '|' . $dt->format('l');
+echo '|' . $dt->format('u');
+"#,
+    );
+}
+
+#[test]
+fn date_parse_keywords() {
+    compile_ok(
+        r#"<?php
+$dt = DateTime::createFromFormat('U', '1700000000');
+echo $dt instanceof DateTime ? 'date-time' : 'bad';
+echo '|' . strtotime('2024-12-31 23:59:59');
+echo '|' . date('Y-m-d', strtotime('2024-01-01 +1 week'));
+"#,
+    );
+}
+
+#[test]
+fn date_period_set_include_start_date_option() {
+    compile_ok(
+        r#"<?php
+$start = new DateTimeImmutable('2024-01-01');
+$period = new DatePeriod($start, new DateInterval('P1D'), 3, DatePeriod::INCLUDE_END_DATE);
+$count = 0;
+foreach ($period as $dt) { $count++; }
+echo $count;
+"#,
+    );
+}
+
+#[test]
+fn date_period_iso8601() {
+    compile_ok(
+        r#"<?php
+$period = new DatePeriod('R3/2024-01-01T00:00:00Z/P1D');
+$days = [];
+foreach ($period as $dt) { $days[] = $dt->format('Y-m-d'); }
+echo implode('|', $days);
+"#,
+    );
+}
+
+#[test]
+fn date_interval_from_string_days() {
+    compile_ok(
+        r#"<?php
+$i = DateInterval::createFromDateString('3 weeks + 2 days');
+echo $i->y . ':' . $i->m . ':' . $i->d;
+"#,
+    );
+}
+
+#[test]
+fn datetime_format_with_timezone_object() {
+    compile_ok(
+        r#"<?php
+$tz = new DateTimeZone('America/Chicago');
+$dt = new DateTimeImmutable('2024-01-01 12:00:00', $tz);
+echo $dt->format('c');
+"#,
+    );
+}
+
+#[test]
+fn datetime_set_timezone_and_clone() {
+    compile_ok(
+        r#"<?php
+$dt = new DateTimeImmutable('2024-01-01 08:00:00', new DateTimeZone('UTC'));
+$ny = new DateTimeZone('America/New_York');
+$local = $dt->setTimezone($ny);
+echo $dt->format('Y-m-d H:i') . ':' . $local->format('Y-m-d H:i');
+"#,
+    );
+}
+
+#[test]
+fn datetimezone_get_offset_for_fixed_date() {
+    compile_ok(
+        r#"<?php
+$tz = new DateTimeZone('UTC');
+$dt = new DateTimeImmutable('2024-03-01 00:00:00', $tz);
+echo $tz->getOffset($dt);
+"#,
+    );
+}
+
+#[test]
+fn date_default_timezone_handling() {
+    compile_ok(
+        r#"<?php
+$original = date_default_timezone_get();
+date_default_timezone_set('Europe/London');
+$tz = date_default_timezone_get();
+echo $tz === 'Europe/London' ? 'ok' : 'no';
+date_default_timezone_set($original);
 "#,
     );
 }

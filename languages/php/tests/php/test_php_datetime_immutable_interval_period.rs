@@ -135,3 +135,54 @@ foreach ($period as $dt) {
 "#,
     );
 }
+
+#[test]
+fn test_php_dateperiod_include_start_date_default() {
+    let out = run_prints(
+        r#"<?php
+$start = new DateTimeImmutable('2024-01-01');
+$interval = new DateInterval('P2D');
+$end = new DateTimeImmutable('2024-01-06');
+$period = new DatePeriod($start, $interval, $end);
+$count = 0;
+foreach ($period as $dt) { $count++; }
+echo $count;
+"#,
+    );
+    assert_eq!(out, vec!["3"]);
+}
+
+#[test]
+fn test_php_dateinterval_component_boundaries() {
+    let out = run_prints(
+        r#"<?php
+$i = new DateInterval('P1Y2M3DT4H5M6S');
+echo $i->y . $i->m . $i->d . $i->h . $i->i . $i->s;
+"#,
+    );
+    assert_eq!(out, vec!["123456"]);
+}
+
+#[test]
+fn test_php_datetimeimmutable_chain_does_not_mutate() {
+    let out = run_prints(
+        r#"<?php
+$a = new DateTimeImmutable('2024-01-01');
+$b = $a->add(new DateInterval('P1D'))->modify('+1 day')->setTime(9, 0);
+echo $a->format('Y-m-d') . '|' . $b->format('Y-m-d H:i:s');
+"#,
+    );
+    assert_eq!(out, vec!["2024-01-01|2024-01-03 09:00:00"]);
+}
+
+#[test]
+fn test_php_datetime_timestamp_set_roundtrip() {
+    let out = run_prints(
+        r#"<?php
+$d = new DateTimeImmutable('2024-01-01 00:00:00', new DateTimeZone('UTC'));
+$d2 = $d->setTimestamp(0);
+echo $d2->format('Y-m-d');
+"#,
+    );
+    assert_eq!(out, vec!["1970-01-01"]);
+}

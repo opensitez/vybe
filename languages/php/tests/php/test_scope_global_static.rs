@@ -256,6 +256,76 @@ echo $total;
     );
 }
 
+#[test]
+fn global_reference_alias_in_nested_function() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$seed = 1;
+function set_seed(int $v): void {
+    global $seed;
+    $r = &$seed;
+    $r = $v;
+}
+set_seed(7);
+echo $seed;
+"#
+        ),
+        vec!["7"]
+    );
+}
+
+#[test]
+fn global_in_closure_with_reference() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$token = 'init';
+$writer = function(string $value): void {
+    global $token;
+    $token = $value;
+};
+$writer('done');
+echo $token;
+"#
+        ),
+        vec!["done"]
+    );
+}
+
+#[test]
+fn static_property_isolation_in_methods() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Counter {
+    public function inc(): int { static $n = 0; return ++$n; }
+}
+$a = new Counter();
+$b = new Counter();
+echo $a->inc() . $a->inc();
+echo '|';
+echo $b->inc();
+"#
+        ),
+        vec!["12|3"]
+    );
+}
+
+#[test]
+fn static_in_multiple_functions_with_same_name() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+function first(): int { static $n = 0; return ++$n; }
+function second(): int { static $n = 5; return ++$n; }
+echo first() . '|' . first() . '|' . second();
+"#
+        ),
+        vec!["1|2|6"]
+    );
+}
+
 crate::php_cases! {
     static_local_variable_increments_per_call => {
         r#"<?php

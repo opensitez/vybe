@@ -129,3 +129,61 @@ echo $sentence;
 "#,
     );
 }
+
+#[test]
+fn test_php_array_count_values_string_number_coercion() {
+    let out = run_prints(
+        r#"<?php
+$values = [1, "1", 2, "2", "2", 1];
+$counts = array_count_values($values);
+echo "1=" . $counts["1"] . " ";
+echo "2=" . $counts["2"];
+"#,
+    );
+    assert_eq!(out, vec!["1=3 2=3"]);
+}
+
+#[test]
+fn test_php_array_fill_negative_count_throws() {
+    let out = run_prints(
+        r#"<?php
+try {
+    array_fill(0, -2, "x");
+    echo "no-error";
+} catch (ValueError $e) {
+    echo "value-error";
+}
+"#,
+    );
+    assert_eq!(out, vec!["value-error"]);
+}
+
+#[test]
+fn test_php_array_udiff_with_comparator_value_and_key() {
+    let out = run_prints(
+        r#"<?php
+$a1 = ["a" => 1, "b" => 2, "c" => 3];
+$a2 = ["a" => 1, "B" => 2, "c" => 4];
+$diff = array_udiff_assoc(
+    $a1,
+    $a2,
+    fn($v1, $v2) => $v1 <=> $v2
+);
+echo count($diff) . "|" . implode(",", $diff);
+"#,
+    );
+    assert_eq!(out, vec!["2|2,3"]);
+}
+
+#[test]
+fn test_php_array_intersect_assoc_preserves_key_order() {
+    let out = run_prints(
+        r#"<?php
+$a1 = ["x" => 1, "y" => 2, "z" => 3];
+$a2 = ["y" => 2, "x" => 1];
+$i = array_intersect_assoc($a1, $a2);
+echo implode(",", array_keys($i)) . ":" . implode(",", $i);
+"#,
+    );
+    assert_eq!(out, vec!["x,y:1,2"]);
+}

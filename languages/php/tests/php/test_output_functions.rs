@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── printf with multiple format specifiers ────────────────────
 
@@ -209,5 +209,60 @@ ob_end_clean();
 $l3 = ob_get_level();
 echo "$l0,$l1,$l2,$l3";
 "#,
+    );
+}
+
+#[test]
+fn printf_writes_output_and_reports_bytes_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$written = printf('%s:%d', 'age', 7);
+echo '|' . $written;
+"#,
+        ),
+        vec!["age:7|6"]
+    );
+}
+
+#[test]
+fn vprintf_outputs_and_reports_bytes_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$args = ['score', 42];
+$written = vprintf('%s=%d', $args);
+echo '|' . $written;
+"#,
+        ),
+        vec!["score=42|8"]
+    );
+}
+
+#[test]
+fn fprintf_to_memory_stream_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$stream = fopen('php://memory', 'r+');
+fprintf($stream, 'value=%d', 11);
+rewind($stream);
+$data = stream_get_contents($stream);
+echo $data;
+"#,
+        ),
+        vec!["value=11"]
+    );
+}
+
+#[test]
+fn output_functions_with_escape_sequences_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo sprintf("x\\n|%s", "y");
+"#,
+        ),
+        vec!["x", "|y"]
     );
 }

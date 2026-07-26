@@ -207,9 +207,222 @@ class Buffer implements ReadWriteable {
     public function write(string $data): void { $this->content .= $data; }
 }
 
-$b = new Buffer();
+    $b = new Buffer();
 $b->write("hello");
 echo $b->read();
 "#,
     );
+}
+
+#[test]
+fn test_php_abstract_method_dispatch_runtime() {
+    let out = run_prints(
+        r#"<?php
+abstract class Processor {
+    abstract protected function transform(string $input): string;
+    public function run(string $input): string {
+        return $this->transform($input) . '!';
+    }
+}
+
+class UpperProcessor extends Processor {
+    protected function transform(string $input): string {
+        return strtoupper($input);
+    }
+}
+
+echo (new UpperProcessor())->run('ok');
+"#,
+    );
+    assert_eq!(out, vec!["OK!"]);
+}
+
+#[test]
+fn test_php_static_binding_factory_runtime() {
+    let out = run_prints(
+        r#"<?php
+abstract class Base {
+    public function __construct(public string $name) {}
+    public static function make(string $name): static {
+        return new static($name);
+    }
+}
+class ChildBase extends Base {}
+echo ChildBase::make('x')->name;
+"#,
+    );
+    assert_eq!(out, vec!["x"]);
+}
+
+#[test]
+fn test_php_trait_precedence_runtime() {
+    let out = run_prints(
+        r#"<?php
+trait A {
+    public function label(): string { return 'A'; }
+}
+trait B {
+    public function label(): string { return 'B'; }
+}
+class Item {
+    use A, B { B::label insteadof A; }
+}
+echo (new Item())->label();
+"#,
+    );
+    assert_eq!(out, vec!["B"]);
+}
+
+#[test]
+fn test_php_final_class_as_dependency_runtime() {
+    compile_ok(
+        r#"<?php
+final class FinalService {
+    public function execute(): string { return 'ok'; }
+}
+class Wrapped {
+    public function call(FinalService $s): string { return $s->execute(); }
+}
+$w = new Wrapped();
+echo $w->call(new FinalService());
+"#,
+    );
+}
+
+#[test]
+fn test_php_interface_default_method_style_polymorphism() {
+    let out = run_prints(
+        r#"<?php
+interface Sink {
+    public function label(): string;
+}
+class A implements Sink {
+    public function label(): string { return 'A'; }
+}
+class B implements Sink {
+    public function label(): string { return 'B'; }
+}
+$xs = [new A(), new B()];
+echo $xs[0]->label() . $xs[1]->label();
+"#,
+    );
+    assert_eq!(out, vec!["AB"]);
+}
+
+#[test]
+fn test_php_self_static_class_binding_runtime() {
+    let out = run_prints(
+        r#"<?php
+abstract class BaseType {
+    public static function selfClass(): string { return self::class; }
+    public static function staticClass(): string { return static::class; }
+}
+class ChildType extends BaseType {}
+echo BaseType::selfClass();
+echo '|';
+echo BaseType::staticClass();
+echo '|';
+echo ChildType::selfClass();
+echo '|';
+echo ChildType::staticClass();
+"#,
+    );
+    assert_eq!(out, vec!["BaseType|BaseType|BaseType|ChildType"]);
+}
+
+#[test]
+fn test_php_abstract_template_method_runtime() {
+    let out = run_prints(
+        r#"<?php
+abstract class Workflow {
+    abstract protected function stepA(): string;
+    abstract protected function stepB(): string;
+    final public function run(): string {
+        return $this->stepA() . '>' . $this->stepB();
+    }
+}
+class Job extends Workflow {
+    protected function stepA(): string { return 'prepare'; }
+    protected function stepB(): string { return 'execute'; }
+}
+echo (new Job())->run();
+"#,
+    );
+    assert_eq!(out, vec!["prepare>execute"]);
+}
+
+#[test]
+fn test_php_abstract_property_visibility_preserved_runtime() {
+    compile_ok(
+        r#"<?php
+abstract class UserEntity {
+    public function __construct(protected string $name) {}
+    protected function getName(): string { return $this->name; }
+}
+class CustomerEntity extends UserEntity {
+    public function label(): string { return $this->getName(); }
+}
+echo (new CustomerEntity('acme'))->label();
+"#,
+    );
+}
+
+#[test]
+fn test_php_trait_alias_runtime() {
+    let out = run_prints(
+        r#"<?php
+trait First {
+    public function kind(): string { return 'first'; }
+}
+trait Second {
+    public function kind(): string { return 'second'; }
+}
+class Item {
+    use First, Second {
+        First::kind insteadof Second;
+        Second::kind as secondaryKind;
+    }
+}
+$item = new Item();
+echo $item->kind();
+echo '|';
+echo $item->secondaryKind();
+"#,
+    );
+    assert_eq!(out, vec!["first|second"]);
+}
+
+#[test]
+fn test_php_parent_and_static_in_chain_runtime() {
+    let out = run_prints(
+        r#"<?php
+class A {
+    public function who(): string { return 'A'; }
+}
+class B extends A {
+    public function who(): string { return 'B' . parent::who(); }
+}
+class C extends B {
+    public function who(): string { return 'C' . parent::who(); }
+}
+echo (new C())->who();
+"#,
+    );
+    assert_eq!(out, vec!["CBA"]);
+}
+
+#[test]
+fn test_php_final_class_dependency_runtime() {
+    let out = run_prints(
+        r#"<?php
+interface Repository { public function id(): string; }
+final class SqlRepository implements Repository {
+    public function __construct(private string $name) {}
+    public function id(): string { return $this->name; }
+}
+function describe(Repository $repo): string { return $repo->id(); }
+echo describe(new SqlRepository('main'));
+"#,
+    );
+    assert_eq!(out, vec!["main"]);
 }

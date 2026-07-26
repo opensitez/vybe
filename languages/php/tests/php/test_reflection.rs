@@ -365,3 +365,42 @@ echo $doc !== false ? 'has doc' : 'no doc';
 "#,
     );
 }
+
+#[test]
+fn reflection_class_in_namespace() {
+    compile_ok(
+        r#"<?php
+namespace App\Services;
+class UserProcessor {}
+$rc = new \ReflectionClass(UserProcessor::class);
+echo $rc->inNamespace() ? 'in_ns' : 'no';
+echo ':' . $rc->getNamespaceName();
+"#,
+    );
+}
+
+#[test]
+fn reflection_class_is_instantiable() {
+    compile_ok(
+        r#"<?php
+abstract class Abs {}
+class Concrete {}
+$r1 = new ReflectionClass(Abs::class);
+$r2 = new ReflectionClass(Concrete::class);
+echo $r1->isInstantiable() ? 'yes' : 'no';
+echo $r2->isInstantiable() ? 'yes' : 'no';
+"#,
+    );
+}
+
+#[test]
+fn reflection_function_is_closure() {
+    compile_ok(
+        r#"<?php
+$f = function() {};
+$rf = new ReflectionFunction($f);
+echo $rf->isClosure() ? 'closure' : 'function';
+"#,
+    );
+}
+

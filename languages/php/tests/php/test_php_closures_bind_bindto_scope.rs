@@ -161,3 +161,105 @@ echo $add5(10);
 "#,
     );
 }
+
+#[test]
+fn test_php_closure_reference_capture_increments_shared_state() {
+    let out = run_prints(
+        r#"<?php
+$count = 1;
+$inc = function() use (&$count) { $count += 2; return $count; };
+echo $inc();
+echo $inc();
+"#,
+    );
+    assert_eq!(out, vec!["3", "5"]);
+}
+
+#[test]
+fn test_php_closure_value_capture_uses_snapshot_not_live_value() {
+    let out = run_prints(
+        r#"<?php
+$x = 1;
+$snap = function() use ($x) { return $x; };
+$x = 9;
+echo $snap();
+"#,
+    );
+    assert_eq!(out, vec!["1"]);
+}
+
+#[test]
+fn test_php_closure_use_global_access_inside_nested_scope() {
+    let out = run_prints(
+        r#"<?php
+$g = 'outside';
+$fn = function() {
+    global $g;
+    return $g;
+};
+$g = 'inside';
+echo $fn();
+"#,
+    );
+    assert_eq!(out, vec!["inside"]);
+}
+
+#[test]
+fn test_php_closure_static_forbids_this() {
+    let out = run_prints(
+        r#"<?php
+$fn = static function() { return isset($this); };
+echo $fn();
+"#,
+    );
+    assert_eq!(out, vec![""]);
+}
+
+#[test]
+fn test_php_closure_bindto_private_method_access() {
+    let out = run_prints(
+        r#"<?php
+class Vault {
+    private function secret(): string { return "locked"; }
+}
+$vault = new Vault();
+$fn = function() { return $this->secret(); };
+$bound = $fn->bindTo($vault, Vault::class);
+echo $bound();
+"#,
+    );
+    assert_eq!(out, vec!["locked"]);
+}
+
+#[test]
+fn test_php_closure_bind_to_namespace_scope() {
+    let out = run_prints(
+        r#"<?php
+namespace ScopeDemo {
+    class ScopeClass {
+        private const TOKEN = 'ns-token';
+        public function token(): string {
+            $fn = function() { return self::TOKEN; };
+            return $fn->call($this);
+        }
+    }
+    $obj = new ScopeClass();
+    echo $obj->token();
+}
+"#,
+    );
+    assert_eq!(out, vec!["ns-token"]);
+}
+
+#[test]
+fn test_php_closure_call_with_bound_parameters_in_runtime() {
+    let out = run_prints(
+        r#"<?php
+function scale(int $x, int $factor): int { return $x * $factor; }
+$closure = function(int $x, int $factor) { return $x * $factor; };
+$bound = $closure->bindTo(null, null);
+echo $bound(2, 4);
+"#,
+    );
+    assert_eq!(out, vec!["8"]);
+}

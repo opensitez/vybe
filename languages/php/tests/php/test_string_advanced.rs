@@ -863,3 +863,231 @@ echo "\n";
         &["2"]
     );
 }
+
+#[test]
+fn strpos_zero_position_vs_false_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strpos("abcdef", "a") === 0 ? "zero" : "no";
+echo "\n";
+echo strpos("abcdef", "z") === false ? "missing" : "found";
+"#
+        ),
+        &["zero", "missing"]
+    );
+}
+
+#[test]
+fn strrpos_negative_offset_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strrpos("ababc", "ab", -4);
+echo "\n";
+echo strripos("AbAbC", "ab", -4);
+"#
+        ),
+        &["2", "2"]
+    );
+}
+
+#[test]
+fn strstr_not_found_returns_false_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$value = strstr("hello", "z");
+if ($value === false) {
+    echo "nf";
+} else {
+    echo "found";
+}
+"#
+        ),
+        &["nf"]
+    );
+}
+
+#[test]
+fn strrchr_no_match_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strrchr("abcdef", "z") === false ? "missing" : "found";
+echo "\n";
+echo strrchr("abc/def", "/");
+"#,
+        ),
+        &["missing", "/def"]
+    );
+}
+
+#[test]
+fn sprintf_with_precision_and_sign_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo sprintf("%+d", 12);
+echo "\n";
+echo sprintf("% 06d", 12);
+echo "\n";
+echo sprintf("%'_'9d", 42);
+"# 
+        ),
+        &["+12", "000012", "_______42"]
+    );
+}
+
+#[test]
+fn trim_with_unicode_and_multiline_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo trim(" \n\tHello World\t\n");
+echo "\n";
+echo trim("xxHelloxx", "x");
+echo "\n";
+echo trim("xyxxyx", "xy");
+"#
+        ),
+        &["Hello World", "Hello", ""]
+    );
+}
+
+#[test]
+fn strpos_negative_offset_empty_match_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strpos("abcabc", "a", -4) === 2 ? "pos2" : "no";
+echo "\n";
+echo strpos("abc", "") === 0 ? "empty-zero" : "non-zero";
+"#
+        ),
+        &["pos2", "empty-zero"]
+    );
+}
+
+#[test]
+fn strtr_unicode_map_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strtr("café", ['é' => 'e', 'á' => 'a']);
+echo "\n";
+echo strtr("abcde", "abc", "123");
+"#
+        ),
+        &["cafe", "123de"]
+    );
+}
+
+#[test]
+fn str_getcsv_limits_and_empty_fields_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$v = str_getcsv("a,,c,");
+echo count($v);
+echo "|";
+echo $v[1];
+echo "|";
+echo $v[3];
+echo "\n";
+$u = str_getcsv('"a","b","c"', ',', '"', '\\');
+echo $u[2];
+echo "|";
+echo implode('-', $u);
+"#
+        ),
+        &["4||", "c", "c|a-b-c"]
+    );
+}
+
+#[test]
+fn string_compare_unicode_falsey_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strcmp("", "") === 0 ? "both_empty" : "diff";
+echo "\n";
+echo strcasecmp("ABC", "abc") === 0 ? "ci" : "noc";
+echo "\n";
+echo substr_compare("abcdef", "ab", 0, 0);
+"#
+        ),
+        &["both_empty", "ci", "0"]
+    );
+}
+
+#[test]
+fn str_word_count_empty_subject_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo str_word_count('');
+echo '|';
+echo str_word_count('a   b', 2);
+"#
+        ),
+        &["0|2"]
+    );
+}
+
+#[test]
+fn strpbrk_hunt_charset_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo (strpbrk('hello@example.com', '@.') === false) ? 'no' : 'yes';
+echo '|';
+echo (strpbrk('abcdef', 'xyz') === false) ? 'none' : 'found';
+"#
+        ),
+        &["yes|none"]
+    );
+}
+
+#[test]
+fn strcoll_numeric_string_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strcoll('2', '10');
+echo '|';
+echo strcoll('a', 'A');
+"#
+        ),
+        &["-1|1"]
+    );
+}
+
+#[test]
+fn strtr_overlapping_replacements_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strtr('abc', ['ab' => 'x', 'bc' => 'y']);
+echo '|';
+echo strtr('aaaa', 'a', 'b');
+"#
+        ),
+        &["xc|bbbb"]
+    );
+}
+
+#[test]
+fn str_getcsv_escaping_and_delimiter_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$fields = str_getcsv('a,"b\"b",c', ',', '"');
+echo count($fields);
+echo '|';
+echo $fields[1];
+"#
+        ),
+        &["3|b\"b"]
+    );
+}

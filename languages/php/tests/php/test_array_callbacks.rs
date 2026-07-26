@@ -187,4 +187,158 @@ echo array_search(2, ['a' => 1, 'b' => 2]);
 "#,
         ["b"]
     };
+
+    array_map_captures_outer_sum => {
+        r#"<?php
+$numbers = [1, 2, 3];
+$base = 10;
+$mapped = array_map(fn($n) => $n + $base, $numbers);
+echo implode(',', $mapped);
+"#,
+        ["11,12,13"]
+    };
+
+    array_filter_use_key_mode => {
+        r#"<?php
+$filtered = array_filter(['a' => 1, 'bb' => 2, 'ccc' => 3], fn($k) => strlen($k) > 1, ARRAY_FILTER_USE_KEY);
+echo implode(',', array_keys($filtered));
+"#,
+        ["bb,ccc"]
+    };
+
+    array_filter_use_both_key_and_value => {
+        r#"<?php
+$filtered = array_filter(
+    ['a' => 1, 'b' => 0, 'cc' => 3],
+    fn($v, $k) => $v === 1 || $k === 'cc',
+    ARRAY_FILTER_USE_BOTH
+);
+echo implode(',', array_keys($filtered));
+"#,
+        ["a,cc"]
+    };
+
+    array_map_with_null_callback_zip => {
+        r#"<?php
+$letters = ['a', 'b', 'c'];
+$numbers = [1, 2, 3];
+$zipped = array_map(null, $letters, $numbers);
+echo json_encode($zipped);
+"#,
+        ["[[\"a\",1],[\"b\",2],[\"c\",3]]"]
+    };
+
+    array_walk_with_key_and_data => {
+        r#"<?php
+$items = ['x' => 1, 'y' => 2];
+$factor = 5;
+array_walk($items, function(&$v, $k, $factor) {
+    $v *= $factor;
+    if ($k === 'x') {
+        $v += 1;
+    }
+}, $factor);
+echo implode('|', $items);
+"#,
+        ["6|10"]
+    };
+
+    array_reduce_initial_non_trivial_seed => {
+        r#"<?php
+$result = array_reduce([1, 2, 3], fn($c, $n) => $c . ':' . $n, 'seed');
+echo $result;
+"#,
+        ["seed:1:2:3"]
+    };
+
+    array_map_with_empty_input_is_empty => {
+        r#"<?php
+echo json_encode(array_map(fn($n) => $n * 2, []));
+"#,
+        ["[]"]
+    };
+
+    array_map_truncates_to_shortest_input => {
+        r#"<?php
+$a = [1, 2, 3];
+$b = [10, 20];
+$mapped = array_map(fn($x, $y) => $x + $y, $a, $b);
+echo json_encode($mapped);
+"#,
+        ["[11,22]"]
+    };
+
+    array_filter_default_keeps_only_truthy => {
+        r#"<?php
+echo implode(',', array_filter([0, 1, false, 'php', '', 5, null, '0']));
+"#,
+        ["1,php,5"]
+    };
+
+    array_filter_key_callback_skips_numeric_keys => {
+        r#"<?php
+$items = ['0' => 1, 'a' => 2, 3 => 3, 'b' => 4];
+$filtered = array_filter($items, fn($k) => ctype_alpha((string)$k), ARRAY_FILTER_USE_KEY);
+echo implode(',', array_keys($filtered));
+"#,
+        ["a,b"]
+    };
+
+    array_filter_with_empty_callback_and_both_modes => {
+        r#"<?php
+$items = ['x' => 0, 'y' => 1, 'z' => 2];
+$filtered = array_filter(
+    $items,
+    fn($v, $k) => $v > 0 || $k === 'x',
+    ARRAY_FILTER_USE_BOTH
+);
+echo implode(',', array_keys($filtered));
+"#,
+        ["x,z"]
+    };
+
+    array_reduce_accumulates_objects_by_reference => {
+        r#"<?php
+$items = [[1], [2], [3]];
+$result = array_reduce($items, function($carry, $item) {
+    $carry[] = $item[0] * 2;
+    return $carry;
+}, []);
+echo implode(',', $result);
+"#,
+        ["2,4,6"]
+    };
+
+    array_walk_recursive_preserves_nested_keys => {
+        r#"<?php
+$tree = ['a' => ['count' => 1], 'b' => ['count' => 2]];
+array_walk_recursive($tree, function(&$value, $key) {
+    if (is_numeric($value)) {
+        $value += 1;
+    }
+});
+echo $tree['a']['count'];
+echo $tree['b']['count'];
+"#,
+        ["23"]
+    };
+
+    array_map_with_null_preserves_shape => {
+        r#"<?php
+$out = array_map(null, [1, 2], ['a', 'b', 'c']);
+echo json_encode($out);
+"#,
+        ["[[1,\"a\"],[2,\"b\"]]"]
+    };
+
+    array_walk_with_data_argument => {
+        r#"<?php
+$items = ['x' => 1, 'y' => 2];
+array_walk($items, function(&$v, $k, $scale) {
+    $v = $v * $scale;
+}, 3);
+echo implode('|', $items);
+"#,
+        ["3|6"]
+    };
 }

@@ -85,6 +85,69 @@ echo "Recurrences: " . $period->getRecurrences();
 }
 
 #[test]
+fn test_php_dateperiod_recurrence_count_zero() {
+    let out = run_prints(
+        r#"<?php
+$start = new DateTimeImmutable('2024-01-01');
+$interval = new DateInterval('P1D');
+$period = new DatePeriod($start, $interval, 0);
+echo $period->getRecurrences();
+"#,
+    );
+    assert_eq!(out, vec!["0"]);
+}
+
+#[test]
+fn test_php_dateperiod_hourly_stepping_counted() {
+    let out = run_prints(
+        r#"<?php
+$start = new DateTimeImmutable('2024-05-12 00:00:00');
+$interval = new DateInterval('PT6H');
+$end = new DateTimeImmutable('2024-05-13 00:00:00');
+$period = new DatePeriod($start, $interval, $end);
+$count = 0;
+foreach ($period as $_dt) { $count++; }
+echo $count;
+"#,
+    );
+    assert_eq!(out, vec!["4"]);
+}
+
+#[test]
+fn test_php_dateperiod_with_include_end_date() {
+    let out = run_prints(
+        r#"<?php
+$start = new DateTimeImmutable('2024-01-01');
+$interval = new DateInterval('P1D');
+$end = new DateTimeImmutable('2024-01-04');
+$period = new DatePeriod($start, $interval, $end, DatePeriod::INCLUDE_END_DATE);
+$dates = [];
+foreach ($period as $dt) { $dates[] = $dt->format('Y-m-d'); }
+echo implode('|', $dates);
+"#,
+    );
+    assert_eq!(out, vec!["2024-01-01|2024-01-02|2024-01-03|2024-01-04"]);
+}
+
+#[test]
+fn test_php_dateperiod_timezone_offset_preserved() {
+    let out = run_prints(
+        r#"<?php
+$tz = new DateTimeZone('Europe/Paris');
+$start = new DateTimeImmutable('2024-01-01', $tz);
+$period = new DatePeriod($start, new DateInterval('P1D'), 2);
+$tzName = null;
+foreach ($period as $dt) {
+    $tzName = $dt->getTimezone()->getName();
+    break;
+}
+echo $tzName;
+"#,
+    );
+    assert_eq!(out, vec!["Europe/Paris"]);
+}
+
+#[test]
 fn test_php_dateperiod_hourly_stepping() {
     compile_ok(
         r#"<?php

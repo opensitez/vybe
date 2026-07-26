@@ -123,3 +123,84 @@ if (function_exists('array_is_list')) {
 "#,
     );
 }
+
+#[test]
+fn test_php_array_key_casting_edge_cases() {
+    let out = run_prints(
+        r#"<?php
+$a = [1 => 'num', '1' => 'strnum', 1.2 => 'float', 'foo' => 'bar'];
+echo array_key_exists(1, $a) ? 1 : 0;
+echo '|';
+echo $a[1];
+echo '|';
+echo $a['foo'];
+"#,
+    );
+    assert_eq!(out, vec!["1|float|bar"]);
+}
+
+#[test]
+fn test_php_array_key_overwrite_order_with_push() {
+    let out = run_prints(
+        r#"<?php
+$a = [];
+$a['x'] = 1;
+$a[0] = 'zero';
+$a[] = 'append';
+echo count($a) . ':' . implode('|', $a);
+"#,
+    );
+    assert_eq!(out, vec!["3:1|zero|append"]);
+}
+
+#[test]
+fn test_php_array_chunk_preserve_keys() {
+    let out = run_prints(
+        r#"<?php
+$a = ['a' => 1, 'b' => 2, 'c' => 3, 'd' => 4];
+$chunks = array_chunk($a, 2, true);
+echo $chunks[0]['a'] . '|' . $chunks[0]['b'];
+echo '|' . (isset($chunks[1]['d']) ? $chunks[1]['d'] : 'none');
+"#,
+    );
+    assert_eq!(out, vec!["1|2|4"]);
+}
+
+#[test]
+fn test_php_array_search_and_flip_reduction() {
+    let out = run_prints(
+        r#"<?php
+$roles = ['read', 'write', 'read', 'admin'];
+$pos = array_search('admin', $roles, true);
+$flipped = array_flip($roles);
+echo $pos . '|';
+echo $flipped['read'];
+"#,
+    );
+    assert_eq!(out, vec!["3|0"]);
+}
+
+#[test]
+fn test_php_array_key_casting_bool_numeric() {
+    let out = run_prints(
+        r#"<?php
+$a = [];
+$a[true] = 't';
+$a[false] = 'f';
+echo $a[1] . '|' . $a[0] . '|' . count($a);
+"#,
+    );
+    assert_eq!(out, vec!["t|f|2"]);
+}
+
+#[test]
+fn test_php_array_key_first_last_empty_array() {
+    let out = run_prints(
+        r#"<?php
+$a = [];
+echo (array_key_first($a) === null ? 'first-null' : 'first-set') . '|';
+echo (array_key_last($a) === null ? 'last-null' : 'last-set');
+"#,
+    );
+    assert_eq!(out, vec!["first-null|last-null"]);
+}

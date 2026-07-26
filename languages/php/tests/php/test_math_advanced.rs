@@ -262,3 +262,124 @@ echo is_finite(42) ? "finite" : "not";
         &["naninffinite"]
     );
 }
+
+#[test]
+fn exponentiation_operator_negative_exponent() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo 2 ** 3;
+echo "\n";
+echo 2 ** 0;
+echo "\n";
+echo 2 ** -1;
+echo "\n";
+echo 9 ** 0.5;
+"#
+        ),
+        vec!["8", "1", "0.5", "3"]
+    );
+}
+
+#[test]
+fn pow_and_exponentiation_precedence() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo 2 + 3 ** 2;
+echo "\n";
+echo (2 + 3) ** 2;
+"#
+        ),
+        vec!["11", "25"]
+    );
+}
+
+#[test]
+fn fmod_sign_behavior() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo fmod(8.5, 2.5) . "\n";
+echo fmod(-8.5, 2.5) . "\n";
+echo fmod(8.5, -2.5) . "\n";
+echo fmod(-8.5, -2.5) . "\n";
+"#
+        ),
+        vec!["1", "-1", "1", "-1"]
+    );
+}
+
+#[test]
+fn float_division_quotients() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo (5 / 2) . "\n";
+echo (5.0 / 2) . "\n";
+echo (-5 / 2) . "\n";
+echo (5 / -2) . "\n";
+"#
+        ),
+        vec!["2.5", "2.5", "-2.5", "-2.5"]
+    );
+}
+
+#[test]
+fn modf_integer_and_fraction() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+[$frac, $int] = modf(3.25);
+echo $frac . "\n";
+echo $int . "\n";
+[$frac2, $int2] = modf(-7.75);
+echo $frac2 . "\n";
+echo $int2 . "\n";
+"#
+        ),
+        vec!["0.25", "3", "-0.75", "-7"]
+    );
+}
+
+#[test]
+fn math_constants_reference() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo (round(M_2_PI, 8) == 0.63661977 ? 'ok' : 'bad') . "\n";
+echo (round(M_SQRT3, 8) == 1.73205081 ? 'ok' : 'bad') . "\n";
+echo (M_LOG10E > 0 && M_LN10 > 0 ? 'ok' : 'bad') . "\n";
+echo (M_LN2 < M_LN10 ? 'ok' : 'bad') . "\n";
+"#
+        ),
+        vec!["ok", "ok", "ok", "ok"]
+    );
+}
+
+#[test]
+fn degree_radian_roundtrip_precision() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo round(rad2deg(deg2rad(45)), 12) . "\n";
+echo round(deg2rad(rad2deg(M_PI)), 12) . "\n";
+"#
+        ),
+        vec!["45", "3.14159265359"]
+    );
+}
+
+#[test]
+fn number_format_currency_style() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo number_format(1987.65, 1, ',', '.') . "\n";
+echo number_format(1987.65, 3, '.', ',') . "\n";
+echo number_format(1000, 0, '.', ',') . "\n";
+"#
+        ),
+        vec!["1.987,6", "1,987.650", "1,000"]
+    );
+}

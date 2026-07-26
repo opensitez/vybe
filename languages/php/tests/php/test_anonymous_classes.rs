@@ -224,3 +224,118 @@ echo $obj->a() . $obj->b();
         vec!["AB"]
     );
 }
+
+#[test]
+fn anon_class_implements_countable() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$c = new class implements Countable {
+    public function count(): int { return 42; }
+};
+echo count($c);
+"#
+        ),
+        vec!["42"]
+    );
+}
+
+#[test]
+fn anon_class_with_readonly_property() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$obj = new class('config_value') {
+    public function __construct(public readonly string $cfg) {}
+};
+echo $obj->cfg;
+"#
+        ),
+        vec!["config_value"]
+    );
+}
+
+#[test]
+fn anon_class_inside_trait_method() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+trait Runner {
+    public function makeRunner() {
+        return new class { public function run(): string { return 'running_from_trait'; } };
+    }
+}
+class Host { use Runner; }
+$h = new Host();
+echo $h->makeRunner()->run();
+"#
+        ),
+        vec!["running_from_trait"]
+    );
+}
+
+#[test]
+fn anon_class_with_final_method() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$obj = new class {
+    final public function fixed(): string { return 'immutable_method'; }
+};
+echo $obj->fixed();
+"#
+        ),
+        vec!["immutable_method"]
+    );
+}
+
+#[test]
+fn anon_class_callable_as_callback() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$obj = new class {
+    public function __invoke(int $v): int { return $v + 10; }
+};
+
+echo $obj(5);
+"#
+        ),
+        vec!["15"]
+    );
+}
+
+#[test]
+fn anon_class_with_static_property_counter() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$obj = new class {
+    public static int $count = 0;
+    public function add(): int {
+        return ++self::$count;
+    }
+};
+
+echo $obj->add() . $obj->add();
+"#
+        ),
+        vec!["12"]
+    );
+}
+
+#[test]
+fn anon_class_with_readonly_property_promotion() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo (new class {
+    public function __construct(public readonly string $value) {}
+
+    public function reveal(): string { return $this->value; }
+}('secret'))->reveal();
+"#
+        ),
+        vec!["secret"]
+    );
+}

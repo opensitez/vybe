@@ -249,3 +249,213 @@ echo $sum;
         vec!["15"]
     );
 }
+
+#[test]
+fn array_map_multi_array_unequal_and_longest() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$z = array_map(
+    fn($a, $b, $c) => "$a-$b-$c",
+    [1, 2, 3, 4],
+    ['a', 'b'],
+    [true, false, true]
+);
+echo implode('|', $z);
+"#
+        ),
+        vec!["1-a-1|2-b-|3--1|4--"]
+    );
+}
+
+#[test]
+fn array_filter_rejects_null_callback_explicit() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$data = [0 => 0, 1 => 1, 2 => 2];
+$mapped = array_filter($data, null, ARRAY_FILTER_USE_KEY);
+echo implode('|', $mapped);
+"#
+        ),
+        vec!["1|2"]
+    );
+}
+
+#[test]
+fn array_reduce_without_initial_uses_first_element() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$result = array_reduce([2, 3, 4], fn($carry, $item) => $carry + $item);
+echo $result;
+"#
+        ),
+        vec!["9"]
+    );
+}
+
+#[test]
+fn array_map_returns_nested_arrays() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$data = [1, 2, 3];
+$pairs = array_map(fn($n) => [$n, $n * $n], $data);
+echo json_encode($pairs[0]) . '|' . json_encode($pairs[2]);
+"#
+        ),
+        &["[1,1]|[3,9]"]
+    );
+}
+
+#[test]
+fn array_walk_nested_list_style_mutation() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$payload = [['a' => 1], ['a' => 2]];
+array_walk($payload, function(&$item) { $item['a'] += 5; $item[] = 9; });
+echo $payload[0]['a'] . ':' . $payload[0][0] . '|' . $payload[1]['a'] . ':' . $payload[1][0];
+"#
+        ),
+        vec!["6:9|7:9"]
+    );
+}
+
+#[test]
+fn array_map_multiple_arrays_with_floats_preserves_type() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$x = array_map(fn($n) => $n + 0.5, [1, 2, 3]);
+echo json_encode($x);
+"#
+        ),
+        vec!["[1.5,2.5,3.5]"]
+    );
+}
+
+#[test]
+fn array_filter_key_mode_on_associative_preserves_associated_keys() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$arr = ['a' => 1, 'b' => 0, 'c' => 2];
+$r = array_filter($arr, fn($k) => $k !== 'b', ARRAY_FILTER_USE_KEY);
+echo implode(',', array_keys($r));
+"#
+        ),
+        vec!["a,c"]
+    );
+}
+
+#[test]
+fn array_reduce_without_initial_ignores_user_error_messages() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$data = [1, 2, 3, 4];
+$r = array_reduce($data, function($carry, $item) {
+    if ($carry === null) {
+        return $item;
+    }
+    return $carry + $item;
+});
+echo $r;
+"#
+        ),
+        vec!["10"]
+    );
+}
+
+#[test]
+fn array_map_with_callback_receiving_key_not_used() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$input = ['a' => 1, 'b' => 2, 'c' => 3];
+$doubled = array_map(fn($v) => $v * 2, $input);
+echo $doubled['a'] . ',' . $doubled['b'] . ',' . $doubled['c'];
+"#,
+        ),
+        vec!["2,4,6"]
+    );
+}
+
+#[test]
+fn array_map_with_fewer_columns_is_not_auditably_padded() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$a = [1, 2, 3, 4];
+$b = [10, 20];
+$pairs = array_map(fn($x, $y) => [$x, $y], $a, $b);
+echo json_encode($pairs[0]) . '|' . json_encode($pairs[2]);
+"#,
+        ),
+        vec!["[1,10]|[3,null]"]
+    );
+}
+
+#[test]
+fn array_filter_with_empty_key_mode_and_assoc_keys() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$values = ['a' => 1, 'b' => 0, 'c' => 3];
+$filtered = array_filter($values, null, ARRAY_FILTER_USE_KEY);
+echo implode(',', array_keys($filtered));
+"#,
+        ),
+        vec!["a,b,c"]
+    );
+}
+
+#[test]
+fn array_filter_with_strict_callable_on_empty_array() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$values = [];
+$filtered = array_filter($values, fn($x) => $x > 1);
+echo is_array($filtered) ? 'array' : 'no';
+echo '|';
+echo count($filtered);
+"#,
+        ),
+        vec!["array|0"]
+    );
+}
+
+#[test]
+fn array_reduce_string_keys_and_null_seed() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$items = ['x' => 1, 'y' => 2, 'z' => 3];
+$value = array_reduce($items, fn($carry, $item) => $carry . '-' . $item, null);
+echo $value;
+"#,
+        ),
+        vec!["-1-2-3"]
+    );
+}
+
+#[test]
+fn array_walk_recursive_with_reference_value_and_key() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$data = ['first' => [1, 2], 'second' => [3]];
+array_walk_recursive($data, function(&$value, $key) {
+    if (is_int($value)) {
+        $value += 1;
+    }
+});
+echo $data['first'][0] . '|' . $data['first'][1] . '|' . $data['second'][0];
+"#,
+        ),
+        vec!["2|3|4"]
+    );
+}

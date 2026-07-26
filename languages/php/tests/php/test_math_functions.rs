@@ -1,4 +1,4 @@
-use super::helpers::run_prints;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Trigonometry ──────────────────────────────────────────────
 
@@ -174,5 +174,183 @@ fn m_ln2_constant() {
     assert_eq!(
         run_prints(r#"<?php echo round(M_LN2, 5); "#),
         vec!["0.69315"]
+    );
+}
+
+#[test]
+fn math_floor_and_ceil_behavior_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo floor(4.7);
+echo '|';
+echo ceil(4.1);
+"#,
+        ),
+        vec!["4|5"]
+    );
+}
+
+#[test]
+fn math_round_half_even_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo round(2.5);
+echo '|';
+echo round(3.5, 0, PHP_ROUND_HALF_UP);
+"#,
+        ),
+        vec!["2|4"]
+    );
+}
+
+#[test]
+fn math_modf_returns_fraction_and_integer_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+list($frac, $int) = modf(3.75);
+echo $frac;
+echo '|';
+echo $int;
+"#,
+            ),
+        vec!["0.75|3"]
+    );
+}
+
+#[test]
+fn math_radix_conversion_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo base_convert(255, 10, 16);
+echo '|';
+echo octdec('10');
+"#,
+        ),
+        vec!["ff|8"]
+    );
+}
+
+#[test]
+fn intdiv_negative_rounding_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo intdiv(7, 3);
+echo '|';
+echo intdiv(-7, 3);
+echo '|';
+echo intdiv(7, -3);
+"#,
+        ),
+        vec!["2|-2|-2"]
+    );
+}
+
+#[test]
+fn fdiv_zero_division_behavior_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo fdiv(5.0, 0.0);
+echo '|';
+echo fdiv(-5.0, 0.0);
+echo '|';
+echo is_infinite(fdiv(1, 0)) ? '1' : '0';
+"#,
+        ),
+        vec!["INF|-INF|1"]
+    );
+}
+
+#[test]
+fn trig_periodic_relationship_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo round(sin(M_PI), 10);
+echo '|';
+echo round(cos(0), 10);
+echo '|';
+echo round(sin(M_PI / 6), 10);
+"#,
+        ),
+        vec!["0|1|0.5"]
+    );
+}
+
+#[test]
+fn ceil_and_floor_negative_values_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo ceil(-3.2);
+echo '|';
+echo floor(-3.2);
+"#,
+        ),
+        vec!["-3|-4"]
+    );
+}
+
+#[test]
+fn log_invalid_base_and_base_e_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo log(8, 2);
+echo '|';
+echo is_nan(log(-1)) ? '1' : '0';
+echo '|';
+echo round(exp(log(5)), 5);
+"#,
+        ),
+        vec!["3|1|5"]
+    );
+}
+
+#[test]
+fn power_edge_cases_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo pow(0, 0);
+echo '|';
+echo pow(-2, 3);
+echo '|';
+echo pow(-2, 2);
+"#,
+        ),
+        vec!["1|-8|4"]
+    );
+}
+
+#[test]
+fn number_format_negative_and_precision_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo number_format(-1234.5678, 2, ',', '.');
+echo '|';
+echo number_format(99.9, 0, ',', '');
+"#,
+        ),
+        vec!["-1.234,57|100"]
+    );
+}
+
+#[test]
+fn decimal_and_binary_mix_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo decbin(5) . '|';
+echo bindec('101');
+"#,
+        ),
+        vec!["101|5"]
     );
 }

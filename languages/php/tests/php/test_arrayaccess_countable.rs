@@ -63,6 +63,44 @@ echo isset($s['k']) ? 'exists' : 'gone';
     );
 }
 #[test]
+fn arrayaccess_offset_get_missing_key_returns_null() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class BagMiss implements ArrayAccess {
+    public function offsetExists(mixed $k): bool { return false; }
+    public function offsetGet(mixed $k): mixed { return null; }
+    public function offsetSet(mixed $k, mixed $v): void {}
+    public function offsetUnset(mixed $k): void {}
+}
+$b = new BagMiss;
+echo var_export($b['missing'], true);
+"#
+        ),
+        vec!["NULL"]
+    );
+}
+#[test]
+fn arrayaccess_offset_set_overwrites_value() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class BagSet implements ArrayAccess {
+    private array $d = [];
+    public function offsetExists(mixed $k): bool { return isset($this->d[$k]); }
+    public function offsetGet(mixed $k): mixed { return $this->d[$k]; }
+    public function offsetSet(mixed $k, mixed $v): void { $this->d[$k] = $v; }
+    public function offsetUnset(mixed $k): void { unset($this->d[$k]); }
+}
+$b = new BagSet;
+$b['a'] = 1; $b['a'] = 3;
+echo $b['a'];
+"#
+        ),
+        vec!["3"]
+    );
+}
+#[test]
 fn arrayaccess_push_with_null_key() {
     assert_eq!(
         run_prints(
@@ -84,6 +122,30 @@ echo implode(',', $l->toArray());
 "#
         ),
         vec!["a,b,c"]
+    );
+}
+#[test]
+fn arrayaccess_offset_set_with_null_key_appends() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class List3 implements ArrayAccess {
+    private array $d = [];
+    public function offsetExists(mixed $k): bool { return isset($this->d[$k]); }
+    public function offsetGet(mixed $k): mixed { return $this->d[$k]; }
+    public function offsetSet(mixed $k, mixed $v): void {
+        if ($k === null) $this->d[] = $v;
+        else $this->d[$k] = $v;
+    }
+    public function offsetUnset(mixed $k): void { unset($this->d[$k]); }
+    public function toArray(): array { return $this->d; }
+}
+$l = new List3;
+$l[0] = 'head'; $l[] = 'tail'; $l[2] = 'mid';
+echo implode('|', $l->toArray());
+"#
+        ),
+        vec!["head|tail|mid"]
     );
 }
 
@@ -125,6 +187,28 @@ echo count($c);
 "#
         ),
         vec!["3"]
+    );
+}
+#[test]
+fn arrayaccess_countable_reflects_count_after_unset() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class CollectionCount implements ArrayAccess, Countable {
+    private array $d = [];
+    public function offsetExists(mixed $k): bool { return isset($this->d[$k]); }
+    public function offsetGet(mixed $k): mixed { return $this->d[$k]; }
+    public function offsetSet(mixed $k, mixed $v): void { $this->d[$k] = $v; }
+    public function offsetUnset(mixed $k): void { unset($this->d[$k]); }
+    public function count(): int { return count($this->d); }
+}
+$c = new CollectionCount;
+$c['a'] = 1; $c['b'] = 2; $c['c'] = 3;
+unset($c['b']);
+echo count($c);
+"#
+        ),
+        vec!["2"]
     );
 }
 
@@ -245,5 +329,18 @@ echo implode(',', (array)$ao);
 "#
         ),
         vec!["1,2,3"]
+    );
+}
+#[test]
+fn array_object_exchange_array() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$ao = new ArrayObject(['a' => 1, 'b' => 2]);
+$old = $ao->exchangeArray(['x' => 9, 'y' => 8]);
+echo count($old) . '|' . $ao['x'] . $ao['y'];
+"#
+        ),
+        vec!["2|98"]
     );
 }

@@ -246,3 +246,189 @@ fn levenshtein_one_insertion() {
         vec!["1"]
     );
 }
+
+#[test]
+fn strcmp_equal_and_ordering_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strcmp("abc", "abc");
+echo "|";
+echo strcmp("abc", "abd") < 0 ? "lt" : "ge";
+echo "|";
+echo strcmp("abb", "aba") > 0 ? "gt" : "le";
+"#
+        ),
+        vec!["0|lt|gt"]
+    );
+}
+
+#[test]
+fn strcasecmp_casefolding_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strcasecmp("Hello", "hello");
+echo "|";
+echo strcasecmp("apple", "Banana") < 0 ? "lt" : "ge";
+echo "|";
+echo strcasecmp("abc", "ABC");
+"#
+        ),
+        vec!["0|lt|0"]
+    );
+}
+
+#[test]
+fn strnatcmp_numeric_string_order() {
+    assert_eq!(
+        run_prints(r#"<?php echo strnatcmp('item2', 'item10') < 0 ? 'lt' : 'ge'; "#),
+        vec!["lt"]
+    );
+}
+
+#[test]
+fn strnatcasecmp_casefolded_numeric_order() {
+    assert_eq!(
+        run_prints(r#"<?php echo strnatcasecmp('File2', 'file10') < 0 ? 'lt' : 'ge'; "#),
+        vec!["lt"]
+    );
+}
+
+#[test]
+fn strcasecmp_with_symbols() {
+    assert_eq!(
+        run_prints(r#"<?php echo strcasecmp("A-B", "a-b") === 0 ? 'equal' : 'diff'; "#),
+        vec!["equal"]
+    );
+}
+
+#[test]
+fn strpbrk_early_match() {
+    assert_eq!(
+        run_prints(r#"<?php echo strpbrk('xyz', 'x'); "#),
+        vec!["xyz"]
+    );
+}
+
+#[test]
+fn strpbrk_empty_mask_returns_false() {
+    assert_eq!(
+        run_prints(r#"<?php echo var_export(strpbrk('abc', ''), true); "#),
+        vec!["false"]
+    );
+}
+
+#[test]
+fn strcoll_zero_on_equal_strings() {
+    assert_eq!(
+        run_prints(r#"<?php echo strcoll('hello', 'hello') === 0 ? 'eq' : 'neq'; "#),
+        vec!["eq"]
+    );
+}
+
+#[test]
+fn strpos_with_offset_points_into_tail() {
+    assert_eq!(
+        run_prints(r#"<?php echo strpos('abcabc', 'c', 3); "#),
+        vec!["5"]
+    );
+}
+
+#[test]
+fn strcoll_culture_independent_fallback_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+setlocale(LC_COLLATE, "C");
+$cmp = strcoll("A", "a");
+if ($cmp < 0) {
+    echo -1;
+} else {
+    echo 1;
+}
+echo "|";
+echo strcoll("a", "a");
+"#
+        ),
+        vec!["-1|0"]
+    );
+}
+
+#[test]
+fn strnatcmp_numeric_text_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strnatcmp("file2", "file10");
+echo "|";
+echo strnatcmp("img9", "img10");
+echo "|";
+echo strnatcasecmp("abc9", "ABC10");
+"#
+        ),
+        vec!["-1|1|1"]
+    );
+}
+
+#[test]
+fn str_contains_not_found_returns_false_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo str_contains("testing", "x") ? "yes" : "no";
+echo "|";
+var_export(str_starts_with("", "a"));
+echo "|";
+echo var_export(str_ends_with("abc", "d"), true);
+"#
+        ),
+        vec!["no|false|false"]
+    );
+}
+
+#[test]
+fn strstr_starts_after_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strstr("one@two@three", "@");
+echo "|";
+echo strstr("one@two@three", "@", true);
+echo "|";
+echo stristr("One", "o");
+"#
+        ),
+        vec!["@two@three|one|One"]
+    );
+}
+
+#[test]
+fn strcspn_and_strspn_masks_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strcspn("abc123", "0123456789");
+echo "|";
+echo strcspn("123abc", "0123456789");
+echo "|";
+echo strspn("abc123", "abc");
+"#
+        ),
+        vec!["3|0|3"]
+    );
+}
+
+#[test]
+fn strtr_simple_map_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strtr("abcdef", "ab", "12");
+echo "|";
+echo strtr("hello", ["h"=>"H", "l"=>"L"]);
+"#
+        ),
+        vec!["12cdef|HeLLo"]
+    );
+}

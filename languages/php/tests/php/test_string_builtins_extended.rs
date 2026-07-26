@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── str_word_count ───────────────────────────────────────────────
 #[test]
@@ -295,5 +295,223 @@ echo substr_replace("Hello World", "PHP", 6, 5);
 echo substr_replace("abcdefgh", "XYZ", 2, 3);
 echo substr_replace("insert here", ">>", 6, 0);
 "#,
+    );
+}
+
+#[test]
+fn str_word_count_by_mode_1_2() {
+    compile_ok(
+        r#"<?php
+echo implode("|", str_word_count("one two-three", 1));
+echo "|";
+echo implode("|", array_keys(str_word_count("one two-three", 2)));
+"#,
+    );
+}
+
+#[test]
+fn str_getcsv_quoted_fields_and_escapes() {
+    compile_ok(
+        r#"<?php
+$fields = str_getcsv('"a,b","c\"d","e\"f"');
+echo $fields[0];
+echo $fields[1];
+echo $fields[2];
+"#,
+    );
+}
+
+#[test]
+fn addcslashes_and_stripcslashes_roundtrip() {
+    compile_ok(
+        r#"<?php
+$escaped = addcslashes("a b", " a");
+$original = stripcslashes($escaped);
+echo strlen($escaped);
+echo $original;
+"#,
+    );
+}
+
+#[test]
+fn strip_tags_no_text_retention_without_input() {
+    compile_ok(
+        r#"<?php
+echo strip_tags("<script>alert(1)</script>");
+echo "|";
+echo strip_tags("<b>safe</b><i>ok</i>", "<i>");
+"#,
+    );
+}
+
+#[test]
+fn html_entity_decode_mode_flags_runtime() {
+    compile_ok(
+        r#"<?php
+echo html_entity_decode('&quot;A&amp;B&quot;', ENT_QUOTES);
+echo "|";
+echo html_entity_decode('&#x41;&#x42;', ENT_NOQUOTES);
+"#,
+    );
+}
+
+#[test]
+fn quoted_printable_decode_roundtrip_unicode() {
+    compile_ok(
+        r#"<?php
+$encoded = quoted_printable_encode("Cafe: Crème");
+echo quoted_printable_decode($encoded);
+"#,
+    );
+}
+
+#[test]
+fn str_word_count_modes_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo str_word_count("one two three");
+echo "|";
+echo implode(",", str_word_count("one two three", 1));
+echo "|";
+echo implode(",", array_keys(str_word_count("one two three", 2)));
+"#
+        ),
+        vec!["3|one,two,three|0,4,8"]
+    );
+}
+
+#[test]
+fn wordwrap_width_and_cut_behavior() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo wordwrap("abcdefghijkl", 3, "-", true);
+"#
+        ),
+        vec!["abc-def-ghi-jkl"]
+    );
+}
+
+#[test]
+fn chunk_split_with_length_and_separator() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo chunk_split("abcdefghij", 4, "_");
+"#
+        ),
+        vec!["abcd_efgh_ij_"]
+    );
+}
+
+#[test]
+fn number_format_negative_and_small_decimals() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo number_format(-1234.5, 2, '.', ',');
+echo "|";
+echo number_format(1000, 0, '.', ',');
+"#
+        ),
+        vec!["-1,234.50|1,000"]
+    );
+}
+
+#[test]
+fn vsprintf_uses_positional_formatting() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo vsprintf("A:%2\$s B:%1\$d", ["first", 7]);
+"#
+        ),
+        vec!["A:7 B:first"]
+    );
+}
+
+#[test]
+fn hex_bin_roundtrip_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo bin2hex("Hi");
+echo "|";
+echo hex2bin("48656c6c6f");
+"#
+        ),
+        vec!["4869|Hello"]
+    );
+}
+
+#[test]
+fn strtr_single_char_and_char_mode() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strtr("abc", "ba", "xy");
+echo "|";
+echo strtr("hello", ["ll" => "xx", "o" => "a"]);
+"#
+        ),
+        vec!["yxc|hexxa"]
+    );
+}
+
+#[test]
+fn addslashes_stripslashes_inverse_with_escapes() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$value = "a'b\\c\"d";
+echo addslashes($value);
+echo "|";
+echo addslashes(stripslashes(addslashes($value)));
+"#
+        ),
+        vec!["a\\'b\\\\c\\\"d|a'b\\\\c\"d"]
+    );
+}
+
+#[test]
+fn strip_tags_with_allowed_and_disallowed() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo strip_tags("<p>safe</p><script>bad()</script><em>ok</em>", "<em>");
+echo "|";
+echo strip_tags("<div><span>v</span></div>", "<span>");
+"#
+        ),
+        vec!["safeok|<span>v</span>"]
+    );
+}
+
+#[test]
+fn html_entity_decode_quotes_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo html_entity_decode("&lt;b&gt;A&amp;B&gt;&gt;", ENT_QUOTES);
+echo "|";
+echo html_entity_decode("&lt;i&gt;X&lt;/i&gt;");
+"#
+        ),
+        vec!["<b>A&B>>|<i>X</i>"]
+    );
+}
+
+#[test]
+fn quoted_printable_handles_unicode_roundtrip() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo quoted_printable_encode("Hello");
+echo "|";
+echo quoted_printable_decode("=48=65=6C=6C=6F");
+"#
+        ),
+        vec!["Hello|Hello"]
     );
 }

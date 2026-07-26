@@ -116,4 +116,94 @@ echo convert_uudecode($enc);
 "#,
         ["data"]
     };
+
+    htmlspecialchars_does_not_double_encode_by_default => {
+        r#"<?php
+echo htmlspecialchars('&lt;tag&gt;');
+"#,
+        ["&amp;amp;lt;tag&amp;gt;"]
+    };
+
+    html_entity_decode_without_quote_conversion => {
+        r#"<?php
+$decoded = html_entity_decode('&quot;x&quot;');
+echo $decoded === '"x"' ? 'quoted' : 'plain';
+"#,
+        ["quoted"]
+    };
+
+    addcslashes_escapes_special_chars => {
+        r#"<?php
+$value = addcslashes('a b', ' a');
+echo $value;
+"#,
+        ["a\\ b"]
+    };
+
+    strip_tags_removes_all_without_allowed => {
+        r#"<?php
+echo strip_tags('<div>safe</div><b>bold</b>');
+"#,
+        ["safebold"]
+    };
+
+    strip_tags_keep_empty_allowed_tag => {
+        r#"<?php
+echo strip_tags('<b>safe</b>', '<b>');
+"#,
+        ["<b>safe</b>"]
+    };
+
+    filter_var_sanitize_encoded_url => {
+        r#"<?php
+$out = filter_var('https://example.com/q?a=1', FILTER_SANITIZE_URL);
+echo $out;
+"#,
+        ["https://example.com/q?a=1"]
+    };
+
+    htmlspecialchars_null_byte => {
+        r#"<?php
+echo htmlspecialchars("a\0b", ENT_QUOTES, 'UTF-8');
+"#,
+        ["a\0b"]
+    };
+
+    addslashes_handles_backslashes => {
+        r#"<?php
+echo addslashes('C:\\path\\file');
+"#,
+        ["C\\\\path\\\\file"]
+    };
+
+    stripcslashes_and_addcslashes_roundtrip => {
+        r#"<?php
+$raw = addcslashes("line\none", "\\n");
+$back = stripcslashes($raw);
+echo $back === "line\none" ? 'roundtrip' : 'broken';
+"#,
+        ["roundtrip"]
+    };
+
+    html_entity_decode_preserves_double_quotes_when_ent_noquotes => {
+        r#"<?php
+$out = htmlspecialchars('a "b"', ENT_NOQUOTES);
+echo str_contains($out, '&quot;') ? 'quoted' : 'no-quote';
+"#,
+        ["no-quote"]
+    };
+
+    stripcslashes_empty_backslash_sequence => {
+        r#"<?php
+echo stripcslashes('x\\\\');
+"#,
+        ["x\\\\"]
+    };
+
+    htmlspecialchars_converts_ampersand_entities_once => {
+        r#"<?php
+echo htmlspecialchars('&amp; &lt; &gt;');
+"#,
+        ["&amp;amp; &amp;lt; &amp;gt;"]
+    };
 }

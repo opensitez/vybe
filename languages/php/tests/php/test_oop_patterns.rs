@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Covariant return type — child returns narrower type ───────────
 #[test]
@@ -447,5 +447,668 @@ echo $c->debug ? 'true' : 'false';
 echo $c->timeout;
 echo $c->secret ?? 'null';
 "#,
+    );
+}
+
+#[test]
+fn covariant_return_type_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Animal {}
+class Dog extends Animal {}
+class AnimalFactory { public function create(): Animal { return new Animal(); } }
+class DogFactory extends AnimalFactory {
+    public function create(): Dog { return new Dog(); }
+}
+$f = new DogFactory();
+echo $f->create() instanceof Dog ? 'yes' : 'no';
+"#,
+        ),
+        &["yes"]
+    );
+}
+
+#[test]
+fn object_comparison_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Point {
+    public function __construct(public int $x, public int $y) {}
+}
+$a = new Point(1, 2);
+$b = new Point(1, 2);
+$c = $a;
+echo ($a == $b) ? 'e' : 'n';
+echo ($a === $c) ? 's' : 'd';
+"#,
+        ),
+        &["es"]
+    );
+}
+
+#[test]
+fn deep_clone_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Address {
+    public function __construct(public string $city) {}
+}
+class Person {
+    public function __construct(public string $name, public Address $address) {}
+    public function __clone(): void {
+        $this->address = clone $this->address;
+    }
+}
+$original = new Person('Alice', new Address('Paris'));
+$copy = clone $original;
+$copy->address->city = 'London';
+echo $original->address->city . '|' . $copy->address->city;
+"#,
+        ),
+        &["Paris|London"]
+    );
+}
+
+#[test]
+fn static_property_shared_state_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Counter {
+    private static int $count = 0;
+    public function __construct() { self::$count++; }
+    public static function total(): int { return self::$count; }
+}
+new Counter();
+new Counter();
+echo (string) Counter::total();
+"#,
+        ),
+        &["2"]
+    );
+}
+
+#[test]
+fn private_constructor_factory_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Database {
+    private static ?self $instance = null;
+    private function __construct(private string $dsn) {}
+    public static function connect(string $dsn): self {
+        if (self::$instance === null) {
+            self::$instance = new self($dsn);
+        }
+        return self::$instance;
+    }
+    public function getDsn(): string { return $this->dsn; }
+}
+$db1 = Database::connect('mysql://localhost/app');
+$db2 = Database::connect('other://ignore');
+echo $db1->getDsn() . '|' . (($db1 === $db2) ? 'same' : 'diff');
+"#,
+        ),
+        &["mysql://localhost/app|same"]
+    );
+}
+
+#[test]
+fn trait_conflict_alias_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+trait A { public function label(): string { return 'A'; } }
+trait B { public function label(): string { return 'B'; } }
+class C {
+    use A, B { B::label insteadof A; A::label as labelFromA; }
+}
+echo (new C())->label() . '|' . (new C())->labelFromA();
+"#,
+        ),
+        &["B|A"]
+    );
+}
+
+#[test]
+fn nullsafe_chain_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Street { public function __construct(public string $name) {} }
+class Address { public function __construct(public ?Street $street = null) {} }
+class User {
+    public function __construct(public ?Address $address = null) {}
+}
+echo (new User(new Address(new Street('Main')))?->address?->street?->name ?? 'none'), '|', (new User())->address?->street?->name ?? 'none';
+"#,
+        ),
+        &["Main|none"]
+    );
+}
+
+#[test]
+fn dynamic_class_instantiation_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Service {
+    public function __construct(public string $name) {}
+}
+$class = Service::class;
+$svc = new $class('Search');
+echo $svc->name;
+"#,
+        ),
+        &["Search"]
+    );
+}
+
+#[test]
+fn dynamic_method_invocation_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Worker {
+    public function work(string $task): string { return "work:$task"; }
+}
+$obj = new Worker();
+$m = 'work';
+echo $obj->$m('backup');
+"#,
+        ),
+        &["work:backup"]
+    );
+}
+
+#[test]
+fn trait_aliasing_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+trait Logger {
+    public function log(string $msg): string { return "log:$msg"; }
+}
+trait Auditor {
+    public function log(string $msg): string { return "audit:$msg"; }
+}
+class ServiceLayer {
+    use Logger, Auditor { Logger::log insteadof Auditor; Auditor::log as auditLog; }
+}
+$svc = new ServiceLayer();
+echo $svc->log('ok');
+echo $svc->auditLog('ok');
+"#,
+        ),
+        &["log:okaudit:ok"]
+    );
+}
+
+#[test]
+fn readonly_visibility_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Config {
+    public function __construct(public readonly string $name, public readonly int $retries) {}
+}
+$c = new Config('core', 5);
+echo $c->name;
+echo $c->retries;
+"#,
+        ),
+        &["core5"]
+    );
+}
+
+#[test]
+fn magic_invoke_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class CallableCounter {
+    public function __construct(private int $n = 0) {}
+    public function __invoke(int $step = 1): int {
+        $this->n += $step;
+        return $this->n;
+    }
+}
+$c = new CallableCounter(2);
+echo $c();
+echo $c(3);
+"#,
+        ),
+        &["2","5"]
+    );
+}
+
+#[test]
+fn interface_dispatch_with_multiple_implementers_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface Formatter {
+    public function format(string $value): string;
+}
+
+class Upper implements Formatter {
+    public function format(string $value): string { return strtoupper($value); }
+}
+
+class Lower implements Formatter {
+    public function format(string $value): string { return strtolower($value); }
+}
+
+function apply_formatter(Formatter $formatter, string $value): string {
+    return $formatter->format($value);
+}
+
+echo apply_formatter(new Upper(), 'ab');
+echo apply_formatter(new Lower(), 'AB');
+"#,
+        ),
+        &["AB", "ab"]
+    );
+}
+
+#[test]
+fn late_static_factory_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+abstract class BaseProduct {
+    public function __construct(public string $name) {}
+    public static function make(string $name): static {
+        return new static($name);
+    }
+}
+
+class Widget extends BaseProduct {}
+
+$w = Widget::make('widget');
+echo get_class($w) . '|' . $w->name;
+"#,
+        ),
+        &["Widget|widget"]
+    );
+}
+
+#[test]
+fn dynamic_class_property_exists_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Profile {
+    public function __construct(public string $name = 'anon') {}
+}
+
+$class = 'Profile';
+$property = 'name';
+echo property_exists(new $class(), $property) ? 'yes' : 'no';
+"#,
+        ),
+        &["yes"]
+    );
+}
+
+#[test]
+fn __call_forwarding_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Invoker {
+    public function __call(string $name, array $args): string {
+        return $name . ':' . implode(',', $args);
+    }
+}
+$i = new Invoker();
+echo $i->run('build', 1, 2);
+"#,
+        ),
+        &["run:build,1,2"]
+    );
+}
+
+#[test]
+fn __call_static_and_property_visibility_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Service {
+    private static int $counter = 0;
+    public static function bump(): int {
+        return ++self::$counter;
+    }
+}
+
+echo Service::bump();
+echo Service::bump();
+"#,
+        ),
+        &["12"]
+    );
+}
+
+#[test]
+fn class_alias_and_instanceof_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Adapter {}
+class_alias(Adapter::class, 'ServiceAdapter');
+echo class_exists('ServiceAdapter') ? 'exists' : 'missing';
+echo '|';
+echo (new ServiceAdapter()) instanceof Adapter ? 'yes' : 'no';
+"#,
+        ),
+        &["exists|yes"]
+    );
+}
+
+#[test]
+fn magic_setter_getter_with_isset_unset_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Bag {
+    private array $values = [];
+    public function __set(string $name, mixed $value): void {
+        $this->values[$name] = $value;
+    }
+    public function __get(string $name): mixed {
+        return $this->values[$name] ?? null;
+    }
+    public function __isset(string $name): bool {
+        return array_key_exists($name, $this->values);
+    }
+    public function __unset(string $name): void {
+        unset($this->values[$name]);
+    }
+}
+$bag = new Bag();
+$bag->token = 'abc';
+echo $bag->token;
+echo '|';
+echo isset($bag->token) ? 'set' : 'not';
+unset($bag->token);
+echo '|';
+echo isset($bag->token) ? 'set' : 'not';
+"#,
+        ),
+        &["abc|set|not"]
+    );
+}
+
+#[test]
+fn object_set_state_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Payload {
+    public string $value = '';
+    public static function __set_state(array $state): self {
+        $obj = new self();
+        $obj->value = strtoupper($state['value']);
+        return $obj;
+    }
+}
+$obj = Payload::__set_state(['value' => 'ok']);
+echo $obj->value;
+"#,
+        ),
+        &["OK"]
+    );
+}
+
+#[test]
+fn serialize_cycle_with_unserialize_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Box {
+    public function __construct(public int $n, public string $label) {}
+    public function __serialize(): array {
+        return ['n' => $this->n, 'label' => $this->label];
+    }
+    public function __unserialize(array $data): void {
+        $this->n = $data['n'];
+        $this->label = $data['label'] . '!'; 
+    }
+}
+$box = new Box(7, 'ok');
+$text = serialize($box);
+$copy = unserialize($text);
+echo $copy->n . '|' . $copy->label;
+"#,
+        ),
+        &["7|ok!"]
+    );
+}
+
+#[test]
+fn named_arguments_to_constructor_and_method_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Metrics {
+    public function __construct(public int $a = 0, public int $b = 0) {}
+    public function span(int $start = 0, int $end = 0): int {
+        return $end - $start;
+    }
+}
+$m = new Metrics(b: 30, a: 10);
+echo $m->span(end: 15, start: 5) . '|' . $m->a . ':' . $m->b;
+"#,
+        ),
+        &["10|10:30"]
+    );
+}
+
+#[test]
+fn late_static_binding_clone_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class BaseProduct {
+    public static string $kind = 'base';
+    public static function make(string $name): self {
+        return new static($name);
+    }
+    public function __construct(public string $name) {}
+    public function type(): string {
+        return static::$kind;
+    }
+}
+class PremiumProduct extends BaseProduct {
+    public static string $kind = 'premium';
+}
+$product = PremiumProduct::make('x');
+echo $product->type();
+echo '|';
+echo $product instanceof PremiumProduct ? 'premium' : 'base';
+"#,
+        ),
+        &["premium|premium"]
+    );
+}
+
+#[test]
+fn readonly_property_reassignment_error_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Token {
+    public function __construct(public readonly int $id) {}
+}
+$t = new Token(1);
+$result = null;
+try {
+    $t->id = 2;
+    $result = 'changed';
+} catch (Error $e) {
+    $result = 'readonly';
+}
+echo $t->id . '|' . $result;
+"#,
+        ),
+        &["1|readonly"]
+    );
+}
+
+#[test]
+fn property_visibility_across_hierarchy_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Base {
+    public string $public = 'pub';
+    protected string $protected = 'prot';
+    private string $private = 'priv';
+    public function visible(): string {
+        return $this->public . '|' . $this->protected;
+    }
+}
+class Child extends Base {
+    public function secret(): string {
+        return $this->protected;
+    }
+}
+$obj = new Child();
+echo $obj->visible();
+echo '|' . $obj->secret();
+echo '|' . $obj->public;
+"#,
+        ),
+        &["pub|prot|pub|prot"]
+    );
+}
+
+#[test]
+fn class_const_visibility_and_inheritance_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class BaseValue {
+    public const SCOPE = 'public';
+    protected const INTERNAL = 'internal';
+    private const SECRET = 'secret';
+    public function marker(): string {
+        return self::SCOPE . '|' . static::SCOPE;
+    }
+}
+class ChildValue extends BaseValue {}
+echo ChildValue::SCOPE;
+echo '|' . (new ChildValue())->marker();
+"#,
+        ),
+        &["public|public|public"]
+    );
+}
+
+#[test]
+fn dynamic_property_with_overloaded_setter_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Bag {
+    private array $values = [];
+    public function __set(string $name, mixed $value): void { $this->values[$name] = $value; }
+    public function __get(string $name): mixed { return $this->values[$name] ?? null; }
+}
+$b = new Bag();
+$b->one = 1;
+$b->two = '2';
+echo $b->one . '|' . $b->two;
+"#,
+        ),
+        &["1|2"]
+    );
+}
+
+#[test]
+fn __invoke_on_object_with_union_input_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Processor {
+    public function __invoke(string|int $v): string {
+        return (string)$v;
+    }
+}
+$p = new Processor();
+echo $p('id');
+echo '|';
+echo $p(12);
+"#,
+        ),
+        &["id|12"]
+    );
+}
+
+#[test]
+fn static_method_polymorphism_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class FormatterBase {
+    public static function supports(): string { return 'base'; }
+}
+class JsonFormatter extends FormatterBase {
+    public static function supports(): string { return 'json'; }
+}
+class CsvFormatter extends FormatterBase {
+    public static function supports(): string { return 'csv'; }
+}
+echo JsonFormatter::supports();
+echo '|' . CsvFormatter::supports();
+echo '|' . FormatterBase::supports();
+"#,
+        ),
+        &["json|csv|base"]
+    );
+}
+
+#[test]
+fn dynamic_type_check_with_instanceof_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface I {}
+class A implements I {}
+class B {}
+$a = new A();
+$b = new B();
+echo ($a instanceof I ? 'ia' : 'noa');
+echo '|' . ($b instanceof I ? 'ib' : 'nob');
+"#,
+        ),
+        &["ia|nob"]
+    );
+}
+
+#[test]
+fn constructor_property_promotion_with_visibility_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class User {
+    public function __construct(
+        public string $name,
+        protected int $age,
+        private bool $active
+    ) {}
+    public function summary(): string {
+        return $this->name . ':' . $this->age . ':' . ($this->active ? 'on' : 'off');
+    }
+}
+$u = new User('alice', 31, true);
+echo $u->name;
+echo '|' . $u->summary();
+"#,
+        ),
+        &["alice|alice:31:on"]
     );
 }

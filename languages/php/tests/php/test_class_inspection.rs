@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── interface_exists ──────────────────────────────────────────────
 #[test]
@@ -226,7 +226,163 @@ class SelfNaming {
     }
 }
 $obj = new SelfNaming();
-echo $obj->className();
+    echo $obj->className();
 "#,
+    );
+}
+
+#[test]
+fn class_alias_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Original {}
+class_alias(Original::class, 'AliasClass');
+echo class_exists('AliasClass') ? 'yes' : 'no';
+echo (new AliasClass)::class;
+"#,
+        ),
+        vec!["yesAliasClass"]
+    );
+}
+
+#[test]
+fn get_declared_classes_runtime_contains_user_class() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Listed { }
+echo in_array('Listed', get_declared_classes()) ? 'yes' : 'no';
+"#,
+        ),
+        vec!["yes"]
+    );
+}
+
+#[test]
+fn get_declared_traits_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+trait ListedTrait { public function id(): string { return 'ok'; } }
+echo trait_exists('ListedTrait', false) ? 'yes' : 'no';
+"#,
+        ),
+        vec!["yes"]
+    );
+}
+
+#[test]
+fn class_alias_with_namespaces_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+namespace Demo {
+    class Base {}
+}
+\class_alias(\Demo\Base::class, 'DemoAlias');
+echo class_exists('DemoAlias') ? 'yes' : 'no';
+"#,
+        ),
+        vec!["yes"]
+    );
+}
+
+#[test]
+fn get_declared_interfaces_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+interface ListedInterface { public function run(): void; }
+echo interface_exists('ListedInterface') ? 'yes' : 'no';
+echo in_array('ListedInterface', get_declared_interfaces()) ? 'yes' : 'no';
+"#,
+        ),
+        vec!["yesyes"]
+    );
+}
+
+#[test]
+fn class_methods_runtime_contains_defined_methods() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Calculator {
+    public function add(int $a, int $b): int { return $a + $b; }
+}
+
+$methods = get_class_methods(Calculator::class);
+echo in_array('add', $methods) ? 'yes' : 'no';
+echo is_string($methods[0]) ? 'string' : 'not';
+"#,
+        ),
+        vec!["yesstring"]
+    );
+}
+
+#[test]
+fn class_uses_runtime_trait_lookup() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+trait Marker { public function mark(): string { return 'm'; } }
+class Host {
+    use Marker;
+}
+$traits = class_uses(Host::class);
+echo isset($traits['Marker']) ? 'yes' : 'no';
+"#,
+        ),
+        vec!["yes"]
+    );
+}
+
+#[test]
+fn get_class_vars_runtime_with_defaults() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Defaults {
+    public string $env = 'prod';
+    public int $port = 9000;
+}
+$vars = get_class_vars('Defaults');
+echo ($vars['env'] === 'prod' ? 'env' : 'no');
+echo ($vars['port'] === 9000 ? 'port' : 'no');
+"#,
+        ),
+        vec!["envport"]
+    );
+}
+
+#[test]
+fn is_a_runtime_checks() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Base {}
+class Leaf extends Base {}
+$leaf = new Leaf();
+echo is_a($leaf, Base::class) ? 'yes' : 'no';
+echo is_a($leaf, 'Base') ? 'yes' : 'no';
+echo is_a($leaf, 'stdClass') ? 'yes' : 'no';
+"#,
+        ),
+        vec!["yesyesno"]
+    );
+}
+
+#[test]
+fn get_parent_class_runtime_lookup() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+class Root {}
+class Mid extends Root {}
+class Top extends Mid {}
+echo get_parent_class('Top');
+"#,
+        ),
+        vec!["Mid"]
     );
 }

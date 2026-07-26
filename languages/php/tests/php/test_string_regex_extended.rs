@@ -241,3 +241,120 @@ fn str_ireplace_case_insensitive() {
         vec!["Hi World Hi"]
     );
 }
+
+#[test]
+fn preg_quote_escapes_delimiter_and_meta() {
+    assert_eq!(
+        run_prints(r#"<?php $pat = '/'.preg_quote('/foo.bar', '/').'/'; echo preg_match($pat, 'a/foo.bar/'); "#),
+        vec!["1"]
+    );
+}
+
+#[test]
+fn preg_match_with_optional_group() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+preg_match('/^(?<x>\w+)(?:\s+(\d+))?$/', 'name 123', $m);
+echo isset($m[2]) ? $m[2] : 'none';
+echo '|';
+preg_match('/^(?<x>\w+)(?:\s+(\d+))?$/', 'name', $m2);
+echo isset($m2[2]) ? $m2[2] : 'none';
+"#
+        ),
+        vec!["123|none"]
+    );
+}
+
+#[test]
+fn preg_match_all_with_no_match() {
+    assert_eq!(
+        run_prints(r#"<?php echo preg_match_all('/\d{4}/', 'no-digits-here', $m); echo '|'; echo count($m[0]); "#),
+        vec!["0|0"]
+    );
+}
+
+#[test]
+fn regex_offset_capture_starts_after_offset() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$matches = [];
+$result = preg_match('/a/', 'abcab', $matches, PREG_OFFSET_CAPTURE, 2);
+echo $result;
+echo '|';
+echo $matches[0][0];
+echo '|';
+echo $matches[0][1];
+"#
+        ),
+        vec!["1|a|3"]
+    );
+}
+
+
+#[test]
+fn regex_replace_backreference_reordering() {
+    assert_eq!(
+        run_prints(r#"<?php echo preg_replace('/(foo)(bar)/', '$2-$1', 'foobar'); "#),
+        vec!["bar-foo"]
+    );
+}
+
+#[test]
+fn regex_unicode_property_class() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+echo preg_match_all('/\p{Lu}+/u', 'ABCé', $m);
+echo '|';
+echo $m[0][0] ?? 'none';
+"#
+        ),
+        vec!["1|ABC"]
+    );
+}
+
+#[test]
+fn regex_split_offsets_and_no_captures() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$parts = preg_split('/:/', 'a:b:c', -1, PREG_SPLIT_OFFSET_CAPTURE);
+echo $parts[0][0];
+echo '|';
+echo $parts[1][0];
+echo '|';
+echo $parts[1][1];
+"#
+        ),
+        vec!["a|b|2"]
+    );
+}
+
+#[test]
+fn preg_replace_backreference_with_grouped_digits_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$value = 'A1,B2,C3';
+echo preg_replace('/([A-Z])(\d)/', '$2$1', $value);
+"#
+        ),
+        vec!["1A,2B,3C"]
+    );
+}
+
+#[test]
+fn preg_match_offset_flag_only_after_match() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
+$matches = [];
+preg_match('/b/', 'abcab', $matches, PREG_OFFSET_CAPTURE);
+echo $matches[0][1];
+"#
+        ),
+        vec!["1"]
+    );
+}

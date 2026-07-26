@@ -306,3 +306,128 @@ echo implode(',', qsort([3,6,8,10,1,2,1]));
         vec!["1,1,2,3,6,8,10"]
     );
 }
+
+#[test]
+fn switch_subject_is_computed_expression_runtime() {
+    let out = run_prints(
+        r#"<?php
+$index = 1;
+$total = '';
+switch ($index + 1) {
+    case 1:
+        $total = 'one';
+        break;
+    case 2:
+        $total = 'two';
+        break;
+    default:
+        $total = 'other';
+}
+echo $total;
+"#
+    );
+    assert_eq!(out, vec!["two"]);
+}
+
+#[test]
+fn switch_default_as_fallthrough_with_following_case_runtime() {
+    let out = run_prints(
+        r#"<?php
+$x = 4;
+$out = [];
+switch ($x) {
+    case 1:
+        $out[] = 'one';
+    default:
+        $out[] = 'default';
+    case 2:
+        $out[] = 'two';
+        break;
+    case 4:
+        $out[] = 'four';
+        break;
+}
+echo implode('-', $out);
+"#
+    );
+    assert_eq!(out, vec!["default-two"]);
+}
+
+#[test]
+fn switch_default_never_reaches_non_matching_cases() {
+    let out = run_prints(
+        r#"<?php
+$state = 'z';
+$out = [];
+switch ($state) {
+    case 'a':
+        $out[] = 'a';
+        break;
+    default:
+        $out[] = 'd';
+        break;
+    case 'b':
+        $out[] = 'b';
+        break;
+}
+echo implode('|', $out);
+"#
+    );
+    assert_eq!(out, vec!["d"]);
+}
+
+#[test]
+fn match_with_non_matching_subject_and_no_default_traps_error() {
+    let out = run_prints(
+        r#"<?php
+try {
+    match ('none') {
+        'a' => 'alpha',
+        'b' => 'beta',
+    };
+} catch (UnhandledMatchError $e) {
+    echo 'fatal';
+}
+"#
+    );
+    assert_eq!(out, vec!["fatal"]);
+}
+
+#[test]
+fn nested_loop_break_2_from_foreach_runtime() {
+    let out = run_prints(
+        r#"<?php
+$out = [];
+for ($i = 0; $i < 3; $i++) {
+    foreach ([1,2,3] as $n) {
+        if ($n === 2) {
+            break 2;
+        }
+        $out[] = $i . '-' . $n;
+    }
+}
+echo implode(',', $out);
+"#
+    );
+    assert_eq!(out, vec!["0-1"]);
+}
+
+#[test]
+fn foreach_while_continue_2_outer_runtime() {
+    let out = run_prints(
+        r#"<?php
+$k = 0;
+while ($k < 3) {
+    foreach ([0,1,2] as $v) {
+        if ($v === 0) {
+            $k++;
+            continue 2;
+        }
+        $k += 100;
+    }
+}
+echo $k;
+"#
+    );
+    assert_eq!(out, vec!["3"]);
+}

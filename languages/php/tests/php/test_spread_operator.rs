@@ -77,4 +77,66 @@ echo implode(',', [...gen()]);
 "#,
         ["1,2"]
     };
+
+    nested_array_spread_with_string_keys => {
+        r#"<?php
+$left = ['base' => 'b'];
+$mid = [...$left, 'mid' => 'm'];
+$right = [...$mid, 'right' => 'r', 'base' => 'override'];
+echo $right['base'];
+echo '|';
+echo $right['mid'];
+echo '|';
+echo $right['right'];
+"#,
+        ["override|m|r"]
+    };
+
+    argument_spread_with_defaulted_parameters => {
+        r#"<?php
+function greet(string $name, string $title = 'mr.', string $suffix = ''): string {
+    return trim("$title $name $suffix");
+}
+echo greet(...['Doe']);
+echo '|';
+echo greet(...['Jane', 'Ms.', 'Jr.']);
+"#,
+        ["mr. Doe|Ms. Jane Jr."]
+    };
+
+    spread_in_array_with_nested_array_literals => {
+        r#"<?php
+$packed = [1, ...[2, 3], ...[4], 5, ...[]];
+echo implode(',', $packed);
+"#,
+        ["1,2,3,4,5"]
+    };
+
+    spread_array_merge_with_numeric_reindexing => {
+        r#"<?php
+$a = [10 => 'a'];
+$b = [11 => 'b'];
+$c = [...$a, ...$b];
+echo count($c);
+echo '|';
+echo isset($c[10]) ? 'has10' : 'no10';
+echo '|';
+echo array_key_exists(0, $c) ? 'has0' : 'no0';
+echo '|';
+echo array_key_exists(1, $c) ? 'has1' : 'no1';
+"#,
+        ["2|no10|has0|has1"]
+    };
+
+    spread_with_generator_and_array_keys => {
+        r#"<?php
+function values(): Generator {
+    yield 1;
+    yield 2;
+}
+$combined = [0, ...values(), ...[3, 4]];
+echo implode(',', $combined);
+"#,
+        ["0,1,2,3,4"]
+    };
 }

@@ -210,4 +210,46 @@ echo $ref->getAttributes(Inject::class) ? 'inject' : 'plain';
 "#,
         ["inject"]
     };
+
+    attribute_get_arguments_array => {
+        r#"<?php
+#[Attribute]
+class Options {
+    public function __construct(public array $list) {}
 }
+#[Options(['a' => 1, 'b' => 2])]
+class ConfigHolder {}
+$attr = (new ReflectionClass(ConfigHolder::class))->getAttributes(Options::class)[0];
+$args = $attr->getArguments();
+echo is_array($args) && isset($args[0]['a']) ? 'args_array_ok' : 'err';
+"#,
+        ["args_array_ok"]
+    };
+
+    attribute_get_target_bitmask => {
+        r#"<?php
+#[Attribute(Attribute::TARGET_CLASS | Attribute::TARGET_METHOD)]
+class DualTarget {}
+$rc = new ReflectionClass(DualTarget::class);
+$attr = $rc->getAttributes(Attribute::class)[0]->newInstance();
+echo ($attr->flags & Attribute::TARGET_CLASS) ? 'has_class_target' : 'err';
+"#,
+        ["has_class_target"]
+    };
+
+    deprecated_attribute_php84_builtin => {
+        r#"<?php
+class Legacy {
+    #[\Deprecated("Use newMethod instead", since: "2.0")]
+    public function oldMethod(): string { return 'legacy'; }
+}
+$rm = new ReflectionMethod(Legacy::class, 'oldMethod');
+$attrs = $rm->getAttributes(\Deprecated::class);
+echo count($attrs) . '|' . $attrs[0]->getName() . '|';
+$d = $attrs[0]->newInstance();
+echo $d->message . '|' . $d->since . '|' . ($rm->isDeprecated() ? 'yes' : 'no');
+"#,
+        ["1|Deprecated|Use newMethod instead|2.0|yes"]
+    };
+}
+
