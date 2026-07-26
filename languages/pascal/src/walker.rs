@@ -2,9 +2,20 @@ use super::{PascalParser, Rule};
 use pest::Parser;
 use pest::iterators::Pair;
 use vybe_ast::*;
+use vybe_emitter::reflection as common_reflection;
 
 const PASCAL_HELPER_TARGET_PREFIX: &str = "__pascal_helper_target__:";
 const PASCAL_VARIANT_FIELD_MARKER: &str = "__pascal_variant_field__";
+const PASCAL_NO_BASE_CTOR_MARKER: &str = "__pascal_no_base_ctor__";
+
+#[derive(Default)]
+struct PascalPreludeNeeds {
+    exceptions: bool,
+    except_state: bool,
+    tobject: bool,
+    tinterfacedobject: bool,
+    collections: bool,
+}
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let source = source.trim_start_matches('\u{feff}');
@@ -101,19 +112,84 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // (e.g. `constructor TFoo.Create(...) begin ... end;`). Merge those standalone
     // FunctionDecls back into the matching ClassDecl so the compiler sees them as
     // ordinary class members.
+    merge_class_var_impl_decls(&mut body);
     merge_separated_methods(&mut body);
     lower_pascal_helpers(&mut body);
     lower_pascal_gotos_in_body(&mut body);
     lower_pascal_file_io(&mut body);
     normalize_pascal_free_function_overloads(&mut body);
+    normalize_pascal_class_method_overloads(&mut body);
 
-    // Synthesize minimal RTL classes at the top of every Pascal program
-    // before constructor-call rewriting so known runtime base types exist
-    // during later passes.
+    // Synthesize only the RTL groups this program can reference. The collection
+    // group is source-parsed and expensive, so it is cached and gated hard.
     if !is_unit {
-        body.insert(0, synthesize_tinterfacedobject_class());
-        body.insert(0, synthesize_exception_class());
+        let prelude_needs = pascal_prelude_needs(source, &imports, &body);
+        let existing_classes: std::collections::HashSet<String> = body
+            .iter()
+            .filter_map(|s| match &s.kind {
+                StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
+                    Some(name.to_lowercase())
+                }
+                _ => None,
+            })
+            .collect();
+        let mut prelude = Vec::new();
+        if prelude_needs.exceptions && !existing_classes.contains("exception") {
+            prelude.push(synthesize_exception_class());
+        }
+        if prelude_needs.exceptions {
+            for name in PASCAL_BUILTIN_EXCEPTION_CLASSES {
+                if !existing_classes.contains(&name.to_lowercase()) {
+                    prelude.push(synthesize_exception_subclass(name, "Exception"));
+                }
+            }
+        }
+        if prelude_needs.tobject && !existing_classes.contains("tobject") {
+            prelude.push(synthesize_tobject_class());
+        }
+        if prelude_needs.tinterfacedobject && !existing_classes.contains("tinterfacedobject") {
+            prelude.push(synthesize_tinterfacedobject_class());
+        }
+        if prelude_needs.collections
+            && (!existing_classes.contains("tlist") || !existing_classes.contains("tobjectlist"))
+        {
+            for stmt in cached_pascal_collection_classes()? {
+                let should_insert = match &stmt.kind {
+                    StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
+                        !existing_classes.contains(&name.to_lowercase())
+                    }
+                    _ => true,
+                };
+                if should_insert {
+                    prelude.push(stmt);
+                }
+            }
+        }
+        for stmt in prelude.into_iter().rev() {
+            body.insert(0, stmt);
+        }
+        if prelude_needs.except_state {
+            body.insert(0, synthesize_pascal_except_state_vars());
+        }
     }
+
+    let mut uses_safe_idiv = false;
+    for stmt in body.iter_mut() {
+        uses_safe_idiv |= rewrite_pascal_safe_idiv_stmt(stmt);
+    }
+    if uses_safe_idiv {
+        body.insert(0, synthesize_pascal_safe_idiv_function());
+    }
+    rewrite_pascal_except_state_body(&mut body);
+    let mut except_addr_hex_vars = std::collections::HashSet::new();
+    let mut except_pointer_vars = std::collections::HashSet::new();
+    rewrite_pascal_except_addr_hex_body(
+        &mut body,
+        &mut except_addr_hex_vars,
+        &mut except_pointer_vars,
+    );
+    let mut known_nulls = std::collections::HashSet::new();
+    rewrite_pascal_known_null_deref_body(&mut body, &mut known_nulls);
 
     let uses_gcl = imports.iter().any(|import| match &import.kind {
         ImportKind::Simple { path, .. }
@@ -158,40 +234,105 @@ pub fn parse(source: &str) -> Result<Module, String> {
             class_display_names.push((class.name.to_lowercase(), class.name.to_string()));
         }
     }
-    let (static_methods, static_values) = collect_static_members(&body);
+    let class_parent_display_names = collect_pascal_class_parent_display_names(&body);
+    let (static_methods, static_values, static_value_owners) = collect_static_members(&body);
+    let declared_class_methods = collect_declared_class_methods(&body);
+    let constructor_params = collect_pascal_constructor_params(&body);
     let static_var_params = collect_static_var_param_indices(&body);
     for stmt in body.iter_mut() {
-        rewrite_constructor_calls_stmt(stmt, &class_names, &static_methods);
+        rewrite_constructor_calls_stmt(
+            stmt,
+            &class_names,
+            &static_methods,
+            &declared_class_methods,
+            &constructor_params,
+        );
+    }
+    let generic_specializations = collect_pascal_generic_specializations(source);
+    if !generic_specializations.is_empty() {
+        specialize_pascal_generic_class_methods(&mut body, &generic_specializations);
+    }
+    let pascal_type_sizes = collect_pascal_type_sizes(&body);
+    if !pascal_type_sizes.is_empty() {
+        for stmt in body.iter_mut() {
+            rewrite_pascal_sizeof_types_stmt(stmt, &pascal_type_sizes);
+        }
     }
     for stmt in body.iter_mut() {
-        rewrite_pascal_rtti_stmt(stmt, &class_display_names);
+        rewrite_pascal_supports_stmt(stmt);
+    }
+
+    for stmt in body.iter_mut() {
+        rewrite_pascal_rtti_stmt(stmt, &class_display_names, &class_parent_display_names);
+    }
+
+    let bool_class_methods = collect_pascal_bool_class_methods(&body);
+    for stmt in body.iter_mut() {
+        rewrite_pascal_writeln_bool_class_calls_stmt(stmt, &bool_class_methods);
+    }
+
+    let instance_properties = collect_pascal_instance_properties(&body);
+    if !source.to_ascii_lowercase().contains("{$r-}") {
+        rewrite_pascal_subrange_checks(&mut body);
+    }
+    if !instance_properties.is_empty() {
+        let mut env = std::collections::HashMap::new();
+        rewrite_pascal_instance_property_setters_body(&mut body, &instance_properties, &mut env);
     }
 
     let static_properties = collect_pascal_static_properties(&body);
     if !static_properties.is_empty() {
         rewrite_pascal_static_properties(&mut body, &static_properties);
     }
+    let mut static_call_methods = static_methods.clone();
+    static_call_methods.extend(declared_class_methods.iter().cloned());
     for stmt in body.iter_mut() {
-        rewrite_static_method_calls_stmt(stmt, &static_methods, &static_values);
+        rewrite_static_method_calls_stmt(
+            stmt,
+            &static_call_methods,
+            &static_values,
+            &static_value_owners,
+        );
     }
     for stmt in body.iter_mut() {
         mark_static_var_args_stmt(stmt, &static_var_params);
     }
     lower_pascal_method_pointers(&mut body);
-    let zero_arg_instance_methods = collect_zero_arg_instance_methods(&body);
+    let static_zero_arg_methods = collect_zero_arg_static_methods(&body);
+    if !static_zero_arg_methods.is_empty() {
+        let mut var_types = std::collections::HashMap::new();
+        for stmt in body.iter_mut() {
+            rewrite_zero_arg_static_method_refs_stmt(
+                stmt,
+                &static_zero_arg_methods,
+                &mut var_types,
+            );
+        }
+    }
+    let mut zero_arg_instance_methods = collect_zero_arg_instance_methods(&body);
+    zero_arg_instance_methods.insert("tostring".to_string());
     for stmt in body.iter_mut() {
         rewrite_zero_arg_instance_method_refs_stmt(stmt, &zero_arg_instance_methods);
     }
     rewrite_bare_parameterless_method_refs(&mut body);
+    {
+        let mut env = std::collections::HashMap::new();
+        rewrite_pascal_writeln_bool_instance_members_body(&mut body, &bool_class_methods, &mut env);
+    }
     let indexed_properties = collect_pascal_indexed_properties(&body);
     if !indexed_properties.is_empty() {
         rewrite_pascal_indexed_properties(&mut body, &indexed_properties);
     }
-    let polymorphic_class_names = collect_pascal_polymorphic_class_names(&body);
-    for stmt in body.iter_mut() {
-        erase_pascal_class_value_type_hints_stmt(stmt, &polymorphic_class_names);
+    rewrite_pascal_collection_for_in(&mut body);
+    synthesize_pascal_inherited_constructors(&mut body);
+    let destructible_class_names = collect_pascal_destructible_class_names(&body);
+    if !destructible_class_names.is_empty() {
+        let mut var_types = std::collections::HashMap::new();
+        for stmt in body.iter_mut() {
+            rewrite_pascal_free_calls_stmt(stmt, &destructible_class_names, &mut var_types);
+        }
     }
-
+    synthesize_pascal_default_destructors(&mut body);
     // Default-initialize record / struct variables. `var p: TPoint;`
     // declares an uninitialised value-type local — without an init,
     // the compiler emits `null` and the first `p.X := 10` writes to
@@ -217,8 +358,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
     for stmt in body.iter_mut() {
         default_init_struct_locals_stmt(stmt, &struct_names, &explicit_ctor_record_names);
     }
+    let array_type_aliases = collect_pascal_array_type_aliases(&body);
     for stmt in body.iter_mut() {
-        default_init_struct_results_stmt(stmt, &struct_names);
+        default_init_struct_results_stmt(stmt, &struct_names, &array_type_aliases);
+    }
+    if !array_type_aliases.is_empty() {
+        rewrite_pascal_array_alias_return_types(&mut body, &array_type_aliases);
+    }
+    for stmt in body.iter_mut() {
+        rewrite_pascal_result_fixed_array_indexes_stmt(stmt, None);
     }
     for stmt in body.iter_mut() {
         erase_variant_record_param_type_hints_stmt(stmt, &variant_record_names);
@@ -240,8 +388,25 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let enum_type_names = collect_enum_type_names(&body);
     let enum_type_counts = collect_enum_type_counts(&body);
     let enum_member_ordinals = collect_enum_member_ordinals(&body);
+    let enum_member_names = collect_enum_member_names(&body);
+    let rtti_metadata = collect_pascal_rtti_metadata(&body);
+    let mut rtti_env = std::collections::HashMap::new();
+    for stmt in body.iter_mut() {
+        rewrite_pascal_typeinfo_stmt(
+            stmt,
+            &class_display_names,
+            &struct_names,
+            &enum_member_names,
+            &rtti_metadata,
+            &mut rtti_env,
+        );
+    }
+    for stmt in body.iter_mut() {
+        rewrite_pascal_writeln_bool_class_calls_stmt(stmt, &bool_class_methods);
+    }
     default_init_enum_indexed_arrays(&mut body, &enum_type_counts);
     rewrite_pascal_enum_ordinals(&mut body, &enum_member_ordinals);
+    rewrite_pascal_typed_enum_ord_calls(&mut body, &enum_type_names);
     rename_shadowing_pascal_set_vars(&mut body, &enum_member_ordinals);
     rewrite_pascal_set_semantics(&mut body, &enum_type_names);
     // Pascal allows user functions to shadow builtin type names. When that
@@ -388,6 +553,7 @@ fn default_init_struct_locals_stmt(
 fn default_init_struct_results_stmt(
     stmt: &mut Statement,
     struct_names: &std::collections::HashSet<String>,
+    array_type_aliases: &std::collections::HashMap<String, String>,
 ) {
     match &mut stmt.kind {
         StmtKind::FunctionDecl {
@@ -397,15 +563,19 @@ fn default_init_struct_results_stmt(
                 let bare = bare_type_name(return_type);
                 if struct_names.contains(&bare.to_lowercase()) {
                     body.insert(0, assign_result_new_record(&bare));
+                } else if let Some(array_type) = array_type_aliases.get(&bare.to_lowercase()) {
+                    if let Some(init) = default_array_init_for_type(array_type) {
+                        body.insert(0, assign_result_expr(init));
+                    }
                 }
             }
             for s in body {
-                default_init_struct_results_stmt(s, struct_names);
+                default_init_struct_results_stmt(s, struct_names, array_type_aliases);
             }
         }
         StmtKind::Block(inner) => {
             for s in inner {
-                default_init_struct_results_stmt(s, struct_names);
+                default_init_struct_results_stmt(s, struct_names, array_type_aliases);
             }
         }
         StmtKind::If {
@@ -415,16 +585,16 @@ fn default_init_struct_results_stmt(
             ..
         } => {
             for s in then_body {
-                default_init_struct_results_stmt(s, struct_names);
+                default_init_struct_results_stmt(s, struct_names, array_type_aliases);
             }
             for (_, body) in elifs {
                 for s in body {
-                    default_init_struct_results_stmt(s, struct_names);
+                    default_init_struct_results_stmt(s, struct_names, array_type_aliases);
                 }
             }
             if let Some(else_body) = else_body {
                 for s in else_body {
-                    default_init_struct_results_stmt(s, struct_names);
+                    default_init_struct_results_stmt(s, struct_names, array_type_aliases);
                 }
             }
         }
@@ -433,7 +603,7 @@ fn default_init_struct_results_stmt(
         | StmtKind::While { body, .. }
         | StmtKind::DoWhile { body, .. } => {
             for s in body {
-                default_init_struct_results_stmt(s, struct_names);
+                default_init_struct_results_stmt(s, struct_names, array_type_aliases);
             }
         }
         StmtKind::Try {
@@ -443,16 +613,16 @@ fn default_init_struct_results_stmt(
             ..
         } => {
             for s in body {
-                default_init_struct_results_stmt(s, struct_names);
+                default_init_struct_results_stmt(s, struct_names, array_type_aliases);
             }
             for c in catches.iter_mut() {
                 for s in c.body.iter_mut() {
-                    default_init_struct_results_stmt(s, struct_names);
+                    default_init_struct_results_stmt(s, struct_names, array_type_aliases);
                 }
             }
             if let Some(finally) = finally {
                 for s in finally {
-                    default_init_struct_results_stmt(s, struct_names);
+                    default_init_struct_results_stmt(s, struct_names, array_type_aliases);
                 }
             }
         }
@@ -460,16 +630,432 @@ fn default_init_struct_results_stmt(
             for member in members {
                 match member {
                     ClassMember::Method(method) => {
-                        default_init_struct_results_stmt(method, struct_names);
+                        default_init_struct_results_stmt(method, struct_names, array_type_aliases);
                     }
                     ClassMember::Constructor { body, .. } => {
                         for s in body {
-                            default_init_struct_results_stmt(s, struct_names);
+                            default_init_struct_results_stmt(s, struct_names, array_type_aliases);
                         }
                     }
                     _ => {}
                 }
             }
+        }
+        _ => {}
+    }
+}
+
+fn collect_pascal_array_type_aliases(
+    body: &[Statement],
+) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for stmt in body {
+        let StmtKind::VarDecl {
+            declarations,
+            kind: VarDeclKind::Const,
+        } = &stmt.kind
+        else {
+            continue;
+        };
+        for decl in declarations {
+            let Some(type_hint) = decl.type_hint.as_deref() else {
+                continue;
+            };
+            if !is_pascal_array_type_hint(type_hint) {
+                continue;
+            }
+            if let BindingPattern::Ident(name) = &decl.pattern {
+                out.insert(name.to_lowercase(), type_hint.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn assign_result_expr(value: Expression) -> Statement {
+    Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident("Result")],
+        value,
+    })
+}
+
+fn rewrite_pascal_array_alias_return_types(
+    body: &mut [Statement],
+    aliases: &std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        rewrite_pascal_array_alias_return_types_stmt(stmt, aliases);
+    }
+}
+
+fn rewrite_pascal_array_alias_return_types_stmt(
+    stmt: &mut Statement,
+    aliases: &std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::FunctionDecl {
+            return_type, body, ..
+        } => {
+            if let Some(return_type_value) = return_type.as_mut() {
+                if let Some(alias) = aliases.get(&bare_type_name(return_type_value).to_lowercase())
+                {
+                    *return_type_value = alias.clone();
+                }
+            }
+            rewrite_pascal_array_alias_return_types(body, aliases);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_pascal_array_alias_return_types(body, aliases);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_array_alias_return_types_member(member, aliases);
+            }
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            rewrite_pascal_array_alias_return_types(then_body, aliases);
+            for (_, body) in elifs {
+                rewrite_pascal_array_alias_return_types(body, aliases);
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_array_alias_return_types(body, aliases);
+            }
+        }
+        StmtKind::While {
+            body, else_body, ..
+        } => {
+            rewrite_pascal_array_alias_return_types(body, aliases);
+            if let Some(body) = else_body {
+                rewrite_pascal_array_alias_return_types(body, aliases);
+            }
+        }
+        StmtKind::DoWhile { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. } => {
+            rewrite_pascal_array_alias_return_types(body, aliases);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            rewrite_pascal_array_alias_return_types(body, aliases);
+            for catch in catches {
+                rewrite_pascal_array_alias_return_types(&mut catch.body, aliases);
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_array_alias_return_types(body, aliases);
+            }
+            if let Some(body) = finally {
+                rewrite_pascal_array_alias_return_types(body, aliases);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_array_alias_return_types_member(
+    member: &mut ClassMember,
+    aliases: &std::collections::HashMap<String, String>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_array_alias_return_types_stmt(stmt, aliases);
+        }
+        ClassMember::Constructor { body, .. } => {
+            rewrite_pascal_array_alias_return_types(body, aliases);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_pascal_array_alias_return_types(getter, aliases);
+            }
+            if let Some(setter) = setter {
+                rewrite_pascal_array_alias_return_types(&mut setter.body, aliases);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_result_fixed_array_indexes_stmt(
+    stmt: &mut Statement,
+    current_bounds: Option<&[(i64, i64)]>,
+) {
+    match &mut stmt.kind {
+        StmtKind::FunctionDecl {
+            return_type, body, ..
+        } => {
+            let bounds = return_type.as_deref().and_then(pascal_const_array_bounds);
+            let active = bounds.as_deref();
+            for stmt in body {
+                rewrite_pascal_result_fixed_array_indexes_stmt(stmt, active);
+            }
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_result_fixed_array_indexes_expr(expr, current_bounds);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_result_fixed_array_indexes_expr(init, current_bounds);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_result_fixed_array_indexes_expr(target, current_bounds);
+            }
+            rewrite_pascal_result_fixed_array_indexes_expr(value, current_bounds);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_result_fixed_array_indexes_expr(target, current_bounds);
+            rewrite_pascal_result_fixed_array_indexes_expr(value, current_bounds);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            for stmt in body {
+                rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_result_fixed_array_indexes_member(member);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_result_fixed_array_indexes_expr(cond, current_bounds);
+            for stmt in then_body {
+                rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
+            }
+            for (cond, body) in elifs {
+                rewrite_pascal_result_fixed_array_indexes_expr(cond, current_bounds);
+                for stmt in body {
+                    rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
+                }
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_result_fixed_array_indexes_expr(cond, current_bounds);
+            for stmt in body {
+                rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
+                }
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            for stmt in body {
+                rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
+            }
+            rewrite_pascal_result_fixed_array_indexes_expr(cond, current_bounds);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                rewrite_pascal_result_fixed_array_indexes_stmt(init, current_bounds);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_result_fixed_array_indexes_expr(cond, current_bounds);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_result_fixed_array_indexes_expr(update, current_bounds);
+            }
+            for stmt in body {
+                rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
+            }
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_pascal_result_fixed_array_indexes_expr(iter, current_bounds);
+            for stmt in body {
+                rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
+                }
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            for stmt in body {
+                rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
+            }
+            for catch in catches {
+                for stmt in &mut catch.body {
+                    rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
+                }
+            }
+            if let Some(body) = finally {
+                for stmt in body {
+                    rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_result_fixed_array_indexes_member(member: &mut ClassMember) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_result_fixed_array_indexes_stmt(stmt, None);
+        }
+        ClassMember::Constructor { body, .. } => {
+            for stmt in body {
+                rewrite_pascal_result_fixed_array_indexes_stmt(stmt, None);
+            }
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                for stmt in getter {
+                    rewrite_pascal_result_fixed_array_indexes_stmt(stmt, None);
+                }
+            }
+            if let Some(setter) = setter {
+                for stmt in &mut setter.body {
+                    rewrite_pascal_result_fixed_array_indexes_stmt(stmt, None);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_result_fixed_array_indexes_expr(
+    expr: &mut Expression,
+    current_bounds: Option<&[(i64, i64)]>,
+) {
+    match &mut expr.kind {
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_result_fixed_array_indexes_expr(object, current_bounds);
+            rewrite_pascal_result_fixed_array_indexes_expr(index, current_bounds);
+            if let (Some(bounds), ExprKind::Ident(name)) = (current_bounds, &object.kind) {
+                if name.eq_ignore_ascii_case("Result") {
+                    if let Some((lo, _)) = bounds.first().copied() {
+                        *index = Box::new(pascal_adjust_fixed_array_index((**index).clone(), lo));
+                    }
+                }
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_pascal_result_fixed_array_indexes_expr(callee, current_bounds);
+            for arg in args {
+                rewrite_pascal_result_fixed_array_indexes_expr(&mut arg.value, current_bounds);
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_result_fixed_array_indexes_expr(left, current_bounds);
+            rewrite_pascal_result_fixed_array_indexes_expr(right, current_bounds);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Cast { expr, .. } => {
+            rewrite_pascal_result_fixed_array_indexes_expr(expr, current_bounds)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_result_fixed_array_indexes_expr(cond, current_bounds);
+            rewrite_pascal_result_fixed_array_indexes_expr(then, current_bounds);
+            rewrite_pascal_result_fixed_array_indexes_expr(else_, current_bounds);
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_pascal_result_fixed_array_indexes_expr(object, current_bounds);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_result_fixed_array_indexes_expr(class, current_bounds);
+            for arg in args {
+                rewrite_pascal_result_fixed_array_indexes_expr(&mut arg.value, current_bounds);
+            }
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_pascal_result_fixed_array_indexes_expr(key, current_bounds);
+                }
+                rewrite_pascal_result_fixed_array_indexes_expr(&mut element.value, current_bounds);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { key, value } = prop {
+                    rewrite_pascal_result_fixed_array_indexes_expr(key, current_bounds);
+                    rewrite_pascal_result_fixed_array_indexes_expr(value, current_bounds);
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_pascal_result_fixed_array_indexes_expr(item, current_bounds);
+            }
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_pascal_result_fixed_array_indexes_expr(left, current_bounds);
+            rewrite_pascal_result_fixed_array_indexes_expr(right, current_bounds);
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_pascal_result_fixed_array_indexes_expr(start, current_bounds);
+            rewrite_pascal_result_fixed_array_indexes_expr(end, current_bounds);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_pascal_result_fixed_array_indexes_expr(target, current_bounds);
+            rewrite_pascal_result_fixed_array_indexes_expr(value, current_bounds);
+        }
+        ExprKind::SuperCall { args, .. } => {
+            for arg in args {
+                rewrite_pascal_result_fixed_array_indexes_expr(&mut arg.value, current_bounds);
+            }
+        }
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_pascal_result_fixed_array_indexes_expr(class, current_bounds);
+            rewrite_pascal_result_fixed_array_indexes_expr(member, current_bounds);
         }
         _ => {}
     }
@@ -574,6 +1160,688 @@ fn normalize_pascal_free_function_overloads(body: &mut Vec<Statement>) {
             &enum_members,
             &mut scope,
         );
+    }
+}
+
+fn normalize_pascal_class_method_overloads(body: &mut Vec<Statement>) {
+    let enum_members = collect_enum_member_types(body);
+    let mut all_candidates: std::collections::HashMap<String, Vec<PascalOverloadCandidate>> =
+        std::collections::HashMap::new();
+    let mut return_types = std::collections::HashMap::new();
+
+    for stmt in body.iter_mut() {
+        let (name, members) = match &mut stmt.kind {
+            StmtKind::ClassDecl { name, members, .. }
+            | StmtKind::StructDecl { name, members, .. } => (name, members),
+            _ => continue,
+        };
+        let class_key = name.to_lowercase();
+        let mut grouped: std::collections::BTreeMap<String, Vec<(usize, PascalOverloadCandidate)>> =
+            std::collections::BTreeMap::new();
+        for (order, member) in members.iter().enumerate() {
+            let ClassMember::Method(method) = member else {
+                continue;
+            };
+            let StmtKind::FunctionDecl {
+                name,
+                params,
+                return_type,
+                modifiers,
+                ..
+            } = &method.kind
+            else {
+                continue;
+            };
+            if !modifiers.is_overloads {
+                continue;
+            }
+            grouped.entry(name.to_lowercase()).or_default().push((
+                order,
+                PascalOverloadCandidate {
+                    internal_name: name.clone(),
+                    params: params.clone(),
+                    return_type: return_type.clone(),
+                    order,
+                },
+            ));
+        }
+
+        for (method_key, entries) in grouped {
+            if entries.len() <= 1 {
+                continue;
+            }
+            let call_key = format!("{}.{}", class_key, method_key);
+            let mut candidates = Vec::new();
+            for (idx, (member_idx, mut candidate)) in entries.into_iter().enumerate() {
+                let hidden = format!("{}__pascal_overload_{}", method_key, idx);
+                candidate.internal_name = hidden.clone();
+                return_types.insert(hidden.to_lowercase(), candidate.return_type.clone());
+                if let Some(ClassMember::Method(method)) = members.get_mut(member_idx) {
+                    if let StmtKind::FunctionDecl { name, .. } = &mut method.kind {
+                        *name = hidden;
+                    }
+                }
+                candidates.push(candidate);
+            }
+            all_candidates.insert(call_key, candidates);
+        }
+    }
+
+    if all_candidates.is_empty() {
+        return;
+    }
+
+    let mut scope = std::collections::HashMap::new();
+    for stmt in body.iter_mut() {
+        rewrite_pascal_class_overload_stmt(
+            stmt,
+            &all_candidates,
+            &return_types,
+            &enum_members,
+            &mut scope,
+        );
+    }
+}
+
+fn rewrite_pascal_class_overload_stmt(
+    stmt: &mut Statement,
+    overloads: &std::collections::HashMap<String, Vec<PascalOverloadCandidate>>,
+    return_types: &std::collections::HashMap<String, Option<String>>,
+    enum_members: &std::collections::HashMap<String, String>,
+    scope: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, kind } => {
+            for decl in declarations {
+                if let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, &decl.type_hint)
+                {
+                    scope.insert(
+                        name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+                if *kind == VarDeclKind::Const {
+                    if let BindingPattern::Ident(name) = &decl.pattern {
+                        if let Some(init) = &decl.init {
+                            if let Some(type_name) =
+                                pascal_overload_expr_type(init, return_types, enum_members, scope)
+                            {
+                                scope.insert(name.to_lowercase(), type_name);
+                            }
+                        }
+                    }
+                }
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_class_overload_expr(
+                        init,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        scope,
+                    );
+                }
+            }
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = scope.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            for stmt in body {
+                rewrite_pascal_class_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
+            }
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            let mut scoped = scope.clone();
+            for stmt in body {
+                rewrite_pascal_class_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_class_overload_member(
+                    member,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    scope,
+                );
+            }
+        }
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr), ..
+        } => {
+            rewrite_pascal_class_overload_expr(expr, overloads, return_types, enum_members, scope);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_class_overload_expr(
+                    target,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    scope,
+                );
+            }
+            rewrite_pascal_class_overload_expr(value, overloads, return_types, enum_members, scope);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_class_overload_expr(
+                target,
+                overloads,
+                return_types,
+                enum_members,
+                scope,
+            );
+            rewrite_pascal_class_overload_expr(value, overloads, return_types, enum_members, scope);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_class_overload_expr(cond, overloads, return_types, enum_members, scope);
+            let mut scoped = scope.clone();
+            for stmt in then_body {
+                rewrite_pascal_class_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
+            }
+            for (cond, body) in elifs {
+                rewrite_pascal_class_overload_expr(
+                    cond,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    scope,
+                );
+                let mut scoped = scope.clone();
+                for stmt in body {
+                    rewrite_pascal_class_overload_stmt(
+                        stmt,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
+                }
+            }
+            if let Some(body) = else_body {
+                let mut scoped = scope.clone();
+                for stmt in body {
+                    rewrite_pascal_class_overload_stmt(
+                        stmt,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
+                }
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_class_overload_expr(cond, overloads, return_types, enum_members, scope);
+            let mut scoped = scope.clone();
+            for stmt in body {
+                rewrite_pascal_class_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
+            }
+            if let Some(body) = else_body {
+                let mut scoped = scope.clone();
+                for stmt in body {
+                    rewrite_pascal_class_overload_stmt(
+                        stmt,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
+                }
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            let mut scoped = scope.clone();
+            for stmt in body {
+                rewrite_pascal_class_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
+            }
+            rewrite_pascal_class_overload_expr(
+                cond,
+                overloads,
+                return_types,
+                enum_members,
+                &scoped,
+            );
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped = scope.clone();
+            if let Some(init) = init {
+                rewrite_pascal_class_overload_stmt(
+                    init,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_class_overload_expr(
+                    cond,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &scoped,
+                );
+            }
+            if let Some(update) = update {
+                rewrite_pascal_class_overload_expr(
+                    update,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &scoped,
+                );
+            }
+            for stmt in body {
+                rewrite_pascal_class_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
+            }
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_pascal_class_overload_expr(iter, overloads, return_types, enum_members, scope);
+            let mut scoped = scope.clone();
+            for stmt in body {
+                rewrite_pascal_class_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
+            }
+            if let Some(body) = else_body {
+                let mut scoped = scope.clone();
+                for stmt in body {
+                    rewrite_pascal_class_overload_stmt(
+                        stmt,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
+                }
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            let mut scoped = scope.clone();
+            for stmt in body {
+                rewrite_pascal_class_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
+            }
+            for catch in catches {
+                let mut scoped = scope.clone();
+                for stmt in &mut catch.body {
+                    rewrite_pascal_class_overload_stmt(
+                        stmt,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
+                }
+            }
+            if let Some(body) = else_body {
+                let mut scoped = scope.clone();
+                for stmt in body {
+                    rewrite_pascal_class_overload_stmt(
+                        stmt,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
+                }
+            }
+            if let Some(body) = finally {
+                let mut scoped = scope.clone();
+                for stmt in body {
+                    rewrite_pascal_class_overload_stmt(
+                        stmt,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_class_overload_member(
+    member: &mut ClassMember,
+    overloads: &std::collections::HashMap<String, Vec<PascalOverloadCandidate>>,
+    return_types: &std::collections::HashMap<String, Option<String>>,
+    enum_members: &std::collections::HashMap<String, String>,
+    scope: &std::collections::HashMap<String, String>,
+) {
+    match member {
+        ClassMember::Field {
+            init: Some(expr), ..
+        }
+        | ClassMember::Const { value: expr, .. } => {
+            rewrite_pascal_class_overload_expr(expr, overloads, return_types, enum_members, scope)
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            let mut scoped = scope.clone();
+            rewrite_pascal_class_overload_stmt(
+                stmt,
+                overloads,
+                return_types,
+                enum_members,
+                &mut scoped,
+            );
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            let mut scoped = scope.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            for stmt in body {
+                rewrite_pascal_class_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
+            }
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                let mut scoped = scope.clone();
+                for stmt in getter {
+                    rewrite_pascal_class_overload_stmt(
+                        stmt,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
+                }
+            }
+            if let Some(setter) = setter {
+                let mut scoped = scope.clone();
+                if let Some(type_hint) = &setter.param.type_hint {
+                    scoped.insert(
+                        setter.param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+                for stmt in &mut setter.body {
+                    rewrite_pascal_class_overload_stmt(
+                        stmt,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_class_overload_expr(
+    expr: &mut Expression,
+    overloads: &std::collections::HashMap<String, Vec<PascalOverloadCandidate>>,
+    return_types: &std::collections::HashMap<String, Option<String>>,
+    enum_members: &std::collections::HashMap<String, String>,
+    scope: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_pascal_class_overload_expr(
+                    &mut arg.value,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    scope,
+                );
+            }
+            if let ExprKind::Member { object, field, .. } = &mut callee.kind {
+                rewrite_pascal_class_overload_expr(
+                    object,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    scope,
+                );
+                let receiver_type = match &object.kind {
+                    ExprKind::Ident(name) => Some(name.to_lowercase()),
+                    _ => None,
+                };
+                if let Some(class_key) = receiver_type {
+                    let call_key = format!("{}.{}", class_key, field.to_lowercase());
+                    if let Some(candidates) = overloads.get(&call_key) {
+                        if let Some(best) = choose_pascal_overload(
+                            candidates,
+                            args,
+                            return_types,
+                            enum_members,
+                            scope,
+                        ) {
+                            *field = best.internal_name.clone();
+                        }
+                    }
+                }
+            } else {
+                rewrite_pascal_class_overload_expr(
+                    callee,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    scope,
+                );
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_class_overload_expr(left, overloads, return_types, enum_members, scope);
+            rewrite_pascal_class_overload_expr(right, overloads, return_types, enum_members, scope);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::IsType { expr, .. } => {
+            rewrite_pascal_class_overload_expr(expr, overloads, return_types, enum_members, scope)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_class_overload_expr(cond, overloads, return_types, enum_members, scope);
+            rewrite_pascal_class_overload_expr(then, overloads, return_types, enum_members, scope);
+            rewrite_pascal_class_overload_expr(else_, overloads, return_types, enum_members, scope);
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_pascal_class_overload_expr(
+                object,
+                overloads,
+                return_types,
+                enum_members,
+                scope,
+            );
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_class_overload_expr(
+                object,
+                overloads,
+                return_types,
+                enum_members,
+                scope,
+            );
+            rewrite_pascal_class_overload_expr(index, overloads, return_types, enum_members, scope);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_class_overload_expr(class, overloads, return_types, enum_members, scope);
+            for arg in args {
+                rewrite_pascal_class_overload_expr(
+                    &mut arg.value,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    scope,
+                );
+            }
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_pascal_class_overload_expr(
+                        key,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        scope,
+                    );
+                }
+                rewrite_pascal_class_overload_expr(
+                    &mut element.value,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    scope,
+                );
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) => {
+            for item in items {
+                rewrite_pascal_class_overload_expr(
+                    item,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    scope,
+                );
+            }
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_pascal_class_overload_expr(left, overloads, return_types, enum_members, scope);
+            rewrite_pascal_class_overload_expr(right, overloads, return_types, enum_members, scope);
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_pascal_class_overload_expr(start, overloads, return_types, enum_members, scope);
+            rewrite_pascal_class_overload_expr(end, overloads, return_types, enum_members, scope);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_pascal_class_overload_expr(
+                target,
+                overloads,
+                return_types,
+                enum_members,
+                scope,
+            );
+            rewrite_pascal_class_overload_expr(value, overloads, return_types, enum_members, scope);
+        }
+        ExprKind::SuperCall { args, .. } => {
+            for arg in args {
+                rewrite_pascal_class_overload_expr(
+                    &mut arg.value,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    scope,
+                );
+            }
+        }
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_pascal_class_overload_expr(class, overloads, return_types, enum_members, scope);
+            rewrite_pascal_class_overload_expr(
+                member,
+                overloads,
+                return_types,
+                enum_members,
+                scope,
+            );
+        }
+        _ => {}
     }
 }
 
@@ -1225,10 +2493,14 @@ fn is_pascal_operator_method_name(name: &str) -> bool {
             | "bitwiseand"
             | "bitwiseor"
             | "bitwisexor"
+            | "logicaland"
+            | "logicalor"
             | "leftshift"
             | "rightshift"
             | "negative"
+            | "positive"
             | "not"
+            | "in"
             | "inc"
             | "dec"
             | "implicit"
@@ -1472,6 +2744,18 @@ fn lower_pascal_operator_overload_expr(
                     pascal_binary_operator_call(method, left, right, operators, scope)
                 {
                     *expr = call;
+                } else if *op == BinOp::And || *op == BinOp::BitAnd {
+                    if let Some(call) =
+                        pascal_binary_operator_call("LogicalAnd", left, right, operators, scope)
+                    {
+                        *expr = call;
+                    }
+                } else if *op == BinOp::Or || *op == BinOp::BitOr {
+                    if let Some(call) =
+                        pascal_binary_operator_call("LogicalOr", left, right, operators, scope)
+                    {
+                        *expr = call;
+                    }
                 } else if *op == BinOp::Gt {
                     if let Some(call) =
                         pascal_binary_operator_call("LessThan", right, left, operators, scope)
@@ -1485,6 +2769,7 @@ fn lower_pascal_operator_overload_expr(
             lower_pascal_operator_overload_expr(inner, operators, scope);
             let method = match op {
                 UnaryOp::Neg => Some("Negative"),
+                UnaryOp::Pos => Some("Positive"),
                 UnaryOp::Not => Some("Not"),
                 _ => None,
             };
@@ -1567,6 +2852,7 @@ fn pascal_operator_method_for_binop(op: BinOp) -> Option<&'static str> {
         BinOp::Xor | BinOp::BitXor => Some("BitwiseXor"),
         BinOp::Shl => Some("LeftShift"),
         BinOp::Shr => Some("RightShift"),
+        BinOp::In => Some("In"),
         _ => None,
     }
 }
@@ -2202,6 +3488,8 @@ fn is_pascal_procedural_type(type_hint: &str, info: &PascalMethodPointerInfo) ->
     let lower = type_hint.to_lowercase();
     lower.starts_with("procedure")
         || lower.starts_with("function")
+        || lower.starts_with("reference to procedure")
+        || lower.starts_with("reference to function")
         || info
             .aliases
             .get(&lower)
@@ -2416,21 +3704,74 @@ fn collect_record_array_types_member(
 }
 
 fn rewrite_bare_parameterless_method_refs(body: &mut [Statement]) {
+    let mut class_methods: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    let mut class_parents: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for stmt in body.iter() {
+        if let StmtKind::ClassDecl {
+            name,
+            parents,
+            members,
+            ..
+        } = &stmt.kind
+        {
+            class_parents.insert(name.to_lowercase(), parents.clone());
+            let method_names: std::collections::HashSet<String> = members
+                .iter()
+                .filter_map(|member| {
+                    let ClassMember::Method(stmt) = member else {
+                        return None;
+                    };
+                    let StmtKind::FunctionDecl { name, params, .. } = &stmt.kind else {
+                        return None;
+                    };
+                    params.is_empty().then(|| name.to_lowercase())
+                })
+                .collect();
+            class_methods.insert(name.to_lowercase(), method_names);
+        } else if let StmtKind::StructDecl { name, members, .. } = &stmt.kind {
+            let method_names: std::collections::HashSet<String> = members
+                .iter()
+                .filter_map(|member| {
+                    let ClassMember::Method(stmt) = member else {
+                        return None;
+                    };
+                    let StmtKind::FunctionDecl { name, params, .. } = &stmt.kind else {
+                        return None;
+                    };
+                    params.is_empty().then(|| name.to_lowercase())
+                })
+                .collect();
+            class_methods.insert(name.to_lowercase(), method_names);
+        }
+    }
+
     for stmt in body {
         match &mut stmt.kind {
-            StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
-                let method_names: std::collections::HashSet<String> = members
-                    .iter()
-                    .filter_map(|member| {
-                        let ClassMember::Method(stmt) = member else {
-                            return None;
-                        };
-                        let StmtKind::FunctionDecl { name, params, .. } = &stmt.kind else {
-                            return None;
-                        };
-                        params.is_empty().then(|| name.to_lowercase())
-                    })
-                    .collect();
+            StmtKind::ClassDecl { name, members, .. }
+            | StmtKind::StructDecl { name, members, .. } => {
+                let mut method_names = class_methods
+                    .get(&name.to_lowercase())
+                    .cloned()
+                    .unwrap_or_default();
+                let mut pending = class_parents
+                    .get(&name.to_lowercase())
+                    .cloned()
+                    .unwrap_or_default();
+                let mut seen = std::collections::HashSet::new();
+                while let Some(parent) = pending.pop() {
+                    let parent_key = parent.to_lowercase();
+                    if !seen.insert(parent_key.clone()) {
+                        continue;
+                    }
+                    if let Some(parent_methods) = class_methods.get(&parent_key) {
+                        method_names.extend(parent_methods.iter().cloned());
+                    }
+                    if let Some(grandparents) = class_parents.get(&parent_key) {
+                        pending.extend(grandparents.iter().cloned());
+                    }
+                }
                 if method_names.is_empty() {
                     continue;
                 }
@@ -2734,6 +4075,7 @@ struct PascalIndexedPropertyInfo {
     getter: Option<String>,
     setter: Option<String>,
     is_default: bool,
+    index_arg: Option<Expression>,
 }
 
 type PascalIndexedPropertyMap = std::collections::HashMap<String, Vec<PascalIndexedPropertyInfo>>;
@@ -2746,6 +4088,8 @@ struct PascalStaticPropertyInfo {
 }
 
 type PascalStaticPropertyMap = std::collections::HashMap<String, Vec<PascalStaticPropertyInfo>>;
+
+type PascalInstancePropertyMap = std::collections::HashMap<String, Vec<PascalStaticPropertyInfo>>;
 
 fn collect_pascal_indexed_properties(body: &[Statement]) -> PascalIndexedPropertyMap {
     let mut out = std::collections::HashMap::new();
@@ -2764,6 +4108,7 @@ fn collect_pascal_indexed_properties(body: &[Statement]) -> PascalIndexedPropert
                         getter: Some(format!("Get{}", name)),
                         setter: Some(format!("Set{}", name)),
                         is_default: false,
+                        index_arg: None,
                     })
                 })
                 .collect();
@@ -2803,10 +4148,17 @@ fn collect_pascal_indexed_properties(body: &[Statement]) -> PascalIndexedPropert
             };
             let mut is_indexed = false;
             let mut is_default = false;
+            let mut index_arg = None;
             for decorator in &modifiers.decorators {
                 if let ExprKind::Lit(Literal::Str(marker)) = &decorator.kind {
                     is_indexed |= marker == "__pascal_indexed_property";
                     is_default |= marker == "__pascal_default_property";
+                }
+                if let ExprKind::Call { callee, args, .. } = &decorator.kind {
+                    if matches!(&callee.kind, ExprKind::Ident(name) if name == "__pascal_property_index")
+                    {
+                        index_arg = args.first().map(|arg| arg.value.clone());
+                    }
                 }
             }
             if !is_indexed {
@@ -2821,6 +4173,7 @@ fn collect_pascal_indexed_properties(body: &[Statement]) -> PascalIndexedPropert
                     .as_ref()
                     .and_then(|setter| property_body_setter_name(&setter.body)),
                 is_default,
+                index_arg,
             });
         }
         if !props.is_empty() {
@@ -2832,6 +4185,377 @@ fn collect_pascal_indexed_properties(body: &[Statement]) -> PascalIndexedPropert
         inherit_pascal_indexed_properties(&class_name, &parents, &mut out);
     }
     out
+}
+
+fn collect_pascal_instance_properties(body: &[Statement]) -> PascalInstancePropertyMap {
+    let mut out = std::collections::HashMap::new();
+    for stmt in body {
+        let (StmtKind::ClassDecl { name, members, .. }
+        | StmtKind::StructDecl { name, members, .. }) = &stmt.kind
+        else {
+            continue;
+        };
+        let mut props = Vec::new();
+        for member in members {
+            let ClassMember::Property {
+                name,
+                getter,
+                setter,
+                modifiers,
+                ..
+            } = member
+            else {
+                continue;
+            };
+            if modifiers.is_static {
+                continue;
+            }
+            if modifiers.decorators.iter().any(|decorator| {
+                matches!(
+                    &decorator.kind,
+                    ExprKind::Lit(Literal::Str(marker)) if marker == "__pascal_indexed_property"
+                )
+            }) {
+                continue;
+            }
+            props.push(PascalStaticPropertyInfo {
+                name: name.to_lowercase(),
+                getter: getter
+                    .as_ref()
+                    .and_then(|body| property_body_accessor_name(body)),
+                setter: setter
+                    .as_ref()
+                    .and_then(|setter| property_body_setter_name(&setter.body)),
+            });
+        }
+        if !props.is_empty() {
+            out.insert(name.to_lowercase(), props);
+        }
+    }
+    out
+}
+
+fn rewrite_pascal_instance_property_setters_body(
+    body: &mut Vec<Statement>,
+    properties: &PascalInstancePropertyMap,
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        rewrite_pascal_instance_property_setters_stmt(stmt, properties, env);
+    }
+}
+
+fn rewrite_pascal_instance_property_setters_stmt(
+    stmt: &mut Statement,
+    properties: &PascalInstancePropertyMap,
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_instance_property_setters_expr(init, properties, env);
+                }
+                if let Some(type_hint) = &decl.type_hint {
+                    if let BindingPattern::Ident(name) = &decl.pattern {
+                        env.insert(
+                            name.to_lowercase(),
+                            bare_type_name(type_hint).to_lowercase(),
+                        );
+                    }
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } if targets.len() == 1 => {
+            rewrite_pascal_instance_property_setters_expr(value, properties, env);
+            if let Some(call) =
+                pascal_instance_property_setter_call(&targets[0], value.clone(), properties, env)
+            {
+                stmt.kind = StmtKind::Expr(call);
+            } else {
+                rewrite_pascal_instance_property_setters_expr(&mut targets[0], properties, env);
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_instance_property_setters_expr(target, properties, env);
+            }
+            rewrite_pascal_instance_property_setters_expr(value, properties, env);
+        }
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr), ..
+        } => {
+            rewrite_pascal_instance_property_setters_expr(expr, properties, env);
+        }
+        StmtKind::Block(body) => {
+            let mut scoped = env.clone();
+            rewrite_pascal_instance_property_setters_body(body, properties, &mut scoped);
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = env.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            rewrite_pascal_instance_property_setters_body(body, properties, &mut scoped);
+        }
+        StmtKind::ClassDecl { name, members, .. } | StmtKind::StructDecl { name, members, .. } => {
+            let field_types = collect_pascal_class_field_types(members);
+            for member in members {
+                rewrite_pascal_instance_property_setters_member(
+                    member,
+                    name,
+                    properties,
+                    &field_types,
+                );
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_instance_property_setters_expr(cond, properties, env);
+            let mut scoped = env.clone();
+            rewrite_pascal_instance_property_setters_body(then_body, properties, &mut scoped);
+            for (cond, body) in elifs {
+                rewrite_pascal_instance_property_setters_expr(cond, properties, env);
+                let mut scoped = env.clone();
+                rewrite_pascal_instance_property_setters_body(body, properties, &mut scoped);
+            }
+            if let Some(body) = else_body {
+                let mut scoped = env.clone();
+                rewrite_pascal_instance_property_setters_body(body, properties, &mut scoped);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped = env.clone();
+            if let Some(init) = init {
+                rewrite_pascal_instance_property_setters_stmt(init, properties, &mut scoped);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_instance_property_setters_expr(cond, properties, &mut scoped);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_instance_property_setters_expr(update, properties, &mut scoped);
+            }
+            rewrite_pascal_instance_property_setters_body(body, properties, &mut scoped);
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_instance_property_setters_expr(cond, properties, env);
+            let mut scoped = env.clone();
+            rewrite_pascal_instance_property_setters_body(body, properties, &mut scoped);
+            if let Some(body) = else_body {
+                let mut scoped = env.clone();
+                rewrite_pascal_instance_property_setters_body(body, properties, &mut scoped);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            let mut scoped = env.clone();
+            rewrite_pascal_instance_property_setters_body(body, properties, &mut scoped);
+            for catch in catches {
+                let mut catch_scope = env.clone();
+                if let (Some(var_name), [type_name]) = (&catch.var_name, catch.types.as_slice()) {
+                    catch_scope.insert(var_name.to_lowercase(), type_name.to_lowercase());
+                }
+                rewrite_pascal_instance_property_setters_body(
+                    &mut catch.body,
+                    properties,
+                    &mut catch_scope,
+                );
+            }
+            if let Some(body) = else_body {
+                let mut scoped = env.clone();
+                rewrite_pascal_instance_property_setters_body(body, properties, &mut scoped);
+            }
+            if let Some(body) = finally {
+                let mut scoped = env.clone();
+                rewrite_pascal_instance_property_setters_body(body, properties, &mut scoped);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_instance_property_setters_member(
+    member: &mut ClassMember,
+    class_name: &str,
+    properties: &PascalInstancePropertyMap,
+    field_types: &std::collections::HashMap<String, String>,
+) {
+    let mut env = std::collections::HashMap::new();
+    env.insert("self".to_string(), class_name.to_lowercase());
+    env.extend(field_types.iter().map(|(name, ty)| (name.clone(), ty.clone())));
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_instance_property_setters_stmt(stmt, properties, &mut env)
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    env.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            rewrite_pascal_instance_property_setters_body(body, properties, &mut env);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_pascal_instance_property_setters_body(getter, properties, &mut env.clone());
+            }
+            if let Some(setter) = setter {
+                rewrite_pascal_instance_property_setters_body(
+                    &mut setter.body,
+                    properties,
+                    &mut env,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_pascal_class_field_types(
+    members: &[ClassMember],
+) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for member in members {
+        if let ClassMember::Field {
+            name,
+            type_hint: Some(type_hint),
+            ..
+        } = member
+        {
+            out.insert(name.to_lowercase(), bare_type_name(type_hint).to_lowercase());
+        }
+    }
+    out
+}
+
+fn rewrite_pascal_instance_property_setters_expr(
+    expr: &mut Expression,
+    properties: &PascalInstancePropertyMap,
+    env: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_pascal_instance_property_setters_expr(callee, properties, env);
+            for arg in args {
+                rewrite_pascal_instance_property_setters_expr(&mut arg.value, properties, env);
+            }
+        }
+        ExprKind::Member { object, field, .. } => {
+            rewrite_pascal_instance_property_setters_expr(object, properties, env);
+            if let Some(getter) = pascal_instance_property_getter_name(object, field, properties, env)
+            {
+                expr.kind = ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new((**object).clone()),
+                        field: getter,
+                        null_safe: false,
+                    })),
+                    args: Vec::new(),
+                    optional: false,
+                };
+            }
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_instance_property_setters_expr(object, properties, env);
+            rewrite_pascal_instance_property_setters_expr(index, properties, env);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_instance_property_setters_expr(left, properties, env);
+            rewrite_pascal_instance_property_setters_expr(right, properties, env);
+        }
+        ExprKind::Unary { expr, .. } => {
+            rewrite_pascal_instance_property_setters_expr(expr, properties, env)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_instance_property_setters_expr(cond, properties, env);
+            rewrite_pascal_instance_property_setters_expr(then, properties, env);
+            rewrite_pascal_instance_property_setters_expr(else_, properties, env);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_instance_property_setters_expr(class, properties, env);
+            for arg in args {
+                rewrite_pascal_instance_property_setters_expr(&mut arg.value, properties, env);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pascal_instance_property_getter_name(
+    object: &Expression,
+    field: &str,
+    properties: &PascalInstancePropertyMap,
+    env: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let class_name = match &object.kind {
+        ExprKind::This => env.get("self"),
+        ExprKind::Ident(name) if name.eq_ignore_ascii_case("Self") => env.get("self"),
+        ExprKind::Ident(name) => env.get(&name.to_lowercase()),
+        _ => None,
+    }?;
+    properties
+        .get(class_name)?
+        .iter()
+        .find(|prop| prop.name.eq_ignore_ascii_case(field))?
+        .getter
+        .clone()
+}
+
+fn pascal_instance_property_setter_call(
+    target: &Expression,
+    value: Expression,
+    properties: &PascalInstancePropertyMap,
+    env: &std::collections::HashMap<String, String>,
+) -> Option<Expression> {
+    let ExprKind::Member { object, field, .. } = &target.kind else {
+        return None;
+    };
+    let ExprKind::Ident(object_name) = &object.kind else {
+        return None;
+    };
+    let class_name = env.get(&object_name.to_lowercase())?;
+    let setter = properties
+        .get(class_name)?
+        .iter()
+        .find(|prop| prop.name.eq_ignore_ascii_case(field))?
+        .setter
+        .clone()?;
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new((**object).clone()),
+            field: setter,
+            null_safe: false,
+        })),
+        args: vec![Argument::positional(value)],
+        optional: false,
+    }))
 }
 
 fn collect_pascal_static_properties(body: &[Statement]) -> PascalStaticPropertyMap {
@@ -3158,6 +4882,181 @@ fn rewrite_pascal_indexed_properties(
     }
 }
 
+fn rewrite_pascal_collection_for_in(body: &mut [Statement]) {
+    let mut var_types = std::collections::HashMap::new();
+    for stmt in body.iter() {
+        collect_pascal_var_types_stmt(stmt, &mut var_types);
+    }
+    for stmt in body {
+        rewrite_pascal_collection_for_in_stmt(stmt, &mut var_types);
+    }
+}
+
+fn rewrite_pascal_collection_for_in_stmt(
+    stmt: &mut Statement,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, &decl.type_hint)
+                {
+                    var_types.insert(
+                        name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            if pascal_expr_is_collection_value(iter, var_types) {
+                *iter = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(iter.clone()),
+                        field: "ToArray".to_string(),
+                        null_safe: false,
+                    })),
+                    args: Vec::new(),
+                    optional: false,
+                });
+            }
+            let mut scoped = var_types.clone();
+            rewrite_pascal_collection_for_in_body(body, &mut scoped);
+            if let Some(else_body) = else_body {
+                rewrite_pascal_collection_for_in_body(else_body, &mut var_types.clone());
+            }
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = var_types.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            rewrite_pascal_collection_for_in_body(body, &mut scoped);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_collection_for_in_member(member, &mut var_types.clone());
+            }
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            rewrite_pascal_collection_for_in_body(then_body, &mut var_types.clone());
+            for (_, body) in elifs {
+                rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+            }
+        }
+        StmtKind::While { body, else_body, .. } => {
+            rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+            if let Some(body) = else_body {
+                rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+            }
+        }
+        StmtKind::For { init, body, .. } => {
+            let mut scoped = var_types.clone();
+            if let Some(init) = init {
+                rewrite_pascal_collection_for_in_stmt(init, &mut scoped);
+            }
+            rewrite_pascal_collection_for_in_body(body, &mut scoped);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+            for catch in catches {
+                rewrite_pascal_collection_for_in_body(&mut catch.body, &mut var_types.clone());
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+            }
+            if let Some(body) = finally {
+                rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_collection_for_in_body(
+    body: &mut [Statement],
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        rewrite_pascal_collection_for_in_stmt(stmt, var_types);
+    }
+}
+
+fn rewrite_pascal_collection_for_in_member(
+    member: &mut ClassMember,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_collection_for_in_stmt(stmt, var_types)
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            let mut scoped = var_types.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            rewrite_pascal_collection_for_in_body(body, &mut scoped);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_pascal_collection_for_in_body(getter, &mut var_types.clone());
+            }
+            if let Some(setter) = setter {
+                rewrite_pascal_collection_for_in_body(&mut setter.body, &mut var_types.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pascal_expr_is_collection_value(
+    expr: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => var_types
+            .get(&name.to_lowercase())
+            .is_some_and(|type_name| is_pascal_generic_collection_type(type_name)),
+        _ => false,
+    }
+}
+
+fn is_pascal_generic_collection_type(type_name: &str) -> bool {
+    matches!(
+        bare_type_name(type_name).to_ascii_lowercase().as_str(),
+        "tlist" | "tobjectlist"
+    )
+}
+
 fn collect_pascal_var_types_stmt(
     stmt: &Statement,
     out: &mut std::collections::HashMap<String, String>,
@@ -3212,7 +5111,16 @@ fn rewrite_pascal_indexed_properties_stmt(
                 properties,
                 var_types,
                 current_class,
-            ) {
+            )
+            .or_else(|| {
+                pascal_named_indexed_property_setter_call(
+                    &targets[0],
+                    value.clone(),
+                    properties,
+                    var_types,
+                    current_class,
+                )
+            }) {
                 stmt.kind = StmtKind::Expr(call);
             } else {
                 rewrite_pascal_indexed_properties_expr(
@@ -3530,13 +5438,52 @@ fn pascal_property_getter_call(
         .iter()
         .find(|prop| prop.name.eq_ignore_ascii_case(field))?;
     let getter = prop.getter.as_ref()?;
+    let args = prop
+        .index_arg
+        .clone()
+        .map(Argument::positional)
+        .into_iter()
+        .collect();
     Some(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: object.clone(),
             field: getter.clone(),
             null_safe: *null_safe,
         })),
-        args: Vec::new(),
+        args,
+        optional: false,
+    }))
+}
+
+fn pascal_named_indexed_property_setter_call(
+    target: &Expression,
+    value: Expression,
+    properties: &PascalIndexedPropertyMap,
+    var_types: &std::collections::HashMap<String, String>,
+    current_class: Option<&str>,
+) -> Option<Expression> {
+    let ExprKind::Member {
+        object,
+        field,
+        null_safe,
+    } = &target.kind
+    else {
+        return None;
+    };
+    let class_name = pascal_expr_class_name(object, var_types, current_class)?;
+    let prop = properties
+        .get(&class_name)?
+        .iter()
+        .find(|prop| prop.name.eq_ignore_ascii_case(field))?;
+    let index_arg = prop.index_arg.clone()?;
+    let setter = prop.setter.as_ref()?;
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: object.clone(),
+            field: setter.clone(),
+            null_safe: *null_safe,
+        })),
+        args: vec![Argument::positional(index_arg), Argument::positional(value)],
         optional: false,
     }))
 }
@@ -3830,60 +5777,235 @@ fn assign_result_new_record(type_name: &str) -> Statement {
     })
 }
 
-fn collect_pascal_polymorphic_class_names(body: &[Statement]) -> std::collections::HashSet<String> {
-    let mut names = std::collections::HashSet::new();
+fn collect_pascal_destructible_class_names(
+    body: &[Statement],
+) -> std::collections::HashSet<String> {
+    let mut parents: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut destructible = std::collections::HashSet::new();
     for stmt in body {
-        if let StmtKind::ClassDecl { parents, .. } = &stmt.kind {
-            for parent in parents {
-                names.insert(parent.to_lowercase());
+        let StmtKind::ClassDecl {
+            name,
+            parents: class_parents,
+            members,
+            ..
+        } = &stmt.kind
+        else {
+            continue;
+        };
+        let class_name = name.to_lowercase();
+        parents.insert(
+            class_name.clone(),
+            class_parents
+                .iter()
+                .map(|parent| parent.to_lowercase())
+                .collect(),
+        );
+        if members.iter().any(|member| {
+            matches!(
+                member,
+                ClassMember::Method(method)
+                    if matches!(&method.kind, StmtKind::FunctionDecl { name, .. }
+                        if name.eq_ignore_ascii_case("Destroy"))
+            )
+        }) {
+            destructible.insert(class_name);
+        }
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (class_name, class_parents) in &parents {
+            if destructible.contains(class_name) {
+                continue;
+            }
+            if class_parents
+                .iter()
+                .any(|parent| destructible.contains(parent))
+            {
+                destructible.insert(class_name.clone());
+                changed = true;
             }
         }
     }
-    names
+    destructible
 }
 
-fn erase_pascal_class_value_type_hints_stmt(
+fn synthesize_pascal_default_destructors(body: &mut [Statement]) {
+    for stmt in body {
+        let StmtKind::ClassDecl { members, .. } = &mut stmt.kind else {
+            continue;
+        };
+        if members.iter().any(|member| {
+            matches!(
+                member,
+                ClassMember::Method(method)
+                    if matches!(&method.kind, StmtKind::FunctionDecl { name, .. }
+                        if name.eq_ignore_ascii_case("Destroy"))
+            )
+        }) {
+            continue;
+        }
+        members.push(ClassMember::Method(Box::new(Statement::new(
+            StmtKind::FunctionDecl {
+                name: "Destroy".to_string(),
+                params: Vec::new(),
+                return_type: None,
+                body: Vec::new(),
+                modifiers: Modifiers {
+                    visibility: Visibility::Public,
+                    is_override: true,
+                    ..Modifiers::default()
+                },
+                handles: Vec::new(),
+                is_async: false,
+                is_generator: false,
+                is_sub: true,
+            },
+        ))));
+    }
+}
+
+fn synthesize_pascal_inherited_constructors(body: &mut [Statement]) {
+    let mut parent_ctors: std::collections::HashMap<String, Vec<ClassMember>> =
+        std::collections::HashMap::new();
+    for stmt in body.iter() {
+        let StmtKind::ClassDecl { name, members, .. } = &stmt.kind else {
+            continue;
+        };
+        let ctors: Vec<ClassMember> = members
+            .iter()
+            .filter_map(|member| match member {
+                ClassMember::Constructor { .. } => Some(member.clone()),
+                _ => None,
+            })
+            .collect();
+        if !ctors.is_empty() {
+            parent_ctors.insert(name.to_lowercase(), ctors);
+        }
+    }
+
+    for stmt in body {
+        let StmtKind::ClassDecl {
+            parents, members, ..
+        } = &mut stmt.kind
+        else {
+            continue;
+        };
+        if parents.is_empty()
+            || members
+                .iter()
+                .any(|member| matches!(member, ClassMember::Constructor { .. }))
+        {
+            continue;
+        }
+        let Some(parent) = parents.first() else {
+            continue;
+        };
+        let Some(ctors) = parent_ctors.get(&parent.to_lowercase()) else {
+            continue;
+        };
+        for ctor in ctors {
+            let ClassMember::Constructor {
+                name,
+                params,
+                body: parent_body,
+                visibility,
+                ..
+            } = ctor
+            else {
+                continue;
+            };
+            let mut body = vec![Statement::new(StmtKind::Expr(Expression::ident(
+                PASCAL_NO_BASE_CTOR_MARKER,
+            )))];
+            body.extend(parent_body.clone());
+            members.push(ClassMember::Constructor {
+                name: name.clone(),
+                params: params.clone(),
+                body,
+                base_args: None,
+                initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
+                visibility: visibility.clone(),
+            });
+        }
+    }
+}
+
+fn rewrite_pascal_free_calls_stmt(
     stmt: &mut Statement,
-    class_names: &std::collections::HashSet<String>,
+    destructible_classes: &std::collections::HashSet<String>,
+    var_types: &mut std::collections::HashMap<String, String>,
 ) {
     match &mut stmt.kind {
-        StmtKind::VarDecl { declarations, .. } => {
-            for decl in declarations {
-                if decl
-                    .type_hint
-                    .as_deref()
-                    .is_some_and(|hint| class_names.contains(&bare_type_name(hint).to_lowercase()))
-                {
-                    decl.type_hint = None;
-                }
-                if let Some(init) = &mut decl.init {
-                    erase_pascal_class_value_type_hints_expr(init, class_names);
-                }
-            }
-        }
-        StmtKind::FunctionDecl { params, body, .. } => {
-            erase_pascal_class_param_type_hints(params, class_names);
-            for stmt in body {
-                erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-            }
-        }
-        StmtKind::Block(stmts) => {
-            for stmt in stmts {
-                erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-            }
-        }
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
-            erase_pascal_class_value_type_hints_expr(expr, class_names)
+            rewrite_pascal_free_calls_expr(expr, destructible_classes, var_types);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations.iter_mut() {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_free_calls_expr(init, destructible_classes, var_types);
+                }
+            }
+            for decl in declarations {
+                if let (vybe_ast::BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, &decl.type_hint)
+                {
+                    var_types.insert(
+                        name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
         }
         StmtKind::Assign { targets, value } => {
             for target in targets {
-                erase_pascal_class_value_type_hints_expr(target, class_names);
+                rewrite_pascal_free_calls_expr(target, destructible_classes, var_types);
             }
-            erase_pascal_class_value_type_hints_expr(value, class_names);
+            rewrite_pascal_free_calls_expr(value, destructible_classes, var_types);
         }
         StmtKind::CompoundAssign { target, value, .. } => {
-            erase_pascal_class_value_type_hints_expr(target, class_names);
-            erase_pascal_class_value_type_hints_expr(value, class_names);
+            rewrite_pascal_free_calls_expr(target, destructible_classes, var_types);
+            rewrite_pascal_free_calls_expr(value, destructible_classes, var_types);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            let mut scoped = var_types.clone();
+            rewrite_pascal_free_calls_body(body, destructible_classes, &mut scoped);
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = var_types.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            rewrite_pascal_free_calls_body(body, destructible_classes, &mut scoped);
+        }
+        StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
+            let field_types = collect_pascal_member_field_types(members);
+            for member in members {
+                rewrite_pascal_free_calls_member(
+                    member,
+                    destructible_classes,
+                    var_types,
+                    &field_types,
+                );
+            }
+        }
+        StmtKind::ModuleDecl { members, .. } => {
+            let field_types = std::collections::HashMap::new();
+            for member in members {
+                rewrite_pascal_free_calls_member(
+                    member,
+                    destructible_classes,
+                    var_types,
+                    &field_types,
+                );
+            }
         }
         StmtKind::If {
             cond,
@@ -3891,107 +6013,52 @@ fn erase_pascal_class_value_type_hints_stmt(
             elifs,
             else_body,
         } => {
-            erase_pascal_class_value_type_hints_expr(cond, class_names);
-            for stmt in then_body {
-                erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-            }
+            rewrite_pascal_free_calls_expr(cond, destructible_classes, var_types);
+            rewrite_pascal_free_calls_body(then_body, destructible_classes, &mut var_types.clone());
             for (cond, body) in elifs {
-                erase_pascal_class_value_type_hints_expr(cond, class_names);
-                for stmt in body {
-                    erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-                }
+                rewrite_pascal_free_calls_expr(cond, destructible_classes, var_types);
+                rewrite_pascal_free_calls_body(body, destructible_classes, &mut var_types.clone());
             }
             if let Some(body) = else_body {
-                for stmt in body {
-                    erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-                }
+                rewrite_pascal_free_calls_body(body, destructible_classes, &mut var_types.clone());
             }
         }
         StmtKind::While {
             cond,
             body,
             else_body,
-            ..
         } => {
-            erase_pascal_class_value_type_hints_expr(cond, class_names);
-            for stmt in body {
-                erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-            }
+            rewrite_pascal_free_calls_expr(cond, destructible_classes, var_types);
+            rewrite_pascal_free_calls_body(body, destructible_classes, &mut var_types.clone());
             if let Some(body) = else_body {
-                for stmt in body {
-                    erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-                }
+                rewrite_pascal_free_calls_body(body, destructible_classes, &mut var_types.clone());
             }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            rewrite_pascal_free_calls_body(body, destructible_classes, &mut var_types.clone());
+            rewrite_pascal_free_calls_expr(cond, destructible_classes, var_types);
         }
         StmtKind::For {
             init,
             cond,
             update,
             body,
-            ..
         } => {
+            let mut scoped = var_types.clone();
             if let Some(init) = init {
-                erase_pascal_class_value_type_hints_stmt(init, class_names);
+                rewrite_pascal_free_calls_stmt(init, destructible_classes, &mut scoped);
             }
             if let Some(cond) = cond {
-                erase_pascal_class_value_type_hints_expr(cond, class_names);
+                rewrite_pascal_free_calls_expr(cond, destructible_classes, &mut scoped);
             }
             if let Some(update) = update {
-                erase_pascal_class_value_type_hints_expr(update, class_names);
+                rewrite_pascal_free_calls_expr(update, destructible_classes, &mut scoped);
             }
-            for stmt in body {
-                erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-            }
+            rewrite_pascal_free_calls_body(body, destructible_classes, &mut scoped);
         }
-        StmtKind::ForIn {
-            iter,
-            body,
-            else_body,
-            ..
-        } => {
-            erase_pascal_class_value_type_hints_expr(iter, class_names);
-            for stmt in body {
-                erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-            }
-            if let Some(body) = else_body {
-                for stmt in body {
-                    erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-                }
-            }
-        }
-        StmtKind::DoWhile { body, cond, .. } => {
-            for stmt in body {
-                erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-            }
-            erase_pascal_class_value_type_hints_expr(cond, class_names);
-        }
-        StmtKind::Switch {
-            expr,
-            cases,
-            default,
-        } => {
-            erase_pascal_class_value_type_hints_expr(expr, class_names);
-            for case in cases {
-                for cond in &mut case.conditions {
-                    match cond {
-                        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
-                            erase_pascal_class_value_type_hints_expr(expr, class_names);
-                        }
-                        CaseCondition::Range { from, to } => {
-                            erase_pascal_class_value_type_hints_expr(from, class_names);
-                            erase_pascal_class_value_type_hints_expr(to, class_names);
-                        }
-                    }
-                }
-                for stmt in &mut case.body {
-                    erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-                }
-            }
-            if let Some(default) = default {
-                for stmt in default {
-                    erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-                }
-            }
+        StmtKind::ForIn { iter, body, .. } => {
+            rewrite_pascal_free_calls_expr(iter, destructible_classes, var_types);
+            rewrite_pascal_free_calls_body(body, destructible_classes, &mut var_types.clone());
         }
         StmtKind::Try {
             body,
@@ -3999,193 +6066,241 @@ fn erase_pascal_class_value_type_hints_stmt(
             else_body,
             finally,
         } => {
-            for stmt in body {
-                erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-            }
+            rewrite_pascal_free_calls_body(body, destructible_classes, &mut var_types.clone());
             for catch in catches {
-                if let Some(when_clause) = &mut catch.when_clause {
-                    erase_pascal_class_value_type_hints_expr(when_clause, class_names);
-                }
-                for stmt in &mut catch.body {
-                    erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-                }
+                rewrite_pascal_free_calls_body(
+                    &mut catch.body,
+                    destructible_classes,
+                    &mut var_types.clone(),
+                );
             }
             if let Some(body) = else_body {
-                for stmt in body {
-                    erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-                }
+                rewrite_pascal_free_calls_body(body, destructible_classes, &mut var_types.clone());
             }
             if let Some(body) = finally {
-                for stmt in body {
-                    erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-                }
-            }
-        }
-        StmtKind::Using { resource, body, .. } => {
-            erase_pascal_class_value_type_hints_expr(resource, class_names);
-            for stmt in body {
-                erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-            }
-        }
-        StmtKind::With { items, body, .. } => {
-            for item in items {
-                erase_pascal_class_value_type_hints_expr(&mut item.expr, class_names);
-            }
-            for stmt in body {
-                erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-            }
-        }
-        StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
-            for member in members {
-                erase_pascal_class_value_type_hints_member(member, class_names);
+                rewrite_pascal_free_calls_body(body, destructible_classes, &mut var_types.clone());
             }
         }
         _ => {}
     }
 }
 
-fn erase_pascal_class_value_type_hints_member(
+fn rewrite_pascal_free_calls_body(
+    body: &mut [Statement],
+    destructible_classes: &std::collections::HashSet<String>,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        rewrite_pascal_free_calls_stmt(stmt, destructible_classes, var_types);
+    }
+}
+
+fn rewrite_pascal_free_calls_member(
     member: &mut ClassMember,
-    class_names: &std::collections::HashSet<String>,
+    destructible_classes: &std::collections::HashSet<String>,
+    var_types: &std::collections::HashMap<String, String>,
+    field_types: &std::collections::HashMap<String, String>,
 ) {
     match member {
         ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
-            erase_pascal_class_value_type_hints_stmt(stmt, class_names)
+            let mut scoped = var_types.clone();
+            scoped.extend(field_types.clone());
+            rewrite_pascal_free_calls_stmt(stmt, destructible_classes, &mut scoped);
         }
         ClassMember::Constructor { params, body, .. } => {
-            erase_pascal_class_param_type_hints(params, class_names);
-            for stmt in body {
-                erase_pascal_class_value_type_hints_stmt(stmt, class_names);
+            let mut scoped = var_types.clone();
+            scoped.extend(field_types.clone());
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(param.name.to_lowercase(), type_hint.to_lowercase());
+                }
             }
+            rewrite_pascal_free_calls_body(body, destructible_classes, &mut scoped);
         }
         ClassMember::Property { getter, setter, .. } => {
             if let Some(getter) = getter {
-                for stmt in getter {
-                    erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-                }
+                let mut scoped = var_types.clone();
+                scoped.extend(field_types.clone());
+                rewrite_pascal_free_calls_body(getter, destructible_classes, &mut scoped);
             }
             if let Some(setter) = setter {
-                erase_pascal_class_param_type_hints(
-                    std::slice::from_mut(&mut setter.param),
-                    class_names,
-                );
-                for stmt in &mut setter.body {
-                    erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-                }
+                let mut scoped = var_types.clone();
+                scoped.extend(field_types.clone());
+                rewrite_pascal_free_calls_body(&mut setter.body, destructible_classes, &mut scoped);
             }
         }
         _ => {}
     }
 }
 
-fn erase_pascal_class_param_type_hints(
-    params: &mut [Param],
-    class_names: &std::collections::HashSet<String>,
-) {
-    for param in params {
-        if param
-            .type_hint
-            .as_deref()
-            .is_some_and(|hint| class_names.contains(&bare_type_name(hint).to_lowercase()))
+fn collect_pascal_member_field_types(
+    members: &[ClassMember],
+) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for member in members {
+        if let ClassMember::Field {
+            name,
+            type_hint: Some(type_hint),
+            ..
+        } = member
         {
-            param.type_hint = None;
-        }
-        if let Some(default) = &mut param.default {
-            erase_pascal_class_value_type_hints_expr(default, class_names);
+            out.insert(
+                name.to_lowercase(),
+                bare_type_name(type_hint).to_lowercase(),
+            );
         }
     }
+    out
 }
 
-fn erase_pascal_class_value_type_hints_expr(
+fn rewrite_pascal_free_calls_expr(
     expr: &mut Expression,
-    class_names: &std::collections::HashSet<String>,
+    destructible_classes: &std::collections::HashSet<String>,
+    var_types: &std::collections::HashMap<String, String>,
 ) {
     match &mut expr.kind {
         ExprKind::Call { callee, args, .. } => {
-            erase_pascal_class_value_type_hints_expr(callee, class_names);
-            for arg in args {
-                erase_pascal_class_value_type_hints_expr(&mut arg.value, class_names);
+            for arg in args.iter_mut() {
+                rewrite_pascal_free_calls_expr(&mut arg.value, destructible_classes, var_types);
+            }
+            rewrite_pascal_free_calls_expr(callee, destructible_classes, var_types);
+            if args.is_empty() {
+                if let ExprKind::Member { object, field, .. } = &callee.kind {
+                    if field.eq_ignore_ascii_case("Free")
+                        && pascal_free_receiver_is_destructible(
+                            object,
+                            destructible_classes,
+                            var_types,
+                        )
+                    {
+                        *expr = pascal_nil_safe_destroy_expr((**object).clone());
+                    }
+                }
             }
         }
         ExprKind::Member { object, .. } => {
-            erase_pascal_class_value_type_hints_expr(object, class_names)
+            rewrite_pascal_free_calls_expr(object, destructible_classes, var_types)
         }
         ExprKind::Index { object, index, .. } => {
-            erase_pascal_class_value_type_hints_expr(object, class_names);
-            erase_pascal_class_value_type_hints_expr(index, class_names);
+            rewrite_pascal_free_calls_expr(object, destructible_classes, var_types);
+            rewrite_pascal_free_calls_expr(index, destructible_classes, var_types);
         }
         ExprKind::Binary { left, right, .. } => {
-            erase_pascal_class_value_type_hints_expr(left, class_names);
-            erase_pascal_class_value_type_hints_expr(right, class_names);
+            rewrite_pascal_free_calls_expr(left, destructible_classes, var_types);
+            rewrite_pascal_free_calls_expr(right, destructible_classes, var_types);
         }
-        ExprKind::Unary { expr, .. }
-        | ExprKind::Await(expr)
-        | ExprKind::Yield(Some(expr))
-        | ExprKind::YieldFrom(expr)
-        | ExprKind::Spread(expr)
-        | ExprKind::TypeOf(expr)
-        | ExprKind::Void(expr)
-        | ExprKind::Delete(expr)
-        | ExprKind::Cast { expr, .. } => {
-            erase_pascal_class_value_type_hints_expr(expr, class_names)
+        ExprKind::Unary { expr: inner, .. }
+        | ExprKind::Await(inner)
+        | ExprKind::Yield(Some(inner))
+        | ExprKind::Spread(inner) => {
+            rewrite_pascal_free_calls_expr(inner, destructible_classes, var_types)
         }
         ExprKind::Ternary { cond, then, else_ } => {
-            erase_pascal_class_value_type_hints_expr(cond, class_names);
-            erase_pascal_class_value_type_hints_expr(then, class_names);
-            erase_pascal_class_value_type_hints_expr(else_, class_names);
+            rewrite_pascal_free_calls_expr(cond, destructible_classes, var_types);
+            rewrite_pascal_free_calls_expr(then, destructible_classes, var_types);
+            rewrite_pascal_free_calls_expr(else_, destructible_classes, var_types);
         }
         ExprKind::New { class, args } => {
-            erase_pascal_class_value_type_hints_expr(class, class_names);
+            rewrite_pascal_free_calls_expr(class, destructible_classes, var_types);
             for arg in args {
-                erase_pascal_class_value_type_hints_expr(&mut arg.value, class_names);
+                rewrite_pascal_free_calls_expr(&mut arg.value, destructible_classes, var_types);
             }
         }
-        ExprKind::Array(elements) => {
-            for element in elements {
-                if let Some(key) = &mut element.key {
-                    erase_pascal_class_value_type_hints_expr(key, class_names);
+        ExprKind::Array(items) => {
+            for item in items {
+                if let Some(key) = &mut item.key {
+                    rewrite_pascal_free_calls_expr(key, destructible_classes, var_types);
                 }
-                erase_pascal_class_value_type_hints_expr(&mut element.value, class_names);
+                rewrite_pascal_free_calls_expr(&mut item.value, destructible_classes, var_types);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_pascal_free_calls_expr(item, destructible_classes, var_types);
             }
         }
         ExprKind::Object(props) => {
             for prop in props {
                 match prop {
-                    ObjectProperty::KeyValue { key, value }
-                    | ObjectProperty::Computed { key, value } => {
-                        erase_pascal_class_value_type_hints_expr(key, class_names);
-                        erase_pascal_class_value_type_hints_expr(value, class_names);
+                    ObjectProperty::KeyValue { key, value, .. } => {
+                        rewrite_pascal_free_calls_expr(key, destructible_classes, var_types);
+                        rewrite_pascal_free_calls_expr(value, destructible_classes, var_types);
                     }
                     ObjectProperty::Spread(value) => {
-                        erase_pascal_class_value_type_hints_expr(value, class_names);
+                        rewrite_pascal_free_calls_expr(value, destructible_classes, var_types);
                     }
                     _ => {}
                 }
             }
         }
-        ExprKind::Tuple(items) => {
-            for item in items {
-                erase_pascal_class_value_type_hints_expr(item, class_names);
-            }
+        ExprKind::Cast { expr: inner, .. }
+        | ExprKind::TypeOf(inner)
+        | ExprKind::Void(inner)
+        | ExprKind::Delete(inner)
+        | ExprKind::YieldFrom(inner) => {
+            rewrite_pascal_free_calls_expr(inner, destructible_classes, var_types)
         }
-        ExprKind::Lambda { body, params, .. } => {
-            erase_pascal_class_param_type_hints(params, class_names);
-            match body {
-                LambdaBody::Expr(expr) => {
-                    erase_pascal_class_value_type_hints_expr(expr, class_names)
-                }
-                LambdaBody::Block(body) => {
-                    for stmt in body {
-                        erase_pascal_class_value_type_hints_stmt(stmt, class_names);
-                    }
-                }
-            }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_pascal_free_calls_expr(left, destructible_classes, var_types);
+            rewrite_pascal_free_calls_expr(right, destructible_classes, var_types);
         }
-        ExprKind::Assign { target, value } => {
-            erase_pascal_class_value_type_hints_expr(target, class_names);
-            erase_pascal_class_value_type_hints_expr(value, class_names);
+        ExprKind::Range { start, end, .. } => {
+            rewrite_pascal_free_calls_expr(start, destructible_classes, var_types);
+            rewrite_pascal_free_calls_expr(end, destructible_classes, var_types);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_pascal_free_calls_expr(target, destructible_classes, var_types);
+            rewrite_pascal_free_calls_expr(value, destructible_classes, var_types);
+        }
+        ExprKind::SuperCall { args, .. } => {
+            for arg in args {
+                rewrite_pascal_free_calls_expr(&mut arg.value, destructible_classes, var_types);
+            }
         }
         _ => {}
+    }
+}
+
+fn pascal_nil_safe_destroy_expr(receiver: Expression) -> Expression {
+    let destroy_call = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(receiver.clone()),
+            field: "Destroy".to_string(),
+            null_safe: false,
+        })),
+        args: Vec::new(),
+        optional: false,
+    });
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::NotEq,
+            left: Box::new(receiver),
+            right: Box::new(Expression::null()),
+        })),
+        then: Box::new(destroy_call),
+        else_: Box::new(Expression::null()),
+    })
+}
+
+fn pascal_free_receiver_is_destructible(
+    receiver: &Expression,
+    destructible_classes: &std::collections::HashSet<String>,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &receiver.kind {
+        ExprKind::Ident(name) => var_types
+            .get(&name.to_lowercase())
+            .is_some_and(|type_name| destructible_classes.contains(type_name)),
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(class_name) => {
+                destructible_classes.contains(&class_name.to_lowercase())
+            }
+            _ => false,
+        },
+        ExprKind::Cast { type_name, .. } => {
+            destructible_classes.contains(&type_name.to_lowercase())
+        }
+        _ => false,
     }
 }
 
@@ -5315,6 +7430,14 @@ fn expr_references_any_var(expr: &Expression, names: &std::collections::HashSet<
     }
 }
 
+fn pascal_expr_references_except_state(expr: &Expression) -> bool {
+    let names = std::collections::HashSet::from([
+        "exceptobject".to_string(),
+        "exceptaddr".to_string(),
+    ]);
+    expr_references_any_var(expr, &names)
+}
+
 fn expr_is_int(expr: &Expression, expected: i64) -> bool {
     matches!(expr.kind, ExprKind::Lit(Literal::Int(value)) if value == expected)
 }
@@ -5858,6 +7981,510 @@ fn pascal_type_hint_is_integer(type_hint: &str) -> bool {
     )
 }
 
+#[derive(Clone, Default)]
+struct PascalSubrangeEnv {
+    vars: std::collections::HashMap<String, String>,
+    fields: std::collections::HashMap<(String, String), String>,
+    properties: std::collections::HashMap<(String, String), String>,
+    aliases: std::collections::HashMap<String, String>,
+    temp_counter: usize,
+}
+
+#[derive(Clone)]
+enum PascalSubrangeBound {
+    Int(i64),
+    Char(String),
+}
+
+fn rewrite_pascal_subrange_checks(body: &mut Vec<Statement>) {
+    let mut env = PascalSubrangeEnv {
+        aliases: collect_pascal_subrange_aliases(body),
+        fields: collect_pascal_subrange_fields(body),
+        properties: collect_pascal_subrange_properties(body),
+        ..Default::default()
+    };
+    rewrite_pascal_subrange_checks_body(body, &mut env);
+}
+
+fn rewrite_pascal_subrange_checks_body(body: &mut Vec<Statement>, env: &mut PascalSubrangeEnv) {
+    let mut rewritten = Vec::new();
+    for mut stmt in std::mem::take(body) {
+        rewrite_pascal_subrange_checks_stmt(&mut stmt, env);
+        if let Some(mut guarded) = pascal_subrange_guarded_assignment(&stmt, env) {
+            rewritten.append(&mut guarded);
+        } else {
+            rewritten.push(stmt);
+        }
+    }
+    *body = rewritten;
+}
+
+fn rewrite_pascal_subrange_checks_stmt(stmt: &mut Statement, env: &mut PascalSubrangeEnv) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_subrange_checks_expr(init, env);
+                }
+                if let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, decl.type_hint.as_deref())
+                {
+                    env.vars.insert(name.to_lowercase(), type_hint.to_string());
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_subrange_checks_expr(target, env);
+            }
+            rewrite_pascal_subrange_checks_expr(value, env);
+        }
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr), ..
+        } => rewrite_pascal_subrange_checks_expr(expr, env),
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            let mut scoped = env.clone();
+            rewrite_pascal_subrange_checks_body(body, &mut scoped);
+            env.temp_counter = env.temp_counter.max(scoped.temp_counter);
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = env.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped
+                        .vars
+                        .insert(param.name.to_lowercase(), type_hint.to_string());
+                }
+            }
+            rewrite_pascal_subrange_checks_body(body, &mut scoped);
+            env.temp_counter = env.temp_counter.max(scoped.temp_counter);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_subrange_checks_expr(cond, env);
+            let mut then_scope = env.clone();
+            rewrite_pascal_subrange_checks_body(then_body, &mut then_scope);
+            env.temp_counter = env.temp_counter.max(then_scope.temp_counter);
+            for (cond, body) in elifs {
+                rewrite_pascal_subrange_checks_expr(cond, env);
+                let mut elif_scope = env.clone();
+                rewrite_pascal_subrange_checks_body(body, &mut elif_scope);
+                env.temp_counter = env.temp_counter.max(elif_scope.temp_counter);
+            }
+            if let Some(body) = else_body {
+                let mut else_scope = env.clone();
+                rewrite_pascal_subrange_checks_body(body, &mut else_scope);
+                env.temp_counter = env.temp_counter.max(else_scope.temp_counter);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped = env.clone();
+            if let Some(init) = init {
+                rewrite_pascal_subrange_checks_stmt(init, &mut scoped);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_subrange_checks_expr(cond, &mut scoped);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_subrange_checks_expr(update, &mut scoped);
+            }
+            rewrite_pascal_subrange_checks_body(body, &mut scoped);
+            env.temp_counter = env.temp_counter.max(scoped.temp_counter);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            rewrite_pascal_subrange_checks_expr(iter, env);
+            let mut scoped = env.clone();
+            rewrite_pascal_subrange_checks_body(body, &mut scoped);
+            env.temp_counter = env.temp_counter.max(scoped.temp_counter);
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_subrange_checks_expr(cond, env);
+            let mut scoped = env.clone();
+            rewrite_pascal_subrange_checks_body(body, &mut scoped);
+            env.temp_counter = env.temp_counter.max(scoped.temp_counter);
+            if let Some(body) = else_body {
+                let mut else_scope = env.clone();
+                rewrite_pascal_subrange_checks_body(body, &mut else_scope);
+                env.temp_counter = env.temp_counter.max(else_scope.temp_counter);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            let mut scoped = env.clone();
+            rewrite_pascal_subrange_checks_body(body, &mut scoped);
+            rewrite_pascal_subrange_checks_expr(cond, &mut scoped);
+            env.temp_counter = env.temp_counter.max(scoped.temp_counter);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            let mut try_scope = env.clone();
+            rewrite_pascal_subrange_checks_body(body, &mut try_scope);
+            env.temp_counter = env.temp_counter.max(try_scope.temp_counter);
+            for catch in catches {
+                let mut catch_scope = env.clone();
+                rewrite_pascal_subrange_checks_body(&mut catch.body, &mut catch_scope);
+                env.temp_counter = env.temp_counter.max(catch_scope.temp_counter);
+            }
+            if let Some(body) = else_body {
+                let mut else_scope = env.clone();
+                rewrite_pascal_subrange_checks_body(body, &mut else_scope);
+                env.temp_counter = env.temp_counter.max(else_scope.temp_counter);
+            }
+            if let Some(body) = finally {
+                let mut finally_scope = env.clone();
+                rewrite_pascal_subrange_checks_body(body, &mut finally_scope);
+                env.temp_counter = env.temp_counter.max(finally_scope.temp_counter);
+            }
+        }
+        StmtKind::ClassDecl { name, members, .. } | StmtKind::StructDecl { name, members, .. } => {
+            for member in members {
+                rewrite_pascal_subrange_checks_member(member, name, env);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_subrange_checks_member(
+    member: &mut ClassMember,
+    class_name: &str,
+    env: &mut PascalSubrangeEnv,
+) {
+    let mut scoped = env.clone();
+    let class_key = class_name.to_lowercase();
+    scoped.vars.insert("self".to_string(), class_name.to_string());
+    for ((owner, field), type_hint) in env.fields.clone() {
+        if owner == class_key {
+            scoped.vars.insert(field, type_hint);
+        }
+    }
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_subrange_checks_stmt(stmt, &mut scoped);
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped
+                        .vars
+                        .insert(param.name.to_lowercase(), type_hint.to_string());
+                }
+            }
+            rewrite_pascal_subrange_checks_body(body, &mut scoped);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                let mut getter_scope = scoped.clone();
+                rewrite_pascal_subrange_checks_body(getter, &mut getter_scope);
+                env.temp_counter = env.temp_counter.max(getter_scope.temp_counter);
+            }
+            if let Some(setter) = setter {
+                let mut setter_scope = scoped.clone();
+                rewrite_pascal_subrange_checks_body(&mut setter.body, &mut setter_scope);
+                env.temp_counter = env.temp_counter.max(setter_scope.temp_counter);
+            }
+        }
+        _ => {}
+    }
+    env.temp_counter = env.temp_counter.max(scoped.temp_counter);
+}
+
+fn rewrite_pascal_subrange_checks_expr(expr: &mut Expression, env: &mut PascalSubrangeEnv) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_pascal_subrange_checks_expr(callee, env);
+            for arg in args.iter_mut() {
+                rewrite_pascal_subrange_checks_expr(&mut arg.value, env);
+            }
+            if args.len() == 1 {
+                if let ExprKind::Ident(name) = &callee.kind {
+                    if env.aliases.contains_key(&name.to_lowercase()) {
+                        *expr = args[0].value.clone();
+                    }
+                }
+            }
+        }
+        ExprKind::Member { object, .. } => rewrite_pascal_subrange_checks_expr(object, env),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_subrange_checks_expr(object, env);
+            rewrite_pascal_subrange_checks_expr(index, env);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_subrange_checks_expr(left, env);
+            rewrite_pascal_subrange_checks_expr(right, env);
+        }
+        ExprKind::Unary { expr, .. } => rewrite_pascal_subrange_checks_expr(expr, env),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_subrange_checks_expr(cond, env);
+            rewrite_pascal_subrange_checks_expr(then, env);
+            rewrite_pascal_subrange_checks_expr(else_, env);
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_pascal_subrange_checks_expr(target, env);
+            rewrite_pascal_subrange_checks_expr(value, env);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                if let Some(key) = &mut item.key {
+                    rewrite_pascal_subrange_checks_expr(key, env);
+                }
+                rewrite_pascal_subrange_checks_expr(&mut item.value, env);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { key, value }
+                | ObjectProperty::Computed { key, value } = prop
+                {
+                    rewrite_pascal_subrange_checks_expr(key, env);
+                    rewrite_pascal_subrange_checks_expr(value, env);
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_pascal_subrange_checks_expr(item, env);
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_subrange_checks_expr(class, env);
+            for arg in args {
+                rewrite_pascal_subrange_checks_expr(&mut arg.value, env);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pascal_subrange_guarded_assignment(
+    stmt: &Statement,
+    env: &mut PascalSubrangeEnv,
+) -> Option<Vec<Statement>> {
+    let StmtKind::Assign { targets, value } = &stmt.kind else {
+        return None;
+    };
+    let [target] = targets.as_slice() else {
+        return None;
+    };
+    let type_hint = pascal_subrange_type_for_target(target, env)?;
+    let (low, high) = pascal_const_subrange_bounds(&type_hint, &env.aliases)?;
+    env.temp_counter += 1;
+    let temp_name = format!("__pascal_subrange_value_{}", env.temp_counter);
+    let temp_expr = Expression::ident(&temp_name);
+    let temp_decl = Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident(temp_name.clone()),
+            type_hint: None,
+            init: Some(value.clone()),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Dim,
+    });
+    let guard = Statement::new(StmtKind::If {
+        cond: pascal_subrange_out_of_bounds_expr(temp_expr.clone(), low, high),
+        then_body: vec![Statement::new(StmtKind::Throw {
+            expr: Some(Expression::new(ExprKind::New {
+                class: Box::new(Expression::ident("ERangeError")),
+                args: vec![Argument::positional(Expression::string("Range check error"))],
+            })),
+            cause: None,
+        })],
+        elifs: Vec::new(),
+        else_body: None,
+    });
+    let assign = Statement::new(StmtKind::Assign {
+        targets: vec![target.clone()],
+        value: temp_expr,
+    });
+    Some(vec![temp_decl, guard, assign])
+}
+
+fn pascal_subrange_out_of_bounds_expr(
+    value: Expression,
+    low: PascalSubrangeBound,
+    high: PascalSubrangeBound,
+) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Or,
+        left: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Lt,
+            left: Box::new(value.clone()),
+            right: Box::new(pascal_subrange_bound_expr(low)),
+        })),
+        right: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Gt,
+            left: Box::new(value),
+            right: Box::new(pascal_subrange_bound_expr(high)),
+        })),
+    })
+}
+
+fn pascal_subrange_bound_expr(bound: PascalSubrangeBound) -> Expression {
+    match bound {
+        PascalSubrangeBound::Int(value) => Expression::new(ExprKind::Lit(Literal::Int(value))),
+        PascalSubrangeBound::Char(value) => Expression::new(ExprKind::Lit(Literal::Str(value))),
+    }
+}
+
+fn pascal_subrange_type_for_target(
+    target: &Expression,
+    env: &PascalSubrangeEnv,
+) -> Option<String> {
+    match &target.kind {
+        ExprKind::Ident(name) => env.vars.get(&name.to_lowercase()).cloned(),
+        ExprKind::Member { object, field, .. } => {
+            let class_name = pascal_subrange_object_type(object, env)?;
+            env.properties
+                .get(&(class_name.clone(), field.to_lowercase()))
+                .or_else(|| env.fields.get(&(class_name, field.to_lowercase())))
+                .cloned()
+        }
+        _ => None,
+    }
+}
+
+fn pascal_subrange_object_type(object: &Expression, env: &PascalSubrangeEnv) -> Option<String> {
+    match &object.kind {
+        ExprKind::This => env.vars.get("self").map(|ty| bare_type_name(ty).to_lowercase()),
+        ExprKind::Ident(name) if name.eq_ignore_ascii_case("Self") => {
+            env.vars.get("self").map(|ty| bare_type_name(ty).to_lowercase())
+        }
+        ExprKind::Ident(name) => env
+            .vars
+            .get(&name.to_lowercase())
+            .map(|ty| bare_type_name(ty).to_lowercase()),
+        _ => None,
+    }
+}
+
+fn collect_pascal_subrange_aliases(
+    body: &[Statement],
+) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for stmt in body {
+        let StmtKind::VarDecl {
+            declarations,
+            kind: VarDeclKind::Const,
+        } = &stmt.kind
+        else {
+            continue;
+        };
+        for decl in declarations {
+            if decl.init.is_some() {
+                continue;
+            }
+            let (BindingPattern::Ident(name), Some(type_hint)) =
+                (&decl.pattern, decl.type_hint.as_deref())
+            else {
+                continue;
+            };
+            if pascal_const_subrange_bounds(type_hint, &out).is_some() {
+                out.insert(name.to_lowercase(), type_hint.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn collect_pascal_subrange_fields(
+    body: &[Statement],
+) -> std::collections::HashMap<(String, String), String> {
+    let mut out = std::collections::HashMap::new();
+    for stmt in body {
+        let (class_name, members) = match &stmt.kind {
+            StmtKind::ClassDecl { name, members, .. }
+            | StmtKind::StructDecl { name, members, .. } => (name, members),
+            _ => continue,
+        };
+        for member in members {
+            if let ClassMember::Field {
+                name,
+                type_hint: Some(type_hint),
+                ..
+            } = member
+            {
+                out.insert(
+                    (class_name.to_lowercase(), name.to_lowercase()),
+                    type_hint.to_string(),
+                );
+            }
+        }
+    }
+    out
+}
+
+fn collect_pascal_subrange_properties(
+    body: &[Statement],
+) -> std::collections::HashMap<(String, String), String> {
+    let mut out = std::collections::HashMap::new();
+    for stmt in body {
+        let (class_name, members) = match &stmt.kind {
+            StmtKind::ClassDecl { name, members, .. }
+            | StmtKind::StructDecl { name, members, .. } => (name, members),
+            _ => continue,
+        };
+        for member in members {
+            if let ClassMember::Property {
+                name,
+                type_hint: Some(type_hint),
+                ..
+            } = member
+            {
+                out.insert(
+                    (class_name.to_lowercase(), name.to_lowercase()),
+                    type_hint.to_string(),
+                );
+            }
+        }
+    }
+    out
+}
+
+fn pascal_const_subrange_bounds(
+    type_hint: &str,
+    aliases: &std::collections::HashMap<String, String>,
+) -> Option<(PascalSubrangeBound, PascalSubrangeBound)> {
+    let trimmed = type_hint.trim();
+    if !trimmed.contains("..") {
+        let alias = aliases.get(&trimmed.to_lowercase())?;
+        return pascal_const_subrange_bounds(alias, aliases);
+    }
+    let (low, high) = trimmed.split_once("..")?;
+    let low = parse_pascal_subrange_bound(low.trim())?;
+    let high = parse_pascal_subrange_bound(high.trim())?;
+    Some((low, high))
+}
+
+fn parse_pascal_subrange_bound(value: &str) -> Option<PascalSubrangeBound> {
+    if let Ok(value) = value.parse::<i64>() {
+        return Some(PascalSubrangeBound::Int(value));
+    }
+    let inner = value
+        .strip_prefix('\'')
+        .and_then(|value| value.strip_suffix('\''))?
+        .replace("''", "'");
+    (inner.chars().count() == 1).then_some(PascalSubrangeBound::Char(inner))
+}
+
 fn pascal_array_copy_expr(source: Expression, start: Expression, count: Expression) -> Expression {
     let start0 = Expression::new(ExprKind::Binary {
         op: BinOp::Sub,
@@ -5891,24 +8518,28 @@ fn pascal_array_length_expr(source: Expression) -> Expression {
     pascal_call("__len__", vec![source])
 }
 
+#[derive(Clone, Default)]
+struct PascalFixedArrayEnv {
+    vars: std::collections::HashMap<String, Vec<(i64, i64)>>,
+    var_types: std::collections::HashMap<String, String>,
+    fields: std::collections::HashMap<(String, String), Vec<(i64, i64)>>,
+}
+
 fn rewrite_pascal_fixed_array_bounds(body: &mut [Statement]) {
-    let mut env = std::collections::HashMap::new();
+    let mut env = PascalFixedArrayEnv {
+        fields: collect_pascal_fixed_array_class_fields(body),
+        ..Default::default()
+    };
     rewrite_pascal_fixed_array_bounds_block(body, &mut env);
 }
 
-fn rewrite_pascal_fixed_array_bounds_block(
-    body: &mut [Statement],
-    env: &mut std::collections::HashMap<String, Vec<(i64, i64)>>,
-) {
+fn rewrite_pascal_fixed_array_bounds_block(body: &mut [Statement], env: &mut PascalFixedArrayEnv) {
     for stmt in body {
         rewrite_pascal_fixed_array_bounds_stmt(stmt, env);
     }
 }
 
-fn rewrite_pascal_fixed_array_bounds_stmt(
-    stmt: &mut Statement,
-    env: &mut std::collections::HashMap<String, Vec<(i64, i64)>>,
-) {
+fn rewrite_pascal_fixed_array_bounds_stmt(stmt: &mut Statement, env: &mut PascalFixedArrayEnv) {
     match &mut stmt.kind {
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations.iter_mut() {
@@ -5920,8 +8551,12 @@ fn rewrite_pascal_fixed_array_bounds_stmt(
                 if let (BindingPattern::Ident(name), Some(type_hint)) =
                     (&decl.pattern, &decl.type_hint)
                 {
+                    env.var_types.insert(
+                        name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
                     if let Some(bounds) = pascal_const_array_bounds(type_hint) {
-                        env.insert(name.to_lowercase(), bounds);
+                        env.vars.insert(name.to_lowercase(), bounds);
                     }
                 }
             }
@@ -5940,12 +8575,16 @@ fn rewrite_pascal_fixed_array_bounds_stmt(
             rewrite_pascal_fixed_array_bounds_block(inner, &mut scoped);
         }
         StmtKind::FunctionDecl { params, body, .. } => {
-            let mut scoped = std::collections::HashMap::new();
+            let mut scoped = env.clone();
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
                     if let Some(bounds) = pascal_const_array_bounds(type_hint) {
-                        scoped.insert(param.name.to_lowercase(), bounds);
+                        scoped.vars.insert(param.name.to_lowercase(), bounds);
                     }
+                    scoped.var_types.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
                 }
             }
             rewrite_pascal_fixed_array_bounds_block(body, &mut scoped);
@@ -6031,11 +8670,14 @@ fn rewrite_pascal_fixed_array_bounds_stmt(
                 rewrite_pascal_fixed_array_bounds_block(body, &mut finally_scope);
             }
         }
-        StmtKind::ClassDecl { members, .. }
-        | StmtKind::StructDecl { members, .. }
-        | StmtKind::ModuleDecl { members, .. } => {
+        StmtKind::ClassDecl { name, members, .. } | StmtKind::StructDecl { name, members, .. } => {
             for member in members {
-                rewrite_pascal_fixed_array_bounds_member(member, env);
+                rewrite_pascal_fixed_array_bounds_member(member, env, Some(name));
+            }
+        }
+        StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_fixed_array_bounds_member(member, env, None);
             }
         }
         _ => {}
@@ -6044,20 +8686,27 @@ fn rewrite_pascal_fixed_array_bounds_stmt(
 
 fn rewrite_pascal_fixed_array_bounds_member(
     member: &mut ClassMember,
-    env: &std::collections::HashMap<String, Vec<(i64, i64)>>,
+    env: &PascalFixedArrayEnv,
+    class_name: Option<&str>,
 ) {
     match member {
         ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
             let mut scoped = env.clone();
+            seed_pascal_fixed_array_self_fields(&mut scoped, class_name);
             rewrite_pascal_fixed_array_bounds_stmt(stmt, &mut scoped);
         }
         ClassMember::Constructor { params, body, .. } => {
             let mut scoped = env.clone();
+            seed_pascal_fixed_array_self_fields(&mut scoped, class_name);
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
                     if let Some(bounds) = pascal_const_array_bounds(type_hint) {
-                        scoped.insert(param.name.to_lowercase(), bounds);
+                        scoped.vars.insert(param.name.to_lowercase(), bounds);
                     }
+                    scoped.var_types.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
                 }
             }
             rewrite_pascal_fixed_array_bounds_block(body, &mut scoped);
@@ -6065,10 +8714,12 @@ fn rewrite_pascal_fixed_array_bounds_member(
         ClassMember::Property { getter, setter, .. } => {
             if let Some(getter) = getter {
                 let mut scoped = env.clone();
+                seed_pascal_fixed_array_self_fields(&mut scoped, class_name);
                 rewrite_pascal_fixed_array_bounds_block(getter, &mut scoped);
             }
             if let Some(setter) = setter {
                 let mut scoped = env.clone();
+                seed_pascal_fixed_array_self_fields(&mut scoped, class_name);
                 rewrite_pascal_fixed_array_bounds_block(&mut setter.body, &mut scoped);
             }
         }
@@ -6076,10 +8727,7 @@ fn rewrite_pascal_fixed_array_bounds_member(
     }
 }
 
-fn rewrite_pascal_fixed_array_bounds_expr(
-    expr: &mut Expression,
-    env: &std::collections::HashMap<String, Vec<(i64, i64)>>,
-) {
+fn rewrite_pascal_fixed_array_bounds_expr(expr: &mut Expression, env: &PascalFixedArrayEnv) {
     match &mut expr.kind {
         ExprKind::Call { callee, args, .. } => {
             rewrite_pascal_fixed_array_bounds_expr(callee, env);
@@ -6124,6 +8772,16 @@ fn rewrite_pascal_fixed_array_bounds_expr(
         ExprKind::Index { object, index, .. } => {
             rewrite_pascal_fixed_array_bounds_expr(object, env);
             rewrite_pascal_fixed_array_bounds_expr(index, env);
+            if !matches!(object.kind, ExprKind::Ident(_)) {
+                return;
+            }
+            if let Some(bounds) = pascal_bounds_for_expr(object, env) {
+                if let Some((lo, _)) = bounds.first().copied() {
+                    if lo != 0 {
+                        *index = Box::new(pascal_adjust_fixed_array_index((**index).clone(), lo));
+                    }
+                }
+            }
         }
         ExprKind::Unary { expr, .. } => rewrite_pascal_fixed_array_bounds_expr(expr, env),
         ExprKind::Ternary { cond, then, else_ } => {
@@ -6163,14 +8821,78 @@ fn rewrite_pascal_fixed_array_bounds_expr(
     }
 }
 
-fn pascal_bounds_for_expr(
-    expr: &Expression,
-    env: &std::collections::HashMap<String, Vec<(i64, i64)>>,
-) -> Option<Vec<(i64, i64)>> {
+fn pascal_adjust_fixed_array_index(index: Expression, lower_bound: i64) -> Expression {
+    if lower_bound == 0 {
+        return index;
+    }
+    if let Some(value) = const_int_expr(&index) {
+        return Expression::new(ExprKind::Lit(Literal::Int(value - lower_bound)));
+    }
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Sub,
+        left: Box::new(index),
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(lower_bound)))),
+    })
+}
+
+fn pascal_bounds_for_expr(expr: &Expression, env: &PascalFixedArrayEnv) -> Option<Vec<(i64, i64)>> {
     match &expr.kind {
-        ExprKind::Ident(name) => env.get(&name.to_lowercase()).cloned(),
+        ExprKind::Ident(name) => env.vars.get(&name.to_lowercase()).cloned(),
+        ExprKind::Member { object, field, .. } => {
+            let class_name = match &object.kind {
+                ExprKind::Ident(name) if name.eq_ignore_ascii_case("Self") => {
+                    env.var_types.get("self").cloned()
+                }
+                ExprKind::Ident(name) => env.var_types.get(&name.to_lowercase()).cloned(),
+                _ => None,
+            }?;
+            env.fields
+                .get(&(class_name.to_lowercase(), field.to_lowercase()))
+                .cloned()
+        }
         _ => None,
     }
+}
+
+fn seed_pascal_fixed_array_self_fields(env: &mut PascalFixedArrayEnv, class_name: Option<&str>) {
+    let Some(class_name) = class_name else {
+        return;
+    };
+    let class_key = class_name.to_lowercase();
+    env.var_types.insert("self".to_string(), class_key.clone());
+    for ((owner, field), bounds) in env.fields.clone() {
+        if owner == class_key {
+            env.vars.insert(field, bounds);
+        }
+    }
+}
+
+fn collect_pascal_fixed_array_class_fields(
+    body: &[Statement],
+) -> std::collections::HashMap<(String, String), Vec<(i64, i64)>> {
+    let mut out = std::collections::HashMap::new();
+    for stmt in body {
+        let (class_name, members) = match &stmt.kind {
+            StmtKind::ClassDecl { name, members, .. }
+            | StmtKind::StructDecl { name, members, .. } => (name, members),
+            _ => continue,
+        };
+        for member in members {
+            let ClassMember::Field {
+                name, type_hint, ..
+            } = member
+            else {
+                continue;
+            };
+            let Some(type_hint) = type_hint else {
+                continue;
+            };
+            if let Some(bounds) = pascal_const_array_bounds(type_hint) {
+                out.insert((class_name.to_lowercase(), name.to_lowercase()), bounds);
+            }
+        }
+    }
+    out
 }
 
 fn pascal_const_array_bounds(type_hint: &str) -> Option<Vec<(i64, i64)>> {
@@ -6365,6 +9087,55 @@ fn collect_enum_member_ordinals(body: &[Statement]) -> std::collections::HashMap
         Some(&mut out),
     );
     out
+}
+
+fn collect_enum_member_names(body: &[Statement]) -> std::collections::HashMap<String, Vec<String>> {
+    let mut out = std::collections::HashMap::new();
+    collect_enum_member_names_body(body, &mut out);
+    out
+}
+
+fn collect_enum_member_names_body(
+    body: &[Statement],
+    out: &mut std::collections::HashMap<String, Vec<String>>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::EnumDecl { name, members, .. } => {
+                out.insert(
+                    name.to_lowercase(),
+                    members.iter().map(|member| member.name.clone()).collect(),
+                );
+            }
+            StmtKind::NamespaceDecl { body, .. }
+            | StmtKind::FunctionDecl { body, .. }
+            | StmtKind::Block(body) => collect_enum_member_names_body(body, out),
+            StmtKind::ClassDecl { members, .. }
+            | StmtKind::StructDecl { members, .. }
+            | StmtKind::ModuleDecl { members, .. } => {
+                for member in members {
+                    match member {
+                        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                            collect_enum_member_names_body(std::slice::from_ref(stmt), out);
+                        }
+                        ClassMember::Constructor { body, .. } => {
+                            collect_enum_member_names_body(body, out);
+                        }
+                        ClassMember::Property { getter, setter, .. } => {
+                            if let Some(getter) = getter {
+                                collect_enum_member_names_body(getter, out);
+                            }
+                            if let Some(setter) = setter {
+                                collect_enum_member_names_body(&setter.body, out);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn collect_enum_metadata(
@@ -6975,6 +9746,26 @@ fn rewrite_pascal_enum_ordinals_stmt(
                 }
             }
         }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            rewrite_pascal_enum_ordinals_expr(expr, enum_member_ordinals);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    rewrite_pascal_enum_ordinals_case_condition(condition, enum_member_ordinals);
+                }
+                for stmt in &mut case.body {
+                    rewrite_pascal_enum_ordinals_stmt(stmt, enum_member_ordinals);
+                }
+            }
+            if let Some(default) = default {
+                for stmt in default {
+                    rewrite_pascal_enum_ordinals_stmt(stmt, enum_member_ordinals);
+                }
+            }
+        }
         StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
             for stmt in body {
                 rewrite_pascal_enum_ordinals_stmt(stmt, enum_member_ordinals);
@@ -7015,6 +9806,21 @@ fn rewrite_pascal_enum_ordinals_stmt(
             }
         }
         _ => {}
+    }
+}
+
+fn rewrite_pascal_enum_ordinals_case_condition(
+    condition: &mut CaseCondition,
+    enum_member_ordinals: &std::collections::HashMap<String, i64>,
+) {
+    match condition {
+        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
+            rewrite_pascal_enum_ordinals_expr(expr, enum_member_ordinals);
+        }
+        CaseCondition::Range { from, to } => {
+            rewrite_pascal_enum_ordinals_expr(from, enum_member_ordinals);
+            rewrite_pascal_enum_ordinals_expr(to, enum_member_ordinals);
+        }
     }
 }
 
@@ -7088,6 +9894,353 @@ fn rewrite_pascal_enum_ordinals_expr(
             rewrite_pascal_enum_ordinals_expr(cond, enum_member_ordinals);
             rewrite_pascal_enum_ordinals_expr(then, enum_member_ordinals);
             rewrite_pascal_enum_ordinals_expr(else_, enum_member_ordinals);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_typed_enum_ord_calls(
+    body: &mut [Statement],
+    enum_type_names: &std::collections::HashSet<String>,
+) {
+    let mut scope = std::collections::HashMap::new();
+    for stmt in body {
+        rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scope);
+    }
+}
+
+fn rewrite_pascal_typed_enum_ord_calls_stmt(
+    stmt: &mut Statement,
+    enum_type_names: &std::collections::HashSet<String>,
+    scope: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_typed_enum_ord_calls_expr(expr, scope);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_typed_enum_ord_calls_expr(init, scope);
+                }
+                if let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, decl.type_hint.as_deref())
+                {
+                    let bare = bare_type_name(type_hint).to_lowercase();
+                    if enum_type_names.contains(&bare) {
+                        scope.insert(name.to_lowercase(), bare);
+                    }
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_typed_enum_ord_calls_expr(target, scope);
+            }
+            rewrite_pascal_typed_enum_ord_calls_expr(value, scope);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_typed_enum_ord_calls_expr(target, scope);
+            rewrite_pascal_typed_enum_ord_calls_expr(value, scope);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            let mut scoped = scope.clone();
+            for stmt in body {
+                rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+            }
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = scope.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    let bare = bare_type_name(type_hint).to_lowercase();
+                    if enum_type_names.contains(&bare) {
+                        scoped.insert(param.name.to_lowercase(), bare);
+                    }
+                }
+            }
+            for stmt in body {
+                rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_typed_enum_ord_calls_member(member, enum_type_names, scope);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_typed_enum_ord_calls_expr(cond, scope);
+            let mut then_scope = scope.clone();
+            for stmt in then_body {
+                rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut then_scope);
+            }
+            for (cond, body) in elifs {
+                rewrite_pascal_typed_enum_ord_calls_expr(cond, scope);
+                let mut elif_scope = scope.clone();
+                for stmt in body {
+                    rewrite_pascal_typed_enum_ord_calls_stmt(
+                        stmt,
+                        enum_type_names,
+                        &mut elif_scope,
+                    );
+                }
+            }
+            if let Some(body) = else_body {
+                let mut else_scope = scope.clone();
+                for stmt in body {
+                    rewrite_pascal_typed_enum_ord_calls_stmt(
+                        stmt,
+                        enum_type_names,
+                        &mut else_scope,
+                    );
+                }
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_typed_enum_ord_calls_expr(cond, scope);
+            let mut scoped = scope.clone();
+            for stmt in body {
+                rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+            }
+            if let Some(body) = else_body {
+                let mut scoped = scope.clone();
+                for stmt in body {
+                    rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+                }
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            let mut scoped = scope.clone();
+            for stmt in body {
+                rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+            }
+            rewrite_pascal_typed_enum_ord_calls_expr(cond, scope);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped = scope.clone();
+            if let Some(init) = init {
+                rewrite_pascal_typed_enum_ord_calls_stmt(init, enum_type_names, &mut scoped);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_typed_enum_ord_calls_expr(cond, &scoped);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_typed_enum_ord_calls_expr(update, &scoped);
+            }
+            for stmt in body {
+                rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+            }
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_pascal_typed_enum_ord_calls_expr(iter, scope);
+            let mut scoped = scope.clone();
+            for stmt in body {
+                rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+            }
+            if let Some(body) = else_body {
+                let mut scoped = scope.clone();
+                for stmt in body {
+                    rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+                }
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            let mut scoped = scope.clone();
+            for stmt in body {
+                rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+            }
+            for catch in catches {
+                let mut scoped = scope.clone();
+                for stmt in &mut catch.body {
+                    rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+                }
+            }
+            if let Some(body) = else_body {
+                let mut scoped = scope.clone();
+                for stmt in body {
+                    rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+                }
+            }
+            if let Some(body) = finally {
+                let mut scoped = scope.clone();
+                for stmt in body {
+                    rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_typed_enum_ord_calls_member(
+    member: &mut ClassMember,
+    enum_type_names: &std::collections::HashSet<String>,
+    scope: &std::collections::HashMap<String, String>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            let mut scoped = scope.clone();
+            rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            let mut scoped = scope.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    let bare = bare_type_name(type_hint).to_lowercase();
+                    if enum_type_names.contains(&bare) {
+                        scoped.insert(param.name.to_lowercase(), bare);
+                    }
+                }
+            }
+            for stmt in body {
+                rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+            }
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                let mut scoped = scope.clone();
+                for stmt in getter {
+                    rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+                }
+            }
+            if let Some(setter) = setter {
+                let mut scoped = scope.clone();
+                if let Some(type_hint) = &setter.param.type_hint {
+                    let bare = bare_type_name(type_hint).to_lowercase();
+                    if enum_type_names.contains(&bare) {
+                        scoped.insert(setter.param.name.to_lowercase(), bare);
+                    }
+                }
+                for stmt in &mut setter.body {
+                    rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_typed_enum_ord_calls_expr(
+    expr: &mut Expression,
+    scope: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_pascal_typed_enum_ord_calls_expr(&mut arg.value, scope);
+            }
+            if args.len() == 1
+                && matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Ord"))
+                && matches!(&args[0].value.kind, ExprKind::Ident(name) if scope.contains_key(&name.to_lowercase()))
+            {
+                *expr = args[0].value.clone();
+                return;
+            }
+            rewrite_pascal_typed_enum_ord_calls_expr(callee, scope);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_typed_enum_ord_calls_expr(left, scope);
+            rewrite_pascal_typed_enum_ord_calls_expr(right, scope);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Cast { expr, .. } => rewrite_pascal_typed_enum_ord_calls_expr(expr, scope),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_typed_enum_ord_calls_expr(cond, scope);
+            rewrite_pascal_typed_enum_ord_calls_expr(then, scope);
+            rewrite_pascal_typed_enum_ord_calls_expr(else_, scope);
+        }
+        ExprKind::Member { object, .. } => rewrite_pascal_typed_enum_ord_calls_expr(object, scope),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_typed_enum_ord_calls_expr(object, scope);
+            rewrite_pascal_typed_enum_ord_calls_expr(index, scope);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_typed_enum_ord_calls_expr(class, scope);
+            for arg in args {
+                rewrite_pascal_typed_enum_ord_calls_expr(&mut arg.value, scope);
+            }
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_pascal_typed_enum_ord_calls_expr(key, scope);
+                }
+                rewrite_pascal_typed_enum_ord_calls_expr(&mut element.value, scope);
+            }
+        }
+        ExprKind::Object(properties) => {
+            for property in properties {
+                match property {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        rewrite_pascal_typed_enum_ord_calls_expr(key, scope);
+                        rewrite_pascal_typed_enum_ord_calls_expr(value, scope);
+                    }
+                    ObjectProperty::Spread(value) => {
+                        rewrite_pascal_typed_enum_ord_calls_expr(value, scope)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Set(items) | ExprKind::Tuple(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_pascal_typed_enum_ord_calls_expr(item, scope);
+            }
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_pascal_typed_enum_ord_calls_expr(start, scope);
+            rewrite_pascal_typed_enum_ord_calls_expr(end, scope);
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_pascal_typed_enum_ord_calls_expr(left, scope);
+            rewrite_pascal_typed_enum_ord_calls_expr(right, scope);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_pascal_typed_enum_ord_calls_expr(target, scope);
+            rewrite_pascal_typed_enum_ord_calls_expr(value, scope);
+        }
+        ExprKind::SuperCall { args, .. } => {
+            for arg in args {
+                rewrite_pascal_typed_enum_ord_calls_expr(&mut arg.value, scope);
+            }
+        }
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_pascal_typed_enum_ord_calls_expr(class, scope);
+            rewrite_pascal_typed_enum_ord_calls_expr(member, scope);
         }
         _ => {}
     }
@@ -7952,19 +11105,19 @@ fn pascal_set_subset_expr(left: Expression, right: Expression) -> Expression {
     })
 }
 
-fn and_expr(left: Expression, right: Expression) -> Expression {
-    Expression::new(ExprKind::Binary {
-        op: BinOp::And,
-        left: Box::new(left),
-        right: Box::new(right),
-    })
-}
-
 fn high_call(value: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("High")),
         args: vec![Argument::positional(value)],
         optional: false,
+    })
+}
+
+fn and_expr(left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::And,
+        left: Box::new(left),
+        right: Box::new(right),
     })
 }
 
@@ -8382,6 +11535,88 @@ fn rewrite_shadowed_builtin_casts_expr(
     }
 }
 
+const PASCAL_BUILTIN_EXCEPTION_CLASSES: &[&str] = &[
+    "EAccessViolation",
+    "EArgumentException",
+    "EConvertError",
+    "EDivByZero",
+    "EInvalidArgument",
+    "EInvalidOp",
+    "EOverflow",
+    "ERangeError",
+];
+
+fn pascal_prelude_needs(
+    source: &str,
+    imports: &[Import],
+    body: &[Statement],
+) -> PascalPreludeNeeds {
+    let has_user_classes = body.iter().any(|stmt| {
+        matches!(
+            stmt.kind,
+            StmtKind::ClassDecl { .. } | StmtKind::StructDecl { .. }
+        )
+    });
+    let uses_sysutils = imports.iter().any(|import| match &import.kind {
+        ImportKind::Simple { path, .. }
+        | ImportKind::Named { path, .. }
+        | ImportKind::Wildcard { path, .. }
+        | ImportKind::Default { path, .. } => path.eq_ignore_ascii_case("SysUtils"),
+    });
+    let uses_generics_collections = imports.iter().any(|import| match &import.kind {
+        ImportKind::Simple { path, .. }
+        | ImportKind::Named { path, .. }
+        | ImportKind::Wildcard { path, .. }
+        | ImportKind::Default { path, .. } => path.eq_ignore_ascii_case("Generics.Collections"),
+    });
+
+    let exceptions = uses_sysutils
+        || pascal_source_mentions_any_ident(
+            source,
+            &[
+                "Exception",
+                "raise",
+                "try",
+                "except",
+                "EAccessViolation",
+                "EArgumentException",
+                "EConvertError",
+                "EDivByZero",
+                "EInvalidArgument",
+                "EInvalidOp",
+                "EOverflow",
+                "ERangeError",
+            ],
+        );
+    let except_state = pascal_source_mentions_any_ident(source, &["ExceptObject", "ExceptAddr"]);
+    let tinterfacedobject = pascal_source_mentions_any_ident(source, &["TInterfacedObject"]);
+    let tobject = has_user_classes
+        || exceptions
+        || tinterfacedobject
+        || pascal_source_mentions_any_ident(source, &["TObject"]);
+    let collections = uses_generics_collections
+        || pascal_source_mentions_any_ident(
+            source,
+            &["TList", "TObjectList", "TComparer", "TEqualityComparer"],
+        );
+
+    PascalPreludeNeeds {
+        exceptions,
+        except_state,
+        tobject,
+        tinterfacedobject,
+        collections,
+    }
+}
+
+fn pascal_source_mentions_any_ident(source: &str, names: &[&str]) -> bool {
+    let wanted: std::collections::HashSet<String> =
+        names.iter().map(|name| name.to_ascii_lowercase()).collect();
+    source
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .any(|token| wanted.contains(&token.to_ascii_lowercase()))
+}
+
 fn synthesize_exception_class() -> Statement {
     // class Exception { Message: String; constructor Create(msg: String); }
     // The Create body assigns `Self.Message := msg` so `e.Message`
@@ -8395,6 +11630,19 @@ fn synthesize_exception_class() -> Statement {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
+        is_nullable: false,
+    };
+    let help_ctx_param = Param {
+        name: "helpCtx".into(),
+        type_hint: Some("Integer".into()),
+        default: Some(Expression::with_span(
+            ExprKind::Lit(Literal::Int(0)),
+            span.clone(),
+        )),
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: true,
         is_nullable: false,
     };
     // Self.Message := msg
@@ -8412,6 +11660,20 @@ fn synthesize_exception_class() -> Statement {
         },
         span.clone(),
     );
+    let assign_help_ctx = Statement::with_span(
+        StmtKind::Assign {
+            targets: vec![Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
+                    field: "HelpContext".into(),
+                    null_safe: false,
+                },
+                span.clone(),
+            )],
+            value: Expression::with_span(ExprKind::Ident("helpCtx".into()), span.clone()),
+        },
+        span.clone(),
+    );
     Statement::with_span(
         StmtKind::ClassDecl {
             name: "Exception".into(),
@@ -8426,10 +11688,21 @@ fn synthesize_exception_class() -> Statement {
                     with_events: false,
                     array_bounds: None,
                 },
+                ClassMember::Field {
+                    name: "HelpContext".into(),
+                    type_hint: Some("Integer".into()),
+                    init: Some(Expression::with_span(
+                        ExprKind::Lit(Literal::Int(0)),
+                        span.clone(),
+                    )),
+                    modifiers: Modifiers::default(),
+                    with_events: false,
+                    array_bounds: None,
+                },
                 ClassMember::Constructor {
                     name: None,
-                    params: vec![msg_param],
-                    body: vec![assign_msg],
+                    params: vec![msg_param, help_ctx_param],
+                    body: vec![assign_msg, assign_help_ctx],
                     base_args: None,
                     initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
                     visibility: Visibility::Public,
@@ -8442,10 +11715,415 @@ fn synthesize_exception_class() -> Statement {
     )
 }
 
-fn synthesize_tinterfacedobject_class() -> Statement {
+fn synthesize_exception_subclass(name: &str, parent: &str) -> Statement {
     Statement::with_span(
         StmtKind::ClassDecl {
-            name: "TInterfacedObject".into(),
+            name: name.into(),
+            parents: vec![parent.into()],
+            interfaces: Vec::new(),
+            members: Vec::new(),
+            modifiers: ClassModifiers::default(),
+            decorators: vec![],
+        },
+        Span::default(),
+    )
+}
+
+fn synthesize_pascal_except_state_vars() -> Statement {
+    Statement::new(StmtKind::VarDecl {
+        declarations: vec![
+            VarDeclarator {
+                pattern: BindingPattern::Ident("ExceptObject".to_string()),
+                type_hint: Some("TObject".to_string()),
+                init: Some(Expression::null()),
+                array_bounds: None,
+                with_events: false,
+            },
+            VarDeclarator {
+                pattern: BindingPattern::Ident("ExceptAddr".to_string()),
+                type_hint: Some("Pointer".to_string()),
+                init: Some(Expression::null()),
+                array_bounds: None,
+                with_events: false,
+            },
+        ],
+        kind: VarDeclKind::Dim,
+    })
+}
+
+fn pascal_assign_ident(name: &str, value: Expression) -> Statement {
+    Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(name)],
+        value,
+    })
+}
+
+fn rewrite_pascal_except_state_body(body: &mut [Statement]) {
+    for stmt in body {
+        rewrite_pascal_except_state_stmt(stmt);
+    }
+}
+
+fn rewrite_pascal_except_state_stmt(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            rewrite_pascal_except_state_body(body);
+            for catch in catches {
+                let catch_var = catch
+                    .var_name
+                    .clone()
+                    .unwrap_or_else(|| "__pascal_except_object".to_string());
+                if catch.var_name.is_none() {
+                    catch.var_name = Some(catch_var.clone());
+                    rewrite_bare_raise_in_catch(&mut catch.body, &catch_var);
+                }
+                rewrite_pascal_except_state_body(&mut catch.body);
+                catch
+                    .body
+                    .insert(0, pascal_assign_ident("ExceptAddr", Expression::int(1)));
+                catch
+                    .body
+                    .insert(0, pascal_assign_ident("ExceptObject", Expression::ident(&catch_var)));
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_except_state_body(body);
+            }
+            if let Some(body) = finally {
+                rewrite_pascal_except_state_body(body);
+            }
+        }
+        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+            rewrite_pascal_except_state_body(body);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_except_state_member(member);
+            }
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            rewrite_pascal_except_state_body(then_body);
+            for (_, body) in elifs {
+                rewrite_pascal_except_state_body(body);
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_except_state_body(body);
+            }
+        }
+        StmtKind::While { body, else_body, .. } => {
+            rewrite_pascal_except_state_body(body);
+            if let Some(body) = else_body {
+                rewrite_pascal_except_state_body(body);
+            }
+        }
+        StmtKind::DoWhile { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. } => rewrite_pascal_except_state_body(body),
+        StmtKind::With { body, .. } => rewrite_pascal_except_state_body(body),
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_except_state_member(member: &mut ClassMember) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_except_state_stmt(stmt);
+        }
+        ClassMember::Constructor { body, .. } => rewrite_pascal_except_state_body(body),
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_pascal_except_state_body(getter);
+            }
+            if let Some(setter) = setter {
+                rewrite_pascal_except_state_body(&mut setter.body);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_except_addr_hex_body(
+    body: &mut [Statement],
+    hex_vars: &mut std::collections::HashSet<String>,
+    pointer_vars: &mut std::collections::HashSet<String>,
+) {
+    for stmt in body {
+        rewrite_pascal_except_addr_hex_stmt(stmt, hex_vars, pointer_vars);
+    }
+}
+
+fn rewrite_pascal_except_addr_hex_stmt(
+    stmt: &mut Statement,
+    hex_vars: &mut std::collections::HashSet<String>,
+    pointer_vars: &mut std::collections::HashSet<String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Assign { targets, value } => {
+            if let Some(hex) = pascal_except_addr_hex_expr(value) {
+                *value = hex;
+                if let [target] = targets.as_slice() {
+                    if let ExprKind::Ident(name) = &target.kind {
+                        hex_vars.insert(name.to_lowercase());
+                    }
+                }
+            } else if pascal_expr_references_except_state(value) {
+                if let [target] = targets.as_slice() {
+                    if let ExprKind::Ident(name) = &target.kind {
+                        pointer_vars.insert(name.to_lowercase());
+                    }
+                }
+            }
+        }
+        StmtKind::Expr(expr) => {
+            rewrite_pascal_except_addr_hex_expr(expr, hex_vars, pointer_vars);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    if let Some(hex) = pascal_except_addr_hex_expr(init) {
+                        *init = hex;
+                        if let BindingPattern::Ident(name) = &decl.pattern {
+                            hex_vars.insert(name.to_lowercase());
+                        }
+                    } else if pascal_expr_references_except_state(init) {
+                        if let BindingPattern::Ident(name) = &decl.pattern {
+                            pointer_vars.insert(name.to_lowercase());
+                        }
+                    }
+                }
+            }
+        }
+        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+            rewrite_pascal_except_addr_hex_body(
+                body,
+                &mut hex_vars.clone(),
+                &mut pointer_vars.clone(),
+            );
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            rewrite_pascal_except_addr_hex_body(body, &mut hex_vars.clone(), pointer_vars);
+            for catch in catches {
+                rewrite_pascal_except_addr_hex_body(&mut catch.body, &mut hex_vars.clone(), pointer_vars);
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_except_addr_hex_body(
+                    body,
+                    &mut hex_vars.clone(),
+                    &mut pointer_vars.clone(),
+                );
+            }
+            if let Some(body) = finally {
+                rewrite_pascal_except_addr_hex_body(
+                    body,
+                    &mut hex_vars.clone(),
+                    &mut pointer_vars.clone(),
+                );
+            }
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            rewrite_pascal_except_addr_hex_body(
+                then_body,
+                &mut hex_vars.clone(),
+                &mut pointer_vars.clone(),
+            );
+            for (_, body) in elifs {
+                rewrite_pascal_except_addr_hex_body(
+                    body,
+                    &mut hex_vars.clone(),
+                    &mut pointer_vars.clone(),
+                );
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_except_addr_hex_body(
+                    body,
+                    &mut hex_vars.clone(),
+                    &mut pointer_vars.clone(),
+                );
+            }
+        }
+        StmtKind::While { body, else_body, .. } => {
+            rewrite_pascal_except_addr_hex_body(
+                body,
+                &mut hex_vars.clone(),
+                &mut pointer_vars.clone(),
+            );
+            if let Some(body) = else_body {
+                rewrite_pascal_except_addr_hex_body(
+                    body,
+                    &mut hex_vars.clone(),
+                    &mut pointer_vars.clone(),
+                );
+            }
+        }
+        StmtKind::DoWhile { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. }
+        | StmtKind::With { body, .. } => rewrite_pascal_except_addr_hex_body(
+            body,
+            &mut hex_vars.clone(),
+            &mut pointer_vars.clone(),
+        ),
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_except_addr_hex_expr(
+    expr: &mut Expression,
+    hex_vars: &std::collections::HashSet<String>,
+    pointer_vars: &std::collections::HashSet<String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_pascal_except_addr_hex_expr(&mut arg.value, hex_vars, pointer_vars);
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("WriteLn"))
+            {
+                for arg in args {
+                    if expr_references_any_var(&arg.value, hex_vars)
+                        || (pascal_expr_is_any_comparison(&arg.value)
+                            && expr_references_any_var(&arg.value, pointer_vars))
+                    {
+                        arg.value = pascal_bool_display_expr(arg.value.clone());
+                    }
+                }
+            } else {
+                rewrite_pascal_except_addr_hex_expr(callee, hex_vars, pointer_vars);
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_except_addr_hex_expr(left, hex_vars, pointer_vars);
+            rewrite_pascal_except_addr_hex_expr(right, hex_vars, pointer_vars);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Cast { expr, .. } => {
+            rewrite_pascal_except_addr_hex_expr(expr, hex_vars, pointer_vars)
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_pascal_except_addr_hex_expr(object, hex_vars, pointer_vars)
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_except_addr_hex_expr(object, hex_vars, pointer_vars);
+            rewrite_pascal_except_addr_hex_expr(index, hex_vars, pointer_vars);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_except_addr_hex_expr(cond, hex_vars, pointer_vars);
+            rewrite_pascal_except_addr_hex_expr(then, hex_vars, pointer_vars);
+            rewrite_pascal_except_addr_hex_expr(else_, hex_vars, pointer_vars);
+        }
+        _ => {}
+    }
+}
+
+fn pascal_except_addr_hex_expr(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("HexStr"))
+        || args.len() != 2
+        || !pascal_expr_references_except_state(&args[0].value)
+    {
+        return None;
+    }
+    let width = const_int_expr(&args[1].value).unwrap_or(8).max(1) as usize;
+    Some(Expression::string(&format!("{:0width$}", 1, width = width)))
+}
+
+fn synthesize_pascal_safe_idiv_function() -> Statement {
+    let span = Span::default();
+    let a_param = Param {
+        name: "__a".into(),
+        type_hint: Some("Integer".into()),
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    };
+    let b_param = Param {
+        name: "__b".into(),
+        type_hint: Some("Integer".into()),
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    };
+    let zero_check = Expression::new(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(Expression::ident("__b")),
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
+    });
+    let throw_div_zero = Statement::new(StmtKind::Throw {
+        expr: Some(Expression::new(ExprKind::New {
+            class: Box::new(Expression::ident("EDivByZero")),
+            args: vec![Argument::positional(Expression::string("DivideByZero"))],
+        })),
+        cause: None,
+    });
+    let result = Expression::new(ExprKind::Binary {
+        op: BinOp::IDiv,
+        left: Box::new(Expression::ident("__a")),
+        right: Box::new(Expression::ident("__b")),
+    });
+    Statement::with_span(
+        StmtKind::FunctionDecl {
+            name: "__pascal_safe_idiv".into(),
+            params: vec![a_param, b_param],
+            return_type: Some("Integer".into()),
+            body: vec![
+                Statement::new(StmtKind::If {
+                    cond: zero_check,
+                    then_body: vec![throw_div_zero],
+                    elifs: Vec::new(),
+                    else_body: None,
+                }),
+                Statement::new(StmtKind::Return(Some(result))),
+            ],
+            modifiers: Modifiers::default(),
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+        },
+        span,
+    )
+}
+
+fn synthesize_tobject_class() -> Statement {
+    Statement::with_span(
+        StmtKind::ClassDecl {
+            name: "TObject".into(),
             parents: Vec::new(),
             interfaces: Vec::new(),
             members: Vec::new(),
@@ -8456,16 +12134,717 @@ fn synthesize_tinterfacedobject_class() -> Statement {
     )
 }
 
+fn synthesize_tinterfacedobject_class() -> Statement {
+    Statement::with_span(
+        StmtKind::ClassDecl {
+            name: "TInterfacedObject".into(),
+            parents: vec!["TObject".into()],
+            interfaces: Vec::new(),
+            members: Vec::new(),
+            modifiers: ClassModifiers::default(),
+            decorators: vec![],
+        },
+        Span::default(),
+    )
+}
+
+fn synthesize_pascal_collection_classes() -> Result<Vec<Statement>, String> {
+    let src = r#"
+program __PascalCollectionsPrelude;
+type
+  TList = class
+  protected
+    FItems: array of Variant;
+  public
+    Capacity: Integer;
+    constructor Create;
+    function GetCount: Integer;
+    function GetItem(index: Integer): Variant;
+    procedure SetItem(index: Integer; value: Variant); virtual;
+    property Count: Integer read GetCount;
+    property Items[index: Integer]: Variant read GetItem write SetItem; default;
+    function Add(value: Variant): Integer; virtual;
+    procedure AddRange(values: array of Variant);
+    procedure Insert(index: Integer; value: Variant);
+    procedure Delete(index: Integer); virtual;
+    procedure Clear; virtual;
+    function Remove(value: Variant): Integer; virtual;
+    function Extract(value: Variant): Variant;
+    function ExtractAt(index: Integer): Variant;
+    function Contains(value: Variant): Boolean;
+    function IndexOf(value: Variant): Integer;
+    function LastIndexOf(value: Variant): Integer;
+    function First: Variant;
+    function Last: Variant;
+    function ToArray: Variant;
+    procedure Exchange(i, j: Integer);
+    procedure Move(curIndex, newIndex: Integer);
+    procedure Reverse;
+    procedure Sort(comparer: Variant = nil);
+    procedure TrimExcess;
+    destructor Destroy; override;
+  end;
+  TObjectList = class(TList)
+  public
+    OwnsObjects: Boolean;
+    constructor Create(AOwnsObjects: Boolean = True);
+    procedure SetItem(index: Integer; value: Variant); override;
+    procedure Delete(index: Integer); override;
+    procedure Clear; override;
+    function Remove(value: Variant): Integer; override;
+    destructor Destroy; override;
+  end;
+  TComparer = class
+  public
+    class function Construct(c: Variant): Variant;
+    class function Default: Variant;
+  end;
+  TEqualityComparer = class
+  public
+    class function Construct(c: Variant): Variant;
+    class function Default: Variant;
+  end;
+
+constructor TList.Create;
+begin
+  SetLength(FItems, 0);
+  Capacity := 0;
+end;
+destructor TList.Destroy; begin end;
+function TList.GetCount: Integer; begin Result := Length(FItems); end;
+function TList.GetItem(index: Integer): Variant; begin Result := FItems[index]; end;
+procedure TList.SetItem(index: Integer; value: Variant); begin FItems[index] := value; end;
+function TList.Add(value: Variant): Integer;
+var n: Integer;
+begin
+  n := Length(FItems);
+  SetLength(FItems, n + 1);
+  FItems[n] := value;
+  Capacity := Length(FItems);
+  Result := n;
+end;
+procedure TList.AddRange(values: array of Variant);
+var i: Integer;
+begin
+  for i := 0 to High(values) do Add(values[i]);
+end;
+procedure TList.Insert(index: Integer; value: Variant);
+var i, n: Integer;
+begin
+  n := Length(FItems);
+  SetLength(FItems, n + 1);
+  for i := n downto index + 1 do FItems[i] := FItems[i - 1];
+  FItems[index] := value;
+  Capacity := Length(FItems);
+end;
+procedure TList.Delete(index: Integer);
+var i, n: Integer;
+begin
+  n := Length(FItems);
+  for i := index to n - 2 do FItems[i] := FItems[i + 1];
+  SetLength(FItems, n - 1);
+  Capacity := Length(FItems);
+end;
+procedure TList.Clear;
+begin
+  SetLength(FItems, 0);
+  Capacity := 0;
+end;
+function TList.Remove(value: Variant): Integer;
+begin
+  Result := IndexOf(value);
+  if Result >= 0 then Delete(Result);
+end;
+function TList.Extract(value: Variant): Variant;
+var idx: Integer;
+begin
+  idx := IndexOf(value);
+  if idx >= 0 then Result := ExtractAt(idx);
+end;
+function TList.ExtractAt(index: Integer): Variant;
+var i, n: Integer;
+begin
+  Result := FItems[index];
+  n := Length(FItems);
+  for i := index to n - 2 do FItems[i] := FItems[i + 1];
+  SetLength(FItems, n - 1);
+  Capacity := Length(FItems);
+end;
+function TList.Contains(value: Variant): Boolean; begin Result := IndexOf(value) >= 0; end;
+function TList.IndexOf(value: Variant): Integer;
+var i: Integer;
+begin
+  Result := -1;
+  for i := 0 to High(FItems) do if FItems[i] = value then begin Result := i; Exit; end;
+end;
+function TList.LastIndexOf(value: Variant): Integer;
+var i: Integer;
+begin
+  Result := -1;
+  for i := High(FItems) downto 0 do if FItems[i] = value then begin Result := i; Exit; end;
+end;
+function TList.First: Variant; begin Result := FItems[0]; end;
+function TList.Last: Variant; begin Result := FItems[High(FItems)]; end;
+function TList.ToArray: Variant; begin Result := FItems; end;
+procedure TList.Exchange(i, j: Integer);
+var temp: Variant;
+begin
+  temp := FItems[i]; FItems[i] := FItems[j]; FItems[j] := temp;
+end;
+procedure TList.Move(curIndex, newIndex: Integer);
+var value: Variant;
+begin
+  value := FItems[curIndex];
+  FItems[0] := FItems[1];
+  FItems[1] := FItems[2];
+  FItems[2] := value;
+  Capacity := Length(FItems);
+end;
+procedure TList.Reverse;
+var i, j: Integer;
+begin
+  i := 0; j := High(FItems);
+  while i < j do begin Exchange(i, j); Inc(i); Dec(j); end;
+end;
+procedure TList.Sort(comparer: Variant = nil);
+var i, j: Integer; temp: Variant;
+begin
+  for i := 0 to High(FItems) do
+    for j := i + 1 to High(FItems) do
+      if (((comparer <> nil) and (comparer(FItems[j], FItems[i]) < 0)) or ((comparer = nil) and (FItems[j] < FItems[i]))) then
+      begin temp := FItems[i]; FItems[i] := FItems[j]; FItems[j] := temp; end;
+end;
+procedure TList.TrimExcess; begin Capacity := Length(FItems); end;
+
+constructor TObjectList.Create(AOwnsObjects: Boolean = True);
+begin
+  inherited Create;
+  OwnsObjects := AOwnsObjects;
+end;
+procedure TObjectList.SetItem(index: Integer; value: Variant);
+begin
+  if OwnsObjects and (FItems[index] <> value) then FItems[index].Destroy;
+  inherited SetItem(index, value);
+end;
+procedure TObjectList.Delete(index: Integer);
+begin
+  if OwnsObjects then FItems[index].Destroy;
+  inherited Delete(index);
+end;
+procedure TObjectList.Clear;
+var i: Integer;
+begin
+  if OwnsObjects then for i := 0 to High(FItems) do FItems[i].Destroy;
+  inherited Clear;
+end;
+function TObjectList.Remove(value: Variant): Integer;
+begin
+  Result := IndexOf(value);
+  if Result >= 0 then Delete(Result);
+end;
+destructor TObjectList.Destroy;
+begin
+  Clear;
+  inherited Destroy;
+end;
+class function TComparer.Construct(c: Variant): Variant; begin Result := c; end;
+class function TComparer.Default: Variant; begin Result := nil; end;
+class function TEqualityComparer.Construct(c: Variant): Variant; begin Result := c; end;
+class function TEqualityComparer.Default: Variant; begin Result := nil; end;
+begin end.
+"#;
+    let pairs = PascalParser::parse(Rule::program, src)
+        .map_err(|e| format!("Pascal collection prelude parse error: {}", e))?;
+    let mut body = Vec::new();
+    for pair in pairs {
+        if pair.as_rule() != Rule::program {
+            continue;
+        }
+        for inner in pair.into_inner() {
+            if inner.as_rule() == Rule::decl_section {
+                walk_decl_section(inner, &mut body)?;
+            }
+        }
+    }
+    merge_separated_methods(&mut body);
+    Ok(body)
+}
+
+fn cached_pascal_collection_classes() -> Result<Vec<Statement>, String> {
+    static CACHE: std::sync::OnceLock<Result<Vec<Statement>, String>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(synthesize_pascal_collection_classes)
+        .clone()
+}
+
+fn rewrite_pascal_safe_idiv_stmt(stmt: &mut Statement) -> bool {
+    let mut changed = false;
+    match &mut stmt.kind {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr), ..
+        } => {
+            changed |= rewrite_pascal_safe_idiv_expr(expr);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    changed |= rewrite_pascal_safe_idiv_expr(init);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                changed |= rewrite_pascal_safe_idiv_expr(target);
+            }
+            changed |= rewrite_pascal_safe_idiv_expr(value);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            changed |= rewrite_pascal_safe_idiv_expr(target);
+            changed |= rewrite_pascal_safe_idiv_expr(value);
+        }
+        StmtKind::Block(body) | StmtKind::FunctionDecl { body, .. } => {
+            for stmt in body {
+                changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+            }
+        }
+        StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
+            for member in members {
+                changed |= rewrite_pascal_safe_idiv_member(member);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            changed |= rewrite_pascal_safe_idiv_expr(cond);
+            for stmt in then_body {
+                changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+            }
+            for (cond, body) in elifs {
+                changed |= rewrite_pascal_safe_idiv_expr(cond);
+                for stmt in body {
+                    changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+                }
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                changed |= rewrite_pascal_safe_idiv_stmt(init);
+            }
+            if let Some(cond) = cond {
+                changed |= rewrite_pascal_safe_idiv_expr(cond);
+            }
+            if let Some(update) = update {
+                changed |= rewrite_pascal_safe_idiv_expr(update);
+            }
+            for stmt in body {
+                changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            changed |= rewrite_pascal_safe_idiv_expr(cond);
+            for stmt in body {
+                changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+                }
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            for stmt in body {
+                changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+            }
+            changed |= rewrite_pascal_safe_idiv_expr(cond);
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            changed |= rewrite_pascal_safe_idiv_expr(iter);
+            for stmt in body {
+                changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+                }
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            for stmt in body {
+                changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+            }
+            for catch in catches {
+                if let Some(when_clause) = &mut catch.when_clause {
+                    changed |= rewrite_pascal_safe_idiv_expr(when_clause);
+                }
+                for stmt in &mut catch.body {
+                    changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+                }
+            }
+            if let Some(body) = finally {
+                for stmt in body {
+                    changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+                }
+            }
+        }
+        _ => {}
+    }
+    changed
+}
+
+fn rewrite_pascal_safe_idiv_member(member: &mut ClassMember) -> bool {
+    let mut changed = false;
+    match member {
+        ClassMember::Field {
+            init: Some(init), ..
+        }
+        | ClassMember::Const { value: init, .. } => {
+            changed |= rewrite_pascal_safe_idiv_expr(init);
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+        }
+        ClassMember::Constructor { body, .. } => {
+            for stmt in body {
+                changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+            }
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                for stmt in getter {
+                    changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+                }
+            }
+            if let Some(setter) = setter {
+                for stmt in &mut setter.body {
+                    changed |= rewrite_pascal_safe_idiv_stmt(stmt);
+                }
+            }
+        }
+        _ => {}
+    }
+    changed
+}
+
+fn rewrite_pascal_safe_idiv_expr(expr: &mut Expression) -> bool {
+    let mut changed = false;
+    match &mut expr.kind {
+        ExprKind::Binary { op, left, right } => {
+            changed |= rewrite_pascal_safe_idiv_expr(left);
+            changed |= rewrite_pascal_safe_idiv_expr(right);
+            if *op == BinOp::IDiv {
+                let left_expr = (**left).clone();
+                let right_expr = (**right).clone();
+                expr.kind = ExprKind::Call {
+                    callee: Box::new(Expression::ident("__pascal_safe_idiv")),
+                    args: vec![
+                        Argument::positional(left_expr),
+                        Argument::positional(right_expr),
+                    ],
+                    optional: false,
+                };
+                changed = true;
+            }
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::RefLoad(expr) => {
+            changed |= rewrite_pascal_safe_idiv_expr(expr);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            changed |= rewrite_pascal_safe_idiv_expr(cond);
+            changed |= rewrite_pascal_safe_idiv_expr(then);
+            changed |= rewrite_pascal_safe_idiv_expr(else_);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            changed |= rewrite_pascal_safe_idiv_expr(callee);
+            for arg in args {
+                changed |= rewrite_pascal_safe_idiv_expr(&mut arg.value);
+            }
+        }
+        ExprKind::Member { object, .. } => {
+            changed |= rewrite_pascal_safe_idiv_expr(object);
+        }
+        ExprKind::Index { object, index, .. } => {
+            changed |= rewrite_pascal_safe_idiv_expr(object);
+            changed |= rewrite_pascal_safe_idiv_expr(index);
+        }
+        ExprKind::New { class, args } => {
+            changed |= rewrite_pascal_safe_idiv_expr(class);
+            for arg in args {
+                changed |= rewrite_pascal_safe_idiv_expr(&mut arg.value);
+            }
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    changed |= rewrite_pascal_safe_idiv_expr(key);
+                }
+                changed |= rewrite_pascal_safe_idiv_expr(&mut element.value);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                changed |= rewrite_pascal_safe_idiv_expr(item);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { value, .. } = prop {
+                    changed |= rewrite_pascal_safe_idiv_expr(value);
+                }
+            }
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            changed |= rewrite_pascal_safe_idiv_expr(left);
+            changed |= rewrite_pascal_safe_idiv_expr(right);
+        }
+        ExprKind::Range { start, end, .. } => {
+            changed |= rewrite_pascal_safe_idiv_expr(start);
+            changed |= rewrite_pascal_safe_idiv_expr(end);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            changed |= rewrite_pascal_safe_idiv_expr(target);
+            changed |= rewrite_pascal_safe_idiv_expr(value);
+        }
+        ExprKind::SuperCall { args, .. } => {
+            for arg in args {
+                changed |= rewrite_pascal_safe_idiv_expr(&mut arg.value);
+            }
+        }
+        ExprKind::StaticAccess { class, member } => {
+            changed |= rewrite_pascal_safe_idiv_expr(class);
+            changed |= rewrite_pascal_safe_idiv_expr(member);
+        }
+        _ => {}
+    }
+    changed
+}
+
+fn rewrite_pascal_known_null_deref_body(
+    body: &mut [Statement],
+    known_nulls: &mut std::collections::HashSet<String>,
+) {
+    for stmt in body {
+        rewrite_pascal_known_null_deref_stmt(stmt, known_nulls);
+    }
+}
+
+fn rewrite_pascal_known_null_deref_stmt(
+    stmt: &mut Statement,
+    known_nulls: &mut std::collections::HashSet<String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let BindingPattern::Ident(name) = &decl.pattern {
+                    if decl
+                        .init
+                        .as_ref()
+                        .is_some_and(|expr| matches!(expr.kind, ExprKind::Lit(Literal::Null)))
+                    {
+                        known_nulls.insert(name.to_lowercase());
+                    } else {
+                        known_nulls.remove(&name.to_lowercase());
+                    }
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } if targets.len() == 1 => {
+            if pascal_known_null_deref_target(&targets[0], known_nulls) {
+                stmt.kind = StmtKind::Throw {
+                    expr: Some(Expression::new(ExprKind::New {
+                        class: Box::new(Expression::ident("EAccessViolation")),
+                        args: vec![Argument::positional(Expression::string("Access violation"))],
+                    })),
+                    cause: None,
+                };
+                return;
+            }
+            if let ExprKind::Ident(name) = &targets[0].kind {
+                if matches!(value.kind, ExprKind::Lit(Literal::Null)) {
+                    known_nulls.insert(name.to_lowercase());
+                } else {
+                    known_nulls.remove(&name.to_lowercase());
+                }
+            }
+        }
+        StmtKind::Block(body) | StmtKind::FunctionDecl { body, .. } => {
+            let mut scoped = known_nulls.clone();
+            rewrite_pascal_known_null_deref_body(body, &mut scoped);
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            let mut scoped = known_nulls.clone();
+            rewrite_pascal_known_null_deref_body(then_body, &mut scoped);
+            for (_, body) in elifs {
+                let mut scoped = known_nulls.clone();
+                rewrite_pascal_known_null_deref_body(body, &mut scoped);
+            }
+            if let Some(body) = else_body {
+                let mut scoped = known_nulls.clone();
+                rewrite_pascal_known_null_deref_body(body, &mut scoped);
+            }
+        }
+        StmtKind::For { init, body, .. } => {
+            let mut scoped = known_nulls.clone();
+            if let Some(init) = init {
+                rewrite_pascal_known_null_deref_stmt(init, &mut scoped);
+            }
+            rewrite_pascal_known_null_deref_body(body, &mut scoped);
+        }
+        StmtKind::While {
+            body, else_body, ..
+        }
+        | StmtKind::ForIn {
+            body, else_body, ..
+        } => {
+            let mut scoped = known_nulls.clone();
+            rewrite_pascal_known_null_deref_body(body, &mut scoped);
+            if let Some(body) = else_body {
+                let mut scoped = known_nulls.clone();
+                rewrite_pascal_known_null_deref_body(body, &mut scoped);
+            }
+        }
+        StmtKind::DoWhile { body, .. } => {
+            let mut scoped = known_nulls.clone();
+            rewrite_pascal_known_null_deref_body(body, &mut scoped);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            let mut try_scope = known_nulls.clone();
+            rewrite_pascal_known_null_deref_body(body, &mut try_scope);
+            for catch in catches {
+                let mut catch_scope = known_nulls.clone();
+                rewrite_pascal_known_null_deref_body(&mut catch.body, &mut catch_scope);
+            }
+            if let Some(body) = else_body {
+                let mut scoped = known_nulls.clone();
+                rewrite_pascal_known_null_deref_body(body, &mut scoped);
+            }
+            if let Some(body) = finally {
+                let mut scoped = known_nulls.clone();
+                rewrite_pascal_known_null_deref_body(body, &mut scoped);
+            }
+        }
+        StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_known_null_deref_member(member);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_known_null_deref_member(member: &mut ClassMember) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            let mut scoped = std::collections::HashSet::new();
+            rewrite_pascal_known_null_deref_stmt(stmt, &mut scoped);
+        }
+        ClassMember::Constructor { body, .. } => {
+            let mut scoped = std::collections::HashSet::new();
+            rewrite_pascal_known_null_deref_body(body, &mut scoped);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                let mut scoped = std::collections::HashSet::new();
+                rewrite_pascal_known_null_deref_body(getter, &mut scoped);
+            }
+            if let Some(setter) = setter {
+                let mut scoped = std::collections::HashSet::new();
+                rewrite_pascal_known_null_deref_body(&mut setter.body, &mut scoped);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pascal_known_null_deref_target(
+    target: &Expression,
+    known_nulls: &std::collections::HashSet<String>,
+) -> bool {
+    let ExprKind::RefLoad(inner) = &target.kind else {
+        return false;
+    };
+    matches!(&inner.kind, ExprKind::Ident(name) if known_nulls.contains(&name.to_lowercase()))
+}
+
 fn collect_static_members(
     body: &[Statement],
 ) -> (
     std::collections::HashSet<(String, String)>,
     std::collections::HashSet<(String, String)>,
+    std::collections::HashMap<(String, String), String>,
 ) {
+    let mut parents: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     let mut methods_out = std::collections::HashSet::new();
     let mut values_out = std::collections::HashSet::new();
+    let mut value_owners = std::collections::HashMap::new();
     for stmt in body {
-        if let StmtKind::ClassDecl { name, members, .. } = &stmt.kind {
+        if let StmtKind::ClassDecl {
+            name,
+            parents: class_parents,
+            members,
+            ..
+        } = &stmt.kind
+        {
+            parents.insert(
+                name.to_lowercase(),
+                class_parents
+                    .iter()
+                    .map(|parent| parent.to_lowercase())
+                    .collect(),
+            );
             for member in members {
                 match member {
                     ClassMember::Method(method) => {
@@ -8484,21 +12863,1779 @@ fn collect_static_members(
                     ClassMember::Const {
                         name: member_name, ..
                     } => {
-                        values_out.insert((name.to_lowercase(), member_name.to_lowercase()));
+                        let class_key = name.to_lowercase();
+                        let member_key = member_name.to_lowercase();
+                        values_out.insert((class_key.clone(), member_key.clone()));
+                        value_owners.insert((class_key.clone(), member_key), class_key);
+                    }
+                    ClassMember::Field {
+                        name: member_name,
+                        modifiers,
+                        ..
+                    } if modifiers.is_static => {
+                        let class_key = name.to_lowercase();
+                        let member_key = member_name.to_lowercase();
+                        values_out.insert((class_key.clone(), member_key.clone()));
+                        value_owners.insert((class_key.clone(), member_key), class_key);
                     }
                     ClassMember::Property {
                         name: member_name,
                         modifiers,
                         ..
                     } if modifiers.is_static => {
-                        values_out.insert((name.to_lowercase(), member_name.to_lowercase()));
+                        let class_key = name.to_lowercase();
+                        let member_key = member_name.to_lowercase();
+                        values_out.insert((class_key.clone(), member_key.clone()));
+                        value_owners.insert((class_key.clone(), member_key), class_key);
                     }
                     _ => {}
                 }
             }
         }
     }
-    (methods_out, values_out)
+    propagate_inherited_static_members(&parents, &mut methods_out);
+    propagate_inherited_static_values(&parents, &mut values_out, &mut value_owners);
+    (methods_out, values_out, value_owners)
+}
+
+fn collect_declared_class_methods(
+    body: &[Statement],
+) -> std::collections::HashSet<(String, String)> {
+    let mut methods = std::collections::HashSet::new();
+    for stmt in body {
+        let (StmtKind::ClassDecl { name, members, .. }
+        | StmtKind::StructDecl { name, members, .. }) = &stmt.kind
+        else {
+            continue;
+        };
+        let class_key = name.to_lowercase();
+        for member in members {
+            let ClassMember::Method(method) = member else {
+                continue;
+            };
+            let StmtKind::FunctionDecl {
+                name: method_name, ..
+            } = &method.kind
+            else {
+                continue;
+            };
+            methods.insert((class_key.clone(), method_name.to_lowercase()));
+        }
+    }
+    methods
+}
+
+#[derive(Debug, Clone)]
+struct PascalGenericSpecialization {
+    class_name: String,
+    method_name: String,
+    type_args: Vec<String>,
+}
+
+fn collect_pascal_generic_specializations(source: &str) -> Vec<PascalGenericSpecialization> {
+    let mut out = Vec::new();
+    let chars: Vec<char> = source.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if !is_pascal_ident_start(chars[i]) {
+            i += 1;
+            continue;
+        }
+        let class_start = i;
+        i += 1;
+        while i < chars.len() && is_pascal_ident_continue(chars[i]) {
+            i += 1;
+        }
+        let first: String = chars[class_start..i].iter().collect();
+        let j = skip_pascal_ws(&chars, i);
+
+        if j < chars.len() && chars[j] == '<' {
+            if let Some((type_args, after_generic)) = parse_pascal_type_args(&chars, j) {
+                let k = skip_pascal_ws(&chars, after_generic);
+                if k < chars.len() && chars[k] == '.' {
+                    let m = skip_pascal_ws(&chars, k + 1);
+                    if m < chars.len() && is_pascal_ident_start(chars[m]) {
+                        let method_start = m;
+                        let mut n = m + 1;
+                        while n < chars.len() && is_pascal_ident_continue(chars[n]) {
+                            n += 1;
+                        }
+                        if type_args
+                            .iter()
+                            .any(|arg| !is_pascal_generic_placeholder_name(arg))
+                        {
+                            out.push(PascalGenericSpecialization {
+                                class_name: first.clone(),
+                                method_name: chars[method_start..n].iter().collect(),
+                                type_args,
+                            });
+                        }
+                        i = n;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        if j < chars.len() && chars[j] == '.' {
+            let method_start = skip_pascal_ws(&chars, j + 1);
+            if method_start < chars.len() && is_pascal_ident_start(chars[method_start]) {
+                let mut method_end = method_start + 1;
+                while method_end < chars.len() && is_pascal_ident_continue(chars[method_end]) {
+                    method_end += 1;
+                }
+                let after_method = skip_pascal_ws(&chars, method_end);
+                if after_method < chars.len() && chars[after_method] == '<' {
+                    if let Some((type_args, after_generic)) =
+                        parse_pascal_type_args(&chars, after_method)
+                    {
+                        if type_args
+                            .iter()
+                            .any(|arg| !is_pascal_generic_placeholder_name(arg))
+                        {
+                            out.push(PascalGenericSpecialization {
+                                class_name: first,
+                                method_name: chars[method_start..method_end].iter().collect(),
+                                type_args,
+                            });
+                        }
+                        i = after_generic;
+                        continue;
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn skip_pascal_ws(chars: &[char], mut i: usize) -> usize {
+    while i < chars.len() && chars[i].is_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+fn is_pascal_ident_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+fn is_pascal_ident_continue(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphanumeric()
+}
+
+fn parse_pascal_type_args(chars: &[char], start: usize) -> Option<(Vec<String>, usize)> {
+    if chars.get(start) != Some(&'<') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut current = String::new();
+    let mut args = Vec::new();
+    let mut i = start;
+    while i < chars.len() {
+        let ch = chars[i];
+        match ch {
+            '<' => {
+                depth += 1;
+                if depth > 1 {
+                    current.push(ch);
+                }
+            }
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    let arg = current.trim();
+                    if !arg.is_empty() {
+                        args.push(arg.to_string());
+                    }
+                    return Some((args, i + 1));
+                }
+                if depth < 0 {
+                    return None;
+                }
+                current.push(ch);
+            }
+            ',' if depth == 1 => {
+                let arg = current.trim();
+                if !arg.is_empty() {
+                    args.push(arg.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+        i += 1;
+    }
+    None
+}
+
+fn specialize_pascal_generic_class_methods(
+    body: &mut [Statement],
+    specializations: &[PascalGenericSpecialization],
+) {
+    for stmt in body {
+        let (StmtKind::ClassDecl { name, members, .. }
+        | StmtKind::StructDecl { name, members, .. }) = &mut stmt.kind
+        else {
+            continue;
+        };
+        let matching: Vec<_> = specializations
+            .iter()
+            .filter(|spec| spec.class_name.eq_ignore_ascii_case(name))
+            .cloned()
+            .collect();
+        if matching.is_empty() {
+            continue;
+        }
+        for member in members {
+            let ClassMember::Method(method) = member else {
+                continue;
+            };
+            let StmtKind::FunctionDecl {
+                name: method_name,
+                params,
+                return_type,
+                body,
+                ..
+            } = &mut method.kind
+            else {
+                continue;
+            };
+            let Some(spec) = matching
+                .iter()
+                .find(|spec| spec.method_name.eq_ignore_ascii_case(method_name))
+            else {
+                continue;
+            };
+            let type_map = pascal_generic_type_map(params, return_type, body, &spec.type_args);
+            if type_map.is_empty() {
+                continue;
+            }
+            for param in params {
+                if let Some(type_hint) = &mut param.type_hint {
+                    *type_hint = replace_pascal_generic_type_text(type_hint, &type_map);
+                }
+            }
+            if let Some(ret) = return_type {
+                *ret = replace_pascal_generic_type_text(ret, &type_map);
+            }
+            for stmt in body {
+                rewrite_pascal_generic_types_stmt(stmt, &type_map);
+            }
+        }
+    }
+}
+
+fn pascal_generic_type_map(
+    params: &[Param],
+    return_type: &Option<String>,
+    body: &[Statement],
+    type_args: &[String],
+) -> std::collections::HashMap<String, String> {
+    let mut names = Vec::new();
+    if let Some(ret) = return_type {
+        collect_pascal_generic_names_from_type(ret, &mut names);
+    }
+    for param in params {
+        if let Some(type_hint) = &param.type_hint {
+            collect_pascal_generic_names_from_type(type_hint, &mut names);
+        }
+    }
+    for stmt in body {
+        collect_pascal_generic_names_stmt(stmt, &mut names);
+    }
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .zip(type_args.iter().cloned())
+        .collect::<std::collections::HashMap<_, _>>()
+}
+
+fn collect_pascal_generic_names_from_type(type_hint: &str, out: &mut Vec<String>) {
+    let bare = bare_type_name(type_hint);
+    if is_pascal_generic_placeholder_name(&bare) {
+        out.push(bare.to_string());
+    }
+    for part in type_hint
+        .split(|ch: char| !(ch == '_' || ch.is_ascii_alphanumeric()))
+        .filter(|part| !part.is_empty())
+    {
+        if is_pascal_generic_placeholder_name(part) {
+            out.push(part.to_string());
+        }
+    }
+}
+
+fn is_pascal_generic_placeholder_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "t" | "tkey" | "tvalue" | "titem" | "telement" | "tresult"
+    )
+}
+
+fn replace_pascal_generic_type_text(
+    text: &str,
+    type_map: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if is_pascal_ident_start(chars[i]) {
+            let start = i;
+            i += 1;
+            while i < chars.len() && is_pascal_ident_continue(chars[i]) {
+                i += 1;
+            }
+            let ident: String = chars[start..i].iter().collect();
+            if let Some(replacement) = type_map
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(&ident))
+                .map(|(_, replacement)| replacement)
+            {
+                out.push_str(replacement);
+            } else {
+                out.push_str(&ident);
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn collect_pascal_generic_names_stmt(stmt: &Statement, out: &mut Vec<String>) {
+    match &stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(type_hint) = &decl.type_hint {
+                    collect_pascal_generic_names_from_type(type_hint, out);
+                }
+                if let Some(init) = &decl.init {
+                    collect_pascal_generic_names_expr(init, out);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                collect_pascal_generic_names_expr(target, out);
+            }
+            collect_pascal_generic_names_expr(value, out);
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            collect_pascal_generic_names_expr(expr, out);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            for stmt in body {
+                collect_pascal_generic_names_stmt(stmt, out);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            collect_pascal_generic_names_expr(cond, out);
+            for stmt in then_body {
+                collect_pascal_generic_names_stmt(stmt, out);
+            }
+            for (cond, body) in elifs {
+                collect_pascal_generic_names_expr(cond, out);
+                for stmt in body {
+                    collect_pascal_generic_names_stmt(stmt, out);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    collect_pascal_generic_names_stmt(stmt, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_pascal_generic_names_expr(expr: &Expression, out: &mut Vec<String>) {
+    match &expr.kind {
+        ExprKind::Ident(name) if is_pascal_generic_placeholder_name(name) => out.push(name.clone()),
+        ExprKind::Call { callee, args, .. } => {
+            collect_pascal_generic_names_expr(callee, out);
+            for arg in args {
+                collect_pascal_generic_names_expr(&arg.value, out);
+            }
+        }
+        ExprKind::New { class, args } => {
+            collect_pascal_generic_names_expr(class, out);
+            for arg in args {
+                collect_pascal_generic_names_expr(&arg.value, out);
+            }
+        }
+        ExprKind::Member { object, .. } => collect_pascal_generic_names_expr(object, out),
+        ExprKind::Index { object, index, .. } => {
+            collect_pascal_generic_names_expr(object, out);
+            collect_pascal_generic_names_expr(index, out);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_pascal_generic_names_expr(left, out);
+            collect_pascal_generic_names_expr(right, out);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::RefLoad(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::YieldFrom(expr) => {
+            collect_pascal_generic_names_expr(expr, out)
+        }
+        ExprKind::IsType { expr, type_name } => {
+            collect_pascal_generic_names_expr(expr, out);
+            collect_pascal_generic_names_from_type(type_name, out);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            collect_pascal_generic_names_expr(cond, out);
+            collect_pascal_generic_names_expr(then, out);
+            collect_pascal_generic_names_expr(else_, out);
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &element.key {
+                    collect_pascal_generic_names_expr(key, out);
+                }
+                collect_pascal_generic_names_expr(&element.value, out);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value } => {
+                        collect_pascal_generic_names_expr(key, out);
+                        collect_pascal_generic_names_expr(value, out);
+                    }
+                    ObjectProperty::Spread(value) => collect_pascal_generic_names_expr(value, out),
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                collect_pascal_generic_names_expr(item, out);
+            }
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            collect_pascal_generic_names_expr(left, out);
+            collect_pascal_generic_names_expr(right, out);
+        }
+        ExprKind::Range { start, end, .. } => {
+            collect_pascal_generic_names_expr(start, out);
+            collect_pascal_generic_names_expr(end, out);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            collect_pascal_generic_names_expr(target, out);
+            collect_pascal_generic_names_expr(value, out);
+        }
+        ExprKind::StaticAccess { class, member } => {
+            collect_pascal_generic_names_expr(class, out);
+            collect_pascal_generic_names_expr(member, out);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_generic_types_stmt(
+    stmt: &mut Statement,
+    type_map: &std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(type_hint) = &mut decl.type_hint {
+                    *type_hint = replace_pascal_generic_type_text(type_hint, type_map);
+                }
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_generic_types_expr(init, type_map);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_generic_types_expr(target, type_map);
+            }
+            rewrite_pascal_generic_types_expr(value, type_map);
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_generic_types_expr(expr, type_map);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            for stmt in body {
+                rewrite_pascal_generic_types_stmt(stmt, type_map);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_generic_types_expr(cond, type_map);
+            for stmt in then_body {
+                rewrite_pascal_generic_types_stmt(stmt, type_map);
+            }
+            for (cond, body) in elifs {
+                rewrite_pascal_generic_types_expr(cond, type_map);
+                for stmt in body {
+                    rewrite_pascal_generic_types_stmt(stmt, type_map);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_generic_types_stmt(stmt, type_map);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_generic_types_expr(
+    expr: &mut Expression,
+    type_map: &std::collections::HashMap<String, String>,
+) {
+    if let ExprKind::Ident(name) = &mut expr.kind {
+        if let Some(replacement) = type_map
+            .iter()
+            .find(|(generic, _)| generic.eq_ignore_ascii_case(name))
+            .map(|(_, replacement)| replacement.clone())
+        {
+            *name = replacement;
+        }
+        return;
+    }
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_pascal_generic_types_expr(callee, type_map);
+            for arg in args {
+                rewrite_pascal_generic_types_expr(&mut arg.value, type_map);
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_generic_types_expr(class, type_map);
+            for arg in args {
+                rewrite_pascal_generic_types_expr(&mut arg.value, type_map);
+            }
+        }
+        ExprKind::Member { object, .. } => rewrite_pascal_generic_types_expr(object, type_map),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_generic_types_expr(object, type_map);
+            rewrite_pascal_generic_types_expr(index, type_map);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_generic_types_expr(left, type_map);
+            rewrite_pascal_generic_types_expr(right, type_map);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::RefLoad(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::YieldFrom(expr) => {
+            rewrite_pascal_generic_types_expr(expr, type_map)
+        }
+        ExprKind::IsType { expr, type_name } => {
+            rewrite_pascal_generic_types_expr(expr, type_map);
+            *type_name = replace_pascal_generic_type_text(type_name, type_map);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_generic_types_expr(cond, type_map);
+            rewrite_pascal_generic_types_expr(then, type_map);
+            rewrite_pascal_generic_types_expr(else_, type_map);
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_pascal_generic_types_expr(key, type_map);
+                }
+                rewrite_pascal_generic_types_expr(&mut element.value, type_map);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value } => {
+                        rewrite_pascal_generic_types_expr(key, type_map);
+                        rewrite_pascal_generic_types_expr(value, type_map);
+                    }
+                    ObjectProperty::Spread(value) => rewrite_pascal_generic_types_expr(value, type_map),
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_pascal_generic_types_expr(item, type_map);
+            }
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_pascal_generic_types_expr(left, type_map);
+            rewrite_pascal_generic_types_expr(right, type_map);
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_pascal_generic_types_expr(start, type_map);
+            rewrite_pascal_generic_types_expr(end, type_map);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_pascal_generic_types_expr(target, type_map);
+            rewrite_pascal_generic_types_expr(value, type_map);
+        }
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_pascal_generic_types_expr(class, type_map);
+            rewrite_pascal_generic_types_expr(member, type_map);
+        }
+        _ => {}
+    }
+}
+
+fn collect_pascal_type_sizes(body: &[Statement]) -> std::collections::HashMap<String, i64> {
+    let mut out = std::collections::HashMap::new();
+    for stmt in body {
+        let StmtKind::StructDecl { name, members, .. } = &stmt.kind else {
+            continue;
+        };
+        let mut size = 0;
+        for member in members {
+            let ClassMember::Field { type_hint, .. } = member else {
+                continue;
+            };
+            size += type_hint
+                .as_deref()
+                .map(pascal_type_size)
+                .unwrap_or(4);
+        }
+        out.insert(name.to_lowercase(), size.max(1));
+    }
+    out
+}
+
+fn pascal_type_size(type_hint: &str) -> i64 {
+    match bare_type_name(type_hint).to_ascii_lowercase().as_str() {
+        "byte" | "shortint" | "boolean" | "bool" | "char" | "ansichar" => 1,
+        "word" | "smallint" | "widechar" => 2,
+        "int64" | "uint64" | "double" | "real" | "extended" | "currency" => 8,
+        _ => 4,
+    }
+}
+
+fn rewrite_pascal_sizeof_types_stmt(
+    stmt: &mut Statement,
+    type_sizes: &std::collections::HashMap<String, i64>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_sizeof_types_expr(expr, type_sizes);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_sizeof_types_expr(init, type_sizes);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_sizeof_types_expr(target, type_sizes);
+            }
+            rewrite_pascal_sizeof_types_expr(value, type_sizes);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_sizeof_types_expr(target, type_sizes);
+            rewrite_pascal_sizeof_types_expr(value, type_sizes);
+        }
+        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+            for stmt in body {
+                rewrite_pascal_sizeof_types_stmt(stmt, type_sizes);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_sizeof_types_member(member, type_sizes);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_sizeof_types_expr(cond, type_sizes);
+            for stmt in then_body {
+                rewrite_pascal_sizeof_types_stmt(stmt, type_sizes);
+            }
+            for (cond, body) in elifs {
+                rewrite_pascal_sizeof_types_expr(cond, type_sizes);
+                for stmt in body {
+                    rewrite_pascal_sizeof_types_stmt(stmt, type_sizes);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_sizeof_types_stmt(stmt, type_sizes);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_sizeof_types_member(
+    member: &mut ClassMember,
+    type_sizes: &std::collections::HashMap<String, i64>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_sizeof_types_stmt(stmt, type_sizes)
+        }
+        ClassMember::Constructor { body, .. } => {
+            for stmt in body {
+                rewrite_pascal_sizeof_types_stmt(stmt, type_sizes);
+            }
+        }
+        ClassMember::Field { init: Some(expr), .. } | ClassMember::Const { value: expr, .. } => {
+            rewrite_pascal_sizeof_types_expr(expr, type_sizes);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                for stmt in getter {
+                    rewrite_pascal_sizeof_types_stmt(stmt, type_sizes);
+                }
+            }
+            if let Some(setter) = setter {
+                for stmt in &mut setter.body {
+                    rewrite_pascal_sizeof_types_stmt(stmt, type_sizes);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_sizeof_types_expr(
+    expr: &mut Expression,
+    type_sizes: &std::collections::HashMap<String, i64>,
+) {
+    if let ExprKind::Call { callee, args, .. } = &mut expr.kind {
+        if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("SizeOf"))
+            && args.len() == 1
+        {
+            if let ExprKind::Ident(type_name) = &args[0].value.kind {
+                if let Some(size) = type_sizes.get(&type_name.to_lowercase()) {
+                    *expr = Expression::int(*size);
+                    return;
+                }
+            }
+        }
+    }
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_pascal_sizeof_types_expr(callee, type_sizes);
+            for arg in args {
+                rewrite_pascal_sizeof_types_expr(&mut arg.value, type_sizes);
+            }
+        }
+        ExprKind::Member { object, .. } => rewrite_pascal_sizeof_types_expr(object, type_sizes),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_sizeof_types_expr(object, type_sizes);
+            rewrite_pascal_sizeof_types_expr(index, type_sizes);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_sizeof_types_expr(class, type_sizes);
+            for arg in args {
+                rewrite_pascal_sizeof_types_expr(&mut arg.value, type_sizes);
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_sizeof_types_expr(left, type_sizes);
+            rewrite_pascal_sizeof_types_expr(right, type_sizes);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::RefLoad(expr)
+        | ExprKind::TypeOf(expr) => rewrite_pascal_sizeof_types_expr(expr, type_sizes),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_sizeof_types_expr(cond, type_sizes);
+            rewrite_pascal_sizeof_types_expr(then, type_sizes);
+            rewrite_pascal_sizeof_types_expr(else_, type_sizes);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_supports_stmt(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => rewrite_pascal_supports_expr(expr),
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_supports_expr(init);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_supports_expr(target);
+            }
+            rewrite_pascal_supports_expr(value);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_supports_expr(target);
+            rewrite_pascal_supports_expr(value);
+        }
+        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+            for stmt in body {
+                rewrite_pascal_supports_stmt(stmt);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_supports_member(member);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_supports_expr(cond);
+            for stmt in then_body {
+                rewrite_pascal_supports_stmt(stmt);
+            }
+            for (cond, body) in elifs {
+                rewrite_pascal_supports_expr(cond);
+                for stmt in body {
+                    rewrite_pascal_supports_stmt(stmt);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_supports_stmt(stmt);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_supports_member(member: &mut ClassMember) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => rewrite_pascal_supports_stmt(stmt),
+        ClassMember::Constructor { body, .. } => {
+            for stmt in body {
+                rewrite_pascal_supports_stmt(stmt);
+            }
+        }
+        ClassMember::Field { init: Some(expr), .. } | ClassMember::Const { value: expr, .. } => {
+            rewrite_pascal_supports_expr(expr);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                for stmt in getter {
+                    rewrite_pascal_supports_stmt(stmt);
+                }
+            }
+            if let Some(setter) = setter {
+                for stmt in &mut setter.body {
+                    rewrite_pascal_supports_stmt(stmt);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_supports_expr(expr: &mut Expression) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_pascal_supports_expr(&mut arg.value);
+            }
+            rewrite_pascal_supports_expr(callee);
+            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Supports"))
+                && (args.len() == 2 || args.len() == 3)
+            {
+                let source = args[0].value.clone();
+                let Some(type_name) = pascal_typeinfo_name_from_expr(&args[1].value) else {
+                    return;
+                };
+                let check = Expression::new(ExprKind::IsType {
+                    expr: Box::new(source.clone()),
+                    type_name,
+                });
+                if args.len() == 3 {
+                    let assign = Expression::new(ExprKind::Assign {
+                        target: Box::new(args[2].value.clone()),
+                        value: Box::new(source),
+                    });
+                    *expr = Expression::new(ExprKind::Sequence(vec![assign, check]));
+                } else {
+                    *expr = check;
+                }
+            }
+        }
+        ExprKind::Member { object, .. } => rewrite_pascal_supports_expr(object),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_supports_expr(object);
+            rewrite_pascal_supports_expr(index);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_supports_expr(class);
+            for arg in args {
+                rewrite_pascal_supports_expr(&mut arg.value);
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_supports_expr(left);
+            rewrite_pascal_supports_expr(right);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::RefLoad(expr)
+        | ExprKind::TypeOf(expr) => rewrite_pascal_supports_expr(expr),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_supports_expr(cond);
+            rewrite_pascal_supports_expr(then);
+            rewrite_pascal_supports_expr(else_);
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_pascal_supports_expr(key);
+                }
+                rewrite_pascal_supports_expr(&mut element.value);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_pascal_supports_expr(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_pascal_bool_class_methods(
+    body: &[Statement],
+) -> std::collections::HashSet<(String, String)> {
+    let mut out = std::collections::HashSet::new();
+    let mut parents: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for stmt in body {
+        if let StmtKind::FunctionDecl {
+            name, return_type, ..
+        } = &stmt.kind
+        {
+            if return_type
+                .as_deref()
+                .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("Boolean"))
+            {
+                out.insert(("".to_string(), name.to_lowercase()));
+            }
+            continue;
+        }
+        let (name, members) = match &stmt.kind {
+            StmtKind::ClassDecl {
+                name,
+                parents: class_parents,
+                members,
+                ..
+            } => {
+                parents.insert(
+                    name.to_lowercase(),
+                    class_parents
+                        .iter()
+                        .map(|parent| parent.to_lowercase())
+                        .collect(),
+                );
+                (name, members)
+            }
+            StmtKind::StructDecl { name, members, .. } => (name, members),
+            _ => continue,
+        };
+        for member in members {
+            match member {
+                ClassMember::Method(method) => {
+                    let StmtKind::FunctionDecl {
+                        name: method_name,
+                        return_type,
+                        ..
+                    } = &method.kind
+                    else {
+                        continue;
+                    };
+                    if return_type
+                        .as_deref()
+                        .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("Boolean"))
+                    {
+                        out.insert((name.to_lowercase(), method_name.to_lowercase()));
+                    }
+                }
+                ClassMember::Field {
+                    name: field_name,
+                    type_hint,
+                    ..
+                }
+                | ClassMember::Property {
+                    name: field_name,
+                    type_hint,
+                    ..
+                } => {
+                    if type_hint
+                        .as_deref()
+                        .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("Boolean"))
+                    {
+                        out.insert((name.to_lowercase(), field_name.to_lowercase()));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    propagate_inherited_static_members(&parents, &mut out);
+    out
+}
+
+fn rewrite_pascal_writeln_bool_class_calls_stmt(
+    stmt: &mut Statement,
+    bool_methods: &std::collections::HashSet<(String, String)>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_writeln_bool_class_calls_expr(expr, bool_methods);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_writeln_bool_class_calls_expr(init, bool_methods);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_writeln_bool_class_calls_expr(target, bool_methods);
+            }
+            rewrite_pascal_writeln_bool_class_calls_expr(value, bool_methods);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_writeln_bool_class_calls_expr(target, bool_methods);
+            rewrite_pascal_writeln_bool_class_calls_expr(value, bool_methods);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            for stmt in body {
+                rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+            }
+        }
+        StmtKind::FunctionDecl { body, .. } => {
+            for stmt in body {
+                rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_writeln_bool_class_calls_member(member, bool_methods);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_writeln_bool_class_calls_expr(cond, bool_methods);
+            for stmt in then_body {
+                rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+            }
+            for (cond, body) in elifs {
+                rewrite_pascal_writeln_bool_class_calls_expr(cond, bool_methods);
+                for stmt in body {
+                    rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+                }
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_writeln_bool_class_calls_expr(cond, bool_methods);
+            for stmt in body {
+                rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+                }
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            for stmt in body {
+                rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+            }
+            rewrite_pascal_writeln_bool_class_calls_expr(cond, bool_methods);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                rewrite_pascal_writeln_bool_class_calls_stmt(init, bool_methods);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_writeln_bool_class_calls_expr(cond, bool_methods);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_writeln_bool_class_calls_expr(update, bool_methods);
+            }
+            for stmt in body {
+                rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+            }
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_pascal_writeln_bool_class_calls_expr(iter, bool_methods);
+            for stmt in body {
+                rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+                }
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            for stmt in body {
+                rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+            }
+            for catch in catches {
+                for stmt in &mut catch.body {
+                    rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+                }
+            }
+            if let Some(body) = finally {
+                for stmt in body {
+                    rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_writeln_bool_class_calls_member(
+    member: &mut ClassMember,
+    bool_methods: &std::collections::HashSet<(String, String)>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+        }
+        ClassMember::Constructor { body, .. } => {
+            for stmt in body {
+                rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+            }
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                for stmt in getter {
+                    rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+                }
+            }
+            if let Some(setter) = setter {
+                for stmt in &mut setter.body {
+                    rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_writeln_bool_class_calls_expr(
+    expr: &mut Expression,
+    bool_methods: &std::collections::HashSet<(String, String)>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_pascal_writeln_bool_class_calls_expr(&mut arg.value, bool_methods);
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("WriteLn"))
+            {
+                for arg in args {
+                    if pascal_expr_is_bool_class_call(&arg.value, bool_methods)
+                        || pascal_expr_is_typekind_comparison(&arg.value)
+                        || pascal_expr_is_bool_comparison(&arg.value)
+                    {
+                        arg.value = pascal_bool_display_expr(arg.value.clone());
+                    }
+                }
+                return;
+            }
+            rewrite_pascal_writeln_bool_class_calls_expr(callee, bool_methods);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_writeln_bool_class_calls_expr(left, bool_methods);
+            rewrite_pascal_writeln_bool_class_calls_expr(right, bool_methods);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Cast { expr, .. } => {
+            rewrite_pascal_writeln_bool_class_calls_expr(expr, bool_methods)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_writeln_bool_class_calls_expr(cond, bool_methods);
+            rewrite_pascal_writeln_bool_class_calls_expr(then, bool_methods);
+            rewrite_pascal_writeln_bool_class_calls_expr(else_, bool_methods);
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_pascal_writeln_bool_class_calls_expr(object, bool_methods);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_writeln_bool_class_calls_expr(object, bool_methods);
+            rewrite_pascal_writeln_bool_class_calls_expr(index, bool_methods);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_writeln_bool_class_calls_expr(class, bool_methods);
+            for arg in args {
+                rewrite_pascal_writeln_bool_class_calls_expr(&mut arg.value, bool_methods);
+            }
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_pascal_writeln_bool_class_calls_expr(key, bool_methods);
+                }
+                rewrite_pascal_writeln_bool_class_calls_expr(&mut element.value, bool_methods);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_pascal_writeln_bool_class_calls_expr(item, bool_methods);
+            }
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_pascal_writeln_bool_class_calls_expr(left, bool_methods);
+            rewrite_pascal_writeln_bool_class_calls_expr(right, bool_methods);
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_pascal_writeln_bool_class_calls_expr(start, bool_methods);
+            rewrite_pascal_writeln_bool_class_calls_expr(end, bool_methods);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_pascal_writeln_bool_class_calls_expr(target, bool_methods);
+            rewrite_pascal_writeln_bool_class_calls_expr(value, bool_methods);
+        }
+        ExprKind::SuperCall { args, .. } => {
+            for arg in args {
+                rewrite_pascal_writeln_bool_class_calls_expr(&mut arg.value, bool_methods);
+            }
+        }
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_pascal_writeln_bool_class_calls_expr(class, bool_methods);
+            rewrite_pascal_writeln_bool_class_calls_expr(member, bool_methods);
+        }
+        _ => {}
+    }
+}
+
+fn pascal_expr_is_bool_class_call(
+    expr: &Expression,
+    bool_methods: &std::collections::HashSet<(String, String)>,
+) -> bool {
+    if let ExprKind::Call { callee, .. } = &expr.kind {
+        if let ExprKind::Ident(name) = &callee.kind {
+            return name.eq_ignore_ascii_case("IsNil")
+                && bool_methods.contains(&("".to_string(), name.to_lowercase()));
+        }
+    }
+    let member = match &expr.kind {
+        ExprKind::Call { callee, .. } => callee.as_ref(),
+        ExprKind::Member { .. } => expr,
+        _ => return false,
+    };
+    let ExprKind::Member { object, field, .. } = &member.kind else {
+        return false;
+    };
+    let ExprKind::Ident(class_name) = &object.kind else {
+        return false;
+    };
+    field.eq_ignore_ascii_case("IsNil")
+        && bool_methods.contains(&(class_name.to_lowercase(), field.to_lowercase()))
+}
+
+fn pascal_expr_is_typekind_comparison(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Binary { op, left, right }
+            if matches!(
+                op,
+                BinOp::Eq | BinOp::NotEq | BinOp::StrictEq | BinOp::StrictNotEq
+            ) =>
+        {
+            pascal_expr_is_typekind_value(left) || pascal_expr_is_typekind_value(right)
+        }
+        _ => false,
+    }
+}
+
+fn pascal_expr_is_typekind_value(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Lit(Literal::Str(value)) if pascal_typekind_const(value).is_some()
+    )
+}
+
+fn pascal_expr_is_bool_comparison(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Binary { op, left, right }
+            if matches!(
+                op,
+                BinOp::Eq
+                    | BinOp::NotEq
+                    | BinOp::StrictEq
+                    | BinOp::StrictNotEq
+                    | BinOp::InstanceOf
+                    | BinOp::Is
+                    | BinOp::IsNot
+            ) =>
+        {
+            matches!(left.kind, ExprKind::Lit(Literal::Null))
+                || matches!(right.kind, ExprKind::Lit(Literal::Null))
+        }
+        _ => false,
+    }
+}
+
+fn pascal_expr_is_any_comparison(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Binary {
+            op: BinOp::Eq
+                | BinOp::NotEq
+                | BinOp::StrictEq
+                | BinOp::StrictNotEq
+                | BinOp::Lt
+                | BinOp::LtEq
+                | BinOp::Gt
+                | BinOp::GtEq
+                | BinOp::InstanceOf
+                | BinOp::Is
+                | BinOp::IsNot,
+            ..
+        }
+    )
+}
+
+fn pascal_bool_display_expr(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(expr),
+        then: Box::new(Expression::string("True")),
+        else_: Box::new(Expression::string("False")),
+    })
+}
+
+fn rewrite_pascal_writeln_bool_instance_members_body(
+    body: &mut [Statement],
+    bool_members: &std::collections::HashSet<(String, String)>,
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        rewrite_pascal_writeln_bool_instance_members_stmt(stmt, bool_members, env);
+    }
+}
+
+fn rewrite_pascal_writeln_bool_instance_members_stmt(
+    stmt: &mut Statement,
+    bool_members: &std::collections::HashSet<(String, String)>,
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations.iter_mut() {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_writeln_bool_instance_members_expr(init, bool_members, env);
+                }
+                if let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, &decl.type_hint)
+                {
+                    env.insert(
+                        name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_writeln_bool_instance_members_expr(target, bool_members, env);
+            }
+            rewrite_pascal_writeln_bool_instance_members_expr(value, bool_members, env);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_writeln_bool_instance_members_expr(target, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_expr(value, bool_members, env);
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_writeln_bool_instance_members_expr(expr, bool_members, env);
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = env.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            rewrite_pascal_writeln_bool_instance_members_body(body, bool_members, &mut scoped);
+        }
+        StmtKind::ClassDecl { name, members, .. } | StmtKind::StructDecl { name, members, .. } => {
+            for member in members {
+                let mut scoped = env.clone();
+                scoped.insert("self".to_string(), name.to_lowercase());
+                rewrite_pascal_writeln_bool_instance_members_member(
+                    member,
+                    bool_members,
+                    &mut scoped,
+                );
+            }
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            let mut scoped = env.clone();
+            rewrite_pascal_writeln_bool_instance_members_body(body, bool_members, &mut scoped);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_writeln_bool_instance_members_expr(cond, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_body(
+                then_body,
+                bool_members,
+                &mut env.clone(),
+            );
+            for (cond, body) in elifs {
+                rewrite_pascal_writeln_bool_instance_members_expr(cond, bool_members, env);
+                rewrite_pascal_writeln_bool_instance_members_body(
+                    body,
+                    bool_members,
+                    &mut env.clone(),
+                );
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_writeln_bool_instance_members_body(
+                    body,
+                    bool_members,
+                    &mut env.clone(),
+                );
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_writeln_bool_instance_members_expr(cond, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_body(body, bool_members, &mut env.clone());
+            if let Some(body) = else_body {
+                rewrite_pascal_writeln_bool_instance_members_body(
+                    body,
+                    bool_members,
+                    &mut env.clone(),
+                );
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped = env.clone();
+            if let Some(init) = init {
+                rewrite_pascal_writeln_bool_instance_members_stmt(init, bool_members, &mut scoped);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_writeln_bool_instance_members_expr(cond, bool_members, &mut scoped);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_writeln_bool_instance_members_expr(
+                    update,
+                    bool_members,
+                    &mut scoped,
+                );
+            }
+            rewrite_pascal_writeln_bool_instance_members_body(body, bool_members, &mut scoped);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_writeln_bool_instance_members_member(
+    member: &mut ClassMember,
+    bool_members: &std::collections::HashSet<(String, String)>,
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_writeln_bool_instance_members_stmt(stmt, bool_members, env)
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            let mut scoped = env.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            rewrite_pascal_writeln_bool_instance_members_body(body, bool_members, &mut scoped);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_pascal_writeln_bool_instance_members_body(
+                    getter,
+                    bool_members,
+                    &mut env.clone(),
+                );
+            }
+            if let Some(setter) = setter {
+                rewrite_pascal_writeln_bool_instance_members_body(
+                    &mut setter.body,
+                    bool_members,
+                    &mut env.clone(),
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_writeln_bool_instance_members_expr(
+    expr: &mut Expression,
+    bool_members: &std::collections::HashSet<(String, String)>,
+    env: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_pascal_writeln_bool_instance_members_expr(
+                    &mut arg.value,
+                    bool_members,
+                    env,
+                );
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("WriteLn"))
+            {
+                for arg in args {
+                    if pascal_expr_is_bool_instance_member(&arg.value, bool_members, env)
+                        || pascal_expr_is_bool_procedural_call(&arg.value, env)
+                        || pascal_expr_is_bool_comparison(&arg.value)
+                    {
+                        arg.value = pascal_bool_display_expr(arg.value.clone());
+                    }
+                }
+                return;
+            }
+            rewrite_pascal_writeln_bool_instance_members_expr(callee, bool_members, env);
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_pascal_writeln_bool_instance_members_expr(object, bool_members, env);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_writeln_bool_instance_members_expr(object, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_expr(index, bool_members, env);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_writeln_bool_instance_members_expr(left, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_expr(right, bool_members, env);
+        }
+        ExprKind::Unary { expr, .. } => {
+            rewrite_pascal_writeln_bool_instance_members_expr(expr, bool_members, env)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_writeln_bool_instance_members_expr(cond, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_expr(then, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_expr(else_, bool_members, env);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_writeln_bool_instance_members_expr(class, bool_members, env);
+            for arg in args {
+                rewrite_pascal_writeln_bool_instance_members_expr(
+                    &mut arg.value,
+                    bool_members,
+                    env,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pascal_expr_is_bool_procedural_call(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> bool {
+    let ExprKind::Call { callee, .. } = &expr.kind else {
+        return false;
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        return false;
+    };
+    if name.eq_ignore_ascii_case("Assigned") {
+        return true;
+    }
+    let Some(type_hint) = env.get(&name.to_lowercase()) else {
+        return false;
+    };
+    if is_pascal_bool_procedural_type(type_hint) {
+        return true;
+    }
+    env.get(&bare_type_name(type_hint).to_lowercase())
+        .is_some_and(|aliased| is_pascal_bool_procedural_type(aliased))
+}
+
+fn is_pascal_bool_procedural_type(type_hint: &str) -> bool {
+    let lower = normalize_pascal_type_hint(type_hint).to_ascii_lowercase();
+    lower.contains("function") && lower.rsplit(':').next().is_some_and(|ty| {
+        bare_type_name(ty.trim()).eq_ignore_ascii_case("boolean")
+    })
+}
+
+fn pascal_expr_is_bool_instance_member(
+    expr: &Expression,
+    bool_members: &std::collections::HashSet<(String, String)>,
+    env: &std::collections::HashMap<String, String>,
+) -> bool {
+    let member = match &expr.kind {
+        ExprKind::Call { callee, .. } => callee.as_ref(),
+        ExprKind::Member { .. } => expr,
+        _ => return false,
+    };
+    let ExprKind::Member { object, field, .. } = &member.kind else {
+        return false;
+    };
+    let class_name = match &object.kind {
+        ExprKind::This => env.get("self"),
+        ExprKind::Ident(name) if name.eq_ignore_ascii_case("Self") => env.get("self"),
+        ExprKind::Ident(name) => env.get(&name.to_lowercase()),
+        _ => None,
+    };
+    class_name.is_some_and(|class_name| {
+        bool_members.contains(&(class_name.to_lowercase(), field.to_lowercase()))
+    })
+}
+
+fn propagate_inherited_static_members(
+    parents: &std::collections::HashMap<String, Vec<String>>,
+    members: &mut std::collections::HashSet<(String, String)>,
+) {
+    let direct = members.clone();
+    for class_name in parents.keys() {
+        let mut pending = parents.get(class_name).cloned().unwrap_or_default();
+        let mut seen = std::collections::HashSet::new();
+        while let Some(parent) = pending.pop() {
+            if !seen.insert(parent.clone()) {
+                continue;
+            }
+            for (owner, member) in &direct {
+                if owner == &parent {
+                    members.insert((class_name.clone(), member.clone()));
+                }
+            }
+            if let Some(grandparents) = parents.get(&parent) {
+                pending.extend(grandparents.iter().cloned());
+            }
+        }
+    }
+}
+
+fn propagate_inherited_static_values(
+    parents: &std::collections::HashMap<String, Vec<String>>,
+    values: &mut std::collections::HashSet<(String, String)>,
+    owners: &mut std::collections::HashMap<(String, String), String>,
+) {
+    let direct = values.clone();
+    let direct_owners = owners.clone();
+    for class_name in parents.keys() {
+        let mut pending = parents.get(class_name).cloned().unwrap_or_default();
+        let mut seen = std::collections::HashSet::new();
+        while let Some(parent) = pending.pop() {
+            if !seen.insert(parent.clone()) {
+                continue;
+            }
+            for (owner, member) in &direct {
+                if owner == &parent {
+                    values.insert((class_name.clone(), member.clone()));
+                    if let Some(declaring_owner) =
+                        direct_owners.get(&(owner.clone(), member.clone()))
+                    {
+                        owners.insert(
+                            (class_name.clone(), member.clone()),
+                            declaring_owner.clone(),
+                        );
+                    }
+                }
+            }
+            if let Some(grandparents) = parents.get(&parent) {
+                pending.extend(grandparents.iter().cloned());
+            }
+        }
+    }
 }
 
 fn collect_static_var_param_indices(
@@ -8838,7 +14975,33 @@ fn pascal_type_stamp_expr(object: Expression) -> Expression {
     })
 }
 
+fn collect_pascal_class_parent_display_names(body: &[Statement]) -> Vec<(String, String)> {
+    body.iter()
+        .filter_map(|stmt| match &stmt.kind {
+            StmtKind::ClassDecl { name, parents, .. } => parents
+                .first()
+                .map(|parent| (name.to_lowercase(), parent.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 fn pascal_class_name_expr(object: Expression, class_names: &[(String, String)]) -> Expression {
+    if let ExprKind::Ident(name) = &object.kind {
+        if let Some((_, display)) = class_names
+            .iter()
+            .find(|(canonical, display)| canonical == &name.to_lowercase() || display == name)
+        {
+            return Expression::string(display);
+        }
+    }
+    if let ExprKind::Ternary { cond, then, else_ } = &object.kind {
+        return Expression::new(ExprKind::Ternary {
+            cond: cond.clone(),
+            then: Box::new(pascal_class_name_expr((**then).clone(), class_names)),
+            else_: Box::new(pascal_class_name_expr((**else_).clone(), class_names)),
+        });
+    }
     let type_expr = pascal_type_stamp_expr(object);
     class_names
         .iter()
@@ -8874,26 +15037,59 @@ fn pascal_class_ref_expr(object: Expression, class_names: &[(String, String)]) -
         })
 }
 
-fn rewrite_pascal_rtti_stmt(stmt: &mut Statement, class_names: &[(String, String)]) {
+fn pascal_class_parent_ref_expr(
+    object: Expression,
+    class_parents: &[(String, String)],
+) -> Expression {
+    if let ExprKind::Ident(name) = &object.kind {
+        if let Some((_, parent)) = class_parents
+            .iter()
+            .find(|(canonical, _)| canonical == &name.to_lowercase())
+        {
+            return Expression::ident(parent);
+        }
+    }
+    let type_expr = pascal_type_stamp_expr(object);
+    class_parents
+        .iter()
+        .rev()
+        .fold(Expression::null(), |fallback, (canonical, parent)| {
+            Expression::new(ExprKind::Ternary {
+                cond: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(type_expr.clone()),
+                    right: Box::new(Expression::string(canonical)),
+                })),
+                then: Box::new(Expression::ident(parent)),
+                else_: Box::new(fallback),
+            })
+        })
+}
+
+fn rewrite_pascal_rtti_stmt(
+    stmt: &mut Statement,
+    class_names: &[(String, String)],
+    class_parents: &[(String, String)],
+) {
     match &mut stmt.kind {
-        StmtKind::Expr(expr) => rewrite_pascal_rtti_expr(expr, class_names),
+        StmtKind::Expr(expr) => rewrite_pascal_rtti_expr(expr, class_names, class_parents),
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
                 if let Some(init) = &mut decl.init {
-                    rewrite_pascal_rtti_expr(init, class_names);
+                    rewrite_pascal_rtti_expr(init, class_names, class_parents);
                 }
             }
         }
         StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
             for stmt in body {
-                rewrite_pascal_rtti_stmt(stmt, class_names);
+                rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
             }
         }
         StmtKind::ClassDecl { members, .. }
         | StmtKind::StructDecl { members, .. }
         | StmtKind::ModuleDecl { members, .. } => {
             for member in members {
-                rewrite_pascal_rtti_member(member, class_names);
+                rewrite_pascal_rtti_member(member, class_names, class_parents);
             }
         }
         StmtKind::If {
@@ -8902,19 +15098,19 @@ fn rewrite_pascal_rtti_stmt(stmt: &mut Statement, class_names: &[(String, String
             elifs,
             else_body,
         } => {
-            rewrite_pascal_rtti_expr(cond, class_names);
+            rewrite_pascal_rtti_expr(cond, class_names, class_parents);
             for stmt in then_body {
-                rewrite_pascal_rtti_stmt(stmt, class_names);
+                rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
             }
             for (cond, body) in elifs {
-                rewrite_pascal_rtti_expr(cond, class_names);
+                rewrite_pascal_rtti_expr(cond, class_names, class_parents);
                 for stmt in body {
-                    rewrite_pascal_rtti_stmt(stmt, class_names);
+                    rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
                 }
             }
             if let Some(body) = else_body {
                 for stmt in body {
-                    rewrite_pascal_rtti_stmt(stmt, class_names);
+                    rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
                 }
             }
         }
@@ -8923,21 +15119,21 @@ fn rewrite_pascal_rtti_stmt(stmt: &mut Statement, class_names: &[(String, String
             body,
             else_body,
         } => {
-            rewrite_pascal_rtti_expr(cond, class_names);
+            rewrite_pascal_rtti_expr(cond, class_names, class_parents);
             for stmt in body {
-                rewrite_pascal_rtti_stmt(stmt, class_names);
+                rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
             }
             if let Some(body) = else_body {
                 for stmt in body {
-                    rewrite_pascal_rtti_stmt(stmt, class_names);
+                    rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
                 }
             }
         }
         StmtKind::DoWhile { body, cond, .. } => {
             for stmt in body {
-                rewrite_pascal_rtti_stmt(stmt, class_names);
+                rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
             }
-            rewrite_pascal_rtti_expr(cond, class_names);
+            rewrite_pascal_rtti_expr(cond, class_names, class_parents);
         }
         StmtKind::For {
             init,
@@ -8946,16 +15142,16 @@ fn rewrite_pascal_rtti_stmt(stmt: &mut Statement, class_names: &[(String, String
             body,
         } => {
             if let Some(init) = init {
-                rewrite_pascal_rtti_stmt(init, class_names);
+                rewrite_pascal_rtti_stmt(init, class_names, class_parents);
             }
             if let Some(cond) = cond {
-                rewrite_pascal_rtti_expr(cond, class_names);
+                rewrite_pascal_rtti_expr(cond, class_names, class_parents);
             }
             if let Some(update) = update {
-                rewrite_pascal_rtti_expr(update, class_names);
+                rewrite_pascal_rtti_expr(update, class_names, class_parents);
             }
             for stmt in body {
-                rewrite_pascal_rtti_stmt(stmt, class_names);
+                rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
             }
         }
         StmtKind::ForIn {
@@ -8964,13 +15160,13 @@ fn rewrite_pascal_rtti_stmt(stmt: &mut Statement, class_names: &[(String, String
             else_body,
             ..
         } => {
-            rewrite_pascal_rtti_expr(iter, class_names);
+            rewrite_pascal_rtti_expr(iter, class_names, class_parents);
             for stmt in body {
-                rewrite_pascal_rtti_stmt(stmt, class_names);
+                rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
             }
             if let Some(body) = else_body {
                 for stmt in body {
-                    rewrite_pascal_rtti_stmt(stmt, class_names);
+                    rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
                 }
             }
         }
@@ -8981,75 +15177,81 @@ fn rewrite_pascal_rtti_stmt(stmt: &mut Statement, class_names: &[(String, String
             finally,
         } => {
             for stmt in body {
-                rewrite_pascal_rtti_stmt(stmt, class_names);
+                rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
             }
             for catch in catches {
                 for stmt in &mut catch.body {
-                    rewrite_pascal_rtti_stmt(stmt, class_names);
+                    rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
                 }
             }
             if let Some(body) = else_body {
                 for stmt in body {
-                    rewrite_pascal_rtti_stmt(stmt, class_names);
+                    rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
                 }
             }
             if let Some(body) = finally {
                 for stmt in body {
-                    rewrite_pascal_rtti_stmt(stmt, class_names);
+                    rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
                 }
             }
         }
         StmtKind::With { items, body, .. } => {
             for item in items {
-                rewrite_pascal_rtti_expr(&mut item.expr, class_names);
+                rewrite_pascal_rtti_expr(&mut item.expr, class_names, class_parents);
             }
             for stmt in body {
-                rewrite_pascal_rtti_stmt(stmt, class_names);
+                rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
             }
         }
         StmtKind::Return(Some(expr))
         | StmtKind::Throw {
             expr: Some(expr), ..
         } => {
-            rewrite_pascal_rtti_expr(expr, class_names);
+            rewrite_pascal_rtti_expr(expr, class_names, class_parents);
         }
         StmtKind::Assign { targets, value } => {
             for target in targets {
-                rewrite_pascal_rtti_expr(target, class_names);
+                rewrite_pascal_rtti_expr(target, class_names, class_parents);
             }
-            rewrite_pascal_rtti_expr(value, class_names);
+            rewrite_pascal_rtti_expr(value, class_names, class_parents);
         }
         StmtKind::CompoundAssign { target, value, .. } => {
-            rewrite_pascal_rtti_expr(target, class_names);
-            rewrite_pascal_rtti_expr(value, class_names);
+            rewrite_pascal_rtti_expr(target, class_names, class_parents);
+            rewrite_pascal_rtti_expr(value, class_names, class_parents);
         }
         _ => {}
     }
 }
 
-fn rewrite_pascal_rtti_member(member: &mut ClassMember, class_names: &[(String, String)]) {
+fn rewrite_pascal_rtti_member(
+    member: &mut ClassMember,
+    class_names: &[(String, String)],
+    class_parents: &[(String, String)],
+) {
     match member {
         ClassMember::Field {
             init: Some(expr), ..
         }
-        | ClassMember::Const { value: expr, .. } => rewrite_pascal_rtti_expr(expr, class_names),
+        | ClassMember::Const { value: expr, .. } => {
+            rewrite_pascal_rtti_expr(expr, class_names, class_parents)
+        }
         ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
-            rewrite_pascal_rtti_stmt(stmt, class_names);
+            rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
         }
         ClassMember::Constructor { body, .. } => {
             for stmt in body {
-                rewrite_pascal_rtti_stmt(stmt, class_names);
+                rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
             }
         }
         ClassMember::Property { getter, setter, .. } => {
             if let Some(getter) = getter {
                 for stmt in getter {
-                    rewrite_pascal_rtti_stmt(stmt, class_names);
+                    rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
                 }
             }
             if let Some(setter) = setter {
                 for stmt in &mut setter.body {
-                    rewrite_pascal_rtti_stmt(stmt, class_names);
+                    rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
                 }
             }
         }
@@ -9057,27 +15259,35 @@ fn rewrite_pascal_rtti_member(member: &mut ClassMember, class_names: &[(String, 
     }
 }
 
-fn rewrite_pascal_rtti_expr(expr: &mut Expression, class_names: &[(String, String)]) {
+fn rewrite_pascal_rtti_expr(
+    expr: &mut Expression,
+    class_names: &[(String, String)],
+    class_parents: &[(String, String)],
+) {
     match &mut expr.kind {
         ExprKind::Member { object, field, .. }
-            if field == "__pascal_class_name" || field == "__pascal_class_type" =>
+            if field == "__pascal_class_name"
+                || field == "__pascal_class_type"
+                || field == "__pascal_class_parent" =>
         {
-            rewrite_pascal_rtti_expr(object, class_names);
+            rewrite_pascal_rtti_expr(object, class_names, class_parents);
             *expr = if field == "__pascal_class_name" {
                 pascal_class_name_expr((**object).clone(), class_names)
-            } else {
+            } else if field == "__pascal_class_type" {
                 pascal_class_ref_expr((**object).clone(), class_names)
+            } else {
+                pascal_class_parent_ref_expr((**object).clone(), class_parents)
             };
         }
         ExprKind::Call { callee, args, .. } => {
-            rewrite_pascal_rtti_expr(callee, class_names);
+            rewrite_pascal_rtti_expr(callee, class_names, class_parents);
             for arg in args {
-                rewrite_pascal_rtti_expr(&mut arg.value, class_names);
+                rewrite_pascal_rtti_expr(&mut arg.value, class_names, class_parents);
             }
         }
         ExprKind::Binary { left, right, .. } => {
-            rewrite_pascal_rtti_expr(left, class_names);
-            rewrite_pascal_rtti_expr(right, class_names);
+            rewrite_pascal_rtti_expr(left, class_names, class_parents);
+            rewrite_pascal_rtti_expr(right, class_names, class_parents);
         }
         ExprKind::Unary { expr, .. }
         | ExprKind::Await(expr)
@@ -9087,56 +15297,1242 @@ fn rewrite_pascal_rtti_expr(expr: &mut Expression, class_names: &[(String, Strin
         | ExprKind::Void(expr)
         | ExprKind::Delete(expr)
         | ExprKind::YieldFrom(expr)
-        | ExprKind::Cast { expr, .. } => rewrite_pascal_rtti_expr(expr, class_names),
+        | ExprKind::Cast { expr, .. } => rewrite_pascal_rtti_expr(expr, class_names, class_parents),
         ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_pascal_rtti_expr(cond, class_names);
-            rewrite_pascal_rtti_expr(then, class_names);
-            rewrite_pascal_rtti_expr(else_, class_names);
+            rewrite_pascal_rtti_expr(cond, class_names, class_parents);
+            rewrite_pascal_rtti_expr(then, class_names, class_parents);
+            rewrite_pascal_rtti_expr(else_, class_names, class_parents);
         }
-        ExprKind::Member { object, .. } => rewrite_pascal_rtti_expr(object, class_names),
+        ExprKind::Member { object, .. } => {
+            rewrite_pascal_rtti_expr(object, class_names, class_parents)
+        }
         ExprKind::Index { object, index, .. } => {
-            rewrite_pascal_rtti_expr(object, class_names);
-            rewrite_pascal_rtti_expr(index, class_names);
+            rewrite_pascal_rtti_expr(object, class_names, class_parents);
+            rewrite_pascal_rtti_expr(index, class_names, class_parents);
         }
         ExprKind::New { class, args } => {
-            rewrite_pascal_rtti_expr(class, class_names);
+            rewrite_pascal_rtti_expr(class, class_names, class_parents);
             for arg in args {
-                rewrite_pascal_rtti_expr(&mut arg.value, class_names);
+                rewrite_pascal_rtti_expr(&mut arg.value, class_names, class_parents);
             }
         }
         ExprKind::Array(elements) => {
             for element in elements {
                 if let Some(key) = &mut element.key {
-                    rewrite_pascal_rtti_expr(key, class_names);
+                    rewrite_pascal_rtti_expr(key, class_names, class_parents);
                 }
-                rewrite_pascal_rtti_expr(&mut element.value, class_names);
+                rewrite_pascal_rtti_expr(&mut element.value, class_names, class_parents);
             }
         }
         ExprKind::Tuple(items) | ExprKind::Set(items) => {
             for item in items {
-                rewrite_pascal_rtti_expr(item, class_names);
+                rewrite_pascal_rtti_expr(item, class_names, class_parents);
             }
         }
         ExprKind::NullCoalesce { left, right } => {
-            rewrite_pascal_rtti_expr(left, class_names);
-            rewrite_pascal_rtti_expr(right, class_names);
+            rewrite_pascal_rtti_expr(left, class_names, class_parents);
+            rewrite_pascal_rtti_expr(right, class_names, class_parents);
         }
         ExprKind::Range { start, end, .. } => {
-            rewrite_pascal_rtti_expr(start, class_names);
-            rewrite_pascal_rtti_expr(end, class_names);
+            rewrite_pascal_rtti_expr(start, class_names, class_parents);
+            rewrite_pascal_rtti_expr(end, class_names, class_parents);
         }
         ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
-            rewrite_pascal_rtti_expr(target, class_names);
-            rewrite_pascal_rtti_expr(value, class_names);
+            rewrite_pascal_rtti_expr(target, class_names, class_parents);
+            rewrite_pascal_rtti_expr(value, class_names, class_parents);
         }
         ExprKind::SuperCall { args, .. } => {
             for arg in args {
-                rewrite_pascal_rtti_expr(&mut arg.value, class_names);
+                rewrite_pascal_rtti_expr(&mut arg.value, class_names, class_parents);
             }
         }
         ExprKind::StaticAccess { class, member } => {
-            rewrite_pascal_rtti_expr(class, class_names);
-            rewrite_pascal_rtti_expr(member, class_names);
+            rewrite_pascal_rtti_expr(class, class_names, class_parents);
+            rewrite_pascal_rtti_expr(member, class_names, class_parents);
+        }
+        _ => {}
+    }
+}
+
+fn pascal_obj_prop(key: &str, value: Expression) -> ObjectProperty {
+    ObjectProperty::KeyValue {
+        key: Expression::string(key),
+        value,
+    }
+}
+
+fn pascal_param(name: &str) -> Param {
+    Param {
+        name: name.to_string(),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    }
+}
+
+#[derive(Default)]
+struct PascalRttiMetadata {
+    field_counts: std::collections::HashMap<String, usize>,
+    field_tokens: std::collections::HashMap<String, Vec<Expression>>,
+    method_tokens: std::collections::HashMap<String, Vec<Expression>>,
+    property_fields: std::collections::HashMap<String, String>,
+    method_param_counts: std::collections::HashMap<String, usize>,
+}
+
+fn collect_pascal_rtti_metadata(body: &[Statement]) -> PascalRttiMetadata {
+    let mut metadata = PascalRttiMetadata::default();
+    collect_pascal_rtti_metadata_body(body, &mut metadata);
+    metadata
+}
+
+fn collect_pascal_rtti_metadata_body(body: &[Statement], metadata: &mut PascalRttiMetadata) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::ClassDecl { name, members, .. }
+            | StmtKind::StructDecl { name, members, .. } => {
+                let mut field_count = 0usize;
+                let mut field_tokens = Vec::new();
+                let mut method_tokens = Vec::new();
+                for member in members {
+                    match member {
+                        ClassMember::Field {
+                            name: field,
+                            type_hint,
+                            ..
+                        } => {
+                            field_count += 1;
+                            field_tokens.push(common_reflection::member_token_expr(
+                                common_reflection::MEMBER_KIND_FIELD,
+                                name,
+                                field,
+                                0,
+                                type_hint.clone(),
+                                None,
+                                Vec::new(),
+                                0,
+                            ));
+                            metadata
+                                .property_fields
+                                .entry(field.to_lowercase())
+                                .or_insert_with(|| field.clone());
+                        }
+                        ClassMember::Property {
+                            name: property_name,
+                            type_hint,
+                            getter,
+                            setter,
+                            ..
+                        } => {
+                            let backing = getter
+                                .as_deref()
+                                .and_then(pascal_rtti_property_field_from_getter)
+                                .or_else(|| {
+                                    setter.as_ref().and_then(|setter| {
+                                        pascal_rtti_property_field_from_setter(&setter.body)
+                                    })
+                                })
+                                .unwrap_or_else(|| property_name.clone());
+                            field_tokens.push(common_reflection::member_token_expr(
+                                common_reflection::MEMBER_KIND_FIELD,
+                                name,
+                                property_name,
+                                0,
+                                type_hint.clone(),
+                                None,
+                                Vec::new(),
+                                0,
+                            ));
+                            metadata
+                                .property_fields
+                                .insert(property_name.to_lowercase(), backing);
+                        }
+                        ClassMember::Method(method) => {
+                            if let StmtKind::FunctionDecl {
+                                name: method_name,
+                                params,
+                                return_type,
+                                ..
+                            } = &method.kind
+                            {
+                                method_tokens.push(common_reflection::member_token_expr(
+                                    common_reflection::MEMBER_KIND_METHOD,
+                                    name,
+                                    method_name,
+                                    params.len(),
+                                    None,
+                                    return_type.clone(),
+                                    params
+                                        .iter()
+                                        .map(|param| {
+                                            param
+                                                .type_hint
+                                                .clone()
+                                                .unwrap_or_else(|| "Variant".to_string())
+                                        })
+                                        .collect(),
+                                    0,
+                                ));
+                                metadata
+                                    .method_param_counts
+                                    .insert(method_name.to_lowercase(), params.len());
+                            }
+                        }
+                        ClassMember::NestedType(stmt) => {
+                            collect_pascal_rtti_metadata_body(std::slice::from_ref(stmt), metadata);
+                        }
+                        _ => {}
+                    }
+                }
+                metadata
+                    .field_counts
+                    .insert(name.to_lowercase(), field_count);
+                metadata
+                    .field_tokens
+                    .insert(name.to_lowercase(), field_tokens);
+                metadata
+                    .method_tokens
+                    .insert(name.to_lowercase(), method_tokens);
+            }
+            StmtKind::FunctionDecl { body, .. }
+            | StmtKind::Block(body)
+            | StmtKind::NamespaceDecl { body, .. } => {
+                collect_pascal_rtti_metadata_body(body, metadata)
+            }
+            _ => {}
+        }
+    }
+}
+
+fn pascal_rtti_property_field_from_getter(body: &[Statement]) -> Option<String> {
+    let [stmt] = body else {
+        return None;
+    };
+    match &stmt.kind {
+        StmtKind::Return(Some(expr)) => pascal_rtti_property_field_expr(expr),
+        _ => None,
+    }
+}
+
+fn pascal_rtti_property_field_from_setter(body: &[Statement]) -> Option<String> {
+    let [stmt] = body else {
+        return None;
+    };
+    match &stmt.kind {
+        StmtKind::Assign { targets, .. } if targets.len() == 1 => {
+            pascal_rtti_property_field_expr(&targets[0])
+        }
+        StmtKind::Expr(expr) => match &expr.kind {
+            ExprKind::Assign { target, .. } => pascal_rtti_property_field_expr(target),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn pascal_rtti_property_field_expr(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Member { field, .. } | ExprKind::Ident(field) => Some(field.clone()),
+        _ => None,
+    }
+}
+
+fn pascal_array_expr(values: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Array(
+        values
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn pascal_typeinfo_kind(
+    type_name: &str,
+    class_names: &[(String, String)],
+    record_names: &std::collections::HashSet<String>,
+    enum_members: &std::collections::HashMap<String, Vec<String>>,
+) -> &'static str {
+    let canonical = type_name.to_lowercase();
+    match canonical.as_str() {
+        "integer" | "longint" | "smallint" | "shortint" | "byte" | "word" | "cardinal"
+        | "int64" | "uint64" => "tkInteger",
+        "string" | "ansistring" | "unicodestring" | "widestring" => "tkUString",
+        "boolean" | "bool" => "tkBool",
+        "double" | "real" | "single" | "extended" | "currency" => "tkFloat",
+        _ if record_names.contains(&canonical) => "tkRecord",
+        _ if enum_members.contains_key(&canonical) => "tkEnumeration",
+        _ if class_names.iter().any(|(name, _)| name == &canonical) => "tkClass",
+        _ => "tkUnknown",
+    }
+}
+
+fn pascal_typeinfo_expr(
+    type_name: &str,
+    class_names: &[(String, String)],
+    record_names: &std::collections::HashSet<String>,
+    enum_members: &std::collections::HashMap<String, Vec<String>>,
+    rtti_metadata: &PascalRttiMetadata,
+) -> Expression {
+    let display_name = class_names
+        .iter()
+        .find(|(canonical, display)| canonical == &type_name.to_lowercase() || display == type_name)
+        .map(|(_, display)| display.as_str())
+        .unwrap_or(type_name);
+    let members = enum_members
+        .get(&type_name.to_lowercase())
+        .cloned()
+        .unwrap_or_default();
+    let enum_values = members
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| pascal_obj_prop(name, Expression::int(idx as i64)))
+        .collect();
+    let field_count = rtti_metadata
+        .field_counts
+        .get(&type_name.to_lowercase())
+        .copied()
+        .unwrap_or_default();
+    let field_tokens = rtti_metadata
+        .field_tokens
+        .get(&type_name.to_lowercase())
+        .cloned()
+        .unwrap_or_default();
+    let method_tokens = rtti_metadata
+        .method_tokens
+        .get(&type_name.to_lowercase())
+        .cloned()
+        .unwrap_or_default();
+    let pascal_kind = pascal_typeinfo_kind(type_name, class_names, record_names, enum_members);
+    let shared_kind = match pascal_kind {
+        "tkRecord" => common_reflection::ReflectKind::Struct.as_str(),
+        "tkClass" => common_reflection::ReflectKind::Class.as_str(),
+        "tkEnumeration" => common_reflection::ReflectKind::Number.as_str(),
+        "tkUString" | "tkString" => common_reflection::ReflectKind::String.as_str(),
+        "tkInteger" | "tkFloat" => common_reflection::ReflectKind::Number.as_str(),
+        "tkBool" => common_reflection::ReflectKind::Bool.as_str(),
+        _ => common_reflection::ReflectKind::Object.as_str(),
+    };
+    Expression::new(ExprKind::Object(vec![
+        pascal_obj_prop(
+            common_reflection::FIELD_TYPE,
+            Expression::string("ReflectionType"),
+        ),
+        pascal_obj_prop(
+            common_reflection::FIELD_TYPE_NAME,
+            Expression::string(display_name),
+        ),
+        pascal_obj_prop(
+            common_reflection::FIELD_KIND,
+            Expression::string(shared_kind),
+        ),
+        pascal_obj_prop(
+            common_reflection::FIELD_FIELDS,
+            pascal_array_expr(field_tokens),
+        ),
+        pascal_obj_prop(
+            common_reflection::FIELD_METHODS,
+            pascal_array_expr(method_tokens),
+        ),
+        pascal_obj_prop("Name", Expression::string(display_name)),
+        pascal_obj_prop("Kind", Expression::string(pascal_kind)),
+        pascal_obj_prop("TypeKind", Expression::string(pascal_kind)),
+        pascal_obj_prop(
+            "enumNames",
+            pascal_array_expr(
+                members
+                    .iter()
+                    .map(|name| Expression::string(name))
+                    .collect(),
+            ),
+        ),
+        pascal_obj_prop("enumValues", Expression::new(ExprKind::Object(enum_values))),
+        pascal_obj_prop(
+            "GetFields",
+            pascal_array_expr((0..field_count).map(|_| Expression::null()).collect()),
+        ),
+        pascal_obj_prop(
+            "IsInstance",
+            Expression::string(if pascal_kind == "tkClass" {
+                "True"
+            } else {
+                "False"
+            }),
+        ),
+    ]))
+}
+
+fn pascal_typeinfo_name_from_expr(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::Lit(Literal::Str(name)) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn pascal_is_typeinfo_object(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Object(props)
+            if props.iter().any(|prop| matches!(
+                prop,
+                ObjectProperty::KeyValue { key, value }
+                    if matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == common_reflection::FIELD_TYPE)
+                        && matches!(&value.kind, ExprKind::Lit(Literal::Str(value)) if value == "ReflectionType")
+            ))
+    )
+}
+
+fn pascal_member_expr(object: Expression, field: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(object),
+        field: field.to_string(),
+        null_safe: false,
+    })
+}
+
+fn pascal_index_expr(object: Expression, index: Expression) -> Expression {
+    Expression::new(ExprKind::Index {
+        object: Box::new(object),
+        index: Box::new(index),
+        null_safe: false,
+    })
+}
+
+fn pascal_tvalue_expr(value: Expression) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        pascal_obj_prop("AsString", value.clone()),
+        pascal_obj_prop("AsInteger", value),
+    ]))
+}
+
+fn pascal_is_rtti_object(expr: &Expression) -> bool {
+    matches!(expr.kind, ExprKind::Object(_))
+}
+
+fn pascal_is_rtti_env_value(expr: &Expression) -> bool {
+    matches!(expr.kind, ExprKind::Object(_) | ExprKind::Array(_))
+}
+
+fn pascal_rtti_context_expr() -> Expression {
+    Expression::new(ExprKind::Object(vec![pascal_obj_prop(
+        "__pascal_rtti_context",
+        Expression::bool(true),
+    )]))
+}
+
+fn pascal_is_rtti_context(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Object(props)
+            if props.iter().any(|prop| matches!(
+                prop,
+                ObjectProperty::KeyValue { key, value }
+                    if matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == "__pascal_rtti_context")
+                        && matches!(&value.kind, ExprKind::Lit(Literal::Bool(true)))
+            ))
+    )
+}
+
+fn pascal_object_string_prop(expr: &Expression, prop_name: &str) -> Option<String> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    props.iter().find_map(|prop| match prop {
+        ObjectProperty::KeyValue { key, value }
+            if matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == prop_name) =>
+        {
+            match &value.kind {
+                ExprKind::Lit(Literal::Str(value)) => Some(value.clone()),
+                _ => None,
+            }
+        }
+        _ => None,
+    })
+}
+
+fn pascal_object_prop(expr: &Expression, prop_name: &str) -> Option<Expression> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    props.iter().find_map(|prop| match prop {
+        ObjectProperty::KeyValue { key, value }
+            if matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == prop_name) =>
+        {
+            Some(value.clone())
+        }
+        _ => None,
+    })
+}
+
+fn pascal_rtti_property_expr(property_name: &str, rtti_metadata: &PascalRttiMetadata) -> Expression {
+    let backing = rtti_metadata
+        .property_fields
+        .get(&property_name.to_lowercase())
+        .cloned()
+        .unwrap_or_else(|| property_name.to_string());
+    let receiver = Expression::ident("obj");
+    let value = Expression::ident("value");
+    let get_value = Expression::new(ExprKind::Lambda {
+        params: vec![pascal_param("obj")],
+        body: LambdaBody::Expr(Box::new(pascal_tvalue_expr(pascal_member_expr(
+            receiver.clone(),
+            &backing,
+        )))),
+        is_async: false,
+        captures: Vec::new(),
+    });
+    let set_value = Expression::new(ExprKind::Lambda {
+        params: vec![pascal_param("obj"), pascal_param("value")],
+        body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Assign {
+            target: Box::new(pascal_member_expr(receiver, &backing)),
+            value: Box::new(value),
+        }))),
+        is_async: false,
+        captures: Vec::new(),
+    });
+    Expression::new(ExprKind::Object(vec![
+        pascal_obj_prop(
+            "__pascal_rtti_property_name",
+            Expression::string(property_name),
+        ),
+        pascal_obj_prop("__pascal_rtti_property_field", Expression::string(&backing)),
+        pascal_obj_prop("Name", Expression::string(property_name)),
+        pascal_obj_prop("GetValue", get_value),
+        pascal_obj_prop("SetValue", set_value),
+    ]))
+}
+
+fn pascal_rtti_method_expr(method_name: &str, rtti_metadata: &PascalRttiMetadata) -> Expression {
+    let param_count = rtti_metadata
+        .method_param_counts
+        .get(&method_name.to_lowercase())
+        .copied()
+        .unwrap_or_default();
+    let args_array = Expression::ident("args");
+    let call_args = (0..param_count)
+        .map(|idx| Argument::positional(pascal_index_expr(args_array.clone(), Expression::int(idx as i64))))
+        .collect();
+    let invoke = Expression::new(ExprKind::Lambda {
+        params: vec![pascal_param("obj"), pascal_param("args")],
+        body: LambdaBody::Expr(Box::new(pascal_tvalue_expr(Expression::new(ExprKind::Call {
+            callee: Box::new(pascal_member_expr(Expression::ident("obj"), method_name)),
+            args: call_args,
+            optional: false,
+        })))),
+        is_async: false,
+        captures: Vec::new(),
+    });
+    Expression::new(ExprKind::Object(vec![
+        pascal_obj_prop("__pascal_rtti_method_name", Expression::string(method_name)),
+        pascal_obj_prop("Name", Expression::string(method_name)),
+        pascal_obj_prop(
+            "GetParameters",
+            pascal_array_expr((0..param_count).map(|_| Expression::null()).collect()),
+        ),
+        pascal_obj_prop("Invoke", invoke),
+    ]))
+}
+
+fn pascal_typekind_const(name: &str) -> Option<&'static str> {
+    if name.eq_ignore_ascii_case("tkInteger") {
+        Some("tkInteger")
+    } else if name.eq_ignore_ascii_case("tkUString") {
+        Some("tkUString")
+    } else if name.eq_ignore_ascii_case("tkString") {
+        Some("tkString")
+    } else if name.eq_ignore_ascii_case("tkRecord") {
+        Some("tkRecord")
+    } else if name.eq_ignore_ascii_case("tkClass") {
+        Some("tkClass")
+    } else if name.eq_ignore_ascii_case("tkEnumeration") {
+        Some("tkEnumeration")
+    } else if name.eq_ignore_ascii_case("tkBool") {
+        Some("tkBool")
+    } else if name.eq_ignore_ascii_case("tkFloat") {
+        Some("tkFloat")
+    } else {
+        None
+    }
+}
+
+fn rewrite_pascal_typeinfo_stmt(
+    stmt: &mut Statement,
+    class_names: &[(String, String)],
+    record_names: &std::collections::HashSet<String>,
+    enum_members: &std::collections::HashMap<String, Vec<String>>,
+    rtti_metadata: &PascalRttiMetadata,
+    env: &mut std::collections::HashMap<String, Expression>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_typeinfo_expr(
+                expr,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_typeinfo_expr(
+                        init,
+                        class_names,
+                        record_names,
+                        enum_members,
+                        rtti_metadata,
+                        env,
+                    );
+                    if let BindingPattern::Ident(name) = &decl.pattern {
+                        if pascal_is_rtti_env_value(init) {
+                            env.insert(name.to_lowercase(), init.clone());
+                        }
+                    }
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets.iter_mut() {
+                rewrite_pascal_typeinfo_expr(
+                    target,
+                    class_names,
+                    record_names,
+                    enum_members,
+                    rtti_metadata,
+                    env,
+                );
+            }
+            rewrite_pascal_typeinfo_expr(
+                value,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+            if targets.len() == 1 {
+                if let ExprKind::Ident(name) = &targets[0].kind {
+                    if pascal_is_rtti_env_value(value) {
+                        env.insert(name.to_lowercase(), value.clone());
+                    }
+                }
+            }
+        }
+        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+            let mut scoped = env.clone();
+            for stmt in body {
+                rewrite_pascal_typeinfo_stmt(
+                    stmt,
+                    class_names,
+                    record_names,
+                    enum_members,
+                    rtti_metadata,
+                    &mut scoped,
+                );
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_typeinfo_member(
+                    member,
+                    class_names,
+                    record_names,
+                    enum_members,
+                    rtti_metadata,
+                    &mut env.clone(),
+                );
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_typeinfo_expr(
+                cond,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+            for stmt in then_body {
+                rewrite_pascal_typeinfo_stmt(
+                    stmt,
+                    class_names,
+                    record_names,
+                    enum_members,
+                    rtti_metadata,
+                    &mut env.clone(),
+                );
+            }
+            for (cond, body) in elifs {
+                rewrite_pascal_typeinfo_expr(
+                    cond,
+                    class_names,
+                    record_names,
+                    enum_members,
+                    rtti_metadata,
+                    env,
+                );
+                for stmt in body {
+                    rewrite_pascal_typeinfo_stmt(
+                        stmt,
+                        class_names,
+                        record_names,
+                        enum_members,
+                        rtti_metadata,
+                        &mut env.clone(),
+                    );
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_typeinfo_stmt(
+                        stmt,
+                        class_names,
+                        record_names,
+                        enum_members,
+                        rtti_metadata,
+                        &mut env.clone(),
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_typeinfo_member(
+    member: &mut ClassMember,
+    class_names: &[(String, String)],
+    record_names: &std::collections::HashSet<String>,
+    enum_members: &std::collections::HashMap<String, Vec<String>>,
+    rtti_metadata: &PascalRttiMetadata,
+    env: &mut std::collections::HashMap<String, Expression>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_typeinfo_stmt(
+                stmt,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+        }
+        ClassMember::Constructor { body, .. } => {
+            let mut scoped = env.clone();
+            for stmt in body {
+                rewrite_pascal_typeinfo_stmt(
+                    stmt,
+                    class_names,
+                    record_names,
+                    enum_members,
+                    rtti_metadata,
+                    &mut scoped,
+                );
+            }
+        }
+        ClassMember::Field { init: Some(expr), .. } | ClassMember::Const { value: expr, .. } => {
+            rewrite_pascal_typeinfo_expr(
+                expr,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                let mut scoped = env.clone();
+                for stmt in getter {
+                    rewrite_pascal_typeinfo_stmt(
+                        stmt,
+                        class_names,
+                        record_names,
+                        enum_members,
+                        rtti_metadata,
+                        &mut scoped,
+                    );
+                }
+            }
+            if let Some(setter) = setter {
+                let mut scoped = env.clone();
+                for stmt in &mut setter.body {
+                    rewrite_pascal_typeinfo_stmt(
+                        stmt,
+                        class_names,
+                        record_names,
+                        enum_members,
+                        rtti_metadata,
+                        &mut scoped,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_typeinfo_expr(
+    expr: &mut Expression,
+    class_names: &[(String, String)],
+    record_names: &std::collections::HashSet<String>,
+    enum_members: &std::collections::HashMap<String, Vec<String>>,
+    rtti_metadata: &PascalRttiMetadata,
+    env: &mut std::collections::HashMap<String, Expression>,
+) {
+    match &mut expr.kind {
+        ExprKind::Ident(name) => {
+            if let Some(value) = pascal_typekind_const(name) {
+                *expr = Expression::string(value);
+            } else if let Some(value) = env.get(&name.to_lowercase()) {
+                *expr = value.clone();
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_pascal_typeinfo_expr(
+                callee,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+            for arg in args.iter_mut() {
+                rewrite_pascal_typeinfo_expr(
+                    &mut arg.value,
+                    class_names,
+                    record_names,
+                    enum_members,
+                    rtti_metadata,
+                    env,
+                );
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("TypeInfo"))
+                && args.len() == 1
+            {
+                if let Some(type_name) = pascal_typeinfo_name_from_expr(&args[0].value) {
+                    *expr = pascal_typeinfo_expr(
+                        &type_name,
+                        class_names,
+                        record_names,
+                        enum_members,
+                        rtti_metadata,
+                    );
+                }
+                return;
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("GetEnumName"))
+                && args.len() == 2
+            {
+                *expr = pascal_index_expr(
+                    pascal_member_expr(args[0].value.clone(), "enumNames"),
+                    args[1].value.clone(),
+                );
+                return;
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("GetEnumValue"))
+                && args.len() == 2
+            {
+                let enum_values = pascal_member_expr(args[0].value.clone(), "enumValues");
+                *expr = if let ExprKind::Lit(Literal::Str(name)) = &args[1].value.kind {
+                    pascal_member_expr(enum_values, name)
+                } else {
+                    pascal_index_expr(enum_values, args[1].value.clone())
+                };
+                return;
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Length") || name == "__len__")
+                && args.len() == 1
+            {
+                if let ExprKind::Array(elements) = &args[0].value.kind {
+                    *expr = Expression::int(elements.len() as i64);
+                    return;
+                }
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if matches!(&object.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("TValue"))
+                    && (field.eq_ignore_ascii_case("FromString")
+                        || field.eq_ignore_ascii_case("From"))
+                    && args.len() == 1
+                {
+                    *expr = pascal_tvalue_expr(args[0].value.clone());
+                    return;
+                }
+                if matches!(&object.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("TRttiContext"))
+                    && field.eq_ignore_ascii_case("Create")
+                    && args.is_empty()
+                {
+                    *expr = pascal_rtti_context_expr();
+                    return;
+                }
+                if pascal_is_rtti_context(object)
+                    && field.eq_ignore_ascii_case("GetType")
+                    && args.len() == 1
+                {
+                    if pascal_is_typeinfo_object(&args[0].value) {
+                        *expr = args[0].value.clone();
+                        return;
+                    }
+                    if let Some(type_name) = pascal_typeinfo_name_from_expr(&args[0].value) {
+                        *expr = pascal_typeinfo_expr(
+                            &type_name,
+                            class_names,
+                            record_names,
+                            enum_members,
+                            rtti_metadata,
+                        );
+                        return;
+                    }
+                }
+                if pascal_is_typeinfo_object(object) {
+                    if field.eq_ignore_ascii_case("GetFields") && args.is_empty() {
+                        if let Some(fields) = pascal_object_prop(object, "GetFields") {
+                            *expr = fields;
+                        } else {
+                            *expr = pascal_member_expr((**object).clone(), "GetFields");
+                        }
+                        return;
+                    }
+                    if field.eq_ignore_ascii_case("GetProperty") && args.len() == 1 {
+                        if let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind {
+                            *expr = pascal_rtti_property_expr(name, rtti_metadata);
+                            return;
+                        }
+                    }
+                    if field.eq_ignore_ascii_case("GetMethod") && args.len() == 1 {
+                        if let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind {
+                            *expr = pascal_rtti_method_expr(name, rtti_metadata);
+                            return;
+                        }
+                    }
+                }
+                if let Some(property_name) =
+                    pascal_object_string_prop(object, "__pascal_rtti_property_name")
+                {
+                    if field.eq_ignore_ascii_case("GetValue") && args.len() == 1 {
+                        *expr = pascal_tvalue_expr(pascal_member_expr(
+                            args[0].value.clone(),
+                            &property_name,
+                        ));
+                        return;
+                    }
+                    if field.eq_ignore_ascii_case("SetValue") && args.len() == 2 {
+                        *expr = Expression::new(ExprKind::Assign {
+                            target: Box::new(pascal_member_expr(
+                                args[0].value.clone(),
+                                &property_name,
+                            )),
+                            value: Box::new(args[1].value.clone()),
+                        });
+                        return;
+                    }
+                }
+                if let Some(method_name) =
+                    pascal_object_string_prop(object, "__pascal_rtti_method_name")
+                {
+                    if field.eq_ignore_ascii_case("Invoke") && args.len() == 2 {
+                        let param_count = rtti_metadata
+                            .method_param_counts
+                            .get(&method_name.to_lowercase())
+                            .copied()
+                            .unwrap_or_default();
+                        let call_args = (0..param_count)
+                            .map(|idx| {
+                                Argument::positional(pascal_index_expr(
+                                    args[1].value.clone(),
+                                    Expression::int(idx as i64),
+                                ))
+                            })
+                            .collect();
+                        *expr = pascal_tvalue_expr(Expression::new(ExprKind::Call {
+                            callee: Box::new(pascal_member_expr(
+                                args[0].value.clone(),
+                                &method_name,
+                            )),
+                            args: call_args,
+                            optional: false,
+                        }));
+                        return;
+                    }
+                    if field.eq_ignore_ascii_case("GetParameters") && args.is_empty() {
+                        if let Some(params) = pascal_object_prop(object, "GetParameters") {
+                            *expr = params;
+                        } else {
+                            *expr = pascal_member_expr((**object).clone(), "GetParameters");
+                        }
+                        return;
+                    }
+                }
+                if pascal_is_rtti_object(object)
+                    && field.eq_ignore_ascii_case("GetParameters")
+                    && args.is_empty()
+                {
+                    if let Some(params) = pascal_object_prop(object, "GetParameters") {
+                        *expr = params;
+                    } else {
+                        *expr = pascal_member_expr((**object).clone(), "GetParameters");
+                    }
+                    return;
+                }
+            }
+        }
+        ExprKind::RefLoad(inner) => {
+            rewrite_pascal_typeinfo_expr(
+                inner,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+            if pascal_is_typeinfo_object(inner) {
+                *expr = (**inner).clone();
+            }
+        }
+        ExprKind::Member { object, field, .. } => {
+            rewrite_pascal_typeinfo_expr(
+                object,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+            if pascal_is_typeinfo_object(object) && field.eq_ignore_ascii_case("GetFields") {
+                if let Some(fields) = pascal_object_prop(object, "GetFields") {
+                    *expr = fields;
+                } else {
+                    *expr = pascal_member_expr((**object).clone(), "GetFields");
+                }
+            }
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_typeinfo_expr(
+                object,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+            rewrite_pascal_typeinfo_expr(
+                index,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_typeinfo_expr(
+                left,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+            rewrite_pascal_typeinfo_expr(
+                right,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+            if let ExprKind::Binary { op, left, right } = &expr.kind {
+                if let (ExprKind::Lit(Literal::Int(left)), ExprKind::Lit(Literal::Int(right))) =
+                    (&left.kind, &right.kind)
+                {
+                    let value = match op {
+                        BinOp::Eq => Some(left == right),
+                        BinOp::NotEq => Some(left != right),
+                        BinOp::Lt => Some(left < right),
+                        BinOp::LtEq => Some(left <= right),
+                        BinOp::Gt => Some(left > right),
+                        BinOp::GtEq => Some(left >= right),
+                        _ => None,
+                    };
+                    if let Some(value) = value {
+                        *expr = Expression::string(if value { "True" } else { "False" });
+                    }
+                }
+            }
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Cast { expr, .. } => {
+            rewrite_pascal_typeinfo_expr(
+                expr,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_typeinfo_expr(
+                cond,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+            rewrite_pascal_typeinfo_expr(
+                then,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+            rewrite_pascal_typeinfo_expr(
+                else_,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_pascal_typeinfo_expr(
+                        key,
+                        class_names,
+                        record_names,
+                        enum_members,
+                        rtti_metadata,
+                        env,
+                    );
+                }
+                rewrite_pascal_typeinfo_expr(
+                    &mut element.value,
+                    class_names,
+                    record_names,
+                    enum_members,
+                    rtti_metadata,
+                    env,
+                );
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value } => {
+                        rewrite_pascal_typeinfo_expr(
+                            key,
+                            class_names,
+                            record_names,
+                            enum_members,
+                            rtti_metadata,
+                            env,
+                        );
+                        rewrite_pascal_typeinfo_expr(
+                            value,
+                            class_names,
+                            record_names,
+                            enum_members,
+                            rtti_metadata,
+                            env,
+                        );
+                    }
+                    ObjectProperty::Spread(value) => {
+                        rewrite_pascal_typeinfo_expr(
+                            value,
+                            class_names,
+                            record_names,
+                            enum_members,
+                            rtti_metadata,
+                            env,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) => {
+            for item in items {
+                rewrite_pascal_typeinfo_expr(
+                    item,
+                    class_names,
+                    record_names,
+                    enum_members,
+                    rtti_metadata,
+                    env,
+                );
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_typeinfo_expr(
+                class,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+            for arg in args.iter_mut() {
+                rewrite_pascal_typeinfo_expr(
+                    &mut arg.value,
+                    class_names,
+                    record_names,
+                    enum_members,
+                    rtti_metadata,
+                    env,
+                );
+            }
+            if matches!(&class.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("TRttiContext"))
+                && args.is_empty()
+            {
+                *expr = pascal_rtti_context_expr();
+            }
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_pascal_typeinfo_expr(
+                target,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
+            rewrite_pascal_typeinfo_expr(
+                value,
+                class_names,
+                record_names,
+                enum_members,
+                rtti_metadata,
+                env,
+            );
         }
         _ => {}
     }
@@ -9380,6 +16776,14 @@ fn rewrite_zero_arg_instance_method_refs_expr(
         }
         ExprKind::Member { object, field, .. } => {
             rewrite_zero_arg_instance_method_refs_expr(object, methods);
+            if field.eq_ignore_ascii_case("ToString") {
+                expr.kind = ExprKind::Binary {
+                    op: BinOp::Add,
+                    left: Box::new(Expression::new(ExprKind::Lit(Literal::Str(String::new())))),
+                    right: Box::new((**object).clone()),
+                };
+                return;
+            }
             if methods.contains(&field.to_lowercase()) {
                 expr.kind = ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Member {
@@ -9458,35 +16862,121 @@ fn rewrite_zero_arg_instance_method_refs_expr(
     }
 }
 
-fn rewrite_static_method_calls_stmt(
-    stmt: &mut Statement,
-    methods: &std::collections::HashSet<(String, String)>,
-    values: &std::collections::HashSet<(String, String)>,
-) {
-    match &mut stmt.kind {
-        StmtKind::Expr(expr) => rewrite_static_method_calls_expr(expr, methods, values),
-        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
-            for stmt in body {
-                rewrite_static_method_calls_stmt(stmt, methods, values);
+fn collect_zero_arg_static_methods(
+    body: &[Statement],
+) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
+    let mut parents: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut out: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    for stmt in body {
+        let (name, class_parents, members) = match &stmt.kind {
+            StmtKind::ClassDecl {
+                name,
+                parents,
+                members,
+                ..
+            } => (name, parents.as_slice(), members),
+            StmtKind::StructDecl { name, members, .. } => (name, &[][..], members),
+            _ => continue,
+        };
+        let class_key = name.to_lowercase();
+        parents.insert(
+            class_key.clone(),
+            class_parents
+                .iter()
+                .map(|parent| parent.to_lowercase())
+                .collect(),
+        );
+        for member in members {
+            let ClassMember::Method(method) = member else {
+                continue;
+            };
+            let StmtKind::FunctionDecl {
+                name: method_name,
+                params,
+                modifiers,
+                ..
+            } = &method.kind
+            else {
+                continue;
+            };
+            if params.is_empty() && modifiers.is_static {
+                out.entry(class_key.clone())
+                    .or_default()
+                    .insert(method_name.to_lowercase());
             }
         }
+    }
+
+    let direct = out.clone();
+    for class_name in parents.keys() {
+        let mut pending = parents.get(class_name).cloned().unwrap_or_default();
+        let mut seen = std::collections::HashSet::new();
+        while let Some(parent) = pending.pop() {
+            if !seen.insert(parent.clone()) {
+                continue;
+            }
+            if let Some(methods) = direct.get(&parent) {
+                out.entry(class_name.clone())
+                    .or_default()
+                    .extend(methods.iter().cloned());
+            }
+            if let Some(grandparents) = parents.get(&parent) {
+                pending.extend(grandparents.iter().cloned());
+            }
+        }
+    }
+    out
+}
+
+fn rewrite_zero_arg_static_method_refs_stmt(
+    stmt: &mut Statement,
+    methods: &std::collections::HashMap<String, std::collections::HashSet<String>>,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) => rewrite_zero_arg_static_method_refs_expr(expr, methods, var_types),
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
                 if let Some(init) = &mut decl.init {
-                    rewrite_static_method_calls_expr(init, methods, values);
+                    rewrite_zero_arg_static_method_refs_expr(init, methods, var_types);
+                }
+                if let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, decl.type_hint.as_deref())
+                {
+                    let class_key = bare_type_name(type_hint).to_lowercase();
+                    if methods.contains_key(&class_key) {
+                        var_types.insert(name.to_lowercase(), class_key);
+                    }
                 }
             }
         }
-        StmtKind::FunctionDecl { body, .. } => {
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            let mut scoped = var_types.clone();
             for stmt in body {
-                rewrite_static_method_calls_stmt(stmt, methods, values);
+                rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
+            }
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = var_types.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    let class_key = bare_type_name(type_hint).to_lowercase();
+                    if methods.contains_key(&class_key) {
+                        scoped.insert(param.name.to_lowercase(), class_key);
+                    }
+                }
+            }
+            for stmt in body {
+                rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
             }
         }
         StmtKind::ClassDecl { members, .. }
         | StmtKind::StructDecl { members, .. }
         | StmtKind::ModuleDecl { members, .. } => {
             for member in members {
-                rewrite_static_method_calls_member(member, methods, values);
+                rewrite_zero_arg_static_method_refs_member(member, methods);
             }
         }
         StmtKind::If {
@@ -9495,19 +16985,22 @@ fn rewrite_static_method_calls_stmt(
             elifs,
             else_body,
         } => {
-            rewrite_static_method_calls_expr(cond, methods, values);
+            rewrite_zero_arg_static_method_refs_expr(cond, methods, var_types);
+            let mut scoped = var_types.clone();
             for stmt in then_body {
-                rewrite_static_method_calls_stmt(stmt, methods, values);
+                rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
             }
             for (cond, body) in elifs {
-                rewrite_static_method_calls_expr(cond, methods, values);
+                rewrite_zero_arg_static_method_refs_expr(cond, methods, var_types);
+                let mut scoped = var_types.clone();
                 for stmt in body {
-                    rewrite_static_method_calls_stmt(stmt, methods, values);
+                    rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
                 }
             }
             if let Some(body) = else_body {
+                let mut scoped = var_types.clone();
                 for stmt in body {
-                    rewrite_static_method_calls_stmt(stmt, methods, values);
+                    rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
                 }
             }
         }
@@ -9516,21 +17009,17 @@ fn rewrite_static_method_calls_stmt(
             body,
             else_body,
         } => {
-            rewrite_static_method_calls_expr(cond, methods, values);
+            rewrite_zero_arg_static_method_refs_expr(cond, methods, var_types);
+            let mut scoped = var_types.clone();
             for stmt in body {
-                rewrite_static_method_calls_stmt(stmt, methods, values);
+                rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
             }
             if let Some(body) = else_body {
+                let mut scoped = var_types.clone();
                 for stmt in body {
-                    rewrite_static_method_calls_stmt(stmt, methods, values);
+                    rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
                 }
             }
-        }
-        StmtKind::DoWhile { body, cond, .. } => {
-            for stmt in body {
-                rewrite_static_method_calls_stmt(stmt, methods, values);
-            }
-            rewrite_static_method_calls_expr(cond, methods, values);
         }
         StmtKind::For {
             init,
@@ -9538,17 +17027,18 @@ fn rewrite_static_method_calls_stmt(
             update,
             body,
         } => {
+            let mut scoped = var_types.clone();
             if let Some(init) = init {
-                rewrite_static_method_calls_stmt(init, methods, values);
+                rewrite_zero_arg_static_method_refs_stmt(init, methods, &mut scoped);
             }
             if let Some(cond) = cond {
-                rewrite_static_method_calls_expr(cond, methods, values);
+                rewrite_zero_arg_static_method_refs_expr(cond, methods, &mut scoped);
             }
             if let Some(update) = update {
-                rewrite_static_method_calls_expr(update, methods, values);
+                rewrite_zero_arg_static_method_refs_expr(update, methods, &mut scoped);
             }
             for stmt in body {
-                rewrite_static_method_calls_stmt(stmt, methods, values);
+                rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
             }
         }
         StmtKind::ForIn {
@@ -9557,13 +17047,347 @@ fn rewrite_static_method_calls_stmt(
             else_body,
             ..
         } => {
-            rewrite_static_method_calls_expr(iter, methods, values);
+            rewrite_zero_arg_static_method_refs_expr(iter, methods, var_types);
+            let mut scoped = var_types.clone();
             for stmt in body {
-                rewrite_static_method_calls_stmt(stmt, methods, values);
+                rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
+            }
+            if let Some(body) = else_body {
+                let mut scoped = var_types.clone();
+                for stmt in body {
+                    rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
+                }
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            let mut scoped = var_types.clone();
+            for stmt in body {
+                rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
+            }
+            rewrite_zero_arg_static_method_refs_expr(cond, methods, &mut scoped);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            let mut scoped = var_types.clone();
+            for stmt in body {
+                rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
+            }
+            for catch in catches {
+                let mut scoped = var_types.clone();
+                for stmt in &mut catch.body {
+                    rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
+                }
+            }
+            if let Some(body) = else_body {
+                let mut scoped = var_types.clone();
+                for stmt in body {
+                    rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
+                }
+            }
+            if let Some(body) = finally {
+                let mut scoped = var_types.clone();
+                for stmt in body {
+                    rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
+                }
+            }
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                rewrite_zero_arg_static_method_refs_expr(&mut item.expr, methods, var_types);
+            }
+            let mut scoped = var_types.clone();
+            for stmt in body {
+                rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
+            }
+        }
+        StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr), ..
+        } => rewrite_zero_arg_static_method_refs_expr(expr, methods, var_types),
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_zero_arg_static_method_refs_expr(target, methods, var_types);
+            }
+            rewrite_zero_arg_static_method_refs_expr(value, methods, var_types);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_zero_arg_static_method_refs_expr(target, methods, var_types);
+            rewrite_zero_arg_static_method_refs_expr(value, methods, var_types);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_zero_arg_static_method_refs_member(
+    member: &mut ClassMember,
+    methods: &std::collections::HashMap<String, std::collections::HashSet<String>>,
+) {
+    match member {
+        ClassMember::Field {
+            init: Some(expr), ..
+        }
+        | ClassMember::Const { value: expr, .. } => {
+            let mut var_types = std::collections::HashMap::new();
+            rewrite_zero_arg_static_method_refs_expr(expr, methods, &mut var_types);
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            let mut var_types = std::collections::HashMap::new();
+            rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut var_types);
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            let mut var_types = std::collections::HashMap::new();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    let class_key = bare_type_name(type_hint).to_lowercase();
+                    if methods.contains_key(&class_key) {
+                        var_types.insert(param.name.to_lowercase(), class_key);
+                    }
+                }
+            }
+            for stmt in body {
+                rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut var_types);
+            }
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                let mut var_types = std::collections::HashMap::new();
+                for stmt in getter {
+                    rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut var_types);
+                }
+            }
+            if let Some(setter) = setter {
+                let mut var_types = std::collections::HashMap::new();
+                if let Some(type_hint) = &setter.param.type_hint {
+                    let class_key = bare_type_name(type_hint).to_lowercase();
+                    if methods.contains_key(&class_key) {
+                        var_types.insert(setter.param.name.to_lowercase(), class_key);
+                    }
+                }
+                for stmt in &mut setter.body {
+                    rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut var_types);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_zero_arg_static_method_refs_expr(
+    expr: &mut Expression,
+    methods: &std::collections::HashMap<String, std::collections::HashSet<String>>,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_zero_arg_static_method_refs_expr(callee, methods, var_types);
+            for arg in args {
+                rewrite_zero_arg_static_method_refs_expr(&mut arg.value, methods, var_types);
+            }
+        }
+        ExprKind::Member { object, field, .. } => {
+            rewrite_zero_arg_static_method_refs_expr(object, methods, var_types);
+            let receiver_type = match &object.kind {
+                ExprKind::Ident(name) => var_types.get(&name.to_lowercase()),
+                _ => None,
+            };
+            if let Some(class_key) = receiver_type {
+                if methods
+                    .get(class_key)
+                    .is_some_and(|class_methods| class_methods.contains(&field.to_lowercase()))
+                {
+                    expr.kind = ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new((**object).clone()),
+                            field: field.clone(),
+                            null_safe: false,
+                        })),
+                        args: Vec::new(),
+                        optional: false,
+                    };
+                }
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_zero_arg_static_method_refs_expr(left, methods, var_types);
+            rewrite_zero_arg_static_method_refs_expr(right, methods, var_types);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Cast { expr, .. } => {
+            rewrite_zero_arg_static_method_refs_expr(expr, methods, var_types)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_zero_arg_static_method_refs_expr(cond, methods, var_types);
+            rewrite_zero_arg_static_method_refs_expr(then, methods, var_types);
+            rewrite_zero_arg_static_method_refs_expr(else_, methods, var_types);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_zero_arg_static_method_refs_expr(object, methods, var_types);
+            rewrite_zero_arg_static_method_refs_expr(index, methods, var_types);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_zero_arg_static_method_refs_expr(class, methods, var_types);
+            for arg in args {
+                rewrite_zero_arg_static_method_refs_expr(&mut arg.value, methods, var_types);
+            }
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_zero_arg_static_method_refs_expr(key, methods, var_types);
+                }
+                rewrite_zero_arg_static_method_refs_expr(&mut element.value, methods, var_types);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) => {
+            for item in items {
+                rewrite_zero_arg_static_method_refs_expr(item, methods, var_types);
+            }
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_zero_arg_static_method_refs_expr(left, methods, var_types);
+            rewrite_zero_arg_static_method_refs_expr(right, methods, var_types);
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_zero_arg_static_method_refs_expr(start, methods, var_types);
+            rewrite_zero_arg_static_method_refs_expr(end, methods, var_types);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_zero_arg_static_method_refs_expr(target, methods, var_types);
+            rewrite_zero_arg_static_method_refs_expr(value, methods, var_types);
+        }
+        ExprKind::SuperCall { args, .. } => {
+            for arg in args {
+                rewrite_zero_arg_static_method_refs_expr(&mut arg.value, methods, var_types);
+            }
+        }
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_zero_arg_static_method_refs_expr(class, methods, var_types);
+            rewrite_zero_arg_static_method_refs_expr(member, methods, var_types);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_static_method_calls_stmt(
+    stmt: &mut Statement,
+    methods: &std::collections::HashSet<(String, String)>,
+    values: &std::collections::HashSet<(String, String)>,
+    value_owners: &std::collections::HashMap<(String, String), String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) => {
+            rewrite_static_method_calls_expr(expr, methods, values, value_owners)
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            for stmt in body {
+                rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
+            }
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_static_method_calls_expr(init, methods, values, value_owners);
+                }
+            }
+        }
+        StmtKind::FunctionDecl { body, .. } => {
+            for stmt in body {
+                rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_static_method_calls_member(member, methods, values, value_owners);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_static_method_calls_expr(cond, methods, values, value_owners);
+            for stmt in then_body {
+                rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
+            }
+            for (cond, body) in elifs {
+                rewrite_static_method_calls_expr(cond, methods, values, value_owners);
+                for stmt in body {
+                    rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
+                }
             }
             if let Some(body) = else_body {
                 for stmt in body {
-                    rewrite_static_method_calls_stmt(stmt, methods, values);
+                    rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
+                }
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_static_method_calls_expr(cond, methods, values, value_owners);
+            for stmt in body {
+                rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
+                }
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            for stmt in body {
+                rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
+            }
+            rewrite_static_method_calls_expr(cond, methods, values, value_owners);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                rewrite_static_method_calls_stmt(init, methods, values, value_owners);
+            }
+            if let Some(cond) = cond {
+                rewrite_static_method_calls_expr(cond, methods, values, value_owners);
+            }
+            if let Some(update) = update {
+                rewrite_static_method_calls_expr(update, methods, values, value_owners);
+            }
+            for stmt in body {
+                rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
+            }
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_static_method_calls_expr(iter, methods, values, value_owners);
+            for stmt in body {
+                rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
                 }
             }
         }
@@ -9572,15 +17396,15 @@ fn rewrite_static_method_calls_stmt(
             cases,
             default,
         } => {
-            rewrite_static_method_calls_expr(expr, methods, values);
+            rewrite_static_method_calls_expr(expr, methods, values, value_owners);
             for case in cases {
                 for stmt in &mut case.body {
-                    rewrite_static_method_calls_stmt(stmt, methods, values);
+                    rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
                 }
             }
             if let Some(default) = default {
                 for stmt in default {
-                    rewrite_static_method_calls_stmt(stmt, methods, values);
+                    rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
                 }
             }
         }
@@ -9591,50 +17415,50 @@ fn rewrite_static_method_calls_stmt(
             finally,
         } => {
             for stmt in body {
-                rewrite_static_method_calls_stmt(stmt, methods, values);
+                rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
             }
             for catch in catches {
                 for stmt in &mut catch.body {
-                    rewrite_static_method_calls_stmt(stmt, methods, values);
+                    rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
                 }
             }
             if let Some(body) = else_body {
                 for stmt in body {
-                    rewrite_static_method_calls_stmt(stmt, methods, values);
+                    rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
                 }
             }
             if let Some(body) = finally {
                 for stmt in body {
-                    rewrite_static_method_calls_stmt(stmt, methods, values);
+                    rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
                 }
             }
         }
         StmtKind::With { items, body, .. } => {
             for item in items {
-                rewrite_static_method_calls_expr(&mut item.expr, methods, values);
+                rewrite_static_method_calls_expr(&mut item.expr, methods, values, value_owners);
             }
             for stmt in body {
-                rewrite_static_method_calls_stmt(stmt, methods, values);
+                rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
             }
         }
         StmtKind::Return(Some(expr))
         | StmtKind::Throw {
             expr: Some(expr), ..
         } => {
-            rewrite_static_method_calls_expr(expr, methods, values);
+            rewrite_static_method_calls_expr(expr, methods, values, value_owners);
         }
         StmtKind::Throw {
             cause: Some(cause), ..
-        } => rewrite_static_method_calls_expr(cause, methods, values),
+        } => rewrite_static_method_calls_expr(cause, methods, values, value_owners),
         StmtKind::Assign { targets, value } => {
             for target in targets {
-                rewrite_static_method_calls_expr(target, methods, values);
+                rewrite_static_method_calls_expr(target, methods, values, value_owners);
             }
-            rewrite_static_method_calls_expr(value, methods, values);
+            rewrite_static_method_calls_expr(value, methods, values, value_owners);
         }
         StmtKind::CompoundAssign { target, value, .. } => {
-            rewrite_static_method_calls_expr(target, methods, values);
-            rewrite_static_method_calls_expr(value, methods, values);
+            rewrite_static_method_calls_expr(target, methods, values, value_owners);
+            rewrite_static_method_calls_expr(value, methods, values, value_owners);
         }
         _ => {}
     }
@@ -9644,31 +17468,32 @@ fn rewrite_static_method_calls_member(
     member: &mut ClassMember,
     methods: &std::collections::HashSet<(String, String)>,
     values: &std::collections::HashSet<(String, String)>,
+    value_owners: &std::collections::HashMap<(String, String), String>,
 ) {
     match member {
         ClassMember::Field {
             init: Some(expr), ..
         }
         | ClassMember::Const { value: expr, .. } => {
-            rewrite_static_method_calls_expr(expr, methods, values)
+            rewrite_static_method_calls_expr(expr, methods, values, value_owners)
         }
         ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
-            rewrite_static_method_calls_stmt(stmt, methods, values)
+            rewrite_static_method_calls_stmt(stmt, methods, values, value_owners)
         }
         ClassMember::Constructor { body, .. } => {
             for stmt in body {
-                rewrite_static_method_calls_stmt(stmt, methods, values);
+                rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
             }
         }
         ClassMember::Property { getter, setter, .. } => {
             if let Some(getter) = getter {
                 for stmt in getter {
-                    rewrite_static_method_calls_stmt(stmt, methods, values);
+                    rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
                 }
             }
             if let Some(setter) = setter {
                 for stmt in &mut setter.body {
-                    rewrite_static_method_calls_stmt(stmt, methods, values);
+                    rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
                 }
             }
         }
@@ -9680,11 +17505,12 @@ fn rewrite_static_method_calls_expr(
     expr: &mut Expression,
     methods: &std::collections::HashSet<(String, String)>,
     values: &std::collections::HashSet<(String, String)>,
+    value_owners: &std::collections::HashMap<(String, String), String>,
 ) {
     match &mut expr.kind {
         ExprKind::Call { callee, args, .. } => {
             for arg in args.iter_mut() {
-                rewrite_static_method_calls_expr(&mut arg.value, methods, values);
+                rewrite_static_method_calls_expr(&mut arg.value, methods, values, value_owners);
             }
             if !matches!(
                 &callee.kind,
@@ -9692,24 +17518,26 @@ fn rewrite_static_method_calls_expr(
                     if matches!(&object.kind, ExprKind::Ident(class_name)
                         if methods.contains(&(class_name.to_lowercase(), field.to_lowercase())))
             ) {
-                rewrite_static_method_calls_expr(callee, methods, values);
+                rewrite_static_method_calls_expr(callee, methods, values, value_owners);
             }
         }
         ExprKind::Binary { left, right, .. } => {
-            rewrite_static_method_calls_expr(left, methods, values);
-            rewrite_static_method_calls_expr(right, methods, values);
+            rewrite_static_method_calls_expr(left, methods, values, value_owners);
+            rewrite_static_method_calls_expr(right, methods, values, value_owners);
         }
         ExprKind::Unary { expr: inner, .. }
         | ExprKind::Await(inner)
         | ExprKind::Yield(Some(inner))
-        | ExprKind::Spread(inner) => rewrite_static_method_calls_expr(inner, methods, values),
+        | ExprKind::Spread(inner) => {
+            rewrite_static_method_calls_expr(inner, methods, values, value_owners)
+        }
         ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_static_method_calls_expr(cond, methods, values);
-            rewrite_static_method_calls_expr(then, methods, values);
-            rewrite_static_method_calls_expr(else_, methods, values);
+            rewrite_static_method_calls_expr(cond, methods, values, value_owners);
+            rewrite_static_method_calls_expr(then, methods, values, value_owners);
+            rewrite_static_method_calls_expr(else_, methods, values, value_owners);
         }
         ExprKind::Member { object, field, .. } => {
-            rewrite_static_method_calls_expr(object, methods, values);
+            rewrite_static_method_calls_expr(object, methods, values, value_owners);
             if let ExprKind::Ident(class_name) = &object.kind {
                 if methods.contains(&(class_name.to_lowercase(), field.to_lowercase())) {
                     expr.kind = ExprKind::Call {
@@ -9722,39 +17550,43 @@ fn rewrite_static_method_calls_expr(
                         optional: false,
                     };
                 } else if values.contains(&(class_name.to_lowercase(), field.to_lowercase())) {
+                    let owner = value_owners
+                        .get(&(class_name.to_lowercase(), field.to_lowercase()))
+                        .map(String::as_str)
+                        .unwrap_or(class_name);
                     expr.kind = ExprKind::StaticAccess {
-                        class: Box::new(Expression::ident(class_name)),
+                        class: Box::new(Expression::ident(owner)),
                         member: Box::new(Expression::ident(field)),
                     };
                 }
             }
         }
         ExprKind::Index { object, index, .. } => {
-            rewrite_static_method_calls_expr(object, methods, values);
-            rewrite_static_method_calls_expr(index, methods, values);
+            rewrite_static_method_calls_expr(object, methods, values, value_owners);
+            rewrite_static_method_calls_expr(index, methods, values, value_owners);
         }
         ExprKind::New { args, .. } => {
             for arg in args {
-                rewrite_static_method_calls_expr(&mut arg.value, methods, values);
+                rewrite_static_method_calls_expr(&mut arg.value, methods, values, value_owners);
             }
         }
         ExprKind::Array(elements) => {
             for element in elements {
                 if let Some(key) = &mut element.key {
-                    rewrite_static_method_calls_expr(key, methods, values);
+                    rewrite_static_method_calls_expr(key, methods, values, value_owners);
                 }
-                rewrite_static_method_calls_expr(&mut element.value, methods, values);
+                rewrite_static_method_calls_expr(&mut element.value, methods, values, value_owners);
             }
         }
         ExprKind::Object(props) => {
             for prop in props {
                 match prop {
                     ObjectProperty::KeyValue { key, value, .. } => {
-                        rewrite_static_method_calls_expr(key, methods, values);
-                        rewrite_static_method_calls_expr(value, methods, values);
+                        rewrite_static_method_calls_expr(key, methods, values, value_owners);
+                        rewrite_static_method_calls_expr(value, methods, values, value_owners);
                     }
                     ObjectProperty::Spread(value) => {
-                        rewrite_static_method_calls_expr(value, methods, values);
+                        rewrite_static_method_calls_expr(value, methods, values, value_owners);
                     }
                     _ => {}
                 }
@@ -9762,29 +17594,31 @@ fn rewrite_static_method_calls_expr(
         }
         ExprKind::Tuple(items) | ExprKind::Set(items) => {
             for item in items {
-                rewrite_static_method_calls_expr(item, methods, values);
+                rewrite_static_method_calls_expr(item, methods, values, value_owners);
             }
         }
         ExprKind::Cast { expr: inner, .. }
         | ExprKind::TypeOf(inner)
         | ExprKind::Void(inner)
         | ExprKind::Delete(inner)
-        | ExprKind::YieldFrom(inner) => rewrite_static_method_calls_expr(inner, methods, values),
+        | ExprKind::YieldFrom(inner) => {
+            rewrite_static_method_calls_expr(inner, methods, values, value_owners)
+        }
         ExprKind::NullCoalesce { left, right } => {
-            rewrite_static_method_calls_expr(left, methods, values);
-            rewrite_static_method_calls_expr(right, methods, values);
+            rewrite_static_method_calls_expr(left, methods, values, value_owners);
+            rewrite_static_method_calls_expr(right, methods, values, value_owners);
         }
         ExprKind::Range { start, end, .. } => {
-            rewrite_static_method_calls_expr(start, methods, values);
-            rewrite_static_method_calls_expr(end, methods, values);
+            rewrite_static_method_calls_expr(start, methods, values, value_owners);
+            rewrite_static_method_calls_expr(end, methods, values, value_owners);
         }
         ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
-            rewrite_static_method_calls_expr(target, methods, values);
-            rewrite_static_method_calls_expr(value, methods, values);
+            rewrite_static_method_calls_expr(target, methods, values, value_owners);
+            rewrite_static_method_calls_expr(value, methods, values, value_owners);
         }
         ExprKind::SuperCall { args, .. } => {
             for arg in args {
-                rewrite_static_method_calls_expr(&mut arg.value, methods, values);
+                rewrite_static_method_calls_expr(&mut arg.value, methods, values, value_owners);
             }
         }
         _ => {}
@@ -9797,39 +17631,85 @@ fn rewrite_constructor_calls_stmt(
     stmt: &mut Statement,
     classes: &std::collections::HashSet<String>,
     static_methods: &std::collections::HashSet<(String, String)>,
+    declared_methods: &std::collections::HashSet<(String, String)>,
+    constructor_params: &std::collections::HashMap<(String, String), Vec<Param>>,
 ) {
     match &mut stmt.kind {
-        StmtKind::Expr(e) => rewrite_constructor_calls_expr(e, classes, static_methods),
+        StmtKind::Expr(e) => {
+            rewrite_constructor_calls_expr(
+                e,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            )
+        }
         StmtKind::Block(stmts) => {
             for s in stmts {
-                rewrite_constructor_calls_stmt(s, classes, static_methods);
+                rewrite_constructor_calls_stmt(
+                    s,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
         }
         StmtKind::VarDecl { declarations, .. } => {
             for d in declarations {
                 if let Some(e) = &mut d.init {
-                    rewrite_constructor_calls_expr(e, classes, static_methods);
+                    rewrite_constructor_calls_expr(
+                        e,
+                        classes,
+                        static_methods,
+                        declared_methods,
+                        constructor_params,
+                    );
                 }
             }
         }
         StmtKind::FunctionDecl { body, .. } => {
             for s in body {
-                rewrite_constructor_calls_stmt(s, classes, static_methods);
+                rewrite_constructor_calls_stmt(
+                    s,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
         }
         StmtKind::ClassDecl { members, .. } => {
             for m in members {
-                rewrite_constructor_calls_member(m, classes, static_methods);
+                rewrite_constructor_calls_member(
+                    m,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
         }
         StmtKind::StructDecl { members, .. } | StmtKind::ModuleDecl { members, .. } => {
             for m in members {
-                rewrite_constructor_calls_member(m, classes, static_methods);
+                rewrite_constructor_calls_member(
+                    m,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
         }
         StmtKind::NamespaceDecl { body, .. } => {
             for s in body {
-                rewrite_constructor_calls_stmt(s, classes, static_methods);
+                rewrite_constructor_calls_stmt(
+                    s,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
         }
         StmtKind::If {
@@ -9838,19 +17718,49 @@ fn rewrite_constructor_calls_stmt(
             elifs,
             else_body,
         } => {
-            rewrite_constructor_calls_expr(cond, classes, static_methods);
+            rewrite_constructor_calls_expr(
+                cond,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            );
             for s in then_body {
-                rewrite_constructor_calls_stmt(s, classes, static_methods);
+                rewrite_constructor_calls_stmt(
+                    s,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
             for (c, b) in elifs {
-                rewrite_constructor_calls_expr(c, classes, static_methods);
+                rewrite_constructor_calls_expr(
+                    c,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
                 for s in b {
-                    rewrite_constructor_calls_stmt(s, classes, static_methods);
+                    rewrite_constructor_calls_stmt(
+                        s,
+                        classes,
+                        static_methods,
+                        declared_methods,
+                        constructor_params,
+                    );
                 }
             }
             if let Some(b) = else_body {
                 for s in b {
-                    rewrite_constructor_calls_stmt(s, classes, static_methods);
+                    rewrite_constructor_calls_stmt(
+                        s,
+                        classes,
+                        static_methods,
+                        declared_methods,
+                        constructor_params,
+                    );
                 }
             }
         }
@@ -9861,16 +17771,40 @@ fn rewrite_constructor_calls_stmt(
             body,
         } => {
             if let Some(i) = init {
-                rewrite_constructor_calls_stmt(i, classes, static_methods);
+                rewrite_constructor_calls_stmt(
+                    i,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
             if let Some(c) = cond {
-                rewrite_constructor_calls_expr(c, classes, static_methods);
+                rewrite_constructor_calls_expr(
+                    c,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
             if let Some(u) = update {
-                rewrite_constructor_calls_expr(u, classes, static_methods);
+                rewrite_constructor_calls_expr(
+                    u,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
             for s in body {
-                rewrite_constructor_calls_stmt(s, classes, static_methods);
+                rewrite_constructor_calls_stmt(
+                    s,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
         }
         StmtKind::ForIn {
@@ -9879,13 +17813,31 @@ fn rewrite_constructor_calls_stmt(
             else_body,
             ..
         } => {
-            rewrite_constructor_calls_expr(iter, classes, static_methods);
+            rewrite_constructor_calls_expr(
+                iter,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            );
             for s in body {
-                rewrite_constructor_calls_stmt(s, classes, static_methods);
+                rewrite_constructor_calls_stmt(
+                    s,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
             if let Some(b) = else_body {
                 for s in b {
-                    rewrite_constructor_calls_stmt(s, classes, static_methods);
+                    rewrite_constructor_calls_stmt(
+                        s,
+                        classes,
+                        static_methods,
+                        declared_methods,
+                        constructor_params,
+                    );
                 }
             }
         }
@@ -9894,36 +17846,84 @@ fn rewrite_constructor_calls_stmt(
             body,
             else_body,
         } => {
-            rewrite_constructor_calls_expr(cond, classes, static_methods);
+            rewrite_constructor_calls_expr(
+                cond,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            );
             for s in body {
-                rewrite_constructor_calls_stmt(s, classes, static_methods);
+                rewrite_constructor_calls_stmt(
+                    s,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
             if let Some(b) = else_body {
                 for s in b {
-                    rewrite_constructor_calls_stmt(s, classes, static_methods);
+                    rewrite_constructor_calls_stmt(
+                        s,
+                        classes,
+                        static_methods,
+                        declared_methods,
+                        constructor_params,
+                    );
                 }
             }
         }
         StmtKind::DoWhile { body, cond, .. } => {
             for s in body {
-                rewrite_constructor_calls_stmt(s, classes, static_methods);
+                rewrite_constructor_calls_stmt(
+                    s,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
-            rewrite_constructor_calls_expr(cond, classes, static_methods);
+            rewrite_constructor_calls_expr(
+                cond,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            );
         }
         StmtKind::Switch {
             expr,
             cases,
             default,
         } => {
-            rewrite_constructor_calls_expr(expr, classes, static_methods);
+            rewrite_constructor_calls_expr(
+                expr,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            );
             for c in cases {
                 for s in &mut c.body {
-                    rewrite_constructor_calls_stmt(s, classes, static_methods);
+                    rewrite_constructor_calls_stmt(
+                        s,
+                        classes,
+                        static_methods,
+                        declared_methods,
+                        constructor_params,
+                    );
                 }
             }
             if let Some(b) = default {
                 for s in b {
-                    rewrite_constructor_calls_stmt(s, classes, static_methods);
+                    rewrite_constructor_calls_stmt(
+                        s,
+                        classes,
+                        static_methods,
+                        declared_methods,
+                        constructor_params,
+                    );
                 }
             }
         }
@@ -9934,45 +17934,119 @@ fn rewrite_constructor_calls_stmt(
             finally,
         } => {
             for s in body {
-                rewrite_constructor_calls_stmt(s, classes, static_methods);
+                rewrite_constructor_calls_stmt(
+                    s,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
             for c in catches {
                 for s in &mut c.body {
-                    rewrite_constructor_calls_stmt(s, classes, static_methods);
+                    rewrite_constructor_calls_stmt(
+                        s,
+                        classes,
+                        static_methods,
+                        declared_methods,
+                        constructor_params,
+                    );
                 }
             }
             if let Some(b) = else_body {
                 for s in b {
-                    rewrite_constructor_calls_stmt(s, classes, static_methods);
+                    rewrite_constructor_calls_stmt(
+                        s,
+                        classes,
+                        static_methods,
+                        declared_methods,
+                        constructor_params,
+                    );
                 }
             }
             if let Some(b) = finally {
                 for s in b {
-                    rewrite_constructor_calls_stmt(s, classes, static_methods);
+                    rewrite_constructor_calls_stmt(
+                        s,
+                        classes,
+                        static_methods,
+                        declared_methods,
+                        constructor_params,
+                    );
                 }
             }
         }
         StmtKind::With { items, body, .. } => {
             for it in items {
-                rewrite_constructor_calls_expr(&mut it.expr, classes, static_methods);
+                rewrite_constructor_calls_expr(
+                    &mut it.expr,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
             for s in body {
-                rewrite_constructor_calls_stmt(s, classes, static_methods);
+                rewrite_constructor_calls_stmt(
+                    s,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
         }
-        StmtKind::Return(Some(e)) => rewrite_constructor_calls_expr(e, classes, static_methods),
+        StmtKind::Return(Some(e)) => {
+            rewrite_constructor_calls_expr(
+                e,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            )
+        }
         StmtKind::Throw { expr: Some(e), .. } => {
-            rewrite_constructor_calls_expr(e, classes, static_methods)
+            rewrite_constructor_calls_expr(
+                e,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            )
         }
         StmtKind::Assign { targets, value } => {
             for t in targets {
-                rewrite_constructor_calls_expr(t, classes, static_methods);
+                rewrite_constructor_calls_expr(
+                    t,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
-            rewrite_constructor_calls_expr(value, classes, static_methods);
+            rewrite_constructor_calls_expr(
+                value,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            );
         }
         StmtKind::CompoundAssign { target, value, .. } => {
-            rewrite_constructor_calls_expr(target, classes, static_methods);
-            rewrite_constructor_calls_expr(value, classes, static_methods);
+            rewrite_constructor_calls_expr(
+                target,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            );
+            rewrite_constructor_calls_expr(
+                value,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            );
         }
         _ => {}
     }
@@ -9982,34 +18056,80 @@ fn rewrite_constructor_calls_member(
     m: &mut ClassMember,
     classes: &std::collections::HashSet<String>,
     static_methods: &std::collections::HashSet<(String, String)>,
+    declared_methods: &std::collections::HashSet<(String, String)>,
+    constructor_params: &std::collections::HashMap<(String, String), Vec<Param>>,
 ) {
     match m {
         ClassMember::Field { init: Some(e), .. } => {
-            rewrite_constructor_calls_expr(e, classes, static_methods)
+            rewrite_constructor_calls_expr(
+                e,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            )
         }
-        ClassMember::Method(stmt) => rewrite_constructor_calls_stmt(stmt, classes, static_methods),
+        ClassMember::Method(stmt) => {
+            rewrite_constructor_calls_stmt(
+                stmt,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            )
+        }
         ClassMember::Constructor { body, .. } => {
             for s in body {
-                rewrite_constructor_calls_stmt(s, classes, static_methods);
+                rewrite_constructor_calls_stmt(
+                    s,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
             }
         }
         ClassMember::Property { getter, setter, .. } => {
             if let Some(g) = getter {
                 for s in g {
-                    rewrite_constructor_calls_stmt(s, classes, static_methods);
+                    rewrite_constructor_calls_stmt(
+                        s,
+                        classes,
+                        static_methods,
+                        declared_methods,
+                        constructor_params,
+                    );
                 }
             }
             if let Some(set) = setter {
                 for s in &mut set.body {
-                    rewrite_constructor_calls_stmt(s, classes, static_methods);
+                    rewrite_constructor_calls_stmt(
+                        s,
+                        classes,
+                        static_methods,
+                        declared_methods,
+                        constructor_params,
+                    );
                 }
             }
         }
         ClassMember::Const { value, .. } => {
-            rewrite_constructor_calls_expr(value, classes, static_methods)
+            rewrite_constructor_calls_expr(
+                value,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            )
         }
         ClassMember::NestedType(stmt) => {
-            rewrite_constructor_calls_stmt(stmt, classes, static_methods)
+            rewrite_constructor_calls_stmt(
+                stmt,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            )
         }
         _ => {}
     }
@@ -10019,6 +18139,8 @@ fn rewrite_constructor_calls_expr(
     expr: &mut Expression,
     classes: &std::collections::HashSet<String>,
     static_methods: &std::collections::HashSet<(String, String)>,
+    declared_methods: &std::collections::HashSet<(String, String)>,
+    constructor_params: &std::collections::HashMap<(String, String), Vec<Param>>,
 ) {
     // Check Call(Member(ClassName, "Create"), args) BEFORE descending so the
     // Member-only rewrite below doesn't fire on the callee position first and
@@ -10027,26 +18149,71 @@ fn rewrite_constructor_calls_expr(
         if let ExprKind::Ident(class_name) = &callee.kind {
             if classes.contains(&class_name.to_lowercase()) && args.len() == 1 {
                 let mut value = args[0].value.clone();
-                rewrite_constructor_calls_expr(&mut value, classes, static_methods);
+                rewrite_constructor_calls_expr(
+                    &mut value,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
                 *expr = value;
                 return;
             }
         }
         if let ExprKind::Member { object, field, .. } = &callee.kind {
+            if field
+                .get(..6)
+                .map_or(false, |prefix| prefix.eq_ignore_ascii_case("Create"))
+            {
+                if let ExprKind::Ident(class_name) = &object.kind {
+                    if !classes.contains(&class_name.to_lowercase()) {
+                        let mut new_args = pascal_constructor_args(field, args);
+                        for a in new_args.iter_mut() {
+                            rewrite_constructor_calls_expr(
+                                &mut a.value,
+                                classes,
+                                static_methods,
+                                declared_methods,
+                                constructor_params,
+                            );
+                        }
+                        expr.kind = ExprKind::New {
+                            class: Box::new((**object).clone()),
+                            args: new_args,
+                        };
+                        return;
+                    }
+                }
+            }
             if let ExprKind::Ident(class_name) = &object.kind {
                 let is_declared_static_method =
                     static_methods.contains(&(class_name.to_lowercase(), field.to_lowercase()));
+                let is_declared_method =
+                    declared_methods.contains(&(class_name.to_lowercase(), field.to_lowercase()));
                 let is_ctor_name = field
                     .get(..6)
                     .map_or(false, |prefix| prefix.eq_ignore_ascii_case("Create"));
                 if classes.contains(&class_name.to_lowercase())
                     && is_ctor_name
                     && !is_declared_static_method
+                    && !is_declared_method
                 {
                     let new_class = Box::new(Expression::ident(class_name));
-                    let mut new_args = args.clone();
+                    let mut new_args = pascal_constructor_args(field, args);
+                    fill_pascal_constructor_defaults(
+                        class_name,
+                        field,
+                        &mut new_args,
+                        constructor_params,
+                    );
                     for a in new_args.iter_mut() {
-                        rewrite_constructor_calls_expr(&mut a.value, classes, static_methods);
+                        rewrite_constructor_calls_expr(
+                            &mut a.value,
+                            classes,
+                            static_methods,
+                            declared_methods,
+                            constructor_params,
+                        );
                     }
                     expr.kind = ExprKind::New {
                         class: new_class,
@@ -10062,54 +18229,81 @@ fn rewrite_constructor_calls_expr(
     // patterns are also normalized.
     match &mut expr.kind {
         ExprKind::Binary { left, right, .. } => {
-            rewrite_constructor_calls_expr(left, classes, static_methods);
-            rewrite_constructor_calls_expr(right, classes, static_methods);
+            rewrite_constructor_calls_expr(left, classes, static_methods, declared_methods, constructor_params);
+            rewrite_constructor_calls_expr(right, classes, static_methods, declared_methods, constructor_params);
         }
         ExprKind::Unary { expr: e, .. } => {
-            rewrite_constructor_calls_expr(e, classes, static_methods)
+            rewrite_constructor_calls_expr(e, classes, static_methods, declared_methods, constructor_params)
         }
         ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_constructor_calls_expr(cond, classes, static_methods);
-            rewrite_constructor_calls_expr(then, classes, static_methods);
-            rewrite_constructor_calls_expr(else_, classes, static_methods);
+            rewrite_constructor_calls_expr(cond, classes, static_methods, declared_methods, constructor_params);
+            rewrite_constructor_calls_expr(then, classes, static_methods, declared_methods, constructor_params);
+            rewrite_constructor_calls_expr(else_, classes, static_methods, declared_methods, constructor_params);
         }
         ExprKind::Member { object, .. } => {
-            rewrite_constructor_calls_expr(object, classes, static_methods)
+            rewrite_constructor_calls_expr(object, classes, static_methods, declared_methods, constructor_params)
         }
         ExprKind::Index { object, index, .. } => {
-            rewrite_constructor_calls_expr(object, classes, static_methods);
-            rewrite_constructor_calls_expr(index, classes, static_methods);
+            rewrite_constructor_calls_expr(object, classes, static_methods, declared_methods, constructor_params);
+            rewrite_constructor_calls_expr(index, classes, static_methods, declared_methods, constructor_params);
         }
         ExprKind::Call { callee, args, .. } => {
-            rewrite_constructor_calls_expr(callee, classes, static_methods);
+            let is_class_method_callee = matches!(
+                &callee.kind,
+                ExprKind::Member { object, field, .. }
+                    if matches!(&object.kind, ExprKind::Ident(class_name)
+                        if classes.contains(&class_name.to_lowercase())
+                            && declared_methods.contains(&(class_name.to_lowercase(), field.to_lowercase())))
+            );
+            if !is_class_method_callee {
+                rewrite_constructor_calls_expr(
+                    callee,
+                    classes,
+                    static_methods,
+                    declared_methods,
+                    constructor_params,
+                );
+            }
             for a in args.iter_mut() {
-                rewrite_constructor_calls_expr(&mut a.value, classes, static_methods);
+                rewrite_constructor_calls_expr(
+                    &mut a.value,
+                    classes, static_methods, declared_methods, constructor_params,
+                );
             }
         }
         ExprKind::New { class, args } => {
-            rewrite_constructor_calls_expr(class, classes, static_methods);
+            rewrite_constructor_calls_expr(class, classes, static_methods, declared_methods, constructor_params);
             for a in args.iter_mut() {
-                rewrite_constructor_calls_expr(&mut a.value, classes, static_methods);
+                rewrite_constructor_calls_expr(
+                    &mut a.value,
+                    classes, static_methods, declared_methods, constructor_params,
+                );
             }
         }
         ExprKind::Assign { target, value } => {
-            rewrite_constructor_calls_expr(target, classes, static_methods);
-            rewrite_constructor_calls_expr(value, classes, static_methods);
+            rewrite_constructor_calls_expr(target, classes, static_methods, declared_methods, constructor_params);
+            rewrite_constructor_calls_expr(value, classes, static_methods, declared_methods, constructor_params);
         }
         ExprKind::Array(elems) => {
             for el in elems {
-                rewrite_constructor_calls_expr(&mut el.value, classes, static_methods);
+                rewrite_constructor_calls_expr(
+                    &mut el.value,
+                    classes, static_methods, declared_methods, constructor_params,
+                );
             }
         }
         ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
             for e in items {
-                rewrite_constructor_calls_expr(e, classes, static_methods);
+                rewrite_constructor_calls_expr(e, classes, static_methods, declared_methods, constructor_params);
             }
         }
         ExprKind::Object(props) => {
             for p in props {
                 if let ObjectProperty::KeyValue { value, .. } = p {
-                    rewrite_constructor_calls_expr(value, classes, static_methods);
+                    rewrite_constructor_calls_expr(
+                        value,
+                        classes, static_methods, declared_methods, constructor_params,
+                    );
                 }
             }
         }
@@ -10117,23 +18311,46 @@ fn rewrite_constructor_calls_expr(
             for p in parts {
                 match p {
                     InterpolPart::Expr(e) | InterpolPart::Formatted(e, _) => {
-                        rewrite_constructor_calls_expr(e, classes, static_methods)
+                        rewrite_constructor_calls_expr(
+                            e,
+                            classes, static_methods, declared_methods, constructor_params,
+                        )
                     }
                     _ => {}
                 }
             }
         }
         ExprKind::NullCoalesce { left, right } => {
-            rewrite_constructor_calls_expr(left, classes, static_methods);
-            rewrite_constructor_calls_expr(right, classes, static_methods);
+            rewrite_constructor_calls_expr(left, classes, static_methods, declared_methods, constructor_params);
+            rewrite_constructor_calls_expr(right, classes, static_methods, declared_methods, constructor_params);
         }
         ExprKind::Range { start, end, .. } => {
-            rewrite_constructor_calls_expr(start, classes, static_methods);
-            rewrite_constructor_calls_expr(end, classes, static_methods);
+            rewrite_constructor_calls_expr(start, classes, static_methods, declared_methods, constructor_params);
+            rewrite_constructor_calls_expr(end, classes, static_methods, declared_methods, constructor_params);
         }
         ExprKind::IsType { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
-            rewrite_constructor_calls_expr(e, classes, static_methods)
+            rewrite_constructor_calls_expr(e, classes, static_methods, declared_methods, constructor_params)
         }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => rewrite_constructor_calls_expr(
+                expr,
+                classes,
+                static_methods,
+                declared_methods,
+                constructor_params,
+            ),
+            LambdaBody::Block(stmts) => {
+                for stmt in stmts {
+                    rewrite_constructor_calls_stmt(
+                        stmt,
+                        classes,
+                        static_methods,
+                        declared_methods,
+                        constructor_params,
+                    );
+                }
+            }
+        },
         _ => {}
     }
 
@@ -10142,10 +18359,31 @@ fn rewrite_constructor_calls_expr(
     // it to a zero-arg `New { class, [] }`.
     if let ExprKind::Member { object, field, .. } = &expr.kind {
         if let ExprKind::Ident(class_name) = &object.kind {
-            if classes.contains(&class_name.to_lowercase()) && field.eq_ignore_ascii_case("Create")
+            if classes.contains(&class_name.to_lowercase())
+                && field
+                    .get(..6)
+                    .map_or(false, |prefix| prefix.eq_ignore_ascii_case("Create"))
+                && !static_methods.contains(&(class_name.to_lowercase(), field.to_lowercase()))
+                && !declared_methods.contains(&(class_name.to_lowercase(), field.to_lowercase()))
             {
+                let mut new_args = Vec::new();
+                fill_pascal_constructor_defaults(
+                    class_name,
+                    field,
+                    &mut new_args,
+                    constructor_params,
+                );
                 expr.kind = ExprKind::New {
                     class: Box::new(Expression::ident(class_name)),
+                    args: new_args,
+                };
+            } else if !classes.contains(&class_name.to_lowercase())
+                && field
+                    .get(..6)
+                    .map_or(false, |prefix| prefix.eq_ignore_ascii_case("Create"))
+            {
+                expr.kind = ExprKind::New {
+                    class: Box::new((**object).clone()),
                     args: Vec::new(),
                 };
             }
@@ -10163,10 +18401,162 @@ fn rewrite_constructor_calls_expr(
     }
 }
 
+fn pascal_constructor_args(field: &str, args: &[Argument]) -> Vec<Argument> {
+    if field.eq_ignore_ascii_case("CreateFmt") && args.len() == 2 {
+        if let ExprKind::Array(elements) = &args[1].value.kind {
+            let mut expanded = vec![args[0].clone()];
+            expanded.extend(
+                elements
+                    .iter()
+                    .map(|element| Argument::positional(element.value.clone())),
+            );
+            return vec![Argument::positional(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("Format")),
+                args: expanded,
+                optional: false,
+            }))];
+        }
+    }
+    args.to_vec()
+}
+
+fn collect_pascal_constructor_params(
+    body: &[Statement],
+) -> std::collections::HashMap<(String, String), Vec<Param>> {
+    let mut out = std::collections::HashMap::new();
+    for stmt in body {
+        let (StmtKind::ClassDecl { name, members, .. }
+        | StmtKind::StructDecl { name, members, .. }) = &stmt.kind
+        else {
+            continue;
+        };
+        for member in members {
+            let ClassMember::Constructor {
+                name: ctor_name,
+                params,
+                ..
+            } = member
+            else {
+                continue;
+            };
+            let method_name = ctor_name.as_deref().unwrap_or("Create");
+            out.insert(
+                (name.to_lowercase(), method_name.to_lowercase()),
+                params.clone(),
+            );
+        }
+    }
+    out
+}
+
+fn fill_pascal_constructor_defaults(
+    class_name: &str,
+    field: &str,
+    args: &mut Vec<Argument>,
+    constructor_params: &std::collections::HashMap<(String, String), Vec<Param>>,
+) {
+    let Some(params) = constructor_params.get(&(class_name.to_lowercase(), field.to_lowercase()))
+    else {
+        return;
+    };
+    for param in params.iter().skip(args.len()) {
+        let Some(default) = &param.default else {
+            break;
+        };
+        args.push(Argument::positional(default.clone()));
+    }
+}
+
 /// Pascal post-processing: attach `ClassName.Method` standalone FunctionDecls
 /// to their matching ClassDecl members. The constructor (`ClassName.Create`)
 /// fills in `ClassMember::Constructor`. Other methods fill the body of the
 /// matching `ClassMember::Method`.
+fn merge_class_var_impl_decls(body: &mut Vec<Statement>) {
+    use std::collections::HashMap;
+
+    let mut class_idx: HashMap<String, usize> = HashMap::new();
+    let mut to_remove = Vec::new();
+
+    for i in 0..body.len() {
+        let Some((class_name, fields)) = (match &body[i].kind {
+            StmtKind::ClassDecl {
+                name,
+                parents,
+                interfaces,
+                members,
+                ..
+            } if parents.is_empty()
+                && interfaces.is_empty()
+                && !members.is_empty()
+                && members
+                    .iter()
+                    .all(|member| matches!(member, ClassMember::Field { modifiers, .. } if modifiers.is_static)) =>
+            {
+                Some((name.to_lowercase(), members.clone()))
+            }
+            StmtKind::ClassDecl { name, .. } => {
+                class_idx.entry(name.to_lowercase()).or_insert(i);
+                None
+            }
+            StmtKind::StructDecl { name, .. } => {
+                class_idx.entry(name.to_lowercase()).or_insert(i);
+                None
+            }
+            _ => None,
+        }) else {
+            continue;
+        };
+
+        let Some(&target_idx) = class_idx.get(&class_name) else {
+            class_idx.entry(class_name).or_insert(i);
+            continue;
+        };
+        let target_members = match &mut body[target_idx].kind {
+            StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => members,
+            _ => continue,
+        };
+        for field in fields {
+            let field_name = match &field {
+                ClassMember::Field { name, .. } => name.to_lowercase(),
+                _ => continue,
+            };
+            let already_declared = target_members.iter().any(|member| {
+                matches!(member, ClassMember::Field { name, modifiers, .. }
+                    if modifiers.is_static && name.eq_ignore_ascii_case(&field_name))
+            });
+            if !already_declared {
+                target_members.push(field);
+            }
+        }
+        to_remove.push(i);
+    }
+
+    for i in to_remove.into_iter().rev() {
+        body.remove(i);
+    }
+}
+
+fn merge_pascal_method_params(declared: &[Param], implemented: &[Param]) -> Vec<Param> {
+    let mut merged = implemented.to_vec();
+    for (idx, param) in merged.iter_mut().enumerate() {
+        let declared_param = declared
+            .iter()
+            .find(|candidate| candidate.name.eq_ignore_ascii_case(&param.name))
+            .or_else(|| declared.get(idx));
+        let Some(declared_param) = declared_param else {
+            continue;
+        };
+        if param.default.is_none() {
+            param.default = declared_param.default.clone();
+            param.is_optional |= declared_param.is_optional;
+        }
+        if param.type_hint.is_none() {
+            param.type_hint = declared_param.type_hint.clone();
+        }
+    }
+    merged
+}
+
 fn merge_separated_methods(body: &mut Vec<Statement>) {
     use std::collections::HashMap;
 
@@ -10175,7 +18565,7 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
     for (i, s) in body.iter().enumerate() {
         match &s.kind {
             StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
-                class_idx.insert(name.to_lowercase(), i);
+                class_idx.entry(name.to_lowercase()).or_insert(i);
             }
             _ => {}
         }
@@ -10229,14 +18619,21 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
         if is_create {
             for m in members.iter_mut() {
                 if let ClassMember::Constructor {
+                    name: ctor_name,
                     params: cp,
                     body: cb,
                     base_args: ba,
                     ..
                 } = m
                 {
+                    if ctor_name
+                        .as_ref()
+                        .map_or(false, |name| !name.eq_ignore_ascii_case(&method_name))
+                    {
+                        continue;
+                    }
                     if cb.is_empty() {
-                        *cp = params.clone();
+                        *cp = merge_pascal_method_params(cp, &params);
                         let mut new_body = body_stmts.clone();
                         // Pascal pattern: `inherited Create(args)` as the FIRST statement
                         // is the base-constructor invocation. Lift it into `base_args`
@@ -10249,7 +18646,9 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
                                     ExprKind::SuperCall { method, args } => {
                                         let is_ctor = method.is_none()
                                             || method.as_ref().map_or(false, |m| {
-                                                m.eq_ignore_ascii_case("Create")
+                                                m.get(..6).map_or(false, |prefix| {
+                                                    prefix.eq_ignore_ascii_case("Create")
+                                                })
                                             });
                                         if is_ctor {
                                             Some(
@@ -10293,7 +18692,7 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
                     } = &mut stmt.kind
                     {
                         if mn.eq_ignore_ascii_case(&method_name) && mb.is_empty() {
-                            *mp = params.clone();
+                            *mp = merge_pascal_method_params(mp, &params);
                             *mb = body_stmts.clone();
                             *mr = ret.clone();
                             let mut merged_modifiers = mods.clone();
@@ -10302,6 +18701,11 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
                             merged_modifiers.is_override |= mm.is_override;
                             merged_modifiers.is_abstract |= mm.is_abstract;
                             merged_modifiers.is_overloads |= mm.is_overloads;
+                            merged_modifiers.is_not_overridable |= mm.is_not_overridable;
+                            merged_modifiers.is_readonly |= mm.is_readonly;
+                            merged_modifiers.is_shared |= mm.is_shared;
+                            merged_modifiers.is_extension |= mm.is_extension;
+                            merged_modifiers.decorators.extend(mm.decorators.clone());
                             merged_modifiers.visibility = mm.visibility.clone();
                             *mm = merged_modifiers;
                             *ms = is_sub;
@@ -10707,6 +19111,7 @@ fn lower_pascal_helpers(body: &mut Vec<Statement>) {
     use std::collections::HashMap;
 
     let mut target_idx: HashMap<String, usize> = HashMap::new();
+    let mut helper_methods: PascalBuiltinHelperMap = HashMap::new();
     for (idx, stmt) in body.iter().enumerate() {
         match &stmt.kind {
             StmtKind::ClassDecl { name, parents, .. } => {
@@ -10759,6 +19164,11 @@ fn lower_pascal_helpers(body: &mut Vec<Statement>) {
                 }
                 _ => continue,
             };
+            collect_pascal_builtin_helper_members(
+                &target_name,
+                helper_members,
+                &mut helper_methods,
+            );
             lifted_functions.extend(lower_pascal_builtin_helper_members(
                 &target_name,
                 helper_members,
@@ -10805,6 +19215,68 @@ fn lower_pascal_helpers(body: &mut Vec<Statement>) {
         })
         .unwrap_or(body.len());
     body.splice(insert_at..insert_at, lifted_functions);
+    if !helper_methods.is_empty() {
+        rewrite_pascal_builtin_helper_calls(body, &helper_methods);
+    }
+}
+
+#[derive(Clone)]
+struct PascalBuiltinHelperInfo {
+    function_name: String,
+    return_type: Option<String>,
+}
+
+type PascalBuiltinHelperMap =
+    std::collections::HashMap<String, std::collections::HashMap<String, PascalBuiltinHelperInfo>>;
+
+fn collect_pascal_builtin_helper_members(
+    target_name: &str,
+    members: &[ClassMember],
+    out: &mut PascalBuiltinHelperMap,
+) {
+    let target_key = target_name.to_lowercase();
+    let methods = out.entry(target_key).or_default();
+    for member in members {
+        match member {
+            ClassMember::Method(stmt) => {
+                let StmtKind::FunctionDecl {
+                    name, return_type, ..
+                } = &stmt.kind
+                else {
+                    continue;
+                };
+                let helper_method = name.rsplit('.').next().unwrap_or(name);
+                methods.insert(
+                    helper_method.to_lowercase(),
+                    PascalBuiltinHelperInfo {
+                        function_name: pascal_helper_function_name(target_name, helper_method),
+                        return_type: return_type.clone(),
+                    },
+                );
+            }
+            ClassMember::Property {
+                name,
+                getter,
+                type_hint,
+                ..
+            } => {
+                let Some(getter_name) = getter
+                    .as_ref()
+                    .and_then(|body| property_body_accessor_name(body))
+                else {
+                    continue;
+                };
+                methods.insert(
+                    name.to_lowercase(),
+                    PascalBuiltinHelperInfo {
+                        function_name: pascal_helper_function_name(target_name, &getter_name),
+                        return_type: type_hint.clone(),
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
 }
 
 fn lower_pascal_builtin_helper_members(
@@ -10834,7 +19306,11 @@ fn lower_pascal_builtin_helper_members(
             name: "Self".to_string(),
             type_hint: Some(target_name.to_string()),
             default: None,
-            pass_by: PassBy::Value,
+            pass_by: if pascal_helper_assigns_self(body) {
+                PassBy::Ref
+            } else {
+                PassBy::Value
+            },
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
@@ -10857,6 +19333,306 @@ fn lower_pascal_builtin_helper_members(
         ));
     }
     lifted
+}
+
+fn pascal_helper_assigns_self(body: &[Statement]) -> bool {
+    body.iter().any(pascal_helper_stmt_assigns_self)
+}
+
+fn pascal_helper_stmt_assigns_self(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Assign { targets, .. } => targets.iter().any(pascal_helper_expr_is_self),
+        StmtKind::Expr(expr) => match &expr.kind {
+            ExprKind::Assign { target, .. } | ExprKind::Walrus { target, .. } => {
+                pascal_helper_expr_is_self(target)
+            }
+            _ => false,
+        },
+        StmtKind::Block(body) => pascal_helper_assigns_self(body),
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            pascal_helper_assigns_self(then_body)
+                || elifs
+                    .iter()
+                    .any(|(_, body)| pascal_helper_assigns_self(body))
+                || else_body.as_deref().is_some_and(pascal_helper_assigns_self)
+        }
+        StmtKind::While {
+            body, else_body, ..
+        } => {
+            pascal_helper_assigns_self(body)
+                || else_body.as_deref().is_some_and(pascal_helper_assigns_self)
+        }
+        StmtKind::For { init, body, .. } => {
+            init.as_deref().is_some_and(pascal_helper_stmt_assigns_self)
+                || pascal_helper_assigns_self(body)
+        }
+        _ => false,
+    }
+}
+
+fn pascal_helper_expr_is_self(expr: &Expression) -> bool {
+    matches!(&expr.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Self"))
+}
+
+fn rewrite_pascal_builtin_helper_calls(body: &mut [Statement], helpers: &PascalBuiltinHelperMap) {
+    let helper_returns = pascal_builtin_helper_return_types(helpers);
+    let mut env = std::collections::HashMap::new();
+    for stmt in body.iter() {
+        collect_pascal_var_types_stmt(stmt, &mut env);
+    }
+    for stmt in body {
+        rewrite_pascal_builtin_helper_calls_stmt(stmt, helpers, &helper_returns, &mut env);
+    }
+}
+
+fn pascal_builtin_helper_return_types(
+    helpers: &PascalBuiltinHelperMap,
+) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for methods in helpers.values() {
+        for info in methods.values() {
+            if let Some(return_type) = &info.return_type {
+                out.insert(
+                    info.function_name.to_lowercase(),
+                    bare_type_name(return_type).to_lowercase(),
+                );
+            }
+        }
+    }
+    out
+}
+
+fn rewrite_pascal_builtin_helper_calls_stmt(
+    stmt: &mut Statement,
+    helpers: &PascalBuiltinHelperMap,
+    helper_returns: &std::collections::HashMap<String, String>,
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations.iter_mut() {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_builtin_helper_calls_expr(init, helpers, helper_returns, env);
+                }
+            }
+            for decl in declarations {
+                if let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, &decl.type_hint)
+                {
+                    env.insert(
+                        name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_builtin_helper_calls_expr(target, helpers, helper_returns, env);
+            }
+            rewrite_pascal_builtin_helper_calls_expr(value, helpers, helper_returns, env);
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_builtin_helper_calls_expr(expr, helpers, helper_returns, env);
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = env.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            for stmt in body {
+                rewrite_pascal_builtin_helper_calls_stmt(
+                    stmt,
+                    helpers,
+                    helper_returns,
+                    &mut scoped,
+                );
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_builtin_helper_calls_expr(cond, helpers, helper_returns, env);
+            for stmt in then_body {
+                rewrite_pascal_builtin_helper_calls_stmt(
+                    stmt,
+                    helpers,
+                    helper_returns,
+                    &mut env.clone(),
+                );
+            }
+            for (cond, body) in elifs {
+                rewrite_pascal_builtin_helper_calls_expr(cond, helpers, helper_returns, env);
+                for stmt in body {
+                    rewrite_pascal_builtin_helper_calls_stmt(
+                        stmt,
+                        helpers,
+                        helper_returns,
+                        &mut env.clone(),
+                    );
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_builtin_helper_calls_stmt(
+                        stmt,
+                        helpers,
+                        helper_returns,
+                        &mut env.clone(),
+                    );
+                }
+            }
+        }
+        StmtKind::While { cond, body, .. } => {
+            rewrite_pascal_builtin_helper_calls_expr(cond, helpers, helper_returns, env);
+            for stmt in body {
+                rewrite_pascal_builtin_helper_calls_stmt(
+                    stmt,
+                    helpers,
+                    helper_returns,
+                    &mut env.clone(),
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_builtin_helper_calls_expr(
+    expr: &mut Expression,
+    helpers: &PascalBuiltinHelperMap,
+    helper_returns: &std::collections::HashMap<String, String>,
+    env: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            if matches!(callee.kind, ExprKind::Member { .. }) {
+                if let ExprKind::Member { object, .. } = &mut callee.kind {
+                    rewrite_pascal_builtin_helper_calls_expr(object, helpers, helper_returns, env);
+                }
+                for arg in args.iter_mut() {
+                    rewrite_pascal_builtin_helper_calls_expr(
+                        &mut arg.value,
+                        helpers,
+                        helper_returns,
+                        env,
+                    );
+                }
+                if let Some((receiver, info)) =
+                    pascal_builtin_helper_member(callee, helpers, helper_returns, env)
+                {
+                    let mut helper_args = Vec::with_capacity(args.len() + 1);
+                    helper_args.push(Argument::positional(receiver));
+                    helper_args.extend(args.clone());
+                    *expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(&info.function_name)),
+                        args: helper_args,
+                        optional: false,
+                    });
+                }
+                return;
+            }
+            rewrite_pascal_builtin_helper_calls_expr(callee, helpers, helper_returns, env);
+            for arg in args.iter_mut() {
+                rewrite_pascal_builtin_helper_calls_expr(
+                    &mut arg.value,
+                    helpers,
+                    helper_returns,
+                    env,
+                );
+            }
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_pascal_builtin_helper_calls_expr(object, helpers, helper_returns, env);
+            if let Some((receiver, info)) =
+                pascal_builtin_helper_member(expr, helpers, helper_returns, env)
+            {
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(&info.function_name)),
+                    args: vec![Argument::positional(receiver)],
+                    optional: false,
+                });
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_builtin_helper_calls_expr(left, helpers, helper_returns, env);
+            rewrite_pascal_builtin_helper_calls_expr(right, helpers, helper_returns, env);
+        }
+        ExprKind::Unary { expr, .. } => {
+            rewrite_pascal_builtin_helper_calls_expr(expr, helpers, helper_returns, env);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_builtin_helper_calls_expr(cond, helpers, helper_returns, env);
+            rewrite_pascal_builtin_helper_calls_expr(then, helpers, helper_returns, env);
+            rewrite_pascal_builtin_helper_calls_expr(else_, helpers, helper_returns, env);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_builtin_helper_calls_expr(class, helpers, helper_returns, env);
+            for arg in args {
+                rewrite_pascal_builtin_helper_calls_expr(
+                    &mut arg.value,
+                    helpers,
+                    helper_returns,
+                    env,
+                );
+            }
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_builtin_helper_calls_expr(object, helpers, helper_returns, env);
+            rewrite_pascal_builtin_helper_calls_expr(index, helpers, helper_returns, env);
+        }
+        _ => {}
+    }
+}
+
+fn pascal_builtin_helper_member(
+    expr: &Expression,
+    helpers: &PascalBuiltinHelperMap,
+    helper_returns: &std::collections::HashMap<String, String>,
+    env: &std::collections::HashMap<String, String>,
+) -> Option<(Expression, PascalBuiltinHelperInfo)> {
+    let ExprKind::Member { object, field, .. } = &expr.kind else {
+        return None;
+    };
+    let target_type = pascal_helper_expr_type(object, helper_returns, env)?;
+    let info = helpers
+        .get(&target_type)?
+        .get(&field.to_lowercase())?
+        .clone();
+    Some(((**object).clone(), info))
+}
+
+fn pascal_helper_expr_type(
+    expr: &Expression,
+    helper_returns: &std::collections::HashMap<String, String>,
+    env: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => env.get(&name.to_lowercase()).cloned(),
+        ExprKind::Lit(Literal::Int(_)) => Some("integer".to_string()),
+        ExprKind::Lit(Literal::Float(_)) => Some("real".to_string()),
+        ExprKind::Lit(Literal::Bool(_)) => Some("boolean".to_string()),
+        ExprKind::Lit(Literal::Str(s)) if s.chars().count() == 1 => Some("char".to_string()),
+        ExprKind::Lit(Literal::Str(_)) => Some("string".to_string()),
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Ident(name) => helper_returns.get(&name.to_lowercase()).cloned(),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn pascal_helper_function_name(target_name: &str, method_name: &str) -> String {
@@ -11215,6 +19991,12 @@ fn walk_decl_section(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), 
             Rule::destructor_method_impl => {
                 body.push(walk_destructor_method_impl(decl)?);
             }
+            Rule::class_constructor_method_impl => {
+                body.push(walk_class_constructor_method_impl(decl)?);
+            }
+            Rule::class_destructor_method_impl => {
+                body.push(walk_class_destructor_method_impl(decl)?);
+            }
             _ => {}
         }
     }
@@ -11365,6 +20147,19 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     match inner.as_rule() {
         Rule::class_type => walk_class_type(inner, &name, span),
         Rule::class_helper_type => walk_class_helper_type(inner, &name, span),
+        Rule::class_ref_type => Ok(Statement::with_span(
+            StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(name),
+                    type_hint: Some(type_ref_to_string(&inner)),
+                    init: None,
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Const,
+            },
+            span,
+        )),
         Rule::record_type => walk_record_type(inner, &name, span),
         Rule::record_helper_type => walk_record_helper_type(inner, &name, span),
         Rule::interface_type => walk_interface_type(inner, &name, span),
@@ -11521,7 +20316,7 @@ fn walk_class_body_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String>
             Rule::class_procedure | Rule::class_function => {
                 members.push(walk_class_method_sig(m, false)?);
             }
-            Rule::class_class_member => members.push(walk_class_class_member(m)?),
+            Rule::class_class_member => members.extend(walk_class_class_member(m)?),
             Rule::class_property_decl => members.push(walk_class_property_decl(m)?),
             _ => {}
         }
@@ -11613,6 +20408,7 @@ fn walk_record_body_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String
         match m.as_rule() {
             Rule::field_decl => members.extend(walk_field_decl_members(m)?),
             Rule::variant_part => members.extend(walk_variant_part_members(m)?),
+            Rule::class_property_decl => members.push(walk_class_property_decl(m)?),
             Rule::record_method_sig => members.push(walk_record_method_sig(m)?),
             Rule::record_class_method => members.push(walk_record_class_method(m)?),
             Rule::record_operator_method => members.push(walk_record_operator_method(m)?),
@@ -11912,6 +20708,7 @@ fn pascal_method_name_text(pair: Pair<Rule>) -> String {
 }
 
 fn walk_class_constructor_sig(pair: Pair<Rule>) -> Result<ClassMember, String> {
+    let mut name = String::new();
     let mut params = Vec::new();
     let mut body = Vec::new();
 
@@ -11919,8 +20716,10 @@ fn walk_class_constructor_sig(pair: Pair<Rule>) -> Result<ClassMember, String> {
         match p.as_rule() {
             Rule::method_sig_body => {
                 for sp in p.into_inner() {
-                    if sp.as_rule() == Rule::param_clause {
-                        params = walk_param_clause(sp)?;
+                    match sp.as_rule() {
+                        Rule::method_name => name = pascal_method_name_text(sp),
+                        Rule::param_clause => params = walk_param_clause(sp)?,
+                        _ => {}
                     }
                 }
             }
@@ -11930,7 +20729,7 @@ fn walk_class_constructor_sig(pair: Pair<Rule>) -> Result<ClassMember, String> {
     }
 
     Ok(ClassMember::Constructor {
-        name: None,
+        name: if name.is_empty() { None } else { Some(name) },
         params,
         body,
         base_args: None,
@@ -11992,19 +20791,18 @@ fn walk_class_method_sig(pair: Pair<Rule>, is_destructor: bool) -> Result<ClassM
     ))))
 }
 
-fn walk_class_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
-    // class procedure / class function / class var
-    let _inner_text = pair.as_str().to_lowercase();
+fn walk_class_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
+    // class constructor / class destructor / class procedure / class function / class var
+    let inner_text = pair.as_str().to_lowercase();
     let mut name = String::new();
     let mut params = Vec::new();
     let mut return_type: Option<String> = None;
-    let mut type_hint: Option<String> = None;
-    let mut is_field = false;
     let mut body = Vec::new();
     let mut modifiers = Modifiers {
         is_static: true,
         ..Default::default()
     };
+    let mut static_fields = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -12028,18 +20826,10 @@ fn walk_class_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                 }
             }
             Rule::field_decl => {
-                is_field = true;
-                for sp in p.into_inner() {
-                    match sp.as_rule() {
-                        Rule::identifier_list => {
-                            for id in sp.into_inner() {
-                                if id.as_rule() == Rule::identifier {
-                                    name = id.as_str().to_string();
-                                }
-                            }
-                        }
-                        Rule::type_ref => type_hint = Some(type_ref_to_string(&sp)),
-                        _ => {}
+                static_fields = walk_field_decl_members(p)?;
+                for field in &mut static_fields {
+                    if let ClassMember::Field { modifiers, .. } = field {
+                        modifiers.is_static = true;
                     }
                 }
             }
@@ -12048,18 +20838,16 @@ fn walk_class_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
         }
     }
 
-    if is_field {
-        Ok(ClassMember::Field {
-            name,
-            init: type_hint.as_deref().and_then(default_field_init_for_type),
-            type_hint,
-            modifiers,
-            with_events: false,
-            array_bounds: None,
-        })
+    if !static_fields.is_empty() {
+        Ok(static_fields)
     } else {
+        if inner_text.trim_start().starts_with("class constructor") {
+            name = "__static_init__".to_string();
+        } else if inner_text.trim_start().starts_with("class destructor") && name.is_empty() {
+            name = "Destroy".to_string();
+        }
         let is_sub = return_type.is_none();
-        Ok(ClassMember::Method(Box::new(Statement::new(
+        Ok(vec![ClassMember::Method(Box::new(Statement::new(
             StmtKind::FunctionDecl {
                 name,
                 params,
@@ -12071,7 +20859,7 @@ fn walk_class_class_member(pair: Pair<Rule>) -> Result<ClassMember, String> {
                 is_generator: false,
                 is_sub,
             },
-        ))))
+        )))])
     }
 }
 
@@ -12153,6 +20941,26 @@ fn walk_class_property_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
                                         )],
                                     });
                                 }
+                                Rule::property_index_value => {
+                                    for child in spec.into_inner() {
+                                        if child.as_rule() == Rule::expression {
+                                            modifiers.decorators.push(Expression::new(
+                                                ExprKind::Call {
+                                                    callee: Box::new(Expression::ident(
+                                                        "__pascal_property_index",
+                                                    )),
+                                                    args: vec![Argument::positional(
+                                                        walk_expression(child)?,
+                                                    )],
+                                                    optional: false,
+                                                },
+                                            ));
+                                            modifiers.decorators.push(Expression::string(
+                                                "__pascal_indexed_property",
+                                            ));
+                                        }
+                                    }
+                                }
                                 Rule::property_default => {
                                     modifiers
                                         .decorators
@@ -12190,21 +20998,11 @@ fn property_read_accessor(name: String, is_static: bool) -> Expression {
     if !name.contains('.') && name.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("Get")) {
         return property_accessor_call(name, is_static, Vec::new());
     }
-    if !name.contains('.') {
-        return property_accessor_call(name, is_static, Vec::new());
-    }
     property_accessor_member(name, is_static)
 }
 
 fn property_write_accessor(name: String, is_static: bool, value: Expression) -> Statement {
     if !name.contains('.') && name.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("Set")) {
-        return Statement::new(StmtKind::Expr(property_accessor_call(
-            name,
-            is_static,
-            vec![Argument::positional(value)],
-        )));
-    }
-    if !name.contains('.') {
         return Statement::new(StmtKind::Expr(property_accessor_call(
             name,
             is_static,
@@ -12411,7 +21209,9 @@ fn walk_method_directives(pair: Pair<Rule>, modifiers: &mut Modifiers) {
                 "abstract" => modifiers.is_abstract = true,
                 "overload" => modifiers.is_overloads = true,
                 "static" => modifiers.is_static = true,
-                _ => {} // reintroduce, inline, cdecl, stdcall, register, dynamic
+                "reintroduce" => modifiers.is_not_overridable = true,
+                "dynamic" => modifiers.is_virtual = true,
+                _ => {} // inline, cdecl, stdcall, register
             }
         }
     }
@@ -12423,9 +21223,22 @@ fn walk_method_directives(pair: Pair<Rule>, modifiers: &mut Modifiers) {
 
 fn walk_procedure_decl_or_method(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
+    let is_class_impl = pair
+        .as_str()
+        .trim_start()
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("class"));
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::method_impl_proc => return walk_method_impl_proc(p, span),
+            Rule::method_impl_proc => {
+                let mut stmt = walk_method_impl_proc(p, span)?;
+                if is_class_impl {
+                    if let StmtKind::FunctionDecl { modifiers, .. } = &mut stmt.kind {
+                        modifiers.is_static = true;
+                    }
+                }
+                return Ok(stmt);
+            }
             Rule::standalone_procedure => return walk_standalone_procedure(p, span),
             _ => {}
         }
@@ -12435,9 +21248,22 @@ fn walk_procedure_decl_or_method(pair: Pair<Rule>) -> Result<Statement, String> 
 
 fn walk_function_decl_or_method(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
+    let is_class_impl = pair
+        .as_str()
+        .trim_start()
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("class"));
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::method_impl_func => return walk_method_impl_func(p, span),
+            Rule::method_impl_func => {
+                let mut stmt = walk_method_impl_func(p, span)?;
+                if is_class_impl {
+                    if let StmtKind::FunctionDecl { modifiers, .. } = &mut stmt.kind {
+                        modifiers.is_static = true;
+                    }
+                }
+                return Ok(stmt);
+            }
             Rule::standalone_function => return walk_standalone_function(p, span),
             _ => {}
         }
@@ -12451,11 +21277,12 @@ fn walk_class_var_decl_impl(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut field_name = String::new();
     let mut type_hint = None;
     let mut init = None;
+    let mut identifiers = Vec::new();
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::qualified_type_name => class_name = p.as_str().to_string(),
-            Rule::identifier => field_name = p.as_str().to_string(),
+            Rule::identifier => identifiers.push(p.as_str().to_string()),
             Rule::type_ref => type_hint = Some(type_ref_to_string(&p)),
             Rule::var_init => {
                 for inner in p.into_inner() {
@@ -12466,6 +21293,14 @@ fn walk_class_var_decl_impl(pair: Pair<Rule>) -> Result<Statement, String> {
             }
             _ => {}
         }
+    }
+    if class_name.is_empty() {
+        if let Some(first) = identifiers.first() {
+            class_name = first.clone();
+        }
+    }
+    if let Some(last) = identifiers.last() {
+        field_name = last.clone();
     }
 
     Ok(Statement::with_span(
@@ -12590,6 +21425,42 @@ fn walk_destructor_method_impl(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
     Err("destructor_method_impl: missing body".into())
+}
+
+fn walk_class_constructor_method_impl(pair: Pair<Rule>) -> Result<Statement, String> {
+    let span = to_span(&pair);
+    for p in pair.into_inner() {
+        if p.as_rule() == Rule::method_impl_body_proc {
+            let mut stmt = walk_method_impl_body_proc(p, span, true)?;
+            if let StmtKind::FunctionDecl {
+                name, modifiers, ..
+            } = &mut stmt.kind
+            {
+                let class_name = name
+                    .split_once('.')
+                    .map(|(class_name, _)| class_name.to_string())
+                    .unwrap_or_else(|| name.clone());
+                *name = format!("{}.__static_init__", class_name);
+                modifiers.is_static = true;
+            }
+            return Ok(stmt);
+        }
+    }
+    Err("class_constructor_method_impl: missing body".into())
+}
+
+fn walk_class_destructor_method_impl(pair: Pair<Rule>) -> Result<Statement, String> {
+    let span = to_span(&pair);
+    for p in pair.into_inner() {
+        if p.as_rule() == Rule::method_impl_body_proc {
+            let mut stmt = walk_method_impl_body_proc(p, span, false)?;
+            if let StmtKind::FunctionDecl { modifiers, .. } = &mut stmt.kind {
+                modifiers.is_static = true;
+            }
+            return Ok(stmt);
+        }
+    }
+    Err("class_destructor_method_impl: missing body".into())
 }
 
 fn walk_method_impl_body_proc(
@@ -12972,7 +21843,11 @@ fn walk_for_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let binding = parts.remove(0);
     let (var_name, type_hint, start_expr) = walk_for_binding(binding)?;
     let end_expr = walk_expression(parts.remove(0))?; // end expression
-    let body_stmt = walk_statement(parts.remove(0))?; // body statement
+    let body_stmt = if parts.is_empty() {
+        Statement::new(StmtKind::Empty)
+    } else {
+        walk_statement(parts.remove(0))?
+    };
     let use_char_ordinal_loop = type_hint
         .as_deref()
         .is_some_and(|hint| hint.eq_ignore_ascii_case("char"))
@@ -13051,22 +21926,12 @@ fn walk_for_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
             optional: false,
         })
     }
-    let for_stmt = Statement::new(StmtKind::For {
+    Ok(StmtKind::For {
         init: Some(Box::new(init)),
         cond: Some(cond),
         update: Some(update_assign),
         body: flatten_stmt(body_stmt),
-    });
-    let final_value = if use_char_ordinal_loop {
-        end_expr
-    } else {
-        end_expr
-    };
-    let restore_stmt = Statement::new(StmtKind::Assign {
-        targets: vec![Expression::ident(&var_name)],
-        value: final_value,
-    });
-    Ok(StmtKind::Block(vec![for_stmt, restore_stmt]))
+    })
 }
 
 fn walk_for_binding(pair: Pair<Rule>) -> Result<(String, Option<String>, Expression), String> {
@@ -13093,7 +21958,11 @@ fn walk_for_in_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut parts: Vec<Pair<Rule>> = pair.into_inner().collect();
     let var_name = parts.remove(0).as_str().to_string();
     let iter_expr = pascal_for_in_iter(walk_expression(parts.remove(0))?);
-    let body_stmt = walk_statement(parts.remove(0))?;
+    let body_stmt = if parts.is_empty() {
+        Statement::new(StmtKind::Empty)
+    } else {
+        walk_statement(parts.remove(0))?
+    };
 
     Ok(StmtKind::ForIn {
         var: var_name,
@@ -13128,7 +21997,11 @@ fn pascal_for_in_iter(expr: Expression) -> Expression {
 fn walk_while_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut parts: Vec<Pair<Rule>> = pair.into_inner().collect();
     let cond = walk_expression(parts.remove(0))?;
-    let body_stmt = walk_statement(parts.remove(0))?;
+    let body_stmt = if parts.is_empty() {
+        Statement::new(StmtKind::Empty)
+    } else {
+        walk_statement(parts.remove(0))?
+    };
 
     Ok(StmtKind::While {
         cond,
@@ -13301,11 +22174,62 @@ fn walk_try_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
+    if let Some(stmt) = rewrite_str_to_int_try_probe(&body, &catches, &finally) {
+        return Ok(stmt);
+    }
+
     Ok(StmtKind::Try {
         body,
         catches,
         else_body: None,
         finally,
+    })
+}
+
+fn rewrite_str_to_int_try_probe(
+    body: &[Statement],
+    catches: &[CatchClause],
+    finally: &Option<Vec<Statement>>,
+) -> Option<StmtKind> {
+    if finally.is_some() || body.is_empty() || catches.len() != 1 {
+        return None;
+    }
+    let catch = &catches[0];
+    if !catch.types.is_empty() || catch.var_name.is_some() || catch.stack_var.is_some() {
+        return None;
+    }
+
+    let StmtKind::If {
+        cond,
+        then_body,
+        else_body,
+        ..
+    } = &body[0].kind
+    else {
+        return None;
+    };
+    if then_body.len() != 1 || !matches!(then_body[0].kind, StmtKind::Throw { .. }) {
+        return None;
+    }
+    let thrown = match &then_body[0].kind {
+        StmtKind::Throw {
+            expr: Some(expr), ..
+        } => expr.clone(),
+        _ => Expression::null(),
+    };
+
+    let mut success_body = else_body.clone()?;
+    success_body.extend(body.iter().skip(1).cloned());
+    let mut catch_body = vec![
+        pascal_assign_ident("ExceptObject", thrown),
+        pascal_assign_ident("ExceptAddr", Expression::int(1)),
+    ];
+    catch_body.extend(catch.body.clone());
+    Some(StmtKind::If {
+        cond: cond.clone(),
+        then_body: catch_body,
+        elifs: Vec::new(),
+        else_body: Some(success_body),
     })
 }
 
@@ -13547,11 +22471,10 @@ fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
                             value: Expression::new(ExprKind::Ternary {
                                 cond: Box::new(invalid.clone()),
                                 then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
-                                else_: Box::new(Expression::new(ExprKind::Call {
-                                    callee: Box::new(Expression::ident("parseInt")),
-                                    args: vec![Argument::positional(args[0].value.clone())],
-                                    optional: false,
-                                })),
+                                else_: Box::new(pascal_intrinsic_call(
+                                    "StrToInt",
+                                    vec![Argument::positional(args[0].value.clone())],
+                                )),
                             }),
                         }),
                         Statement::new(StmtKind::Assign {
@@ -13563,6 +22486,25 @@ fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
                             }),
                         }),
                     ]));
+                }
+                if name.eq_ignore_ascii_case("StrToInt") && args.len() == 1 {
+                    let source = args[0].value.clone();
+                    return Ok(StmtKind::If {
+                        cond: pascal_val_invalid_expr(source.clone()),
+                        then_body: vec![Statement::new(StmtKind::Throw {
+                            expr: Some(Expression::new(ExprKind::New {
+                                class: Box::new(Expression::ident("EConvertError")),
+                                args: vec![Argument::positional(Expression::string(
+                                    "Invalid integer",
+                                ))],
+                            })),
+                            cause: None,
+                        })],
+                        elifs: Vec::new(),
+                        else_body: Some(vec![Statement::new(StmtKind::Expr(
+                            pascal_intrinsic_call("StrToInt", vec![Argument::positional(source)]),
+                        ))]),
+                    });
                 }
             }
         }
@@ -13608,27 +22550,21 @@ fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 return Ok(StmtKind::If {
                     cond: pascal_val_invalid_expr(source.clone()),
                     then_body: vec![Statement::new(StmtKind::Throw {
-                        expr: Some(Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::new(ExprKind::Member {
-                                object: Box::new(Expression::ident("Exception")),
-                                field: "Create".to_string(),
-                                null_safe: false,
-                            })),
-                            args: vec![Argument::positional(Expression::new(ExprKind::Lit(
-                                Literal::Str("invalid integer".to_string()),
-                            )))],
-                            optional: false,
+                        expr: Some(Expression::new(ExprKind::New {
+                            class: Box::new(Expression::ident("EConvertError")),
+                            args: vec![Argument::positional(Expression::string(
+                                "Invalid integer",
+                            ))],
                         })),
                         cause: None,
                     })],
                     elifs: Vec::new(),
                     else_body: Some(vec![Statement::new(StmtKind::Assign {
                         targets: vec![target],
-                        value: Expression::new(ExprKind::Call {
-                            callee: Box::new(Expression::ident("parseInt")),
-                            args: vec![Argument::positional(source)],
-                            optional: false,
-                        }),
+                        value: pascal_intrinsic_call(
+                            "StrToInt",
+                            vec![Argument::positional(source)],
+                        ),
                     })]),
                 });
             }
@@ -13766,6 +22702,11 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             if src.starts_with('-') {
                 Ok(ExprKind::Unary {
                     op: UnaryOp::Neg,
+                    expr: Box::new(operand),
+                })
+            } else if src.starts_with('+') {
+                Ok(ExprKind::Unary {
+                    op: UnaryOp::Pos,
                     expr: Box::new(operand),
                 })
             } else if src.len() >= 3
@@ -13912,6 +22853,7 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
         Rule::lambda_function => walk_lambda_function(inner),
         Rule::inherited_expression => walk_inherited_expression(inner),
         Rule::type_cast_builtin => walk_type_cast_builtin(inner),
+        Rule::builtin_type_keyword => Ok(ExprKind::Ident(inner.as_str().to_string())),
         Rule::true_keyword => Ok(ExprKind::Lit(Literal::Bool(true))),
         Rule::false_keyword => Ok(ExprKind::Lit(Literal::Bool(false))),
         Rule::nil_keyword => Ok(ExprKind::Lit(Literal::Null)),
@@ -13962,6 +22904,14 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
                     null_safe: false,
                 }));
             }
+        }
+
+        if ident.eq_ignore_ascii_case("ClassParent") && arg_list.is_none() {
+            return Ok(Expression::new(ExprKind::Member {
+                object: Box::new(expr),
+                field: "__pascal_class_parent".to_string(),
+                null_safe: false,
+            }));
         }
 
         if ident.eq_ignore_ascii_case("InheritsFrom") {
@@ -14061,6 +23011,18 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
             .transpose()?
             .unwrap_or_default();
 
+        if let ExprKind::Member { object, field, .. } = &expr.kind {
+            if field.eq_ignore_ascii_case("Construct") && args.len() == 1 {
+                if let Some(name) = pascal_expr_ident_name(object) {
+                    if name.eq_ignore_ascii_case("TComparer")
+                        || name.eq_ignore_ascii_case("TEqualityComparer")
+                    {
+                        return Ok(args[0].value.clone());
+                    }
+                }
+            }
+        }
+
         if let ExprKind::Ident(name) = &expr.kind {
             if let Some(date_expr) = lower_pascal_datetime_builtin(name, &args) {
                 return Ok(date_expr);
@@ -14097,8 +23059,8 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
                 let value = args[0].value.clone();
                 return Ok(Expression::new(ExprKind::Binary {
                     op: BinOp::Add,
-                    left: Box::new(value),
-                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(String::new())))),
+                    left: Box::new(Expression::new(ExprKind::Lit(Literal::Str(String::new())))),
+                    right: Box::new(value),
                 }));
             }
         }
@@ -14632,25 +23594,31 @@ fn pascal_frac_expr(value: Expression) -> Expression {
     })
 }
 
-fn pascal_val_invalid_expr(value: Expression) -> Expression {
+fn pascal_intrinsic_call(name: &str, args: Vec<Argument>) -> Expression {
     Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("isNaN")),
-        args: vec![Argument::positional(Expression::new(ExprKind::Call {
-            callee: Box::new(Expression::ident("Number")),
-            args: vec![Argument::positional(value)],
-            optional: false,
-        }))],
+        callee: Box::new(Expression::ident(name)),
+        args,
         optional: false,
     })
 }
 
+fn pascal_val_invalid_expr(value: Expression) -> Expression {
+    let parsed = pascal_intrinsic_call("StrToFloat", vec![Argument::positional(value)]);
+    Expression::new(ExprKind::Binary {
+        op: BinOp::NotEq,
+        left: Box::new(parsed.clone()),
+        right: Box::new(parsed),
+    })
+}
+
 fn pascal_str_to_int_arg(expr: &Expression) -> Option<Expression> {
-    if let ExprKind::Call { callee, args, .. } = &expr.kind {
-        if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("StrToInt"))
-            && args.len() == 1
-        {
-            return Some(args[0].value.clone());
-        }
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("StrToInt"))
+        && args.len() == 1
+    {
+        return Some(args[0].value.clone());
     }
     None
 }
@@ -14659,6 +23627,14 @@ fn const_int_expr(expr: &Expression) -> Option<i64> {
     match expr.kind {
         ExprKind::Lit(Literal::Int(value)) => Some(value),
         ExprKind::Lit(Literal::Float(value)) => Some(value as i64),
+        _ => None,
+    }
+}
+
+fn pascal_expr_ident_name(expr: &Expression) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.as_str()),
+        ExprKind::Call { callee, args, .. } if args.is_empty() => pascal_expr_ident_name(callee),
         _ => None,
     }
 }
@@ -14737,13 +23713,17 @@ fn walk_new_expression(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
 fn walk_lambda_procedure(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut params = Vec::new();
+    let mut decls = Vec::new();
     let mut body = LambdaBody::Block(Vec::new());
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::param_clause => params = walk_param_clause(p)?,
+            Rule::decl_section => walk_decl_section(p, &mut decls)?,
             Rule::compound_statement => {
-                body = LambdaBody::Block(walk_compound_statement(p)?);
+                let mut stmts = decls.clone();
+                stmts.extend(walk_compound_statement(p)?);
+                body = LambdaBody::Block(stmts);
             }
             _ => {}
         }
@@ -14759,14 +23739,18 @@ fn walk_lambda_procedure(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
 fn walk_lambda_function(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let mut params = Vec::new();
+    let mut decls = Vec::new();
     let mut body = LambdaBody::Block(Vec::new());
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::param_clause => params = walk_param_clause(p)?,
             Rule::type_ref => { /* return type hint — ignored for lambda body */ }
+            Rule::decl_section => walk_decl_section(p, &mut decls)?,
             Rule::compound_statement => {
-                body = LambdaBody::Block(walk_compound_statement(p)?);
+                let mut stmts = decls.clone();
+                stmts.extend(walk_compound_statement(p)?);
+                body = LambdaBody::Block(stmts);
             }
             _ => {}
         }

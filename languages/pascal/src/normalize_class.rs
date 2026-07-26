@@ -25,12 +25,22 @@ use vybe_bytecode::class_normalize::{
     types::*,
 };
 
+const PASCAL_NO_BASE_CTOR_MARKER: &str = "__pascal_no_base_ctor__";
+
 fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Option<String> {
     let [stmt] = body else {
         return None;
     };
     match &stmt.kind {
         StmtKind::Return(Some(expr)) => match &expr.kind {
+            ExprKind::Member { object, field, .. } if matches!(object.kind, ExprKind::This) => {
+                field_names
+                    .contains(&field.to_ascii_lowercase())
+                    .then(|| field.clone())
+            }
+            ExprKind::Ident(field) => field_names
+                .contains(&field.to_ascii_lowercase())
+                .then(|| field.clone()),
             ExprKind::Call { callee, args, .. } if args.is_empty() => match &callee.kind {
                 ExprKind::Member { object, field, .. } if matches!(object.kind, ExprKind::This) => {
                     field_names
@@ -42,6 +52,21 @@ fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Opt
             _ => None,
         },
         StmtKind::Expr(expr) => match &expr.kind {
+            ExprKind::Assign { target, value } if matches!(value.kind, ExprKind::Ident(ref name) if name.eq_ignore_ascii_case("value")) => {
+                match &target.kind {
+                    ExprKind::Member { object, field, .. }
+                        if matches!(object.kind, ExprKind::This) =>
+                    {
+                        field_names
+                            .contains(&field.to_ascii_lowercase())
+                            .then(|| field.clone())
+                    }
+                    ExprKind::Ident(field) => field_names
+                        .contains(&field.to_ascii_lowercase())
+                        .then(|| field.clone()),
+                    _ => None,
+                }
+            }
             ExprKind::Call { callee, args, .. } if args.len() == 1 => match &callee.kind {
                 ExprKind::Member { object, field, .. }
                     if matches!(object.kind, ExprKind::This)
@@ -144,6 +169,337 @@ fn rewrite_implicit_self_members_in_constructors(
             .map(|param| param.name.to_ascii_lowercase())
             .collect();
         rewrite_implicit_self_members_in_body(&mut constructor.body, member_names, &mut shadowed);
+    }
+}
+
+fn static_access_expr(class_name: &str, member_name: &str) -> Expression {
+    Expression::new(ExprKind::StaticAccess {
+        class: Box::new(Expression::ident(class_name)),
+        member: Box::new(Expression::ident(member_name)),
+    })
+}
+
+fn rewrite_static_value_members_in_methods(
+    methods: &mut [NormalMethod],
+    class_name: &str,
+    member_names: &HashSet<String>,
+) {
+    for method in methods {
+        let mut shadowed: HashSet<String> = method
+            .params
+            .iter()
+            .map(|param| param.name.to_ascii_lowercase())
+            .collect();
+        rewrite_static_value_members_in_body(
+            &mut method.body,
+            class_name,
+            member_names,
+            &mut shadowed,
+        );
+    }
+}
+
+fn rewrite_static_value_members_in_constructors(
+    constructors: &mut [NormalConstructor],
+    class_name: &str,
+    member_names: &HashSet<String>,
+) {
+    for constructor in constructors {
+        let mut shadowed: HashSet<String> = constructor
+            .params
+            .iter()
+            .map(|param| param.name.to_ascii_lowercase())
+            .collect();
+        rewrite_static_value_members_in_body(
+            &mut constructor.body,
+            class_name,
+            member_names,
+            &mut shadowed,
+        );
+    }
+}
+
+fn rewrite_static_value_members_in_body(
+    body: &mut [Statement],
+    class_name: &str,
+    member_names: &HashSet<String>,
+    shadowed: &mut HashSet<String>,
+) {
+    for stmt in body {
+        rewrite_static_value_members_stmt(stmt, class_name, member_names, shadowed);
+    }
+}
+
+fn rewrite_static_value_members_stmt(
+    stmt: &mut Statement,
+    class_name: &str,
+    member_names: &HashSet<String>,
+    shadowed: &mut HashSet<String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_static_value_members_expr(expr, class_name, member_names, shadowed);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations.iter_mut() {
+                if let Some(init) = &mut decl.init {
+                    rewrite_static_value_members_expr(init, class_name, member_names, shadowed);
+                }
+            }
+            for decl in declarations {
+                if let vybe_ast::BindingPattern::Ident(name) = &decl.pattern {
+                    shadowed.insert(name.to_ascii_lowercase());
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_static_value_members_expr(target, class_name, member_names, shadowed);
+            }
+            rewrite_static_value_members_expr(value, class_name, member_names, shadowed);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_static_value_members_expr(target, class_name, member_names, shadowed);
+            rewrite_static_value_members_expr(value, class_name, member_names, shadowed);
+        }
+        StmtKind::Block(body) => {
+            let mut scoped = shadowed.clone();
+            rewrite_static_value_members_in_body(body, class_name, member_names, &mut scoped);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_static_value_members_expr(cond, class_name, member_names, shadowed);
+            rewrite_static_value_members_in_body(
+                then_body,
+                class_name,
+                member_names,
+                &mut shadowed.clone(),
+            );
+            for (cond, body) in elifs {
+                rewrite_static_value_members_expr(cond, class_name, member_names, shadowed);
+                rewrite_static_value_members_in_body(
+                    body,
+                    class_name,
+                    member_names,
+                    &mut shadowed.clone(),
+                );
+            }
+            if let Some(body) = else_body {
+                rewrite_static_value_members_in_body(
+                    body,
+                    class_name,
+                    member_names,
+                    &mut shadowed.clone(),
+                );
+            }
+        }
+        StmtKind::While { cond, body, .. } => {
+            rewrite_static_value_members_expr(cond, class_name, member_names, shadowed);
+            rewrite_static_value_members_in_body(
+                body,
+                class_name,
+                member_names,
+                &mut shadowed.clone(),
+            );
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped = shadowed.clone();
+            if let Some(init) = init {
+                rewrite_static_value_members_stmt(init, class_name, member_names, &mut scoped);
+            }
+            if let Some(cond) = cond {
+                rewrite_static_value_members_expr(cond, class_name, member_names, &mut scoped);
+            }
+            if let Some(update) = update {
+                rewrite_static_value_members_expr(update, class_name, member_names, &mut scoped);
+            }
+            rewrite_static_value_members_in_body(body, class_name, member_names, &mut scoped);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_static_value_members_expr(
+    expr: &mut Expression,
+    class_name: &str,
+    member_names: &HashSet<String>,
+    shadowed: &HashSet<String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Ident(name)
+            if member_names.contains(&name.to_ascii_lowercase())
+                && !shadowed.contains(&name.to_ascii_lowercase()) =>
+        {
+            *expr = static_access_expr(class_name, name);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            if let ExprKind::Ident(name) = &callee.kind {
+                if member_names.contains(&name.to_ascii_lowercase())
+                    && !shadowed.contains(&name.to_ascii_lowercase())
+                {
+                    *callee = Box::new(static_access_expr(class_name, name));
+                }
+            } else {
+                rewrite_static_value_members_expr(callee, class_name, member_names, shadowed);
+            }
+            for arg in args {
+                rewrite_static_value_members_expr(
+                    &mut arg.value,
+                    class_name,
+                    member_names,
+                    shadowed,
+                );
+            }
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_static_value_members_expr(object, class_name, member_names, shadowed);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_static_value_members_expr(object, class_name, member_names, shadowed);
+            rewrite_static_value_members_expr(index, class_name, member_names, shadowed);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_static_value_members_expr(left, class_name, member_names, shadowed);
+            rewrite_static_value_members_expr(right, class_name, member_names, shadowed);
+        }
+        ExprKind::Unary { expr, .. } => {
+            rewrite_static_value_members_expr(expr, class_name, member_names, shadowed);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_static_value_members_expr(cond, class_name, member_names, shadowed);
+            rewrite_static_value_members_expr(then, class_name, member_names, shadowed);
+            rewrite_static_value_members_expr(else_, class_name, member_names, shadowed);
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_static_value_members_expr(target, class_name, member_names, shadowed);
+            rewrite_static_value_members_expr(value, class_name, member_names, shadowed);
+        }
+        ExprKind::New { args, .. } => {
+            for arg in args {
+                rewrite_static_value_members_expr(
+                    &mut arg.value,
+                    class_name,
+                    member_names,
+                    shadowed,
+                );
+            }
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_static_value_members_expr(key, class_name, member_names, shadowed);
+                }
+                rewrite_static_value_members_expr(
+                    &mut element.value,
+                    class_name,
+                    member_names,
+                    shadowed,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_destructor_inherited_calls(body: &mut [Statement], has_parent: bool) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::Expr(expr) => normalize_destructor_inherited_expr(expr, has_parent),
+            StmtKind::Block(body) => normalize_destructor_inherited_calls(body, has_parent),
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                normalize_destructor_inherited_calls(then_body, has_parent);
+                for (_, body) in elifs {
+                    normalize_destructor_inherited_calls(body, has_parent);
+                }
+                if let Some(body) = else_body {
+                    normalize_destructor_inherited_calls(body, has_parent);
+                }
+            }
+            StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::ForIn { body, .. }
+            | StmtKind::DoWhile { body, .. } => {
+                normalize_destructor_inherited_calls(body, has_parent);
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                normalize_destructor_inherited_calls(body, has_parent);
+                for catch in catches {
+                    normalize_destructor_inherited_calls(&mut catch.body, has_parent);
+                }
+                if let Some(body) = else_body {
+                    normalize_destructor_inherited_calls(body, has_parent);
+                }
+                if let Some(body) = finally {
+                    normalize_destructor_inherited_calls(body, has_parent);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn normalize_destructor_inherited_expr(expr: &mut Expression, has_parent: bool) {
+    match &mut expr.kind {
+        ExprKind::SuperCall { method, .. } if method.is_none() => {
+            if has_parent {
+                *method = Some("Destroy".to_string());
+            } else {
+                *expr = Expression::null();
+            }
+        }
+        ExprKind::SuperCall { method, .. }
+            if !has_parent
+                && method
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("Destroy")) =>
+        {
+            *expr = Expression::null();
+        }
+        ExprKind::Call { callee, args, .. } => {
+            normalize_destructor_inherited_expr(callee, has_parent);
+            for arg in args {
+                normalize_destructor_inherited_expr(&mut arg.value, has_parent);
+            }
+        }
+        ExprKind::Member { object, .. } => normalize_destructor_inherited_expr(object, has_parent),
+        ExprKind::Index { object, index, .. } => {
+            normalize_destructor_inherited_expr(object, has_parent);
+            normalize_destructor_inherited_expr(index, has_parent);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            normalize_destructor_inherited_expr(left, has_parent);
+            normalize_destructor_inherited_expr(right, has_parent);
+        }
+        ExprKind::Unary { expr, .. } => normalize_destructor_inherited_expr(expr, has_parent),
+        ExprKind::Ternary { cond, then, else_ } => {
+            normalize_destructor_inherited_expr(cond, has_parent);
+            normalize_destructor_inherited_expr(then, has_parent);
+            normalize_destructor_inherited_expr(else_, has_parent);
+        }
+        ExprKind::Assign { target, value } => {
+            normalize_destructor_inherited_expr(target, has_parent);
+            normalize_destructor_inherited_expr(value, has_parent);
+        }
+        _ => {}
     }
 }
 
@@ -342,7 +698,12 @@ fn rewrite_implicit_self_members_expr(
             *expr = self_member_expr(name);
         }
         ExprKind::Call { callee, args, .. } => {
-            if !matches!(&callee.kind, ExprKind::Ident(_)) {
+            if let ExprKind::Ident(name) = &callee.kind {
+                let key = name.to_ascii_lowercase();
+                if member_names.contains(&key) && !shadowed.contains(&key) {
+                    *callee = Box::new(self_member_expr(name));
+                }
+            } else {
                 rewrite_implicit_self_members_expr(callee, member_names, shadowed, false);
             }
             for arg in args {
@@ -1119,14 +1480,35 @@ pub fn normalize_class(
     let mut constructors: Vec<NormalConstructor> = Vec::new();
     let mut destructor: Option<NormalMethod> = None;
     let mut special_methods: Vec<SpecialMethod> = Vec::new();
-    let field_names: HashSet<String> = members
+    let instance_field_names: HashSet<String> = members
         .iter()
         .filter_map(|member| match member {
-            ClassMember::Field { name, .. } => Some(name.to_ascii_lowercase()),
+            ClassMember::Field {
+                name, modifiers, ..
+            } if !modifiers.is_static => Some(name.to_ascii_lowercase()),
             _ => None,
         })
         .collect();
-    let mut implicit_self_member_names = field_names.clone();
+    let static_value_member_names: HashSet<String> = members
+        .iter()
+        .filter_map(|member| match member {
+            ClassMember::Field {
+                name, modifiers, ..
+            } if modifiers.is_static => Some(name.to_ascii_lowercase()),
+            ClassMember::Const { name, .. } => Some(name.to_ascii_lowercase()),
+            ClassMember::Property {
+                name, modifiers, ..
+            } if modifiers.is_static => Some(name.to_ascii_lowercase()),
+            ClassMember::Method(stmt) => match &stmt.kind {
+                StmtKind::FunctionDecl {
+                    name, modifiers, ..
+                } if modifiers.is_static => Some(name.to_ascii_lowercase()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    let mut implicit_self_member_names = instance_field_names.clone();
 
     for member in members {
         match member {
@@ -1165,7 +1547,12 @@ pub fn normalize_class(
 
                 // Pascal destructor: `destructor Destroy;`. Case-insensitive.
                 if src_name.eq_ignore_ascii_case("Destroy") {
-                    if let Some(d) = from_method_stmt(span.clone(), stmt, "destroy", Access::Public)
+                    let mut stmt = (**stmt).clone();
+                    if let StmtKind::FunctionDecl { body, .. } = &mut stmt.kind {
+                        normalize_destructor_inherited_calls(body, !parents.is_empty());
+                    }
+                    if let Some(d) =
+                        from_method_stmt(span.clone(), &stmt, "destroy", Access::Public)
                     {
                         destructor = Some(d);
                     }
@@ -1197,10 +1584,15 @@ pub fn normalize_class(
                 base_args,
                 ..
             } => {
+                let mut body = body.clone();
+                let suppress_base_call = body.first().is_some_and(is_pascal_no_base_ctor_marker);
+                if suppress_base_call {
+                    body.remove(0);
+                }
                 constructors.push(NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
-                    body: body.clone(),
+                    body,
                     base_call: match base_args {
                         Some(args) => BaseCall::Explicit(
                             args.iter()
@@ -1212,7 +1604,7 @@ pub fn normalize_class(
                         // = None when absent — mirror with Auto if there's
                         // a parent, None otherwise.
                         None => {
-                            if parents.is_empty() {
+                            if parents.is_empty() || suppress_base_call {
                                 BaseCall::None
                             } else {
                                 BaseCall::Auto
@@ -1240,7 +1632,7 @@ pub fn normalize_class(
                         Vec::new(),
                         vec![],
                         None,
-                        rewrite_property_getter_body(body, &field_names),
+                        rewrite_property_getter_body(body, &instance_field_names),
                         Access::Public,
                         false,
                         false,
@@ -1256,7 +1648,7 @@ pub fn normalize_class(
                         Vec::new(),
                         vec![s.param.clone()],
                         None,
-                        rewrite_property_setter_body(&s.body, &field_names),
+                        rewrite_property_setter_body(&s.body, &instance_field_names),
                         Access::Public,
                         false,
                         false,
@@ -1283,6 +1675,30 @@ pub fn normalize_class(
     }
 
     extend_gcl_member_names(&mut implicit_self_member_names, parents);
+    if !static_value_member_names.is_empty() {
+        rewrite_static_value_members_in_methods(
+            &mut instance_methods,
+            name,
+            &static_value_member_names,
+        );
+        rewrite_static_value_members_in_methods(
+            &mut static_methods,
+            name,
+            &static_value_member_names,
+        );
+        rewrite_static_value_members_in_constructors(
+            &mut constructors,
+            name,
+            &static_value_member_names,
+        );
+        if let Some(destructor) = destructor.as_mut() {
+            rewrite_static_value_members_in_methods(
+                std::slice::from_mut(destructor),
+                name,
+                &static_value_member_names,
+            );
+        }
+    }
     rewrite_implicit_self_members_in_methods(&mut instance_methods, &implicit_self_member_names);
     rewrite_implicit_self_members_in_constructors(&mut constructors, &implicit_self_member_names);
     let gcl_accessor_property_names = gcl_accessor_property_names(parents);
@@ -1304,9 +1720,11 @@ pub fn normalize_class(
             .iter()
             .any(|stmt| stmt_calls_method(stmt, "FormCreate"))
     });
-    let (ctor_helper_methods, constructor) =
-        lower_pascal_constructor_overloads(constructors, &span);
-    instance_methods.extend(ctor_helper_methods);
+    let (constructor_variants, constructor) = if constructors.len() <= 1 {
+        (Vec::new(), constructors.into_iter().next())
+    } else {
+        (constructors, None)
+    };
     let mut auto_init_methods = Vec::new();
 
     let is_gcl_form = parents
@@ -1340,36 +1758,13 @@ pub fn normalize_class(
         auto_init_methods.push(GCL_FORM_CREATE_AUTOINIT.to_string());
     }
 
-    if let Some(destructor_method) = destructor.clone() {
-        instance_methods.push(destructor_method);
-
-        let has_free = instance_methods.iter().any(|method| {
-            method.source_name.eq_ignore_ascii_case("Free")
-                || method.canonical_name.eq_ignore_ascii_case("free")
-        });
-        if !has_free {
-            let free_body = vec![Statement::new(StmtKind::Expr(Expression::new(
-                ExprKind::Call {
-                    callee: Box::new(Expression::ident("Destroy")),
-                    args: Vec::new(),
-                    optional: false,
-                },
-            )))];
-            instance_methods.push(build_normal_method(
-                span.clone(),
-                "free",
-                "Free",
-                Vec::new(),
-                Vec::new(),
-                None,
-                free_body,
-                Access::Public,
-                false,
-                false,
-                true,
-                Modifiers::default(),
-            ));
-        }
+    let mut normalized_interfaces = interfaces.to_vec();
+    if !name.eq_ignore_ascii_case("TObject")
+        && !normalized_interfaces
+            .iter()
+            .any(|iface| iface.eq_ignore_ascii_case("TObject"))
+    {
+        normalized_interfaces.push("TObject".to_string());
     }
 
     NormalClass {
@@ -1377,7 +1772,7 @@ pub fn normalize_class(
         name: name.to_string(),
         parent: parents.first().cloned(),
         bases: Vec::new(),
-        interfaces: interfaces.to_vec(),
+        interfaces: normalized_interfaces,
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
         is_partial: false,
@@ -1389,7 +1784,7 @@ pub fn normalize_class(
         instance_methods,
         static_methods,
         properties,
-        constructors: Vec::new(),
+        constructors: constructor_variants,
         constructor,
         destructor,
         auto_init_methods,
@@ -1485,58 +1880,6 @@ fn lower_pascal_method_overloads(methods: Vec<NormalMethod>, span: &Span) -> Vec
     lowered
 }
 
-fn lower_pascal_constructor_overloads(
-    constructors: Vec<NormalConstructor>,
-    span: &Span,
-) -> (Vec<NormalMethod>, Option<NormalConstructor>) {
-    if constructors.is_empty() {
-        return (Vec::new(), None);
-    }
-    if constructors.len() == 1
-        || has_duplicate_arities(constructors.iter().map(|ctor| ctor.params.len()))
-    {
-        return (Vec::new(), constructors.into_iter().last());
-    }
-
-    let mut sorted = constructors;
-    sorted.sort_by_key(|ctor| ctor.params.len());
-    let wrapper_template = sorted.last().cloned().unwrap();
-    let mut helper_methods = Vec::new();
-    let mut cases = Vec::new();
-
-    for ctor in sorted {
-        let hidden_name = format!("__vybe_ctor_create_{}", ctor.params.len());
-        cases.push(PascalOverloadCase {
-            arity: ctor.params.len(),
-            hidden_name: hidden_name.clone(),
-        });
-        helper_methods.push(build_normal_method(
-            ctor.span.clone(),
-            &hidden_name,
-            &hidden_name,
-            Vec::new(),
-            ctor.params.clone(),
-            None,
-            ctor.body.clone(),
-            Access::Public,
-            false,
-            false,
-            true,
-            Modifiers::default(),
-        ));
-    }
-
-    let wrapper = NormalConstructor {
-        span: span.clone(),
-        params: wrapper_template.params.clone(),
-        body: build_pascal_overload_dispatch(&cases, &wrapper_template.params, true),
-        base_call: wrapper_template.base_call,
-        named_name: wrapper_template.named_name,
-    };
-
-    (helper_methods, Some(wrapper))
-}
-
 fn build_pascal_overload_dispatch(
     cases: &[PascalOverloadCase],
     wrapper_params: &[vybe_ast::Param],
@@ -1568,10 +1911,20 @@ fn build_pascal_overload_dispatch(
     }
 
     let gate_param = &wrapper_params[first.arity].name;
-    let cond = Expression::new(ExprKind::Binary {
+    let is_null = Expression::new(ExprKind::Binary {
         op: vybe_ast::BinOp::Eq,
         left: Box::new(Expression::ident(gate_param)),
         right: Box::new(Expression::null()),
+    });
+    let is_undefined = Expression::new(ExprKind::Binary {
+        op: vybe_ast::BinOp::Eq,
+        left: Box::new(Expression::ident(gate_param)),
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Undefined))),
+    });
+    let cond = Expression::new(ExprKind::Binary {
+        op: vybe_ast::BinOp::Or,
+        left: Box::new(is_null),
+        right: Box::new(is_undefined),
     });
 
     vec![Statement::new(StmtKind::If {
@@ -1597,6 +1950,16 @@ where
         }
     }
     false
+}
+
+fn is_pascal_no_base_ctor_marker(stmt: &Statement) -> bool {
+    matches!(
+        &stmt.kind,
+        StmtKind::Expr(Expression {
+            kind: ExprKind::Ident(name),
+            ..
+        }) if name == PASCAL_NO_BASE_CTOR_MARKER
+    )
 }
 
 #[cfg(test)]

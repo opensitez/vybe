@@ -28,7 +28,8 @@ program_inner = _{
 program_heading = { (^"program" | ^"unit") ~ identifier ~ ";" }
 
 uses_clause = { ^"uses" ~ uses_item ~ ("," ~ uses_item)* ~ ";" }
-uses_item = { identifier ~ (^"in" ~ string_literal)? }
+uses_item = { unit_name ~ (^"in" ~ string_literal)? }
+unit_name = { identifier ~ ("." ~ identifier)* }
 
 interface_section = { ^"interface" }
 implementation_section = { ^"implementation" }
@@ -46,6 +47,8 @@ declaration = _{
     | type_section
     | label_section
     | class_var_decl_impl
+    | class_constructor_method_impl
+    | class_destructor_method_impl
     | constructor_method_impl
     | destructor_method_impl
     | procedure_decl_or_method
@@ -82,6 +85,7 @@ type_def = {
     record_helper_type
     | record_type
     | class_helper_type
+    | class_ref_type
     | class_type
     | interface_type
     | array_type
@@ -102,6 +106,7 @@ record_body = { record_member* }
 record_member = _{
     record_visibility
     | variant_part
+    | class_property_decl
     | record_class_method
     | record_operator_method
     | record_method_sig
@@ -181,7 +186,9 @@ class_function = { ^"function" ~ method_sig_body ~ function_body? }
 
 class_class_member = {
     ^"class" ~ (
-        ^"procedure" ~ method_sig_body ~ procedure_body?
+        ^"constructor" ~ method_sig_body ~ procedure_body?
+        | ^"destructor" ~ method_sig_body ~ procedure_body?
+        | ^"procedure" ~ method_sig_body ~ procedure_body?
         | ^"function" ~ method_sig_body ~ function_body?
         | ^"var" ~ field_decl
     )
@@ -237,6 +244,7 @@ property_index = { "[" ~ identifier ~ ":" ~ type_ref ~ "]" }
 property_specifiers = {
     property_read
     | property_write
+    | property_index_value
     | property_default
     | property_stored
     | property_nodefault
@@ -245,6 +253,7 @@ property_specifiers = {
 property_accessor = { method_name ~ ("." ~ method_name)* }
 property_read = { ^"read" ~ property_accessor }
 property_write = { ^"write" ~ property_accessor }
+property_index_value = { ^"index" ~ expression }
 property_default = { ^"default" ~ (&";" | expression) }
 property_stored = { ^"stored" ~ expression? }
 property_nodefault = { ^"nodefault" ~ expression? }
@@ -254,13 +263,13 @@ property_nodefault = { ^"nodefault" ~ expression? }
 method_kind_keyword = { ^"constructor" | ^"destructor" | ^"procedure" | ^"function" }
 
 method_sig_body = {
-    method_name ~ param_clause? ~ return_type_clause? ~ ";" ~ method_directives
+    method_name ~ generic_params? ~ param_clause? ~ return_type_clause? ~ ";" ~ method_directives
 }
 
 method_name = { identifier | operator_keyword_name }
 operator_keyword_name = {
     ^"not" | ^"and" | ^"or" | ^"xor" | ^"div" | ^"mod" | ^"shl" | ^"shr"
-    | ^"set" | ^"do"
+    | ^"in" | ^"set" | ^"do"
 }
 
 return_type_clause = { ":" ~ type_ref }
@@ -299,12 +308,14 @@ function_decl_or_method = {
 }
 constructor_method_impl = { ^"constructor" ~ method_impl_body_proc }
 destructor_method_impl = { ^"destructor" ~ method_impl_body_proc }
+class_constructor_method_impl = { ^"class" ~ ^"constructor" ~ method_impl_body_proc }
+class_destructor_method_impl = { ^"class" ~ ^"destructor" ~ method_impl_body_proc }
 
 // Method implementation: ClassName.MethodName
 qualified_type_name = _{ identifier ~ generic_args? }
-method_impl_proc = { qualified_type_name ~ "." ~ method_name ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
-method_impl_func = { qualified_type_name ~ "." ~ method_name ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
-method_impl_body_proc = { qualified_type_name ~ "." ~ method_name ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
+method_impl_proc = { qualified_type_name ~ "." ~ method_name ~ generic_params? ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
+method_impl_func = { qualified_type_name ~ "." ~ method_name ~ generic_params? ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
+method_impl_body_proc = { qualified_type_name ~ "." ~ method_name ~ generic_params? ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
 
 // Standalone procedure
 standalone_procedure = { identifier ~ generic_params? ~ param_clause? ~ ";" ~ method_directives ~ (forward_directive | procedure_body) }
@@ -320,8 +331,9 @@ function_body = { decl_section ~ compound_statement ~ ";"? }
 // (`<T: class>`, `<T: constructor>`) are accepted but discarded — the
 // dynamic VM is type-erased.
 generic_params = _{ "<" ~ generic_param_list ~ ">" }
-generic_param_list = _{ generic_param ~ ("," ~ generic_param)* }
-generic_param = _{ identifier ~ (":" ~ type_ref)? }
+generic_param_list = _{ generic_param ~ ((";" | ",") ~ generic_param)* }
+generic_param = _{ identifier ~ (":" ~ generic_constraint ~ ("," ~ generic_constraint)*)? }
+generic_constraint = _{ ^"class" | ^"record" | ^"constructor" | type_ref }
 
 forward_directive = { ^"forward" ~ ";" }
 
@@ -340,13 +352,20 @@ param_default = { "=" ~ expression }
 // ── Type References ────────────────────────────────────────────────────────────
 
 type_ref = {
-    procedural_type
+    reference_type
+    | procedural_type
+    | class_ref_type
     | array_type_ref
     | set_type_ref
     | file_type_ref
     | pointer_type
+    | subrange_type
     | simple_type_ref
 }
+
+class_ref_type = { ^"class" ~ ^"of" ~ type_ref }
+
+reference_type = { ^"reference" ~ ^"to" ~ procedural_type }
 
 // Procedural types: `procedure(...)` or `function(...): Type`
 procedural_type = {
@@ -428,7 +447,7 @@ else_clause = { ^"else" ~ statement }
 // ── For ────────────────────────────────────────────────────────────────────────
 
 for_statement = {
-    ^"for" ~ for_binding ~ (^"to" | ^"downto") ~ expression ~ ^"do" ~ statement
+    ^"for" ~ for_binding ~ (^"to" | ^"downto") ~ expression ~ ^"do" ~ statement?
 }
 
 for_binding = {
@@ -437,12 +456,12 @@ for_binding = {
 }
 
 for_in_statement = {
-    ^"for" ~ identifier ~ ^"in" ~ expression ~ ^"do" ~ statement
+    ^"for" ~ identifier ~ ^"in" ~ expression ~ ^"do" ~ statement?
 }
 
 // ── While ──────────────────────────────────────────────────────────────────────
 
-while_statement = { ^"while" ~ expression ~ ^"do" ~ statement }
+while_statement = { ^"while" ~ expression ~ ^"do" ~ statement? }
 
 // ── Repeat ─────────────────────────────────────────────────────────────────────
 
@@ -508,7 +527,7 @@ continue_statement = { ^"continue" }
 
 // ── Inherited ──────────────────────────────────────────────────────────────────
 
-inherited_statement = { ^"inherited" ~ (identifier ~ arg_list?)? }
+inherited_statement = { ^"inherited" ~ ((identifier ~ arg_list?) | arg_list)? }
 
 // ── Assignment / Call ──────────────────────────────────────────────────────────
 
@@ -587,6 +606,7 @@ not_keyword = @{ ^"not" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 unary = {
     "-" ~ unary
+    | "+" ~ unary
     | not_keyword ~ unary
     | "@" ~ unary
     | postfix
@@ -630,6 +650,7 @@ primary = {
     | inherited_expression
     | type_cast_builtin
     | result_keyword
+    | builtin_type_keyword
     | identifier
     | tuple_array_literal
     | "(" ~ expression ~ ")"
@@ -638,7 +659,7 @@ primary = {
 tuple_array_literal = { "(" ~ expression ~ ("," ~ expression)+ ~ ")" }
 
 // Inherited expression: `inherited Method(args)` or bare `inherited`
-inherited_expression = { ^"inherited" ~ (identifier ~ arg_list?)? }
+inherited_expression = { ^"inherited" ~ ((identifier ~ arg_list?) | arg_list)? }
 
 // New expression: `New ClassName(args)`
 new_expression = { ^"new" ~ identifier ~ arg_list? }
@@ -647,10 +668,10 @@ new_expression = { ^"new" ~ identifier ~ arg_list? }
 type_cast_builtin = { builtin_type_keyword ~ "(" ~ expression ~ ")" }
 
 // Anonymous procedure: `procedure(params) begin ... end`
-lambda_procedure = { ^"procedure" ~ param_clause? ~ compound_statement }
+lambda_procedure = { ^"procedure" ~ param_clause? ~ decl_section ~ compound_statement }
 
 // Anonymous function: `function(params): Type begin ... end`
-lambda_function = { ^"function" ~ param_clause? ~ (":" ~ type_ref)? ~ compound_statement }
+lambda_function = { ^"function" ~ param_clause? ~ (":" ~ type_ref)? ~ decl_section ~ compound_statement }
 
 // Set literal: `[1, 2, 3]` or `[A..D]`
 set_literal = { "[" ~ (set_element ~ ("," ~ set_element)*)? ~ "]" }
