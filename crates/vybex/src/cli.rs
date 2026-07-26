@@ -1,6 +1,6 @@
 //! vybex — Universal compiler.
 //!
-//! Usage: vybex [flags] <file|project>
+//! Usage: vybex [flags] <file...|project>
 //!
 //! Flags:
 //!   --dump, -d        Disassemble bytecode and exit (no run)
@@ -14,8 +14,10 @@
 //!   --trace, -t       Enable bytecode trace output
 //!   --chunk <name>    Limit --dump/--trace output to a specific chunk
 //!
-//! Supports single source files (detected by extension), project files
-//! (.vybe, .vbproj, .csproj, .pyproj/.ipyproj), and .wasm binaries.
+//! Supports single source files (detected by extension), MULTIPLE source files
+//! linked together like a C compiler (`vybex main.c util.c` — the first file is
+//! the entry point and all must share one language), project files (.vybe,
+//! .vbproj, .csproj, .pyproj/.ipyproj), and .wasm binaries.
 //! Language is determined automatically.
 
 use std::path::{Path, PathBuf};
@@ -233,7 +235,9 @@ pub fn run() {
     let mut dap_port: Option<u16> = None;
     let mut watch = false;
     let mut chunk_filter = None;
-    let mut file_arg = None;
+    // Every non-flag positional is a source file. Several files link into one
+    // bundle (C-compiler style); the first is the entry file.
+    let mut file_args: Vec<String> = Vec::new();
 
     // --serve flags. When `serve` is true, positional args are treated as
     // [BIND] [ROOT] instead of a single script path.
@@ -302,7 +306,7 @@ pub fn run() {
                 return;
             }
             _ if serve && !arg.starts_with('-') => serve_positional.push(arg.clone()),
-            _ if file_arg.is_none() && !arg.starts_with('-') => file_arg = Some(arg.clone()),
+            _ if !arg.starts_with('-') => file_args.push(arg.clone()),
             _ => {
                 eprintln!("Unknown flag: {arg}");
                 std::process::exit(1);
@@ -331,7 +335,7 @@ pub fn run() {
     // ── --watch: Phase-1 hot reload. Re-run the program in a fresh subprocess
     //    on every source change. Diverges (Ctrl-C to stop). ──────────────────
     if watch {
-        let Some(entry) = file_arg.clone() else {
+        let Some(entry) = file_args.first().cloned() else {
             eprintln!("--watch requires a source file");
             std::process::exit(1);
         };
@@ -388,7 +392,7 @@ pub fn run() {
         );
     }
 
-    if eval_source.is_some() && file_arg.is_some() {
+    if eval_source.is_some() && !file_args.is_empty() {
         eprintln!("Use either a file path or --eval, not both");
         std::process::exit(1);
     }
@@ -400,16 +404,14 @@ pub fn run() {
         std::process::exit(1);
     }
 
-    let file_path = if eval_source.is_none() {
-        match file_arg {
-            Some(f) => Some(f),
-            None => {
-                print_usage();
-                std::process::exit(1);
-            }
+    let file_paths: Vec<PathBuf> = if eval_source.is_none() {
+        if file_args.is_empty() {
+            print_usage();
+            std::process::exit(1);
         }
+        file_args.iter().map(PathBuf::from).collect()
     } else {
-        None
+        Vec::new()
     };
 
     let source_path: PathBuf;
@@ -427,9 +429,11 @@ pub fn run() {
             .unwrap_or_else(|| PathBuf::from(format!("eval.{language_name}")));
         crate::dynamic::bundle_from_source(source.clone(), language, source_path.clone())
     } else {
-        let file_path = file_path.expect("file path already checked");
-        source_path = PathBuf::from(&file_path);
-        let path = Path::new(&file_path);
+        // The entry file (first positional) supplies the source path used for
+        // diagnostics and for `.wasm` dispatch; the rest link alongside it.
+        let entry = file_paths.first().expect("file path already checked").clone();
+        source_path = entry.clone();
+        let path = entry.as_path();
 
         // ── Handle .wasm binaries directly ──────────────────────────────────
         if path.extension().and_then(|e| e.to_str()) == Some("wasm") {
@@ -441,7 +445,7 @@ pub fn run() {
             return;
         }
 
-        match vybe_compiler::projects::load(path) {
+        match vybe_compiler::projects::load_many(&file_paths) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("{e}");
@@ -751,7 +755,7 @@ fn print_usage() {
     let ext_list: Vec<String> = exts.iter().map(|e| format!(".{e}")).collect();
     eprintln!("vybex — Universal compiler");
     eprintln!();
-    eprintln!("Usage: vybex [flags] <file>");
+    eprintln!("Usage: vybex [flags] <file...>   (several files link together)");
     eprintln!("       vybex --eval CODE --lang NAME [--virtual-path PATH]");
     eprintln!("       vybex --serve [--bind BIND] [BIND] [ROOT]");
     eprintln!();
