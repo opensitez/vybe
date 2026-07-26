@@ -241,35 +241,43 @@ pub fn emit_duration_negate(chunks: &mut [Chunk], current: usize, line: u32) {
     wrap_duration_ms(&mut chunks[current], line);
 }
 
+/// Lower `DateTime(year[, month[, day[, hour[, minute[, second]]]]])` onto
+/// `ecma:date.UTC`. Dart §`DateTime` gives every component after `year` a
+/// default — `month` and `day` are **1**, the time parts are 0 — so only the
+/// `argc` values actually on the stack may be popped; popping a fixed six (or
+/// even a fixed three) would consume operands that were never pushed and read
+/// whatever happened to be underneath (`DateTime(2000)` → undefined,
+/// `DateTime(2000, 1)` → year 2066).
 fn utc_from_stack(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = chunks[current].alloc_scratch(6);
-    let second = base;
-    let minute = base + 1;
-    let hour = base + 2;
-    let day = base + 3;
-    let month = base + 4;
-    let year = base + 5;
-    if argc >= 6 {
-        chunks[current].emit_op_u16(Op::LOCAL_SET, second, line);
-        chunks[current].emit_op_u16(Op::LOCAL_SET, minute, line);
-        chunks[current].emit_op_u16(Op::LOCAL_SET, hour, line);
+    // Slots in ARGUMENT order, so index i is the i-th constructor parameter.
+    let slots = [
+        base,     // year
+        base + 1, // month
+        base + 2, // day
+        base + 3, // hour
+        base + 4, // minute
+        base + 5, // second
+    ];
+    let supplied = (argc as usize).min(slots.len());
+    // The last argument is on top, so pop right-to-left.
+    for i in (0..supplied).rev() {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, slots[i], line);
     }
-    chunks[current].emit_op_u16(Op::LOCAL_SET, day, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, month, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, year, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, year, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, month, line);
+    // Fill in the omitted components with Dart's defaults.
+    for (i, slot) in slots.iter().enumerate().skip(supplied) {
+        // month/day are 1-based; hour/minute/second start at 0.
+        let default = if i <= 2 { 1.0 } else { 0.0 };
+        chunks[current].emit_f64_const(default, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, *slot, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+    // `ecma:date.UTC` takes a 0-based month; Dart's is 1-based.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
     chunks[current].emit_f64_const(1.0, line);
     chunks[current].emit_op(Op::F64_SUB, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, day, line);
-    if argc >= 6 {
-        chunks[current].emit_op_u16(Op::LOCAL_GET, hour, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, minute, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, second, line);
-    } else {
-        chunks[current].emit_f64_const(0.0, line);
-        chunks[current].emit_f64_const(0.0, line);
-        chunks[current].emit_f64_const(0.0, line);
+    for slot in &slots[2..] {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, *slot, line);
     }
     host::emit(&mut chunks[current], "ecma:date", "UTC", 6, line);
 }

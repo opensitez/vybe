@@ -387,10 +387,15 @@ kind = "namespace"
 alias = "JSON"
 module = "ecma:json"
 
+# `package:http` is a URL-based client (`http.get(url)`), a shape WASI 0.3 does
+# not provide — `wasi:http/client.send` takes a request *resource*, not a URL.
+# `node:http` exposes the URL-based `get`/`request`, so it backs this alias.
+# (Bare `wasi:http` is a WASI *package* name, not an importable interface, and
+# is registered by nobody.)
 [[esm_default]]
 kind = "namespace"
 alias = "http"
-module = "wasi:http"
+module = "node:http"
 
 [[esm_default]]
 kind = "namespace"

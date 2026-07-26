@@ -2580,6 +2580,76 @@ pub fn emit_dart_is_null(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
+/// Structural equality for two objects: same number of own keys, and every
+/// key of the left equal (by `==`) on the right. Stack: `[] → [bool]`.
+///
+/// Deliberately key-WISE rather than comparing `JSON.stringify` of each side:
+/// two objects built from the same constructor do not necessarily serialise
+/// their keys in the same order, so the stringify form reported identical
+/// values as unequal — and did so intermittently, since the order depends on
+/// the object rather than the program.
+fn emit_dart_fields_equal(
+    chunks: &mut [Chunk],
+    current: usize,
+    left_slot: u16,
+    right_slot: u16,
+    line: u32,
+) {
+    let left_keys = reserve_slot(&mut chunks[current]);
+    let right_keys = reserve_slot(&mut chunks[current]);
+    let idx_slot = reserve_slot(&mut chunks[current]);
+    let key_slot = reserve_slot(&mut chunks[current]);
+    let result_slot = reserve_slot(&mut chunks[current]);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    host::emit(&mut chunks[current], "ecma:object", "keys", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    host::emit(&mut chunks[current], "ecma:object", "keys", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_keys, line);
+
+    // Start out equal, then let any differing key falsify it.
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+
+    // A differing key count is already a mismatch.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_keys, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_keys, line);
+    collections::emit_len(chunks, current, line);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_end(line);
+
+    let state = loops::emit_for_in_start(chunks, current, left_keys, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
+    // `left[key] == right[key]`. Compared with the PRIMITIVE equality, not a
+    // nested `emit_dart_eq`: this emitter inlines its body, so calling the
+    // full comparison here would expand forever at compile time. A value
+    // type's fields are scalars (numbers, strings, bools, enum spellings),
+    // which is exactly what the primitive form handles.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
+    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_end(line);
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
 pub fn emit_dart_eq(chunks: &mut [Chunk], current: usize, line: u32) {
     let right_slot = reserve_slot(&mut chunks[current]);
     let left_slot = reserve_slot(&mut chunks[current]);
@@ -2632,13 +2702,7 @@ pub fn emit_dart_eq(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::I32_AND, line);
     chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
-    host::emit(&mut chunks[current], "ecma:json", "stringify", 1, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    host::emit(&mut chunks[current], "ecma:json", "stringify", 1, line);
-    let equals = chunks[current].add_import("wasm:js-string", "equals");
-    chunks[current].emit_call(equals, 2, line);
-    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+    emit_dart_fields_equal(chunks, current, left_slot, right_slot, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);

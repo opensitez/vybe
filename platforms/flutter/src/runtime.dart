@@ -124,6 +124,36 @@ bool _vfIsLiveProperty(String key) {
   return false;
 }
 
+// Flatten a Flutter value object into the scalar the backing control takes.
+// `padding: EdgeInsets.all(8)` is an object with four edges but the control
+// carries ONE inset, so the largest edge wins (`EdgeInsets.only(left: 16)`
+// should still read as an inset of 16). `color: Color(0xFF2196F3)` is an
+// object whose `.value` is the packed ARGB the control parses.
+dynamic _vfScalar(String key, dynamic value) {
+  if (value == null) {
+    return null;
+  }
+  // A Color (or any value type carrying a packed `.value`).
+  if (value.value != null && value.left == null) {
+    return value.value;
+  }
+  // An EdgeInsets-shaped object: take the largest edge.
+  if (value.left != null) {
+    var m = value.left;
+    if (value.top != null && value.top > m) {
+      m = value.top;
+    }
+    if (value.right != null && value.right > m) {
+      m = value.right;
+    }
+    if (value.bottom != null && value.bottom > m) {
+      m = value.bottom;
+    }
+    return m;
+  }
+  return value;
+}
+
 // The child a transparent wrapper stands in for — `child` for box wrappers,
 // `sliver` for the sliver ones.
 dynamic _vfWrappedChild(dynamic w) {
@@ -190,7 +220,10 @@ void _vfRealize(dynamic w, String path, dynamic parent) {
             vybe.gui.setProperty(path, "selectedindex", "$idx");
           }
         } else if (_vfIsLiveProperty(key)) {
-          vybe.gui.setProperty(path, key, value);
+          var scalar = _vfScalar(key, value);
+          if (scalar != null) {
+            vybe.gui.setProperty(path, key, scalar);
+          }
         }
       }
     } else if (kind == 1) {

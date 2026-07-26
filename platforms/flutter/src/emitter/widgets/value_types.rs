@@ -4,8 +4,17 @@
 
 use crate::emitter::catalog::{FlutterClass, FlutterField};
 
-// `Color(0xFF00FF00).value` — the ARGB int is the sole positional field.
-const COLOR_FIELDS: &[FlutterField] = &[FlutterField::positional("value", 0)];
+// `Color(0xFF00FF00)` — the packed ARGB int is the positional field; the four
+// channels are derived from it. Flutter exposes them as getters, but a Color is
+// immutable, so the walker's construction desugar computes them once (the same
+// treatment `Rect` gets for `width`/`height`).
+const COLOR_FIELDS: &[FlutterField] = &[
+    FlutterField::positional("value", 0),
+    FlutterField::named("alpha"),
+    FlutterField::named("red"),
+    FlutterField::named("green"),
+    FlutterField::named("blue"),
+];
 
 // EdgeInsets carries four resolved edge insets; its named constructors
 // (`all`/`symmetric`/`only`/`fromLTRB`) are desugared in the Dart walker to
@@ -19,6 +28,58 @@ const F_EDGEINSETS: &[FlutterField] = &[
 
 const F_OFFSET: &[FlutterField] =
     &[FlutterField::positional("dx", 0), FlutterField::positional("dy", 1)];
+
+// A `Rect` stores its four edges; `width`/`height`/`center` are derived in
+// Flutter, so the walker's named-constructor desugar computes them once at
+// construction (they can never drift — a Rect is immutable).
+const F_RECT: &[FlutterField] = &[
+    FlutterField::named("left"),
+    FlutterField::named("top"),
+    FlutterField::named("right"),
+    FlutterField::named("bottom"),
+    FlutterField::named("width"),
+    FlutterField::named("height"),
+];
+
+// `Radius.circular(r)` is an elliptical radius with equal axes.
+const F_RADIUS: &[FlutterField] =
+    &[FlutterField::named("x"), FlutterField::named("y")];
+
+const F_RRECT: &[FlutterField] = &[
+    FlutterField::named("left"),
+    FlutterField::named("top"),
+    FlutterField::named("right"),
+    FlutterField::named("bottom"),
+    FlutterField::named("width"),
+    FlutterField::named("height"),
+    FlutterField::named("tlRadius"),
+    FlutterField::named("trRadius"),
+    FlutterField::named("blRadius"),
+    FlutterField::named("brRadius"),
+    // Each corner's radius is also readable as its two scalar axes.
+    FlutterField::named("tlRadiusX"),
+    FlutterField::named("tlRadiusY"),
+    FlutterField::named("trRadiusX"),
+    FlutterField::named("trRadiusY"),
+    FlutterField::named("blRadiusX"),
+    FlutterField::named("blRadiusY"),
+    FlutterField::named("brRadiusX"),
+    FlutterField::named("brRadiusY"),
+];
+
+const F_BOXCONSTRAINTS: &[FlutterField] = &[
+    FlutterField::named_default("minWidth", "0"),
+    FlutterField::named_default("maxWidth", "double.infinity"),
+    FlutterField::named_default("minHeight", "0"),
+    FlutterField::named_default("maxHeight", "double.infinity"),
+];
+
+const F_RELATIVERECT: &[FlutterField] = &[
+    FlutterField::named("left"),
+    FlutterField::named("top"),
+    FlutterField::named("right"),
+    FlutterField::named("bottom"),
+];
 const F_SIZE: &[FlutterField] =
     &[FlutterField::positional("width", 0), FlutterField::positional("height", 1)];
 const F_ICONDATA: &[FlutterField] =
@@ -96,6 +157,11 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::data("EdgeInsets", None, F_EDGEINSETS),
     FlutterClass::data("EdgeInsetsDirectional", None, F_EDGEINSETS),
     FlutterClass::data("Offset", None, F_OFFSET),
+    FlutterClass::data("Rect", None, F_RECT),
+    FlutterClass::data("Radius", None, F_RADIUS),
+    FlutterClass::data("RRect", None, F_RRECT),
+    FlutterClass::data("RelativeRect", None, F_RELATIVERECT),
+    FlutterClass::data("BoxConstraints", None, F_BOXCONSTRAINTS),
     FlutterClass::data("Size", None, F_SIZE),
     FlutterClass::data("FractionalOffset", None, F_OFFSET),
     FlutterClass::data("IconData", None, F_ICONDATA),

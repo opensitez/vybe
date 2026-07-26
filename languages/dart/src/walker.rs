@@ -52,14 +52,25 @@ thread_local! {
     /// own declaration wins over the built-in allowlist (shadowing).
     static USER_DECLARED_TYPES: std::cell::RefCell<HashSet<String>> =
         std::cell::RefCell::new(HashSet::new());
+
+    /// The subset of [`USER_DECLARED_TYPES`] declared with `class` — i.e. the
+    /// names that `Name(args)` CONSTRUCTS. Dart has no `new` keyword, so
+    /// construction parses as an ordinary `Call`; this drives the rewrite to
+    /// the common AST's `ExprKind::New` (see [`dart_call_or_new`]). Kept
+    /// separate from the full type set because `enum`/`mixin`/`extension`
+    /// declarations are not constructible.
+    static USER_DECLARED_CLASSES: std::cell::RefCell<HashSet<String>> =
+        std::cell::RefCell::new(HashSet::new());
 }
 
 /// Cheap source pre-scan for declared type names, so [`dart_flutter_named_ctor`]
 /// can respect user shadowing. A declaration is a line starting with
 /// `class`/`enum`/`mixin`/`extension` (with the usual `abstract`/`sealed`/… )
 /// followed by the name.
-fn collect_user_declared_types(source: &str) -> HashSet<String> {
+/// Returns `(all declared types, the `class`-declared subset)`.
+fn collect_user_declared_types(source: &str) -> (HashSet<String>, HashSet<String>) {
     let mut set = HashSet::new();
+    let mut classes = HashSet::new();
     for line in source.lines() {
         let mut t = line.trim_start();
         for modifier in ["abstract ", "sealed ", "final ", "base ", "interface "] {
@@ -75,12 +86,50 @@ fn collect_user_declared_types(source: &str) -> HashSet<String> {
                     .take_while(|c| c.is_alphanumeric() || *c == '_')
                     .collect();
                 if !name.is_empty() {
+                    if kw == "class " {
+                        classes.insert(name.clone());
+                    }
                     set.insert(name);
                 }
             }
         }
     }
-    set
+    (set, classes)
+}
+
+/// True when `name` is a class the program declares — the names `Name(args)`
+/// constructs.
+fn is_user_declared_class(name: &str) -> bool {
+    USER_DECLARED_CLASSES.with(|s| s.borrow().contains(name))
+}
+
+/// Build a call expression, normalising `ClassName(args)` — a call whose callee
+/// names a class the program declares — to the common AST's `ExprKind::New`.
+///
+/// Dart has no `new` keyword, so construction parses as an ordinary `Call`.
+/// JS/PHP emit `New` from their `new` syntax and Python's walker performs this
+/// same rewrite (`call_or_new`), so every shared consumer that keys on `New` —
+/// `infer_expr_type_hint`, and through it receiver typing and user-method
+/// resolution — saw construction in every language except Dart. That is why a
+/// user method colliding with a profile value-method (`length`, `keys`, `last`,
+/// …) lost to the value-method table on a freshly-constructed receiver
+/// (`K().length()`) but won through a variable (`var k = K(); k.length()`).
+///
+/// Any other callee stays a plain `Call`.
+fn dart_call_or_new(callee: Expression, args: Vec<Argument>) -> ExprKind {
+    if let ExprKind::Ident(name) = &callee.kind {
+        if is_user_declared_class(name) {
+            return ExprKind::New {
+                class: Box::new(callee),
+                args,
+            };
+        }
+    }
+    ExprKind::Call {
+        callee: Box::new(callee),
+        args,
+        optional: false,
+    }
 }
 
 /// Desugar an allowlisted Flutter named constructor (`Type.name(args)`) into
@@ -94,6 +143,382 @@ fn is_flutter_catalog_class(name: &str) -> bool {
     vybe_platform_flutter::emitter::flutter_classes()
         .iter()
         .any(|c| c.name == name)
+}
+
+/// `Rect` geometry methods, lowered to arithmetic over the receiver's edges.
+///
+/// Only names that cannot belong to another Dart type are handled: `inflate`,
+/// `deflate`, `expandToInclude`, `intersect` and `overlaps` are `Rect`-only,
+/// whereas `contains`/`isEmpty`/`center` also exist on `List`/`String`/`Map`
+/// and would be mis-rewritten without a receiver type (which this pass does not
+/// have). The receiver must be a plain identifier, since it is referenced
+/// several times and must not be re-evaluated.
+fn dart_rect_method(receiver: &Expression, method: &str, args: &[Argument]) -> Option<ExprKind> {
+    if !matches!(receiver.kind, ExprKind::Ident(_)) {
+        return None;
+    }
+    // ONLY names that no other Dart type defines. `contains`/`isEmpty`/`center`
+    // are deliberately absent: they are equally `List`/`String`/`Map` members,
+    // and deciding by name alone would miscompile ordinary `list.contains(x)`.
+    // Handling them needs the receiver's DECLARED type, which belongs in the
+    // scope the compiler already maintains (`Scope`/`Local.type_hint`), not in
+    // a name table invented here.
+    if !matches!(
+        method,
+        "inflate" | "deflate" | "expandToInclude" | "intersect" | "overlaps"
+    ) {
+        return None;
+    }
+    let edge = |e: &Expression, f: &str| Expression::new(ExprKind::Member {
+        object: Box::new(e.clone()),
+        field: f.to_string(),
+        null_safe: false,
+    });
+    let bin = |op: BinOp, l: Expression, r: Expression| {
+        Expression::new(ExprKind::Binary {
+            op,
+            left: Box::new(l),
+            right: Box::new(r),
+        })
+    };
+    // `a < b ? a : b` / `a > b ? a : b`
+    let pick = |a: Expression, b: Expression, smaller: bool| {
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(bin(
+                if smaller { BinOp::Lt } else { BinOp::Gt },
+                a.clone(),
+                b.clone(),
+            )),
+            then: Box::new(a),
+            else_: Box::new(b),
+        })
+    };
+    let rect_from = |l: Expression, t: Expression, r: Expression, b: Expression| ExprKind::Call {
+        callee: Box::new(Expression::ident("Rect")),
+        args: rect_fields(l, t, r, b),
+        optional: false,
+    };
+    let (l, t, r, b) = (
+        edge(receiver, "left"),
+        edge(receiver, "top"),
+        edge(receiver, "right"),
+        edge(receiver, "bottom"),
+    );
+
+    match method {
+        // Grow (or shrink) every edge by the same delta.
+        "inflate" | "deflate" => {
+            let d = args.first()?.value.clone();
+            let (out, inn) = if method == "inflate" {
+                (BinOp::Sub, BinOp::Add)
+            } else {
+                (BinOp::Add, BinOp::Sub)
+            };
+            Some(rect_from(
+                bin(out, l, d.clone()),
+                bin(out, t, d.clone()),
+                bin(inn, r, d.clone()),
+                bin(inn, b, d),
+            ))
+        }
+        // The smallest rect covering both.
+        "expandToInclude" => {
+            let o = args.first()?.value.clone();
+            Some(rect_from(
+                pick(l, edge(&o, "left"), true),
+                pick(t, edge(&o, "top"), true),
+                pick(r, edge(&o, "right"), false),
+                pick(b, edge(&o, "bottom"), false),
+            ))
+        }
+        // The overlapping region (empty/inverted when they do not overlap).
+        "intersect" => {
+            let o = args.first()?.value.clone();
+            Some(rect_from(
+                pick(l, edge(&o, "left"), false),
+                pick(t, edge(&o, "top"), false),
+                pick(r, edge(&o, "right"), true),
+                pick(b, edge(&o, "bottom"), true),
+            ))
+        }
+        // True when the two rects share any area.
+        "overlaps" => {
+            let o = args.first()?.value.clone();
+            let and = |x: Expression, y: Expression| bin(BinOp::And, x, y);
+            Some(
+                and(
+                    and(
+                        bin(BinOp::Lt, l, edge(&o, "right")),
+                        bin(BinOp::Gt, r, edge(&o, "left")),
+                    ),
+                    and(
+                        bin(BinOp::Lt, t, edge(&o, "bottom")),
+                        bin(BinOp::Gt, b, edge(&o, "top")),
+                    ),
+                )
+                .kind,
+            )
+        }
+        // Half-open containment: the right/bottom edges are exclusive.
+        "contains" => {
+            let p = args.first()?.value.clone();
+            let (px, py) = (edge(&p, "dx"), edge(&p, "dy"));
+            let and = |x: Expression, y: Expression| bin(BinOp::And, x, y);
+            Some(
+                and(
+                    and(
+                        bin(BinOp::GtEq, px.clone(), l),
+                        bin(BinOp::Lt, px, r),
+                    ),
+                    and(
+                        bin(BinOp::GtEq, py.clone(), t),
+                        bin(BinOp::Lt, py, b),
+                    ),
+                )
+                .kind,
+            )
+        }
+        // Getters, so they arrive with no argument list.
+        "center" => Some(ExprKind::Call {
+            callee: Box::new(Expression::ident("Offset")),
+            args: vec![
+                Argument::positional(bin(
+                    BinOp::Div,
+                    bin(BinOp::Add, l, r),
+                    Expression::new(ExprKind::Lit(Literal::Float(2.0))),
+                )),
+                Argument::positional(bin(
+                    BinOp::Div,
+                    bin(BinOp::Add, t, b),
+                    Expression::new(ExprKind::Lit(Literal::Float(2.0))),
+                )),
+            ],
+            optional: false,
+        }),
+        "isEmpty" => Some(
+            bin(
+                BinOp::Or,
+                bin(BinOp::GtEq, l, r),
+                bin(BinOp::GtEq, t, b),
+            )
+            .kind,
+        ),
+        _ => None,
+    }
+}
+
+/// `Color(packed).alpha/red/green/blue` — the four channels sliced out of the
+/// packed ARGB word. Flutter computes them in getters; a `Color` is immutable,
+/// so they are derived once at construction.
+fn color_channel_args(packed: Expression) -> Vec<Argument> {
+    let named = |field: &str, value: Expression| Argument {
+        value,
+        name: Some(field.to_string()),
+        by_ref: false,
+        spread: false,
+    };
+    // `(packed ~/ place) % 256`. Deliberately arithmetic, NOT `>>`/`&`: a
+    // fully-opaque colour (`0xFF112233`) exceeds 2^31, so the bitwise operators
+    // would wrap it negative and every channel would come out wrong.
+    let channel = |place: i64| -> Expression {
+        let divided = if place == 1 {
+            packed.clone()
+        } else {
+            Expression::new(ExprKind::Binary {
+                op: BinOp::IDiv,
+                left: Box::new(packed.clone()),
+                right: Box::new(Expression::int(place)),
+            })
+        };
+        Expression::new(ExprKind::Binary {
+            op: BinOp::Mod,
+            left: Box::new(divided),
+            right: Box::new(Expression::int(256)),
+        })
+    };
+    vec![
+        Argument::positional(packed.clone()),
+        named("alpha", channel(0x1000000)),
+        named("red", channel(0x10000)),
+        named("green", channel(0x100)),
+        named("blue", channel(1)),
+    ]
+}
+
+/// Pack `a, r, g, b` (each 0-255) into the single ARGB word a `Color` stores.
+fn pack_argb(a: Expression, r: Expression, g: Expression, b: Expression) -> Expression {
+    // Multiply-and-add rather than shift-or: `alpha << 24` overflows a signed
+    // 32-bit word for any opaque colour, which would store a negative `value`.
+    let scale = |v: Expression, place: i64| {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::Mul,
+            left: Box::new(v),
+            right: Box::new(Expression::int(place)),
+        })
+    };
+    let add = |l: Expression, r: Expression| {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(l),
+            right: Box::new(r),
+        })
+    };
+    add(
+        add(scale(a, 0x1000000), scale(r, 0x10000)),
+        add(scale(g, 0x100), b),
+    )
+}
+
+/// `dart:typed_data` list → the ECMA typed array that backs it. Dart's typed
+/// lists ARE the ECMA typed arrays (`Uint8List(3)` is a 3-byte buffer exactly
+/// like `new Uint8Array(3)`), and the shared compiler already constructs the
+/// ECMA names, so the frontend just renames them.
+fn dart_typed_list_alias(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Uint8List" => "Uint8Array",
+        "Uint8ClampedList" => "Uint8ClampedArray",
+        "Int8List" => "Int8Array",
+        "Uint16List" => "Uint16Array",
+        "Int16List" => "Int16Array",
+        "Uint32List" => "Uint32Array",
+        "Int32List" => "Int32Array",
+        "Float32List" => "Float32Array",
+        "Float64List" => "Float64Array",
+        "BigInt64List" => "BigInt64Array",
+        "BigUint64List" => "BigUint64Array",
+        _ => return None,
+    })
+}
+
+/// `left op right` as an arithmetic expression — used to derive a `Rect`'s
+/// edges and extents from the form its constructor was written in.
+fn sub_or_add(left: Expression, right: Expression, op: BinOp) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+/// The six `Rect` fields for a set of edges: the four edges as given, plus the
+/// derived `width`/`height`. Flutter exposes those as getters; a `Rect` is
+/// immutable, so deriving them once at construction is equivalent.
+fn rect_fields(
+    left: Expression,
+    top: Expression,
+    right: Expression,
+    bottom: Expression,
+) -> Vec<Argument> {
+    let arg = |field: &str, value: Expression| Argument {
+        value,
+        name: Some(field.to_string()),
+        by_ref: false,
+        spread: false,
+    };
+    vec![
+        arg("left", left.clone()),
+        arg("top", top.clone()),
+        arg("right", right.clone()),
+        arg("bottom", bottom.clone()),
+        arg("width", sub_or_add(right, left, BinOp::Sub)),
+        arg("height", sub_or_add(bottom, top, BinOp::Sub)),
+    ]
+}
+
+/// Parse a catalog default-value source into an expression. Defaults are
+/// written as ordinary Dart source in the widget modules, but they are a small
+/// closed set (a number, a bool, an empty list, an enum constant), so they are
+/// read directly rather than run back through the parser.
+fn dart_default_expr(src: &str) -> Option<Expression> {
+    let src = src.trim();
+    Some(match src {
+        "true" => Expression::new(ExprKind::Lit(Literal::Bool(true))),
+        "false" => Expression::new(ExprKind::Lit(Literal::Bool(false))),
+        "null" => Expression::null(),
+        "const []" | "[]" => Expression::new(ExprKind::Array(Vec::new())),
+        _ => {
+            if let Ok(i) = src.parse::<i64>() {
+                Expression::new(ExprKind::Lit(Literal::Int(i)))
+            } else if let Ok(f) = src.parse::<f64>() {
+                Expression::new(ExprKind::Lit(Literal::Float(f)))
+            } else if let Some((enum_name, value)) = src.split_once('.') {
+                // An enum-constant default (`FlexFit.loose`) folds exactly as a
+                // written one does, so a default and a supplied value compare
+                // equal.
+                Expression::new(dart_flutter_enum_constant(enum_name, value)?)
+            } else {
+                return None;
+            }
+        }
+    })
+}
+
+/// Apply a Flutter widget's constructor defaults: append a named argument for
+/// every catalog field that declares a default and was not supplied. Flutter
+/// itself defaults these (`Flexible().flex == 1`,
+/// `Flexible().fit == FlexFit.loose`), and the shared construction path stores
+/// whatever it is handed — so the frontend fills them in, which is where Dart's
+/// own default-argument semantics belong.
+fn inject_flutter_defaults(class_name: &str, args: &mut Vec<Argument>) {
+    if USER_DECLARED_TYPES.with(|s| s.borrow().contains(class_name)) {
+        return;
+    }
+    let supplied_positionally = args.iter().filter(|a| a.name.is_none()).count();
+    for (field, default_src) in vybe_platform_flutter::emitter::field_defaults(class_name) {
+        // Already given by name?
+        if args.iter().any(|a| a.name.as_deref() == Some(field)) {
+            continue;
+        }
+        // Or filled by a positional slot? Positional params come first in the
+        // catalog's field order, so a field at index < positional-count is
+        // already covered.
+        let field_index = vybe_platform_flutter::emitter::flutter_classes()
+            .iter()
+            .find(|c| c.name == class_name)
+            .and_then(|c| c.fields.iter().position(|f| f.name == field));
+        if field_index.is_some_and(|i| i < supplied_positionally) {
+            continue;
+        }
+        if let Some(value) = dart_default_expr(default_src) {
+            args.push(Argument {
+                value,
+                name: Some(field.to_string()),
+                by_ref: false,
+                spread: false,
+            });
+        }
+    }
+}
+
+/// Fold a Flutter enum constant `Enum.value` to the string Dart's `toString()`
+/// produces for it (`"Clip.antiAlias"`). Enum constants are compile-time known,
+/// so the canonical spelling IS the value: `==` between two constants is string
+/// equality, a captured field prints as Dart prints it, and a catalog default
+/// (`Column().direction == Axis.vertical`) compares equal. Returns `None` for
+/// anything that is not a catalog enum, and for a user-declared shadow.
+fn dart_flutter_enum_constant(enum_name: &str, value: &str) -> Option<ExprKind> {
+    if USER_DECLARED_TYPES.with(|s| s.borrow().contains(enum_name)) {
+        return None;
+    }
+    vybe_platform_flutter::emitter::enum_value_index(enum_name, value)?;
+    Some(ExprKind::Lit(Literal::Str(format!("{enum_name}.{value}"))))
+}
+
+/// Fold `.name` / `.index` read off an already-folded enum constant. `expr` is
+/// the folded `"Enum.value"` literal, so both answers are compile-time known.
+fn dart_flutter_enum_member(expr: &Expression, field: &str) -> Option<ExprKind> {
+    if field != "name" && field != "index" {
+        return None;
+    }
+    let ExprKind::Lit(Literal::Str(s)) = &expr.kind else {
+        return None;
+    };
+    let (enum_name, value) = s.split_once('.')?;
+    let index = vybe_platform_flutter::emitter::enum_value_index(enum_name, value)?;
+    Some(match field {
+        "name" => ExprKind::Lit(Literal::Str(value.to_string())),
+        _ => ExprKind::Lit(Literal::Int(index as i64)),
+    })
 }
 
 fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Option<ExprKind> {
@@ -238,6 +663,270 @@ fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Op
             Some(construct("SizedBox", vec![named("width", w), named("height", h)]))
         }
 
+        // `Widget.canUpdate(old, new)` — a STATIC, not a constructor: two
+        // widgets are interchangeable when they have the same runtime type and
+        // the same key.
+        ("Widget", "canUpdate") => {
+            let (a, b) = (positional.first()?.clone(), positional.get(1)?.clone());
+            let field = |o: &Expression, f: &str| Expression::new(ExprKind::Member {
+                object: Box::new(o.clone()),
+                field: f.to_string(),
+                null_safe: false,
+            });
+            let eq = |l: Expression, r: Expression| {
+                Expression::new(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(l),
+                    right: Box::new(r),
+                })
+            };
+            Some(
+                Expression::new(ExprKind::Binary {
+                    op: BinOp::And,
+                    left: Box::new(eq(field(&a, "__type"), field(&b, "__type"))),
+                    right: Box::new(eq(field(&a, "key"), field(&b, "key"))),
+                })
+                .kind,
+            )
+        }
+
+        // `Text.rich(span)` builds a Text whose content is a TextSpan tree
+        // rather than a plain string.
+        ("Text", "rich") => {
+            let span = positional.first()?.clone();
+            let mut fields = vec![named("textSpan", span)];
+            fields.extend(args.iter().filter(|a| a.name.is_some()).cloned());
+            Some(construct("Text", fields))
+        }
+
+        // `Color.fromARGB(a, r, g, b)` / `Color.fromRGBO(r, g, b, opacity)`
+        // both pack into the same ARGB word the default constructor takes.
+        ("Color", "fromARGB") => {
+            let packed = pack_argb(
+                positional.first()?.clone(),
+                positional.get(1)?.clone(),
+                positional.get(2)?.clone(),
+                positional.get(3)?.clone(),
+            );
+            Some(construct("Color", color_channel_args(packed)))
+        }
+        ("Color", "fromRGBO") => {
+            // Opacity is 0.0-1.0; the stored alpha is 0-255, rounded.
+            let opacity = positional.get(3)?.clone();
+            let alpha = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::Binary {
+                        op: BinOp::Mul,
+                        left: Box::new(opacity),
+                        right: Box::new(Expression::new(ExprKind::Lit(Literal::Float(255.0)))),
+                    })),
+                    field: "round".to_string(),
+                    null_safe: false,
+                })),
+                args: Vec::new(),
+                optional: false,
+            });
+            let packed = pack_argb(
+                alpha,
+                positional.first()?.clone(),
+                positional.get(1)?.clone(),
+                positional.get(2)?.clone(),
+            );
+            Some(construct("Color", color_channel_args(packed)))
+        }
+
+        // ── dart:ui geometry ────────────────────────────────────────────
+        // A Rect stores four edges; `width`/`height` are derived once here so
+        // they read back without a computed getter.
+        ("Rect", "fromLTRB") => {
+            let (l, t, r, b) = (
+                positional.first()?.clone(),
+                positional.get(1)?.clone(),
+                positional.get(2)?.clone(),
+                positional.get(3)?.clone(),
+            );
+            Some(construct("Rect", rect_fields(l, t, r, b)))
+        }
+        ("Rect", "fromLTWH") => {
+            let (l, t) = (positional.first()?.clone(), positional.get(1)?.clone());
+            let (w, h) = (positional.get(2)?.clone(), positional.get(3)?.clone());
+            let right = sub_or_add(l.clone(), w, BinOp::Add);
+            let bottom = sub_or_add(t.clone(), h, BinOp::Add);
+            Some(construct("Rect", rect_fields(l, t, right, bottom)))
+        }
+        ("Rect", "fromPoints") => {
+            let (a, b) = (positional.first()?.clone(), positional.get(1)?.clone());
+            let m = |o: &Expression, f: &str| Expression::new(ExprKind::Member {
+                object: Box::new(o.clone()),
+                field: f.to_string(),
+                null_safe: false,
+            });
+            // The two corners may be given in any order, so the rect is
+            // normalised: left/top take the smaller coordinate.
+            let pick = |x: Expression, y: Expression, smaller: bool| {
+                Expression::new(ExprKind::Ternary {
+                    cond: Box::new(Expression::new(ExprKind::Binary {
+                        op: if smaller { BinOp::Lt } else { BinOp::Gt },
+                        left: Box::new(x.clone()),
+                        right: Box::new(y.clone()),
+                    })),
+                    then: Box::new(x),
+                    else_: Box::new(y),
+                })
+            };
+            Some(construct(
+                "Rect",
+                rect_fields(
+                    pick(m(&a, "dx"), m(&b, "dx"), true),
+                    pick(m(&a, "dy"), m(&b, "dy"), true),
+                    pick(m(&a, "dx"), m(&b, "dx"), false),
+                    pick(m(&a, "dy"), m(&b, "dy"), false),
+                ),
+            ))
+        }
+        ("Rect", "fromCircle") => {
+            let center = by_name("center")?;
+            let radius = by_name("radius")?;
+            let m = |f: &str| Expression::new(ExprKind::Member {
+                object: Box::new(center.clone()),
+                field: f.to_string(),
+                null_safe: false,
+            });
+            Some(construct(
+                "Rect",
+                rect_fields(
+                    sub_or_add(m("dx"), radius.clone(), BinOp::Sub),
+                    sub_or_add(m("dy"), radius.clone(), BinOp::Sub),
+                    sub_or_add(m("dx"), radius.clone(), BinOp::Add),
+                    sub_or_add(m("dy"), radius, BinOp::Add),
+                ),
+            ))
+        }
+        // `Radius.circular(r)` — equal axes; `.elliptical(x, y)` — explicit.
+        ("Radius", "circular") => {
+            let r = positional.first()?.clone();
+            Some(construct("Radius", vec![named("x", r.clone()), named("y", r)]))
+        }
+        ("Radius", "elliptical") => Some(construct(
+            "Radius",
+            vec![
+                named("x", positional.first()?.clone()),
+                named("y", positional.get(1)?.clone()),
+            ],
+        )),
+        // An RRect carries the rect's box plus a radius per corner.
+        ("RRect", "fromRectAndRadius") | ("RRect", "fromRectAndCorners") => {
+            let rect = positional.first().cloned().or_else(|| by_name("rect"))?;
+            let m = |f: &str| Expression::new(ExprKind::Member {
+                object: Box::new(rect.clone()),
+                field: f.to_string(),
+                null_safe: false,
+            });
+            let uniform = positional.get(1).cloned().or_else(|| by_name("radius"));
+            let corner = |name: &str| -> Expression {
+                by_name(name)
+                    .or_else(|| uniform.clone())
+                    .unwrap_or_else(|| Expression::null())
+            };
+            let mut fields = rect_fields(m("left"), m("top"), m("right"), m("bottom"));
+            // Flutter exposes each corner both as a `Radius` and as its two
+            // scalar axes (`tlRadiusX`/`tlRadiusY`), so store all three.
+            for (field, arg) in [
+                ("tl", "topLeft"),
+                ("tr", "topRight"),
+                ("bl", "bottomLeft"),
+                ("br", "bottomRight"),
+            ] {
+                let radius = corner(arg);
+                let axis = |a: &str| Expression::new(ExprKind::Member {
+                    object: Box::new(radius.clone()),
+                    field: a.to_string(),
+                    null_safe: false,
+                });
+                fields.push(named(&format!("{field}RadiusX"), axis("x")));
+                fields.push(named(&format!("{field}RadiusY"), axis("y")));
+                fields.push(named(&format!("{field}Radius"), radius));
+            }
+            Some(construct("RRect", fields))
+        }
+        ("RelativeRect", "fromLTRB") => Some(construct(
+            "RelativeRect",
+            vec![
+                named("left", positional.first()?.clone()),
+                named("top", positional.get(1)?.clone()),
+                named("right", positional.get(2)?.clone()),
+                named("bottom", positional.get(3)?.clone()),
+            ],
+        )),
+        // BoxConstraints factories: `tight` pins both axes to a Size, `loose`
+        // caps them, `expand` fills, `tightFor` pins only what is given.
+        ("BoxConstraints", "tight") => {
+            let size = positional.first().cloned().or_else(|| by_name("size"))?;
+            let m = |f: &str| Expression::new(ExprKind::Member {
+                object: Box::new(size.clone()),
+                field: f.to_string(),
+                null_safe: false,
+            });
+            Some(construct(
+                "BoxConstraints",
+                vec![
+                    named("minWidth", m("width")),
+                    named("maxWidth", m("width")),
+                    named("minHeight", m("height")),
+                    named("maxHeight", m("height")),
+                ],
+            ))
+        }
+        ("BoxConstraints", "loose") => {
+            let size = positional.first().cloned().or_else(|| by_name("size"))?;
+            let m = |f: &str| Expression::new(ExprKind::Member {
+                object: Box::new(size.clone()),
+                field: f.to_string(),
+                null_safe: false,
+            });
+            Some(construct(
+                "BoxConstraints",
+                vec![
+                    named("minWidth", zero()),
+                    named("maxWidth", m("width")),
+                    named("minHeight", zero()),
+                    named("maxHeight", m("height")),
+                ],
+            ))
+        }
+        ("BoxConstraints", "tightFor") | ("BoxConstraints", "expand") => {
+            let infinity = || Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident("double")),
+                field: "infinity".to_string(),
+                null_safe: false,
+            });
+            // `tightFor` leaves an unspecified axis unconstrained; `expand`
+            // fills it.
+            let unspecified = |e: Option<Expression>, fallback: Expression| e.unwrap_or(fallback);
+            let w = by_name("width");
+            let h = by_name("height");
+            let (w_min, w_max) = match &w {
+                Some(v) => (v.clone(), v.clone()),
+                None if ctor == "expand" => (infinity(), infinity()),
+                None => (zero(), infinity()),
+            };
+            let (h_min, h_max) = match &h {
+                Some(v) => (v.clone(), v.clone()),
+                None if ctor == "expand" => (infinity(), infinity()),
+                None => (zero(), infinity()),
+            };
+            let _ = unspecified;
+            Some(construct(
+                "BoxConstraints",
+                vec![
+                    named("minWidth", w_min),
+                    named("maxWidth", w_max),
+                    named("minHeight", h_min),
+                    named("maxHeight", h_max),
+                ],
+            ))
+        }
+
         // Positioned.fill — stretch to fill the Stack: zero edges (any of
         // left/top/right/bottom may be overridden as a margin), plus child.
         ("Positioned", "fill") => {
@@ -294,12 +983,18 @@ fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Op
         // General fallback: any other named constructor on a known Flutter
         // catalog class is an alternate entry point that captures the same
         // fields — forward the args to the base type's construction.
+        // Any other named constructor on a catalog class is an alternate entry
+        // point capturing the same fields — forward to the base construction.
+        //
+        // ABSTRACT bases are excluded: they have no constructor, so a call like
+        // `Widget.canUpdate(a, b)` is a STATIC, and constructing a `Widget`
+        // from it silently returned an object where a bool was expected.
         _ => {
-            if is_flutter_catalog_class(type_name) {
-                Some(construct(type_name, args.to_vec()))
-            } else {
-                None
-            }
+            let class = vybe_platform_flutter::emitter::flutter_classes()
+                .iter()
+                .find(|c| c.name == type_name)?;
+            let constructible = class.widget_host_fn.is_some() || !class.fields.is_empty();
+            constructible.then(|| construct(type_name, args.to_vec()))
         }
     }
 }
@@ -312,7 +1007,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let source = normalize_dart_expression_source(source);
     // Record the program's own declared types up front so Flutter named-ctor
     // desugaring respects user shadowing.
-    USER_DECLARED_TYPES.with(|s| *s.borrow_mut() = collect_user_declared_types(&source));
+    let (declared_types, declared_classes) = collect_user_declared_types(&source);
+    USER_DECLARED_TYPES.with(|s| *s.borrow_mut() = declared_types);
+    USER_DECLARED_CLASSES.with(|s| *s.borrow_mut() = declared_classes);
     // Flutter render runtime: the `platforms/flutter` adapter owns its Dart
     // runtime (`runApp` + the widget-tree realizer). Append it ONLY when a
     // program actually renders — imports a Flutter library AND references
@@ -3272,6 +3969,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
     rewrite_instance_member_idents(&mut members, &[]);
 
+    let interfaces = with_catalog_ancestry(&parents, interfaces);
     Ok(StmtKind::ClassDecl {
         name,
         parents,
@@ -3280,6 +3978,39 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         modifiers,
         decorators: vec![],
     })
+}
+
+/// Carry a catalog base class's ancestry onto a user class that extends it.
+///
+/// `class MyWidget extends StatelessWidget` must satisfy `is Widget` too, but
+/// the catalog's abstract chain (`StatelessWidget → Widget`) lives in the
+/// namespace tree, not in the compiler's class table — so the user class would
+/// only ever know its immediate parent. Adding the base's remaining ancestry as
+/// interfaces gives the object the same `__types` membership it would have had
+/// if the whole chain were declared, which is what `is` tests.
+fn with_catalog_ancestry(parents: &[String], mut interfaces: Vec<String>) -> Vec<String> {
+    for parent in parents {
+        if USER_DECLARED_TYPES.with(|s| s.borrow().contains(parent)) {
+            continue;
+        }
+        let Some(class) = vybe_platform_flutter::emitter::flutter_classes()
+            .iter()
+            .find(|c| c.name == *parent)
+        else {
+            continue;
+        };
+        // `ancestry` is self-first; the parent itself is already the declared
+        // superclass, so only its ancestors are added.
+        for ancestor in vybe_platform_flutter::emitter::catalog::ancestry(class)
+            .into_iter()
+            .skip(1)
+        {
+            if !interfaces.iter().any(|i| i == ancestor) {
+                interfaces.push(ancestor.to_string());
+            }
+        }
+    }
+    interfaces
 }
 
 /// Rewrite bare `field` to `ClassName.field` for matching static fields.
@@ -6167,17 +6898,20 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         // ── Literals ────────────────────────────────────────────────────
         Rule::numeric_literal => {
             let s = pair.as_str().replace('_', "");
-            if s.contains('.') || s.contains('e') || s.contains('E') {
+            // Radix prefixes MUST be tested before the float test: a hex digit
+            // can legitimately be `e`/`E` (`0xe000`, `0xFE`), and the exponent
+            // check would otherwise claim those as malformed floats.
+            if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+                Ok(ExprKind::Lit(Literal::Int(
+                    i64::from_str_radix(hex, 16).map_err(|e| format!("{}", e))?,
+                )))
+            } else if let Some(bin) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
+                Ok(ExprKind::Lit(Literal::Int(
+                    i64::from_str_radix(bin, 2).map_err(|e| format!("{}", e))?,
+                )))
+            } else if s.contains('.') || s.contains('e') || s.contains('E') {
                 Ok(ExprKind::Lit(Literal::Float(
                     s.parse().map_err(|e| format!("{}", e))?,
-                )))
-            } else if s.starts_with("0x") || s.starts_with("0X") {
-                Ok(ExprKind::Lit(Literal::Int(
-                    i64::from_str_radix(&s[2..], 16).map_err(|e| format!("{}", e))?,
-                )))
-            } else if s.starts_with("0b") || s.starts_with("0B") {
-                Ok(ExprKind::Lit(Literal::Int(
-                    i64::from_str_radix(&s[2..], 2).map_err(|e| format!("{}", e))?,
                 )))
             } else {
                 Ok(ExprKind::Lit(Literal::Int(s.parse().unwrap_or(0))))
@@ -6608,6 +7342,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     optional: false,
                 });
             }
+            inject_flutter_defaults(&class_name, &mut args);
             Ok(ExprKind::New {
                 class: Box::new(Expression::ident(&class_name)),
                 args,
@@ -6645,6 +7380,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     optional: false,
                 });
             }
+            inject_flutter_defaults(&class_name, &mut args);
             Ok(ExprKind::New {
                 class: Box::new(Expression::ident(&class_name)),
                 args,
@@ -8358,8 +9094,69 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 // (`EdgeInsets.all(8)`, no `const`/`new`): the receiver is a
                 // plain type identifier and `name` is an allowlisted named
                 // ctor → desugar to the primary construction.
-                if let (ExprKind::Ident(type_name), Some(cargs)) = (&expr.kind, &call_args) {
+                // `Rect` geometry methods. Pure functions of the receiver's
+                // edges, so they lower to arithmetic over its fields rather
+                // than needing real methods on the value type.
+                if let Some(kind) =
+                    dart_rect_method(&expr, &name, call_args.as_deref().unwrap_or(&[]))
+                {
+                    expr = Expression::new(kind);
+                    continue;
+                }
+                // Dart's number-formatting methods are the ECMA ones under a
+                // different spelling — rename so they reach `ecma:number`.
+                if let Some(ecma_name) = match name.as_str() {
+                    "toStringAsFixed" => Some("toFixed"),
+                    "toStringAsPrecision" => Some("toPrecision"),
+                    "toStringAsExponential" => Some("toExponential"),
+                    _ => None,
+                } {
+                    name = ecma_name.to_string();
+                }
+                // A zero-arg call yields NO `argument_list` pair, so `call_args`
+                // is None even though `()` was written — `SizedBox.expand()`
+                // must still reach the named-constructor desugar.
+                let ctor_args: Option<Vec<Argument>> = match (&call_args, has_call) {
+                    (Some(a), _) => Some(a.clone()),
+                    (None, true) => Some(Vec::new()),
+                    (None, false) => None,
+                };
+                if let (ExprKind::Ident(type_name), Some(cargs)) = (&expr.kind, &ctor_args) {
                     if let Some(kind) = dart_flutter_named_ctor(type_name, &name, cargs) {
+                        expr = Expression::new(kind);
+                        continue;
+                    }
+                    // `Uint8List.fromList([…])` → `Uint8Array.from([…])`: the
+                    // typed list IS the ECMA typed array, and `from` is its
+                    // build-from-iterable constructor.
+                    if name == "fromList" {
+                        if let Some(ecma) = dart_typed_list_alias(type_name) {
+                            expr = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::new(ExprKind::Member {
+                                    object: Box::new(Expression::ident(ecma)),
+                                    field: "from".to_string(),
+                                    null_safe: false,
+                                })),
+                                args: cargs.clone(),
+                                optional: false,
+                            });
+                            continue;
+                        }
+                    }
+                }
+                // Flutter enum constant (`Clip.antiAlias`): fold to its
+                // canonical `"Enum.value"` spelling — Dart's own `toString()`
+                // — so `==`, printing and defaults all line up.
+                if call_args.is_none() && !has_call {
+                    if let ExprKind::Ident(enum_name) = &expr.kind {
+                        if let Some(kind) = dart_flutter_enum_constant(enum_name, &name) {
+                            expr = Expression::new(kind);
+                            continue;
+                        }
+                    }
+                    // `.name` / `.index` on an already-folded enum constant are
+                    // compile-time known too.
+                    if let Some(kind) = dart_flutter_enum_member(&expr, &name) {
                         expr = Expression::new(kind);
                         continue;
                     }
@@ -8767,11 +9564,27 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     continue;
                 }
                 normalize_dart_call_args(&expr, &mut args);
-                expr = Expression::new(ExprKind::Call {
-                    callee: Box::new(expr),
-                    args,
-                    optional: false,
-                });
+                // A bare `Flexible(child: …)` is a constructor call in Dart —
+                // apply the widget's declared defaults for omitted params.
+                if let ExprKind::Ident(class_name) = &expr.kind {
+                    let class_name = class_name.clone();
+                    // `dart:typed_data` lists construct as ECMA typed arrays.
+                    if let Some(ecma) = dart_typed_list_alias(&class_name) {
+                        if !USER_DECLARED_TYPES.with(|s| s.borrow().contains(&class_name)) {
+                            expr = Expression::ident(ecma);
+                        }
+                    }
+                    // `Color(packed)` also derives its four channels.
+                    if class_name == "Color"
+                        && args.len() == 1
+                        && args[0].name.is_none()
+                        && !USER_DECLARED_TYPES.with(|s| s.borrow().contains(&class_name))
+                    {
+                        args = color_channel_args(args[0].value.clone());
+                    }
+                    inject_flutter_defaults(&class_name, &mut args);
+                }
+                expr = Expression::new(dart_call_or_new(expr, args));
             }
             Rule::index_access => {
                 let ia = chain_inner.into_iter().next().unwrap();

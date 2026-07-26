@@ -206,6 +206,9 @@ const NOT_DOUBLE: &[(&str, &str)] = &[
     ("SafeArea", "top"),
     ("SafeArea", "right"),
     ("SafeArea", "bottom"),
+    // `ResizeImage` resizes to a pixel COUNT — Flutter types these `int?`.
+    ("ResizeImage", "width"),
+    ("ResizeImage", "height"),
 ];
 
 /// Value-typed fields whose type is another value type — needed so a CHAINED
@@ -228,6 +231,40 @@ const VALUE_FIELD_TYPES: &[(&str, &str, &str)] = &[
     ("Slider", "value", "double"),
     ("Slider", "min", "double"),
     ("Slider", "max", "double"),
+    // `FittedSizes` holds two `Size`es, so `fs.source.width` resolves through
+    // to a double.
+    ("FittedSizes", "source", "Size"),
+    ("FittedSizes", "destination", "Size"),
+    ("ImageConfiguration", "size", "Size"),
+    // `size` is polymorphic across the catalog — a `Size` on CustomPaint /
+    // ImageConfiguration, but a font-size double on the icon widgets.
+    ("Icon", "size", "double"),
+    ("IconThemeData", "size", "double"),
+    // `style` chains into a TextStyle, whose fontSize is a double.
+    ("Text", "style", "TextStyle"),
+    ("DefaultTextStyle", "style", "TextStyle"),
+    ("RichText", "style", "TextStyle"),
+    ("TextSpan", "style", "TextStyle"),
+    ("Rect", "left", "double"),
+    ("Rect", "top", "double"),
+    ("Rect", "right", "double"),
+    ("Rect", "bottom", "double"),
+    ("Rect", "width", "double"),
+    ("Rect", "height", "double"),
+    ("RRect", "left", "double"),
+    ("RRect", "top", "double"),
+    ("RRect", "right", "double"),
+    ("RRect", "bottom", "double"),
+    ("RRect", "width", "double"),
+    ("RRect", "height", "double"),
+    ("RRect", "tlRadiusX", "double"),
+    ("RRect", "tlRadiusY", "double"),
+    ("RRect", "trRadiusX", "double"),
+    ("RRect", "trRadiusY", "double"),
+    ("RRect", "blRadiusX", "double"),
+    ("RRect", "blRadiusY", "double"),
+    ("RRect", "brRadiusX", "double"),
+    ("RRect", "brRadiusY", "double"),
 ];
 
 /// Static `(OwnerType, field) → fieldType` seed for the Dart frontend's type
@@ -248,6 +285,24 @@ pub fn field_type_seed() -> Vec<(&'static str, &'static str, &'static str)> {
     }
     out.extend_from_slice(VALUE_FIELD_TYPES);
     out
+}
+
+/// Constructor defaults for `class_name`: `(field, default source)` for every
+/// field the catalog declares a default on. Flutter applies these when the
+/// argument is omitted (`Flexible().flex == 1`, `Flexible().fit ==
+/// FlexFit.loose`), so the Dart frontend injects the missing named arguments at
+/// the construction site.
+pub fn field_defaults(class_name: &str) -> Vec<(&'static str, &'static str)> {
+    flutter_classes()
+        .iter()
+        .find(|c| c.name == class_name)
+        .map(|c| {
+            c.fields
+                .iter()
+                .filter_map(|f| f.default.map(|d| (f.name, d)))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Widget type names that realize as TRANSPARENT wrappers — the realizer
@@ -280,6 +335,19 @@ pub const LIVE_PROPERTIES: &[&str] = &[
     "selectedindex",
     "clearitems",
     "additem",
+    // Box/visual properties — backed by the container and label controls
+    // (`SetWidth`/`SetHeight`/`SetPadding`/`SetSpacing`/`SetBackColor`/
+    // `SetForeColor`/`SetFontSize`).
+    "width",
+    "height",
+    "padding",
+    "spacing",
+    "fontsize",
+    "color",
+    "backcolor",
+    "backgroundcolor",
+    "forecolor",
+    "textcolor",
 ];
 
 /// The `is`/`instanceof` ancestry for `class`, self first: e.g. `Scaffold` →

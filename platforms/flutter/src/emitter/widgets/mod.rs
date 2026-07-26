@@ -12,6 +12,7 @@ pub mod abstracts;
 pub mod animation;
 pub mod builders;
 pub mod cupertino;
+pub mod enums;
 pub mod focus;
 pub mod gestures;
 pub mod images;

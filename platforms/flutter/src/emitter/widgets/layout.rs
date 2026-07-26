@@ -3,19 +3,30 @@
 
 use crate::emitter::catalog::{FlutterClass, FlutterField};
 
-// Flex-family fields (Column/Row/Flex share these). `children` defaults to an
-// empty list; enum-valued fields default to null until the enum surface lands.
-const FLEX_FIELDS: &[FlutterField] = &[
-    FlutterField::children_list("children"),
-    FlutterField::named("mainAxisAlignment"),
-    FlutterField::named("mainAxisSize"),
-    FlutterField::named("crossAxisAlignment"),
-    FlutterField::named("textDirection"),
-    FlutterField::named("verticalDirection"),
-    FlutterField::named("textBaseline"),
-    FlutterField::named("clipBehavior"),
-    FlutterField::named("direction"),
-];
+// Flex-family fields. Column/Row/Flex share everything except the main axis,
+// so the shared spec is generated per direction default. These are Flutter's
+// own constructor defaults, which widget code compares against
+// (`Column().crossAxisAlignment == CrossAxisAlignment.center`).
+macro_rules! flex_fields {
+    ($direction_default:expr) => {
+        &[
+            FlutterField::children_list("children"),
+            FlutterField::named_default("mainAxisAlignment", "MainAxisAlignment.start"),
+            FlutterField::named_default("mainAxisSize", "MainAxisSize.max"),
+            FlutterField::named_default("crossAxisAlignment", "CrossAxisAlignment.center"),
+            FlutterField::named("textDirection"),
+            FlutterField::named_default("verticalDirection", "VerticalDirection.down"),
+            FlutterField::named("textBaseline"),
+            FlutterField::named_default("clipBehavior", "Clip.none"),
+            FlutterField::named_default("direction", $direction_default),
+        ]
+    };
+}
+
+// A bare `Flex` has no implied axis — it is the explicit-direction base.
+const FLEX_FIELDS: &[FlutterField] = flex_fields!("Axis.horizontal");
+const COLUMN_FIELDS: &[FlutterField] = flex_fields!("Axis.vertical");
+const ROW_FIELDS: &[FlutterField] = flex_fields!("Axis.horizontal");
 
 const TEXT_FIELDS: &[FlutterField] = &[
     FlutterField::positional("data", 0),
@@ -40,14 +51,14 @@ const CONTAINER_FIELDS: &[FlutterField] = &[
     FlutterField::named("margin"),
     FlutterField::named("padding"),
     FlutterField::named("transform"),
-    FlutterField::named("clipBehavior"),
+    FlutterField::named_default("clipBehavior", "Clip.none"),
 ];
 
 const STACK_FIELDS: &[FlutterField] = &[
     FlutterField::children_list("children"),
     FlutterField::named("alignment"),
-    FlutterField::named("fit"),
-    FlutterField::named("clipBehavior"),
+    FlutterField::named_default("fit", "StackFit.loose"),
+    FlutterField::named_default("clipBehavior", "Clip.hardEdge"),
     FlutterField::named("textDirection"),
 ];
 
@@ -81,13 +92,18 @@ const ICON_FIELDS: &[FlutterField] = &[
     FlutterField::named("textDirection"),
 ];
 
-const EXPANDED_FIELDS: &[FlutterField] =
-    &[FlutterField::named("child"), FlutterField::named_default("flex", "1")];
+// `Expanded` is a `Flexible` that forces the child to fill its share, so its
+// fit is always tight; a plain `Flexible` lets the child be smaller.
+const EXPANDED_FIELDS: &[FlutterField] = &[
+    FlutterField::named("child"),
+    FlutterField::named_default("flex", "1"),
+    FlutterField::named_default("fit", "FlexFit.tight"),
+];
 
 const FLEXIBLE_FIELDS: &[FlutterField] = &[
     FlutterField::named("child"),
     FlutterField::named_default("flex", "1"),
-    FlutterField::named("fit"),
+    FlutterField::named_default("fit", "FlexFit.loose"),
 ];
 
 const POSITIONED_FIELDS: &[FlutterField] = &[
@@ -132,9 +148,9 @@ const F_WRAP: &[FlutterField] = &[
 ];
 
 const F_FITTEDBOX: &[FlutterField] = &[
-    FlutterField::named("fit"),
+    FlutterField::named_default("fit", "BoxFit.contain"),
     FlutterField::named("alignment"),
-    FlutterField::named("clipBehavior"),
+    FlutterField::named_default("clipBehavior", "Clip.none"),
     FlutterField::named("child"),
 ];
 
@@ -201,8 +217,8 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::widget("Placeholder", "StatelessWidget", "Panel", &[]),
     FlutterClass::widget("Container", "StatelessWidget", "FlowLayoutPanel", CONTAINER_FIELDS),
     FlutterClass::widget("Flex", "MultiChildRenderObjectWidget", "FlowLayoutPanel", FLEX_FIELDS),
-    FlutterClass::widget("Column", "Flex", "FlowLayoutPanel", FLEX_FIELDS),
-    FlutterClass::widget("Row", "Flex", "HFlowLayoutPanel", FLEX_FIELDS),
+    FlutterClass::widget("Column", "Flex", "FlowLayoutPanel", COLUMN_FIELDS),
+    FlutterClass::widget("Row", "Flex", "HFlowLayoutPanel", ROW_FIELDS),
     FlutterClass::widget("Stack", "MultiChildRenderObjectWidget", "FlowLayoutPanel", STACK_FIELDS),
     FlutterClass::widget("Align", "SingleChildRenderObjectWidget", "FlowLayoutPanel", ALIGN_FIELDS),
     FlutterClass::widget("Center", "Align", "FlowLayoutPanel", CENTER_FIELDS),
