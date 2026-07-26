@@ -646,12 +646,12 @@ module = "wasi:random/random"
 [[esm_default]]
 kind = "namespace"
 alias = "http"
-module = "wasi:http"
+module = "node:http"
 
 [[esm_default]]
 kind = "namespace"
 alias = "https"
-module = "wasi:http"
+module = "node:https"
 
 [[esm_default]]
 kind = "namespace"
