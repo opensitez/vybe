@@ -139,9 +139,10 @@ End Module
 vb_expr_spec!(
     utility_spec_convert_from_base64,
     r#"
+Imports System.Text
 Module Program
     Sub Main()
-        Console.WriteLine(Convert.FromBase64String("aGVsbG8="))
+        Console.WriteLine(Encoding.UTF8.GetString(Convert.FromBase64String("aGVsbG8=")))
     End Sub
 End Module
 "#,

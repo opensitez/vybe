@@ -96,10 +96,10 @@ Imports System
 
 Module M
     Sub Main()
-        Dim obj As Object = New Byte(0 To 9) {}
+        Dim obj As Object = New Byte(9) {}
         Dim gen As Integer = GC.GetGeneration(obj)
         Console.WriteLine(gen >= 0)
-    End Module
+    End Sub
 End Module
 "#,
     );
@@ -117,7 +117,7 @@ Module M
     Sub Main()
         Dim value As Integer = GC.GetGeneration(Nothing)
         Console.WriteLine(value = -1)
-    End Module
+    End Sub
 End Module
 "#,
     );

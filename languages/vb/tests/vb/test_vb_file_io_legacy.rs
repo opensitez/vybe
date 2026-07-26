@@ -32,7 +32,7 @@ fn fileio_printline() {
 fn fileio_lineinput() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_print.txt", OpenMode.Input): Dim s = LineInput(f): FileClose(f): Console.WriteLine(s): End Sub: End Module"#
+            r#"Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_lineinput.txt", OpenMode.Output): PrintLine(f, "Hello"): FileClose(f): FileOpen(f, "test_lineinput.txt", OpenMode.Input): Dim s = LineInput(f): FileClose(f): Console.WriteLine(s): End Sub: End Module"#
         ),
         vec!["Hello"]
     );
@@ -50,7 +50,7 @@ fn fileio_writeline() {
 fn fileio_input() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_write.txt", OpenMode.Input): Dim a As String = "": Dim b As String = "": Input(f, a): Input(f, b): FileClose(f): Console.WriteLine(a & b): End Sub: End Module"#
+            r#"Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_input.txt", OpenMode.Output): WriteLine(f, "A", "B"): FileClose(f): FileOpen(f, "test_input.txt", OpenMode.Input): Dim a As String = "": Dim b As String = "": Input(f, a): Input(f, b): FileClose(f): Console.WriteLine(a & b): End Sub: End Module"#
         ),
         vec!["AB"]
     );
@@ -68,7 +68,7 @@ fn fileio_eof() {
 fn fileio_lof() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_write.txt", OpenMode.Input): Dim l = LOF(f): FileClose(f): Console.WriteLine(l > 0): End Sub: End Module"#
+            r#"Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_lof.txt", OpenMode.Output): PrintLine(f, "Hello"): FileClose(f): FileOpen(f, "test_lof.txt", OpenMode.Input): Dim l = LOF(f): FileClose(f): Console.WriteLine(l > 0): End Sub: End Module"#
         ),
         vec!["True"]
     );
@@ -88,7 +88,7 @@ fn fileio_loc() {
 fn fileio_filecopy() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): FileCopy("test_print.txt", "test_copy.txt"): Console.WriteLine(System.IO.File.Exists("test_copy.txt")): End Sub: End Module"#
+            r#"Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_copy_src.txt", OpenMode.Output): PrintLine(f, "Hello"): FileClose(f): FileCopy("test_copy_src.txt", "test_copy.txt"): Console.WriteLine(System.IO.File.Exists("test_copy.txt")): End Sub: End Module"#
         ),
         vec!["True"]
     );
@@ -106,7 +106,7 @@ fn fileio_kill() {
 fn fileio_name() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): FileCopy("test_print.txt", "test_rename.txt"): Rename("test_rename.txt", "test_renamed.txt"): Console.WriteLine(System.IO.File.Exists("test_renamed.txt")): Kill("test_renamed.txt"): End Sub: End Module"#
+            r#"Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_rename_src.txt", OpenMode.Output): PrintLine(f, "Hello"): FileClose(f): FileCopy("test_rename_src.txt", "test_rename.txt"): Rename("test_rename.txt", "test_renamed.txt"): Console.WriteLine(System.IO.File.Exists("test_renamed.txt")): Kill("test_renamed.txt"): End Sub: End Module"#
         ),
         vec!["True"]
     );
@@ -115,7 +115,7 @@ fn fileio_name() {
 fn fileio_filelen() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine(FileLen("test_print.txt") > 0): End Sub: End Module"#
+            r#"Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_filelen.txt", OpenMode.Output): PrintLine(f, "Hello"): FileClose(f): Console.WriteLine(FileLen("test_filelen.txt") > 0): End Sub: End Module"#
         ),
         vec!["True"]
     );
@@ -124,7 +124,7 @@ fn fileio_filelen() {
 fn fileio_filedatetime() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine(FileDateTime("test_print.txt").Year > 2000): End Sub: End Module"#
+            r#"Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_filedatetime.txt", OpenMode.Output): PrintLine(f, "Hello"): FileClose(f): Console.WriteLine(FileDateTime("test_filedatetime.txt").Year > 2000): End Sub: End Module"#
         ),
         vec!["True"]
     );
@@ -133,7 +133,7 @@ fn fileio_filedatetime() {
 fn fileio_getattr() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine(CInt(GetAttr("test_print.txt")) >= 0): End Sub: End Module"#
+            r#"Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_getattr.txt", OpenMode.Output): PrintLine(f, "Hello"): FileClose(f): Console.WriteLine(CInt(GetAttr("test_getattr.txt")) >= 0): End Sub: End Module"#
         ),
         vec!["True"]
     );
@@ -142,7 +142,7 @@ fn fileio_getattr() {
 fn fileio_setattr() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): SetAttr("test_print.txt", FileAttribute.Normal): Console.WriteLine("OK"): End Sub: End Module"#
+            r#"Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_setattr.txt", OpenMode.Output): PrintLine(f, "Hello"): FileClose(f): SetAttr("test_setattr.txt", FileAttribute.Normal): Console.WriteLine("OK"): End Sub: End Module"#
         ),
         vec!["OK"]
     );
@@ -169,7 +169,7 @@ fn fileio_curdir() {
 fn fileio_dir() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine(Dir("test_print.txt").Length > 0): End Sub: End Module"#
+            r#"Module M: Sub Main(): Dim f = FreeFile(): FileOpen(f, "test_dir.txt", OpenMode.Output): PrintLine(f, "Hello"): FileClose(f): Console.WriteLine(Dir("test_dir.txt").Length > 0): End Sub: End Module"#
         ),
         vec!["True"]
     );
@@ -209,7 +209,7 @@ fn io_path_getfilename() {
 fn interact_msgbox() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): ' MsgBox("Test") : Console.WriteLine("Parsed"): End Sub: End Module"#
+            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
         ),
         vec!["Parsed"]
     );
@@ -218,7 +218,7 @@ fn interact_msgbox() {
 fn interact_inputbox() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): ' InputBox("Test") : Console.WriteLine("Parsed"): End Sub: End Module"#
+            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
         ),
         vec!["Parsed"]
     );
@@ -227,7 +227,7 @@ fn interact_inputbox() {
 fn interact_beep() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): ' Beep() : Console.WriteLine("Parsed"): End Sub: End Module"#
+            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
         ),
         vec!["Parsed"]
     );
@@ -236,7 +236,7 @@ fn interact_beep() {
 fn interact_shell() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): ' Shell("calc.exe") : Console.WriteLine("Parsed"): End Sub: End Module"#
+            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
         ),
         vec!["Parsed"]
     );
@@ -308,7 +308,7 @@ fn info_vartype() {
 fn registry_getsetting() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): ' SaveSetting("MyApp", "Sec", "Key", "Val") : Console.WriteLine("Parsed"): End Sub: End Module"#
+            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
         ),
         vec!["Parsed"]
     );
@@ -330,7 +330,7 @@ fn erase_array() {
 fn stop_statement() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): ' Stop : Console.WriteLine("Parsed"): End Sub: End Module"#
+            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
         ),
         vec!["Parsed"]
     );
@@ -338,7 +338,7 @@ fn stop_statement() {
 #[test]
 fn end_statement() {
     assert_eq!(
-        run_vb(r#"Module M: Sub Main(): ' End : Console.WriteLine("Parsed"): End Sub: End Module"#),
+        run_vb(r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#),
         vec!["Parsed"]
     );
 }
@@ -348,7 +348,7 @@ fn end_statement() {
 fn my_application() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): ' Console.WriteLine(My.Application.Info.Title) : Console.WriteLine("Parsed"): End Sub: End Module"#
+            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
         ),
         vec!["Parsed"]
     );
@@ -357,7 +357,7 @@ fn my_application() {
 fn my_computer() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): ' Console.WriteLine(My.Computer.Name) : Console.WriteLine("Parsed"): End Sub: End Module"#
+            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
         ),
         vec!["Parsed"]
     );
@@ -366,7 +366,7 @@ fn my_computer() {
 fn my_user() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): ' Console.WriteLine(My.User.Name) : Console.WriteLine("Parsed"): End Sub: End Module"#
+            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
         ),
         vec!["Parsed"]
     );
@@ -375,7 +375,7 @@ fn my_user() {
 fn my_settings() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): ' Console.WriteLine(My.Settings.Test) : Console.WriteLine("Parsed"): End Sub: End Module"#
+            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
         ),
         vec!["Parsed"]
     );
@@ -384,7 +384,7 @@ fn my_settings() {
 fn my_resources() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): ' Console.WriteLine(My.Resources.Test) : Console.WriteLine("Parsed"): End Sub: End Module"#
+            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
         ),
         vec!["Parsed"]
     );
@@ -406,7 +406,7 @@ fn global_namespace_access() {
 fn default_instance_form() {
     assert_eq!(
         run_vb(
-            r#"Module M: Sub Main(): ' Form1.Show() : Console.WriteLine("Parsed"): End Sub: End Module"#
+            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
         ),
         vec!["Parsed"]
     );

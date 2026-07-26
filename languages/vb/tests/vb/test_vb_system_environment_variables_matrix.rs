@@ -30,7 +30,7 @@ Imports System
 
 Module M
     Sub Main()
-        Dim expanded As String = Environment.ExpandEnvironmentVariables("prefix_%PATH%");
+        Dim expanded As String = Environment.ExpandEnvironmentVariables("prefix_%PATH%")
         Console.WriteLine(expanded.Contains("prefix_"))
         Dim args() As String = Environment.GetCommandLineArgs()
         Console.WriteLine(args.Length >= 1)

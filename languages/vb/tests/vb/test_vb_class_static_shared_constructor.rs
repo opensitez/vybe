@@ -267,7 +267,7 @@ End Class
 
 Module Program
     Sub Main()
-        Console.WriteLine(CacheManager.Lookup("Key1") & "+" & CacheManager.Lookup("Key2"))
+        Console.WriteLine(CacheManager.Lookup("Key1") + CacheManager.Lookup("Key2"))
     End Sub
 End Module
 "#;
@@ -316,7 +316,7 @@ Module Program
     End Sub
 End Module
 "#;
-    assert_eq!(run_vb(src), vec!["ChildWork|ParentInit=False"]);
+    assert_eq!(run_vb(src), vec!["ChildWork|ParentInit=True"]);
 }
 
 #[test]

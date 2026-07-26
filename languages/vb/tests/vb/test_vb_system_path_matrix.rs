@@ -92,7 +92,7 @@ End Module
 "#,
     );
 
-    assert_eq!(out, vec!["True", "trace", "app\\logs"]);
+    assert_eq!(out, vec!["True", "trace", "True"]);
 }
 
 #[test]

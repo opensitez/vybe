@@ -186,7 +186,7 @@ Module M
         Catch ex As UriFormatException
             Console.WriteLine(ex.GetType().Name)
         End Try
-    End Module
+    End Sub
 End Module
 "#,
     );
