@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_typed_file_integer_write_read() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Integer; val: Integer;
 begin
@@ -21,13 +22,15 @@ begin
   Read(f, val); WriteLn(val);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "200"]);
 }
 
 #[test]
 fn test_typed_file_record_write_read() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCustomer = packed record
   ID: Integer;
@@ -46,13 +49,15 @@ begin
   Read(f, c2); WriteLn(c2.ID.ToString + ':' + c2.Score.ToString);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1:95", "2:88"]);
 }
 
 #[test]
 fn test_typed_file_filesize_and_filepos() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Integer; val: Integer;
 begin
@@ -70,13 +75,15 @@ begin
   WriteLn(FilePos(f));
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "0", "1"]);
 }
 
 #[test]
 fn test_typed_file_seek_random_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Integer; val: Integer;
 begin
@@ -93,13 +100,15 @@ begin
   WriteLn(val);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20"]);
 }
 
 #[test]
 fn test_typed_file_append_using_seek_filesize() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Integer; val: Integer;
 begin
@@ -117,13 +126,15 @@ begin
   WriteLn(FileSize(f));
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_typed_file_in_place_update() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Integer; val: Integer;
 begin
@@ -147,13 +158,15 @@ begin
   WriteLn(val);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["250"]);
 }
 
 #[test]
 fn test_typed_file_truncate_at_position() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Integer; val: Integer;
 begin
@@ -173,13 +186,15 @@ begin
   WriteLn(FileSize(f));
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_typed_file_byte_stream() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Byte; b: Byte;
 begin
@@ -194,13 +209,15 @@ begin
   Read(f, b); WriteLn(HexStr(b, 2));
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AB", "CD"]);
 }
 
 #[test]
 fn test_typed_file_word_stream() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Word; w: Word;
 begin
@@ -213,13 +230,15 @@ begin
   Read(f, w); WriteLn(w);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["65000"]);
 }
 
 #[test]
 fn test_typed_file_double_stream() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Real; r: Real;
 begin
@@ -232,13 +251,15 @@ begin
   Read(f, r); WriteLn(r);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["12.34"]);
 }
 
 #[test]
 fn test_typed_file_eof_iteration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Integer; val, sum: Integer;
 begin
@@ -259,13 +280,15 @@ begin
   WriteLn(sum);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["45"]);
 }
 
 #[test]
 fn test_typed_file_enum_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStatus = (stInit, stRunning, stDone);
 var f: file of TStatus; s: TStatus;
@@ -279,13 +302,15 @@ begin
   Read(f, s); WriteLn(Ord(s));
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_typed_file_protection_finally() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Integer; val: Integer;
 begin
@@ -298,13 +323,15 @@ begin
     WriteLn('ClosedTypedFileInFinally');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ClosedTypedFileInFinally"]);
 }
 
 #[test]
 fn test_typed_file_seek_last_element() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Integer; val: Integer;
 begin
@@ -320,13 +347,15 @@ begin
   WriteLn(val);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["99"]);
 }
 
 #[test]
 fn test_typed_file_procedure_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure WriteInt(var f: file of Integer; v: Integer);
 begin
@@ -344,13 +373,15 @@ begin
   WriteLn(val);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["888"]);
 }
 
 #[test]
 fn test_typed_file_boolean_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Boolean; b: Boolean;
 begin
@@ -365,13 +396,15 @@ begin
   Read(f, b); WriteLn(b);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_typed_file_empty_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Integer;
 begin
@@ -384,13 +417,15 @@ begin
   WriteLn(Eof(f));
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_typed_file_erase() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Integer; val: Integer;
 begin
@@ -401,13 +436,15 @@ begin
   Erase(f);
   WriteLn('ErasedTypedFile');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ErasedTypedFile"]);
 }
 
 #[test]
 fn test_typed_file_rename() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file of Integer; val: Integer;
 begin
@@ -418,13 +455,15 @@ begin
   Rename(f, 'test_renamed.bin');
   WriteLn('RenamedTypedFile');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RenamedTypedFile"]);
 }
 
 #[test]
 fn test_typed_file_array_struct_payload() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TArrayPayload = packed record
   Data: array[0..2] of Integer;
@@ -442,6 +481,7 @@ begin
   WriteLn(p2.Data[0] + p2.Data[1] + p2.Data[2]);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["6"]);
 }

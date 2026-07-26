@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_untyped_file_blockwrite_blockread_byte_level() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file;
     writeBuf, readBuf: array[0..3] of Byte;
@@ -26,13 +27,15 @@ begin
   WriteLn(readBuf[0]);
   WriteLn(readBuf[3]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4", "4", "10", "40"]);
 }
 
 #[test]
 fn test_untyped_file_custom_block_size() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBlock = array[0..15] of Byte;
 var f: file;
@@ -51,13 +54,15 @@ begin
   WriteLn(readBlocks);
   WriteLn(blk[0]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "65"]);
 }
 
 #[test]
 fn test_untyped_file_chunk_copy_loop() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var srcFile, dstFile: file;
     buf: array[0..63] of Byte;
@@ -82,13 +87,15 @@ begin
   CloseFile(srcFile); CloseFile(dstFile);
   WriteLn('ChunkCopyComplete');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ChunkCopyComplete"]);
 }
 
 #[test]
 fn test_untyped_file_filesize_and_filepos_bytes() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file;
     buf: array[0..9] of Byte;
@@ -106,13 +113,15 @@ begin
   WriteLn(FilePos(f));
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "0", "5"]);
 }
 
 #[test]
 fn test_untyped_file_seek_block() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file;
     buf: array[0..3] of Byte;
@@ -130,13 +139,15 @@ begin
   WriteLn(val);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn test_untyped_file_record_struct_blockwrite() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type THeader = packed record
   Magic: Word;
@@ -158,13 +169,15 @@ begin
   WriteLn(h2.Version);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["19802", "2"]);
 }
 
 #[test]
 fn test_untyped_file_truncate_at_offset() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file;
     buf: array[0..9] of Byte;
@@ -184,13 +197,15 @@ begin
   WriteLn(FileSize(f));
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn test_untyped_file_ioresult_checking() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file; err: Integer;
 begin
@@ -201,13 +216,15 @@ begin
   {$I+}
   WriteLn(err <> 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_untyped_file_protection_finally() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file; b: Byte; written: Integer;
 begin
@@ -221,13 +238,15 @@ begin
     WriteLn('UntypedFileClosedInFinally');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["UntypedFileClosedInFinally"]);
 }
 
 #[test]
 fn test_untyped_file_default_record_size_128() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file;
 begin
@@ -236,13 +255,15 @@ begin
   WriteLn('DefaultRecSize128Initialized');
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DefaultRecSize128Initialized"]);
 }
 
 #[test]
 fn test_untyped_file_string_bytes_blockwrite() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file;
     text: String;
@@ -261,13 +282,15 @@ begin
   WriteLn(readText);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RawStringBytes"]);
 }
 
 #[test]
 fn test_untyped_file_eof_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file; b: Byte; written, readCount: Integer;
 begin
@@ -282,13 +305,15 @@ begin
   WriteLn(Eof(f));
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_untyped_file_procedure_buffer_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure WriteRawData(var f: file; const buffer; size: Integer);
 var written: Integer;
@@ -308,13 +333,15 @@ begin
   WriteLn(readVal);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["999"]);
 }
 
 #[test]
 fn test_untyped_file_erase() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file; b: Byte; written: Integer;
 begin
@@ -326,13 +353,15 @@ begin
   Erase(f);
   WriteLn('ErasedUntypedFile');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ErasedUntypedFile"]);
 }
 
 #[test]
 fn test_untyped_file_rename() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file; b: Byte; written: Integer;
 begin
@@ -344,13 +373,15 @@ begin
   Rename(f, 'test_renamed_raw.bin');
   WriteLn('RenamedUntypedFile');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RenamedUntypedFile"]);
 }
 
 #[test]
 fn test_untyped_file_append_via_seek() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file; b: Byte; written, readCount: Integer;
 begin
@@ -368,13 +399,15 @@ begin
   WriteLn(FileSize(f));
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_untyped_file_read_partial_last_block() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file;
     buf: array[0..2] of Byte;
@@ -391,13 +424,15 @@ begin
   WriteLn(readCount);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_untyped_file_float_blockwrite() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file; r, readR: Real; written, readBytes: Integer;
 begin
@@ -412,13 +447,15 @@ begin
   WriteLn(readR);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["98.76"]);
 }
 
 #[test]
 fn test_untyped_file_multidimensional_array_blockwrite() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file;
     mat1, mat2: array[0..1, 0..1] of Integer;
@@ -435,13 +472,15 @@ begin
   WriteLn(mat2[1,1]);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn test_untyped_file_empty_file_seek() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: file;
 begin
@@ -454,6 +493,7 @@ begin
   WriteLn(FilePos(f));
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }

@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_singly_linked_list_prepend_and_traverse() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record
@@ -40,13 +41,15 @@ begin
     temp := head; head := head^.Next; Dispose(temp);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30", "20", "10"]);
 }
 
 #[test]
 fn test_singly_linked_list_append() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Val: Integer; Next: PNode; end;
@@ -71,13 +74,15 @@ begin
   while curr <> nil do begin WriteLn(curr^.Val); curr := curr^.Next; end;
   while head <> nil do begin temp := head; head := head^.Next; Dispose(temp); end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "200"]);
 }
 
 #[test]
 fn test_doubly_linked_list_forward_and_backward() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record
@@ -97,13 +102,15 @@ begin
 
   Dispose(n1); Dispose(n2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2", "1"]);
 }
 
 #[test]
 fn test_linked_list_delete_node() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Val: Integer; Next: PNode; end;
@@ -132,13 +139,15 @@ begin
   WriteLn(head^.Val);
   Dispose(head);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20"]);
 }
 
 #[test]
 fn test_singly_linked_list_inplace_reverse() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Val: Integer; Next: PNode; end;
@@ -167,13 +176,15 @@ begin
   while curr <> nil do begin WriteLn(curr^.Val); curr := curr^.Next; end;
   while head <> nil do begin temp := head; head := head^.Next; Dispose(temp); end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "2", "1"]);
 }
 
 #[test]
 fn test_linked_list_count_nodes() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Val: Integer; Next: PNode; end;
@@ -189,13 +200,15 @@ begin
   WriteLn(CountNodes(n1));
   Dispose(n1); Dispose(n2); Dispose(n3);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn test_linked_list_sum_values() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Val: Integer; Next: PNode; end;
@@ -208,13 +221,15 @@ begin
   WriteLn(sum);
   Dispose(n1); Dispose(n2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn test_circular_linked_list_traversal() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Val: Integer; Next: PNode; end;
@@ -231,13 +246,15 @@ begin
   until count = 4;
   Dispose(n1); Dispose(n2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "200", "100", "200"]);
 }
 
 #[test]
 fn test_linked_list_with_string_payload() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PStrNode = ^TStrNode;
      TStrNode = record Text: String; Next: PStrNode; end;
@@ -249,13 +266,15 @@ begin
   WriteLn(n1^.Text + ' -> ' + n2^.Text);
   Dispose(n1); Dispose(n2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Head -> Tail"]);
 }
 
 #[test]
 fn test_linked_list_find_node_by_value() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Val: Integer; Next: PNode; end;
@@ -276,13 +295,15 @@ begin
   WriteLn(FindNode(n1, 99));
   Dispose(n1); Dispose(n2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_linked_list_queue_adapter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Val: Integer; Next: PNode; end;
@@ -312,13 +333,15 @@ begin
   WriteLn(Pop(q));
   WriteLn(Pop(q));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20"]);
 }
 
 #[test]
 fn test_linked_list_stack_adapter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Val: Integer; Next: PNode; end;
@@ -345,13 +368,15 @@ begin
   WriteLn(Pop(s));
   WriteLn(Pop(s));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["200", "100"]);
 }
 
 #[test]
 fn test_linked_list_insert_after() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Val: Integer; Next: PNode; end;
@@ -368,13 +393,15 @@ begin
   WriteLn(n1^.Next^.Next^.Val);
   Dispose(n1); Dispose(nNew); Dispose(n2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "3"]);
 }
 
 #[test]
 fn test_linked_list_record_payload() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPoint = record X, Y: Integer; end;
 type PRecNode = ^TRecNode;
@@ -387,13 +414,15 @@ begin
   WriteLn(n^.Data.X + n^.Data.Y);
   Dispose(n);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["36"]);
 }
 
 #[test]
 fn test_floyd_cycle_detection_no_cycle() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Next: PNode; end;
@@ -414,13 +443,15 @@ begin
   WriteLn(HasCycle(n1));
   Dispose(n1); Dispose(n2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False"]);
 }
 
 #[test]
 fn test_floyd_cycle_detection_with_cycle() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Next: PNode; end;
@@ -441,13 +472,15 @@ begin
   WriteLn(HasCycle(n1));
   Dispose(n1); Dispose(n2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_linked_list_deep_copy() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Val: Integer; Next: PNode; end;
@@ -473,13 +506,15 @@ begin
   WriteLn(copyList^.Val);
   Dispose(orig); Dispose(copyList);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_linked_list_middle_element_find() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Val: Integer; Next: PNode; end;
@@ -503,13 +538,15 @@ begin
   WriteLn(GetMiddle(n1));
   Dispose(n1); Dispose(n2); Dispose(n3);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20"]);
 }
 
 #[test]
 fn test_linked_list_merge_two_sorted_lists() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Val: Integer; Next: PNode; end;
@@ -537,13 +574,15 @@ begin
   WriteLn(merged^.Next^.Val);
   Dispose(a); Dispose(b);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20"]);
 }
 
 #[test]
 fn test_doubly_linked_list_remove_head() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Val: Integer; Prev, Next: PNode; end;
@@ -559,6 +598,7 @@ begin
   WriteLn(n2^.Val);
   Dispose(n2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15"]);
 }

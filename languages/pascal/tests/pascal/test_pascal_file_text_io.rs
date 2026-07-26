@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_textfile_assign_rewrite_writeln_close() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile;
 begin
@@ -17,13 +18,15 @@ begin
   CloseFile(f);
   WriteLn('Written');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Written"]);
 }
 
 #[test]
 fn test_textfile_reset_readln_eof() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile; line: String;
 begin
@@ -36,13 +39,15 @@ begin
   end;
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Line 1", "Line 2"]);
 }
 
 #[test]
 fn test_textfile_append_mode() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile; line: String;
 begin
@@ -59,13 +64,15 @@ begin
   end;
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Line 1", "Line 2", "Line 3"]);
 }
 
 #[test]
 fn test_textfile_write_without_newline() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile; line: String;
 begin
@@ -81,13 +88,15 @@ begin
   WriteLn(line);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello World"]);
 }
 
 #[test]
 fn test_textfile_formatted_number_writing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile; val: Integer; r: Real;
 begin
@@ -103,13 +112,15 @@ begin
   WriteLn(val);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_textfile_read_formatted_values() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile; a, b: Integer;
 begin
@@ -123,13 +134,15 @@ begin
   WriteLn(a + b);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_textfile_eoln_detection() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile; ch: Char; count: Integer;
 begin
@@ -148,13 +161,15 @@ begin
   WriteLn(count);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn test_textfile_ioresult_checking() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile; err: Integer;
 begin
@@ -165,13 +180,15 @@ begin
   {$I+}
   WriteLn(err <> 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_textfile_protection_finally() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile;
 begin
@@ -184,13 +201,15 @@ begin
     WriteLn('ClosedInFinally');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ClosedInFinally"]);
 }
 
 #[test]
 fn test_textfile_empty_lines_reading() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile; l1, l2: String;
 begin
@@ -207,13 +226,15 @@ begin
   WriteLn(l2);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "SecondLine"]);
 }
 
 #[test]
 fn test_textfile_width_padded_write() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile; line: String;
 begin
@@ -227,13 +248,15 @@ begin
   WriteLn('[' + line + ']');
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["[   99]"]);
 }
 
 #[test]
 fn test_textfile_multiple_lines_loop_write() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile; i: Integer;
 begin
@@ -253,13 +276,15 @@ begin
   end;
   WriteLn(i);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_textfile_reading_multiple_strings() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile; s1, s2: String;
 begin
@@ -274,13 +299,15 @@ begin
   WriteLn(s1 + ' & ' + s2);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Alpha & Beta"]);
 }
 
 #[test]
 fn test_textfile_flush_buffer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile;
 begin
@@ -291,13 +318,15 @@ begin
   CloseFile(f);
   WriteLn('FlushedSuccessfully');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FlushedSuccessfully"]);
 }
 
 #[test]
 fn test_textfile_boolean_write() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile; line: String;
 begin
@@ -311,13 +340,15 @@ begin
   WriteLn(line);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]
 fn test_textfile_char_by_char_reading() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile; ch: Char;
 begin
@@ -331,13 +362,15 @@ begin
   Read(f, ch); WriteLn(ch);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["X", "Y"]);
 }
 
 #[test]
 fn test_textfile_erase_file() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile;
 begin
@@ -348,13 +381,15 @@ begin
   Erase(f);
   WriteLn('Erased');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Erased"]);
 }
 
 #[test]
 fn test_textfile_rename_file() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile;
 begin
@@ -365,13 +400,15 @@ begin
   Rename(f, 'test_renamed.txt');
   WriteLn('Renamed');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Renamed"]);
 }
 
 #[test]
 fn test_textfile_procedure_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure WriteHeader(var f: TextFile);
 begin
@@ -389,13 +426,15 @@ begin
   WriteLn(line);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["=== HEADER ==="]);
 }
 
 #[test]
 fn test_textfile_overwrite_existing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var f: TextFile; line: String;
 begin
@@ -408,6 +447,7 @@ begin
   WriteLn(line);
   CloseFile(f);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["New"]);
 }

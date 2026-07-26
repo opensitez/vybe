@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_vararray_create_1d_integer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant;
@@ -16,13 +17,15 @@ begin
   WriteLn(v[0] + v[1] + v[2]);
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_vararray_of_inline_creation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant;
@@ -33,13 +36,15 @@ begin
   WriteLn(v[2]);
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Alpha", "Beta", "Gamma"]);
 }
 
 #[test]
 fn test_vararray_low_high_bound_dimcount() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant;
@@ -50,13 +55,15 @@ begin
   WriteLn(VarArrayHighBound(v, 1));
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "1", "5"]);
 }
 
 #[test]
 fn test_vararray_2d_create_and_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant;
@@ -68,13 +75,15 @@ begin
   WriteLn(v[1, 0].ToString + ',' + v[1, 1].ToString);
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1,2", "3,4"]);
 }
 
 #[test]
 fn test_vararray_2d_dimcount_bounds() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant;
@@ -85,13 +94,15 @@ begin
   WriteLn(VarArrayHighBound(v, 2));
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "2", "4"]);
 }
 
 #[test]
 fn test_vararray_redim_resize() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant;
@@ -105,13 +116,15 @@ begin
   WriteLn(VarArrayHighBound(v, 1));
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "300", "3"]);
 }
 
 #[test]
 fn test_vararray_lock_unlock_pointer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant; p: PInteger;
@@ -127,13 +140,15 @@ begin
   end;
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["77", "88"]);
 }
 
 #[test]
 fn test_vararray_heterogeneous_varvariant_elements() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant;
@@ -147,13 +162,15 @@ begin
   WriteLn(v[2]);
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "TextValue", "3.14"]);
 }
 
 #[test]
 fn test_vararray_varisarray_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v1, v2: Variant;
@@ -164,13 +181,15 @@ begin
   WriteLn(VarIsArray(v2));
   VarClear(v1);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_vararray_copy_assignment() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v1, v2: Variant;
@@ -181,13 +200,15 @@ begin
   WriteLn(v2[1]);
   VarClear(v1); VarClear(v2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20"]);
 }
 
 #[test]
 fn test_vararray_3d_cube_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant;
@@ -197,13 +218,15 @@ begin
   WriteLn(v[1, 1, 1]);
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["999"]);
 }
 
 #[test]
 fn test_vararray_element_mutation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant;
@@ -213,13 +236,15 @@ begin
   WriteLn(v[0]);
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20"]);
 }
 
 #[test]
 fn test_vararray_loop_iteration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant; i, sum: Integer;
@@ -231,13 +256,15 @@ begin
   WriteLn(sum);
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10"]);
 }
 
 #[test]
 fn test_vararray_boolean_elements() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant;
@@ -248,13 +275,15 @@ begin
   WriteLn(v[1]);
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_vararray_float_elements_sum() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant;
@@ -263,13 +292,15 @@ begin
   WriteLn(Double(v[0]) + Double(v[1]));
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn test_vararray_out_of_bounds_exception() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants, SysUtils;
 var v: Variant; dummy: Variant;
@@ -282,13 +313,15 @@ begin
   end;
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ArrayBoundsErrorCaught"]);
 }
 
 #[test]
 fn test_vararray_string_search() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 function FindInVarArray(const arr: Variant; const target: String): Boolean;
@@ -306,13 +339,15 @@ begin
   WriteLn(FindInVarArray(v, 'Durian'));
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_vararray_empty_array_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant;
@@ -321,13 +356,15 @@ begin
   WriteLn(VarArrayLowBound(v, 1) > VarArrayHighBound(v, 1));
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_vararray_byte_array_lock() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant; pb: PByte;
@@ -343,13 +380,15 @@ begin
   end;
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AA", "BB"]);
 }
 
 #[test]
 fn test_vararray_reassignment_clears_previous() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 var v: Variant;
@@ -360,6 +399,7 @@ begin
   WriteLn(v[1]);
   VarClear(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "30"]);
 }

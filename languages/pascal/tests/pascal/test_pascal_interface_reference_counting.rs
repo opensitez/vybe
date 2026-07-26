@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_interface_single_implementation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ILogger = interface
   ['{11111111-1111-1111-1111-111111111111}']
@@ -24,13 +25,15 @@ begin
   logger := TConsoleLogger.Create;
   logger.Log('Interface System Init');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["LOG: Interface System Init"]);
 }
 
 #[test]
 fn test_interface_auto_reference_counting_cleanup() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ITracker = interface
   ['{22222222-2222-2222-2222-222222222222}']
@@ -51,13 +54,15 @@ end;
 begin
   RunScope;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Pinged", "AutoDestroyed"]);
 }
 
 #[test]
 fn test_multiple_interfaces_on_single_class() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IReader = interface
   ['{33333333-3333-3333-3333-333333333333}']
@@ -81,13 +86,15 @@ begin
   w.WriteData('StreamContent');
   WriteLn(r.ReadData);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["StreamContent"]);
 }
 
 #[test]
 fn test_interface_parameter_passing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IPrintable = interface
   ['{55555555-5555-5555-5555-555555555555}']
@@ -106,13 +113,15 @@ begin
   rep := TReport.Create;
   PrintObject(rep);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["OUTPUT: ReportContent"]);
 }
 
 #[test]
 fn test_interface_function_return_value() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IWorker = interface
   ['{66666666-6666-6666-6666-666666666666}']
@@ -131,13 +140,15 @@ begin
   w := CreateWorker;
   w.DoWork;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["WorkDone"]);
 }
 
 #[test]
 fn test_interface_array_polymorphism() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ITask = interface
   ['{77777777-7777-7777-7777-777777777777}']
@@ -158,13 +169,15 @@ begin
   for i := 1 to 2 do
     tasks[i].Execute;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TaskA", "TaskB"]);
 }
 
 #[test]
 fn test_supports_operator_interface_query() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IAuditable = interface
   ['{88888888-8888-8888-8888-888888888888}']
@@ -180,13 +193,15 @@ begin
   if Supports(obj, IAuditable, aud) then
     aud.Audit;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Audited"]);
 }
 
 #[test]
 fn test_interface_inheritance() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IBaseIntf = interface
   ['{99999999-9999-9999-9999-999999999999}']
@@ -207,13 +222,15 @@ begin
   sub.Step1;
   sub.Step2;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Step1", "Step2"]);
 }
 
 #[test]
 fn test_interface_reassigned_to_nil() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ICleanable = interface
   ['{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}']
@@ -231,13 +248,15 @@ begin
   intf := nil;
   WriteLn('AfterNil');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Active", "DestroyedOnNil", "AfterNil"]);
 }
 
 #[test]
 fn test_interface_property_accessors() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IHasName = interface
   ['{CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC}']
@@ -257,13 +276,15 @@ begin
   item.Name := 'InterfaceName';
   WriteLn(item.Name);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["InterfaceName"]);
 }
 
 #[test]
 fn test_interface_ref_count_shared_ownership() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IShared = interface
   ['{DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD}']
@@ -284,13 +305,23 @@ begin
   ref2 := nil;
   WriteLn('Ref2Cleared');
 end.
-"#);
-    assert_eq!(out, vec!["Ref1Cleared", "SharedShow", "SharedDestroyed", "Ref2Cleared"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec![
+            "Ref1Cleared",
+            "SharedShow",
+            "SharedDestroyed",
+            "Ref2Cleared"
+        ]
+    );
 }
 
 #[test]
 fn test_interface_method_returning_integer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ICalculator = interface
   ['{EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE}']
@@ -305,13 +336,15 @@ begin
   calc := TSimpleCalc.Create;
   WriteLn(calc.Multiply(6, 7));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_interface_method_returning_boolean() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IChecker = interface
   ['{FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF}']
@@ -327,13 +360,15 @@ begin
   WriteLn(c.IsValid('Pascal'));
   WriteLn(c.IsValid('Hi'));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_interface_assigned_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IEvent = interface
   ['{10101010-1010-1010-1010-101010101010}']
@@ -343,13 +378,15 @@ var e: IEvent;
 begin
   WriteLn(Assigned(e));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False"]);
 }
 
 #[test]
 fn test_interface_with_var_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ITransformer = interface
   ['{20202020-2020-2020-2020-202020202020}']
@@ -366,13 +403,15 @@ begin
   t.DoubleVal(val);
   WriteLn(val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_interface_with_enum_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TDirection = (dUp, dDown);
 type IMover = interface
@@ -388,13 +427,15 @@ begin
   m := TRobot.Create;
   m.Move(dDown);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Dir:1"]);
 }
 
 #[test]
 fn test_interface_with_record_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TData = record Code: Integer; end;
 type IDataConsumer = interface
@@ -411,13 +452,15 @@ begin
   c := TConsumerImpl.Create;
   c.Consume(rec);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["500"]);
 }
 
 #[test]
 fn test_interface_with_default_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type INotifier = interface
   ['{50505050-5050-5050-5050-505050505050}']
@@ -433,13 +476,15 @@ begin
   n.Notify;
   n.Notify('CustomNotification');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DefaultNotification", "CustomNotification"]);
 }
 
 #[test]
 fn test_interface_cast_from_class_instance() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IService = interface
   ['{60606060-6060-6060-6060-606060606060}']
@@ -455,13 +500,15 @@ begin
   srv := obj as IService;
   srv.Serve;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Served"]);
 }
 
 #[test]
 fn test_interface_factory_registry_dispatch() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ICommand = interface
   ['{70707070-7070-7070-7070-707070707070}']
@@ -480,6 +527,7 @@ begin
   cmd := GetCommand('start');
   if cmd <> nil then cmd.Execute;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["StartedCommand"]);
 }

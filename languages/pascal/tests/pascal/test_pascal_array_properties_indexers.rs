@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_array_property_default_bracket_indexer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntList = class
   private FData: array[0..4] of Integer;
@@ -25,13 +26,15 @@ begin
   WriteLn(list[1]);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20"]);
 }
 
 #[test]
 fn test_array_property_explicit_name_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStrList = class
   private FItems: array[0..2] of String;
@@ -48,13 +51,15 @@ begin
   WriteLn(list.Strings[0]);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["First"]);
 }
 
 #[test]
 fn test_multidimensional_array_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TGrid = class
   private FCells: array[0..2, 0..2] of Integer;
@@ -71,13 +76,15 @@ begin
   WriteLn(g[1, 2]);
   g.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["99"]);
 }
 
 #[test]
 fn test_string_indexed_array_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMapHolder = class
   private FKeys: array[0..2] of String;
@@ -110,13 +117,15 @@ begin
   WriteLn(map['host'] + ':' + map['port']);
   map.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["localhost:8080"]);
 }
 
 #[test]
 fn test_enum_indexed_array_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TColor = (cRed, cGreen, cBlue);
 type TPalette = class
@@ -136,13 +145,15 @@ begin
   WriteLn(p[cGreen]);
   p.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["#FF0000", "#00FF00"]);
 }
 
 #[test]
 fn test_read_only_array_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TFixedList = class
   private FNumbers: array[0..2] of Integer;
@@ -161,13 +172,15 @@ begin
   WriteLn(list[1]);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["200"]);
 }
 
 #[test]
 fn test_write_only_array_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBufferWriter = class
   private FBuf: array[0..2] of Integer;
@@ -186,13 +199,15 @@ begin
   WriteLn(bw.GetSum);
   bw.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_array_property_bounds_checking_setter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBoundedArray = class
   private FItems: array[0..2] of Integer;
@@ -217,13 +232,15 @@ begin
   WriteLn(ba[5]);
   ba.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42", "-1"]);
 }
 
 #[test]
 fn test_array_property_returning_record() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPoint = record X, Y: Integer; end;
 type TPointArray = class
@@ -243,13 +260,15 @@ begin
   WriteLn(pa[0].Y);
   pa.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20"]);
 }
 
 #[test]
 fn test_array_property_subrange_index_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIndex = 1..3;
 type TSubrangeIndexed = class
@@ -269,13 +288,15 @@ begin
   WriteLn(si[3]);
   si.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["One", "Three"]);
 }
 
 #[test]
 fn test_array_property_virtual_accessor_methods() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseContainer = class
   protected function GetElem(i: Integer): String; virtual;
@@ -292,13 +313,15 @@ begin
   WriteLn(c[5]);
   c.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Derived:5"]);
 }
 
 #[test]
 fn test_array_property_combined_with_count_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TFixedStack = class
   private FData: array[0..4] of Integer; FCount: Integer;
@@ -318,13 +341,15 @@ begin
     WriteLn(s[i]);
   s.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20", "30"]);
 }
 
 #[test]
 fn test_array_property_modifying_internal_counter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TTrackedArray = class
   private FData: array[0..2] of Integer; FMutations: Integer;
@@ -344,13 +369,15 @@ begin
   WriteLn(ta.Mutations);
   ta.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_array_property_overloaded_index_types() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TFlexContainer = class
   private FData: array[0..2] of String;
@@ -373,13 +400,15 @@ begin
   WriteLn(fc['first']);
   fc.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Alpha", "Alpha"]);
 }
 
 #[test]
 fn test_array_property_returning_boolean() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBitFlags = class
   private FFlags: array[0..7] of Boolean;
@@ -397,13 +426,15 @@ begin
   WriteLn(bf[3]);
   bf.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False", "True"]);
 }
 
 #[test]
 fn test_array_property_in_nested_loops() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMatrix2x2 = class
   private FData: array[0..1, 0..1] of Integer;
@@ -425,13 +456,15 @@ begin
   WriteLn(sum);
   m.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10"]);
 }
 
 #[test]
 fn test_array_property_inherited_redeclaration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBase = class
   protected FValues: array[0..2] of Integer;
@@ -451,13 +484,15 @@ begin
   WriteLn(d[1]);
   d.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["77"]);
 }
 
 #[test]
 fn test_array_property_string_concatenation_setter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TLogBuffer = class
   private FLogs: array[0..2] of String;
@@ -478,13 +513,15 @@ begin
   WriteLn(lb[0]);
   lb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Line1: OK"]);
 }
 
 #[test]
 fn test_array_property_object_instance_element() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNode = class public LabelStr: String; constructor Create(L: String); end;
 type TNodeMap = class
@@ -506,13 +543,15 @@ begin
   WriteLn(nm[0].LabelStr + '-' + nm[1].LabelStr);
   nm.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Start-End"]);
 }
 
 #[test]
 fn test_array_property_float_values() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TFloatList = class
   private FFloats: array[0..2] of Real;
@@ -529,6 +568,7 @@ begin
   WriteLn(fl[0] + fl[1]);
   fl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3.3"]);
 }

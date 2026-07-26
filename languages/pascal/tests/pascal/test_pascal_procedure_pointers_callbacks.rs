@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_procedure_pointer_invocation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNotifyProc = procedure;
 procedure MyCallback;
@@ -18,13 +19,15 @@ begin
   p := MyCallback;
   p();
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CallbackExecuted"]);
 }
 
 #[test]
 fn test_function_pointer_arguments_and_return() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMathOp = function(a, b: Integer): Integer;
 function Multiply(a, b: Integer): Integer;
@@ -36,13 +39,15 @@ begin
   op := Multiply;
   WriteLn(op(6, 7));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_assigned_check_on_procedure_pointer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSimpleProc = procedure;
 procedure Dummy; begin WriteLn('Dummy'); end;
@@ -54,13 +59,15 @@ begin
   WriteLn(Assigned(p));
   p();
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False", "True", "Dummy"]);
 }
 
 #[test]
 fn test_method_pointer_of_object() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TEvent = procedure(msg: String) of object;
 type TListener = class
@@ -78,13 +85,15 @@ begin
   eventHandler('EventTriggered');
   listener.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["LISTENED: EventTriggered"]);
 }
 
 #[test]
 fn test_procedural_parameter_higher_order_function() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TFilterFunc = function(n: Integer): Boolean;
 function IsEven(n: Integer): Boolean;
@@ -100,13 +109,15 @@ end;
 begin
   FilterAndPrint([1, 2, 3, 4, 5, 6], IsEven);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "4", "6"]);
 }
 
 #[test]
 fn test_procedural_type_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStepProc = procedure;
 procedure Step1; begin WriteLn('Step1'); end;
@@ -119,13 +130,15 @@ begin
   for i := 1 to 3 do
     steps[i]();
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Step1", "Step2", "Step3"]);
 }
 
 #[test]
 fn test_procedural_variable_in_record() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TAction = procedure(val: Integer);
 type TCommandRec = record
@@ -143,13 +156,15 @@ begin
   WriteLn(cmd.Name);
   cmd.Exec(99);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["PrintCmd", "VAL:99"]);
 }
 
 #[test]
 fn test_procedural_variable_in_class_field() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TClickEvent = procedure of object;
 type TButton = class
@@ -174,13 +189,15 @@ begin
   btn.Click;
   btn.Free; frm.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ButtonClicked"]);
 }
 
 #[test]
 fn test_procedural_type_returning_function_pointer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMathFunc = function(x: Integer): Integer;
 function DoubleIt(x: Integer): Integer; begin Result := x * 2; end;
@@ -196,13 +213,15 @@ begin
   op := GetMathOp(3);
   WriteLn(op(10));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20", "30"]);
 }
 
 #[test]
 fn test_procedural_variable_with_var_param() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMutatorProc = procedure(var x: Integer);
 procedure SquareVar(var x: Integer);
@@ -216,13 +235,15 @@ begin
   proc(val);
   WriteLn(val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["25"]);
 }
 
 #[test]
 fn test_procedural_variable_with_out_param() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TGenProc = procedure(out s: String);
 procedure ProvideString(out s: String);
@@ -235,13 +256,15 @@ begin
   gen(text);
   WriteLn(text);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ProvidedData"]);
 }
 
 #[test]
 fn test_procedural_variable_string_transform() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStrMapper = function(const s: String): String;
 function ToUpperMapper(const s: String): String; begin Result := UpperCase(s); end;
@@ -253,13 +276,15 @@ begin
   mapper := ToLowerMapper;
   WriteLn(mapper('PASCAL'));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["PASCAL", "pascal"]);
 }
 
 #[test]
 fn test_procedural_variable_enum_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TColor = (cRed, cGreen, cBlue);
 type TColorProc = procedure(c: TColor);
@@ -272,13 +297,15 @@ begin
   p := PrintColor;
   p(cGreen);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["COLOR:1"]);
 }
 
 #[test]
 fn test_procedural_variable_with_default_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TLogProc = procedure(msg: String = 'DefaultLog');
 procedure DoLog(msg: String);
@@ -291,13 +318,15 @@ begin
   p();
   p('CustomLog');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DefaultLog", "CustomLog"]);
 }
 
 #[test]
 fn test_method_pointer_equality_comparison() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TEvent = procedure of object;
 type THandler = class
@@ -311,13 +340,15 @@ begin
   WriteLn(e1 = e2);
   h.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_procedural_variable_subrange_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TScore = 1..100;
 type TScoreProc = procedure(s: TScore);
@@ -331,13 +362,15 @@ begin
   p := HandleScore;
   p(sc);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SCORE:88"]);
 }
 
 #[test]
 fn test_procedural_variable_float_computation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TFloatOp = function(r: Real): Real;
 function Half(r: Real): Real; begin Result := r / 2.0; end;
@@ -346,13 +379,15 @@ begin
   op := Half;
   WriteLn(op(10.0));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn test_procedural_type_closure_like_pass() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TReducer = function(acc, val: Integer): Integer;
 function SumReducer(acc, val: Integer): Integer; begin Result := acc + val; end;
@@ -366,13 +401,15 @@ end;
 begin
   WriteLn(Fold([10, 20, 30], 0, SumReducer));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_method_pointer_cleared_to_nil() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TEvent = procedure of object;
 type TItem = class procedure Action; end;
@@ -386,13 +423,15 @@ begin
   WriteLn(Assigned(ev));
   item.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_procedural_variable_boolean_predicates() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPredicate = function(s: String): Boolean;
 function IsNotEmpty(s: String): Boolean; begin Result := Length(s) > 0; end;
@@ -402,6 +441,7 @@ begin
   WriteLn(pred('hello'));
   WriteLn(pred(''));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }

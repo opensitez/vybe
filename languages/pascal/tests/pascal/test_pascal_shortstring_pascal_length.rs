@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_shortstring_length_byte_read() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var s: ShortString;
 begin
@@ -14,13 +15,15 @@ begin
   WriteLn(Ord(s[0]));
   WriteLn(Length(s));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5", "5"]);
 }
 
 #[test]
 fn test_shortstring_length_byte_mutation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var s: ShortString;
 begin
@@ -29,13 +32,15 @@ begin
   WriteLn(s);
   WriteLn(Length(s));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Pascal", "6"]);
 }
 
 #[test]
 fn test_shortstring_fixed_size_declaration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var s: String[10];
 begin
@@ -43,13 +48,15 @@ begin
   WriteLn(s);
   WriteLn(Length(s));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1234567890", "10"]);
 }
 
 #[test]
 fn test_shortstring_one_based_indexing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var s: ShortString;
 begin
@@ -57,13 +64,15 @@ begin
   WriteLn(s[1]);
   WriteLn(s[5]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["A", "E"]);
 }
 
 #[test]
 fn test_shortstring_element_mutation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var s: ShortString;
 begin
@@ -71,13 +80,15 @@ begin
   s[1] := 'M';
   WriteLn(s);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["More"]);
 }
 
 #[test]
 fn test_shortstring_concatenation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var s1, s2, s3: ShortString;
 begin
@@ -86,26 +97,30 @@ begin
   WriteLn(s3);
   WriteLn(Length(s3));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Short String", "12"]);
 }
 
 #[test]
 fn test_shortstring_high_low_bounds() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var s: ShortString;
 begin
   WriteLn(Low(s));
   WriteLn(High(s));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "255"]);
 }
 
 #[test]
 fn test_shortstring_to_ansistring_conversion() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var ss: ShortString;
     ansi: AnsiString;
@@ -114,13 +129,15 @@ begin
   ansi := ss;
   WriteLn(ansi);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ConvertedShortString"]);
 }
 
 #[test]
 fn test_ansistring_to_shortstring_truncation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var ansi: AnsiString;
     ss: String[5];
@@ -130,13 +147,15 @@ begin
   WriteLn(ss);
   WriteLn(Length(ss));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["LongA", "5"]);
 }
 
 #[test]
 fn test_shortstring_var_parameter_mutation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure AppendShort(var s: ShortString; suffix: ShortString);
 begin
@@ -148,13 +167,15 @@ begin
   AppendShort(text, '_Suffix');
   WriteLn(text);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Base_Suffix"]);
 }
 
 #[test]
 fn test_shortstring_comparisons() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var s1, s2: ShortString;
 begin
@@ -163,13 +184,15 @@ begin
   WriteLn(s1 = 'Apple');
   WriteLn(s1 <> s2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True", "True"]);
 }
 
 #[test]
 fn test_shortstring_empty_initialization() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var s: ShortString;
 begin
@@ -177,13 +200,15 @@ begin
   WriteLn(Length(s));
   WriteLn(Ord(s[0]));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "0"]);
 }
 
 #[test]
 fn test_shortstring_fillchar_zero_reset() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var s: ShortString;
 begin
@@ -191,13 +216,15 @@ begin
   FillChar(s, SizeOf(s), 0);
   WriteLn(Length(s));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn test_shortstring_record_field() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TShortRec = record
   Code: Integer;
@@ -209,26 +236,30 @@ begin
   WriteLn(rec.Code);
   WriteLn(rec.Name);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "ShortRecordName"]);
 }
 
 #[test]
 fn test_shortstring_array_elements() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var list: array[1..2] of String[15];
 begin
   list[1] := 'ItemOne'; list[2] := 'ItemTwo';
   WriteLn(list[1] + ' & ' + list[2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ItemOne & ItemTwo"]);
 }
 
 #[test]
 fn test_shortstring_case_statement_match() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var s: ShortString;
 begin
@@ -238,26 +269,30 @@ begin
     'YES': WriteLn('Approved');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Approved"]);
 }
 
 #[test]
 fn test_shortstring_escaped_quote_literal() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var s: ShortString;
 begin
   s := 'It''s Pascal';
   WriteLn(s);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["It's Pascal"]);
 }
 
 #[test]
 fn test_shortstring_pchar_cast() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var s: ShortString;
     pc: PChar;
@@ -266,13 +301,15 @@ begin
   pc := @s[1];
   WriteLn(pc);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["PCharFromShort"]);
 }
 
 #[test]
 fn test_shortstring_setlength_routine() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var s: ShortString;
 begin
@@ -281,13 +318,15 @@ begin
   WriteLn(s);
   WriteLn(Ord(s[0]));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1234", "4"]);
 }
 
 #[test]
 fn test_shortstring_max_capacity_overflow() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var s1, s2, s3: ShortString;
     i: Integer;
@@ -298,6 +337,7 @@ begin
   s3 := s1 + s2;
   WriteLn(Length(s3));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["255"]);
 }

@@ -6,20 +6,23 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_getmemorymanager_query() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var mm: TMemoryManagerEx;
 begin
   GetMemoryManager(mm);
   WriteLn(Assigned(mm.GetMem));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_custom_memory_manager_interception_counters() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var OldMM, NewMM: TMemoryManagerEx;
     AllocCount, FreeCount: Integer;
@@ -52,13 +55,15 @@ begin
   WriteLn(AllocCount);
   WriteLn(FreeCount);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "1"]);
 }
 
 #[test]
 fn test_custom_memory_manager_realloc_interception() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var OldMM, NewMM: TMemoryManagerEx;
     ReallocCount: Integer;
@@ -84,13 +89,15 @@ begin
   SetMemoryManager(OldMM);
   WriteLn(ReallocCount);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_memory_manager_swap_restoration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var OriginalMM, TempMM, CurrentMM: TMemoryManagerEx;
 begin
@@ -101,13 +108,15 @@ begin
   WriteLn(Assigned(CurrentMM.GetMem));
   SetMemoryManager(OriginalMM);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_custom_mem_manager_allocated_bytes_tracking() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var OldMM, NewMM: TMemoryManagerEx;
     TotalAllocated: NativeInt;
@@ -134,13 +143,15 @@ begin
   SetMemoryManager(OldMM);
   WriteLn(TotalAllocated);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["192"]);
 }
 
 #[test]
 fn test_custom_mem_manager_alloc_and_free_balance_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var OldMM, NewMM: TMemoryManagerEx;
     ActivePointers: Integer;
@@ -173,13 +184,15 @@ begin
 
   SetMemoryManager(OldMM);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "0"]);
 }
 
 #[test]
 fn test_custom_mem_manager_register_expected_memory_leak() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var OldMM, NewMM: TMemoryManagerEx;
     LeakCount: Integer;
@@ -198,13 +211,15 @@ begin
   WriteLn('LeakTrackerInitialized');
   SetMemoryManager(OldMM);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["LeakTrackerInitialized"]);
 }
 
 #[test]
 fn test_custom_mem_manager_allocvec_routine() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var OldMM, NewMM: TMemoryManagerEx;
     AllocVecCount: Integer;
@@ -229,13 +244,15 @@ begin
   SetMemoryManager(OldMM);
   WriteLn(AllocVecCount);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_custom_mem_manager_zero_size_allocation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var mm: TMemoryManagerEx;
     p: Pointer;
@@ -244,13 +261,15 @@ begin
   p := mm.GetMem(0);
   WriteLn(p = nil);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_custom_mem_manager_multiple_swaps() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var OriginalMM, CustomMM1, CustomMM2: TMemoryManagerEx;
 begin
@@ -262,13 +281,15 @@ begin
   SetMemoryManager(OriginalMM);
   WriteLn('SwapsCompleted');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SwappedSuccessfully"]);
 }
 
 #[test]
 fn test_custom_mem_manager_new_instance_dispatch() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var OldMM, NewMM: TMemoryManagerEx;
     NewOpCount: Integer;
@@ -297,13 +318,15 @@ begin
   SetMemoryManager(OldMM);
   WriteLn(NewOpCount > 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["123", "True"]);
 }
 
 #[test]
 fn test_custom_mem_manager_freemem_nil_handling() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var mm: TMemoryManagerEx;
     res: Integer;
@@ -312,13 +335,15 @@ begin
   res := mm.FreeMem(nil);
   WriteLn(res = 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_custom_mem_manager_realloc_nil_pointer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var mm: TMemoryManagerEx;
     p: Pointer;
@@ -328,13 +353,15 @@ begin
   WriteLn(p <> nil);
   mm.FreeMem(p);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_custom_mem_manager_realloc_zero_size() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var mm: TMemoryManagerEx;
     p: Pointer;
@@ -344,13 +371,15 @@ begin
   p := mm.ReallocMem(p, 0);
   WriteLn(p = nil);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_custom_mem_manager_header_tagging() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var OldMM, NewMM: TMemoryManagerEx;
     TagCount: Integer;
@@ -375,13 +404,15 @@ begin
   SetMemoryManager(OldMM);
   WriteLn(TagCount);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_custom_mem_manager_nested_scope_allocation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure RunScope;
 var p: Pointer;
@@ -394,13 +425,15 @@ begin
   RunScope;
   WriteLn('ScopeCleared');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ScopeCleared"]);
 }
 
 #[test]
 fn test_custom_mem_manager_class_instance_allocations() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TTestObj = class
   public Val: Integer;
@@ -412,13 +445,15 @@ begin
   WriteLn(obj.Val);
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["999"]);
 }
 
 #[test]
 fn test_custom_mem_manager_large_buffer_allocation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var p: Pointer;
 begin
@@ -426,26 +461,30 @@ begin
   WriteLn(p <> nil);
   FreeMem(p);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_custom_mem_manager_is_memory_manager_set() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var mm: TMemoryManagerEx;
 begin
   GetMemoryManager(mm);
   WriteLn(IsMemoryManagerSet);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_custom_mem_manager_allocmem_zero_fill() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var pb: PByte;
 begin
@@ -453,6 +492,7 @@ begin
   WriteLn(pb^);
   FreeMem(pb);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }

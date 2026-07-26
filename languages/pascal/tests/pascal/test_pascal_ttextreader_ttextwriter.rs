@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_tstreamwriter_and_tstreamreader_basic_lines() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter; r: TStreamReader;
@@ -23,13 +24,15 @@ begin
   WriteLn(r.ReadLine);
   r.Free; w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Line 1", "Line 2"]);
 }
 
 #[test]
 fn test_tstreamreader_readtoend() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter; r: TStreamReader;
@@ -45,13 +48,15 @@ begin
   WriteLn(r.ReadToEnd);
   r.Free; w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FirstLine", "SecondLine"]);
 }
 
 #[test]
 fn test_tstreamreader_endofstream_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter; r: TStreamReader;
@@ -68,13 +73,15 @@ begin
   WriteLn(r.EndOfStream);
   r.Free; w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False", "True"]);
 }
 
 #[test]
 fn test_tstreamwriter_autoflush_enabled() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter;
@@ -86,13 +93,15 @@ begin
   WriteLn(ms.Size > 0);
   w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_tstreamreader_peek_next_char() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter; r: TStreamReader;
@@ -108,13 +117,15 @@ begin
   WriteLn(r.ReadLine);
   r.Free; w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "ABC"]);
 }
 
 #[test]
 fn test_tstreamwriter_utf8_encoding() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter; r: TStreamReader;
@@ -129,13 +140,15 @@ begin
   WriteLn(r.ReadLine);
   r.Free; w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["UTF8EncodedContent"]);
 }
 
 #[test]
 fn test_tstreamwriter_formatted_numbers() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter; r: TStreamReader;
@@ -150,13 +163,15 @@ begin
   WriteLn(r.ReadLine);
   r.Free; w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Count: 42, Value: 99.95"]);
 }
 
 #[test]
 fn test_tstreamreader_loop_line_count() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter; r: TStreamReader; count: Integer;
@@ -177,13 +192,15 @@ begin
   WriteLn(count);
   r.Free; w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn test_tstreamwriter_write_without_newline() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter; r: TStreamReader;
@@ -199,13 +216,15 @@ begin
   WriteLn(r.ReadLine);
   r.Free; w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Part1_Part2"]);
 }
 
 #[test]
 fn test_tstreamwriter_with_tfilestream() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var fs: TFileStream; w: TStreamWriter; r: TStreamReader;
@@ -220,13 +239,15 @@ begin
   WriteLn(r.ReadLine);
   r.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FileStreamText"]);
 }
 
 #[test]
 fn test_tstreamwriter_protection_finally() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter;
@@ -241,13 +262,15 @@ begin
     WriteLn('StreamWriterFreedInFinally');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["StreamWriterFreedInFinally"]);
 }
 
 #[test]
 fn test_tstreamreader_empty_stream() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; r: TStreamReader;
@@ -258,13 +281,15 @@ begin
   WriteLn(Length(r.ReadLine));
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "0"]);
 }
 
 #[test]
 fn test_tstreamwriter_csv_formatting() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter; r: TStreamReader;
@@ -281,13 +306,15 @@ begin
   WriteLn(r.ReadLine);
   r.Free; w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1,Alice,100", "2,Bob,200"]);
 }
 
 #[test]
 fn test_tstreamwriter_json_formatting() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter; r: TStreamReader;
@@ -305,13 +332,15 @@ begin
   WriteLn(r.ReadLine);
   r.Free; w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["{", "  \"name\": \"Pascal\""]);
 }
 
 #[test]
 fn test_tstreamwriter_xml_formatting() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter; r: TStreamReader;
@@ -329,13 +358,15 @@ begin
   WriteLn(r.ReadLine);
   r.Free; w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["<xml>", "  <val>10</val>"]);
 }
 
 #[test]
 fn test_tstreamreader_read_char_by_char() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter; r: TStreamReader;
@@ -351,13 +382,15 @@ begin
   WriteLn(Chr(r.Read));
   r.Free; w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["X", "Y"]);
 }
 
 #[test]
 fn test_tstreamwriter_write_boolean() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter; r: TStreamReader;
@@ -372,13 +405,15 @@ begin
   WriteLn(r.ReadLine);
   r.Free; w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TRUE"]);
 }
 
 #[test]
 fn test_tstreamwriter_write_integer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter; r: TStreamReader;
@@ -393,13 +428,15 @@ begin
   WriteLn(r.ReadLine);
   r.Free; w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["12345"]);
 }
 
 #[test]
 fn test_tstreamwriter_write_float() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TStreamWriter; r: TStreamReader;
@@ -414,13 +451,15 @@ begin
   WriteLn(r.ReadLine);
   r.Free; w.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3.14"]);
 }
 
 #[test]
 fn test_tstreamreader_base_stream_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; r: TStreamReader;
@@ -430,6 +469,7 @@ begin
   WriteLn(r.BaseStream <> nil);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }

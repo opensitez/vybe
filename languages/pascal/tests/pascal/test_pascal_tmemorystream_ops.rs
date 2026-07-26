@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_tmemorystream_write_read() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms: TMemoryStream; val: Integer;
@@ -19,13 +20,15 @@ begin
   WriteLn(val);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_tmemorystream_memory_pointer_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms: TMemoryStream; pi: PInteger; val: Integer;
@@ -37,13 +40,15 @@ begin
   WriteLn(pi^);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["999"]);
 }
 
 #[test]
 fn test_tmemorystream_clear_resets_buffer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms: TMemoryStream; val: Integer;
@@ -54,13 +59,15 @@ begin
   WriteLn(ms.Size);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn test_tmemorystream_setsize_preallocation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms: TMemoryStream;
@@ -70,13 +77,15 @@ begin
   WriteLn(ms.Size);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1024"]);
 }
 
 #[test]
 fn test_tmemorystream_savetofile_and_loadfromfile() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms1, ms2: TMemoryStream; val: Integer;
@@ -92,13 +101,15 @@ begin
   WriteLn(val);
   ms2.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1234"]);
 }
 
 #[test]
 fn test_tmemorystream_savetostream_and_loadfromstream() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms1, ms2: TMemoryStream; val: Integer;
@@ -115,13 +126,15 @@ begin
 
   ms1.Free; ms2.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["888"]);
 }
 
 #[test]
 fn test_tmemorystream_capacity_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms: TMemoryStream;
@@ -131,13 +144,15 @@ begin
   WriteLn(ms.Capacity >= 2048);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_tmemorystream_record_struct() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 type TRec = packed record Code: Integer; Val: Word; end;
@@ -151,13 +166,15 @@ begin
   WriteLn(r2.Code.ToString + ':' + r2.Val.ToString);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50:1000"]);
 }
 
 #[test]
 fn test_tmemorystream_string_serialization() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms: TMemoryStream; text, resText: String; len: Integer;
@@ -175,13 +192,15 @@ begin
   WriteLn(resText);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MemoryStreamString"]);
 }
 
 #[test]
 fn test_tmemorystream_seek_operations() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms: TMemoryStream; v1, v2, readVal: Integer;
@@ -196,13 +215,15 @@ begin
   WriteLn(readVal);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20"]);
 }
 
 #[test]
 fn test_tmemorystream_direct_pbyte_iteration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms: TMemoryStream; pb: PByte; i, sum: Integer;
@@ -218,13 +239,15 @@ begin
   WriteLn(sum);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_tmemorystream_protection_finally() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms: TMemoryStream;
@@ -238,13 +261,15 @@ begin
     WriteLn('MemoryStreamFreed');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MemoryStreamActive", "MemoryStreamFreed"]);
 }
 
 #[test]
 fn test_tmemorystream_real_values() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms: TMemoryStream; r, readR: Real;
@@ -257,13 +282,15 @@ begin
   WriteLn(readR);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["123.45"]);
 }
 
 #[test]
 fn test_tmemorystream_boolean_flags() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms: TMemoryStream; b, readB: Boolean;
@@ -276,13 +303,15 @@ begin
   WriteLn(readB);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_tmemorystream_copyfrom_partial() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var src, dst: TMemoryStream; v1, v2, readVal: Integer;
@@ -301,13 +330,15 @@ begin
 
   src.Free; dst.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["222"]);
 }
 
 #[test]
 fn test_tmemorystream_polymorphic_helper() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 procedure LogStreamSize(stream: TStream);
@@ -321,13 +352,15 @@ begin
   LogStreamSize(ms);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["256"]);
 }
 
 #[test]
 fn test_tmemorystream_array_of_records() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 type TPoint = packed record X, Y: Integer; end;
@@ -343,13 +376,15 @@ begin
   WriteLn(pts2[1].Y);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "4"]);
 }
 
 #[test]
 fn test_tmemorystream_position_truncation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms: TMemoryStream;
@@ -360,13 +395,15 @@ begin
   WriteLn(ms.Position);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn test_tmemorystream_empty_stream_read() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms: TMemoryStream;
@@ -376,13 +413,15 @@ begin
   WriteLn(ms.Position = 0);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_tmemorystream_loop_appending() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ms: TMemoryStream; i, val: Integer; sum: Integer;
@@ -404,6 +443,7 @@ begin
   WriteLn(sum);
   ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }

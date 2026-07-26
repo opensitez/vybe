@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_tfilestream_create_and_writebuffer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var fs: TFileStream; val: Integer;
@@ -20,13 +21,15 @@ begin
   end;
   WriteLn('WrittenStream');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["WrittenStream"]);
 }
 
 #[test]
 fn test_tfilestream_openread_and_readbuffer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var fs: TFileStream; val: Integer;
@@ -43,13 +46,15 @@ begin
     fs.Free;
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["500"]);
 }
 
 #[test]
 fn test_tfilestream_seek_sofrombeginning() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var fs: TFileStream; v1, v2, val: Integer;
@@ -64,13 +69,15 @@ begin
   WriteLn(val);
   fs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10"]);
 }
 
 #[test]
 fn test_tfilestream_position_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var fs: TFileStream; val: Integer;
@@ -83,13 +90,15 @@ begin
   WriteLn(fs.Position);
   fs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4", "0"]);
 }
 
 #[test]
 fn test_tfilestream_size_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var fs: TFileStream; val: Integer;
@@ -100,13 +109,15 @@ begin
   WriteLn(fs.Size);
   fs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["8"]);
 }
 
 #[test]
 fn test_tfilestream_seek_sofromend() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var fs: TFileStream; val: Integer;
@@ -118,13 +129,15 @@ begin
   WriteLn(fs.Position);
   fs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn test_tfilestream_copyfrom_between_streams() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var fs1, fs2: TFileStream; val: Integer;
@@ -142,13 +155,15 @@ begin
 
   fs1.Free; fs2.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["777"]);
 }
 
 #[test]
 fn test_tfilestream_record_serialization() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 type TPoint = packed record X, Y: Integer; end;
@@ -162,13 +177,15 @@ begin
   WriteLn(pt2.X + pt2.Y);
   fs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["45"]);
 }
 
 #[test]
 fn test_tfilestream_string_length_prefixed_serialization() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 procedure WriteString(stream: TStream; const s: String);
@@ -193,13 +210,15 @@ begin
   WriteLn(ReadString(fs));
   fs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["StreamedStringData"]);
 }
 
 #[test]
 fn test_tfilestream_polymorphic_parameter_passing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 procedure SaveIntToStream(stream: TStream; val: Integer);
@@ -215,13 +234,15 @@ begin
   WriteLn(v);
   fs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["999"]);
 }
 
 #[test]
 fn test_tfilestream_openreadwrite_mode() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var fs: TFileStream; val: Integer;
@@ -241,13 +262,15 @@ begin
   WriteLn(val);
   fs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15"]);
 }
 
 #[test]
 fn test_tfilestream_seek_sofromcurrent() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var fs: TFileStream; v1, v2, readVal: Integer;
@@ -262,13 +285,15 @@ begin
   WriteLn(readVal);
   fs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["200"]);
 }
 
 #[test]
 fn test_tfilestream_size_truncation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var fs: TFileStream; val: Integer;
@@ -282,13 +307,15 @@ begin
   WriteLn(fs.Size);
   fs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["8", "4"]);
 }
 
 #[test]
 fn test_tfilestream_real_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var fs: TFileStream; r, readR: Real;
@@ -301,13 +328,15 @@ begin
   WriteLn(readR);
   fs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["45.67"]);
 }
 
 #[test]
 fn test_tfilestream_boolean_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var fs: TFileStream; b, readB: Boolean;
@@ -320,13 +349,15 @@ begin
   WriteLn(readB);
   fs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_tfilestream_non_existent_file_raises_efopenerror() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var fs: TFileStream;
@@ -338,13 +369,15 @@ begin
     on E: EFOpenError do WriteLn('FOpenErrorCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FOpenErrorCaught"]);
 }
 
 #[test]
 fn test_tfilestream_byte_array_block_write() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var fs: TFileStream;
@@ -359,13 +392,15 @@ begin
   WriteLn(readBuf[3]);
   fs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "4"]);
 }
 
 #[test]
 fn test_tfilestream_empty_file_size() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var fs: TFileStream;
@@ -374,13 +409,15 @@ begin
   WriteLn(fs.Size);
   fs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn test_tfilestream_multiple_records() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 type TItem = packed record ID: Integer; Val: Word; end;
@@ -396,13 +433,15 @@ begin
   WriteLn(item.ID.ToString + ':' + item.Val.ToString);
   fs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2:200"]);
 }
 
 #[test]
 fn test_tfilestream_protection_in_finally() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var fs: TFileStream;
@@ -415,6 +454,7 @@ begin
     WriteLn('StreamFreedInFinally');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["StreamActive", "StreamFreedInFinally"]);
 }

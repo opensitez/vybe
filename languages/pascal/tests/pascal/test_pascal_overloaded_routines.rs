@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_overload_by_parameter_count() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Display(a: Integer); overload;
 begin
@@ -20,13 +21,15 @@ begin
   Display(10);
   Display(10, 20);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["One: 10", "Two: 10, 20"]);
 }
 
 #[test]
 fn test_overload_by_parameter_type_int_and_string() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure PrintVal(v: Integer); overload;
 begin
@@ -40,13 +43,15 @@ begin
   PrintVal(100);
   PrintVal('Pascal');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["INT=100", "STR=Pascal"]);
 }
 
 #[test]
 fn test_overload_functions_with_different_return_types() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function Convert(v: Integer): String; overload;
 begin
@@ -60,13 +65,15 @@ begin
   WriteLn(Convert(42));
   WriteLn(Convert(True));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Int:42", "Bool:True"]);
 }
 
 #[test]
 fn test_overload_class_methods() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TLogger = class
   public procedure Log(msg: String); overload;
@@ -87,13 +94,15 @@ begin
   logger.Log(404, 'Not Found');
   logger.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["LOG: Info message", "ERR[404]: Not Found"]);
 }
 
 #[test]
 fn test_overload_constructors() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPerson = class
   public Name: String; Age: Integer;
@@ -116,13 +125,15 @@ begin
   WriteLn(p2.Name + ':' + p2.Age.ToString);
   p1.Free; p2.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Alice:0", "Bob:30"]);
 }
 
 #[test]
 fn test_overload_class_static_methods() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMath = class
   public class function Square(x: Integer): Integer; overload;
@@ -140,13 +151,15 @@ begin
   WriteLn(TMath.Square(5));
   WriteLn(TMath.Square(2.5));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["25", "6.25"]);
 }
 
 #[test]
 fn test_overload_boolean_vs_integer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Process(b: Boolean); overload;
 begin
@@ -160,13 +173,15 @@ begin
   Process(True);
   Process(1);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["BOOL", "INT"]);
 }
 
 #[test]
 fn test_overload_record_vs_pointer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRec = record Val: Integer; end;
 type PRec = ^TRec;
@@ -184,13 +199,15 @@ begin
   Inspect(rec);
   Inspect(@rec);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["VALUE:99", "POINTER:99"]);
 }
 
 #[test]
 fn test_overload_var_vs_value_parameters() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure UpdateVal(v: Integer); overload;
 begin
@@ -206,13 +223,15 @@ begin
   x := 10;
   UpdateVal(x);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["VAR:20"]);
 }
 
 #[test]
 fn test_overload_enum_parameters() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TColor = (Red, Green, Blue);
 type TSize = (Small, Medium, Large);
@@ -228,13 +247,15 @@ begin
   Render(Green);
   Render(Large);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["COLOR:1", "SIZE:2"]);
 }
 
 #[test]
 fn test_overload_array_types() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntArr = array[1..3] of Integer;
 type TStrArr = array[1..3] of String;
@@ -252,13 +273,15 @@ begin
   Dump(ia);
   Dump(sa);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["INT_ARR:10", "STR_ARR:first"]);
 }
 
 #[test]
 fn test_overload_inherited_class_methods() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBase = class
   public procedure Show(i: Integer); overload; virtual;
@@ -281,13 +304,15 @@ begin
   d.Show(42);
   d.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DERIVED_STR:hello", "BASE_INT:42"]);
 }
 
 #[test]
 fn test_overload_with_default_parameters() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Exec(a: Integer; b: Integer = 0); overload;
 begin
@@ -301,13 +326,15 @@ begin
   Exec(10);
   Exec('test');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["EXEC_INT:10", "EXEC_STR:test"]);
 }
 
 #[test]
 fn test_overload_three_types() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Handle(i: Integer); overload; begin WriteLn('INT'); end;
 procedure Handle(r: Real); overload; begin WriteLn('REAL'); end;
@@ -317,13 +344,15 @@ begin
   Handle(5.5);
   Handle('five');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["INT", "REAL", "STR"]);
 }
 
 #[test]
 fn test_overload_subrange_parameters() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSub1 = 1..10;
 type TSub2 = 100..200;
@@ -341,13 +370,15 @@ begin
   TestSub(v1);
   TestSub(v2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SUB1:5", "SUB2:150"]);
 }
 
 #[test]
 fn test_overload_in_nested_routines() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Parent;
   procedure Action(n: Integer); overload;
@@ -365,13 +396,15 @@ end;
 begin
   Parent;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["NESTED_INT:99", "NESTED_STR:nested"]);
 }
 
 #[test]
 fn test_overload_char_vs_string() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure ProcessChar(c: Char); overload;
 begin
@@ -385,13 +418,15 @@ begin
   ProcessChar('A');
   ProcessChar('ABC');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CHAR:A", "STRING:ABC"]);
 }
 
 #[test]
 fn test_overload_const_ref_vs_value() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TData = record ID: Integer; end;
 procedure LoadData(id: Integer); overload;
@@ -408,13 +443,15 @@ begin
   LoadData(55);
   LoadData(rec);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["BY_ID:55", "BY_REC:55"]);
 }
 
 #[test]
 fn test_overload_four_arguments() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Config(a, b: Integer); overload;
 begin
@@ -428,13 +465,15 @@ begin
   Config(1, 2);
   Config(1, 2, 3, 4);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2_ARGS:3", "4_ARGS:10"]);
 }
 
 #[test]
 fn test_overload_variant_vs_typed() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Evaluate(i: Integer); overload;
 begin
@@ -450,6 +489,7 @@ begin
   v := 'text';
   Evaluate(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TYPED_INT", "VARIANT"]);
 }

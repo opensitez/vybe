@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_fillchar_zeroing_integer_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array[1..4] of Integer;
 begin
@@ -15,13 +16,15 @@ begin
   WriteLn(arr[1]);
   WriteLn(arr[4]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "0"]);
 }
 
 #[test]
 fn test_fillchar_byte_pattern() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var buf: array[0..3] of Byte;
 begin
@@ -29,13 +32,15 @@ begin
   WriteLn(buf[0]);
   WriteLn(buf[3]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["255", "255"]);
 }
 
 #[test]
 fn test_move_copying_integer_arrays() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var src, dst: array[0..2] of Integer;
 begin
@@ -46,13 +51,15 @@ begin
   WriteLn(dst[1]);
   WriteLn(dst[2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "200", "300"]);
 }
 
 #[test]
 fn test_move_copying_record_data() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TData = record A, B: Integer; end;
 var r1, r2: TData;
@@ -62,13 +69,15 @@ begin
   WriteLn(r2.A);
   WriteLn(r2.B);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["55", "99"]);
 }
 
 #[test]
 fn test_fillchar_char_fill() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var charBuf: array[0..4] of Char;
 begin
@@ -77,13 +86,15 @@ begin
   WriteLn(charBuf[0]);
   WriteLn(charBuf[3]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["X", "X"]);
 }
 
 #[test]
 fn test_fillbyte_procedure() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var bytes: array[0..3] of Byte;
 begin
@@ -91,13 +102,15 @@ begin
   WriteLn(bytes[0]);
   WriteLn(bytes[3]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["128", "128"]);
 }
 
 #[test]
 fn test_fillword_procedure() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var words: array[0..2] of Word;
 begin
@@ -105,13 +118,15 @@ begin
   WriteLn(words[0]);
   WriteLn(words[2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1000", "1000"]);
 }
 
 #[test]
 fn test_move_partial_array_slice() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var src, dst: array[0..4] of Integer;
 begin
@@ -123,13 +138,15 @@ begin
   WriteLn(dst[2]);
   WriteLn(dst[3]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "3", "4", "0"]);
 }
 
 #[test]
 fn test_untyped_buffer_parameter_processing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure ClearBuffer(var buf; size: Integer);
 begin
@@ -142,13 +159,15 @@ begin
   WriteLn(nums[1]);
   WriteLn(nums[3]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "0"]);
 }
 
 #[test]
 fn test_move_between_dynamic_array_and_static_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var dynArr: array of Integer;
     statArr: array[0..2] of Integer;
@@ -159,13 +178,15 @@ begin
   WriteLn(statArr[0]);
   WriteLn(statArr[2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["7", "21"]);
 }
 
 #[test]
 fn test_move_overlapping_buffer_shift() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array[0..4] of Integer;
 begin
@@ -175,13 +196,15 @@ begin
   WriteLn(arr[2]);
   WriteLn(arr[3]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20", "30"]);
 }
 
 #[test]
 fn test_fillchar_clearing_record_before_usage() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type THeader = record
   Magic: Integer;
@@ -193,13 +216,15 @@ begin
   WriteLn(h.Magic);
   WriteLn(h.Version);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "0"]);
 }
 
 #[test]
 fn test_move_string_characters_to_byte_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var strVal: String;
     bytes: array[0..4] of Byte;
@@ -210,13 +235,15 @@ begin
   WriteLn(bytes[1]);
   WriteLn(bytes[2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["65", "66", "67"]);
 }
 
 #[test]
 fn test_untyped_move_wrapper_procedure() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure CopyData(const src; var dst; count: Integer);
 begin
@@ -228,13 +255,15 @@ begin
   CopyData(a, b, SizeOf(Integer));
   WriteLn(b);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["999"]);
 }
 
 #[test]
 fn test_fillchar_multidimensional_matrix() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var mat: array[0..1, 0..1] of Integer;
 begin
@@ -244,13 +273,15 @@ begin
   WriteLn(mat[0, 0]);
   WriteLn(mat[1, 1]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "0"]);
 }
 
 #[test]
 fn test_raw_byte_compare_after_move() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function SameBytes(const a, b; len: Integer): Boolean;
 var pa, pb: PByte; i: Integer;
@@ -268,13 +299,15 @@ begin
   Move(x, y, SizeOf(Integer));
   WriteLn(SameBytes(x, y, SizeOf(Integer)));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_move_with_pbyte_offset_source() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var buf: array[0..5] of Byte;
     outVal: Integer;
@@ -283,13 +316,15 @@ begin
   Move(buf[2], outVal, SizeOf(Integer));
   WriteLn(outVal);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_fillword_filling_shortint_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array[0..3] of Word;
 begin
@@ -297,13 +332,15 @@ begin
   WriteLn(arr[0]);
   WriteLn(arr[3]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["12345", "12345"]);
 }
 
 #[test]
 fn test_move_copying_real_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var rSrc, rDst: array[0..1] of Real;
 begin
@@ -312,13 +349,15 @@ begin
   WriteLn(rDst[0]);
   WriteLn(rDst[1]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1.5", "2.5"]);
 }
 
 #[test]
 fn test_fillchar_boolean_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var flags: array[0..2] of Boolean;
 begin
@@ -327,6 +366,7 @@ begin
   WriteLn(flags[0]);
   WriteLn(flags[2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False", "False"]);
 }

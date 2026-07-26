@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_untyped_var_parameter_zeroing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure ZeroData(var data; size: Integer);
 begin
@@ -18,13 +19,15 @@ begin
   ZeroData(x, SizeOf(Integer));
   WriteLn(x);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn test_untyped_const_parameter_reading() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function SumBytes(const buffer; count: Integer): Integer;
 var pb: PByte; i: Integer;
@@ -41,13 +44,15 @@ begin
   arr[0] := 10; arr[1] := 20; arr[2] := 30;
   WriteLn(SumBytes(arr, 3));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_untyped_out_parameter_initialization() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure FillPattern(out buffer; count: Integer; pattern: Byte);
 begin
@@ -59,13 +64,15 @@ begin
   WriteLn(bytes[0]);
   WriteLn(bytes[2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["170", "170"]);
 }
 
 #[test]
 fn test_untyped_var_parameter_record_mutation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TData = record A, B: Integer; end;
 procedure SwapFields(var buffer);
@@ -82,13 +89,15 @@ begin
   WriteLn(d.A);
   WriteLn(d.B);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20", "10"]);
 }
 
 #[test]
 fn test_untyped_parameter_move_wrapper() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure CopyBuffer(const src; var dst; size: Integer);
 begin
@@ -100,13 +109,15 @@ begin
   CopyBuffer(val1, val2, SizeOf(Integer));
   WriteLn(val2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["777"]);
 }
 
 #[test]
 fn test_untyped_parameter_with_string_data() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function FirstCharByte(const buf): Byte;
 var pb: PByte;
@@ -119,13 +130,15 @@ begin
   strVal := 'Pascal';
   WriteLn(FirstCharByte(strVal[1]));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["80"]);
 }
 
 #[test]
 fn test_untyped_parameter_byte_swap_utility() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure ByteSwap16(var buf);
 var pb: PByte; temp: Byte;
@@ -141,13 +154,15 @@ begin
   ByteSwap16(w);
   WriteLn(HexStr(w, 4));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3412"]);
 }
 
 #[test]
 fn test_untyped_parameter_with_float_data() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure DoubleRealBits(var data);
 var pr: PReal;
@@ -161,13 +176,15 @@ begin
   DoubleRealBits(r);
   WriteLn(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["25"]);
 }
 
 #[test]
 fn test_untyped_parameter_with_boolean_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure InvertBooleans(var buf; count: Integer);
 var pb: PBoolean; i: Integer;
@@ -187,13 +204,15 @@ begin
   WriteLn(flags[2]);
   WriteLn(flags[3]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False", "True", "False"]);
 }
 
 #[test]
 fn test_untyped_parameter_in_class_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStreamer = class
   public procedure WriteRaw(const data; size: Integer);
@@ -211,13 +230,15 @@ begin
   s.WriteRaw(num, SizeOf(Integer));
   s.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_untyped_parameter_checksum_calculation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function Checksum8(const buf; count: Integer): Byte;
 var pb: PByte; i: Integer;
@@ -234,13 +255,15 @@ begin
   arr[0] := $AA; arr[1] := $55; arr[2] := $FF;
   WriteLn(Checksum8(arr, 3));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn test_untyped_parameter_with_subrange_variable() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSub = 1..100;
 procedure InspectSub(const buffer);
@@ -254,13 +277,15 @@ begin
   val := 75;
   InspectSub(val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["75"]);
 }
 
 #[test]
 fn test_untyped_parameter_enum_variable() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMode = (mInit, mRun, mStop);
 procedure SetModeRaw(var buffer; modeVal: Byte);
@@ -275,13 +300,15 @@ begin
   SetModeRaw(m, Ord(mRun));
   WriteLn(Ord(m));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_untyped_parameter_multidimensional_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure ZeroMatrix(var matrix; elementCount: Integer);
 begin
@@ -294,13 +321,15 @@ begin
   WriteLn(mat[0, 0]);
   WriteLn(mat[1, 1]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "0"]);
 }
 
 #[test]
 fn test_untyped_parameter_default_size_wrapper() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure ProcessRaw(var buffer; size: Integer = 4);
 var pi: PInteger;
@@ -317,13 +346,15 @@ begin
   ProcessRaw(x);
   WriteLn(x);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_untyped_parameter_record_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBufferWrapper = record
   procedure LoadRaw(const source; count: Integer);
@@ -339,13 +370,15 @@ begin
   val := 99;
   bw.LoadRaw(val, SizeOf(Integer));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["99"]);
 }
 
 #[test]
 fn test_untyped_parameter_bitwise_not_buffer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure InvertBuffer(var buf; size: Integer);
 var pb: PByte; i: Integer;
@@ -363,13 +396,15 @@ begin
   InvertBuffer(b, 1);
   WriteLn(HexStr(b, 2));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["F0"]);
 }
 
 #[test]
 fn test_untyped_parameter_pointer_variable() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure ClearPointerVar(var ptrVar);
 var pp: ^Pointer;
@@ -383,13 +418,15 @@ begin
   ClearPointerVar(p);
   WriteLn(p = nil);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_untyped_parameter_shortstring_header() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function GetShortStringLength(const s): Byte;
 var pb: PByte;
@@ -402,13 +439,15 @@ begin
   ss := 'Short';
   WriteLn(GetShortStringLength(ss));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn test_untyped_parameter_chained_delegation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure InnerRaw(var buf; sz: Integer);
 begin
@@ -424,6 +463,7 @@ begin
   OuterRaw(b, 1);
   WriteLn(b);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["255"]);
 }

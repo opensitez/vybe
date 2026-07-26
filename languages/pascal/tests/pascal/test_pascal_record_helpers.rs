@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_record_helper_integer_extension() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntHelper = record helper for Integer
   public
@@ -22,13 +23,15 @@ begin
   WriteLn(x.IsEven);
   WriteLn(x.Square);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "16"]);
 }
 
 #[test]
 fn test_record_helper_string_extension() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStrHelper = record helper for String
   public
@@ -47,13 +50,15 @@ begin
   s := 'Pascal';
   WriteLn(s.Reversed);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["lacsaP"]);
 }
 
 #[test]
 fn test_record_helper_double_extension() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TDoubleHelper = record helper for Double
   public
@@ -66,13 +71,15 @@ begin
   d := 10.0;
   WriteLn(d.Half);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn test_record_helper_boolean_extension() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBoolHelper = record helper for Boolean
   public
@@ -88,13 +95,15 @@ begin
   b := True;
   WriteLn(b.AsString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["YES"]);
 }
 
 #[test]
 fn test_record_helper_custom_record() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPoint = record X, Y: Integer; end;
 type TPointHelper = record helper for TPoint
@@ -108,13 +117,15 @@ begin
   pt.X := 5; pt.Y := 6;
   WriteLn(pt.Area);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_record_helper_class_function() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPoint = record X, Y: Integer; end;
 type TPointHelper = record helper for TPoint
@@ -131,13 +142,15 @@ begin
   pt := TPoint.CreatePos(10, 20);
   WriteLn(pt.X.ToString + ',' + pt.Y.ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10,20"]);
 }
 
 #[test]
 fn test_record_helper_mutating_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntHelper = record helper for Integer
   public
@@ -154,13 +167,15 @@ begin
   val.DoubleSelf;
   WriteLn(val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_record_helper_property_getter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntHelper = record helper for Integer
   private
@@ -175,13 +190,15 @@ begin
   val := 42;
   WriteLn(val.IsPositive);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_record_helper_enum_extension() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStatus = (stPending, stActive, stDone);
 type TStatusHelper = record helper for TStatus
@@ -198,13 +215,15 @@ begin
   s := stDone;
   WriteLn(s.IsFinished);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_record_helper_char_extension() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCharHelper = record helper for Char
   public
@@ -220,13 +239,15 @@ begin
   c := '7';
   WriteLn(c.IsDigit);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_record_helper_literal_invocation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntHelper = record helper for Integer
   public
@@ -237,13 +258,15 @@ function TIntHelper.IncBy(val: Integer): Integer; begin Result := Self + val; en
 begin
   WriteLn(100.IncBy(25));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["125"]);
 }
 
 #[test]
 fn test_record_helper_multiple_helpers_latest_wins() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntHelper1 = record helper for Integer
   public function Describe: String;
@@ -259,13 +282,15 @@ begin
   x := 5;
   WriteLn(x.Describe);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Helper2:5"]);
 }
 
 #[test]
 fn test_record_helper_procedure_with_var_param() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntHelper = record helper for Integer
   public
@@ -283,13 +308,15 @@ begin
   a.SwapWith(b);
   WriteLn(a.ToString + ',' + b.ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20,10"]);
 }
 
 #[test]
 fn test_record_helper_word_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TWordHelper = record helper for Word
   public
@@ -302,13 +329,15 @@ begin
   w := $1234;
   WriteLn(HexStr(w.HighByte, 2));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["12"]);
 }
 
 #[test]
 fn test_record_helper_byte_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TByteHelper = record helper for Byte
   public
@@ -321,13 +350,15 @@ begin
   b := 255;
   WriteLn(b.ToHex);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FF"]);
 }
 
 #[test]
 fn test_record_helper_int64_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TInt64Helper = record helper for Int64
   public
@@ -340,13 +371,15 @@ begin
   v := 9000000000;
   WriteLn(v.IsPositive);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_record_helper_on_packed_record() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPackedData = packed record
   ID: Word;
@@ -366,13 +399,15 @@ begin
   data.ID := 100; data.Value := 5;
   WriteLn(data.CodeStr);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100-5"]);
 }
 
 #[test]
 fn test_record_helper_chaining_calls() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntHelper = record helper for Integer
   public
@@ -387,13 +422,15 @@ begin
   x := 5;
   WriteLn(x.AddTen.DoubleVal); // (5 + 10) * 2 = 30
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_record_helper_with_overloaded_methods() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntHelper = record helper for Integer
   public
@@ -409,13 +446,15 @@ begin
   WriteLn(x.Add(5));
   WriteLn(x.Add(2.5));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15", "12.5"]);
 }
 
 #[test]
 fn test_record_helper_array_element_invocation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntHelper = record helper for Integer
   public
@@ -428,6 +467,7 @@ begin
   arr[0] := 2; arr[1] := 3; arr[2] := 4;
   WriteLn(arr[1].Squared);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["9"]);
 }

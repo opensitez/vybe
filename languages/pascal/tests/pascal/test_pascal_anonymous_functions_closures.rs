@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_anonymous_func_basic_inline_invocation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TFunc = reference to function(a, b: Integer): Integer;
 var add: TFunc;
@@ -17,13 +18,15 @@ begin
   end;
   WriteLn(add(10, 20));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_anonymous_proc_basic_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPrinter = reference to procedure(const s: String);
 procedure ExecutePrinter(printer: TPrinter);
@@ -36,13 +39,15 @@ begin
     WriteLn(s);
   end);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AnonymousProcedureOutput"]);
 }
 
 #[test]
 fn test_anonymous_closure_variable_capture() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIncrementer = reference to function: Integer;
 function MakeCounter(initial: Integer): TIncrementer;
@@ -61,13 +66,15 @@ begin
   WriteLn(counter());
   WriteLn(counter());
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["11", "12"]);
 }
 
 #[test]
 fn test_anonymous_method_factory_pattern() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMultiplier = reference to function(x: Integer): Integer;
 function CreateMultiplier(factor: Integer): TMultiplier;
@@ -84,13 +91,15 @@ begin
   WriteLn(mult3(10));
   WriteLn(mult5(10));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30", "50"]);
 }
 
 #[test]
 fn test_anonymous_func_in_tlist() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TTask = reference to procedure;
@@ -104,13 +113,15 @@ begin
 
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Task1", "Task2"]);
 }
 
 #[test]
 fn test_anonymous_capturing_string_var() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStringProc = reference to procedure;
 var prefix: String; proc: TStringProc;
@@ -123,13 +134,15 @@ begin
   prefix := 'UpdatedPrefix:';
   proc();
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["UpdatedPrefix:Body"]);
 }
 
 #[test]
 fn test_anonymous_capturing_class_self() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TProc = reference to procedure;
 type TMyObj = class
@@ -154,13 +167,15 @@ begin
   runner();
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CapturedSelfVal:99"]);
 }
 
 #[test]
 fn test_anonymous_nested_closure() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TOuter = reference to function: reference to function: Integer;
 var outerFn: TOuter; innerFn: reference to function: Integer;
@@ -180,13 +195,15 @@ begin
   WriteLn(innerFn());
   WriteLn(innerFn());
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["101", "102"]);
 }
 
 #[test]
 fn test_anonymous_function_predicate_filter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPredicate = reference to function(x: Integer): Boolean;
 procedure FilterAndPrint(const arr: array of Integer; pred: TPredicate);
@@ -201,13 +218,15 @@ begin
     Result := x mod 2 = 0;
   end);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "4", "6"]);
 }
 
 #[test]
 fn test_anonymous_exception_handling_inside_body() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TSafeRunner = reference to procedure;
@@ -223,13 +242,15 @@ begin
   end;
   runner();
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AnonCaught:AnonError"]);
 }
 
 #[test]
 fn test_anonymous_capturing_record_struct() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRec = record Code: Integer; end;
 type TRecRunner = reference to procedure;
@@ -242,13 +263,15 @@ begin
   end;
   runner();
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["555"]);
 }
 
 #[test]
 fn test_anonymous_chained_execution() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TTransformer = reference to function(x: Integer): Integer;
 function Pipe(f1, f2: TTransformer): TTransformer;
@@ -266,13 +289,15 @@ begin
   combined := Pipe(doubleIt, addTen); // (5 * 2) + 10 = 20
   WriteLn(combined(5));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20"]);
 }
 
 #[test]
 fn test_anonymous_recursion_via_local_var() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TFact = reference to function(n: Integer): Integer;
 var fact: TFact;
@@ -284,13 +309,15 @@ begin
   end;
   WriteLn(fact(5));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["120"]);
 }
 
 #[test]
 fn test_anonymous_procedure_no_params() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSimpleProc = reference to procedure;
 var p: TSimpleProc;
@@ -301,13 +328,15 @@ begin
   end;
   p();
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["NoParamAnon"]);
 }
 
 #[test]
 fn test_anonymous_overloaded_outer_routine() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntProc = reference to procedure(v: Integer);
 type TStrProc = reference to procedure(v: String);
@@ -322,13 +351,15 @@ begin
   Exec(procedure(v: Integer) begin WriteLn('Int:' + v.ToString); end);
   Exec(procedure(v: String) begin WriteLn('Str:' + v); end);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Int:42", "Str:FortyTwo"]);
 }
 
 #[test]
 fn test_anonymous_capturing_multiple_variables() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCalc = reference to function: Integer;
 var a, b, c: Integer; calc: TCalc;
@@ -340,13 +371,15 @@ begin
   end;
   WriteLn(calc());
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_anonymous_nil_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TProc = reference to procedure;
 var p: TProc;
@@ -354,13 +387,15 @@ begin
   p := nil;
   WriteLn(Assigned(p));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False"]);
 }
 
 #[test]
 fn test_anonymous_function_returning_boolean() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCheck = reference to function(x: Integer): Boolean;
 var isEven: TCheck;
@@ -369,13 +404,15 @@ begin
   WriteLn(isEven(4));
   WriteLn(isEven(7));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_anonymous_capturing_loop_value_snapshot() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TProc = reference to procedure;
 var procs: array[0..2] of TProc; i: Integer;
@@ -393,13 +430,15 @@ begin
   procs[1]();
   procs[2]();
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "10", "20"]);
 }
 
 #[test]
 fn test_anonymous_procedure_in_record_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TProc = reference to procedure;
 type TRunnerRec = record
@@ -413,6 +452,7 @@ var r: TRunnerRec;
 begin
   r.Run(procedure begin WriteLn('RunnerRecAnonExecuted'); end);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RunnerRecAnonExecuted"]);
 }

@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_subrange_valid_assignment() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$R+}
 var sub: 1..10;
@@ -14,13 +15,15 @@ begin
   sub := 5;
   WriteLn(sub);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn test_subrange_upper_bound_overflow_erangeerror() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure TestOverflow;
@@ -36,13 +39,15 @@ begin
     on E: ERangeError do WriteLn('UpperRangeErrorCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["UpperRangeErrorCaught"]);
 }
 
 #[test]
 fn test_subrange_lower_bound_underflow_erangeerror() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure TestUnderflow;
@@ -58,13 +63,15 @@ begin
     on E: ERangeError do WriteLn('LowerRangeErrorCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["LowerRangeErrorCaught"]);
 }
 
 #[test]
 fn test_integer_overflow_eintoverflow() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$Q+}
 uses SysUtils;
@@ -83,13 +90,15 @@ begin
     on E: ERangeError do WriteLn('IntOverflowCaughtRange');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["IntOverflowCaught"]);
 }
 
 #[test]
 fn test_subrange_disabled_range_checks() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$R-} // Range checks OFF
 var sub: 1..5;
@@ -97,13 +106,15 @@ begin
   sub := 10; // Allowed without exception when R-
   WriteLn('NoRangeException');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["NoRangeException"]);
 }
 
 #[test]
 fn test_overflow_disabled_overflow_checks() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$Q-} // Overflow checks OFF
 var b: Byte;
@@ -112,13 +123,15 @@ begin
   b := b + 1; // Wraps around to 0
   WriteLn(b);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn test_subrange_inc_dec_boundary_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$R+}
 uses SysUtils;
@@ -135,13 +148,15 @@ begin
     on E: ERangeError do WriteLn('IncRangeErrorCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["IncRangeErrorCaught"]);
 }
 
 #[test]
 fn test_subrange_enum_bounds_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$R+}
 uses SysUtils;
@@ -159,13 +174,15 @@ begin
     on E: ERangeError do WriteLn('EnumRangeErrorCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["EnumRangeErrorCaught"]);
 }
 
 #[test]
 fn test_subrange_array_indexing_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$R+}
 uses SysUtils;
@@ -182,13 +199,15 @@ begin
     on E: ERangeError do WriteLn('ArrayIndexErrorCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ArrayIndexErrorCaught"]);
 }
 
 #[test]
 fn test_subrange_loop_iteration_safety() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$R+}
 var sub: 1..5; i: Integer;
@@ -199,13 +218,15 @@ begin
   end;
   WriteLn(sub);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn test_subrange_negative_bounds() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$R+}
 var sub: -10..-5;
@@ -213,13 +234,15 @@ begin
   sub := -7;
   WriteLn(sub);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["-7"]);
 }
 
 #[test]
 fn test_subrange_record_field_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$R+}
 uses SysUtils;
@@ -238,13 +261,15 @@ begin
     on E: ERangeError do WriteLn('RecordRangeErrorCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RecordRangeErrorCaught"]);
 }
 
 #[test]
 fn test_overflow_multiplication_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$Q+}
 uses SysUtils;
@@ -262,13 +287,15 @@ begin
     on E: ERangeError do WriteLn('MulOverflowCaughtRange');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MulOverflowCaught"]);
 }
 
 #[test]
 fn test_subrange_type_conversion_cast() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$R+}
 type TSmall = 1..10;
@@ -278,13 +305,15 @@ begin
   s := TSmall(val);
   WriteLn(s);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["8"]);
 }
 
 #[test]
 fn test_subrange_property_setter_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$R+}
 uses SysUtils;
@@ -302,13 +331,15 @@ begin
   end;
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["PropertyRangeErrorCaught"]);
 }
 
 #[test]
 fn test_overflow_int64_no_overflow() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$Q+}
 var a, b: Int64;
@@ -317,13 +348,15 @@ begin
   b := a * 10;
   WriteLn(b);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10000000000"]);
 }
 
 #[test]
 fn test_subrange_char_bounds() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$R+}
 var subChar: 'A'..'Z';
@@ -331,13 +364,15 @@ begin
   subChar := 'M';
   WriteLn(subChar);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["M"]);
 }
 
 #[test]
 fn test_subrange_char_overflow() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$R+}
 uses SysUtils;
@@ -353,13 +388,15 @@ begin
     on E: ERangeError do WriteLn('CharRangeErrorCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CharRangeErrorCaught"]);
 }
 
 #[test]
 fn test_subrange_pred_underflow() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$R+}
 uses SysUtils;
@@ -376,13 +413,15 @@ begin
     on E: ERangeError do WriteLn('PredRangeErrorCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["PredRangeErrorCaught"]);
 }
 
 #[test]
 fn test_subrange_succ_overflow() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$R+}
 uses SysUtils;
@@ -399,6 +438,7 @@ begin
     on E: ERangeError do WriteLn('SuccRangeErrorCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SuccRangeErrorCaught"]);
 }

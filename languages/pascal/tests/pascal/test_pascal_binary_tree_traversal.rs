@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_bst_insertion_and_inorder_traversal() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record
@@ -48,13 +49,15 @@ begin
   InOrder(root);
   FreeTree(root);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30", "50", "70"]);
 }
 
 #[test]
 fn test_bst_search_key() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Key: Integer; Left, Right: PNode; end;
@@ -90,13 +93,15 @@ begin
   WriteLn(Search(root, 99));
   FreeTree(root);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_preorder_traversal() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Key: Integer; Left, Right: PNode; end;
@@ -118,13 +123,15 @@ begin
   PreOrder(r);
   Dispose(l); Dispose(g); Dispose(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2", "3"]);
 }
 
 #[test]
 fn test_postorder_traversal() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Key: Integer; Left, Right: PNode; end;
@@ -146,13 +153,15 @@ begin
   PostOrder(r);
   Dispose(l); Dispose(g); Dispose(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "3", "1"]);
 }
 
 #[test]
 fn test_bst_min_and_max_key() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Key: Integer; Left, Right: PNode; end;
@@ -192,13 +201,15 @@ begin
   WriteLn(FindMax(root));
   FreeTree(root);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "90"]);
 }
 
 #[test]
 fn test_tree_height_calculation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Math;
 type PNode = ^TNode;
@@ -219,13 +230,15 @@ begin
   WriteLn(GetHeight(r));
   Dispose(l1); Dispose(l); Dispose(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn test_tree_node_count() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Left, Right: PNode; end;
@@ -245,13 +258,15 @@ begin
   WriteLn(CountNodes(r));
   Dispose(l); Dispose(g); Dispose(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn test_tree_key_sum() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Key: Integer; Left, Right: PNode; end;
@@ -271,13 +286,15 @@ begin
   WriteLn(SumKeys(r));
   Dispose(l); Dispose(g); Dispose(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_tree_mirror_inplace() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Key: Integer; Left, Right: PNode; end;
@@ -304,13 +321,15 @@ begin
   WriteLn(r^.Right^.Key);
   Dispose(l); Dispose(g); Dispose(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "2"]);
 }
 
 #[test]
 fn test_tree_with_string_key() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PStrNode = ^TStrNode;
      TStrNode = record Key: String; Left, Right: PStrNode; end;
@@ -345,13 +364,15 @@ begin
   InOrderStr(root);
   FreeStrTree(root);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Apple", "Banana", "Cherry"]);
 }
 
 #[test]
 fn test_is_valid_bst_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Key: Integer; Left, Right: PNode; end;
@@ -372,13 +393,15 @@ begin
   WriteLn(IsBST(r, -1000, 1000));
   Dispose(l); Dispose(g); Dispose(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_tree_leaf_count() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Left, Right: PNode; end;
@@ -399,13 +422,15 @@ begin
   WriteLn(CountLeaves(r));
   Dispose(l); Dispose(g); Dispose(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_tree_node_record_payload() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TData = record Name: String; Val: Integer; end;
 type PNode = ^TNode;
@@ -420,13 +445,15 @@ begin
   WriteLn(n^.Payload.Val);
   Dispose(n);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RootPayload", "777"]);
 }
 
 #[test]
 fn test_tree_level_order_traversal_mock() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Key: Integer; Left, Right: PNode; end;
@@ -451,13 +478,15 @@ begin
   PrintLevel2(r);
   Dispose(l); Dispose(g); Dispose(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2", "3"]);
 }
 
 #[test]
 fn test_lowest_common_ancestor_bst() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Key: Integer; Left, Right: PNode; end;
@@ -479,13 +508,15 @@ begin
   WriteLn(LCA(r, 10, 30));
   Dispose(l); Dispose(g); Dispose(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20"]);
 }
 
 #[test]
 fn test_bst_delete_leaf_node() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Key: Integer; Left, Right: PNode; end;
@@ -510,13 +541,15 @@ begin
   WriteLn(r^.Left = nil);
   Dispose(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_tree_path_sum_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Key: Integer; Left, Right: PNode; end;
@@ -537,13 +570,15 @@ begin
   WriteLn(HasPathSum(r, 99));
   Dispose(l); Dispose(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_tree_symmetric_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Key: Integer; Left, Right: PNode; end;
@@ -564,13 +599,15 @@ begin
   WriteLn(IsMirror(r^.Left, r^.Right));
   Dispose(l); Dispose(g); Dispose(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_tree_copy_structure() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Key: Integer; Left, Right: PNode; end;
@@ -597,13 +634,15 @@ begin
   WriteLn(copy^.Key);
   FreeTree(orig); FreeTree(copy);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["99"]);
 }
 
 #[test]
 fn test_tree_single_node_root() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record Key: Integer; Left, Right: PNode; end;
@@ -613,6 +652,7 @@ begin
   WriteLn(root^.Key);
   Dispose(root);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }

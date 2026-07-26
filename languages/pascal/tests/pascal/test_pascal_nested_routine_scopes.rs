@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_nested_procedure_reads_outer_local() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Outer;
 var outerVal: Integer;
@@ -21,13 +22,15 @@ end;
 begin
   Outer;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_nested_procedure_mutates_outer_local() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Counter;
 var count: Integer;
@@ -45,13 +48,15 @@ end;
 begin
   Counter;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn test_nested_function_returns_computed_outer_val() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function Calculate(base: Integer): Integer;
   function Multiplier: Integer;
@@ -64,13 +69,15 @@ end;
 begin
   WriteLn(Calculate(4));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["45"]);
 }
 
 #[test]
 fn test_three_level_nested_scoping() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Level1;
 var v1: Integer;
@@ -91,13 +98,15 @@ end;
 begin
   Level1;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_nested_procedure_shadows_outer_variable() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Outer;
 var x: Integer;
@@ -115,13 +124,15 @@ end;
 begin
   Outer;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["InnerString", "100"]);
 }
 
 #[test]
 fn test_nested_procedure_modifies_outer_string() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure BuildSentence;
 var s: String;
@@ -139,13 +150,15 @@ end;
 begin
   BuildSentence;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Pascal Is Awesome"]);
 }
 
 #[test]
 fn test_nested_procedure_modifies_outer_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TArr = array[1..3] of Integer;
 procedure FillArray;
@@ -165,13 +178,15 @@ end;
 begin
   FillArray;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20", "30"]);
 }
 
 #[test]
 fn test_sibling_nested_procedures() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Orchestrator;
 var data: Integer;
@@ -191,13 +206,15 @@ end;
 begin
   Orchestrator;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["150"]);
 }
 
 #[test]
 fn test_nested_procedure_called_in_loop() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure ProcessLoop;
 var sum: Integer;
@@ -215,13 +232,15 @@ end;
 begin
   ProcessLoop;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15"]);
 }
 
 #[test]
 fn test_nested_routine_accesses_outer_record() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TUser = record ID: Integer; Name: String; end;
 procedure HandleUser;
@@ -240,13 +259,15 @@ end;
 begin
   HandleUser;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "NewName"]);
 }
 
 #[test]
 fn test_nested_routine_accesses_outer_enum() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStatus = (stPending, stActive, stDone);
 procedure Workflow;
@@ -266,13 +287,15 @@ end;
 begin
   Workflow;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2"]);
 }
 
 #[test]
 fn test_nested_routine_has_own_local_vars() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Outer;
 var outerVal: Integer;
@@ -289,13 +312,15 @@ end;
 begin
   Outer;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_nested_function_in_class_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TWorker = class
   public procedure DoWork;
@@ -316,13 +341,15 @@ begin
   w.DoWork;
   w.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_nested_recursive_function() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function FactorialSum(n: Integer): Integer;
   function Fact(k: Integer): Integer;
@@ -336,13 +363,15 @@ end;
 begin
   WriteLn(FactorialSum(5));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["120"]);
 }
 
 #[test]
 fn test_nested_procedure_accesses_outer_var_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure OuterWithVar(var refVal: Integer);
   procedure InnerModify;
@@ -358,13 +387,15 @@ begin
   OuterWithVar(x);
   WriteLn(x);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_nested_procedure_accesses_outer_const() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure TestConstScope;
 const Multiplier = 100;
@@ -378,13 +409,15 @@ end;
 begin
   TestConstScope;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["500"]);
 }
 
 #[test]
 fn test_nested_routine_boolean_accumulator() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function CheckAllValid: Boolean;
 var allOk: Boolean;
@@ -402,13 +435,15 @@ end;
 begin
   WriteLn(CheckAllValid);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False"]);
 }
 
 #[test]
 fn test_nested_procedure_with_parameters_and_outer_vars() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Outer;
 var factor: Integer;
@@ -425,13 +460,15 @@ end;
 begin
   Outer;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_nested_procedure_pointer_deref_outer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure PointerScope;
 var val: Integer;
@@ -448,13 +485,15 @@ end;
 begin
   PointerScope;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["777"]);
 }
 
 #[test]
 fn test_nested_function_condition_evaluation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function FilterData(x: Integer): Boolean;
 var limit: Integer;
@@ -470,6 +509,7 @@ begin
   WriteLn(FilterData(75));
   WriteLn(FilterData(25));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }

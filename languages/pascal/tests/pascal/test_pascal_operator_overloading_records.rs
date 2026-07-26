@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_operator_add_subtract_record() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPoint = record
   X, Y: Integer;
@@ -31,13 +32,15 @@ begin
   WriteLn(resAdd.X.ToString + ',' + resAdd.Y.ToString);
   WriteLn(resSub.X.ToString + ',' + resSub.Y.ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["13,25", "7,15"]);
 }
 
 #[test]
 fn test_operator_multiply_scalar() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TVec = record
   X, Y: Integer;
@@ -53,13 +56,15 @@ begin
   res := v * 3;
   WriteLn(res.X.ToString + ',' + res.Y.ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["12,15"]);
 }
 
 #[test]
 fn test_operator_equal_notequal() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSize = record
   W, H: Integer;
@@ -83,13 +88,15 @@ begin
   WriteLn(s1 = s2);
   WriteLn(s1 <> s3);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_operator_implicit_conversion() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMoney = record
   Cents: Integer;
@@ -104,13 +111,15 @@ begin
   m := 500; // Implicit assignment from Integer
   WriteLn(m.Cents);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["500"]);
 }
 
 #[test]
 fn test_operator_explicit_conversion() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMoney = record
   Cents: Integer;
@@ -126,13 +135,15 @@ begin
   val := Integer(m); // Explicit cast
   WriteLn(val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["750"]);
 }
 
 #[test]
 fn test_operator_negative_positive() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TVec = record
   X, Y: Integer;
@@ -156,13 +167,15 @@ begin
   WriteLn(n.X.ToString + ',' + n.Y.ToString);
   WriteLn(p.X.ToString + ',' + p.Y.ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["-10,20", "10,-20"]);
 }
 
 #[test]
 fn test_operator_inc_dec() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCounter = record
   Value: Integer;
@@ -186,13 +199,15 @@ begin
   Dec(cnt);
   WriteLn(cnt.Value);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["11", "10"]);
 }
 
 #[test]
 fn test_operator_greaterthan_lessthan() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TScore = record
   Points: Integer;
@@ -214,13 +229,15 @@ begin
   WriteLn(s1 > s2);
   WriteLn(s2 < s1);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_operator_divide_scalar() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TVec = record
   X, Y: Integer;
@@ -236,13 +253,15 @@ begin
   res := v / 2;
   WriteLn(res.X.ToString + ',' + res.Y.ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50,25"]);
 }
 
 #[test]
 fn test_operator_chaining_expression() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPoint = record
   X: Integer;
@@ -258,13 +277,15 @@ begin
   res := p1 + p2 - p3; // (10 + 20) - 5 = 25
   WriteLn(res.X);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["25"]);
 }
 
 #[test]
 fn test_operator_complex_number_multiplication() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TComplex = record
   R, I: Integer;
@@ -283,13 +304,15 @@ begin
   res := c1 * c2; // (8-15) + (10+12)i = -7 + 22i
   WriteLn(res.R.ToString + '+' + res.I.ToString + 'i');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["-7+22i"]);
 }
 
 #[test]
 fn test_operator_greaterthanorequal_lessthanorequal() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TVal = record
   V: Integer;
@@ -305,13 +328,15 @@ begin
   WriteLn(v1 >= v2);
   WriteLn(v1 <= v2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_operator_in_custom_record_set() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRangeRec = record
   MinVal, MaxVal: Integer;
@@ -327,13 +352,15 @@ begin
   WriteLn(15 in r);
   WriteLn(25 in r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_operator_implicit_string_conversion() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMyStr = record
   Text: String;
@@ -349,13 +376,15 @@ begin
   strVal := m;          // Implicit TMyStr -> string
   WriteLn(strVal);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["HelloWrapper"]);
 }
 
 #[test]
 fn test_operator_logical_and_or_not() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBitFlags = record
   Bits: Byte;
@@ -373,13 +402,15 @@ begin
   WriteLn(HexStr(rAnd.Bits, 2));
   WriteLn(HexStr(rOr.Bits, 2));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["03", "3F"]);
 }
 
 #[test]
 fn test_operator_modulus() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNum = record
   V: Integer;
@@ -395,13 +426,15 @@ begin
   res := n1 mod n2;
   WriteLn(res.V);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_operator_leftshift_rightshift() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TWordRec = record
   W: Word;
@@ -419,13 +452,15 @@ begin
   WriteLn(rLeft.W);
   WriteLn(rRight.W);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["32", "4"]);
 }
 
 #[test]
 fn test_operator_commutative_overload() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TVec = record
   X: Integer;
@@ -442,13 +477,15 @@ begin
   r2 := 5 + v;
   WriteLn(r1.X = r2.X);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_operator_record_in_array_sum() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TItem = record
   Val: Integer;
@@ -464,13 +501,15 @@ begin
     sum := sum + items[i];
   WriteLn(sum.Val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_operator_intdiv() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRec = record
   V: Integer;
@@ -484,6 +523,7 @@ begin
   res := r1 div r2;
   WriteLn(res.V);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["6"]);
 }

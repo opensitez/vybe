@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_tstringstream_initial_datastring() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream;
@@ -15,13 +16,15 @@ begin
   WriteLn(ss.DataString);
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["InitialStringText"]);
 }
 
 #[test]
 fn test_tstringstream_writestring_append() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream;
@@ -32,13 +35,15 @@ begin
   WriteLn(ss.DataString);
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello World"]);
 }
 
 #[test]
 fn test_tstringstream_readstring_slice() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream;
@@ -47,13 +52,15 @@ begin
   WriteLn(ss.ReadString(5));
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello"]);
 }
 
 #[test]
 fn test_tstringstream_position_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream;
@@ -64,13 +71,15 @@ begin
   WriteLn(ss.ReadString(3));
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "cal"]);
 }
 
 #[test]
 fn test_tstringstream_size_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream;
@@ -81,13 +90,15 @@ begin
   WriteLn(ss.DataString);
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4", "Da"]);
 }
 
 #[test]
 fn test_tstringstream_clear_content() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream;
@@ -99,13 +110,15 @@ begin
   WriteLn(ss.DataString);
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "Fresh"]);
 }
 
 #[test]
 fn test_tstringstream_copy_to_memorystream() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream; ms: TMemoryStream;
@@ -116,13 +129,15 @@ begin
   WriteLn(ms.Size);
   ms.Free; ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["14"]);
 }
 
 #[test]
 fn test_tstringstream_multiline_text() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream;
@@ -133,13 +148,15 @@ begin
   WriteLn(ss.DataString);
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Line1", "Line2"]);
 }
 
 #[test]
 fn test_tstringstream_polymorphic_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 procedure AppendHeader(stream: TStream);
@@ -155,13 +172,15 @@ begin
   WriteLn(ss.DataString);
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["[HEADER]"]);
 }
 
 #[test]
 fn test_tstringstream_protection_finally() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream;
@@ -174,13 +193,15 @@ begin
     WriteLn('StringStreamFreed');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ProtectedStreamText", "StringStreamFreed"]);
 }
 
 #[test]
 fn test_tstringstream_append_formatted_numbers() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ss: TStringStream;
@@ -190,13 +211,15 @@ begin
   WriteLn(ss.DataString);
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Val: 100, Rate: 5.50"]);
 }
 
 #[test]
 fn test_tstringstream_json_building() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream;
@@ -206,13 +229,15 @@ begin
   WriteLn(ss.DataString);
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["{\"status\":\"ok\"}"]);
 }
 
 #[test]
 fn test_tstringstream_xml_building() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream;
@@ -222,13 +247,15 @@ begin
   WriteLn(ss.DataString);
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["<root><item>1</item></root>"]);
 }
 
 #[test]
 fn test_tstringstream_seek_sofromend() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream;
@@ -238,13 +265,15 @@ begin
   WriteLn(ss.Position);
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn test_tstringstream_empty_initial_text() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream;
@@ -254,13 +283,15 @@ begin
   WriteLn(ss.DataString = '');
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "True"]);
 }
 
 #[test]
 fn test_tstringstream_overwrite_middle_character() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream;
@@ -271,13 +302,15 @@ begin
   WriteLn(ss.DataString);
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ABC"]);
 }
 
 #[test]
 fn test_tstringstream_loop_string_building() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream; i: Integer;
@@ -291,13 +324,15 @@ begin
   WriteLn(ss.DataString);
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1-2-3"]);
 }
 
 #[test]
 fn test_tstringstream_readbuffer_into_char_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream; chars: array[0..2] of Char;
@@ -307,13 +342,15 @@ begin
   WriteLn(chars[0] + chars[1] + chars[2]);
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["XYZ"]);
 }
 
 #[test]
 fn test_tstringstream_utf8_encoding_creation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ss: TStringStream;
@@ -322,13 +359,15 @@ begin
   WriteLn(ss.DataString);
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["UTF8StringText"]);
 }
 
 #[test]
 fn test_tstringstream_datastring_reassignment() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var ss: TStringStream;
@@ -339,6 +378,7 @@ begin
   WriteLn(ss.DataString);
   ss.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Second"]);
 }

@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_try_except_basic_catch() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -16,13 +17,15 @@ begin
     WriteLn('Handled');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Handled"]);
 }
 
 #[test]
 fn test_try_except_on_e_exception_message() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -32,13 +35,15 @@ begin
     on E: Exception do WriteLn(E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SpecificMessage"]);
 }
 
 #[test]
 fn test_try_except_div_by_zero() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var a, b, c: Integer;
@@ -51,13 +56,15 @@ begin
     on E: EDivByZero do WriteLn('DivByZeroCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DivByZeroCaught"]);
 }
 
 #[test]
 fn test_try_except_multiple_on_clauses() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure CauseError(kind: Integer);
@@ -74,13 +81,15 @@ begin
   CauseError(1);
   CauseError(2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ArgErr:BadArg", "OpErr:BadOp"]);
 }
 
 #[test]
 fn test_try_except_else_fallback() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -92,13 +101,15 @@ begin
     WriteLn('FallbackElseBlock');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FallbackElseBlock"]);
 }
 
 #[test]
 fn test_try_except_inside_loop() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var i: Integer;
@@ -113,13 +124,15 @@ begin
     end;
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["OK:1", "Handled:2", "OK:3"]);
 }
 
 #[test]
 fn test_try_except_caller_stack_catch() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure Helper;
@@ -133,13 +146,15 @@ begin
     on E: Exception do WriteLn('CallerCaught:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CallerCaught:NestedFailure"]);
 }
 
 #[test]
 fn test_try_except_suppress_and_continue() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -150,13 +165,15 @@ begin
   end;
   WriteLn('ExecutionContinued');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ExecutionContinued"]);
 }
 
 #[test]
 fn test_try_except_return_default_fallback_value() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 function SafeDivide(a, b: Integer): Integer;
@@ -171,13 +188,15 @@ begin
   WriteLn(SafeDivide(10, 2));
   WriteLn(SafeDivide(10, 0));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5", "-1"]);
 }
 
 #[test]
 fn test_try_except_in_constructor() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TFailObj = class
@@ -195,13 +214,15 @@ begin
     on E: Exception do WriteLn('CtorCaught:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CtorCaught:ConstructorFailed"]);
 }
 
 #[test]
 fn test_try_except_in_record_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TRecWorker = record
@@ -219,13 +240,15 @@ begin
     on E: Exception do WriteLn(E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RecMethodErr"]);
 }
 
 #[test]
 fn test_try_except_retry_pattern() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var attempts: Integer;
@@ -243,13 +266,22 @@ begin
     end;
   end;
 end.
-"#);
-    assert_eq!(out, vec!["RetryingAttempt:1", "RetryingAttempt:2", "SuccessOnAttempt:3"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec![
+            "RetryingAttempt:1",
+            "RetryingAttempt:2",
+            "SuccessOnAttempt:3"
+        ]
+    );
 }
 
 #[test]
 fn test_try_except_no_exception_normal_execution() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -260,13 +292,15 @@ begin
   end;
   WriteLn('Completed');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["NormalFlow", "Completed"]);
 }
 
 #[test]
 fn test_try_except_range_error() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure TriggerRangeError;
@@ -282,13 +316,15 @@ begin
     on E: ERangeError do WriteLn('RangeErrorCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RangeErrorCaught"]);
 }
 
 #[test]
 fn test_try_except_access_violation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var p: PInteger;
@@ -300,13 +336,15 @@ begin
     on E: EAccessViolation do WriteLn('AVCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AVCaught"]);
 }
 
 #[test]
 fn test_try_except_formatting_string_error() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -316,13 +354,15 @@ begin
     on E: EConvertError do WriteLn('ConvertErrCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ConvertErrCaught"]);
 }
 
 #[test]
 fn test_try_except_with_local_vars() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var status: String;
@@ -336,13 +376,15 @@ begin
   end;
   WriteLn(status);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["InExcept:Boom"]);
 }
 
 #[test]
 fn test_try_except_nested_in_finally() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -356,13 +398,15 @@ begin
     WriteLn('OuterFinallyExecuted');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["InnerHandled:InnerError", "OuterFinallyExecuted"]);
 }
 
 #[test]
 fn test_try_except_generic_exception_class_catch() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -372,13 +416,15 @@ begin
     on E: Exception do WriteLn('BaseExceptionCaught:' + E.ClassName);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["BaseExceptionCaught:EInvalidArgument"]);
 }
 
 #[test]
 fn test_try_except_empty_catch_block() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -388,6 +434,7 @@ begin
   end;
   WriteLn('SafelyIgnored');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SafelyIgnored"]);
 }

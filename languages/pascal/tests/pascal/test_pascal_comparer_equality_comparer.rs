@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_tcomparer_default_integer_compare() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Defaults;
 var cmp: IComparer<Integer>;
@@ -16,13 +17,15 @@ begin
   WriteLn(cmp.Compare(20, 10) > 0);
   WriteLn(cmp.Compare(15, 15) = 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True", "True"]);
 }
 
 #[test]
 fn test_tequalitycomparer_default_string_equals() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Defaults;
 var eq: IEqualityComparer<String>;
@@ -31,13 +34,15 @@ begin
   WriteLn(eq.Equals('hello', 'hello'));
   WriteLn(eq.Equals('hello', 'world'));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_custom_string_length_comparer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Defaults;
 var cmp: IComparer<String>;
@@ -50,13 +55,15 @@ begin
   WriteLn(cmp.Compare('A', 'BBB') < 0);
   WriteLn(cmp.Compare('XXXX', 'YY') > 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_custom_descending_integer_comparer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections, Generics.Defaults;
 var list: TList<Integer>;
@@ -73,13 +80,15 @@ begin
   WriteLn(list[2]);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50", "30", "10"]);
 }
 
 #[test]
 fn test_case_insensitive_string_equality_comparer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils, Generics.Defaults, Generics.Collections;
 var dict: TDictionary<String, Integer>;
@@ -99,13 +108,15 @@ begin
   WriteLn(dict['keyname']);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100"]);
 }
 
 #[test]
 fn test_record_multi_field_comparer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Defaults;
 type TPerson = record Name: String; Age: Integer; end;
@@ -121,13 +132,15 @@ begin
   p2.Name := 'Alice'; p2.Age := 30;
   WriteLn(cmp.Compare(p1, p2) < 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_float_comparer_with_tolerance() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Defaults;
 var cmp: IComparer<Real>;
@@ -142,13 +155,15 @@ begin
   WriteLn(cmp.Compare(1.0001, 1.0002) = 0);
   WriteLn(cmp.Compare(1.0, 2.0) < 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_enum_custom_comparer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Defaults;
 type TPriority = (pLow, pMed, pHigh);
@@ -161,13 +176,15 @@ begin
     end);
   WriteLn(cmp.Compare(pLow, pHigh) < 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_tarray_sort_with_custom_comparer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections, Generics.Defaults;
 var arr: TArray<String>;
@@ -183,13 +200,15 @@ begin
   WriteLn(arr[1]);
   WriteLn(arr[2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["apple", "banana", "cherry"]);
 }
 
 #[test]
 fn test_custom_class_instance_comparer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Defaults;
 type TItem = class
@@ -209,13 +228,15 @@ begin
   WriteLn(cmp.Compare(i1, i2) < 0);
   i1.Free; i2.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_gethashcode_integer_default() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Defaults;
 var eq: IEqualityComparer<Integer>;
@@ -224,13 +245,15 @@ begin
   WriteLn(eq.GetHashCode(100) = eq.GetHashCode(100));
   WriteLn(eq.GetHashCode(100) <> eq.GetHashCode(200));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_gethashcode_custom_record() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Defaults;
 type TPoint = record X, Y: Integer; end;
@@ -250,13 +273,15 @@ begin
   WriteLn(eq.Equals(pt1, pt2));
   WriteLn(eq.GetHashCode(pt1) = eq.GetHashCode(pt2));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_tequalitycomparer_default_boolean() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Defaults;
 var eq: IEqualityComparer<Boolean>;
@@ -265,13 +290,15 @@ begin
   WriteLn(eq.Equals(True, True));
   WriteLn(eq.Equals(True, False));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_tcomparer_binarysearch() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections, Generics.Defaults;
 var list: TList<Integer>; idx: Integer;
@@ -282,13 +309,15 @@ begin
     WriteLn(idx);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_custom_comparer_reusability() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections, Generics.Defaults;
 var cmp: IComparer<Integer>;
@@ -304,13 +333,15 @@ begin
   WriteLn(l2[0]);
   l1.Free; l2.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "10"]);
 }
 
 #[test]
 fn test_custom_equality_comparer_for_boolean_flags() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Defaults;
 var eq: IEqualityComparer<Boolean>;
@@ -320,13 +351,15 @@ begin
     function(const Value: Boolean): Integer begin Result := Ord(Value); end);
   WriteLn(eq.Equals(False, False));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_comparer_string_case_insensitive_order() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils, Generics.Defaults;
 var cmp: IComparer<String>;
@@ -338,13 +371,15 @@ begin
     end);
   WriteLn(cmp.Compare('apple', 'APPLE') = 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_tcomparer_real_default() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Defaults;
 var cmp: IComparer<Real>;
@@ -352,13 +387,15 @@ begin
   cmp := TComparer<Real>.Default;
   WriteLn(cmp.Compare(1.5, 2.5) < 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_tequalitycomparer_real_default() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Defaults;
 var eq: IEqualityComparer<Real>;
@@ -366,13 +403,15 @@ begin
   eq := TEqualityComparer<Real>.Default;
   WriteLn(eq.Equals(3.14, 3.14));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_custom_comparer_even_odd_partitioning() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections, Generics.Defaults;
 var list: TList<Integer>;
@@ -388,6 +427,7 @@ begin
   WriteLn(list[1] mod 2);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "0"]);
 }

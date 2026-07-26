@@ -241,7 +241,7 @@ type TInit=class public FReady:Boolean; constructor Create; end;
 constructor TInit.Create; begin FReady:=true; end;
 var o:TInit; begin o:=TInit.Create; WriteLn(o.FReady); o.Free; end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -255,7 +255,7 @@ class var TRes.Freed:Boolean;
 destructor TRes.Destroy; begin Freed:=true; inherited; end;
 var r:TRes; begin TRes.Freed:=false; r:=TRes.Create; r.Free; WriteLn(TRes.Freed); end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -454,7 +454,7 @@ type TSafe=class public FOk:Boolean; constructor Create; end;
 constructor TSafe.Create; begin FOk:=true; end;
 var s:TSafe; begin s:=TSafe.Create; WriteLn(s.FOk); s.Free; end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -524,7 +524,7 @@ constructor TFlag.Create; begin Alive:=true; end;
 destructor TFlag.Destroy; begin Alive:=false; inherited; end;
 var f:TFlag; begin f:=TFlag.Create; f.Free; WriteLn(TFlag.Alive); end."#
         ),
-        &["false"]
+        &["False"]
     );
 }
 

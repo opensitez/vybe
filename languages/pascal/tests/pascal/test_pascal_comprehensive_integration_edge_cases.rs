@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_integration_generic_pipeline_with_interfaces() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 
@@ -50,13 +51,15 @@ begin
   proc.RunAll;
   proc.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TaskDone:Alpha", "TaskDone:Beta"]);
 }
 
 #[test]
 fn test_integration_stream_serialization_pipeline() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 
@@ -88,13 +91,15 @@ begin
     ms.Free;
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["101:1500.75"]);
 }
 
 #[test]
 fn test_integration_custom_exception_hierarchy_handling() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 
@@ -119,13 +124,15 @@ begin
     on E: EAppError do WriteLn('AppError');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ValError:Age=CannotBeNegative"]);
 }
 
 #[test]
 fn test_integration_operator_overloading_with_record_helpers() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TVec2D = record
   X, Y: Double;
@@ -147,13 +154,15 @@ begin
   v3 := v1 + v2; // (3, 4)
   WriteLn(v3.LengthSq); // 9 + 16 = 25
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["25"]);
 }
 
 #[test]
 fn test_integration_anonymous_closure_event_dispatcher() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 
@@ -186,13 +195,15 @@ begin
 
   bus.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Sub1:Broadcast", "Sub2:Broadcast"]);
 }
 
 #[test]
 fn test_integration_custom_memory_pool_allocator() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 
@@ -229,13 +240,15 @@ begin
   WriteLn(Pop);
   WriteLn(Pop);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30", "20", "10"]);
 }
 
 #[test]
 fn test_integration_financial_currency_calculation_engine() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 
@@ -260,13 +273,15 @@ begin
   total := CalculateTotal(cart, 0.10);      // 50.00 * 1.10 = 55.00
   WriteLn(CurrToStr(total));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["55"]);
 }
 
 #[test]
 fn test_integration_json_array_object_round_trip() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 
@@ -284,13 +299,15 @@ end;
 begin
   WriteLn(Pos('ItemA', BuildJSON) > 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_integration_xml_document_generation_parsing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses XmlIntf, XmlDoc;
 
@@ -307,13 +324,15 @@ end;
 begin
   WriteLn(GenerateAndParseXML);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SUCCESS"]);
 }
 
 #[test]
 fn test_integration_rtti_property_inspector() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 
@@ -336,13 +355,15 @@ begin
 
   ctx.Free; p.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Name=Alice", "Age=30"]);
 }
 
 #[test]
 fn test_integration_multithreaded_atomic_accumulator() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SyncObjs;
 
@@ -360,13 +381,15 @@ begin
   AtomicAdd(30);
   WriteLn(globalAcc);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_integration_rtti_custom_attribute_validation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 
@@ -401,13 +424,15 @@ begin
   WriteLn(ValidateModel(m));
   m.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False", "True"]);
 }
 
 #[test]
 fn test_integration_nested_try_finally_resource_chain() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 
@@ -433,13 +458,18 @@ end;
 begin
   ProcessPipeline;
 end.
-"#);
-    assert_eq!(out, vec!["MS1Created", "MS2Created", "MS2Freed", "MS1Freed"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["MS1Created", "MS2Created", "MS2Freed", "MS1Freed"]
+    );
 }
 
 #[test]
 fn test_integration_variant_array_matrix_transform() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Variants;
 
@@ -456,13 +486,15 @@ begin
   WriteLn(m[0, 0] + m[1, 1]);
   VarClear(m);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn test_integration_binary_reader_writer_record_stream() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 
@@ -483,13 +515,15 @@ begin
 
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "StreamPayload", "True"]);
 }
 
 #[test]
 fn test_integration_subrange_overflow_resilience() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$R+}
 uses SysUtils;
@@ -509,13 +543,15 @@ begin
     on E: ERangeError do WriteLn('Failed');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "BoundsCheckOK"]);
 }
 
 #[test]
 fn test_integration_guid_generation_comparison() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 
@@ -525,13 +561,15 @@ begin
   g2 := g1;
   WriteLn(IsEqualGUID(g1, g2));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_integration_inline_assembly_vector_addition() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 
 function FastAdd(a, b: Integer): Integer;
@@ -544,13 +582,15 @@ end;
 begin
   WriteLn(FastAdd(123, 456));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["579"]);
 }
 
 #[test]
 fn test_integration_locale_currency_custom_format_settings() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 
@@ -562,17 +602,23 @@ begin
   s := FormatFloat('#,##0.00', 9876543.21, fs);
   WriteLn(s);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["9.876.543,21"]);
 }
 
 #[test]
 fn test_integration_final_2000_tests_milestone_completion() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 begin
   WriteLn('ALL_2000_PASCOAL_UNIT_TESTS_COMPLETED_SUCCESSFULLY');
 end.
-"#);
-    assert_eq!(out, vec!["ALL_2000_PASCOAL_UNIT_TESTS_COMPLETED_SUCCESSFULLY"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["ALL_2000_PASCOAL_UNIT_TESTS_COMPLETED_SUCCESSFULLY"]
+    );
 }

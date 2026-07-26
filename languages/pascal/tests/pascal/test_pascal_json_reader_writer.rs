@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_jsonobject_create_and_addpair_string() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var json: TJSONObject;
@@ -16,13 +17,15 @@ begin
   WriteLn(json.Values['title'].Value);
   json.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["PascalDoc"]);
 }
 
 #[test]
 fn test_jsonobject_addpair_number_and_boolean() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var json: TJSONObject;
@@ -34,13 +37,15 @@ begin
   WriteLn(json.Values['active'].Value);
   json.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["101", "true"]);
 }
 
 #[test]
 fn test_jsonarray_add_elements() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var arr: TJSONArray;
@@ -53,13 +58,15 @@ begin
   WriteLn(arr.Items[1].Value);
   arr.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "Item1", "Item2"]);
 }
 
 #[test]
 fn test_jsonobject_tostring_output() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var json: TJSONObject;
@@ -69,13 +76,15 @@ begin
   WriteLn(json.ToString);
   json.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["{\"key\":\"value\"}"]);
 }
 
 #[test]
 fn test_jsonobject_parsejsonvalue_object() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var val: TJSONValue; json: TJSONObject;
@@ -86,13 +95,15 @@ begin
   WriteLn(json.Values['age'].Value);
   json.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Alice", "30"]);
 }
 
 #[test]
 fn test_jsonobject_parsejsonvalue_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var val: TJSONValue; arr: TJSONArray;
@@ -103,13 +114,15 @@ begin
   WriteLn(arr.Items[1].Value);
   arr.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "green"]);
 }
 
 #[test]
 fn test_jsonobject_nested_object() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var root, child: TJSONObject;
@@ -122,13 +135,15 @@ begin
   WriteLn((root.Values['address'] as TJSONObject).Values['city'].Value);
   root.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Metropolis"]);
 }
 
 #[test]
 fn test_jsonobject_getvalue_generic_helper() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var json: TJSONObject;
@@ -138,13 +153,15 @@ begin
   WriteLn(json.GetValue<Integer>('count'));
   json.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_jsonobject_jsonnull_handling() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var json: TJSONObject;
@@ -154,13 +171,15 @@ begin
   WriteLn(json.Values['data'] is TJSONNull);
   json.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_jsonobject_contains_key_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var json: TJSONObject;
@@ -171,13 +190,15 @@ begin
   WriteLn(json.Values['missing'] = nil);
   json.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_jsonobject_pairs_count_and_iteration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var json: TJSONObject; pair: TJSONPair;
@@ -189,13 +210,15 @@ begin
     WriteLn(pair.JsonString.Value + '=' + pair.JsonValue.Value);
   json.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "a=1", "b=2"]);
 }
 
 #[test]
 fn test_jsonarray_for_in_loop() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var arr: TJSONArray; val: TJSONValue;
@@ -206,13 +229,15 @@ begin
     WriteLn(val.Value);
   arr.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["X", "Y"]);
 }
 
 #[test]
 fn test_jsonobject_removepair() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var json: TJSONObject; pair: TJSONPair;
@@ -224,13 +249,15 @@ begin
   pair.Free;
   json.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn test_record_to_jsonobject_serialization() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 type TUserRec = record ID: Integer; Name: String; end;
@@ -247,13 +274,15 @@ begin
   WriteLn(json.ToString);
   json.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["{\"id\":99,\"name\":\"Bob\"}"]);
 }
 
 #[test]
 fn test_jsonobject_to_record_deserialization() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 type TUserRec = record ID: Integer; Name: String; end;
@@ -269,13 +298,15 @@ begin
   WriteLn(user.ID.ToString + ':' + user.Name);
   json.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["88:Charlie"]);
 }
 
 #[test]
 fn test_jsonobject_clone_deep_copy() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var original, cloneObj: TJSONObject;
@@ -286,13 +317,15 @@ begin
   WriteLn(cloneObj.Values['key'].Value);
   original.Free; cloneObj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["val"]);
 }
 
 #[test]
 fn test_jsonobject_format_pretty_print() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var json: TJSONObject;
@@ -302,13 +335,15 @@ begin
   WriteLn(json.Format(2) <> '');
   json.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_jsonarray_nested_objects() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var arr: TJSONArray; o1, o2: TJSONObject;
@@ -322,13 +357,15 @@ begin
   WriteLn((arr.Items[1] as TJSONObject).Values['id'].Value);
   arr.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2"]);
 }
 
 #[test]
 fn test_jsonobject_parse_invalid_returns_nil() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var val: TJSONValue;
@@ -336,13 +373,15 @@ begin
   val := TJSONObject.ParseJSONValue('{invalid_json}');
   WriteLn(val = nil);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_jsonobject_protection_finally() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.JSON;
 var json: TJSONObject;
@@ -356,6 +395,7 @@ begin
     WriteLn('JSONFreedInFinally');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["JSONCreated", "JSONFreedInFinally"]);
 }

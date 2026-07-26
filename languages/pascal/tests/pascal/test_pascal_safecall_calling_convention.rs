@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_safecall_interface_method_basic() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ISafeIntf = interface
   ['{11111111-2222-3333-4444-555555555555}']
@@ -24,13 +25,15 @@ begin
   s := TSafeImpl.Create;
   s.DoSafeWork;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SafecallExecuted"]);
 }
 
 #[test]
 fn test_safecall_exception_marshaling_to_caller() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ISafeErrorIntf = interface
@@ -53,13 +56,15 @@ begin
     on E: Exception do WriteLn('CallerCaughtSafecall:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CallerCaughtSafecall:SafecallErrorOccurred"]);
 }
 
 #[test]
 fn test_safecall_function_return_value() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ISafeCalc = interface
   ['{33333333-4444-5555-6666-777777777777}']
@@ -77,13 +82,15 @@ begin
   calc := TSafeCalcImpl.Create;
   WriteLn(calc.Add(20, 30));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn test_safecall_out_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ISafeOut = interface
   ['{44444444-5555-6666-7777-888888888888}']
@@ -102,13 +109,15 @@ begin
   obj.GetInfo(text);
   WriteLn(text);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SafecallOutText"]);
 }
 
 #[test]
 fn test_safecall_var_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ISafeMutator = interface
   ['{55555555-6666-7777-8888-999999999999}']
@@ -128,13 +137,15 @@ begin
   obj.MultiplyVar(val);
   WriteLn(val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn test_safecall_record_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TDataRec = record Code: Integer; Msg: String; end;
 type ISafeRecHandler = interface
@@ -154,13 +165,15 @@ begin
   obj := TSafeRecImpl.Create;
   obj.ProcessRec(rec);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100:RecData"]);
 }
 
 #[test]
 fn test_safecall_enum_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMode = (mOff, mOn);
 type ISafeMode = interface
@@ -179,13 +192,15 @@ begin
   obj := TSafeModeImpl.Create;
   obj.SetMode(mOn);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Mode:1"]);
 }
 
 #[test]
 fn test_safecall_returning_boolean() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ISafeCheck = interface
   ['{88888888-9999-0000-1111-222222222222}']
@@ -204,13 +219,15 @@ begin
   WriteLn(obj.CheckValue(75));
   WriteLn(obj.CheckValue(25));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_safecall_returning_real() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ISafeMath = interface
   ['{99999999-0000-1111-2222-333333333333}']
@@ -228,13 +245,15 @@ begin
   obj := TSafeMathImpl.Create;
   WriteLn(obj.SqrtVal(25.0));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn test_safecall_default_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ISafeDefault = interface
   ['{00000000-1111-2222-3333-444444444444}']
@@ -253,13 +272,15 @@ begin
   obj.Execute;
   obj.Execute('CustomPrefix');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["EXEC:DefaultPrefix", "EXEC:CustomPrefix"]);
 }
 
 #[test]
 fn test_safecall_multiple_methods_in_interface() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ISafeMulti = interface
   ['{10101010-2020-3030-4040-505050505050}']
@@ -277,13 +298,15 @@ begin
   obj.Step1;
   obj.Step2;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Step1Executed", "Step2Executed"]);
 }
 
 #[test]
 fn test_safecall_safecallerror_virtual_override() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSafeCustomObj = class(TInterfacedObject)
   public function SafeCallError(errorCode: HRESULT; ErrorAddr: Pointer): HRESULT; override;
@@ -299,13 +322,15 @@ begin
   WriteLn(Assigned(obj));
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_safecall_standalone_procedure_declaration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure StandaloneSafeProc(msg: String); safecall;
 begin
@@ -314,13 +339,15 @@ end;
 begin
   StandaloneSafeProc('Hello');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["StandaloneSafecall:Hello"]);
 }
 
 #[test]
 fn test_safecall_standalone_function_declaration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function StandaloneSafeFunc(x, y: Integer): Integer; safecall;
 begin
@@ -329,13 +356,15 @@ end;
 begin
   WriteLn(StandaloneSafeFunc(6, 7));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_safecall_in_subclass_virtual_override() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseSafe = class(TInterfacedObject)
   public procedure DoWork; virtual; safecall;
@@ -352,13 +381,15 @@ begin
   b.DoWork;
   b.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SubSafe"]);
 }
 
 #[test]
 fn test_safecall_array_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TArr = array[1..3] of Integer;
 type ISafeArrHandler = interface
@@ -378,13 +409,15 @@ begin
   obj := TSafeArrImpl.Create;
   obj.ProcessArr(a);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_safecall_nested_interface_call() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ISafeCore = interface
   ['{30303030-4040-5050-6060-707070707070}']
@@ -400,13 +433,15 @@ begin
   core := TSafeCoreImpl.Create;
   core.RunCore;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["NestedSafeCoreRun"]);
 }
 
 #[test]
 fn test_safecall_div_by_zero_exception() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ISafeDiv = interface
@@ -430,13 +465,15 @@ begin
     on E: EDivByZero do WriteLn('CaughtSafecallDivByZero');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CaughtSafecallDivByZero"]);
 }
 
 #[test]
 fn test_safecall_const_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ISafeConst = interface
   ['{50505050-6060-7070-8080-909090909090}']
@@ -454,13 +491,15 @@ begin
   obj := TSafeConstImpl.Create;
   obj.LogConst('ImmutableSafecallText');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CONST:ImmutableSafecallText"]);
 }
 
 #[test]
 fn test_safecall_loop_execution() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ISafeLoop = interface
   ['{60606060-7070-8080-9090-000000000000}']
@@ -479,6 +518,7 @@ begin
   for i := 1 to 3 do
     obj.Ping(i);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Ping:1", "Ping:2", "Ping:3"]);
 }

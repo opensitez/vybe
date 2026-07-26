@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_virtual_method_overriding() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TAnimal = class
   public procedure MakeSound; virtual;
@@ -22,13 +23,15 @@ begin
   a.MakeSound;
   a.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Bark"]);
 }
 
 #[test]
 fn test_abstract_method_invocation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TShape = class
   public function GetArea: Real; virtual; abstract;
@@ -46,13 +49,15 @@ begin
   WriteLn(s.GetArea);
   s.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["16"]);
 }
 
 #[test]
 fn test_polymorphic_array_dispatch() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseWidget = class
   public procedure Render; virtual;
@@ -76,13 +81,15 @@ begin
   for i := 1 to 2 do
     widgets[i].Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Button", "Label"]);
 }
 
 #[test]
 fn test_inherited_method_call_in_override() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TParent = class
   public procedure Greet; virtual;
@@ -102,13 +109,15 @@ begin
   c.Greet;
   c.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello Parent", "Hello Child"]);
 }
 
 #[test]
 fn test_three_level_override_hierarchy() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TLevel1 = class
   public procedure Action; virtual;
@@ -128,13 +137,15 @@ begin
   obj.Action;
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["L3"]);
 }
 
 #[test]
 fn test_virtual_destructor_polymorphism() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseResource = class
   public destructor Destroy; override;
@@ -149,13 +160,15 @@ begin
   res := TCustomResource.Create;
   res.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CustomCleaned", "BaseCleaned"]);
 }
 
 #[test]
 fn test_dynamic_method_specifier() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TDynBase = class
   public procedure Exec; dynamic;
@@ -171,13 +184,15 @@ begin
   d.Exec;
   d.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DynSub"]);
 }
 
 #[test]
 fn test_virtual_method_called_by_base_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TFramework = class
   protected procedure ProcessStep; virtual;
@@ -200,13 +215,15 @@ begin
   app.RunFramework;
   app.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Start", "AppCustomStep", "End"]);
 }
 
 #[test]
 fn test_abstract_class_mixed_concrete_methods() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TAbstractLogger = class
   public procedure LogHeader;
@@ -224,13 +241,15 @@ begin
   l.LogBody('Entry 1');
   l.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["=== LOG ===", "Entry 1"]);
 }
 
 #[test]
 fn test_override_function_returning_record() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPoint = record X, Y: Integer; end;
 type TProvider = class
@@ -249,13 +268,15 @@ begin
   WriteLn(pt.Y);
   p.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "200"]);
 }
 
 #[test]
 fn test_override_procedure_mutates_state() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCounter = class
   public Value: Integer;
@@ -274,13 +295,15 @@ begin
   WriteLn(c.Value);
   c.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["12"]);
 }
 
 #[test]
 fn test_virtual_method_is_type_check_before_call() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBase = class procedure Action; virtual; end;
 type TSub = class(TBase) procedure Action; override; end;
@@ -293,13 +316,15 @@ begin
     (b as TSub).Action;
   b.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Sub"]);
 }
 
 #[test]
 fn test_inherited_call_in_middle_override() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TA = class procedure Step; virtual; end;
 type TB = class(TA) procedure Step; override; end;
@@ -313,13 +338,15 @@ begin
   obj.Step;
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["C", "B", "A"]);
 }
 
 #[test]
 fn test_virtual_function_with_string_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TFormatter = class
   public function FormatText(s: String): String; virtual;
@@ -335,13 +362,15 @@ begin
   WriteLn(f.FormatText('hello pascal'));
   f.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["HELLO PASCAL"]);
 }
 
 #[test]
 fn test_abstract_method_two_subclasses() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCalc = class function Exec(a, b: Integer): Integer; virtual; abstract; end;
 type TAddCalc = class(TCalc) function Exec(a, b: Integer): Integer; override; end;
@@ -355,13 +384,15 @@ begin
   WriteLn(c2.Exec(10, 5));
   c1.Free; c2.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15", "50"]);
 }
 
 #[test]
 fn test_override_with_var_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TModifier = class
   public procedure Transform(var x: Integer); virtual;
@@ -379,13 +410,15 @@ begin
   WriteLn(val);
   m.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn test_override_with_const_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPrinter = class
   public procedure PrintVal(const s: String); virtual;
@@ -401,13 +434,15 @@ begin
   p.PrintVal('Message');
   p.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["> Message"]);
 }
 
 #[test]
 fn test_abstract_method_returning_boolean() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TValidator = class
   public function IsValid(data: String): Boolean; virtual; abstract;
@@ -426,13 +461,15 @@ begin
   WriteLn(v.IsValid(''));
   v.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_override_method_accessing_derived_fields() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBase = class
   public function GetDescription: String; virtual;
@@ -451,13 +488,15 @@ begin
   WriteLn(b.GetDescription);
   b.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Book=$15.99"]);
 }
 
 #[test]
 fn test_abstract_class_factory_instantiation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TEngine = class
   public procedure Start; virtual; abstract;
@@ -469,13 +508,14 @@ function CreateEngine: TEngine;
 begin
   Result := TElectricEngine.Create;
 end;
+procedure TElectricEngine.Start; begin WriteLn('SilentStart'); end;
 var eng: TEngine;
 begin
   eng := CreateEngine;
   eng.Start;
   eng.Free;
-end;
-procedure TElectricEngine.Start; begin WriteLn('SilentStart'); end;
-"#);
+end.
+"#,
+    );
     assert_eq!(out, vec!["SilentStart"]);
 }

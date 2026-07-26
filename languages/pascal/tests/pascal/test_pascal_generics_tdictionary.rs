@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_tdictionary_add_and_indexer_lookup() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<String, Integer>;
@@ -18,13 +19,15 @@ begin
   WriteLn(dict['two']);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2"]);
 }
 
 #[test]
 fn test_tdictionary_trygetvalue_success() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<String, String>;
@@ -36,13 +39,15 @@ begin
     WriteLn(val);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["localhost"]);
 }
 
 #[test]
 fn test_tdictionary_trygetvalue_missing_key() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<String, String>;
@@ -52,13 +57,15 @@ begin
   WriteLn(dict.TryGetValue('port', val));
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False"]);
 }
 
 #[test]
 fn test_tdictionary_containskey_and_containsvalue() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<Integer, String>;
@@ -71,13 +78,15 @@ begin
   WriteLn(dict.ContainsValue('OK'));
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False", "True"]);
 }
 
 #[test]
 fn test_tdictionary_addorsetvalue_update() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<String, Integer>;
@@ -89,13 +98,15 @@ begin
   WriteLn(dict['count']);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20"]);
 }
 
 #[test]
 fn test_tdictionary_remove_key() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<String, Integer>;
@@ -107,13 +118,15 @@ begin
   WriteLn(dict.ContainsKey('a'));
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "False"]);
 }
 
 #[test]
 fn test_tdictionary_clear_all() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<String, Integer>;
@@ -124,13 +137,15 @@ begin
   WriteLn(dict.Count);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn test_tdictionary_keys_iteration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<String, Integer>;
@@ -142,13 +157,15 @@ begin
     WriteLn(k);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["A", "B"]);
 }
 
 #[test]
 fn test_tdictionary_values_iteration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<String, Integer>;
@@ -162,13 +179,15 @@ begin
   WriteLn(sum);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_tdictionary_integer_keys() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<Integer, String>;
@@ -178,13 +197,15 @@ begin
   WriteLn(dict[1] + '-' + dict[2]);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Jan-Feb"]);
 }
 
 #[test]
 fn test_tdictionary_record_values() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TPoint = record X, Y: Integer; end;
@@ -197,13 +218,15 @@ begin
   WriteLn(dict['start'].Y);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15", "30"]);
 }
 
 #[test]
 fn test_tdictionary_enum_keys() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TStatus = (stLow, stMed, stHigh);
@@ -215,13 +238,15 @@ begin
   WriteLn(dict[stHigh]);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Green", "Red"]);
 }
 
 #[test]
 fn test_tdictionary_real_values() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<String, Real>;
@@ -232,13 +257,15 @@ begin
   WriteLn(dict['pi']);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3.14159"]);
 }
 
 #[test]
 fn test_tdictionary_boolean_values() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<String, Boolean>;
@@ -250,13 +277,15 @@ begin
   WriteLn(dict['debug']);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_tdictionary_extractpair() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<String, Integer>;
@@ -270,13 +299,15 @@ begin
   WriteLn(dict.Count);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["item", "500", "0"]);
 }
 
 #[test]
 fn test_tdictionary_toarray() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<String, Integer>;
@@ -288,13 +319,15 @@ begin
   WriteLn(Length(arr));
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_tdictionary_key_case_sensitivity() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<String, String>;
@@ -306,13 +339,15 @@ begin
   WriteLn(dict['KEY']);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["lower", "upper"]);
 }
 
 #[test]
 fn test_tdictionary_count_tracking() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<Integer, Integer>; i: Integer;
@@ -324,13 +359,15 @@ begin
   WriteLn(dict.Count);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5", "4"]);
 }
 
 #[test]
 fn test_tdictionary_pair_iteration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<String, Integer>;
@@ -345,13 +382,15 @@ begin
   end;
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["X", "100"]);
 }
 
 #[test]
 fn test_tdictionary_reinsertion_after_remove() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 var dict: TDictionary<String, String>;
@@ -363,6 +402,7 @@ begin
   WriteLn(dict['temp']);
   dict.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["v2"]);
 }

@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_private_field_encapsulation_access_via_public_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TAccount = class
   private FBalance: Integer;
@@ -21,13 +22,15 @@ begin
   WriteLn(acc.GetBalance);
   acc.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["500"]);
 }
 
 #[test]
 fn test_protected_method_accessed_by_subclass() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseProcessor = class
   protected procedure InternalProcess; virtual;
@@ -48,13 +51,15 @@ begin
   p.Execute;
   p.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CustomInternal"]);
 }
 
 #[test]
 fn test_public_field_direct_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPointObj = class
   public X, Y: Integer;
@@ -67,13 +72,15 @@ begin
   WriteLn(pt.X + pt.Y);
   pt.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_published_property_accessibility() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TWidget = class
   private FTitle: String;
@@ -86,13 +93,15 @@ begin
   WriteLn(w.Title);
   w.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MainWidget"]);
 }
 
 #[test]
 fn test_strict_private_field_isolation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TVault = class
   strict private FSecretCode: Integer;
@@ -108,13 +117,15 @@ begin
   WriteLn(v.Validate(9999));
   v.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_strict_protected_field_accessible_to_subclass() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseData = class
   strict protected FData: String;
@@ -132,13 +143,15 @@ begin
   WriteLn(sd.GetData);
   sd.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["StrictProtectedValue"]);
 }
 
 #[test]
 fn test_same_class_instances_accessing_private_fields() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCompareObj = class
   private FVal: Integer;
@@ -157,13 +170,15 @@ begin
   WriteLn(o1.IsEqual(o2));
   o1.Free; o2.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_private_method_called_by_public_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPipeline = class
   private procedure Step1;
@@ -183,13 +198,15 @@ begin
   p.RunAll;
   p.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Step1", "Step2"]);
 }
 
 #[test]
 fn test_protected_field_mutation_in_derived_constructor() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseEntity = class
   protected FID: Integer;
@@ -206,13 +223,15 @@ begin
   WriteLn(u.GetID);
   u.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["777"]);
 }
 
 #[test]
 fn test_public_property_wrapping_private_setter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TScoreTracker = class
   private FScore: Integer;
@@ -230,13 +249,15 @@ begin
   WriteLn(st.Score);
   st.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn test_multiple_visibility_sections_in_single_class() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TComplexClass = class
   private FPriv: Integer;
@@ -253,13 +274,15 @@ begin
   WriteLn(c.GetSum);
   c.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["6"]);
 }
 
 #[test]
 fn test_protected_virtual_method_override_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseApp = class
   protected function GetName: String; virtual;
@@ -277,13 +300,15 @@ begin
   app.PrintName;
   app.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CustomApp"]);
 }
 
 #[test]
 fn test_public_method_exposing_private_record() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TConfigData = record Key, Val: String; end;
 type TConfigStore = class
@@ -300,13 +325,15 @@ begin
   WriteLn(d.Key + '=' + d.Val);
   cs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["env=production"]);
 }
 
 #[test]
 fn test_strict_private_method_call_internal() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSecurityCheck = class
   strict private function InternalCheck(code: Integer): Boolean;
@@ -320,13 +347,15 @@ begin
   WriteLn(sc.Validate(42));
   sc.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_published_property_backed_by_private_getter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSettings = class
   private FPort: Integer;
@@ -342,13 +371,15 @@ begin
   WriteLn(s.Port);
   s.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["8080"]);
 }
 
 #[test]
 fn test_protected_method_with_default_parameters() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseWorker = class
   protected procedure Work(intensity: Integer = 1); virtual;
@@ -366,13 +397,15 @@ begin
   w.Execute;
   w.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FastWork:1"]);
 }
 
 #[test]
 fn test_public_class_function_accessing_private_class_var() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TGlobalState = class
   private class var FCount: Integer;
@@ -386,13 +419,15 @@ begin
   TGlobalState.IncCount;
   WriteLn(TGlobalState.GetCount);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_private_field_array_accessed_via_public_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TArrayStorage = class
   private FElements: array[0..2] of Integer;
@@ -407,13 +442,15 @@ begin
   WriteLn(store.GetSum);
   store.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_protected_property_promoted_to_public_in_derived_class() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseComponent = class
   protected FTag: Integer;
@@ -429,13 +466,15 @@ begin
   WriteLn(pc.Tag);
   pc.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["999"]);
 }
 
 #[test]
 fn test_private_constructor_pattern() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSingleton = class
   private constructor Create;
@@ -454,6 +493,7 @@ begin
   s.Speak;
   s.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SingletonActive"]);
 }

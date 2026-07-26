@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_generic_constraint_class_basic() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TClassHolder<T: class> = class
   public Item: T;
@@ -23,13 +24,15 @@ begin
   WriteLn(holder.Item <> nil);
   holder.Free; obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_generic_constraint_record_basic() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRecordHolder<T: record> = class
   public Item: T;
@@ -46,13 +49,15 @@ begin
   WriteLn(holder.Item.X.ToString + ',' + holder.Item.Y.ToString);
   holder.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10,20"]);
 }
 
 #[test]
 fn test_generic_constraint_constructor() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TFactory<T: class, constructor> = class
   public class function CreateInstance: T;
@@ -72,13 +77,15 @@ begin
   w := TFactory<TWidget>.CreateInstance;
   w.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["WidgetCreated"]);
 }
 
 #[test]
 fn test_generic_constraint_interface_basic() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IWork = interface
   ['{11111111-1111-1111-1111-111111111111}']
@@ -103,13 +110,15 @@ begin
   w := TWorkImpl.Create;
   TWorkInvoker<IWork>.Run(w);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["WorkDoneViaConstrainedGeneric"]);
 }
 
 #[test]
 fn test_generic_constraint_ancestor_class() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseObj = class
   public procedure Announce; virtual;
@@ -135,13 +144,15 @@ begin
   TRunner<TSubObj>.Execute(s);
   s.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Sub"]);
 }
 
 #[test]
 fn test_generic_constraint_multiple_class_interface() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ILoggable = interface
   ['{22222222-2222-2222-2222-222222222222}']
@@ -166,13 +177,15 @@ begin
   l := TLoggableObj.Create;
   TLoggerContainer<TLoggableObj>.Process(l);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ObjLogged"]);
 }
 
 #[test]
 fn test_generic_constraint_record_with_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRecHolder<T: record> = class
   public class procedure PrintSize;
@@ -187,13 +200,15 @@ type TMyRec = record A, B: Integer; end;
 begin
   TRecHolder<TMyRec>.PrintSize;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["8"]);
 }
 
 #[test]
 fn test_generic_constraint_interface_method_call() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ICalculable = interface
   ['{33333333-3333-3333-3333-333333333333}']
@@ -218,13 +233,15 @@ begin
   c := TCalcImpl.Create;
   WriteLn(TCalcRunner<ICalculable>.Execute(c));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_generic_constraint_class_is_nil_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNullableHolder<T: class> = class
   public class function IsNil(obj: T): Boolean;
@@ -241,13 +258,15 @@ begin
   d := nil;
   WriteLn(TNullableHolder<TDummy>.IsNil(d));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_generic_constraint_two_type_parameters() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPair<TKey: record; TValue: class> = class
   public Key: TKey; Value: TValue;
@@ -267,13 +286,15 @@ begin
   WriteLn(p.Key);
   p.Free; obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["101"]);
 }
 
 #[test]
 fn test_generic_constraint_constructor_with_param() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseItem = class
   public constructor Create; virtual;
@@ -298,13 +319,15 @@ begin
   item := TCreator<TDerivedItem>.Make;
   item.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DerivedCreated"]);
 }
 
 #[test]
 fn test_generic_constraint_interface_multiple_interfaces() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IA = interface ['{44444444-4444-4444-4444-444444444444}'] procedure DoA; end;
 type IB = interface ['{55555555-5555-5555-5555-555555555555}'] procedure DoB; end;
@@ -329,13 +352,15 @@ begin
   impl := TDualImpl.Create;
   TDualHandler<TDualImpl>.Run(impl);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ExecA", "ExecB"]);
 }
 
 #[test]
 fn test_generic_constraint_class_type_casting() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TParent = class end;
 type TChild = class(TParent) public procedure SubMethod; end;
@@ -355,13 +380,15 @@ begin
   TCastHelper<TChild>.CallIfChild(c);
   c.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ChildMethod"]);
 }
 
 #[test]
 fn test_generic_constraint_record_type_info() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRecInspector<T: record> = class
   public class procedure PrintName;
@@ -376,13 +403,15 @@ type TSampleRecord = record A: Integer; end;
 begin
   TRecInspector<TSampleRecord>.PrintName;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TSampleRecord"]);
 }
 
 #[test]
 fn test_generic_constraint_interface_property_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type INameable = interface
   ['{66666666-6666-6666-6666-666666666666}']
@@ -408,13 +437,15 @@ begin
   n := TNameImpl.Create;
   TNamePrinter<INameable>.Print(n);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ConstrainedInterfaceName"]);
 }
 
 #[test]
 fn test_generic_constraint_class_virtual_method_dispatch() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseShape = class
   public function Area: Double; virtual;
@@ -443,13 +474,15 @@ begin
   WriteLn(TAreaCalc<TRectangle>.Compute(rect));
   rect.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20"]);
 }
 
 #[test]
 fn test_generic_constraint_interface_queryinterface() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IFirst = interface ['{77777777-7777-7777-7777-777777777777}'] end;
 type ISecond = interface ['{88888888-8888-8888-8888-888888888888}'] procedure SecondProc; end;
@@ -473,13 +506,15 @@ begin
   m := TMultiImpl.Create;
   TIntfQuery<IFirst>.CheckSecond(m);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SecondSupported"]);
 }
 
 #[test]
 fn test_generic_constraint_record_in_list() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TRecStore<T: record> = class
@@ -504,13 +539,15 @@ begin
   WriteLn(store.Count);
   store.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_generic_constraint_class_method_generic_parameters() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TGenericUtils = class
   public class function CreateAndUse<T: class, constructor>: String;
@@ -528,13 +565,15 @@ type TTestObj = class end;
 begin
   WriteLn(TGenericUtils.CreateAndUse<TTestObj>);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TTestObj"]);
 }
 
 #[test]
 fn test_generic_constraint_interface_delegation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IRunner = interface ['{99999999-9999-9999-9999-999999999999}'] procedure Run; end;
 
@@ -559,6 +598,7 @@ begin
   delegateObj.Execute;
   delegateObj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DelegatedRunnerExecuted"]);
 }

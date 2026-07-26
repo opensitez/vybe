@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_smart_pointer_basic_auto_cleanup() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSampleObj = class
   public destructor Destroy; override;
@@ -41,13 +42,15 @@ end;
 begin
   RunScope;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AutoCleanedBySmartPointer"]);
 }
 
 #[test]
 fn test_smart_pointer_value_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TData = class
   public Val: Integer;
@@ -74,13 +77,15 @@ begin
   holder := TDataHolderImpl.Create(TData.Create(500));
   WriteLn(holder.GetData.Val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["500"]);
 }
 
 #[test]
 fn test_smart_pointer_array_ownership() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TItem = class
   public ID: Integer;
@@ -109,13 +114,15 @@ end;
 begin
   ProcessItems;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ItemDestroyed:1", "ItemDestroyed:2"]);
 }
 
 #[test]
 fn test_smart_pointer_reset_managed_reference() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TResource = class
   public Tag: String;
@@ -147,13 +154,15 @@ begin
   ptr.Reset(TResource.Create('New'));
   WriteLn(ptr.Get.Tag);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Freed:Old", "New", "Freed:New"]);
 }
 
 #[test]
 fn test_smart_pointer_release_ownership() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TWidget = class
   public Name: String;
@@ -183,13 +192,15 @@ begin
   WriteLn(w.Name);
   w.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["OwnedWidget"]);
 }
 
 #[test]
 fn test_smart_pointer_validity_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TDataObj = class end;
 type IDataSmart = interface
@@ -212,13 +223,15 @@ begin
   WriteLn(s1.HasValue);
   WriteLn(s2.HasValue);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_smart_pointer_managing_container_instance() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStringContainer = class
   public Text: String;
@@ -244,13 +257,15 @@ begin
   smart := TStrSmartImpl.Create(TStringContainer.Create('ContainerText'));
   WriteLn(smart.GetContainer.Text);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ContainerText"]);
 }
 
 #[test]
 fn test_smart_pointer_in_for_loop_scope() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TLoopObj = class
   public Iteration: Integer;
@@ -281,13 +296,15 @@ end;
 begin
   RunLoop;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["LoopObjFreed:1", "LoopObjFreed:2"]);
 }
 
 #[test]
 fn test_smart_pointer_shared_ownership_refcount() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSharedResource = class
   public Name: String;
@@ -319,13 +336,23 @@ begin
   ref2 := nil;
   WriteLn('Ref2NilCompleted');
 end.
-"#);
-    assert_eq!(out, vec!["Ref1NilCompleted", "SharedDoc", "SharedFreed:SharedDoc", "Ref2NilCompleted"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec![
+            "Ref1NilCompleted",
+            "SharedDoc",
+            "SharedFreed:SharedDoc",
+            "Ref2NilCompleted"
+        ]
+    );
 }
 
 #[test]
 fn test_smart_pointer_passed_to_procedure() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPayload = class
   public Code: Integer;
@@ -356,13 +383,15 @@ begin
   sp := TPayloadSmartImpl.Create(TPayload.Create(999));
   ProcessSmart(sp);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["999"]);
 }
 
 #[test]
 fn test_smart_pointer_in_record_field() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSubItem = class
   public Title: String;
@@ -398,13 +427,15 @@ end;
 begin
   RunRecScope;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RecFieldItem", "SubItemFreed:RecFieldItem"]);
 }
 
 #[test]
 fn test_smart_pointer_recursive_call_frames() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TFrameObj = class
   public Depth: Integer;
@@ -433,13 +464,15 @@ end;
 begin
   RecursiveScope(3);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FrameFreed:1", "FrameFreed:2", "FrameFreed:3"]);
 }
 
 #[test]
 fn test_smart_pointer_custom_cleanup_closure() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCleanupProc = procedure;
 type ICustomCleanup = interface
@@ -466,13 +499,15 @@ end;
 begin
   TestCustomCleanup;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CustomCleanupCallbackExecuted"]);
 }
 
 #[test]
 fn test_smart_pointer_reassignment_cleans_old() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRefObj = class
   public Name: String;
@@ -497,13 +532,22 @@ begin
   s := TRefSmartImpl.Create(TRefObj.Create('Second'));
   WriteLn('ReassignmentDone');
 end.
-"#);
-    assert_eq!(out, vec!["ReassignedFreed:First", "ReassignmentDone", "ReassignedFreed:Second"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec![
+            "ReassignedFreed:First",
+            "ReassignmentDone",
+            "ReassignedFreed:Second"
+        ]
+    );
 }
 
 #[test]
 fn test_smart_pointer_returning_integer_value() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntData = class
   public Value: Integer;
@@ -529,13 +573,15 @@ begin
   s := TIntSmartImpl.Create(TIntData.Create(1234));
   WriteLn(s.GetVal);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1234"]);
 }
 
 #[test]
 fn test_smart_pointer_returning_boolean_value() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBoolData = class
   public Active: Boolean;
@@ -561,13 +607,15 @@ begin
   s := TBoolSmartImpl.Create(TBoolData.Create(True));
   WriteLn(s.IsActive);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_smart_pointer_swap_utility() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSwapObj = class
   public Name: String;
@@ -602,13 +650,15 @@ begin
   WriteLn(s1.GetName);
   WriteLn(s2.GetName);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Obj2", "Obj1"]);
 }
 
 #[test]
 fn test_smart_pointer_nil_initialization() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type INilSmart = interface
   ['{88889999-7777-8888-9999-000011112222}']
@@ -618,13 +668,15 @@ begin
   s := nil;
   WriteLn(s = nil);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_smart_pointer_method_call_on_managed_object() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TWorker = class
   public procedure PerformWork;
@@ -649,13 +701,15 @@ begin
   smart := TWorkerSmartImpl.Create(TWorker.Create);
   smart.DoWork;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ManagedWorkExecuted"]);
 }
 
 #[test]
 fn test_smart_pointer_nested_struct_destruction_order() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TChildObj = class
   constructor Create; destructor Destroy; override;
@@ -689,6 +743,7 @@ end;
 begin
   RunParentScope;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ChildObjFreed", "ParentObjFreed"]);
 }

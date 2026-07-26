@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_interfaces_com_mode_refcounting() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$INTERFACES COM}
 type IComWork = interface
@@ -24,13 +25,15 @@ begin
   w := TComImpl.Create;
   w.DoComWork;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ComWorkExecuted"]);
 }
 
 #[test]
 fn test_interfaces_corba_mode_no_refcounting() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$INTERFACES CORBA}
 type ICorbaWork = interface
@@ -50,13 +53,15 @@ begin
   c.DoCorbaWork;
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CorbaWorkExecuted"]);
 }
 
 #[test]
 fn test_interfaces_supports_query_com() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ITargetIntf = interface
@@ -75,13 +80,15 @@ begin
   if Supports(unk, ITargetIntf, t) then
     t.Action;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ActionSupported"]);
 }
 
 #[test]
 fn test_interfaces_as_operator_com() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IFoo = interface ['{44444444-4444-4444-4444-444444444444}'] procedure Foo; end;
 type IBar = interface ['{55555555-5555-5555-5555-555555555555}'] procedure Bar; end;
@@ -98,13 +105,15 @@ begin
   b := f as IBar;
   b.Bar;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["BarCall"]);
 }
 
 #[test]
 fn test_interfaces_corba_manual_lifetime() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$INTERFACES CORBA}
 type ICorbaItem = interface
@@ -126,13 +135,15 @@ begin
   WriteLn(itemIntf.GetVal);
   itemObj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["500", "CorbaObjectDestroyedManually"]);
 }
 
 #[test]
 fn test_interfaces_iunknown_methods_override() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCustomUnk = class(TObject, IUnknown)
   private FRefCount: Integer;
@@ -149,13 +160,15 @@ var unk: IUnknown;
 begin
   unk := TCustomUnk.Create;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AddRef:1", "Release:0"]);
 }
 
 #[test]
 fn test_interfaces_corba_multiple_interface_implementation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$INTERFACES CORBA}
 type IA = interface ['{77777777-7777-7777-7777-777777777777}'] procedure DoA; end;
@@ -174,13 +187,15 @@ begin
   a.DoA; b.DoB;
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CorbaA", "CorbaB"]);
 }
 
 #[test]
 fn test_interfaces_com_nil_assignment_releases() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IData = interface ['{99999999-9999-9999-9999-999999999999}'] end;
 type TData = class(TInterfacedObject, IData)
@@ -194,13 +209,15 @@ begin
   d := nil;
   WriteLn('AfterNil');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DataReleasedOnNil", "AfterNil"]);
 }
 
 #[test]
 fn test_interfaces_corba_is_operator_query() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$INTERFACES CORBA}
 type ICheck = interface ['{A0A0A0A0-A0A0-A0A0-A0A0-A0A0A0A0A0A0}'] end;
@@ -212,13 +229,15 @@ begin
   WriteLn(obj is ICheck);
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_interfaces_supports_class_type_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type IService = interface ['{B0B0B0B0-B0B0-B0B0-B0B0-B0B0B0B0B0B0}'] end;
@@ -230,13 +249,15 @@ begin
   WriteLn(Supports(obj, IService));
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_interfaces_com_refcount_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRefObj = class(TInterfacedObject)
   public property RefCount: Integer read FRefCount;
@@ -248,13 +269,15 @@ begin
   intf := obj;
   WriteLn(obj.RefCount = 1);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_interfaces_corba_inheritance() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$INTERFACES CORBA}
 type IBaseCorba = interface ['{C0C0C0C0-C0C0-C0C0-C0C0-C0C0C0C0C0C0}'] procedure BaseProc; end;
@@ -273,13 +296,15 @@ begin
   s.BaseProc; s.SubProc;
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["BaseCorbaExecuted", "SubCorbaExecuted"]);
 }
 
 #[test]
 fn test_interfaces_com_procedure_parameter_passing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IWorker = interface ['{E0E0E0E0-E0E0-E0E0-E0E0-E0E0E0E0E0E0}'] procedure Work; end;
 type TWorkerImpl = class(TInterfacedObject, IWorker)
@@ -295,13 +320,15 @@ end;
 begin
   ExecuteWorker(TWorkerImpl.Create);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["WorkParameterDone"]);
 }
 
 #[test]
 fn test_interfaces_corba_array_of_interfaces() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$INTERFACES CORBA}
 type ITask = interface ['{F0F0F0F0-F0F0-F0F0-F0F0-F0F0F0F0F0F0}'] procedure Exec; end;
@@ -319,26 +346,30 @@ begin
   tasks[0].Exec; tasks[1].Exec;
   o1.Free; o2.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["T1", "T2"]);
 }
 
 #[test]
 fn test_interfaces_guid_tostring_match() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type IGuidTest = interface ['{12345678-1234-1234-1234-123456789012}'] end;
 begin
   WriteLn(GUIDToString(IGuidTest) = '{12345678-1234-1234-1234-123456789012}');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_interfaces_com_weak_ref_avoidance() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ISimple = interface ['{11223344-5566-7788-9900-AABBCCDDEEFF}'] procedure Run; end;
 type TSimple = class(TInterfacedObject, ISimple)
@@ -356,13 +387,15 @@ begin
   TestScope;
   WriteLn('ScopeEnded');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RunSimple", "ScopeEnded"]);
 }
 
 #[test]
 fn test_interfaces_corba_generic_interface() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$INTERFACES CORBA}
 type IGenericCorba<T> = interface
@@ -382,13 +415,15 @@ begin
   WriteLn(intf.GetValue);
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["888"]);
 }
 
 #[test]
 fn test_interfaces_com_interface_return_from_function() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IItem = interface ['{AA11BB22-CC33-DD44-EE55-FF6677889900}'] function Name: String; end;
 type TItemImpl = class(TInterfacedObject, IItem)
@@ -404,13 +439,15 @@ end;
 begin
   WriteLn(CreateItem.Name);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ItemReturnedFromFunc"]);
 }
 
 #[test]
 fn test_interfaces_com_supports_guid_string() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ITarget = interface ['{99887766-5544-3322-1100-AABBCCDDEEFF}'] end;
@@ -422,13 +459,15 @@ begin
   WriteLn(Supports(obj, '{99887766-5544-3322-1100-AABBCCDDEEFF}'));
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_interfaces_corba_nil_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$INTERFACES CORBA}
 type ICorbaNil = interface ['{A1B2C3D4-E5F6-1122-3344-556677889900}'] end;
@@ -437,6 +476,7 @@ begin
   c := nil;
   WriteLn(c = nil);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }

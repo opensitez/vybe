@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_filesystem_extractfilepath_filename_ext() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var p: String;
@@ -16,26 +17,30 @@ begin
   WriteLn(ExtractFileExt(p));
   WriteLn(ExtractFileDir(p));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["compiler.pas", ".pas", "/usr/local/bin"]);
 }
 
 #[test]
 fn test_filesystem_changefileext() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
   WriteLn(ChangeFileExt('main.pas', '.exe'));
   WriteLn(ChangeFileExt('data.tar.gz', '.zip'));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["main.exe", "data.tar.zip"]);
 }
 
 #[test]
 fn test_filesystem_fileexists_deletefile() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var f: TextFile; fname: String;
@@ -47,13 +52,15 @@ begin
   DeleteFile(fname);
   WriteLn(FileExists(fname));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_filesystem_createdir_directoryexists_removedir() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var dname: String;
@@ -66,13 +73,15 @@ begin
   RemoveDir(dname);
   WriteLn(DirectoryExists(dname));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_filesystem_forcedirectories() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var path: String;
@@ -83,25 +92,29 @@ begin
   RemoveDir('test_parent_dir/test_sub_dir');
   RemoveDir('test_parent_dir');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_filesystem_getcurrentdir() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
   WriteLn(Length(GetCurrentDir) > 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_filesystem_renamefile() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var f: TextFile;
@@ -112,13 +125,15 @@ begin
   WriteLn(FileExists('test_rename_2.tmp'));
   DeleteFile('test_rename_2.tmp');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False", "True"]);
 }
 
 #[test]
 fn test_filesystem_expandfilename() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var fullPath: String;
@@ -126,13 +141,15 @@ begin
   fullPath := ExpandFileName('relative_file.txt');
   WriteLn(Pos('relative_file.txt', fullPath) > 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_filesystem_findfirst_findnext_findclose() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sr: TSearchRec; f: TextFile; count: Integer;
@@ -153,13 +170,15 @@ begin
   DeleteFile('test_search_1.tmp');
   DeleteFile('test_search_2.tmp');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_filesystem_include_exclude_trailing_path_delimiter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var p1, p2: String;
@@ -169,39 +188,45 @@ begin
   WriteLn(p1);
   WriteLn(p2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["/usr/local/", "/usr/local"]);
 }
 
 #[test]
 fn test_filesystem_ispathdelimiter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
   WriteLn(IsPathDelimiter('/usr/bin', 1));
   WriteLn(IsPathDelimiter('usr/bin', 2));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_filesystem_matchesmask() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Masks;
 begin
   WriteLn(MatchesMask('document.pdf', '*.pdf'));
   WriteLn(MatchesMask('document.txt', '*.pdf'));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_filesystem_filegetattr_filesetattr() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var f: TextFile; fname: String; attr: Integer;
@@ -214,13 +239,15 @@ begin
 
   DeleteFile(fname);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_filesystem_fileage() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var f: TextFile; fname: String; age: Integer;
@@ -233,37 +260,43 @@ begin
 
   DeleteFile(fname);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_filesystem_samefilename() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
   WriteLn(SameFileName('file.txt', 'file.txt'));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_filesystem_extractfiledrive() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
   WriteLn(Length(ExtractFileDrive('/usr/bin')) >= 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_filesystem_findclose_safety() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sr: TSearchRec;
@@ -272,25 +305,29 @@ begin
     WriteLn('NotFound');
   FindClose(sr);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["NotFound"]);
 }
 
 #[test]
 fn test_filesystem_tpath_combine() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.IOUtils;
 begin
   WriteLn(TPath.Combine('/folder', 'file.txt'));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["/folder/file.txt"]);
 }
 
 #[test]
 fn test_filesystem_tfile_fetchalltext() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.IOUtils;
 var fname: String;
@@ -300,18 +337,21 @@ begin
   WriteLn(TFile.ReadAllText(fname));
   TFile.Delete(fname);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TFileContent"]);
 }
 
 #[test]
 fn test_filesystem_tdirectory_exists() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses System.IOUtils;
 begin
   WriteLn(TDirectory.Exists('.'));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }

@@ -6,19 +6,22 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_assert_condition_true_passes() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 begin
   Assert(10 > 5);
   WriteLn('AssertionPassed');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AssertionPassed"]);
 }
 
 #[test]
 fn test_assert_condition_false_raises_eassertionfailed() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -28,13 +31,15 @@ begin
     on E: EAssertionFailed do WriteLn('AssertFailedCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AssertFailedCaught"]);
 }
 
 #[test]
 fn test_assert_custom_message() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -44,26 +49,30 @@ begin
     on E: Exception do WriteLn(E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MathIsBroken"]);
 }
 
 #[test]
 fn test_assert_assertions_off_directive() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$C-} // Assertions OFF
 begin
   Assert(10 < 5);
   WriteLn('AssertionsOffIgnoredFailure');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AssertionsOffIgnoredFailure"]);
 }
 
 #[test]
 fn test_assert_assertions_on_directive() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$C+} // Assertions ON
 uses SysUtils;
@@ -74,13 +83,15 @@ begin
     on E: EAssertionFailed do WriteLn('AssertionsOnTriggered');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AssertionsOnTriggered"]);
 }
 
 #[test]
 fn test_assert_pointer_not_nil() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var val: Integer; p: PInteger;
@@ -93,13 +104,15 @@ begin
     on E: Exception do WriteLn(E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["PointerValid"]);
 }
 
 #[test]
 fn test_assert_string_not_empty() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure ProcessName(const name: String);
@@ -115,13 +128,15 @@ begin
     on E: Exception do WriteLn('Caught:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Name:Alice", "Caught:NameCannotBeEmpty"]);
 }
 
 #[test]
 fn test_custom_asserterrorproc_hook() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var HookTriggered: Boolean;
@@ -142,13 +157,15 @@ begin
 
   AssertErrorProc := oldHandler;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CustomHook:HookMessage"]);
 }
 
 #[test]
 fn test_assert_in_class_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TAccount = class
@@ -172,13 +189,15 @@ begin
   end;
   acc.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Deposit100OK", "Caught:DepositMustBePositive"]);
 }
 
 #[test]
 fn test_assert_in_record_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TPoint = record
@@ -200,13 +219,15 @@ begin
     on E: Exception do WriteLn('Caught:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["PosValid", "Caught:CoordsMustBeNonNegative"]);
 }
 
 #[test]
 fn test_assert_inside_loop() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var arr: array[0..2] of Integer; i: Integer;
@@ -222,13 +243,15 @@ begin
     end;
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ElementOK:2", "ElementOK:4", "CaughtAtIndex:2"]);
 }
 
 #[test]
 fn test_assert_assigned_object() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TWidget = class end;
@@ -241,13 +264,15 @@ begin
     on E: Exception do WriteLn(E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["WidgetNotAssigned"]);
 }
 
 #[test]
 fn test_assert_array_index_range() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure AccessIndex(idx: Integer);
@@ -263,13 +288,15 @@ begin
     on E: Exception do WriteLn(E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["IndexOK", "IndexOutOfBounds"]);
 }
 
 #[test]
 fn test_assert_recursive_invariant() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 function Factorial(n: Integer): Integer;
@@ -286,13 +313,15 @@ begin
     on E: Exception do WriteLn(E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["24", "FactorialNegativeInput"]);
 }
 
 #[test]
 fn test_assert_in_constructor() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TStrictItem = class
@@ -310,13 +339,15 @@ begin
     on E: Exception do WriteLn('CtorCaught:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CtorCaught:CodeTooSmall"]);
 }
 
 #[test]
 fn test_assert_boolean_logic_combination() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var a, b: Boolean;
@@ -328,13 +359,15 @@ begin
     on E: Exception do WriteLn(E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["BothMustBeTrue"]);
 }
 
 #[test]
 fn test_assert_restoring_asserterrorproc() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure DummyAssertHandler(const Message, Filename: String; LineNumber: Integer; ErrorAddr: Pointer);
@@ -353,13 +386,15 @@ begin
     on E: EAssertionFailed do WriteLn('StandardHandler:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DummyHandler:Msg1", "StandardHandler:Msg2"]);
 }
 
 #[test]
 fn test_assert_in_function_return_val() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 function GetSquare(x: Integer): Integer;
@@ -370,13 +405,15 @@ end;
 begin
   WriteLn(GetSquare(5));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["25"]);
 }
 
 #[test]
 fn test_assert_count_tracker_in_custom_hook() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var assertCount: Integer;
@@ -398,13 +435,15 @@ begin
   AssertErrorProc := oldHandler;
   WriteLn(assertCount);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_assert_multiline_custom_message() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -414,6 +453,7 @@ begin
     on E: Exception do WriteLn(E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Line1", "Line2"]);
 }

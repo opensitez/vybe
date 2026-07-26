@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_unit_initialization_execution_order() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit TestUnitInit;
 interface
   procedure Dummy;
@@ -23,13 +24,18 @@ uses TestUnitInit;
 begin
   WriteLn('MainProgramBody');
 end.
-"#);
-    assert_eq!(out, vec!["UnitInitialized", "MainProgramBody", "UnitFinalized"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["UnitInitialized", "MainProgramBody", "UnitFinalized"]
+    );
 }
 
 #[test]
 fn test_unit_initialization_global_variable() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit GlobalInitUnit;
 interface
   var GlobalCounter: Integer;
@@ -43,13 +49,15 @@ uses GlobalInitUnit;
 begin
   WriteLn(GlobalCounter);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100"]);
 }
 
 #[test]
 fn test_unit_finalization_cleanup_variable() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit CleanupUnit;
 interface
   procedure Touch;
@@ -66,13 +74,18 @@ uses CleanupUnit;
 begin
   Touch;
 end.
-"#);
-    assert_eq!(out, vec!["InitCleanupUnit", "TouchWork", "FinalizeCleanupUnit"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["InitCleanupUnit", "TouchWork", "FinalizeCleanupUnit"]
+    );
 }
 
 #[test]
 fn test_unit_initialization_singleton_instantiation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit SingletonUnit;
 interface
   type TSingleton = class
@@ -93,13 +106,15 @@ uses SingletonUnit;
 begin
   SingletonInstance.Speak;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SingletonActive", "SingletonFreed"]);
 }
 
 #[test]
 fn test_unit_dependencies_initialization_order() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit UnitA;
 interface procedure ProcA;
 implementation
@@ -125,13 +140,18 @@ uses UnitB;
 begin
   WriteLn('MainProgram');
 end.
-"#);
-    assert_eq!(out, vec!["InitA", "InitB", "MainProgram", "FinalB", "FinalA"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["InitA", "InitB", "MainProgram", "FinalB", "FinalA"]
+    );
 }
 
 #[test]
 fn test_unit_initialization_stringlist_population() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit ConfigUnit;
 interface
   uses Classes;
@@ -149,13 +169,15 @@ uses ConfigUnit;
 begin
   WriteLn(AppConfig.Values['Key']);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Value"]);
 }
 
 #[test]
 fn test_unit_initialization_with_try_except() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit SafeInitUnit;
 interface
   var SafeInitSuccess: Boolean;
@@ -174,13 +196,15 @@ uses SafeInitUnit;
 begin
   WriteLn(SafeInitSuccess);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_unit_initialization_nested_routine_call() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit NestedInitUnit;
 interface
   var InitValue: Integer;
@@ -195,13 +219,15 @@ uses NestedInitUnit;
 begin
   WriteLn(InitValue);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_unit_finalization_without_initialization() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit FinalOnlyUnit;
 interface
   procedure Run;
@@ -216,13 +242,15 @@ uses FinalOnlyUnit;
 begin
   Run;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["InsideRun", "FinalOnlyExecuted"]);
 }
 
 #[test]
 fn test_unit_initialization_without_finalization() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit InitOnlyUnit;
 interface
   var Flag: Boolean;
@@ -236,13 +264,15 @@ uses InitOnlyUnit;
 begin
   WriteLn(Flag);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_unit_initialization_array_setup() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit LookupUnit;
 interface
   var Squares: array[0..3] of Integer;
@@ -258,13 +288,15 @@ uses LookupUnit;
 begin
   WriteLn(Squares[3]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["9"]);
 }
 
 #[test]
 fn test_unit_initialization_proc_pointer_assignment() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit CallbackUnit;
 interface
   type TCallback = procedure(const s: String);
@@ -283,13 +315,15 @@ uses CallbackUnit;
 begin
   GlobalCallback('TestMsg');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DefaultCB:TestMsg"]);
 }
 
 #[test]
 fn test_unit_finalization_with_try_finally() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit SafeFinalUnit;
 interface
   procedure DoWork;
@@ -308,13 +342,15 @@ uses SafeFinalUnit;
 begin
   DoWork;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FinalizeWork", "FinalizeFinally"]);
 }
 
 #[test]
 fn test_unit_initialization_rtti_registration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit RegUnit;
 interface
   var RegisteredName: String;
@@ -328,13 +364,15 @@ uses RegUnit;
 begin
   WriteLn(RegisteredName);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RegUnitClass"]);
 }
 
 #[test]
 fn test_unit_initialization_flag_toggle() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit FlagUnit;
 interface
   var IsReady: Boolean;
@@ -350,13 +388,15 @@ uses FlagUnit;
 begin
   WriteLn(IsReady);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_unit_initialization_math_constant_setup() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit MathConstUnit;
 interface
   var TwoPi: Double;
@@ -370,13 +410,15 @@ uses MathConstUnit;
 begin
   WriteLn(TwoPi > 6.28);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_unit_initialization_record_setup() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit RecInitUnit;
 interface
   type TPoint = record X, Y: Integer; end;
@@ -392,13 +434,15 @@ uses RecInitUnit;
 begin
   WriteLn(DefaultPoint.X.ToString + ',' + DefaultPoint.Y.ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10,20"]);
 }
 
 #[test]
 fn test_unit_finalization_decrements_counter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit CounterUnit;
 interface
   var Counter: Integer;
@@ -415,13 +459,15 @@ uses CounterUnit;
 begin
   WriteLn('CounterBody:' + Counter.ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CounterBody:1", "CounterFinalized:0"]);
 }
 
 #[test]
 fn test_unit_initialization_char_table() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit CharTableUnit;
 interface
   var HexChars: array[0..15] of Char;
@@ -437,13 +483,15 @@ uses CharTableUnit;
 begin
   WriteLn(HexChars[10] + HexChars[15]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AF"]);
 }
 
 #[test]
 fn test_unit_initialization_interface_instance() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 unit IntfInitUnit;
 interface
   type IService = interface
@@ -468,6 +516,7 @@ uses IntfInitUnit;
 begin
   ServiceRef.Execute;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["InitServiceExecuted"]);
 }

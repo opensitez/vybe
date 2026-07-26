@@ -195,7 +195,7 @@ begin
   WriteLn(TLimits.IsValidCount(101));
 end."#
         ),
-        &["true", "false", "false"]
+        &["True", "False", "False"]
     );
 }
 
@@ -270,7 +270,7 @@ begin
   WriteLn(n);
 end."#
         ),
-        &["true", "42", "false", "0"]
+        &["True", "42", "False", "0"]
     );
 }
 
@@ -382,7 +382,7 @@ begin
   WriteLn(TStringUtil.IsPalindrome('hello'));
 end."#
         ),
-        &["true", "false"]
+        &["True", "False"]
     );
 }
 
@@ -533,6 +533,6 @@ begin
   WriteLn(TValidator.IsPositive(-1));
 end."#
         ),
-        &["true", "false", "true", "false"]
+        &["True", "False", "True", "False"]
     );
 }

@@ -568,7 +568,7 @@ begin
   o.Free;
 end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 

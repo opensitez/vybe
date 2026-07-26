@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_class_procedure_basic_invocation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TUtils = class
   public class procedure LogInfo(msg: String);
@@ -18,13 +19,15 @@ end;
 begin
   TUtils.LogInfo('Application Init');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["[INFO]: Application Init"]);
 }
 
 #[test]
 fn test_class_function_return_value() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMathUtils = class
   public class function Add(a, b: Integer): Integer;
@@ -36,13 +39,15 @@ end;
 begin
   WriteLn(TMathUtils.Add(100, 200));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["300"]);
 }
 
 #[test]
 fn test_class_var_shared_state() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TInstanceCounter = class
   public class var Counter: Integer;
@@ -61,13 +66,15 @@ begin
   WriteLn(TInstanceCounter.Counter);
   i1.Free; i2.Free; i3.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn test_class_constructor_and_destructor_lifecycle() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TConfig = class
   public class var AppVersion: String;
@@ -85,13 +92,15 @@ end;
 begin
   WriteLn(TConfig.AppVersion);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["v1.0.0"]);
 }
 
 #[test]
 fn test_class_method_calls_another_class_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStrHelper = class
   public class function Quote(s: String): String;
@@ -108,13 +117,15 @@ end;
 begin
   WriteLn(TStrHelper.DoubleQuote('Text'));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["''Text''"]);
 }
 
 #[test]
 fn test_class_function_factory_pattern() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TProduct = class
   public ID: Integer;
@@ -131,13 +142,15 @@ begin
   WriteLn(p.ID);
   p.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["777"]);
 }
 
 #[test]
 fn test_class_procedure_with_default_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TFormatter = class
   public class procedure PrintHeader(title: String = 'DEFAULT');
@@ -150,13 +163,15 @@ begin
   TFormatter.PrintHeader;
   TFormatter.PrintHeader('CUSTOM');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["=== DEFAULT ===", "=== CUSTOM ==="]);
 }
 
 #[test]
 fn test_class_function_overloading() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TParser = class
   public class function Parse(i: Integer): String; overload;
@@ -168,13 +183,15 @@ begin
   WriteLn(TParser.Parse(42));
   WriteLn(TParser.Parse('hello'));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["INT:42", "STR:hello"]);
 }
 
 #[test]
 fn test_instance_method_accesses_class_var() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSession = class
   public class var GlobalTimeout: Integer;
@@ -191,13 +208,15 @@ begin
   WriteLn(s.GetTimeout);
   s.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["300"]);
 }
 
 #[test]
 fn test_subclass_inherits_class_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseUtil = class
   public class procedure BaseLog;
@@ -210,13 +229,15 @@ end;
 begin
   TSubUtil.BaseLog;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["BaseLogExecuted"]);
 }
 
 #[test]
 fn test_class_procedure_var_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRefUtils = class
   public class procedure MultiplyByTwo(var n: Integer);
@@ -231,13 +252,15 @@ begin
   TRefUtils.MultiplyByTwo(val);
   WriteLn(val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn test_class_method_with_enum_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TLogLevel = (llInfo, llWarn, llError);
 type TLogger = class
@@ -250,13 +273,15 @@ end;
 begin
   TLogger.Log(llWarn, 'Disk space low');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1:Disk space low"]);
 }
 
 #[test]
 fn test_class_function_returning_record() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPoint = record X, Y: Integer; end;
 type TPointFactory = class
@@ -272,13 +297,15 @@ begin
   WriteLn(pt.X);
   WriteLn(pt.Y);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "200"]);
 }
 
 #[test]
 fn test_class_var_private_visibility() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSecureVault = class
   private class var FMasterKey: Integer;
@@ -291,13 +318,15 @@ begin
   TSecureVault.SetKey(9876);
   WriteLn(TSecureVault.GetKey);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["9876"]);
 }
 
 #[test]
 fn test_class_function_returning_boolean() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TValidator = class
   public class function IsPositive(n: Integer): Boolean;
@@ -310,13 +339,15 @@ begin
   WriteLn(TValidator.IsPositive(10));
   WriteLn(TValidator.IsPositive(-5));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_subclass_overrides_class_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseClass = class
   public class procedure Announce; virtual;
@@ -330,13 +361,15 @@ begin
   TBaseClass.Announce;
   TSubClass.Announce;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["BaseClass", "SubClass"]);
 }
 
 #[test]
 fn test_class_function_returning_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntArr = array[1..3] of Integer;
 type TArrayMaker = class
@@ -351,13 +384,15 @@ begin
   arr := TArrayMaker.MakeArray(10, 20, 30);
   WriteLn(arr[2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20"]);
 }
 
 #[test]
 fn test_class_method_called_via_instance_variable() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type THelper = class
   public class function Version: String;
@@ -369,13 +404,15 @@ begin
   WriteLn(h.Version);
   h.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1.2.3"]);
 }
 
 #[test]
 fn test_multiple_class_vars_in_single_declaration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStats = class
   public class var Reads, Writes: Integer;
@@ -391,13 +428,15 @@ begin
   WriteLn(TStats.Reads);
   WriteLn(TStats.Writes);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "0"]);
 }
 
 #[test]
 fn test_class_function_real_precision_computation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TGeometry = class
   public class function CircleArea(radius: Real): Real;
@@ -409,6 +448,7 @@ end;
 begin
   WriteLn(TGeometry.CircleArea(2.0));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["12.56636"]);
 }

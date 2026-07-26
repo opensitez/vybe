@@ -6,19 +6,22 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_guid_structure_sizeof() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
   WriteLn(SizeOf(TGUID) = 16);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_guid_string_round_trip() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var g1, g2: TGUID; s: String;
@@ -28,13 +31,15 @@ begin
   g2 := StringToGUID(GUIDToString(g1));
   WriteLn(IsEqualGUID(g1, g2));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_guid_tostring_format_length() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var g: TGUID; s: String;
@@ -45,13 +50,15 @@ begin
   WriteLn(s[1] = '{');
   WriteLn(s[38] = '}');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True", "True"]);
 }
 
 #[test]
 fn test_guid_equality_operators() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var g1, g2, g3: TGUID;
@@ -62,13 +69,15 @@ begin
   WriteLn(g1 = g2);
   WriteLn(g1 <> g3);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_guid_createguid_function() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var g: TGUID; res: Integer;
@@ -77,13 +86,15 @@ begin
   WriteLn(res = 0);
   WriteLn(Length(GUIDToString(g)) = 38);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_guid_interface_iid_query() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type IMyCustomIntf = interface
@@ -94,13 +105,15 @@ begin
   g := IMyCustomIntf;
   WriteLn(GUIDToString(g) = '{AAAABBBB-CCCC-DDDD-EEEE-FFFF00001111}');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_guid_null_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var g: TGUID;
@@ -108,13 +121,15 @@ begin
   FillChar(g, SizeOf(TGUID), 0);
   WriteLn(IsEqualGUID(g, GUID_NULL));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_guid_fields_direct_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var g: TGUID;
@@ -126,13 +141,15 @@ begin
   WriteLn(HexStr(g.D1, 8));
   WriteLn(HexStr(g.D2, 4));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["12345678", "ABCD"]);
 }
 
 #[test]
 fn test_guid_in_record_struct() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TComponentMeta = record
@@ -145,13 +162,18 @@ begin
   meta.Name := 'Component1';
   WriteLn(GUIDToString(meta.ID) + ':' + meta.Name);
 end.
-"#);
-    assert_eq!(out, vec!["{00000000-0000-0000-0000-000000000001}:Component1"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["{00000000-0000-0000-0000-000000000001}:Component1"]
+    );
 }
 
 #[test]
 fn test_guid_array_operations() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var guids: array[0..1] of TGUID;
@@ -160,13 +182,15 @@ begin
   guids[1] := StringToGUID('{20000000-0000-0000-0000-000000000000}');
   WriteLn(IsEqualGUID(guids[0], guids[1]));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False"]);
 }
 
 #[test]
 fn test_guid_invalid_string_raises_exception() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var g: TGUID;
@@ -177,13 +201,15 @@ begin
     on E: EConvertError do WriteLn('InvalidGuidErrorCaught');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["InvalidGuidErrorCaught"]);
 }
 
 #[test]
 fn test_guid_compare_equal() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var g1, g2: TGUID;
@@ -192,13 +218,15 @@ begin
   g2 := StringToGUID('{ABCDEF01-1234-5678-90AB-CDEF01234567}');
   WriteLn(g1 = g2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_guid_createguid_uniqueness() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var g1, g2: TGUID;
@@ -207,13 +235,15 @@ begin
   CreateGUID(g2);
   WriteLn(not IsEqualGUID(g1, g2));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_guid_lowercase_string_parsing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var g: TGUID;
@@ -221,13 +251,15 @@ begin
   g := StringToGUID('{abcdef01-1234-5678-90ab-cdef01234567}');
   WriteLn(GUIDToString(g) = '{ABCDEF01-1234-5678-90AB-CDEF01234567}');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_guid_without_braces_parsing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var g: TGUID;
@@ -235,13 +267,15 @@ begin
   g := StringToGUID('12345678-1234-1234-1234-1234567890AB');
   WriteLn(GUIDToString(g) = '{12345678-1234-1234-1234-1234567890AB}');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_guid_dynamic_array_search() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 function FindGUID(const list: array of TGUID; const target: TGUID): Boolean;
@@ -259,13 +293,15 @@ begin
   target := StringToGUID('{22222222-2222-2222-2222-222222222222}');
   WriteLn(FindGUID(list, target));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_guid_hash_code_generation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 function HashGUID(const g: TGUID): Cardinal;
@@ -277,13 +313,15 @@ begin
   g := StringToGUID('{12345678-0000-0000-0000-000000000000}');
   WriteLn(HashGUID(g) = $12345678);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_guid_d4_bytes_copy() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var g: TGUID; i: Integer; sum: Integer;
@@ -294,13 +332,15 @@ begin
     sum := sum + g.D4[i];
   WriteLn(sum); // 1+2+3+4+5+6+7+8 = 36
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["36"]);
 }
 
 #[test]
 fn test_guid_supports_guid_variable() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var g: TGUID;
@@ -308,13 +348,15 @@ begin
   g := GUID_NULL;
   WriteLn(IsEqualGUID(g, GUID_NULL));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_guid_to_string_conversion_in_log() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure LogGuid(const g: TGUID);
@@ -324,6 +366,7 @@ end;
 begin
   LogGuid(StringToGUID('{99999999-9999-9999-9999-999999999999}'));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["LOG_GUID:{99999999-9999-9999-9999-999999999999}"]);
 }

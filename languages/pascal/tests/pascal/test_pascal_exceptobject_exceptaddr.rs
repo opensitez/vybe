@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_exceptobject_basic_query() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -16,13 +17,15 @@ begin
     WriteLn(Exception(ExceptObject).Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ExceptObjectTest"]);
 }
 
 #[test]
 fn test_exceptobject_classname() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -32,13 +35,15 @@ begin
     WriteLn(ExceptObject.ClassName);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["EInvalidArgument"]);
 }
 
 #[test]
 fn test_exceptaddr_not_nil() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -48,13 +53,15 @@ begin
     WriteLn(ExceptAddr <> nil);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_exceptobject_casting_to_custom_exception() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ECustom = class(Exception)
@@ -73,25 +80,29 @@ begin
       WriteLn(ECustom(ExceptObject).Tag);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["777"]);
 }
 
 #[test]
 fn test_exceptobject_outside_except_is_nil() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
   WriteLn(ExceptObject = nil);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_pass_exceptobject_to_logger() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure LogException(obj: TObject);
@@ -106,13 +117,15 @@ begin
     LogException(ExceptObject);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Logged:PassToLogger"]);
 }
 
 #[test]
 fn test_pass_exceptaddr_to_reporter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure ReportAddr(addr: Pointer);
@@ -126,13 +139,15 @@ begin
     ReportAddr(ExceptAddr);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_exceptobject_in_untyped_except_block() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -142,13 +157,15 @@ begin
     WriteLn(ExceptObject.ClassName + ':' + Exception(ExceptObject).Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["EDivByZero:UntypedDivZero"]);
 }
 
 #[test]
 fn test_exceptobject_nested_handlers() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -163,13 +180,18 @@ begin
     WriteLn('OuterExceptObject:' + Exception(ExceptObject).Message);
   end;
 end.
-"#);
-    assert_eq!(out, vec!["InnerExceptObject:InnerExc", "OuterExceptObject:OuterExc"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["InnerExceptObject:InnerExc", "OuterExceptObject:OuterExc"]
+    );
 }
 
 #[test]
 fn test_exceptaddr_in_nested_handlers() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var a1, a2: Pointer;
@@ -187,13 +209,15 @@ begin
   WriteLn(a1 <> nil);
   WriteLn(a2 <> nil);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_exceptobject_in_constructor_failure() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TFail = class
@@ -211,13 +235,15 @@ begin
     WriteLn(ExceptObject.ClassName);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Exception"]);
 }
 
 #[test]
 fn test_exceptobject_in_record_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TRec = record
@@ -235,13 +261,15 @@ begin
     WriteLn(Exception(ExceptObject).Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RecMethodFail"]);
 }
 
 #[test]
 fn test_exceptobject_inheritsfrom_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ECustomBase = class(Exception);
@@ -253,13 +281,15 @@ begin
     WriteLn(ExceptObject.InheritsFrom(ECustomBase));
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_exceptaddr_converted_to_hex_string() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var addrHex: String;
@@ -271,13 +301,15 @@ begin
     WriteLn(Length(addrHex) >= 8);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_exceptobject_property_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -287,13 +319,15 @@ begin
     WriteLn(Exception(ExceptObject).Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["PropAccessMessage"]);
 }
 
 #[test]
 fn test_exceptobject_reraised_identity() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var ptr1, ptr2: Pointer;
@@ -310,13 +344,15 @@ begin
   end;
   WriteLn(ptr1 = ptr2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_exceptobject_in_function_return() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 function GetExceptMsg: String;
@@ -330,13 +366,15 @@ end;
 begin
   WriteLn(GetExceptMsg);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FuncExceptMsg"]);
 }
 
 #[test]
 fn test_exceptobject_with_sysutils_econvert_error() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -346,13 +384,15 @@ begin
     WriteLn(ExceptObject.ClassName);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["EConvertError"]);
 }
 
 #[test]
 fn test_exceptobject_with_edivbyzero() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var a, b: Integer;
@@ -364,13 +404,15 @@ begin
     WriteLn(ExceptObject.ClassName);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["EDivByZero"]);
 }
 
 #[test]
 fn test_exceptobject_lifecycle_safety() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure InspectObject;
@@ -384,6 +426,7 @@ begin
     InspectObject;
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }

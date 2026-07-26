@@ -234,7 +234,7 @@ function TOn.On: Boolean; begin Result := true; end;
 var f: TFlag;
 begin f := TOn.Create; WriteLn(f.On); f.Free; end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -359,7 +359,7 @@ constructor TImpl.Create; begin inherited; FReady := true; end;
 var o: TBase;
 begin o := TImpl.Create; WriteLn(o.Ready); o.Free; end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 

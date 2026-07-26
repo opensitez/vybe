@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_custom_range_enumerator_basic() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRange = record
   FStart, FEnd: Integer;
@@ -39,13 +40,15 @@ begin
   for i in rng do
     WriteLn(i);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2", "3"]);
 }
 
 #[test]
 fn test_custom_class_getenumerator_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCustomListEnum = class
   private FItems: array[0..2] of String; FIndex: Integer;
@@ -73,13 +76,15 @@ begin
     WriteLn(s);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Alpha", "Beta", "Gamma"]);
 }
 
 #[test]
 fn test_custom_reverse_enumerator() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TArrayWrapper = record
   Data: array[0..2] of Integer;
@@ -104,13 +109,15 @@ begin
   for val in wrapper do
     WriteLn(val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30", "20", "10"]);
 }
 
 #[test]
 fn test_custom_filter_enumerator_even_numbers() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TEvenFilter = record
   MaxVal: Integer;
@@ -139,13 +146,15 @@ begin
   for val in filter do
     WriteLn(val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "4", "6"]);
 }
 
 #[test]
 fn test_linked_list_enumerator() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PNode = ^TNode;
      TNode = record
@@ -187,13 +196,15 @@ begin
     WriteLn(v);
   Dispose(n1); Dispose(n2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "200"]);
 }
 
 #[test]
 fn test_custom_generic_container_enumerator() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TGenBox<T> = class
   public Item1, Item2: T;
@@ -226,13 +237,15 @@ begin
     WriteLn(s);
   b.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["BoxA", "BoxB"]);
 }
 
 #[test]
 fn test_custom_enumerator_with_step_size() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStepRange = record
   Start, Stop, Step: Integer;
@@ -262,13 +275,15 @@ begin
   for val in sr do
     WriteLn(val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20", "30"]);
 }
 
 #[test]
 fn test_custom_enumerator_yields_index_value_pair() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPair = record Index: Integer; Val: String; end;
 type TIndexedArr = record
@@ -294,13 +309,15 @@ begin
   for p in arr do
     WriteLn(p.Index.ToString + '=' + p.Val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0=Zero", "1=One"]);
 }
 
 #[test]
 fn test_custom_string_token_enumerator() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TTokenWrapper = record
@@ -341,13 +358,15 @@ begin
   for tok in tw do
     WriteLn(tok);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["red", "green", "blue"]);
 }
 
 #[test]
 fn test_custom_enumerator_empty_container() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TEmptyContainer = record end;
 type TEmptyEnum = record
@@ -366,13 +385,15 @@ begin
   for val in ec do Inc(count);
   WriteLn(count);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn test_custom_enumerator_single_item() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSingleContainer = record Val: Integer; end;
 type TSingleEnum = record
@@ -397,13 +418,15 @@ begin
   for v in sc do
     WriteLn(v);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["999"]);
 }
 
 #[test]
 fn test_custom_enumerator_record_fields() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPointRec = record X, Y, Z: Integer; end;
 type TPointEnum = record
@@ -433,13 +456,15 @@ begin
   for coord in pt do
     WriteLn(coord);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20", "30"]);
 }
 
 #[test]
 fn test_custom_enumerator_matrix_row_traversal() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMatrix2x2 = record
   Data: array[0..1, 0..1] of Integer;
@@ -468,13 +493,15 @@ begin
   for v in m do sum := sum + v;
   WriteLn(sum);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10"]);
 }
 
 #[test]
 fn test_custom_enumerator_boolean_flags() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TFlagContainer = record
   Flags: array[0..2] of Boolean;
@@ -498,13 +525,15 @@ begin
   for b in fc do
     WriteLn(b);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False", "True"]);
 }
 
 #[test]
 fn test_custom_enumerator_break_loop_support() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRange = record StartVal, StopVal: Integer; end;
 type TRangeEnum = record
@@ -529,13 +558,15 @@ begin
     WriteLn(i);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2", "3"]);
 }
 
 #[test]
 fn test_custom_enumerator_continue_loop_support() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRange = record StartVal, StopVal: Integer; end;
 type TRangeEnum = record
@@ -560,13 +591,15 @@ begin
     WriteLn(i);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "3", "5"]);
 }
 
 #[test]
 fn test_custom_enumerator_nested_loops() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRange = record StartVal, StopVal: Integer; end;
 type TRangeEnum = record
@@ -590,13 +623,15 @@ begin
     for j in r2 do
       WriteLn(i.ToString + ':' + j.ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1:10", "1:11", "2:10", "2:11"]);
 }
 
 #[test]
 fn test_custom_enumerator_enum_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TColor = (cRed, cGreen, cBlue);
 type TColorEnum = record
@@ -618,13 +653,15 @@ begin
   for col in cr do
     WriteLn(Ord(col));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "1", "2"]);
 }
 
 #[test]
 fn test_custom_enumerator_real_elements() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRealList = record
   R1, R2: Real;
@@ -648,13 +685,15 @@ begin
   for r in rl do
     WriteLn(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2.5", "7.5"]);
 }
 
 #[test]
 fn test_custom_class_helper_enumerator() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type THelperEnum = record
   private FCurr, FMax: Integer;
@@ -678,6 +717,7 @@ begin
   for i in num do
     WriteLn(i);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2", "3"]);
 }

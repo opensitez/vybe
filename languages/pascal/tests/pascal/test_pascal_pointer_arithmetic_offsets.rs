@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_pbyte_inc_dec() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var bytes: array[0..2] of Byte;
     pb: PByte;
@@ -19,13 +20,15 @@ begin
   Inc(pb);
   WriteLn(pb^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20", "30"]);
 }
 
 #[test]
 fn test_pinteger_pointer_arithmetic_stride() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var ints: array[0..2] of Integer;
     pi: PInteger;
@@ -37,13 +40,15 @@ begin
   Inc(pi, 1);
   WriteLn(pi^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["200", "300"]);
 }
 
 #[test]
 fn test_pointer_array_indexing_syntax() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array[0..2] of Integer;
     p: PInteger;
@@ -54,13 +59,15 @@ begin
   WriteLn(p[1]);
   WriteLn(p[2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5", "15", "25"]);
 }
 
 #[test]
 fn test_pointer_subtraction_byte_distance() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array[0..4] of Byte;
     p1, p2: PByte;
@@ -71,13 +78,15 @@ begin
   diff := NativeInt(p2) - NativeInt(p1);
   WriteLn(diff);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn test_pchar_pointer_addition() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var strBuf: array[0..5] of Char;
     pc: PChar;
@@ -87,13 +96,15 @@ begin
   Inc(pc);
   WriteLn(pc^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["i"]);
 }
 
 #[test]
 fn test_pointer_dec_loop_iteration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var nums: array[0..2] of Integer;
     p: PInteger;
@@ -106,13 +117,15 @@ begin
   Dec(p);
   WriteLn(p^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "2", "1"]);
 }
 
 #[test]
 fn test_pointer_offset_with_pbyte_casting() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TData = record
   A: Integer;
@@ -127,13 +140,15 @@ begin
   pB := PInteger(PByte(pBase) + SizeOf(Integer));
   WriteLn(pB^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["222"]);
 }
 
 #[test]
 fn test_pointer_comparison_boundary_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array[0..2] of Integer;
     p, pEnd: PInteger;
@@ -150,13 +165,15 @@ begin
   end;
   WriteLn(sum);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_pointer_pred_and_succ() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array[0..2] of Integer;
     p: PInteger;
@@ -166,13 +183,15 @@ begin
   WriteLn(Pred(p)^);
   WriteLn(Succ(p)^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "30"]);
 }
 
 #[test]
 fn test_pointer_arithmetic_custom_step() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array[0..4] of Integer;
     p: PInteger;
@@ -184,13 +203,15 @@ begin
   Inc(p, 2);
   WriteLn(p^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["300", "500"]);
 }
 
 #[test]
 fn test_pointer_arithmetic_record_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPoint = record X, Y: Integer; end;
 type PPoint = ^TPoint;
@@ -204,13 +225,15 @@ begin
   WriteLn(p^.X);
   WriteLn(p^.Y);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "4"]);
 }
 
 #[test]
 fn test_pointer_addition_operator_syntax() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array[0..2] of Integer;
     p1, p2: PInteger;
@@ -220,13 +243,15 @@ begin
   p2 := p1 + 2;
   WriteLn(p2^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["33"]);
 }
 
 #[test]
 fn test_pointer_subtraction_operator_syntax() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array[0..2] of Integer;
     p1, p2: PInteger;
@@ -236,13 +261,15 @@ begin
   p2 := p1 - 2;
   WriteLn(p2^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["11"]);
 }
 
 #[test]
 fn test_pointer_arithmetic_2d_matrix_offset() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var matrix: array[0..1, 0..1] of Integer;
     pBase: PInteger;
@@ -254,13 +281,15 @@ begin
   val := (pBase + (1 * 2 + 1))^;
   WriteLn(val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn test_pointer_arithmetic_byte_buffer_accumulation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var buf: array[0..3] of Byte;
     pb: PByte;
@@ -276,13 +305,15 @@ begin
   end;
   WriteLn(sum);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn test_pointer_arithmetic_real_stride() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var floats: array[0..1] of Real;
     pr: PReal;
@@ -292,13 +323,15 @@ begin
   Inc(pr);
   WriteLn(pr^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3.5"]);
 }
 
 #[test]
 fn test_pointer_indexing_mutation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array[0..2] of Integer;
     p: PInteger;
@@ -309,13 +342,15 @@ begin
   p[2] := 300;
   WriteLn(arr[0] + arr[1] + arr[2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["600"]);
 }
 
 #[test]
 fn test_pointer_distance_element_count() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array[0..9] of Integer;
     pStart, pEnd: PInteger;
@@ -326,13 +361,15 @@ begin
   count := pEnd - pStart;
   WriteLn(count);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn test_pointer_offset_with_negative_index() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array[0..2] of Integer;
     p: PInteger;
@@ -342,13 +379,15 @@ begin
   WriteLn(p[-1]);
   WriteLn(p[-2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20", "10"]);
 }
 
 #[test]
 fn test_pointer_arithmetic_boolean_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var flags: array[0..2] of Boolean;
     pb: PBoolean;
@@ -358,6 +397,7 @@ begin
   Inc(pb);
   WriteLn(pb^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }

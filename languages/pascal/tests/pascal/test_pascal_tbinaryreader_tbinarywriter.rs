@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_tbinarywriter_and_tbinaryreader_primitive_int() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader;
@@ -23,13 +24,15 @@ begin
   WriteLn(r.ReadInt32);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42", "100"]);
 }
 
 #[test]
 fn test_tbinarywriter_and_tbinaryreader_string() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader;
@@ -44,13 +47,15 @@ begin
   WriteLn(r.ReadString);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["BinaryStringPayload"]);
 }
 
 #[test]
 fn test_tbinarywriter_and_tbinaryreader_boolean() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader;
@@ -67,13 +72,15 @@ begin
   WriteLn(r.ReadBoolean);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_tbinarywriter_and_tbinaryreader_double() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader;
@@ -88,13 +95,15 @@ begin
   WriteLn(r.ReadDouble);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3.14159"]);
 }
 
 #[test]
 fn test_tbinarywriter_heterogeneous_pipeline() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader;
@@ -115,13 +124,15 @@ begin
   WriteLn(r.ReadDouble);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["101", "ItemName", "True", "19.99"]);
 }
 
 #[test]
 fn test_tbinaryreader_readbytes() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader;
@@ -140,13 +151,15 @@ begin
   WriteLn(bytes[2]);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "10", "30"]);
 }
 
 #[test]
 fn test_tbinarywriter_with_tfilestream() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var fs: TFileStream; w: TBinaryWriter; r: TBinaryReader;
@@ -161,13 +174,15 @@ begin
   WriteLn(r.ReadString);
   r.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FileBinaryData"]);
 }
 
 #[test]
 fn test_tbinaryreader_basestream_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; r: TBinaryReader;
@@ -177,13 +192,15 @@ begin
   WriteLn(r.BaseStream <> nil);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_tbinarywriter_write_byte_word_cardinal() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader;
@@ -202,13 +219,15 @@ begin
   WriteLn(r.ReadUInt32);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["255", "65535", "4294967295"]);
 }
 
 #[test]
 fn test_tbinarywriter_write_char() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader;
@@ -223,13 +242,15 @@ begin
   WriteLn(r.ReadChar);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Z"]);
 }
 
 #[test]
 fn test_tbinarywriter_protection_finally() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter;
@@ -244,13 +265,15 @@ begin
     WriteLn('BinaryWriterFreedInFinally');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["BinaryWriterFreedInFinally"]);
 }
 
 #[test]
 fn test_tbinarywriter_loop_writing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader; i: Integer;
@@ -265,13 +288,15 @@ begin
   for i := 1 to 3 do WriteLn(r.ReadInt32);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20", "30"]);
 }
 
 #[test]
 fn test_tbinaryreader_readint64() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader;
@@ -286,13 +311,15 @@ begin
   WriteLn(r.ReadInt64);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["9876543210"]);
 }
 
 #[test]
 fn test_tbinaryreader_readsingle_float() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader;
@@ -307,13 +334,15 @@ begin
   WriteLn(r.ReadSingle);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["12.5"]);
 }
 
 #[test]
 fn test_tbinarywriter_empty_string_write() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader;
@@ -328,13 +357,15 @@ begin
   WriteLn(Length(r.ReadString));
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn test_tbinarywriter_multiple_strings() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader;
@@ -350,13 +381,15 @@ begin
   WriteLn(r.ReadString + ' & ' + r.ReadString);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["First & Second"]);
 }
 
 #[test]
 fn test_tbinaryreader_peekchar() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader;
@@ -372,13 +405,15 @@ begin
   WriteLn(r.ReadChar);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "A"]);
 }
 
 #[test]
 fn test_tbinarywriter_record_serialization() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 type THeader = packed record Magic: Word; Version: Byte; end;
@@ -397,13 +432,15 @@ begin
   WriteLn(r.ReadByte);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["19802", "1"]);
 }
 
 #[test]
 fn test_tbinarywriter_array_of_bytes_write() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader;
@@ -423,13 +460,15 @@ begin
   WriteLn(readBytes[1]);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["55", "66"]);
 }
 
 #[test]
 fn test_tbinaryreader_eof_check_base_stream() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SysUtils;
 var ms: TMemoryStream; w: TBinaryWriter; r: TBinaryReader;
@@ -445,6 +484,7 @@ begin
   WriteLn(r.BaseStream.Position = r.BaseStream.Size);
   r.Free; ms.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }

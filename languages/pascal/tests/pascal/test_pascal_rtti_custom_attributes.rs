@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_rtti_custom_attribute_class_declaration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type TableAttribute = class(TCustomAttribute)
@@ -32,13 +33,15 @@ begin
       WriteLn(TableAttribute(attr).TableName);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["users_table"]);
 }
 
 #[test]
 fn test_rtti_custom_attribute_on_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type RequiredAttribute = class(TCustomAttribute);
@@ -59,13 +62,15 @@ begin
       WriteLn('EmailIsRequired');
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["EmailIsRequired"]);
 }
 
 #[test]
 fn test_rtti_custom_attribute_on_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type RouteAttribute = class(TCustomAttribute)
@@ -91,13 +96,15 @@ begin
       WriteLn(RouteAttribute(attr).Path);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["/api/v1/status"]);
 }
 
 #[test]
 fn test_rtti_multiple_attributes_on_single_symbol() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type AttrA = class(TCustomAttribute);
@@ -115,13 +122,15 @@ begin
   WriteLn(Length(t.GetAttributes) = 2);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_rtti_attribute_integer_arg() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type MaxLengthAttribute = class(TCustomAttribute)
@@ -147,13 +156,15 @@ begin
       WriteLn(MaxLengthAttribute(attr).MaxLen);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn test_rtti_attribute_inheritance() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type BaseAttr = class(TCustomAttribute);
@@ -171,13 +182,15 @@ begin
     WriteLn(attr is BaseAttr);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_rtti_custom_attribute_on_field() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type FieldTagAttribute = class(TCustomAttribute)
@@ -202,13 +215,15 @@ begin
       WriteLn(FieldTagAttribute(attr).Tag);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["primary_key"]);
 }
 
 #[test]
 fn test_rtti_custom_attribute_enum_argument() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type TSeverity = (sevLow, sevHigh);
@@ -231,13 +246,15 @@ begin
       WriteLn(Ord(SeverityAttribute(attr).Level));
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_rtti_custom_attribute_boolean_argument() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type VisibleAttribute = class(TCustomAttribute)
@@ -259,13 +276,15 @@ begin
       WriteLn(VisibleAttribute(attr).IsVisible);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False"]);
 }
 
 #[test]
 fn test_rtti_custom_attribute_default_constructor() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type SerializableAttribute = class(TCustomAttribute);
@@ -281,13 +300,15 @@ begin
   WriteLn(t.GetAttributes[0].ClassName);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SerializableAttribute"]);
 }
 
 #[test]
 fn test_rtti_custom_attribute_on_record() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type RecMetaAttribute = class(TCustomAttribute)
@@ -311,13 +332,15 @@ begin
       WriteLn(RecMetaAttribute(attr).Meta);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["struct_v1"]);
 }
 
 #[test]
 fn test_rtti_custom_attribute_multiple_params() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type ColumnAttribute = class(TCustomAttribute)
@@ -346,13 +369,15 @@ begin
       WriteLn(ColumnAttribute(attr).Name + ':' + ColumnAttribute(attr).IsNullable.ToString);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["user_age:True"]);
 }
 
 #[test]
 fn test_rtti_no_attributes_returns_empty_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type TPlainClass = class end;
@@ -363,13 +388,15 @@ begin
   WriteLn(Length(t.GetAttributes) = 0);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_rtti_attribute_query_by_class() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type TargetAttr = class(TCustomAttribute);
@@ -392,13 +419,15 @@ begin
   WriteLn(HasAttr(t, TargetAttr));
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_rtti_attribute_on_interface() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type ServiceAttribute = class(TCustomAttribute);
@@ -416,13 +445,15 @@ begin
   WriteLn(Length(t.GetAttributes) = 1);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_rtti_attribute_float_argument() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type VersionAttr = class(TCustomAttribute)
@@ -444,13 +475,15 @@ begin
       WriteLn(VersionAttr(attr).Ver);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2.5"]);
 }
 
 #[test]
 fn test_rtti_attribute_on_method_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type ParamCheckAttr = class(TCustomAttribute);
@@ -468,13 +501,15 @@ begin
   WriteLn(Length(params[0].GetAttributes) = 1);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_rtti_attribute_subclass_polymorphic_filtering() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type BaseValidationAttr = class(TCustomAttribute);
@@ -497,13 +532,15 @@ begin
       WriteLn(attr.ClassName);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["NotEmptyAttr"]);
 }
 
 #[test]
 fn test_rtti_attribute_instance_uniqueness() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type UniqueAttr = class(TCustomAttribute);
@@ -525,13 +562,15 @@ begin
   WriteLn(a1 <> a2);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_rtti_attribute_on_enum_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type EnumMetaAttr = class(TCustomAttribute);
@@ -547,6 +586,7 @@ begin
   WriteLn(Length(t.GetAttributes) = 1);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }

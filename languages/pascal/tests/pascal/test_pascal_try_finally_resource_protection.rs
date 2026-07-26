@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_try_finally_normal_execution() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 begin
   try
@@ -15,13 +16,15 @@ begin
     WriteLn('ResourceFreed');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ProtectedWork", "ResourceFreed"]);
 }
 
 #[test]
 fn test_try_finally_execution_on_exception() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -35,13 +38,15 @@ begin
     on E: Exception do WriteLn('Caught:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FinallyRunsOnException", "Caught:FailInWork"]);
 }
 
 #[test]
 fn test_try_finally_object_free_pattern() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TResObj = class
   destructor Destroy; override;
@@ -57,13 +62,15 @@ begin
     obj.Free;
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["UsingObject", "ObjectFreedInFinally"]);
 }
 
 #[test]
 fn test_try_finally_runs_on_exit() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure RunProc;
 begin
@@ -78,13 +85,15 @@ end;
 begin
   RunProc;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["BeforeExit", "FinallyRunsOnExit"]);
 }
 
 #[test]
 fn test_try_finally_runs_on_break() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var i: Integer;
 begin
@@ -98,13 +107,15 @@ begin
     end;
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Iter:1", "FinallyIter:1", "FinallyIter:2"]);
 }
 
 #[test]
 fn test_try_finally_runs_on_continue() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var i: Integer;
 begin
@@ -118,13 +129,15 @@ begin
     end;
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FinallyIter:1", "Iter:2", "FinallyIter:2"]);
 }
 
 #[test]
 fn test_try_finally_getmem_freemem_protection() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var p: Pointer;
 begin
@@ -136,13 +149,15 @@ begin
     WriteLn('BufferFreed');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["BufferAllocated", "BufferFreed"]);
 }
 
 #[test]
 fn test_nested_try_finally_execution_order() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 begin
   try
@@ -155,13 +170,15 @@ begin
     WriteLn('OuterFinally');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["InnerWork", "InnerFinally", "OuterFinally"]);
 }
 
 #[test]
 fn test_state_restore_in_finally() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var globalState: Boolean;
 procedure ModifyState;
@@ -180,13 +197,15 @@ begin
   globalState := False;
   ModifyState;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["StateModified:True", "StateRestored:False"]);
 }
 
 #[test]
 fn test_try_finally_combined_with_try_except() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var objFreed: Boolean;
@@ -203,13 +222,15 @@ begin
   end;
   WriteLn('ObjFreedStatus:' + objFreed.ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Handled:ErrorInTry", "ObjFreedStatus:True"]);
 }
 
 #[test]
 fn test_try_finally_stringlist_protection() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -223,13 +244,15 @@ begin
     WriteLn('StringListFreed');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ProtectedLine", "StringListFreed"]);
 }
 
 #[test]
 fn test_try_finally_lock_unlock_pattern() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TLock = record
   Locked: Boolean;
@@ -247,13 +270,15 @@ begin
     l.Unlock;
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Locked", "CriticalSectionCode", "Unlocked"]);
 }
 
 #[test]
 fn test_try_finally_multiple_resources() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TResA = class destructor Destroy; override; end;
 type TResB = class destructor Destroy; override; end;
@@ -274,13 +299,15 @@ begin
     a.Free;
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["UsingBothResources", "ResBFreed", "ResAFreed"]);
 }
 
 #[test]
 fn test_try_finally_in_function_return() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function ComputeValue: Integer;
 begin
@@ -293,13 +320,15 @@ end;
 begin
   WriteLn(ComputeValue);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FinallyInFunction", "42"]);
 }
 
 #[test]
 fn test_try_finally_in_recursive_procedure() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure RecursiveProc(depth: Integer);
 begin
@@ -313,13 +342,15 @@ end;
 begin
   RecursiveProc(2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Enter:2", "Enter:1", "Leave:1", "Leave:2"]);
 }
 
 #[test]
 fn test_try_finally_cursor_toggle_restoration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var cursor: String;
 procedure ShowWaitCursor;
@@ -338,13 +369,15 @@ begin
   cursor := 'Default';
   ShowWaitCursor;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CurrentCursor:Wait", "RestoredCursor:Default"]);
 }
 
 #[test]
 fn test_try_finally_unhandled_exception_propagation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure DoWork;
@@ -362,13 +395,15 @@ begin
     on E: Exception do WriteLn('TopCaught:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SubFinallyExecuted", "TopCaught:UncaughtInSub"]);
 }
 
 #[test]
 fn test_try_finally_nil_check_free_pattern() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCleanObj = class end;
 var obj: TCleanObj;
@@ -381,13 +416,15 @@ begin
     WriteLn('NilFreeHandled');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["NoAllocationMade", "NilFreeHandled"]);
 }
 
 #[test]
 fn test_try_finally_in_record_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TWorkerRec = record
   procedure Execute;
@@ -404,13 +441,15 @@ var w: TWorkerRec;
 begin
   w.Execute;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RecExecuteStart", "RecExecuteFinally"]);
 }
 
 #[test]
 fn test_try_finally_counter_increment_decrement() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var activeTasks: Integer;
 procedure TaskRun;
@@ -427,6 +466,7 @@ begin
   TaskRun;
   WriteLn('ActiveTasks:' + activeTasks.ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ActiveTasks:1", "ActiveTasks:0"]);
 }

@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_stringbuilder_basic_append() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -17,13 +18,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello World"]);
 }
 
 #[test]
 fn test_stringbuilder_append_multiple_types() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -36,13 +39,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Int: 42 Bool: True"]);
 }
 
 #[test]
 fn test_stringbuilder_method_chaining() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -52,13 +57,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ABC"]);
 }
 
 #[test]
 fn test_stringbuilder_appendline() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -69,13 +76,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Line1", "Line2"]);
 }
 
 #[test]
 fn test_stringbuilder_insert_at_index() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -85,13 +94,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ABC"]);
 }
 
 #[test]
 fn test_stringbuilder_remove_range() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -101,13 +112,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello"]);
 }
 
 #[test]
 fn test_stringbuilder_replace_occurrences() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -117,13 +130,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["qux bar qux"]);
 }
 
 #[test]
 fn test_stringbuilder_clear_reset() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -135,13 +150,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "FreshData"]);
 }
 
 #[test]
 fn test_stringbuilder_appendformat() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -151,13 +168,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Item: Book, ID: 101"]);
 }
 
 #[test]
 fn test_stringbuilder_chars_0based_indexing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -168,13 +187,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["P", "Jascal"]);
 }
 
 #[test]
 fn test_stringbuilder_capacity_preallocation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -183,13 +204,15 @@ begin
   WriteLn(sb.Capacity >= 1024);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_stringbuilder_loop_aggregation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder; i: Integer;
@@ -203,13 +226,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1,2,3,4,5"]);
 }
 
 #[test]
 fn test_stringbuilder_json_formatting() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -222,13 +247,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["{\"id\":10,\"active\":true}"]);
 }
 
 #[test]
 fn test_stringbuilder_xml_tag_building() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -238,13 +265,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["<title>Pascal Documentation</title>"]);
 }
 
 #[test]
 fn test_stringbuilder_parameter_passing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure BuildHeader(sb: TStringBuilder);
@@ -258,13 +287,15 @@ begin
   WriteLn(b.ToString);
   b.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["=== HEADER ==="]);
 }
 
 #[test]
 fn test_stringbuilder_append_float() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -274,13 +305,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3.14"]);
 }
 
 #[test]
 fn test_stringbuilder_length_truncation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -290,13 +323,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Long"]);
 }
 
 #[test]
 fn test_stringbuilder_append_char() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -308,13 +343,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["XYZ"]);
 }
 
 #[test]
 fn test_stringbuilder_replace_single_char() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -324,13 +361,15 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["A:B:C"]);
 }
 
 #[test]
 fn test_stringbuilder_initial_string_constructor() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var sb: TStringBuilder;
@@ -340,6 +379,7 @@ begin
   WriteLn(sb.ToString);
   sb.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["InitialContent_Appended"]);
 }

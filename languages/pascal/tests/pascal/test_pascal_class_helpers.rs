@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_record_helper_for_integer_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntHelper = record helper for Integer
   function IsEven: Boolean;
@@ -22,13 +23,15 @@ begin
   n := 17;
   WriteLn(n.IsEven);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_record_helper_for_string_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStringHelper = record helper for String
   function DoubleStr: String;
@@ -42,13 +45,15 @@ begin
   s := 'ABC';
   WriteLn(s.DoubleStr);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ABCABC"]);
 }
 
 #[test]
 fn test_record_helper_for_boolean_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBoolHelper = record helper for Boolean
   function ToInt: Integer;
@@ -64,13 +69,15 @@ begin
   b := False;
   WriteLn(b.ToInt);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "0"]);
 }
 
 #[test]
 fn test_class_helper_for_tobject() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TObjectHelper = class helper for TObject
   function GetClassNameUpper: String;
@@ -85,13 +92,15 @@ begin
   WriteLn(obj.GetClassNameUpper);
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TOBJECT"]);
 }
 
 #[test]
 fn test_class_helper_for_custom_class() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPerson = class
   public Name: String;
@@ -108,13 +117,15 @@ begin
   WriteLn(p.Greet);
   p.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Hello Bob"]);
 }
 
 #[test]
 fn test_record_helper_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntPropHelper = record helper for Integer
   private function GetIsPositive: Boolean;
@@ -131,13 +142,15 @@ begin
   val := -5;
   WriteLn(val.IsPositive);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_record_helper_enum_extension() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TColor = (cRed, cGreen, cBlue);
 type TColorHelper = record helper for TColor
@@ -156,13 +169,15 @@ begin
   col := cGreen;
   WriteLn(col.ToHex);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["#00FF00"]);
 }
 
 #[test]
 fn test_record_helper_multiple_methods() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMathHelper = record helper for Integer
   function Squared: Integer;
@@ -176,13 +191,15 @@ begin
   WriteLn(x.Squared);
   WriteLn(x.Cubed);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["9", "27"]);
 }
 
 #[test]
 fn test_record_helper_var_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMutateHelper = record helper for Integer
   procedure DoubleSelf;
@@ -197,13 +214,15 @@ begin
   num.DoubleSelf;
   WriteLn(num);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_record_helper_float_methods() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TFloatHelper = record helper for Real
   function RoundToInt: Integer;
@@ -217,13 +236,15 @@ begin
   r := 14.8;
   WriteLn(r.RoundToInt);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15"]);
 }
 
 #[test]
 fn test_record_helper_chaining() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntHelper = record helper for Integer
   function IncBy(n: Integer): Integer;
@@ -234,13 +255,15 @@ begin
   val := 10;
   WriteLn(val.IncBy(5).IncBy(20));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["35"]);
 }
 
 #[test]
 fn test_class_helper_accesses_protected_field() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TWidget = class
   protected FCode: Integer;
@@ -257,13 +280,15 @@ begin
   WriteLn(w.GetCodeTimesTen);
   w.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn test_record_helper_default_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStrPadHelper = record helper for String
   function PadLeftCustom(len: Integer; ch: Char = ' '): String;
@@ -279,13 +304,15 @@ begin
   s := '7';
   WriteLn(s.PadLeftCustom(3, '0'));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["007"]);
 }
 
 #[test]
 fn test_record_helper_overloaded_methods() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntOverloadHelper = record helper for Integer
   function AddVal(n: Integer): Integer; overload;
@@ -299,13 +326,15 @@ begin
   WriteLn(x.AddVal(5));
   WriteLn(x.AddVal('20'));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15", "30"]);
 }
 
 #[test]
 fn test_record_helper_subrange_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TScore = 0..100;
 type TScoreHelper = record helper for TScore
@@ -319,13 +348,15 @@ begin
   sc := 45;
   WriteLn(sc.IsPassing);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_class_helper_static_class_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBase = class end;
 type TBaseStaticHelper = class helper for TBase
@@ -338,13 +369,15 @@ end;
 begin
   TBase.Announce;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["HelperStaticMethod"]);
 }
 
 #[test]
 fn test_record_helper_on_literal_values() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntHelper = record helper for Integer
   function DoubleVal: Integer;
@@ -355,13 +388,15 @@ begin
   res := 50;
   WriteLn(res.DoubleVal);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100"]);
 }
 
 #[test]
 fn test_record_helper_char_methods() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCharHelper = record helper for Char
   function IsDigitChar: Boolean;
@@ -377,13 +412,15 @@ begin
   c := 'X';
   WriteLn(c.IsDigitChar);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_class_helper_inheritance_hierarchy() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TParent = class public PName: String; end;
 type TChild = class(TParent) public CCode: Integer; end;
@@ -398,13 +435,15 @@ begin
   WriteLn(c.GetPInfo);
   c.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["P:ParentData"]);
 }
 
 #[test]
 fn test_record_helper_returning_string() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntFormatHelper = record helper for Integer
   function ToPaddedString(len: Integer): String;
@@ -420,6 +459,7 @@ begin
   id := 42;
   WriteLn(id.ToPaddedString(5));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["00042"]);
 }

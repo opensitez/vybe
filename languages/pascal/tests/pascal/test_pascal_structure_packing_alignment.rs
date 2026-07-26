@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_packed_record_sizeof_exact() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPackedHeader = packed record
   Tag: Byte;
@@ -16,13 +17,15 @@ end;
 begin
   WriteLn(SizeOf(TPackedHeader));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["7"]);
 }
 
 #[test]
 fn test_packrecords_directive_one() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$PACKRECORDS 1}
 type TRec1 = record
@@ -32,13 +35,15 @@ end;
 begin
   WriteLn(SizeOf(TRec1));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn test_packed_record_field_offsets() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPackedRec = packed record
   B1: Byte;
@@ -53,13 +58,15 @@ begin
   WriteLn(off1);
   WriteLn(off2);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "4"]);
 }
 
 #[test]
 fn test_packed_record_binary_deserialization_with_move() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPacket = packed record
   Id: Byte;
@@ -77,13 +84,15 @@ begin
   WriteLn(pkt.Length);
   WriteLn(pkt.Data);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "10", "42"]);
 }
 
 #[test]
 fn test_packed_record_serialization_with_move() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPacket = packed record
   Cmd: Byte;
@@ -97,13 +106,15 @@ begin
   WriteLn(raw[0]);
   WriteLn(raw[1] or (raw[2] shl 8));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["9", "500"]);
 }
 
 #[test]
 fn test_nested_packed_records() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TInner = packed record
   X, Y: Byte;
@@ -116,13 +127,15 @@ end;
 begin
   WriteLn(SizeOf(TOuter));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn test_packed_record_array_contiguity() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TItem = packed record
   Id: Byte;
@@ -134,13 +147,15 @@ begin
   diff := NativeInt(@items[1]) - NativeInt(@items[0]);
   WriteLn(diff);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn test_packrecords_directive_two() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$PACKRECORDS 2}
 type TRec2 = record
@@ -150,13 +165,15 @@ end;
 begin
   WriteLn(SizeOf(TRec2));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn test_packrecords_directive_four() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$PACKRECORDS 4}
 type TRec4 = record
@@ -166,13 +183,15 @@ end;
 begin
   WriteLn(SizeOf(TRec4));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["8"]);
 }
 
 #[test]
 fn test_pointer_to_packed_record() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPackedData = packed record
   Code: Byte;
@@ -187,13 +206,15 @@ begin
   WriteLn(p^.Code);
   WriteLn(p^.Val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["7", "777"]);
 }
 
 #[test]
 fn test_packed_record_enum_fields() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStatus = (stOff, stOn);
 type TPackedStatus = packed record
@@ -206,13 +227,15 @@ begin
   WriteLn(SizeOf(TPackedStatus));
   WriteLn(Ord(ps.Status));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "1"]);
 }
 
 #[test]
 fn test_packed_record_subrange_fields() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSmallSub = 1..10;
 type TPackedSub = packed record
@@ -225,25 +248,29 @@ begin
   WriteLn(SizeOf(TPackedSub));
   WriteLn(ps.Sub);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "5"]);
 }
 
 #[test]
 fn test_packed_array_byte_elements() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPackedBytes = packed array[1..5] of Byte;
 begin
   WriteLn(SizeOf(TPackedBytes));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn test_packed_record_boolean_fields() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPackedFlags = packed record
   F1: Boolean;
@@ -258,13 +285,15 @@ begin
   WriteLn(pf.F2);
   WriteLn(pf.F3);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "True", "False", "True"]);
 }
 
 #[test]
 fn test_unpacked_vs_packed_size_comparison() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TUnpacked = record
   B1: Byte;
@@ -279,13 +308,15 @@ end;
 begin
   WriteLn(SizeOf(TPacked) < SizeOf(TUnpacked));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_packed_record_passed_to_untyped_proc() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPackedHeader = packed record
   Magic: Word;
@@ -303,13 +334,15 @@ begin
   h.Magic := $4D5A; h.Size := 512;
   InspectHeader(h, SizeOf(TPackedHeader));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["19802", "512"]);
 }
 
 #[test]
 fn test_packed_record_heap_allocation_new() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPackedItem = packed record
   Id: Byte;
@@ -324,13 +357,15 @@ begin
   WriteLn(p^.Code);
   Dispose(p);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "2000"]);
 }
 
 #[test]
 fn test_packrecords_default_restoration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 {$PACKRECORDS 1}
 type TPacked1 = record B: Byte; I: Integer; end;
@@ -339,13 +374,15 @@ type TDefault = record B: Byte; I: Integer; end;
 begin
   WriteLn(SizeOf(TPacked1) < SizeOf(TDefault));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_packed_record_fillchar_initialization() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPackedData = packed record
   B: Byte;
@@ -359,13 +396,15 @@ begin
   WriteLn(d.W);
   WriteLn(d.I);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "0", "0"]);
 }
 
 #[test]
 fn test_packed_record_int64_alignment() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPackedInt64 = packed record
   B: Byte;
@@ -374,6 +413,7 @@ end;
 begin
   WriteLn(SizeOf(TPackedInt64));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["9"]);
 }

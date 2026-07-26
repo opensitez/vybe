@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_new_and_dispose_typed_pointer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var p: PInteger;
 begin
@@ -15,13 +16,15 @@ begin
   WriteLn(p^);
   Dispose(p);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100"]);
 }
 
 #[test]
 fn test_getmem_and_freemem_raw_bytes() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var p: Pointer;
     pi: PInteger;
@@ -32,13 +35,15 @@ begin
   WriteLn(pi^);
   FreeMem(p);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["500"]);
 }
 
 #[test]
 fn test_new_and_dispose_record_structure() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNode = record
   ID: Integer;
@@ -54,13 +59,15 @@ begin
   WriteLn(n^.Val);
   Dispose(n);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42", "HeapNode"]);
 }
 
 #[test]
 fn test_reallocmem_growing_buffer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var p: PInteger;
 begin
@@ -70,13 +77,15 @@ begin
   WriteLn(p^);
   FreeMem(Pointer(p));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10"]);
 }
 
 #[test]
 fn test_dynamic_array_setlength_and_length() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array of Integer;
 begin
@@ -85,13 +94,15 @@ begin
   WriteLn(Length(arr));
   WriteLn(arr[1]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "20"]);
 }
 
 #[test]
 fn test_dynamic_array_high_and_low() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array of String;
 begin
@@ -99,13 +110,15 @@ begin
   WriteLn(Low(arr));
   WriteLn(High(arr));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "4"]);
 }
 
 #[test]
 fn test_multidimensional_dynamic_array() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var grid: array of array of Integer;
 begin
@@ -115,13 +128,15 @@ begin
   WriteLn(Length(grid[1]));
   WriteLn(grid[1, 2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "3", "999"]);
 }
 
 #[test]
 fn test_getmem_with_fillchar_zeroing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var p: PByte;
 begin
@@ -130,13 +145,15 @@ begin
   WriteLn(p^);
   FreeMem(Pointer(p));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn test_dynamic_array_resizing_preserves_elements() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array of Integer;
 begin
@@ -147,13 +164,15 @@ begin
   WriteLn(arr[0]);
   WriteLn(arr[3]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "400"]);
 }
 
 #[test]
 fn test_dynamic_array_clearing_via_setlength_zero() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array of Integer;
 begin
@@ -162,13 +181,15 @@ begin
   SetLength(arr, 0);
   WriteLn(Length(arr));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5", "0"]);
 }
 
 #[test]
 fn test_new_pointer_in_constructor_and_dispose_in_destructor() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type THolder = class
   public PVal: PInteger;
@@ -183,13 +204,15 @@ begin
   WriteLn(h.PVal^);
   h.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["777"]);
 }
 
 #[test]
 fn test_allocating_array_of_record_pointers() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRec = record Val: Integer; end;
 type PRec = ^TRec;
@@ -200,13 +223,15 @@ begin
   WriteLn(ptrs[1]^.Val + ptrs[2]^.Val);
   Dispose(ptrs[1]); Dispose(ptrs[2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_dynamic_array_of_strings() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var names: array of String;
 begin
@@ -214,13 +239,15 @@ begin
   names[0] := 'Alice'; names[1] := 'Bob';
   WriteLn(names[0] + ' & ' + names[1]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Alice & Bob"]);
 }
 
 #[test]
 fn test_helper_function_allocates_and_returns_pointer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function CreateInt(val: Integer): PInteger;
 begin
@@ -233,13 +260,15 @@ begin
   WriteLn(p^);
   Dispose(p);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["888"]);
 }
 
 #[test]
 fn test_reallocmem_shrinking_buffer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var p: PInteger;
 begin
@@ -249,13 +278,15 @@ begin
   WriteLn(p^);
   FreeMem(Pointer(p));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_dynamic_array_copy_function() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var src, dst: array of Integer;
 begin
@@ -266,13 +297,15 @@ begin
   WriteLn(dst[0]);
   WriteLn(dst[1]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "2", "3"]);
 }
 
 #[test]
 fn test_dynamic_array_concat_function() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var a, b, c: array of Integer;
 begin
@@ -283,13 +316,15 @@ begin
   WriteLn(c[0]);
   WriteLn(c[3]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4", "10", "40"]);
 }
 
 #[test]
 fn test_dynamic_array_loop_iteration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array of Integer;
     i, sum: Integer;
@@ -301,13 +336,15 @@ begin
     sum := sum + arr[i];
   WriteLn(sum);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn test_dynamic_array_in_record_field() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TDataSet = record
   Title: String;
@@ -321,13 +358,15 @@ begin
   WriteLn(ds.Title);
   WriteLn(ds.Values[0] + ds.Values[1]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SensorReadings", "37.5"]);
 }
 
 #[test]
 fn test_getmem_pointer_not_nil_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var p: Pointer;
 begin
@@ -335,6 +374,7 @@ begin
   WriteLn(p <> nil);
   FreeMem(p);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }

@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_set_empty_and_element_membership() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNumSet = set of 1..10;
 var s: TNumSet;
@@ -18,13 +19,15 @@ begin
   WriteLn(8 in s);
   WriteLn(1 in s);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False", "True", "True", "False"]);
 }
 
 #[test]
 fn test_set_union_operator() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCharSet = set of Char;
 var s1, s2, s3: TCharSet;
@@ -36,13 +39,15 @@ begin
   WriteLn('B' in s3);
   WriteLn('C' in s3);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True", "True"]);
 }
 
 #[test]
 fn test_set_intersection_operator() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNumSet = set of 1..20;
 var s1, s2, s3: TNumSet;
@@ -55,13 +60,15 @@ begin
   WriteLn(5 in s3);
   WriteLn(7 in s3);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False", "True", "True", "False"]);
 }
 
 #[test]
 fn test_set_difference_operator() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNumSet = set of 1..10;
 var s1, s2, s3: TNumSet;
@@ -74,13 +81,15 @@ begin
   WriteLn(3 in s3);
   WriteLn(4 in s3);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False", "True", "False"]);
 }
 
 #[test]
 fn test_set_symmetric_difference_operator() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNumSet = set of 1..10;
 var s1, s2, s3: TNumSet;
@@ -93,13 +102,15 @@ begin
   WriteLn(3 in s3);
   WriteLn(4 in s3);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False", "False", "True"]);
 }
 
 #[test]
 fn test_set_include_procedure() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNumSet = set of 1..10;
 var s: TNumSet;
@@ -108,13 +119,15 @@ begin
   Include(s, 3);
   WriteLn(3 in s);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_set_exclude_procedure() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNumSet = set of 1..10;
 var s: TNumSet;
@@ -125,13 +138,15 @@ begin
   WriteLn(1 in s);
   WriteLn(3 in s);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False", "True", "True"]);
 }
 
 #[test]
 fn test_set_subset_comparison() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNumSet = set of 1..10;
 var s1, s2: TNumSet;
@@ -141,13 +156,15 @@ begin
   WriteLn(s1 <= s2);
   WriteLn(s2 <= s1);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_set_superset_comparison() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNumSet = set of 1..10;
 var s1, s2: TNumSet;
@@ -157,13 +174,15 @@ begin
   WriteLn(s1 >= s2);
   WriteLn(s2 >= s1);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_set_equality_and_inequality() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNumSet = set of 1..10;
 var s1, s2, s3: TNumSet;
@@ -174,13 +193,15 @@ begin
   WriteLn(s1 = s2);
   WriteLn(s1 <> s3);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_set_range_literal_construction() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCharSet = set of Char;
 var vowels: TCharSet;
@@ -190,13 +211,15 @@ begin
   WriteLn('c' in vowels);
   WriteLn('f' in vowels);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True", "False"]);
 }
 
 #[test]
 fn test_set_enum_based_set() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStyle = (fsBold, fsItalic, fsUnderline, fsStrikeOut);
 type TFontStyle = set of TStyle;
@@ -206,13 +229,15 @@ begin
   WriteLn(fsBold in font);
   WriteLn(fsUnderline in font);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_set_parameter_passing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TDigitSet = set of 0..9;
 function CountDigits(s: TDigitSet): Integer;
@@ -226,13 +251,15 @@ end;
 begin
   WriteLn(CountDigits([1, 3, 5, 7, 9]));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn test_set_function_return_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TAlphaSet = set of 'A'..'Z';
 function GetVowels: TAlphaSet;
@@ -243,13 +270,15 @@ begin
   WriteLn('E' in GetVowels);
   WriteLn('B' in GetVowels);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_set_conditional_membership_branch() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCharSet = set of Char;
 function IsHexDigit(c: Char): Boolean;
@@ -261,13 +290,15 @@ begin
   WriteLn(IsHexDigit('B'));
   WriteLn(IsHexDigit('z'));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True", "False"]);
 }
 
 #[test]
 fn test_set_reassignment_with_expressions() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNumSet = set of 1..10;
 var s: TNumSet;
@@ -278,13 +309,15 @@ begin
   WriteLn(3 in s);
   WriteLn(4 in s);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False", "True", "True"]);
 }
 
 #[test]
 fn test_set_record_field_storage() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TAccess = (ReadAcc, WriteAcc, ExecAcc);
 type TAccessSet = set of TAccess;
@@ -300,13 +333,15 @@ begin
   WriteLn(ReadAcc in fp.Access);
   WriteLn(ExecAcc in fp.Access);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["data.bin", "True", "False"]);
 }
 
 #[test]
 fn test_set_chained_include_exclude() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNumSet = set of 1..10;
 var s: TNumSet;
@@ -320,13 +355,15 @@ begin
   WriteLn(5 in s);
   WriteLn(9 in s);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False", "True"]);
 }
 
 #[test]
 fn test_set_subrange_variable_elements() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TNumSet = set of 1..20;
 var s: TNumSet;
@@ -339,13 +376,15 @@ begin
   WriteLn(14 in s);
   WriteLn(10 in s);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True", "False"]);
 }
 
 #[test]
 fn test_set_all_elements_present() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TByteRange = 1..4;
 type TFullSet = set of TByteRange;
@@ -357,6 +396,7 @@ begin
   WriteLn(3 in s);
   WriteLn(4 in s);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True", "True", "True"]);
 }

@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_interface_property_read_write() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IData = interface
   ['{11111111-2222-3333-4444-555555555555}']
@@ -30,13 +31,15 @@ begin
   d.Val := 100;
   WriteLn(d.Val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100"]);
 }
 
 #[test]
 fn test_interface_property_read_only() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IReadOnlyData = interface
   ['{22222222-3333-4444-5555-666666666666}']
@@ -54,13 +57,15 @@ begin
   c := TCountImpl.Create;
   WriteLn(c.Count);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_interface_default_indexer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IStringContainer = interface
   ['{33333333-4444-5555-6666-777777777777}']
@@ -82,13 +87,15 @@ begin
   WriteLn(c[0]);
   WriteLn(c[1]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Item_0", "Item_1"]);
 }
 
 #[test]
 fn test_interface_multidimensional_indexer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IMatrix = interface
   ['{44444444-5555-6666-7777-888888888888}']
@@ -109,13 +116,15 @@ begin
   m := TMatrixImpl.Create;
   WriteLn(m[2, 3]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["23"]);
 }
 
 #[test]
 fn test_interface_write_only_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IWriteOnlyLogger = interface
   ['{55555555-6666-7777-8888-999999999999}']
@@ -136,13 +145,15 @@ begin
   l := TLoggerImpl.Create;
   l.LogMsg := 'InterfaceWriteOnly';
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Logged:InterfaceWriteOnly"]);
 }
 
 #[test]
 fn test_interface_property_string_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ITitleHolder = interface
   ['{66666666-7777-8888-9999-000000000000}']
@@ -166,13 +177,15 @@ begin
   h.Title := 'PascalInterfaceTitle';
   WriteLn(h.Title);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["PascalInterfaceTitle"]);
 }
 
 #[test]
 fn test_interface_property_boolean_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IFlagHolder = interface
   ['{77777777-8888-9999-0000-111111111111}']
@@ -195,13 +208,15 @@ begin
   f.Active := True;
   WriteLn(f.Active);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_interface_property_enum_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TState = (stStop, stRun);
 type IStateHolder = interface
@@ -224,13 +239,15 @@ begin
   s.State := stRun;
   WriteLn(Ord(s.State));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_interface_property_indexer_read_write() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IMutableArray = interface
   ['{99999999-0000-1111-2222-333333333333}']
@@ -254,13 +271,15 @@ begin
   arr[0] := 10; arr[1] := 20; arr[2] := 30;
   WriteLn(arr[0] + arr[1] + arr[2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_interface_property_record_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPoint = record X, Y: Integer; end;
 type IPointHolder = interface
@@ -284,13 +303,15 @@ begin
   h.Position := pt;
   WriteLn(h.Position.X.ToString + ',' + h.Position.Y.ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15,25"]);
 }
 
 #[test]
 fn test_interface_property_inheritance() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IBase = interface
   ['{10101010-1010-1010-1010-101010101010}']
@@ -314,13 +335,15 @@ begin
   s := TSubImpl.Create;
   WriteLn(s.ID.ToString + ':' + s.Name);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1:SubName"]);
 }
 
 #[test]
 fn test_interface_property_delegation_implements() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IPropIntf = interface
   ['{30303030-3030-3030-3030-303030303030}']
@@ -346,13 +369,15 @@ begin
   obj := TPropOuter.Create;
   WriteLn(obj.Val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["999"]);
 }
 
 #[test]
 fn test_interface_property_string_indexer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IDictionary = interface
   ['{40404040-4040-4040-4040-404040404040}']
@@ -373,13 +398,15 @@ begin
   dict := TDictImpl.Create;
   WriteLn(dict['user']);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ValFor_user"]);
 }
 
 #[test]
 fn test_interface_property_double_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IScale = interface
   ['{50505050-5050-5050-5050-505050505050}']
@@ -401,13 +428,15 @@ begin
   s.Factor := 2.5;
   WriteLn(s.Factor);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2.5"]);
 }
 
 #[test]
 fn test_interface_property_interface_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IChildIntf = interface
   ['{60606060-6060-6060-6060-606060606060}']
@@ -438,13 +467,15 @@ begin
   p := TParentImpl.Create;
   p.Child.Action;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ChildActionExecuted"]);
 }
 
 #[test]
 fn test_interface_property_mutating_value_via_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ICounter = interface
   ['{80808080-8080-8080-8080-808080808080}']
@@ -468,13 +499,15 @@ begin
   c.Increment;
   WriteLn(c.Count);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_interface_property_guid_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IGuidHolder = interface
   ['{90909090-9090-9090-9090-909090909090}']
@@ -495,13 +528,15 @@ begin
   g := TGuidImpl.Create;
   WriteLn(GUIDToString(g.Guid));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["{11111111-1111-1111-1111-111111111111}"]);
 }
 
 #[test]
 fn test_interface_property_array_count_indexer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ICollection = interface
   ['{A0A0A0A0-A0A0-A0A0-A0A0-A0A0A0A0A0A0}']
@@ -523,13 +558,15 @@ begin
   for i := 0 to coll.Count - 1 do
     WriteLn(coll[i]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20"]);
 }
 
 #[test]
 fn test_interface_property_tbytes_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type IBufferHolder = interface
@@ -552,13 +589,15 @@ begin
   b := TBufferImpl.Create;
   WriteLn(Chr(b.Buffer[0]) + Chr(b.Buffer[1]));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AB"]);
 }
 
 #[test]
 fn test_interface_property_tdatetime_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ITimeStamped = interface
@@ -580,6 +619,7 @@ begin
   t := TTimeImpl.Create;
   WriteLn(FormatDateTime('yyyy-mm-dd', t.TimeStamp));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2026-12-25"]);
 }

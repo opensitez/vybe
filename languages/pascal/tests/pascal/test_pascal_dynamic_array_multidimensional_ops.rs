@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_dynarray_2d_setlength_rectangular() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMatrix = array of array of Integer;
 var m: TMatrix;
@@ -15,13 +16,15 @@ begin
   WriteLn(Length(m));
   WriteLn(Length(m[0]));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "3"]);
 }
 
 #[test]
 fn test_dynarray_2d_element_read_write() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMatrix = array of array of Integer;
 var m: TMatrix;
@@ -32,13 +35,15 @@ begin
   WriteLn(m[0, 0].ToString + ',' + m[0, 1].ToString);
   WriteLn(m[1, 0].ToString + ',' + m[1, 1].ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1,2", "3,4"]);
 }
 
 #[test]
 fn test_dynarray_2d_ragged_matrix() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRagged = array of array of Integer;
 var r: TRagged;
@@ -52,13 +57,15 @@ begin
   WriteLn(Length(r[1]));
   WriteLn(Length(r[2]));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2", "3"]);
 }
 
 #[test]
 fn test_dynarray_2d_bounds_low_high() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMatrix = array of array of Double;
 var m: TMatrix;
@@ -67,13 +74,15 @@ begin
   WriteLn(Low(m).ToString + '..' + High(m).ToString);
   WriteLn(Low(m[0]).ToString + '..' + High(m[0]).ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0..2", "0..3"]);
 }
 
 #[test]
 fn test_dynarray_3d_cube() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCube = array of array of array of Byte;
 var c: TCube;
@@ -85,13 +94,15 @@ begin
   WriteLn(Length(c[0, 0]));
   WriteLn(c[1, 2, 3]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "3", "4", "255"]);
 }
 
 #[test]
 fn test_dynarray_2d_reference_assignment() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMatrix = array of array of Integer;
 var m1, m2: TMatrix;
@@ -103,13 +114,15 @@ begin
   m1[0, 0] := 99;
   WriteLn(m2[0, 0]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42", "99"]);
 }
 
 #[test]
 fn test_dynarray_2d_copy_function() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMatrix = array of array of Integer;
 var m1, m2: TMatrix;
@@ -120,13 +133,15 @@ begin
   m1[0, 0] := 20;
   WriteLn(m2[0, 0]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10"]);
 }
 
 #[test]
 fn test_dynarray_2d_nested_loop_iteration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TGrid = array of array of Integer;
 var g: TGrid; r, c, sum: Integer;
@@ -143,13 +158,15 @@ begin
 
   WriteLn(sum);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["18"]);
 }
 
 #[test]
 fn test_dynarray_2d_clear_nil() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMatrix = array of array of Integer;
 var m: TMatrix;
@@ -158,13 +175,15 @@ begin
   m := nil;
   WriteLn(Length(m));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn test_dynarray_2d_resize_preserve_contents() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMatrix = array of array of Integer;
 var m: TMatrix;
@@ -176,13 +195,15 @@ begin
   WriteLn(m[0, 1]);
   WriteLn(Length(m));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5", "10", "3"]);
 }
 
 #[test]
 fn test_dynarray_2d_procedure_var_param() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMatrix = array of array of Integer;
 procedure InitIdentity(var m: TMatrix; size: Integer);
@@ -197,13 +218,15 @@ begin
   WriteLn(mat[0, 0].ToString + ',' + mat[1, 1].ToString + ',' + mat[2, 2].ToString);
   WriteLn(mat[0, 1]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1,1,1", "0"]);
 }
 
 #[test]
 fn test_dynarray_2d_string_matrix() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TStrMatrix = array of array of String;
 var sm: TStrMatrix;
@@ -213,13 +236,15 @@ begin
   sm[1, 0] := 'Gamma'; sm[1, 1] := 'Delta';
   WriteLn(sm[0, 0] + '-' + sm[1, 1]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Alpha-Delta"]);
 }
 
 #[test]
 fn test_dynarray_2d_record_matrix() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPoint = record X, Y: Integer; end;
 type TPointMatrix = array of array of TPoint;
@@ -229,13 +254,15 @@ begin
   pm[0, 0].X := 12; pm[0, 0].Y := 34;
   WriteLn(pm[0, 0].X.ToString + ':' + pm[0, 0].Y.ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["12:34"]);
 }
 
 #[test]
 fn test_dynarray_2d_for_in_loop() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMatrix = array of array of Integer;
 var m: TMatrix; row: array of Integer; elem: Integer;
@@ -248,13 +275,15 @@ begin
     for elem in row do
       WriteLn(elem);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2", "3", "4"]);
 }
 
 #[test]
 fn test_dynarray_2d_concat_rows() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRow = array of Integer;
 type TMatrix = array of TRow;
@@ -266,13 +295,15 @@ begin
   WriteLn(m[0][0]);
   WriteLn(m[1][1]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "40"]);
 }
 
 #[test]
 fn test_dynarray_2d_boolean_matrix() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBoolMatrix = array of array of Boolean;
 var bm: TBoolMatrix;
@@ -282,13 +313,15 @@ begin
   WriteLn(bm[0, 0]);
   WriteLn(bm[0, 1]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_dynarray_2d_transpose() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMatrix = array of array of Integer;
 function Transpose(const src: TMatrix): TMatrix;
@@ -310,13 +343,15 @@ begin
   WriteLn(Length(t).ToString + 'x' + Length(t[0]).ToString);
   WriteLn(t[2, 0]); // m[0, 2] = 3
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3x2", "3"]);
 }
 
 #[test]
 fn test_dynarray_2d_empty_rows() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMatrix = array of array of Integer;
 var m: TMatrix;
@@ -324,13 +359,15 @@ begin
   SetLength(m, 0, 0);
   WriteLn(Length(m) = 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_dynarray_2d_fillchar_bzero() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRow = array[0..1] of Byte;
 type TMatrix = array of TRow;
@@ -340,13 +377,15 @@ begin
   FillChar(m[0][0], SizeOf(TRow), $AB);
   WriteLn(HexStr(m[0][0], 2));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AB"]);
 }
 
 #[test]
 fn test_dynarray_3d_ragged_cube() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRagged3D = array of array of array of Integer;
 var r: TRagged3D;
@@ -357,6 +396,7 @@ begin
   r[0, 0, 2] := 777;
   WriteLn(r[0, 0, 2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["777"]);
 }

@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_exact_class_matching() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -17,13 +18,15 @@ begin
     on E: Exception do WriteLn('MatchedBase');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MatchedExact:EConvertError"]);
 }
 
 #[test]
 fn test_subclass_matches_ancestor_handler() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ECustomBase = class(Exception);
@@ -35,13 +38,15 @@ begin
     on E: ECustomBase do WriteLn('MatchedAncestor:' + E.ClassName);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MatchedAncestor:ECustomChild"]);
 }
 
 #[test]
 fn test_first_matching_on_block_wins() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type EBase = class(Exception);
@@ -54,13 +59,15 @@ begin
     on E: ESub do WriteLn('SubHandlerSecond');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["BaseHandlerFirst"]);
 }
 
 #[test]
 fn test_omitting_variable_in_on_clause() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -70,13 +77,15 @@ begin
     on EDivByZero do WriteLn('DivByZeroCaughtWithoutVar');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DivByZeroCaughtWithoutVar"]);
 }
 
 #[test]
 fn test_on_block_with_else_fallback() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -89,13 +98,15 @@ begin
     WriteLn('ElseFallbackHandled');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ElseFallbackHandled"]);
 }
 
 #[test]
 fn test_multi_level_inheritance_matching() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ELevel1 = class(Exception);
@@ -108,13 +119,15 @@ begin
     on E: ELevel1 do WriteLn('CaughtAtL1:' + E.ClassName);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CaughtAtL1:ELevel3"]);
 }
 
 #[test]
 fn test_on_exception_class_eaccessviolation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var p: PInteger;
@@ -127,13 +140,15 @@ begin
     on E: Exception do WriteLn('MatchedGen');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MatchedAV"]);
 }
 
 #[test]
 fn test_on_exception_class_edivbyzero() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var a, b: Integer;
@@ -145,13 +160,15 @@ begin
     on E: EDivByZero do WriteLn('MatchedDivByZero');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MatchedDivByZero"]);
 }
 
 #[test]
 fn test_on_exception_class_eargumentexception() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -161,13 +178,15 @@ begin
     on E: EArgumentException do WriteLn('MatchedArgErr:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MatchedArgErr:BadParam"]);
 }
 
 #[test]
 fn test_on_exception_custom_property_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ECustomProp = class(Exception)
@@ -185,13 +204,15 @@ begin
     on E: ECustomProp do WriteLn(E.CustomID.ToString + '-' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["888-PropMsg"]);
 }
 
 #[test]
 fn test_on_exception_in_virtual_method_override() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TBaseWorker = class
@@ -213,13 +234,15 @@ begin
   end;
   w.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MatchedVirtualOverride:SubOpFail"]);
 }
 
 #[test]
 fn test_on_exception_in_interface_delegation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type IWork = interface
@@ -240,13 +263,15 @@ begin
     on E: EOverflow do WriteLn('MatchedInterfaceDelegation:' + E.ClassName);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MatchedInterfaceDelegation:EOverflow"]);
 }
 
 #[test]
 fn test_on_exception_in_constructor() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TFailObj = class
@@ -262,13 +287,15 @@ begin
     on E: ERangeError do WriteLn('MatchedCtorErr:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MatchedCtorErr:RangeCtor"]);
 }
 
 #[test]
 fn test_on_exception_in_record_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TRec = record
@@ -284,13 +311,15 @@ begin
     on E: EConvertError do WriteLn('MatchedRecordErr:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MatchedRecordErr:RecConvertFail"]);
 }
 
 #[test]
 fn test_on_exception_variable_scope_isolation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure TestScope;
@@ -310,13 +339,15 @@ end;
 begin
   TestScope;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Scope1:Err1", "Scope2:Err2"]);
 }
 
 #[test]
 fn test_on_exception_reraise_from_handler() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -334,13 +365,18 @@ begin
     on E: EDivByZero do WriteLn('OuterMatched:' + E.ClassName);
   end;
 end.
-"#);
-    assert_eq!(out, vec!["InnerMatched:EDivByZero", "OuterMatched:EDivByZero"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["InnerMatched:EDivByZero", "OuterMatched:EDivByZero"]
+    );
 }
 
 #[test]
 fn test_on_exception_catch_all_base_class() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type EUnusualError = class(Exception);
@@ -351,13 +387,15 @@ begin
     on E: Exception do WriteLn('CatchAllBase:' + E.ClassName);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CatchAllBase:EUnusualError"]);
 }
 
 #[test]
 fn test_on_exception_ordered_specific_to_generic() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ESpecific = class(Exception);
@@ -369,13 +407,15 @@ begin
     on E: Exception do WriteLn('GenericHandlerMatched');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SpecificHandlerMatched"]);
 }
 
 #[test]
 fn test_on_exception_loop_matching_performance() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var i, count: Integer;
@@ -391,13 +431,15 @@ begin
   end;
   WriteLn(count);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn test_on_exception_in_nested_function_calls() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 function F3: Integer; begin raise EConvertError.Create('F3Convert'); end;
@@ -410,6 +452,7 @@ begin
     on E: EConvertError do WriteLn('TopMatchedF3:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TopMatchedF3:F3Convert"]);
 }

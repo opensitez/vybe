@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_pointer_basic_address_and_dereference() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var x: Integer;
     p: PInteger;
@@ -15,13 +16,15 @@ begin
   p := @x;
   WriteLn(p^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_untyped_pointer_assignment() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var val: Integer;
     untypedPtr: Pointer;
@@ -32,13 +35,15 @@ begin
   typedPtr := PInteger(untypedPtr);
   WriteLn(typedPtr^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100"]);
 }
 
 #[test]
 fn test_pchar_to_pbyte_casting() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var c: Char;
     pc: PChar;
@@ -49,13 +54,15 @@ begin
   pb := PByte(pc);
   WriteLn(pb^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["65"]);
 }
 
 #[test]
 fn test_double_pointer_dereference() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type PPInteger = ^PInteger;
 var val: Integer;
@@ -67,13 +74,15 @@ begin
   p2 := @p1;
   WriteLn(p2^^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["777"]);
 }
 
 #[test]
 fn test_array_element_address() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var arr: array[1..3] of Integer;
     p: PInteger;
@@ -82,13 +91,15 @@ begin
   p := @arr[2];
   WriteLn(p^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20"]);
 }
 
 #[test]
 fn test_record_field_address() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TData = record Code: Integer; Name: String; end;
 var rec: TData;
@@ -98,13 +109,15 @@ begin
   pCode := @rec.Code;
   WriteLn(pCode^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["999"]);
 }
 
 #[test]
 fn test_pointer_mutation_via_dereference() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var num: Integer;
     p: PInteger;
@@ -114,13 +127,15 @@ begin
   p^ := 50;
   WriteLn(num);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn test_pointer_to_nativeint_casting() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var val: Integer;
     p: PInteger;
@@ -131,13 +146,15 @@ begin
   addr := NativeInt(p);
   WriteLn(addr > 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_pboolean_pointer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var flag: Boolean;
     pb: PBoolean;
@@ -148,13 +165,15 @@ begin
   pb^ := False;
   WriteLn(flag);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_preal_pointer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var num: Real;
     pr: PReal;
@@ -165,13 +184,15 @@ begin
   pr^ := 2.71;
   WriteLn(num);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3.14", "2.71"]);
 }
 
 #[test]
 fn test_pointer_comparisons() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var a, b: Integer;
     pa, pb, pa2: PInteger;
@@ -180,13 +201,15 @@ begin
   WriteLn(pa = pa2);
   WriteLn(pa <> pb);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_nil_pointer_casting() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var pUntyped: Pointer;
     pTyped: PInteger;
@@ -195,13 +218,15 @@ begin
   pTyped := PInteger(pUntyped);
   WriteLn(pTyped = nil);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_pword_pointer_typecast() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var w: Word;
     pw: PWord;
@@ -210,13 +235,15 @@ begin
   pw := @w;
   WriteLn(pw^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["65535"]);
 }
 
 #[test]
 fn test_pointer_cast_inside_procedure() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure PrintIntPtr(ptr: Pointer);
 var p: PInteger;
@@ -229,13 +256,15 @@ begin
   x := 888;
   PrintIntPtr(@x);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["888"]);
 }
 
 #[test]
 fn test_pointer_cast_function_return() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var globalVal: Integer;
 function GetValPointer: Pointer;
@@ -248,13 +277,15 @@ begin
   p := PInteger(GetValPointer);
   WriteLn(p^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["555"]);
 }
 
 #[test]
 fn test_pointer_arithmetic_dereference_expression() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var a, b: Integer;
     pa, pb: PInteger;
@@ -263,13 +294,15 @@ begin
   pa := @a; pb := @b;
   WriteLn(pa^ + pb^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_penum_pointer_typecast() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TColor = (cRed, cGreen, cBlue);
 type PColor = ^TColor;
@@ -280,13 +313,15 @@ begin
   pc := @col;
   WriteLn(Ord(pc^));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_psubrange_pointer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TScore = 1..100;
 type PScore = ^TScore;
@@ -297,13 +332,15 @@ begin
   ps := @sc;
   WriteLn(ps^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["95"]);
 }
 
 #[test]
 fn test_pointer_to_record_structure() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPoint = record X, Y: Integer; end;
 type PPoint = ^TPoint;
@@ -315,13 +352,15 @@ begin
   WriteLn(p^.X);
   WriteLn(p^.Y);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15", "30"]);
 }
 
 #[test]
 fn test_pointer_cast_and_bitwise_operations() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var val: Integer;
     p: PInteger;
@@ -331,6 +370,7 @@ begin
   p^ := p^ or $0F0F;
   WriteLn(val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["65535"]);
 }

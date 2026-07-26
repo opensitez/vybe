@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_tstringlist_add_and_strings_indexer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -19,13 +20,15 @@ begin
   WriteLn(sl[1]);
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "Line1", "Line2"]);
 }
 
 #[test]
 fn test_tstringlist_text_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -36,13 +39,15 @@ begin
   WriteLn(sl[1]);
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "Beta"]);
 }
 
 #[test]
 fn test_tstringlist_commatext_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -54,13 +59,15 @@ begin
   WriteLn(sl[2]);
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "apple", "cherry, ripe"]);
 }
 
 #[test]
 fn test_tstringlist_delimitedtext_custom_delimiter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -74,13 +81,15 @@ begin
   WriteLn(sl[2]);
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3", "one", "three"]);
 }
 
 #[test]
 fn test_tstringlist_key_value_values_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -94,13 +103,15 @@ begin
   WriteLn(sl.Values['port']);
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["localhost", "8080", "9090"]);
 }
 
 #[test]
 fn test_tstringlist_names_indexer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -112,13 +123,15 @@ begin
   WriteLn(sl.Names[1]);
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["User", "Role"]);
 }
 
 #[test]
 fn test_tstringlist_sorted_and_find() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList; idx: Integer;
@@ -131,13 +144,15 @@ begin
     WriteLn(idx);
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Apple", "1"]);
 }
 
 #[test]
 fn test_tstringlist_duplicates_ignore() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -150,13 +165,15 @@ begin
   WriteLn(sl.Count);
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_tstringlist_addobject_and_objects() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -168,13 +185,15 @@ begin
   WriteLn(NativeInt(sl.Objects[1]));
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "200"]);
 }
 
 #[test]
 fn test_tstringlist_casesensitive_search() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -186,13 +205,15 @@ begin
   WriteLn(sl.IndexOf('Pascal'));
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["-1", "0"]);
 }
 
 #[test]
 fn test_tstringlist_clear_all_lines() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -203,13 +224,15 @@ begin
   WriteLn(sl.Count);
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }
 
 #[test]
 fn test_tstringlist_delete_and_insert() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -222,13 +245,15 @@ begin
   WriteLn(sl[0]);
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["B", "B"]);
 }
 
 #[test]
 fn test_tstringlist_exchange_lines() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -240,13 +265,15 @@ begin
   WriteLn(sl[1]);
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Bottom", "Top"]);
 }
 
 #[test]
 fn test_tstringlist_indexofname_lookup() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -257,13 +284,15 @@ begin
   WriteLn(sl.IndexOfName('env'));
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_tstringlist_valuefromindex_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -274,13 +303,15 @@ begin
   WriteLn(sl.ValueFromIndex[1]);
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["val2"]);
 }
 
 #[test]
 fn test_tstringlist_ownsobjects_automatic_freeing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 type TItemObj = class
@@ -297,13 +328,15 @@ begin
   sl.AddObject('Obj1', TItemObj.Create('Item1'));
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FreedObj:Item1"]);
 }
 
 #[test]
 fn test_tstringlist_namevalueseparator_custom() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -315,13 +348,15 @@ begin
   WriteLn(sl.Values['Host']);
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Host", "127.0.0.1"]);
 }
 
 #[test]
 fn test_tstringlist_for_in_loop_iteration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList; line: String;
@@ -332,13 +367,15 @@ begin
     WriteLn(line);
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Row1", "Row2"]);
 }
 
 #[test]
 fn test_tstringlist_sort_custom_case_insensitive() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl: TStringList;
@@ -352,13 +389,15 @@ begin
   WriteLn(sl[2]);
   sl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["A", "b", "c"]);
 }
 
 #[test]
 fn test_tstringlist_assign_copy() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var sl1, sl2: TStringList;
@@ -371,6 +410,7 @@ begin
   WriteLn(sl2[1]);
   sl1.Free; sl2.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "CopyLine2"]);
 }

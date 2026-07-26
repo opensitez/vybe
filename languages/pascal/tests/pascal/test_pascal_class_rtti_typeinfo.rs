@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_classname_reflection() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCustomWidget = class end;
 var obj: TCustomWidget;
@@ -15,13 +16,15 @@ begin
   WriteLn(obj.ClassName);
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TCustomWidget"]);
 }
 
 #[test]
 fn test_inheritsfrom_type_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TParent = class end;
 type TChild = class(TParent) end;
@@ -32,13 +35,15 @@ begin
   WriteLn(c.InheritsFrom(TObject));
   c.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_classparent_reflection() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBaseNode = class end;
 type TSubNode = class(TBaseNode) end;
@@ -48,13 +53,15 @@ begin
   WriteLn(node.ClassParent.ClassName);
   node.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TBaseNode"]);
 }
 
 #[test]
 fn test_class_reference_type_metaclass() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TAnimal = class
   public constructor Create; virtual;
@@ -77,13 +84,15 @@ end;
 begin
   InstantiateAndSpeak(TDog);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Woof"]);
 }
 
 #[test]
 fn test_classtype_reflection() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TItem = class end;
 var item: TItem;
@@ -92,37 +101,43 @@ begin
   WriteLn(item.ClassType = TItem);
   item.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_typeinfo_typekind_integer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti, TypInfo;
 begin
   WriteLn(TypeInfo(Integer)^.Kind = tkInteger);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_typeinfo_typekind_string() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses TypInfo;
 begin
   WriteLn(TypeInfo(String)^.Kind = tkUString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_rtti_context_type_by_name() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type TPerson = class
@@ -136,13 +151,15 @@ begin
   WriteLn(t.Name);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TPerson"]);
 }
 
 #[test]
 fn test_rtti_property_reflection() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type TCar = class
@@ -159,13 +176,15 @@ begin
   WriteLn(p.Name);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Speed"]);
 }
 
 #[test]
 fn test_rtti_read_published_property_value() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type TUser = class
@@ -185,13 +204,15 @@ begin
   u.Free;
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["35"]);
 }
 
 #[test]
 fn test_rtti_write_published_property_value() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type TConfig = class
@@ -208,13 +229,15 @@ begin
   cfg.Free;
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["60"]);
 }
 
 #[test]
 fn test_rtti_method_reflection_and_invoke() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type TCalculator = class
@@ -234,13 +257,15 @@ begin
   calc.Free;
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_rtti_enum_type_names() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti, TypInfo;
 type TColor = (cRed, cGreen, cBlue);
@@ -249,13 +274,15 @@ begin
   info := TypeInfo(TColor);
   WriteLn(GetEnumName(info, Ord(cGreen)));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["cGreen"]);
 }
 
 #[test]
 fn test_rtti_enum_name_to_value() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses TypInfo;
 type TStatus = (stInit, stRunning, stFinished);
@@ -264,13 +291,15 @@ begin
   info := TypeInfo(TStatus);
   WriteLn(GetEnumValue(info, 'stFinished'));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_rtti_record_type_reflection() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type TPoint = record X, Y: Integer; end;
@@ -282,13 +311,15 @@ begin
   WriteLn(t.TypeKind = tkRecord);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_rtti_class_fields_enumeration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type TSample = class
@@ -304,13 +335,15 @@ begin
   WriteLn(Length(fields) >= 2);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_rtti_is_instance_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type TBase = class end;
@@ -322,13 +355,15 @@ begin
   WriteLn(t.IsInstance);
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_rtti_tvalue_from_string() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 var val: TValue;
@@ -336,13 +371,15 @@ begin
   val := TValue.FromString('PascalRTTI');
   WriteLn(val.AsString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["PascalRTTI"]);
 }
 
 #[test]
 fn test_rtti_tvalue_from_integer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 var val: TValue;
@@ -350,13 +387,15 @@ begin
   val := TValue.From<Integer>(500);
   WriteLn(val.AsInteger);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["500"]);
 }
 
 #[test]
 fn test_rtti_method_parameter_count() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Rtti;
 type THelper = class
@@ -371,6 +410,7 @@ begin
   WriteLn(Length(m.GetParameters));
   ctx.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }

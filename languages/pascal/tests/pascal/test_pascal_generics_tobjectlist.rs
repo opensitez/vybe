@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_tobjectlist_ownsobjects_automatic_destruction() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TSampleItem = class
@@ -23,13 +24,15 @@ begin
   list.Add(TSampleItem.Create(2));
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FreedItem:1", "FreedItem:2"]);
 }
 
 #[test]
 fn test_tobjectlist_delete_frees_owned_object() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TWidget = class
@@ -48,13 +51,18 @@ begin
   WriteLn('AfterDelete');
   list.Free;
 end.
-"#);
-    assert_eq!(out, vec!["WidgetDestroyed:W1", "AfterDelete", "WidgetDestroyed:W2"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["WidgetDestroyed:W1", "AfterDelete", "WidgetDestroyed:W2"]
+    );
 }
 
 #[test]
 fn test_tobjectlist_clear_frees_all_owned_objects() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TNode = class
@@ -71,13 +79,15 @@ begin
   WriteLn(list.Count);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["NodeCleared", "NodeCleared", "0"]);
 }
 
 #[test]
 fn test_tobjectlist_ownsobjects_false_does_not_free() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TExternalObj = class
@@ -96,13 +106,15 @@ begin
   list.Free;
   obj.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["External"]);
 }
 
 #[test]
 fn test_tobjectlist_extract_without_freeing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TItem = class
@@ -122,13 +134,15 @@ begin
   list.Free;
   extracted.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "100", "ItemFreed:100"]);
 }
 
 #[test]
 fn test_tobjectlist_replace_item_frees_previous() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TData = class
@@ -146,13 +160,15 @@ begin
   WriteLn(list[0].LabelStr);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ReplacedFreed:Old", "New", "ReplacedFreed:New"]);
 }
 
 #[test]
 fn test_tobjectlist_first_and_last_accessors() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TElement = class
@@ -170,13 +186,15 @@ begin
   WriteLn(list.Last.Name);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FirstEl", "LastEl"]);
 }
 
 #[test]
 fn test_tobjectlist_contains_and_indexof() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TObj = class end;
@@ -191,13 +209,15 @@ begin
   list.Free;
   o2.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False", "0"]);
 }
 
 #[test]
 fn test_tobjectlist_for_in_loop() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TItem = class
@@ -216,13 +236,15 @@ begin
   WriteLn(sum);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_tobjectlist_extractat_index() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TItem = class
@@ -242,13 +264,15 @@ begin
   extracted.Free;
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "1", "ItemFreed:10", "ItemFreed:20"]);
 }
 
 #[test]
 fn test_tobjectlist_remove_frees_object() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TItem = class
@@ -265,13 +289,15 @@ begin
   WriteLn(list.Count);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RemovedAndFreed", "0"]);
 }
 
 #[test]
 fn test_tobjectlist_sort_with_custom_comparer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections, Generics.Defaults;
 type TScoreObj = class
@@ -294,13 +320,15 @@ begin
   WriteLn(list[1].Score);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "50"]);
 }
 
 #[test]
 fn test_tobjectlist_toarray_of_objects() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TItem = class end;
@@ -312,13 +340,15 @@ begin
   WriteLn(Length(arr));
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_nested_tobjectlist_hierarchy() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TChild = class
@@ -340,13 +370,15 @@ begin
   list.Add(p);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ChildFreed", "ParentFreed"]);
 }
 
 #[test]
 fn test_tobjectlist_exchange_elements() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TItem = class
@@ -364,13 +396,15 @@ begin
   WriteLn(list[1].Name);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Second", "First"]);
 }
 
 #[test]
 fn test_tobjectlist_reverse_order() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TItem = class
@@ -388,13 +422,15 @@ begin
   WriteLn(list[1].Val);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "1"]);
 }
 
 #[test]
 fn test_tobjectlist_trimexcess() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TItem = class end;
@@ -407,13 +443,15 @@ begin
   WriteLn(list.Capacity);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_tobjectlist_addrange_objects() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TItem = class
@@ -430,13 +468,15 @@ begin
   WriteLn(list[0].Code);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2", "10"]);
 }
 
 #[test]
 fn test_tobjectlist_ownsobjects_toggle_runtime() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TItem = class
@@ -452,13 +492,15 @@ begin
   list.OwnsObjects := True;
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ToggledFreed"]);
 }
 
 #[test]
 fn test_tobjectlist_empty_list_free() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Generics.Collections;
 type TItem = class end;
@@ -468,6 +510,7 @@ begin
   WriteLn(list.Count);
   list.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0"]);
 }

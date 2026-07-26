@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_reraise_untyped_except_block() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -21,13 +22,18 @@ begin
     on E: Exception do WriteLn('OuterCaught:' + E.Message);
   end;
 end.
-"#);
-    assert_eq!(out, vec!["UntypedIntercepted", "OuterCaught:UntypedReraise"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["UntypedIntercepted", "OuterCaught:UntypedReraise"]
+    );
 }
 
 #[test]
 fn test_reraise_typed_on_e_exception() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -45,13 +51,21 @@ begin
     on E: EInvalidArgument do WriteLn('OuterTypedCaught:' + E.ClassName);
   end;
 end.
-"#);
-    assert_eq!(out, vec!["TypedIntercepted:BadArg", "OuterTypedCaught:EInvalidArgument"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec![
+            "TypedIntercepted:BadArg",
+            "OuterTypedCaught:EInvalidArgument"
+        ]
+    );
 }
 
 #[test]
 fn test_reraise_preserves_exact_subclass_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ECustomChild = class(Exception);
@@ -70,13 +84,21 @@ begin
     on E: ECustomChild do WriteLn('OuterChildCaught:' + E.ClassName);
   end;
 end.
-"#);
-    assert_eq!(out, vec!["BaseIntercept:ECustomChild", "OuterChildCaught:ECustomChild"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec![
+            "BaseIntercept:ECustomChild",
+            "OuterChildCaught:ECustomChild"
+        ]
+    );
 }
 
 #[test]
 fn test_reraise_in_nested_procedure_call() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure MiddleLogger;
@@ -98,13 +120,15 @@ begin
     on E: Exception do WriteLn('TopHandler:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["LoggerLogged:DeepError", "TopHandler:DeepError"]);
 }
 
 #[test]
 fn test_reraise_after_resource_cleanup() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils, Classes;
 var sl: TStringList;
@@ -124,13 +148,21 @@ begin
     on E: Exception do WriteLn('OuterCaughtResourceCleaned:' + E.Message);
   end;
 end.
-"#);
-    assert_eq!(out, vec!["CleaningUpResource", "OuterCaughtResourceCleaned:FailWithResource"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec![
+            "CleaningUpResource",
+            "OuterCaughtResourceCleaned:FailWithResource"
+        ]
+    );
 }
 
 #[test]
 fn test_reraise_conditional() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure Process(shouldReraise: Boolean);
@@ -154,13 +186,23 @@ begin
     on E: Exception do WriteLn('CaughtTopAfterReraise');
   end;
 end.
-"#);
-    assert_eq!(out, vec!["CaughtInProc", "ContinuedWhenNoReraise", "CaughtInProc", "CaughtTopAfterReraise"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec![
+            "CaughtInProc",
+            "ContinuedWhenNoReraise",
+            "CaughtInProc",
+            "CaughtTopAfterReraise"
+        ]
+    );
 }
 
 #[test]
 fn test_reraise_inside_loop_iteration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var i: Integer;
@@ -183,13 +225,18 @@ begin
     end;
   end;
 end.
-"#);
-    assert_eq!(out, vec!["LoopOK:1", "LoopIntercept:2", "LoopOuterCaught:2"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["LoopOK:1", "LoopIntercept:2", "LoopOuterCaught:2"]
+    );
 }
 
 #[test]
 fn test_reraise_updates_global_error_count() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var errorCount: Integer;
@@ -213,13 +260,15 @@ begin
     on E: Exception do WriteLn('ErrorCount:' + errorCount.ToString);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ErrorCount:1"]);
 }
 
 #[test]
 fn test_reraise_in_class_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TWorker = class
@@ -247,13 +296,18 @@ begin
   end;
   w.Free;
 end.
-"#);
-    assert_eq!(out, vec!["MethodLogged:TaskFailed", "CallerCaught:TaskFailed"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["MethodLogged:TaskFailed", "CallerCaught:TaskFailed"]
+    );
 }
 
 #[test]
 fn test_reraise_in_record_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TRec = record
@@ -279,13 +333,15 @@ begin
     on E: Exception do WriteLn('OuterRecCaught:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RecLogged:RecErr", "OuterRecCaught:RecErr"]);
 }
 
 #[test]
 fn test_reraise_multiple_chained_levels() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure P1; begin raise Exception.Create('ChainedErr'); end;
@@ -304,13 +360,18 @@ begin
     on E: Exception do WriteLn('MainCaught:' + E.Message);
   end;
 end.
-"#);
-    assert_eq!(out, vec!["P2Reraising", "P3Reraising", "MainCaught:ChainedErr"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["P2Reraising", "P3Reraising", "MainCaught:ChainedErr"]
+    );
 }
 
 #[test]
 fn test_reraise_with_finally_block_cleanup() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -329,13 +390,18 @@ begin
     on E: Exception do WriteLn('OuterBlock:' + E.Message);
   end;
 end.
-"#);
-    assert_eq!(out, vec!["ExceptBlock", "FinallyBlock", "OuterBlock:WithFinally"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["ExceptBlock", "FinallyBlock", "OuterBlock:WithFinally"]
+    );
 }
 
 #[test]
 fn test_reraise_custom_exception_with_extra_fields() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ECustomData = class(Exception)
@@ -361,13 +427,15 @@ begin
     on E: ECustomData do WriteLn('OuterTag:' + E.Tag.ToString);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["InnerTag:999", "OuterTag:999"]);
 }
 
 #[test]
 fn test_reraise_does_not_alter_message() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var origMsg, caughtMsg: String;
@@ -384,13 +452,15 @@ begin
   end;
   WriteLn(origMsg = caughtMsg);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_reraise_in_constructor() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TChildObj = class
@@ -418,13 +488,18 @@ begin
     on E: Exception do WriteLn('CallerCtorCaught:' + E.Message);
   end;
 end.
-"#);
-    assert_eq!(out, vec!["ParentCtorLogging", "CallerCtorCaught:ChildCtorErr"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["ParentCtorLogging", "CallerCtorCaught:ChildCtorErr"]
+    );
 }
 
 #[test]
 fn test_reraise_in_destructor() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TFailDtor = class
@@ -449,13 +524,15 @@ begin
     on E: Exception do WriteLn('FreeCaught:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DtorLogging", "FreeCaught:DtorErr"]);
 }
 
 #[test]
 fn test_reraise_in_class_helper() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TIntHelper = record helper for Integer
@@ -479,13 +556,15 @@ begin
     on E: Exception do WriteLn('CallerHelperCaught:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["HelperLogged", "CallerHelperCaught:HelperErr"]);
 }
 
 #[test]
 fn test_reraise_preserves_error_code_in_sys_exception() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -503,13 +582,15 @@ begin
     on E: EDivByZero do WriteLn('OuterDivByZeroConfirmed');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["InnerDivByZero", "OuterDivByZeroConfirmed"]);
 }
 
 #[test]
 fn test_reraise_in_interface_method_implementation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type IWork = interface
@@ -537,13 +618,15 @@ begin
     on E: Exception do WriteLn('IntfCallerCaught:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["IntfLogged", "IntfCallerCaught:IntfWorkErr"]);
 }
 
 #[test]
 fn test_reraise_in_function_return() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 function GetVal: Integer;
@@ -562,6 +645,7 @@ begin
     on E: Exception do WriteLn('FuncCallerCaught:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["FuncLogged", "FuncCallerCaught:FuncValErr"]);
 }

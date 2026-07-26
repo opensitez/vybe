@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_var_param_integer_swap() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure SwapInt(var a, b: Integer);
 var temp: Integer;
@@ -23,13 +24,15 @@ begin
   WriteLn(x);
   WriteLn(y);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20", "10"]);
 }
 
 #[test]
 fn test_out_param_value_assignment() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure GetValues(out a: Integer; out b: String);
 begin
@@ -43,13 +46,15 @@ begin
   WriteLn(x);
   WriteLn(s);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100", "Result"]);
 }
 
 #[test]
 fn test_const_param_read_only_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function SumConst(const a, b: Integer): Integer;
 begin
@@ -58,13 +63,15 @@ end;
 begin
   WriteLn(SumConst(15, 25));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["40"]);
 }
 
 #[test]
 fn test_var_param_string_mutation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure AppendTag(var s: String);
 begin
@@ -76,13 +83,15 @@ begin
   AppendTag(text);
   WriteLn(text);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ITEM_TAGGED"]);
 }
 
 #[test]
 fn test_var_param_record_mutation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPoint = record
   X, Y: Integer;
@@ -100,13 +109,15 @@ begin
   WriteLn(pt.X);
   WriteLn(pt.Y);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["8", "14"]);
 }
 
 #[test]
 fn test_out_param_record_initialization() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRect = record
   W, H: Integer;
@@ -122,13 +133,15 @@ begin
   WriteLn(myRect.W);
   WriteLn(myRect.H);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["800", "600"]);
 }
 
 #[test]
 fn test_var_param_array_mutation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TIntArray = array[1..3] of Integer;
 procedure DoubleElements(var arr: TIntArray);
@@ -145,13 +158,15 @@ begin
   WriteLn(nums[2]);
   WriteLn(nums[3]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20", "40", "60"]);
 }
 
 #[test]
 fn test_constref_parameter_passing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TLargeData = record
   ID: Integer;
@@ -167,13 +182,15 @@ begin
   d.Title := 'Document';
   WriteLn(ReadTitle(d));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Document"]);
 }
 
 #[test]
 fn test_var_param_passthrough_multiple_levels() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure InnerInc(var val: Integer);
 begin
@@ -190,13 +207,15 @@ begin
   OuterInc(n);
   WriteLn(n);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["7"]);
 }
 
 #[test]
 fn test_multiple_var_out_const_in_one_routine() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure ProcessData(const input: String; var count: Integer; out status: String);
 begin
@@ -211,13 +230,15 @@ begin
   WriteLn(c);
   WriteLn(st);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15", "PROCESSED"]);
 }
 
 #[test]
 fn test_var_param_enum_mutation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TState = (StateIdle, StateBusy, StateDone);
 procedure AdvanceState(var s: TState);
@@ -233,13 +254,15 @@ begin
   AdvanceState(current);
   WriteLn(Ord(current));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2"]);
 }
 
 #[test]
 fn test_var_param_in_recursive_function() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure CountDown(n: Integer; var totalSteps: Integer);
 begin
@@ -253,13 +276,15 @@ begin
   CountDown(5, steps);
   WriteLn(steps);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn test_var_param_subrange_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TScore = 0..100;
 procedure AddBonus(var score: TScore; bonus: Integer);
@@ -272,13 +297,15 @@ begin
   AddBonus(myScore, 15);
   WriteLn(myScore);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["95"]);
 }
 
 #[test]
 fn test_out_param_multiple_return_emulation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure DivideAndRemainder(dividend, divisor: Integer; out quotient, remainder: Integer);
 begin
@@ -291,13 +318,15 @@ begin
   WriteLn(q);
   WriteLn(r);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4", "5"]);
 }
 
 #[test]
 fn test_var_param_pointer_mutation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure ReassignPointer(var p: PInteger; var target: Integer);
 begin
@@ -312,13 +341,15 @@ begin
   ReassignPointer(ptr, val2);
   WriteLn(ptr^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["99"]);
 }
 
 #[test]
 fn test_const_string_param_no_side_effects() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function RepeatTwice(const s: String): String;
 begin
@@ -330,13 +361,15 @@ begin
   WriteLn(RepeatTwice(original));
   WriteLn(original);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ABCABC", "ABC"]);
 }
 
 #[test]
 fn test_var_param_boolean_toggle() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Toggle(var flag: Boolean);
 begin
@@ -350,13 +383,15 @@ begin
   Toggle(active);
   WriteLn(active);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_var_param_real_accumulation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure Accumulate(var total: Real; amount: Real);
 begin
@@ -368,13 +403,15 @@ begin
   Accumulate(sum, 4.5);
   WriteLn(sum);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15"]);
 }
 
 #[test]
 fn test_out_param_boolean_success_flag() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 procedure TryParseInt(const s: String; out value: Integer; out success: Boolean);
 begin
@@ -396,13 +433,15 @@ begin
   WriteLn(ok);
   WriteLn(val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "123"]);
 }
 
 #[test]
 fn test_var_param_in_method_call() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCalculator = class
   public procedure DoubleVal(var v: Integer);
@@ -420,6 +459,7 @@ begin
   WriteLn(num);
   calc.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }

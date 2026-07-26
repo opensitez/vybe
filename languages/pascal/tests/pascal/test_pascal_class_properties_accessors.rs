@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_property_direct_field_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TItem = class
   private FValue: Integer;
@@ -19,13 +20,15 @@ begin
   WriteLn(item.Value);
   item.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100"]);
 }
 
 #[test]
 fn test_property_method_accessors() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TAccount = class
   private FBalance: Real;
@@ -42,13 +45,15 @@ begin
   WriteLn(acc.Balance);
   acc.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["250.5"]);
 }
 
 #[test]
 fn test_property_read_only() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSystemInfo = class
   private FOSName: String;
@@ -62,13 +67,15 @@ begin
   WriteLn(info.OSName);
   info.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["PascalOS"]);
 }
 
 #[test]
 fn test_property_setter_validation_side_effect() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TTemperature = class
   private FCelsius: Integer;
@@ -89,13 +96,15 @@ begin
   WriteLn(t.Celsius);
   t.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["-273", "25"]);
 }
 
 #[test]
 fn test_property_computed_getter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRectangle = class
   private FWidth, FHeight: Integer;
@@ -111,13 +120,15 @@ begin
   WriteLn(r.Area);
   r.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50"]);
 }
 
 #[test]
 fn test_property_index_specifier() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TDataHolder = class
   private FVal1, FVal2: Integer;
@@ -143,13 +154,15 @@ begin
   WriteLn(h.Val2);
   h.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20"]);
 }
 
 #[test]
 fn test_property_boolean_flag() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TToggle = class
   private FEnabled: Boolean;
@@ -162,13 +175,15 @@ begin
   WriteLn(t.Enabled);
   t.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_property_enum_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TState = (stInactive, stActive);
 type TComponent = class
@@ -182,13 +197,15 @@ begin
   WriteLn(Ord(c.State));
   c.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_property_record_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TPoint = record X, Y: Integer; end;
 type TShape = class
@@ -204,13 +221,15 @@ begin
   WriteLn(s.Pos.Y);
   s.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15", "30"]);
 }
 
 #[test]
 fn test_property_virtual_getter_override() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBase = class
   protected function GetTitle: String; virtual;
@@ -227,13 +246,15 @@ begin
   WriteLn(b.Title);
   b.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DerivedTitle"]);
 }
 
 #[test]
 fn test_property_write_only() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TSecretStore = class
   private FSecret: String;
@@ -250,13 +271,15 @@ begin
   WriteLn(store.IsSecretSet);
   store.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_property_class_property_static() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TGlobalConfig = class
   private class var FAppName: String;
@@ -266,13 +289,15 @@ begin
   TGlobalConfig.AppName := 'VybeApp';
   WriteLn(TGlobalConfig.AppName);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["VybeApp"]);
 }
 
 #[test]
 fn test_property_internal_self_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCounter = class
   private FCount: Integer;
@@ -291,13 +316,15 @@ begin
   WriteLn(c.Count);
   c.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["11"]);
 }
 
 #[test]
 fn test_property_subrange_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TLevel = 1..5;
 type TPlayer = class
@@ -311,13 +338,15 @@ begin
   WriteLn(p.Level);
   p.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn test_property_redeclared_in_derived_class() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBase = class
   protected FVal: Integer;
@@ -333,13 +362,15 @@ begin
   WriteLn(d.Val);
   d.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["999"]);
 }
 
 #[test]
 fn test_property_string_trim_on_set() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TCleanText = class
   private FText: String;
@@ -357,13 +388,15 @@ begin
   WriteLn('[' + ct.Text + ']');
   ct.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["[Cleaned]"]);
 }
 
 #[test]
 fn test_property_chained_modification() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBox = class
   private FWidth, FHeight: Integer;
@@ -385,13 +418,15 @@ begin
   WriteLn(b.Height);
   b.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20", "40"]);
 }
 
 #[test]
 fn test_property_pointer_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRefHolder = class
   private FDataPtr: PInteger;
@@ -405,13 +440,15 @@ begin
   WriteLn(holder.DataPtr^);
   holder.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["404"]);
 }
 
 #[test]
 fn test_property_getter_side_effect_count() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TAccessTracker = class
   private FReads: Integer; FValue: String;
@@ -433,13 +470,15 @@ begin
   WriteLn(t.Reads);
   t.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn test_property_default_specifier_metadata() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TControl = class
   private FVisible: Boolean;
@@ -453,6 +492,7 @@ begin
   WriteLn(ctrl.Visible);
   ctrl.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }

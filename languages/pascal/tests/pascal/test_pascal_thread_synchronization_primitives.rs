@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_thread_tthread_subclassing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 type TTestThread = class(TThread)
@@ -24,13 +25,15 @@ begin
   t.WaitFor;
   t.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ThreadExecuted"]);
 }
 
 #[test]
 fn test_thread_tcriticalsection_enter_leave() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SyncObjs;
 var cs: TCriticalSection;
@@ -44,13 +47,15 @@ begin
   end;
   cs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CriticalSectionEntered"]);
 }
 
 #[test]
 fn test_thread_tcriticalsection_acquire_release() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SyncObjs;
 var cs: TCriticalSection;
@@ -64,13 +69,15 @@ begin
   end;
   cs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Acquired"]);
 }
 
 #[test]
 fn test_thread_tinterlocked_increment_decrement() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SyncObjs;
 var counter: Integer;
@@ -81,13 +88,15 @@ begin
   TInterlocked.Decrement(counter);
   WriteLn(counter);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "0"]);
 }
 
 #[test]
 fn test_thread_tinterlocked_add() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SyncObjs;
 var val: Integer;
@@ -96,13 +105,15 @@ begin
   TInterlocked.Add(val, 5);
   WriteLn(val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15"]);
 }
 
 #[test]
 fn test_thread_tinterlocked_compareexchange() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SyncObjs;
 var target, oldValue: Integer;
@@ -111,13 +122,15 @@ begin
   oldValue := TInterlocked.CompareExchange(target, 200, 100);
   WriteLn(oldValue.ToString + ':' + target.ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100:200"]);
 }
 
 #[test]
 fn test_thread_tinterlocked_exchange() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SyncObjs;
 var target, oldVal: Integer;
@@ -126,13 +139,15 @@ begin
   oldVal := TInterlocked.Exchange(target, 75);
   WriteLn(oldVal.ToString + '->' + target.ToString);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["50->75"]);
 }
 
 #[test]
 fn test_thread_tevent_signal_reset() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SyncObjs;
 var event: TEvent; res: TWaitResult;
@@ -148,13 +163,15 @@ begin
 
   event.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_thread_terminated_flag_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 type TLoopThread = class(TThread)
@@ -176,13 +193,15 @@ begin
   t.WaitFor;
   t.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TerminatedLoopDone"]);
 }
 
 #[test]
 fn test_thread_synchronize_invocation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 type TSyncThread = class(TThread)
@@ -205,13 +224,15 @@ begin
   t.WaitFor;
   t.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SynchronizedWork"]);
 }
 
 #[test]
 fn test_thread_tspinlock_tryenter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SyncObjs;
 var spin: TSpinLock;
@@ -223,13 +244,15 @@ begin
     spin.Exit;
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SpinLockEntered"]);
 }
 
 #[test]
 fn test_thread_multiple_threads_synchronization() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes, SyncObjs;
 var sharedCounter: Integer; cs: TCriticalSection;
@@ -262,13 +285,15 @@ begin
 
   t1.Free; t2.Free; cs.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_thread_tinterlocked_pointer_exchange() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SyncObjs;
 var p1, p2, oldP: Pointer; v1, v2: Integer;
@@ -279,13 +304,15 @@ begin
   WriteLn(PInteger(oldP)^);
   WriteLn(PInteger(p1)^);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10", "20"]);
 }
 
 #[test]
 fn test_thread_tinterlocked_double_exchange() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SyncObjs;
 var dTarget, oldD: Double;
@@ -295,13 +322,15 @@ begin
   WriteLn(oldD = 1.5);
   WriteLn(dTarget = 3.5);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_thread_tsemaphore_acquire_release() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SyncObjs;
 var sem: TSemaphore; res: TWaitResult;
@@ -312,13 +341,15 @@ begin
   sem.Release(1);
   sem.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_thread_return_value_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 type TRetThread = class(TThread)
@@ -337,13 +368,15 @@ begin
   WriteLn(t.ReturnValue);
   t.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_thread_thread_id_access() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var t: TThread;
@@ -351,13 +384,15 @@ begin
   t := TThread.CurrentThread;
   WriteLn(t.ThreadID <> 0);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_thread_priority_level_setting() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 type TPriorityThread = class(TThread)
@@ -372,13 +407,15 @@ begin
   WriteLn(t.Priority = tpNormal);
   t.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_thread_queue_asynchronous_dispatch() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 type TQueueThread = class(TThread)
@@ -401,13 +438,15 @@ begin
   t.WaitFor;
   t.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["QueuedWorkCompleted"]);
 }
 
 #[test]
 fn test_thread_tinterlocked_bit_test_and_set() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SyncObjs;
 var flags: Integer; oldBit: Boolean;
@@ -417,6 +456,7 @@ begin
   WriteLn(oldBit);
   WriteLn(flags = 4);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False", "True"]);
 }

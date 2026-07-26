@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_tbits_class_basic_operations() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var b: TBits;
@@ -20,13 +21,15 @@ begin
   WriteLn(b.Bits[10]);
   b.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False", "True"]);
 }
 
 #[test]
 fn test_tbits_openbit_first_clear() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var b: TBits;
@@ -38,13 +41,15 @@ begin
   WriteLn(b.OpenBit);
   b.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_bitmask_set_bit() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function SetBit(flags, bitPos: Integer): Integer;
 begin
@@ -53,13 +58,15 @@ end;
 begin
   WriteLn(SetBit(0, 3));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["8"]);
 }
 
 #[test]
 fn test_bitmask_clear_bit() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function ClearBit(flags, bitPos: Integer): Integer;
 begin
@@ -68,13 +75,15 @@ end;
 begin
   WriteLn(ClearBit(15, 2));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["11"]);
 }
 
 #[test]
 fn test_bitmask_toggle_bit() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function ToggleBit(flags, bitPos: Integer): Integer;
 begin
@@ -84,13 +93,15 @@ begin
   WriteLn(ToggleBit(8, 3));
   WriteLn(ToggleBit(0, 3));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0", "8"]);
 }
 
 #[test]
 fn test_bitmask_test_bit() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function TestBit(flags, bitPos: Integer): Boolean;
 begin
@@ -100,13 +111,15 @@ begin
   WriteLn(TestBit(12, 2));
   WriteLn(TestBit(12, 0));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_popcount_population_count() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function PopCount(val: Cardinal): Integer;
 begin
@@ -121,13 +134,15 @@ begin
   WriteLn(PopCount($FF));
   WriteLn(PopCount($0F0F));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["8", "8"]);
 }
 
 #[test]
 fn test_extract_least_significant_set_bit() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function ExtractLSB(val: Integer): Integer;
 begin
@@ -136,13 +151,15 @@ end;
 begin
   WriteLn(ExtractLSB(12));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn test_rotate_left_32bit() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function RotateLeft(val: DWord; shift: Byte): DWord;
 begin
@@ -151,13 +168,15 @@ end;
 begin
   WriteLn(HexStr(RotateLeft($80000001, 1), 8));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["00000003"]);
 }
 
 #[test]
 fn test_rotate_right_32bit() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function RotateRight(val: DWord; shift: Byte): DWord;
 begin
@@ -166,13 +185,15 @@ end;
 begin
   WriteLn(HexStr(RotateRight($00000003, 1), 8));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["80000001"]);
 }
 
 #[test]
 fn test_large_set_byte_representation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TByteSet = set of 0..7;
 var s: TByteSet;
@@ -182,13 +203,15 @@ begin
   Move(s, b, 1);
   WriteLn(b);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_tbits_size_resizing_clears_or_expands() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var b: TBits;
@@ -201,13 +224,15 @@ begin
   WriteLn(b.Bits[7]);
   b.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_tbits_iteration_count_set_bits() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var b: TBits; i, count: Integer;
@@ -221,13 +246,15 @@ begin
   WriteLn(count);
   b.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn test_bit_field_struct_simulation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBitFieldRec = record
   PackedData: Word;
@@ -249,13 +276,15 @@ begin
   SetFieldA(r, 12);
   WriteLn(GetFieldA(r));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["12"]);
 }
 
 #[test]
 fn test_bitwise_nibble_swap() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function SwapNibbles(b: Byte): Byte;
 begin
@@ -264,26 +293,30 @@ end;
 begin
   WriteLn(HexStr(SwapNibbles($AB), 2));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["BA"]);
 }
 
 #[test]
 fn test_bitwise_int64_masking() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var val: Int64;
 begin
   val := $123456789ABCDEF0;
   WriteLn(HexStr(val and $FFFF, 4));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DEF0"]);
 }
 
 #[test]
 fn test_is_power_of_two_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 function IsPowerOfTwo(n: Integer): Boolean;
 begin
@@ -293,13 +326,15 @@ begin
   WriteLn(IsPowerOfTwo(16));
   WriteLn(IsPowerOfTwo(18));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_tbits_clear_all() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses Classes;
 var b: TBits; i: Integer; allClear: Boolean;
@@ -313,13 +348,15 @@ begin
   WriteLn(allClear);
   b.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_bitwise_sign_extension_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 var sb: ShortInt;
     i: Integer;
@@ -328,13 +365,15 @@ begin
   i := sb;
   WriteLn(i = -1);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_bit_array_record_wrapper() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TBitArray64 = record
   Words: array[0..1] of DWord;
@@ -357,6 +396,7 @@ begin
   WriteLn(TestBit64(ba, 45));
   WriteLn(TestBit64(ba, 44));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }

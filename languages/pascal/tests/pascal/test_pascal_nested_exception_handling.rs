@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_nested_try_except_inner_catches_first() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -20,13 +21,15 @@ begin
     on E: Exception do WriteLn('OuterCaught:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["InnerCaught:InnerError"]);
 }
 
 #[test]
 fn test_nested_try_except_reraise_to_outer() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -44,13 +47,18 @@ begin
     on E: Exception do WriteLn('OuterCaught:' + E.Message);
   end;
 end.
-"#);
-    assert_eq!(out, vec!["InnerLog:OriginalError", "OuterCaught:OriginalError"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["InnerLog:OriginalError", "OuterCaught:OriginalError"]
+    );
 }
 
 #[test]
 fn test_nested_try_except_wrap_new_exception() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -65,13 +73,15 @@ begin
     on E: EInvalidArgument do WriteLn('OuterCaughtWrapped:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["OuterCaughtWrapped:Wrapped:DivisionByZero"]);
 }
 
 #[test]
 fn test_exception_in_finally_block() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -85,13 +95,18 @@ begin
     on E: Exception do WriteLn('OuterCaughtFinallyErr:' + E.Message);
   end;
 end.
-"#);
-    assert_eq!(out, vec!["InTryBlock", "OuterCaughtFinallyErr:FinallyFailed"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["InTryBlock", "OuterCaughtFinallyErr:FinallyFailed"]
+    );
 }
 
 #[test]
 fn test_stack_unwinding_across_three_procedures() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure Level3;
@@ -113,13 +128,15 @@ begin
     on E: Exception do WriteLn('UnwoundToTop:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["UnwoundToTop:DeepFailure"]);
 }
 
 #[test]
 fn test_try_finally_inside_try_except() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -133,13 +150,15 @@ begin
     on E: Exception do WriteLn('HandlerExecuted:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CleanupExecuted", "HandlerExecuted:WorkError"]);
 }
 
 #[test]
 fn test_try_except_inside_try_finally() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -153,13 +172,18 @@ begin
     WriteLn('OuterFinallyExecuted');
   end;
 end.
-"#);
-    assert_eq!(out, vec!["InnerHandled:HandledInner", "OuterFinallyExecuted"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["InnerHandled:HandledInner", "OuterFinallyExecuted"]
+    );
 }
 
 #[test]
 fn test_selective_inner_catch_unmatched_bubbles_up() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -173,13 +197,15 @@ begin
     on E: EAccessViolation do WriteLn('OuterCaughtAV:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["OuterCaughtAV:AVError"]);
 }
 
 #[test]
 fn test_recursive_unwinding_with_finally() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure Recurse(depth: Integer);
@@ -198,13 +224,23 @@ begin
     on E: Exception do WriteLn('TopCaught:' + E.Message);
   end;
 end.
-"#);
-    assert_eq!(out, vec!["UnwindingDepth:3", "UnwindingDepth:2", "UnwindingDepth:1", "TopCaught:Depth3Err"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec![
+            "UnwindingDepth:3",
+            "UnwindingDepth:2",
+            "UnwindingDepth:1",
+            "TopCaught:Depth3Err"
+        ]
+    );
 }
 
 #[test]
 fn test_nested_try_except_in_loop() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 var i: Integer;
@@ -223,13 +259,15 @@ begin
     end;
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["OuterCaughtErr:Err1", "InnerCaughtDivZero"]);
 }
 
 #[test]
 fn test_exception_during_except_handler_execution() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -247,13 +285,21 @@ begin
     on E: Exception do WriteLn('OuterCaughtSecond:' + E.Message);
   end;
 end.
-"#);
-    assert_eq!(out, vec!["FirstCaught:FirstErr", "OuterCaughtSecond:SecondErrFromExcept"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec![
+            "FirstCaught:FirstErr",
+            "OuterCaughtSecond:SecondErrFromExcept"
+        ]
+    );
 }
 
 #[test]
 fn test_nested_exceptions_in_class_hierarchy() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TSubProcessor = class
@@ -284,13 +330,15 @@ begin
   end;
   mainProc.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SubFreedInFinally", "MainCaught:SubFail"]);
 }
 
 #[test]
 fn test_nested_exception_in_property_getter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TTestProp = class
@@ -314,13 +362,15 @@ begin
     t.Free;
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CaughtGetter:GetterError"]);
 }
 
 #[test]
 fn test_nested_exception_in_property_setter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TTestProp = class
@@ -341,13 +391,15 @@ begin
   end;
   t.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CaughtSetter:NegativeValueNotAllowed"]);
 }
 
 #[test]
 fn test_nested_try_except_in_constructor() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TSubObj = class
@@ -376,13 +428,15 @@ begin
   WriteLn(p.Sub = nil);
   p.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ParentCtorHandled:SubCtorErr", "True"]);
 }
 
 #[test]
 fn test_nested_exception_preserves_class_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -396,13 +450,15 @@ begin
     on E: Exception do WriteLn(E.ClassName + ':' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ERangeError:OutOfRange"]);
 }
 
 #[test]
 fn test_nested_finally_with_reraised_exception() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -420,13 +476,15 @@ begin
     on E: Exception do WriteLn('CaughtAtTop:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Fin1", "Fin2", "CaughtAtTop:DeepErr"]);
 }
 
 #[test]
 fn test_nested_exception_handling_in_record() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TRec = record
@@ -444,13 +502,15 @@ var r: TRec;
 begin
   r.Run;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RecHandled:RecRunErr"]);
 }
 
 #[test]
 fn test_nested_exception_with_array_processing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 procedure ProcessArray(const arr: array of Integer);
@@ -469,13 +529,15 @@ end;
 begin
   ProcessArray([10, 0, 30]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Val:10", "SkippedZeroAtIndex:1", "Val:30"]);
 }
 
 #[test]
 fn test_three_level_nested_try_except() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 begin
@@ -493,6 +555,7 @@ begin
     on E: Exception do WriteLn('Level1Handled:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Level1Handled:Level3Err"]);
 }

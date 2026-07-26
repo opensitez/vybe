@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_interface_delegation_basic() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ILogger = interface
   ['{11110000-1111-1111-1111-111111111111}']
@@ -27,13 +28,15 @@ begin
   app := TAppController.Create;
   app.Log('Delegation Works');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DELEGATED: Delegation Works"]);
 }
 
 #[test]
 fn test_interface_delegation_multiple_methods() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IOperations = interface
   ['{22220000-2222-2222-2222-222222222222}']
@@ -58,13 +61,15 @@ begin
   WriteLn(calc.Add(10, 5));
   WriteLn(calc.Sub(10, 5));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["15", "5"]);
 }
 
 #[test]
 fn test_interface_delegation_dynamic_replacement() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IPrinter = interface
   ['{33330000-3333-3333-3333-333333333333}']
@@ -93,13 +98,15 @@ begin
   s.SetPrinter(TPrinterB.Create);
   intf.Print;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["PrinterA", "PrinterB"]);
 }
 
 #[test]
 fn test_interface_delegation_getter_backing() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IWorker = interface
   ['{44440000-4444-4444-4444-444444444444}']
@@ -126,13 +133,15 @@ begin
   m := TManager.Create;
   m.Work;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["WorkingLazy"]);
 }
 
 #[test]
 fn test_interface_delegation_multiple_interfaces() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type INameable = interface
   ['{55550000-5555-5555-5555-555555555555}']
@@ -165,13 +174,15 @@ begin
   WriteLn(n.GetName);
   WriteLn(v.GetValue);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CompositeItem", "999"]);
 }
 
 #[test]
 fn test_interface_delegation_supports_check() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IAuditable = interface
   ['{77770000-7777-7777-7777-777777777777}']
@@ -193,13 +204,15 @@ begin
   if Supports(obj, IAuditable, intf) then
     intf.Audit;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AuditExecuted"]);
 }
 
 #[test]
 fn test_interface_delegation_with_var_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IMutator = interface
   ['{88880000-8888-8888-8888-888888888888}']
@@ -222,13 +235,15 @@ begin
   m.Modify(val);
   WriteLn(val);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["30"]);
 }
 
 #[test]
 fn test_interface_delegation_with_record_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TRec = record Val: String; end;
 type IRecHandler = interface
@@ -251,13 +266,15 @@ begin
   h := TRecDelegate.Create;
   h.HandleRec(data);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["REC:DelegatedRecordData"]);
 }
 
 #[test]
 fn test_interface_delegation_with_default_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IDefaultProc = interface
   ['{AAAA0000-AAAA-AAAA-AAAA-AAAAAAAAAAAA}']
@@ -279,13 +296,15 @@ begin
   d.Run;
   d.Run('CUST');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RUN:DEF", "RUN:CUST"]);
 }
 
 #[test]
 fn test_interface_delegation_returning_boolean() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ICheck = interface
   ['{BBBB0000-BBBB-BBBB-BBBB-BBBBBBBBBBBB}']
@@ -307,13 +326,15 @@ begin
   WriteLn(c.Check(75));
   WriteLn(c.Check(25));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_interface_delegation_modifies_delegate_state() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ICounter = interface
   ['{CCCC0000-CCCC-CCCC-CCCC-CCCCCCCCCCCC}']
@@ -339,13 +360,15 @@ begin
   c.IncCount;
   WriteLn(c.GetCount);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_interface_delegation_subclass_extension() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IService = interface
   ['{DDDD0000-DDDD-DDDD-DDDD-DDDDDDDDDDDD}']
@@ -367,13 +390,15 @@ begin
   s := TDerivedContainer.Create;
   s.Execute;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SubclassDelegated"]);
 }
 
 #[test]
 fn test_interface_delegation_overloaded_methods() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IOverloaded = interface
   ['{EEEE0000-EEEE-EEEE-EEEE-EEEEEEEEEEEE}']
@@ -398,13 +423,15 @@ begin
   o.Process(42);
   o.Process('Pascal');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["INT:42", "STR:Pascal"]);
 }
 
 #[test]
 fn test_interface_delegation_enum_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TMode = (mOne, mTwo);
 type IModeHandler = interface
@@ -426,13 +453,15 @@ begin
   mh := TModeDelegate.Create;
   mh.SetMode(mTwo);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MODE:1"]);
 }
 
 #[test]
 fn test_interface_delegation_nested_composition() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IAction = interface
   ['{10100000-1010-1010-1010-101010101010}']
@@ -459,13 +488,15 @@ begin
   a := TOuterWrapper.Create;
   a.Run;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DeepNestedRun"]);
 }
 
 #[test]
 fn test_interface_delegation_returning_real() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IMath = interface
   ['{20200000-2020-2020-2020-202020202020}']
@@ -486,13 +517,15 @@ begin
   m := TMathDelegate.Create;
   WriteLn(m.SqrtVal(16.0));
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn test_interface_delegation_const_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type IDisplay = interface
   ['{30300000-3030-3030-3030-303030303030}']
@@ -513,13 +546,15 @@ begin
   d := TDisplayDelegate.Create;
   d.ShowConst('ImmutableText');
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CONST:ImmutableText"]);
 }
 
 #[test]
 fn test_interface_delegation_array_returning_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TArr = array[1..3] of Integer;
 type IArrayProvider = interface
@@ -542,13 +577,15 @@ begin
   arr := ap.GetArray;
   WriteLn(arr[2]);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["20"]);
 }
 
 #[test]
 fn test_interface_delegation_subrange_parameter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type TScore = 1..100;
 type IScoreHandler = interface
@@ -571,13 +608,15 @@ begin
   sh := TScoreDelegate.Create;
   sh.RecordScore(sc);
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SCORE:95"]);
 }
 
 #[test]
 fn test_interface_delegation_ref_count_tracking() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 type ICounterIntf = interface
   ['{60600000-6060-6060-6060-606060606060}']
@@ -603,6 +642,7 @@ end;
 begin
   TestLifetime;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DelegatedPing", "DelegateDestroyed"]);
 }

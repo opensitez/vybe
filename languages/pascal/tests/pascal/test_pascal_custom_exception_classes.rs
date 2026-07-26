@@ -6,7 +6,8 @@ use super::helpers::run_pascal;
 
 #[test]
 fn test_custom_exception_class_declaration() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ECustomAppError = class(Exception);
@@ -17,13 +18,15 @@ begin
     on E: ECustomAppError do WriteLn(E.ClassName + ':' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ECustomAppError:AppErrorOccurred"]);
 }
 
 #[test]
 fn test_custom_exception_with_error_code_field() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ECodeException = class(Exception)
@@ -43,13 +46,15 @@ begin
     on E: ECodeException do WriteLn(E.ErrorCode.ToString + '-' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["404-Page Not Found"]);
 }
 
 #[test]
 fn test_custom_exception_inheritance_polymorphism() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type EBaseAppErr = class(Exception);
@@ -67,13 +72,15 @@ begin
     on E: EBaseAppErr do WriteLn('CaughtBase:' + E.ClassName);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CaughtBase:ETimeoutErr"]);
 }
 
 #[test]
 fn test_custom_exception_subclass_matching_priority() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type EBaseErr = class(Exception);
@@ -87,13 +94,15 @@ begin
     on E: EBaseErr do WriteLn('MatchedBaseClass');
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["MatchedSubClass"]);
 }
 
 #[test]
 fn test_custom_exception_with_default_constructor_args() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type EDefaultErr = class(Exception)
@@ -110,13 +119,15 @@ begin
     on E: EDefaultErr do WriteLn(E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["DefaultErrorMessage"]);
 }
 
 #[test]
 fn test_custom_exception_inheritsfrom_query() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ECoreErr = class(Exception);
@@ -128,13 +139,15 @@ begin
   WriteLn(e.InheritsFrom(Exception));
   e.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_custom_exception_thrown_from_property_setter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type EInvalidAge = class(Exception);
@@ -158,13 +171,15 @@ begin
   end;
   p.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AgeCannotBeNegative"]);
 }
 
 #[test]
 fn test_custom_exception_createfmt_helper() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type EFormattedErr = class(Exception);
@@ -175,13 +190,15 @@ begin
     on E: EFormattedErr do WriteLn(E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Invalid value 99 for field Age"]);
 }
 
 #[test]
 fn test_custom_exception_with_helpcontext() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type EHelpErr = class(Exception)
@@ -198,13 +215,15 @@ begin
     on E: EHelpErr do WriteLn(E.Message + '-' + E.HelpContext.ToString);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ContextualHelpError-1001"]);
 }
 
 #[test]
 fn test_custom_exception_wrapping_payload_record() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type TErrorPayload = record ModuleName: String; Severity: Integer; end;
@@ -226,13 +245,15 @@ begin
     on E: EPayloadErr do WriteLn(E.Payload.ModuleName + ':' + E.Payload.Severity.ToString);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["AuthModule:5"]);
 }
 
 #[test]
 fn test_custom_exception_virtual_message_formatter() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type EVirtualErr = class(Exception)
@@ -250,13 +271,15 @@ begin
   WriteLn(e.GetFormattedMessage);
   e.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Sub:TestMessage"]);
 }
 
 #[test]
 fn test_custom_exception_in_generic_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type EGenericErr = class(Exception);
@@ -275,13 +298,15 @@ begin
     on E: EGenericErr do WriteLn(E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["GenericValueNull"]);
 }
 
 #[test]
 fn test_custom_exception_classname_reflection() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ECustomReflect = class(Exception);
@@ -291,13 +316,15 @@ begin
   WriteLn(e.ClassName);
   e.Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ECustomReflect"]);
 }
 
 #[test]
 fn test_custom_exception_in_record_method() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ERecordErr = class(Exception);
@@ -316,13 +343,15 @@ begin
     on E: ERecordErr do WriteLn(E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["RecordValidationFailed"]);
 }
 
 #[test]
 fn test_custom_exception_hierarchy_multi_level() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ELevel1 = class(Exception);
@@ -341,13 +370,15 @@ begin
     on E: ELevel2 do WriteLn('CaughtAtL2:' + E.ClassName);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CaughtAtL2:ELevel3"]);
 }
 
 #[test]
 fn test_custom_exception_multiple_fields_constructor() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type EMultiFieldErr = class(Exception)
@@ -366,13 +397,15 @@ begin
     on E: EMultiFieldErr do WriteLn(E.Message + '@' + E.Line.ToString + ':' + E.Col.ToString);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["SyntaxError@12:45"]);
 }
 
 #[test]
 fn test_custom_exception_subclassing_econvert_error() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type EParseErr = class(EConvertError);
@@ -383,13 +416,15 @@ begin
     on E: EConvertError do WriteLn('CaughtAsConvertError:' + E.Message);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CaughtAsConvertError:ParseIntegerFailed"]);
 }
 
 #[test]
 fn test_custom_exception_reraising_custom_type() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type ECustomReraise = class(Exception);
@@ -412,13 +447,18 @@ begin
     on E: ECustomReraise do WriteLn('OuterLog:' + E.Message);
   end;
 end.
-"#);
-    assert_eq!(out, vec!["InnerLog:ReraisedCustom", "OuterLog:ReraisedCustom"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        vec!["InnerLog:ReraisedCustom", "OuterLog:ReraisedCustom"]
+    );
 }
 
 #[test]
 fn test_custom_exception_array_instantiation() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type EArrayErr = class(Exception);
@@ -430,13 +470,15 @@ begin
   WriteLn(errs[1].Message);
   errs[0].Free; errs[1].Free;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Err0", "Err1"]);
 }
 
 #[test]
 fn test_custom_exception_with_string_property() {
-    let out = run_pascal(r#"
+    let out = run_pascal(
+        r#"
 program Test;
 uses SysUtils;
 type EDetailErr = class(Exception)
@@ -456,6 +498,7 @@ begin
     on E: EDetailErr do WriteLn(E.Message + ' -> ' + E.Detail);
   end;
 end.
-"#);
+"#,
+    );
     assert_eq!(out, vec!["Summary -> DetailedStackInformation"]);
 }
