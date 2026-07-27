@@ -5,6 +5,9 @@
 //! `vybe_compiler::ast::Module`. From there everything goes through the
 //! shared compiler — no PHP-specific code in `compiler.rs`.
 
+// Force-link every plugin crate in `[dependencies]` so its link-time
+// registration reaches the registry. Generated from Cargo.toml — see build.rs.
+include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
 pub mod emitter;
 pub mod normalize_class;
 pub mod tree_register;
@@ -67,3 +70,7 @@ impl vybe_bytecode::Plugin for Plugin {
         register();
     }
 }
+
+// Link-time registration: this crate submits its plugin to the one registry.
+// Nothing lists plugins in code — linking this crate IS the registration.
+vybe_bytecode::register_plugin!(Plugin);

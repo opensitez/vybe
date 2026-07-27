@@ -6,13 +6,14 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+inventory = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_platform_wasi = { workspace = true } # node:crypto reuses wasi:crypto md5/sha256
 
 # Node.js compat support crates (moved from vybe_host).
-sha1 = { workspace = true }
+# Digests come from vybe_platform_wasi::crypto — node:crypto only maps
+# OpenSSL names onto them. sha2/hmac stay for the non-digest paths.
 sha2 = { workspace = true }
-md-5 = { workspace = true }
 hmac = { workspace = true }
 brotli = { workspace = true }
 flate2 = { workspace = true }
@@ -24,4 +25,4 @@ regex = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
-vybe_emitter = { workspace = true }
+vybe_compiler = { workspace = true }

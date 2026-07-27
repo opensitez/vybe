@@ -10,7 +10,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_emitter::instructions::core_wasm;
+use vybe_compiler::compiler::instructions::core_wasm;
 
 /// How many items an infinite generator (`count`, `cycle`) materialises.
 /// Bounded because the list is eager; callers take a prefix via `next`/`islice`.
@@ -24,7 +24,7 @@ fn push(chunk: &mut Chunk, line: u32) {
 
 fn len_of(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    vybe_emitter::collections::emit_len(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_len(chunks, current, line);
 }
 
 // ── operator module ────────────────────────────────────────────────────────
@@ -37,28 +37,28 @@ fn len_of(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
 /// `operator.truth(x)` → a real `bool`. Stack: `[x]` → `[bool]`.
 pub fn emit_op_truth(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
-    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
 }
 
 /// `operator.not_(x)`. Stack: `[x]` → `[bool]`.
 pub fn emit_op_not(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
-    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
 }
 
 /// `operator.eq(a, b)` / `ne`. Stack: `[a, b]` → `[bool]`.
 pub fn emit_op_eq(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
 }
 
 pub fn emit_op_ne(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    vybe_emitter::ops::emit_dyn_ne(chunk, line);
-    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_ne(chunk, line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
 }
 
 /// `operator.pos(x)` — unary plus is identity for a number.
@@ -72,7 +72,7 @@ pub fn emit_op_abs(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
 /// `operator.inv(x)` / `invert` — bitwise NOT. Stack: `[x]` → `[num]`.
 pub fn emit_op_inv(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let line2 = line;
-    vybe_emitter::expressions::emit_i32_not(&mut chunks[current], line2);
+    vybe_compiler::compiler::expressions::emit_i32_not(&mut chunks[current], line2);
 }
 
 /// The bitwise/shift pairs — each is its plain i32 opcode.
@@ -98,13 +98,13 @@ pub fn emit_op_rshift(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 
 /// `operator.getitem(a, k)` — `a[k]`. Stack: `[a, k]` → `[value]`.
 pub fn emit_op_getitem(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    vybe_emitter::collections::emit_get(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_get(chunks, current, line);
 }
 
 /// `operator.setitem(a, k, v)` — `a[k] = v`, returning None.
 /// Stack: `[a, k, v]` → `[null]`.
 pub fn emit_op_setitem(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    vybe_emitter::collections::emit_set(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
 }
@@ -121,7 +121,7 @@ pub fn emit_op_concat(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_op_u16(Op::LOCAL_GET, a, line);
     let is_array = chunk.add_import("ecma:array", "isArray");
     chunk.emit_call(is_array, 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, a, line);
     chunk.emit_op_u16(Op::LOCAL_GET, b, line);
@@ -183,7 +183,7 @@ fn emit_pred_filter(chunks: &mut [Chunk], current: usize, spec: Filter, line: u3
     chunks[current].emit_op_u16(Op::LOCAL_SET, f, line);
     len_of(chunks, current, xs, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
@@ -194,12 +194,12 @@ fn emit_pred_filter(chunks: &mut [Chunk], current: usize, spec: Filter, line: u3
     );
     chunks[current].emit_op_u16(Op::LOCAL_SET, latch, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op_u16(Op::LOCAL_GET, n, line);
     chunk.emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
 
     // p = truthy(f(xs[i]))
     let p = chunk.alloc_scratch(1);
@@ -208,7 +208,7 @@ fn emit_pred_filter(chunks: &mut [Chunk], current: usize, spec: Filter, line: u3
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op_u8(Op::CALL_REF, 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, p, line);
 
     if spec.stop_at_first_false {
@@ -266,7 +266,7 @@ fn emit_pred_filter(chunks: &mut [Chunk], current: usize, spec: Filter, line: u3
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
@@ -341,16 +341,16 @@ pub fn emit_zip_longest(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     chunk.emit_op_u16(Op::LOCAL_SET, n, line);
     chunk.emit_end(line);
 
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
     for (src, len) in [(a, na), (b, nb)] {
@@ -366,21 +366,21 @@ pub fn emit_zip_longest(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
         chunks[current].emit_op(Op::NULL, line);
         chunks[current].emit_end(line);
     }
-    vybe_emitter::tuples::emit_tuple(chunks, current, 2, line);
+    vybe_compiler::compiler::tuples::emit_tuple(chunks, current, 2, line);
     push(&mut chunks[current], line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
 /// `itertools.chain(*iterables)` — one list, in order. Stack: `[a, b, …]` → `[array]`.
 pub fn emit_chain(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc == 0 {
-        vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+        vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
         return;
     }
     let base = chunks[current].alloc_scratch(argc as u16);
@@ -411,17 +411,17 @@ pub fn emit_repeat(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, x, line);
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op_u16(Op::LOCAL_GET, n, line);
     chunk.emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, out, line);
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     push(chunk, line);
@@ -429,7 +429,7 @@ pub fn emit_repeat(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
@@ -456,17 +456,17 @@ pub fn emit_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     }
     chunks[current].emit_op_u16(Op::LOCAL_GET, start, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, cur, line);
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     core_wasm::i32_const(chunk, line, INFINITE_PREFIX);
     chunk.emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, out, line);
     chunk.emit_op_u16(Op::LOCAL_GET, cur, line);
     push(chunk, line);
@@ -478,7 +478,7 @@ pub fn emit_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
@@ -492,17 +492,17 @@ pub fn emit_cycle(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
     len_of(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     core_wasm::i32_const(chunk, line, INFINITE_PREFIX);
     chunk.emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
     // out.push(data[i % n]) — wrapping is what makes it a cycle.
     chunk.emit_op_u16(Op::LOCAL_GET, out, line);
     chunk.emit_op_u16(Op::LOCAL_GET, data, line);
@@ -515,7 +515,7 @@ pub fn emit_cycle(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
@@ -553,19 +553,19 @@ pub fn emit_accumulate(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
     len_of(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     core_wasm::f64_const(&mut chunks[current], line, 0.0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, acc, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op_u16(Op::LOCAL_GET, n, line);
     chunk.emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
     chunk.emit_op_u16(Op::LOCAL_GET, data, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
@@ -579,7 +579,7 @@ pub fn emit_accumulate(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
@@ -592,16 +592,16 @@ pub fn emit_pairwise(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
     len_of(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
@@ -611,13 +611,13 @@ pub fn emit_pairwise(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
     chunks[current].emit_op(Op::ARRAY_GET, line);
-    vybe_emitter::tuples::emit_tuple(chunks, current, 2, line);
+    vybe_compiler::compiler::tuples::emit_tuple(chunks, current, 2, line);
     push(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
@@ -632,17 +632,17 @@ pub fn emit_batched(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
     len_of(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op_u16(Op::LOCAL_GET, n, line);
     chunk.emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, out, line);
     chunk.emit_op_u16(Op::LOCAL_GET, data, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
@@ -656,7 +656,7 @@ pub fn emit_batched(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_GET, size, line);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
@@ -673,17 +673,17 @@ pub fn emit_tee(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op_u16(Op::LOCAL_GET, n, line);
     chunk.emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
     // Each copy must be independent — `tee`'s whole purpose.
     chunk.emit_op_u16(Op::LOCAL_GET, out, line);
     chunk.emit_op_u16(Op::LOCAL_GET, data, line);
@@ -695,6 +695,6 @@ pub fn emit_tee(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }

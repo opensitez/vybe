@@ -16,9 +16,9 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::instructions::{core_wasm, host};
+use vybe_compiler::compiler::instructions::{core_wasm, host};
 
-use vybe_emitter::math;
+use vybe_compiler::compiler::math;
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
@@ -339,13 +339,13 @@ pub fn emit_timespan_parse(chunks: &mut [Chunk], current: usize, line: u32) {
 fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::I32(-1), line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    vybe_emitter::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::I32(1), line);
     chunk.emit_else(line);

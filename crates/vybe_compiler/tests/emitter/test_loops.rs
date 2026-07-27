@@ -4,7 +4,7 @@
 //! convention). These tests drive them through a one-element slice.
 
 use vybe_bytecode::Chunk;
-use vybe_compiler::emitter::loops;
+use vybe_compiler::compiler::loops;
 
 fn one_chunk(local_count: u16) -> Vec<Chunk> {
     let mut c = Chunk::new("test");

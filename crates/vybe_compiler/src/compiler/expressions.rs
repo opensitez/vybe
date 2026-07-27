@@ -35,7 +35,7 @@ impl Compiler {
     /// path. Leaves the constructed object on the stack.
     pub(crate) fn emit_tree_ctor_construction(
         &mut self,
-        spec: &crate::emitter::namespaces::CtorSpec,
+        spec: &crate::compiler::namespaces::CtorSpec,
         args: &[crate::ast::Argument],
     ) -> Result<(), String> {
         use crate::ast::{Expression, Param, PassBy};
@@ -57,7 +57,7 @@ impl Compiler {
         let sig = super::CallSignature::from_params(&params);
         let ordered = self.reorder_named_args_with_signatures(args, &[sig]);
 
-        use crate::emitter::namespaces::FieldGui;
+        use crate::compiler::namespaces::FieldGui;
 
         // Every widget is a config OBJECT (data), never a control at
         // construction — the runtime realizer creates/updates the backing
@@ -232,7 +232,7 @@ impl Compiler {
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, meta_slot);
         fn_call!(self, "wasm:js-undefined", "test", 1);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
         common::dict::emit_new(&mut self.chunks, self.current, line);
         let init_slot = self.define_local("__js_import_meta_init");
@@ -335,11 +335,11 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, control_slot);
         {
             let l = self.line;
-            crate::emitter::instructions::recipes::is_object(self.chunk(), l);
+            crate::compiler::instructions::recipes::is_object(self.chunk(), l);
         }
         {
             let l = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         let line = self.line;
         self.chunk().emit_if(line);
@@ -349,7 +349,7 @@ impl Compiler {
         self.emit_u16(Op::STRUCT_GET, marker_key);
         {
             let l = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         self.chunk().emit_if(line);
 
@@ -359,7 +359,7 @@ impl Compiler {
         self.emit_const(Value::String(Arc::from("throw")));
         {
             let l = self.line;
-            crate::emitter::instructions::host::emit(
+            crate::compiler::instructions::host::emit(
                 self.chunk(),
                 "wasm:js-string",
                 "equals",
@@ -369,7 +369,7 @@ impl Compiler {
         }
         {
             let l = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         self.chunk().emit_if(line);
 
@@ -378,7 +378,7 @@ impl Compiler {
         self.emit_u16(Op::STRUCT_GET, value_key);
         {
             let line = self.line;
-            crate::emitter::errors::emit_throw(self.chunk(), line);
+            crate::compiler::errors::emit_throw(self.chunk(), line);
         }
 
         self.chunk().emit_end(line);
@@ -387,7 +387,7 @@ impl Compiler {
         self.emit_const(Value::String(Arc::from("return")));
         {
             let l = self.line;
-            crate::emitter::instructions::host::emit(
+            crate::compiler::instructions::host::emit(
                 self.chunk(),
                 "wasm:js-string",
                 "equals",
@@ -397,7 +397,7 @@ impl Compiler {
         }
         {
             let l = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         self.chunk().emit_if(line);
 
@@ -423,11 +423,11 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, resume_slot);
         {
             let l = self.line;
-            crate::emitter::instructions::recipes::is_object(self.chunk(), l);
+            crate::compiler::instructions::recipes::is_object(self.chunk(), l);
         }
         {
             let l = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         self.chunk().emit_if(line);
 
@@ -436,7 +436,7 @@ impl Compiler {
         self.emit_u16(Op::STRUCT_GET, marker_key);
         {
             let l = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         self.chunk().emit_if(line);
 
@@ -446,7 +446,7 @@ impl Compiler {
         self.emit_const(Value::String(Arc::from("throw")));
         {
             let l = self.line;
-            crate::emitter::instructions::host::emit(
+            crate::compiler::instructions::host::emit(
                 self.chunk(),
                 "wasm:js-string",
                 "equals",
@@ -456,7 +456,7 @@ impl Compiler {
         }
         {
             let l = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         self.chunk().emit_if(line);
 
@@ -465,7 +465,7 @@ impl Compiler {
         self.emit_u16(Op::STRUCT_GET, value_key);
         {
             let line = self.line;
-            crate::emitter::errors::emit_throw(self.chunk(), line);
+            crate::compiler::errors::emit_throw(self.chunk(), line);
         }
 
         self.chunk().emit_end(line);
@@ -474,7 +474,7 @@ impl Compiler {
         self.emit_const(Value::String(Arc::from("return")));
         {
             let l = self.line;
-            crate::emitter::instructions::host::emit(
+            crate::compiler::instructions::host::emit(
                 self.chunk(),
                 "wasm:js-string",
                 "equals",
@@ -484,7 +484,7 @@ impl Compiler {
         }
         {
             let l = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), l);
         }
         self.chunk().emit_if(line);
 
@@ -571,7 +571,7 @@ impl Compiler {
         self.emit_const(Value::F64(1.0));
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_add(self.chunk(), line);
         };
         self.emit_u16(Op::GLOBAL_SET, next_global);
 
@@ -582,13 +582,13 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
         inst!(self, recipes::is_object);
         let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
 
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
         let marker_key = self.str_const("__vybe_generator_yield");
         self.emit_u16(Op::STRUCT_GET, marker_key);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
 
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
@@ -626,13 +626,13 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
         inst!(self, recipes::is_object);
         let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
 
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
         let marker_key = self.str_const("__vybe_generator_yield");
         self.emit_u16(Op::STRUCT_GET, marker_key);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
 
         self.emit_u16(Op::LOCAL_GET, yielded_slot);
@@ -851,7 +851,7 @@ impl Compiler {
                     // this_slot is still null throws a ReferenceError.
                     if self.js_derived_ctor_ctx == Some((self.current, slot)) {
                         let l = self.line;
-                        common::classes::emit_this_initialized_guard(self.chunk(), slot, l);
+                        crate::compiler::classes::emit_this_initialized_guard(self.chunk(), slot, l);
                     }
                     self.emit_u16(Op::LOCAL_GET, slot);
                 } else if self.scopes.len() > 1 {
@@ -861,14 +861,14 @@ impl Compiler {
                         let env = self.closure_env_slot();
                         let idx = self.closure_env_index(&kw);
                         let l = self.line;
-                        crate::emitter::closures::emit_env_get(self.chunk(), env, idx, l);
+                        crate::compiler::closures::emit_env_get(self.chunk(), env, idx, l);
                     } else if self.profile.ambient_this_binding {
                         if let Some(_uv) = self.resolve_upvalue(self.scopes.len() - 1, "__js_this")
                         {
                             let env = self.closure_env_slot();
                             let idx = self.closure_env_index("__js_this");
                             let l = self.line;
-                            crate::emitter::closures::emit_env_get(self.chunk(), env, idx, l);
+                            crate::compiler::closures::emit_env_get(self.chunk(), env, idx, l);
                         } else {
                             let idx = self.str_const("__js_this");
                             self.emit_u16(Op::GLOBAL_GET, idx);
@@ -972,8 +972,8 @@ impl Compiler {
                     );
                     if self.profile.name == "pascal" {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                     }
                     return Ok(());
                 }
@@ -989,8 +989,8 @@ impl Compiler {
                     );
                     if self.profile.name == "pascal" {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                     }
                     return Ok(());
                 }
@@ -1116,7 +1116,7 @@ impl Compiler {
                         if *op == BinOp::NotIn {
                             {
                                 let line = self.line;
-                                crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                                crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                             };
                         }
                         return Ok(());
@@ -1170,8 +1170,8 @@ impl Compiler {
                     self.compile_binop(&BinOp::BitXor);
                     if !integer_xor {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                     }
                     return Ok(());
                 }
@@ -1370,8 +1370,8 @@ impl Compiler {
                     )
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                 }
             }
 
@@ -1505,14 +1505,14 @@ impl Compiler {
                                 {
                                     common::expressions::emit_i32_not(self.chunk(), line);
                                 } else {
-                                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                                    crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                                 }
                                 if (self.profile.ecma_boolean_operators
                                     || self.profile.materialize_bool_results)
                                     && !(self.profile.name == "pascal"
                                         && self.pascal_expr_is_integer_like(inner))
                                 {
-                                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                                    crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                                 }
                             }
                             UnaryOp::BitNot => {
@@ -1690,7 +1690,7 @@ impl Compiler {
                     let line = self.line;
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    crate::emitter::functions::emit_await(self.chunk(), line);
+                    crate::compiler::functions::emit_await(self.chunk(), line);
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     self.chunk().emit_end(line);
@@ -1702,10 +1702,10 @@ impl Compiler {
                         self.resolve_profile_namespace_chain(&parts)
                     {
                         match target {
-                            crate::emitter::namespaces::ResolutionTarget::CommonEmit(emit) => {
+                            crate::compiler::namespaces::ResolutionTarget::CommonEmit(emit) => {
                                 self.emit_common(&emit, 0, self.line);
                             }
-                            crate::emitter::namespaces::ResolutionTarget::HostCall {
+                            crate::compiler::namespaces::ResolutionTarget::HostCall {
                                 module,
                                 func,
                                 ..
@@ -1713,7 +1713,7 @@ impl Compiler {
                                 let idx = self.import(&module, &func);
                                 self.emit_host_call(idx, 0);
                             }
-                            crate::emitter::namespaces::ResolutionTarget::Const(value) => {
+                            crate::compiler::namespaces::ResolutionTarget::Const(value) => {
                                 self.emit_const(value);
                             }
                             _ => {}
@@ -2003,7 +2003,7 @@ impl Compiler {
                                 return Ok(());
                             }
                             Some(super::resolver::Resolution::Tree(
-                                crate::emitter::namespaces::ResolutionTarget::CommonEmit(emit),
+                                crate::compiler::namespaces::ResolutionTarget::CommonEmit(emit),
                             )) => {
                                 self.emit_common(&emit, 0, self.line);
                                 return Ok(());
@@ -2011,7 +2011,7 @@ impl Compiler {
                             Some(
                                 super::resolver::Resolution::HostImport { module, func }
                                 | super::resolver::Resolution::Tree(
-                                    crate::emitter::namespaces::ResolutionTarget::HostCall {
+                                    crate::compiler::namespaces::ResolutionTarget::HostCall {
                                         module,
                                         func,
                                         ..
@@ -2023,7 +2023,7 @@ impl Compiler {
                                 return Ok(());
                             }
                             Some(super::resolver::Resolution::Tree(
-                                crate::emitter::namespaces::ResolutionTarget::Const(value),
+                                crate::compiler::namespaces::ResolutionTarget::Const(value),
                             )) => {
                                 self.emit_const(value);
                                 return Ok(());
@@ -2033,12 +2033,12 @@ impl Compiler {
                                 suffix,
                             }) => {
                                 match target {
-                                    crate::emitter::namespaces::ResolutionTarget::CommonEmit(
+                                    crate::compiler::namespaces::ResolutionTarget::CommonEmit(
                                         emit,
                                     ) => {
                                         self.emit_common(&emit, 0, self.line);
                                     }
-                                    crate::emitter::namespaces::ResolutionTarget::HostCall {
+                                    crate::compiler::namespaces::ResolutionTarget::HostCall {
                                         module,
                                         func,
                                         ..
@@ -2046,7 +2046,7 @@ impl Compiler {
                                         let idx = self.import(&module, &func);
                                         self.emit_host_call(idx, 0);
                                     }
-                                    crate::emitter::namespaces::ResolutionTarget::Const(value) => {
+                                    crate::compiler::namespaces::ResolutionTarget::Const(value) => {
                                         self.emit_const(value);
                                     }
                                     _ => {}
@@ -2178,7 +2178,7 @@ impl Compiler {
                     // accessor lives on the class prototype, not the instance.
                     let has_own_idx = self.import("ecma:object", "has");
                     self.emit_host_call(has_own_idx, 2);
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if_value(line);
 
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -2319,10 +2319,10 @@ impl Compiler {
                             self.emit_const(Value::String(Arc::from("symbol")));
                             {
                                 let line = self.line;
-                                crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                                crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                             };
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                             self.chunk().emit_if(line);
                             let invoke = self.import("ecma:value", "invokeMethod");
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -2439,7 +2439,7 @@ impl Compiler {
                             self.emit(Op::REF_IS_NULL);
                             {
                                 let line = self.line;
-                                crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                                crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                             };
                             return Ok(());
                         }
@@ -2651,12 +2651,16 @@ impl Compiler {
                     && !*null_safe
                     && let Some(target) = receiver_type_hint.as_deref().and_then(|type_hint| {
                         let class_name = Self::normalize_type_hint(type_hint);
-                        common::dotnet::surface().lookup_instance_property(&class_name, field)
+                        vybe_bytecode::namespaces::lookup_type_property_target(
+                            &self.profile.namespaces.type_scopes,
+                            &class_name,
+                            field,
+                        )
                     })
                 {
                     self.compile_expr(object)?;
                     match target {
-                        common::dotnet::InstancePropertyTarget::Host { module, func, key } => {
+                        vybe_bytecode::component_model::InstancePropertyTarget::Host { module, func, key } => {
                             let idx = self.import(&module, &func);
                             if let Some(key) = key {
                                 self.emit_const(Value::String(Arc::from(key.as_str())));
@@ -2666,7 +2670,7 @@ impl Compiler {
                             }
                             return Ok(());
                         }
-                        common::dotnet::InstancePropertyTarget::Common { emit } => {
+                        vybe_bytecode::component_model::InstancePropertyTarget::Common { emit } => {
                             self.emit_common(&emit, 1, self.line);
                             return Ok(());
                         }
@@ -2686,14 +2690,19 @@ impl Compiler {
                 {
                     receiver_type_hint.as_deref().and_then(|type_hint| {
                         let class_name = Self::normalize_type_hint(type_hint);
-                        common::dotnet::surface().lookup_instance_method(&class_name, field, 0)
+                        vybe_bytecode::namespaces::lookup_type_instance_target(
+                            &self.profile.namespaces.type_scopes,
+                            &class_name,
+                            field,
+                            0,
+                        )
                     })
                 } else {
                     None
                 };
 
                 if let Some(target) = dotnet_instance_zero_arg_method {
-                    if let common::dotnet::InstanceMethodTarget::Common { emit, .. } = &target {
+                    if let vybe_bytecode::component_model::InstanceMethodTarget::Common { emit, .. } = &target {
                         let line = self.line;
                         self.compile_expr(object)?;
                         self.emit_common(emit, 1, line);
@@ -2738,11 +2747,11 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     match target {
-                        common::dotnet::InstanceMethodTarget::Host { module, func, .. } => {
+                        vybe_bytecode::component_model::InstanceMethodTarget::Host { module, func, .. } => {
                             let idx = self.import(&module, &func);
                             self.emit_host_call(idx, 1);
                         }
-                        common::dotnet::InstanceMethodTarget::Common { emit, .. } => {
+                        vybe_bytecode::component_model::InstanceMethodTarget::Common { emit, .. } => {
                             let line = self.line;
                             self.emit_common(&emit, 1, line);
                         }
@@ -2772,10 +2781,10 @@ impl Compiler {
                     self.emit_const(Value::String(Arc::from("function")));
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                     };
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if_value(line);
 
                     self.emit_u16(Op::LOCAL_GET, value_slot);
@@ -2869,7 +2878,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     inst!(self, recipes::is_object);
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     let field_name = self.canon(field);
@@ -2972,7 +2981,7 @@ impl Compiler {
                         // Inclusive `a..b` slice → exclusive upper bound b+1.
                         if *inclusive {
                             inst!(self, core_wasm::i32_const, 1);
-                            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_add(self.chunk(), line);
                         }
                         self.emit_u16(Op::LOCAL_SET, end_slot);
 
@@ -3001,7 +3010,7 @@ impl Compiler {
                         // Inclusive `a..b` slice → exclusive upper bound b+1.
                         if *inclusive {
                             inst!(self, core_wasm::i32_const, 1);
-                            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_add(self.chunk(), line);
                         }
                         // Direct polymorphic `ecma:array.slice` (string→substring,
                         // array→slice) — no `__vybe_slice` func-ref/chunk detour.
@@ -3069,7 +3078,7 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, obj_slot);
                                 common::collections::emit_len(&mut self.chunks, self.current, line);
                             }
-                            common::slices::emit_contiguous(&mut self.chunks, self.current, line);
+                            crate::compiler::slices::emit_contiguous(&mut self.chunks, self.current, line);
                         } else {
                             let obj_slot = self.define_local("__py_index_slice_obj");
                             self.emit_u16(Op::LOCAL_SET, obj_slot);
@@ -3086,7 +3095,7 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, obj_slot);
                                 common::collections::emit_len(&mut self.chunks, self.current, line);
                             }
-                            common::slices::emit_contiguous(&mut self.chunks, self.current, line);
+                            crate::compiler::slices::emit_contiguous(&mut self.chunks, self.current, line);
                         }
                     } else {
                         let step_const = step.as_ref().and_then(|expr| match &expr.kind {
@@ -3109,7 +3118,7 @@ impl Compiler {
                                 self.chunk().emit_if_value(line);
                                 {
                                     let l = self.line;
-                                    crate::emitter::strings::emit_str_reverse(self.chunk(), l);
+                                    crate::compiler::strings::emit_str_reverse(self.chunk(), l);
                                 }
                                 self.chunk().emit_else(line);
                                 self.emit(Op::NULL);
@@ -3120,10 +3129,10 @@ impl Compiler {
                                     self.emit(Op::NULL);
                                 }
                                 {
-                                    let opts = common::slices::Options::new(
+                                    let opts = crate::compiler::slices::Options::new(
                                         self.profile.slice_step_zero_raises,
                                     );
-                                    common::slices::emit_stepped(
+                                    crate::compiler::slices::emit_stepped(
                                         &mut self.chunks,
                                         self.current,
                                         line,
@@ -3160,11 +3169,11 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, len_slot);
                                 {
                                     let line = self.line;
-                                    crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                                    crate::compiler::ops::emit_dyn_lt(self.chunk(), line);
                                 };
                                 {
                                     let line = self.line;
-                                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                                    crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                                 };
                                 self.chunk().emit_br_if(1, line);
 
@@ -3196,10 +3205,10 @@ impl Compiler {
                                     self.emit(Op::NULL);
                                 }
                                 {
-                                    let opts = common::slices::Options::new(
+                                    let opts = crate::compiler::slices::Options::new(
                                         self.profile.slice_step_zero_raises,
                                     );
-                                    common::slices::emit_stepped(
+                                    crate::compiler::slices::emit_stepped(
                                         &mut self.chunks,
                                         self.current,
                                         line,
@@ -3228,8 +3237,8 @@ impl Compiler {
                         }
                         {
                             let opts =
-                                common::slices::Options::new(self.profile.slice_step_zero_raises);
-                            common::slices::emit_stepped(
+                                crate::compiler::slices::Options::new(self.profile.slice_step_zero_raises);
+                            crate::compiler::slices::emit_stepped(
                                 &mut self.chunks,
                                 self.current,
                                 line,
@@ -3610,7 +3619,7 @@ impl Compiler {
                         self.chunk().emit_if(line);
 
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        common::references::emit_cell_load(
+                        crate::compiler::references::emit_cell_load(
                             &mut self.chunks,
                             self.current,
                             self.line,
@@ -3757,8 +3766,8 @@ impl Compiler {
                             &format!("Cannot instantiate abstract class {}", type_name),
                             line,
                         );
-                        crate::emitter::errors::emit_exception_new_finalize(chunk, "Error", line);
-                        crate::emitter::errors::emit_throw(chunk, line);
+                        crate::compiler::errors::emit_exception_new_finalize(chunk, "Error", line);
+                        crate::compiler::errors::emit_throw(chunk, line);
                         return Ok(());
                     }
                     if self.defined_classes.contains(&canon_type) {
@@ -3979,7 +3988,7 @@ impl Compiler {
                         && !self.defined_classes.contains(&self.canon(type_name))
                     {
                         if let Some(super::resolver::Resolution::Tree(
-                            crate::emitter::namespaces::ResolutionTarget::Ctor {
+                            crate::compiler::namespaces::ResolutionTarget::Ctor {
                                 spec: Some(spec),
                                 ..
                             },
@@ -4035,7 +4044,10 @@ impl Compiler {
                     }
                     // Dotnet component descriptor constructors — fallback after
                     // GUI so .NET-only types like Dictionary still work.
-                    let dotnet_constructor = common::dotnet::surface().lookup_constructor(bare_str);
+                    let dotnet_constructor = vybe_bytecode::namespaces::lookup_type_ctor_target(
+                        &self.profile.namespaces.type_scopes,
+                        bare_str,
+                    );
                     if let Some(target) = dotnet_constructor.clone() {
                         for a in args {
                             self.compile_expr(&a.value)?;
@@ -4127,7 +4139,7 @@ impl Compiler {
                                 // prototype link + own-name removal.
                                 if self.profile.ecma_new_dispatch && module == "ecma:error" {
                                     let line = self.line;
-                                    crate::emitter::errors::emit_finish_js_error_instance(
+                                    crate::compiler::errors::emit_finish_js_error_instance(
                                         self.chunk(),
                                         &func,
                                         line,
@@ -4239,15 +4251,15 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, class_slot);
                     {
                         let l = self.line;
-                        crate::emitter::instructions::host::CapabilityContext::get()
+                        crate::compiler::instructions::host::CapabilityContext::get()
                             .functions
                             .emit(&mut self.chunks[self.current], "ecma:value", "typeof", 1, l);
                     }
                     self.emit_const(Value::String(Arc::from("string")));
                     {
                         let l = self.line;
-                        crate::emitter::ops::emit_dyn_eq(self.chunk(), l);
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), l);
+                        crate::compiler::ops::emit_dyn_eq(self.chunk(), l);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), l);
                     }
                     let line = self.line;
                     self.chunk().emit_if(line);
@@ -4266,7 +4278,7 @@ impl Compiler {
                         self.emit_u8(Op::CALL_REF, 1);
                         {
                             let line = self.line;
-                            crate::emitter::errors::emit_throw(self.chunk(), line);
+                            crate::compiler::errors::emit_throw(self.chunk(), line);
                         }
                     }
                     self.chunk().emit_end(line);
@@ -4456,7 +4468,7 @@ impl Compiler {
                                 self.compile_expr(&elem.value)?;
                                 if is_known_gen {
                                     // continuation is on TOS; drain into array
-                                    crate::emitter::generators::emit_drain_into_array(
+                                    crate::compiler::generators::emit_drain_into_array(
                                         &mut self.chunks,
                                         self.current,
                                         line,
@@ -5041,44 +5053,44 @@ impl Compiler {
                         "string" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             fn_call!(self, "wasm:js-string", "test", 1);
-                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                             return Ok(());
                         }
                         "number" | "float" | "double" | "int" | "integer" | "long" | "single"
                         | "decimal" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             fn_call!(self, "wasm:js-number", "test", 1);
-                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                             return Ok(());
                         }
                         "boolean" | "bool" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             fn_call!(self, "wasm:js-boolean", "test", 1);
-                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                             return Ok(());
                         }
                         "array" | "list" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             fn_call!(self, "ecma:array", "isArray", 1);
-                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                             return Ok(());
                         }
                         "function" | "callable" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             inst!(self, recipes::is_func);
-                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                             return Ok(());
                         }
                         "undefined" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             fn_call!(self, "wasm:js-undefined", "test", 1);
-                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                             return Ok(());
                         }
                         "object" | "dict" | "map" => {
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
                             inst!(self, recipes::is_object);
-                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                             return Ok(());
                         }
                         _ => {} // fall through to the general reflection path
@@ -5093,13 +5105,13 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     fn_call!(self, "wasm:js-number", "test", 1);
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     inst!(self, core_wasm::dup);
                     self.emit(Op::F64_TRUNC);
-                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
+                    crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                     self.chunk().emit_else(line);
                     inst!(self, core_wasm::bool_const, false);
                     self.chunk().emit_end(line);
@@ -5119,7 +5131,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_slot);
                 self.chunk()
                     .emit_op_u16(vybe_bytecode::Op::REF_TEST, type_idx, line);
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if(line);
                 self.emit_const(Value::I32(1));
                 self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -5131,9 +5143,9 @@ impl Compiler {
                 self.emit_const(Value::String(Arc::from(canon_type.as_str())));
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                 };
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if(line);
                 self.emit_const(Value::I32(1));
                 self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -5155,7 +5167,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.chunk()
                         .emit_op_u16(vybe_bytecode::Op::REF_TEST, candidate_idx, line);
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -5167,9 +5179,9 @@ impl Compiler {
                     self.emit_const(Value::String(Arc::from(candidate.as_str())));
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                     };
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -5186,7 +5198,7 @@ impl Compiler {
                 ) {
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     fn_call!(self, "ecma:array", "isArray", 1);
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -5198,7 +5210,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.chunk()
                         .emit_op_u16(vybe_bytecode::Op::REF_TEST, list_idx, line);
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -5219,7 +5231,7 @@ impl Compiler {
                     if canon_type == "IEnumerable" {
                         self.emit_u16(Op::LOCAL_GET, obj_slot);
                         inst!(self, recipes::is_object);
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if(line);
                         self.emit_const(Value::I32(1));
                         self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -5239,7 +5251,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, types_slot);
                 self.emit_const(Value::String(Arc::from(canon_type.as_str())));
                 common::collections::emit_contains(&mut self.chunks, self.current, line);
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if(line);
                 self.emit_const(Value::I32(1));
                 self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -5248,7 +5260,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, types_slot);
                     self.emit_const(Value::String(Arc::from(candidate.as_str())));
                     common::collections::emit_contains(&mut self.chunks, self.current, line);
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -5484,12 +5496,12 @@ impl Compiler {
                                             )));
                                             {
                                                 let line = self.line;
-                                                crate::emitter::ops::emit_dyn_eq(
+                                                crate::compiler::ops::emit_dyn_eq(
                                                     self.chunk(),
                                                     line,
                                                 );
                                             };
-                                            crate::emitter::ops::emit_dyn_to_bool(
+                                            crate::compiler::ops::emit_dyn_to_bool(
                                                 self.chunk(),
                                                 object_line,
                                             );
@@ -5518,7 +5530,7 @@ impl Compiler {
                                                 self.current,
                                                 line,
                                             );
-                                            crate::emitter::ops::emit_dyn_to_bool(
+                                            crate::compiler::ops::emit_dyn_to_bool(
                                                 self.chunk(),
                                                 object_line,
                                             );
@@ -5737,7 +5749,7 @@ impl Compiler {
                 // passes non-promise values through unchanged.
                 self.compile_expr(inner)?;
                 let line = self.line;
-                crate::emitter::functions::emit_await(self.chunk(), line);
+                crate::compiler::functions::emit_await(self.chunk(), line);
             }
 
             // ── Yield ───────────────────────────────────────────────────
@@ -5786,7 +5798,7 @@ impl Compiler {
                     self.emit(Op::NULL);
                 }
                 let line = self.line;
-                crate::emitter::generators::emit_suspend(self.chunk(), line);
+                crate::compiler::generators::emit_suspend(self.chunk(), line);
                 self.emit_generator_resume_value()?;
             }
 
@@ -5807,27 +5819,27 @@ impl Compiler {
                 let is_gen_idx = self.import("ecma:value", "isGenerator");
                 self.emit_host_call(is_gen_idx, 1);
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if(line);
 
                 let gen_block = self.chunk().emit_block(line);
                 let (gen_loop, _) = self.chunk().emit_loop_s(line);
                 self.emit_u16(Op::LOCAL_GET, gen_slot);
                 let line = self.line;
-                crate::emitter::generators::emit_next(self.chunk(), line);
+                crate::compiler::generators::emit_next(self.chunk(), line);
                 // After GEN_NEXT: stack top is has_more (i32), under it value.
                 self.emit_u16(Op::LOCAL_SET, has_more_slot);
                 self.emit_u16(Op::LOCAL_SET, val_slot);
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
                 self.emit(Op::I32_EQZ);
                 self.chunk().emit_br_if(1, line);
                 self.emit_u16(Op::LOCAL_GET, val_slot);
                 let line = self.line;
-                crate::emitter::generators::emit_suspend(self.chunk(), line);
+                crate::compiler::generators::emit_suspend(self.chunk(), line);
                 self.emit(Op::DROP);
                 self.chunk().emit_br(0, line);
                 self.chunk().emit_end(line);
@@ -5861,18 +5873,18 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, len_slot);
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_lt(self.chunk(), line);
                 };
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                 };
                 self.chunk().emit_br_if(1, line);
                 self.emit_u16(Op::LOCAL_GET, iter_slot);
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit(Op::ARRAY_GET);
                 let line = self.line;
-                crate::emitter::generators::emit_suspend(self.chunk(), line);
+                crate::compiler::generators::emit_suspend(self.chunk(), line);
                 self.emit(Op::DROP);
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit_const(Value::F64(1.0));
@@ -5985,7 +5997,7 @@ impl Compiler {
                             if let Some((ctx_chunk, ctx_slot)) = self.js_derived_ctor_ctx {
                                 if ctx_chunk == self.current {
                                     let l = self.line;
-                                    common::classes::emit_super_once_guard(
+                                    crate::compiler::classes::emit_super_once_guard(
                                         self.chunk(),
                                         ctx_slot,
                                         l,
@@ -6112,7 +6124,7 @@ impl Compiler {
                 let result_slot = self.define_local("__comp_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);
 
-                use crate::emitter::loops::LoopState;
+                use crate::compiler::loops::LoopState;
                 // Compile each generator (nested for-clauses)
                 let mut cond_blocks = 0usize;
                 let mut loop_info: Vec<(u16, LoopState)> = Vec::new();
@@ -6129,7 +6141,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, src_slot);
                         let is_gen = self.import("ecma:value", "isGenerator");
                         self.emit_host_call(is_gen, 1);
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if_value(line);
                         self.emit_u16(Op::LOCAL_GET, src_slot);
                         common::generators::emit_drain_into_array(
@@ -6198,7 +6210,7 @@ impl Compiler {
                         self.compile_expr(cond_expr)?;
                         {
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                         };
                         self.chunk().emit_if(line);
                         cond_blocks += 1;
@@ -6289,12 +6301,12 @@ impl Compiler {
                         common::collections::emit_len(&mut self.chunks, self.current, line);
                     }
                     // Contiguous slice via ecma:array.slice (string→substring /
-                    // array→array, negative-wrap + clamp). Home: vybe_emitter::slices.
-                    common::slices::emit_contiguous(&mut self.chunks, self.current, line);
+                    // array→array, negative-wrap + clamp). Home: crate::compiler::slices.
+                    crate::compiler::slices::emit_contiguous(&mut self.chunks, self.current, line);
                 } else {
                     // Strided slice → [obj, lower, upper, step] (NULL = absent);
                     // obj is already on the stack from the Index parent.
-                    // vybe_emitter::slices emits the CPython normalization +
+                    // crate::compiler::slices emits the CPython normalization +
                     // strided copy inline; the step==0 quirk comes from the
                     // `slice_step_zero_raises` profile property.
                     if let Some(l) = lower {
@@ -6312,8 +6324,8 @@ impl Compiler {
                     } else {
                         self.emit(Op::NULL);
                     }
-                    let opts = common::slices::Options::new(self.profile.slice_step_zero_raises);
-                    common::slices::emit_stepped(&mut self.chunks, self.current, line, opts);
+                    let opts = crate::compiler::slices::Options::new(self.profile.slice_step_zero_raises);
+                    crate::compiler::slices::emit_stepped(&mut self.chunks, self.current, line, opts);
                 }
             }
 
@@ -6370,7 +6382,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, result_slot);
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.emit(Op::I32_EQZ);
                         self.chunk().emit_if(line);
                         self.emit_const(Value::String(Arc::from(
@@ -6391,7 +6403,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, result_slot);
                         self.emit_u16(Op::LOCAL_GET, result_slot);
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.emit(Op::I32_EQZ);
                         self.chunk().emit_if(line);
                         self.emit_const(Value::String(Arc::from(
@@ -6584,7 +6596,7 @@ impl Compiler {
                         let has_own_idx = self.import("ecma:object", "has");
                         let line = self.line;
                         self.emit_host_call(has_own_idx, 2);
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if_value(line);
 
                         self.emit_u16(Op::LOCAL_GET, class_slot);
@@ -6639,10 +6651,10 @@ impl Compiler {
                             self.compile_expr(c)?;
                             {
                                 let line = self.line;
-                                crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                                crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                             };
                             let cond_line = self.line;
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), cond_line);
+                            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), cond_line);
                             self.chunk().emit_if(cond_line);
                             self.emit_const(Value::I32(1));
                             self.emit_u16(Op::LOCAL_SET, arm_match_slot);
@@ -6722,7 +6734,7 @@ impl Compiler {
         if *op == BinOp::NotEq {
             {
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_not(self.chunk(), line);
             };
         }
         Ok(true)
@@ -6829,7 +6841,7 @@ impl Compiler {
             if negate_result {
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                 };
             }
             return Ok(true);
@@ -6852,7 +6864,7 @@ impl Compiler {
         if negate_result {
             {
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_not(self.chunk(), line);
             };
         }
         Ok(true)
@@ -7096,3 +7108,537 @@ impl Compiler {
         self.chunk().emit_end(line);
     }
 }
+
+// ── Chunk-level expressions emit ────────────────────────────────────────────
+// Free functions over `&mut Chunk`, merged in from the former `emitter::expressions`
+// module. The `impl Compiler` walkers above and these primitives are the two
+// halves of the same topic and now live in one file.
+use crate::compiler::instructions::core_wasm;
+use std::sync::Arc;
+use vybe_bytecode::opcode::Op;
+use vybe_bytecode::{Chunk, Value};
+// Expression compilation helpers — shared bytecode patterns for common expressions.
+//
+// Ternary conditionals, short-circuit logic, and null coalescing are identical
+// across all languages. Helpers emit structured WASM control constructs so
+// callers can compile language-specific sub-expressions in between.
+
+
+// ── Undefined sentinel ─────────────────────────────────────────────────
+//
+// JS `undefined` is not a WASM concept. We represent it as a global sentinel
+// `__undefined` that is set up at bundle time. All compilers that need
+// undefined semantics emit `global_get "__undefined"` via this helper.
+// Languages that don't have undefined (VB, C#, Pascal, Python) never call this.
+//
+// This centralizes all undefined emission so the opcode `Op::undefined` can
+// eventually be removed — every site that used to emit that opcode should
+// call this function instead.
+
+/// Emit the JS `undefined` value onto the stack.
+/// Uses `global_get "__undefined"` — a sentinel wired at bundle time.
+/// Stack: [] → [undefined]
+pub fn emit_undefined(chunk: &mut Chunk, line: u32) {
+    let name = chunk.add_constant(Value::String(Arc::from("__undefined")));
+    chunk.emit_op_u16(Op::GLOBAL_GET, name, line);
+}
+
+/// Emit bitwise NOT (i32). WASM equivalent: i32.const -1, i32.xor.
+/// Stack: [i32] → [i32]
+pub fn emit_i32_not(chunk: &mut Chunk, line: u32) {
+    chunk.emit_i32_const(-1, line);
+    chunk.emit_op(Op::I32_XOR, line);
+}
+
+/// Emit f64 C-style modulo as pure WASM opcodes (no host import).
+/// Stack: [a, b] → [result]
+pub fn emit_f64_mod_with_import(chunk: &mut Chunk, _import_idx: u16, line: u32) {
+    crate::compiler::math::emit_c_fmod(chunk, line);
+}
+
+/// Emit f64 C-style modulo as pure WASM opcodes (no host import).
+/// Stack: [a, b] → [result]
+pub fn emit_f64_mod(chunk: &mut Chunk, line: u32) {
+    crate::compiler::math::emit_c_fmod(chunk, line);
+}
+
+/// Emit boolean NOT. Converts value to bool then negates.
+/// WASM equivalent: dyn_to_bool + i32.eqz.
+/// Stack: [value] → [bool]
+pub fn emit_bool_not(chunk: &mut Chunk, line: u32) {
+    crate::compiler::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+}
+
+// ── Ternary / conditional expression ────────────────────────────────────
+//
+// Usage:
+//   compile_condition(chunk);
+//   let false_jump = emit_ternary_start(chunk);
+//   compile_then_expr(chunk);
+//   let end_jump = emit_ternary_middle(chunk, false_jump);
+//   compile_else_expr(chunk);
+//   emit_ternary_end(chunk, end_jump);
+
+/// After condition is on stack: convert to bool and enter the then arm.
+/// Stack before: [condition]  Stack after: []
+pub fn emit_ternary_start(chunk: &mut Chunk, line: u32) -> usize {
+    crate::compiler::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    0
+}
+
+/// After "then" expression: start the else arm.
+/// Stack: [then_value]
+pub fn emit_ternary_middle(chunk: &mut Chunk, _false_jump: usize, line: u32) -> usize {
+    chunk.emit_else(line);
+    0
+}
+
+/// After "else" expression: close the structured if.
+/// Stack: [result_value]
+pub fn emit_ternary_end(chunk: &mut Chunk, _end_jump: usize) {
+    chunk.emit_end(0);
+}
+
+// ── Short-circuit logical AND ───────────────────────────────────────────
+//
+// Usage:
+//   compile_left(chunk);
+//   let jump = emit_and_start(chunk);
+//   compile_right(chunk);
+//   emit_short_circuit_end(chunk, jump);
+
+/// After left operand: if falsy, short-circuit (keep left as result).
+/// Stack before: [left]  Stack after: [] (right will be compiled next)
+pub fn emit_and_start(chunk: &mut Chunk, line: u32) -> usize {
+    let block = chunk.emit_block(line);
+    chunk.emit_dup(line);
+    crate::compiler::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(0, line);
+    chunk.emit_op(Op::DROP, line); // discard left, right becomes result
+    block
+}
+
+// ── Short-circuit logical OR ────────────────────────────────────────────
+//
+// Usage:
+//   compile_left(chunk);
+//   let jump = emit_or_start(chunk);
+//   compile_right(chunk);
+//   emit_short_circuit_end(chunk, jump);
+
+/// After left operand: if truthy, short-circuit (keep left as result).
+/// Stack before: [left]  Stack after: [] (right will be compiled next)
+pub fn emit_or_start(chunk: &mut Chunk, line: u32) -> usize {
+    let block = chunk.emit_block(line);
+    chunk.emit_dup(line);
+    crate::compiler::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_br_if(0, line);
+    chunk.emit_op(Op::DROP, line); // discard left, right becomes result
+    block
+}
+
+/// End a short-circuit AND or OR.
+/// Stack: [result_value]
+pub fn emit_short_circuit_end(chunk: &mut Chunk, block: usize) {
+    chunk.emit_end(0);
+    chunk.patch_block(block);
+}
+
+// ── Null coalescing ─────────────────────────────────────────────────────
+//
+// Usage:
+//   compile_left(chunk);
+//   let (null_jump, end_jump) = emit_null_coalesce_start(chunk);
+//   compile_right(chunk);
+//   emit_null_coalesce_end(chunk, end_jump);
+
+/// After left operand: if null, drop it and fall through to right expression.
+/// If non-null, skip over right expression.
+/// Stack before: [left]  Stack after: [] (right will be compiled next)
+/// Returns (block_patch, 0).
+pub fn emit_null_coalesce_start(chunk: &mut Chunk, line: u32) -> (usize, usize) {
+    chunk.emit_dup(line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    let block = chunk.emit_block(line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(0, line);
+    chunk.emit_op(Op::DROP, line);
+    (block, 0)
+}
+
+/// After right expression: close the non-null skip block.
+/// Stack: [result_value]
+pub fn emit_null_coalesce_end(chunk: &mut Chunk, block: usize) {
+    chunk.emit_end(0);
+    chunk.patch_block(block);
+}
+
+// ── Null-safe member access (?.) ────────────────────────────────────────
+//
+// Usage:
+//   compile_object(chunk);
+//   let (skip, end) = emit_null_safe_start(chunk);
+//   // compile member access (struct_get, etc.)
+//   emit_null_safe_end(chunk, end);
+
+/// After object is on stack: if null, skip the member access.
+/// Stack before: [object]  Stack after: [object] (if non-null) or control jumps to end
+pub fn emit_null_safe_start(chunk: &mut Chunk, line: u32) -> (usize, usize) {
+    chunk.emit_dup(line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    let block = chunk.emit_block(line);
+    chunk.emit_br_if(0, line);
+    (block, 0)
+}
+
+/// After member access: close the null-skip block.
+pub fn emit_null_safe_end(chunk: &mut Chunk, block: usize, _line: u32) {
+    chunk.emit_end(0);
+    chunk.patch_block(block);
+}
+
+// ── Generic dynamic dispatch ────────────────────────────────────────────
+//
+// The universal pattern for dynamic languages:
+//   1. struct_get a method/property on the object
+//   2. If found (non-null), call it
+//   3. If not found, execute a fallback
+//
+// All rich_compare, smart_length, rich_arithmetic, etc. are instances of this.
+
+/// Emit a try-method-or-fallback dispatch.
+/// Checks if `obj_slot` has a method named `method_name`. If found, calls it with
+/// `arg_count` args (which the caller pushes between start and end).
+/// Returns (is_null_jump, found_done_jump) for the caller to emit the fallback.
+///
+/// Usage:
+///   let (null_jump, done_jump) = emit_dynamic_dispatch_start(chunk, obj_slot, "method", line);
+///   // push args for the found case
+///   emit_dynamic_dispatch_call(chunk, arg_count, line);
+///   let done = emit_dynamic_dispatch_middle(chunk, line);
+///   // patch null case, emit fallback
+///   emit_dynamic_dispatch_fallback(chunk, null_jump, done, line);
+///
+/// Or use the simpler one-shot helpers below.
+// ── Rich arithmetic (user-defined __add__/__sub__/etc) ──────────────────
+//
+// Same pattern as rich_compare but for binary arithmetic operators.
+// Tries user-defined dunder method, falls back to primitive opcode.
+
+/// Emit rich arithmetic: tries the user-defined `__add__`/`__mul__`/…,
+/// falls back to the primitive opcode.
+/// Caller must store left in `left_slot` and right in `right_slot`.
+/// Stack before: []  Stack after: [result_value]
+///
+/// Deliberately NOT `emit_rich_compare_locals`. That helper's second stage
+/// tries `compare`/`CompareTo`/`<=>` and applies `fallback_fn` against `0`,
+/// which is right for an ordering (`CompareTo(a, b) < 0`) and nonsense for
+/// arithmetic (`CompareTo(a, b) + 0`). An operator method is the only thing
+/// that can define `a + b`, so there is no second stage here.
+pub fn emit_rich_arithmetic(
+    chunk: &mut Chunk,
+    left_slot: u16,
+    right_slot: u16,
+    dunder: &str,
+    fallback_fn: fn(&mut Chunk, u32),
+    line: u32,
+) {
+    let method_slot = alloc_local(chunk);
+
+    // A primitive traps on STRUCT_GET, so gate the lookup on the operand
+    // actually being an object.
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_call(typeof_fn, 1, line);
+    chunk.emit_string_const("object", line);
+    crate::compiler::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+
+    let key = chunk.add_constant(Value::String(Arc::from(dunder)));
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    fallback_fn(chunk, line);
+    chunk.emit_end(line);
+
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    fallback_fn(chunk, line);
+    chunk.emit_end(line);
+}
+
+/// Emit a rich unary operator: tries the user-defined `__neg__`/`__bitnot__`
+/// on an object operand, else the primitive fallback.
+/// Stack before: []  Stack after: [result_value]
+pub fn emit_rich_unary(
+    chunk: &mut Chunk,
+    operand_slot: u16,
+    dunder: &str,
+    fallback_fn: fn(&mut Chunk, u32),
+    line: u32,
+) {
+    let method_slot = alloc_local(chunk);
+
+    let typeof_fn = chunk.add_import("ecma:value", "typeof");
+    chunk.emit_op_u16(Op::LOCAL_GET, operand_slot, line);
+    chunk.emit_call(typeof_fn, 1, line);
+    chunk.emit_string_const("object", line);
+    crate::compiler::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if_value(line);
+
+    let key = chunk.add_constant(Value::String(Arc::from(dunder)));
+    chunk.emit_op_u16(Op::LOCAL_GET, operand_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, operand_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, operand_slot, line);
+    fallback_fn(chunk, line);
+    chunk.emit_end(line);
+
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, operand_slot, line);
+    fallback_fn(chunk, line);
+    chunk.emit_end(line);
+}
+
+fn alloc_local(chunk: &mut Chunk) -> u16 {
+    let slot = chunk.local_count;
+    chunk.local_count = chunk.local_count.max(slot + 1);
+    if chunk.local_count > chunk.scratch_high_water {
+        chunk.scratch_high_water = chunk.local_count;
+    }
+    slot
+}
+
+// ── Rich toString (user-defined __str__ / toString) ─────────────────────
+
+/// Emit smart toString: tries __str__/toString getter on objects, falls back to host toString.
+/// Object must be in `obj_slot`.
+/// Stack before: []  Stack after: [string_value]
+pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
+    let method_slot = chunk.local_count;
+    chunk.local_count = chunk.local_count.max(method_slot + 1);
+    if chunk.local_count > chunk.scratch_high_water {
+        chunk.scratch_high_water = chunk.local_count;
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    let key = chunk.add_constant(Value::String(Arc::from("__str__")));
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    let to_str = chunk.add_import("ecma:string", "String");
+    chunk.emit_call(to_str, 1, line);
+    chunk.emit_end(line);
+}
+
+// ── Rich bool (user-defined __bool__ / valueOf) ─────────────────────────
+
+/// Emit smart bool: tries __bool__ on objects, falls back to dyn_to_bool.
+/// Object must be in `obj_slot`.
+/// Stack before: []  Stack after: [bool_value]
+pub fn emit_rich_bool(chunk: &mut Chunk, obj_slot: u16, line: u32) {
+    let method_slot = chunk.local_count;
+    chunk.local_count = chunk.local_count.max(method_slot + 1);
+    if chunk.local_count > chunk.scratch_high_water {
+        chunk.scratch_high_water = chunk.local_count;
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    let key = chunk.add_constant(Value::String(Arc::from("__bool__")));
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    crate::compiler::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_end(line);
+}
+
+// ── Rich comparison (user-defined __lt__/__gt__/etc) ────────────────────
+//
+// Standard WASM opcodes only. Emits inline dispatch:
+//   1. Try struct_get for the dunder method on left operand
+//   2. If found (non-null), call it with right operand
+//   3. If not found, fall back to the primitive dyn_lt/dyn_gt/etc opcode
+//
+// This allows Python `__lt__`, Dart `operator<`, C# `CompareTo` etc.
+// to work on user objects while keeping primitive comparison fast.
+
+/// Emit a rich comparison: tries user-defined method, falls back to primitive opcode.
+/// Both operands must already be on the stack: [left, right].
+/// Stack after: [bool_result]
+///
+/// `dunder`: the method name to look for (e.g. "__lt__", "__gt__")
+/// `fallback_fn`: the emitter to use if no method (e.g. `crate::compiler::ops::emit_dyn_lt`)
+pub fn emit_rich_compare(
+    chunk: &mut Chunk,
+    _dunder: &str,
+    fallback_fn: fn(&mut Chunk, u32),
+    line: u32,
+) {
+    // Stack: [left, right]
+    // Save right to temp, check left for dunder method
+    // We need to: peek at left (under right), struct_get dunder, check null
+
+    // Store right in temp
+    // Note: we can't allocate locals here (no scope access). Use stack manipulation.
+    // Strategy: swap to get left on top, dup, struct_get, check null.
+    // But there's no swap opcode. Use a different approach:
+    // Store right, dup left, struct_get dunder, check null.
+
+    // Actually, the simplest approach that uses only standard WASM ops:
+    // [left, right] on stack.
+    // We need left for struct_get. But right is on top.
+    // Emit: store right in a constant-indexed temp via the "over" pattern.
+
+    // Simplest correct approach using only existing opcodes:
+    // The caller must have left and right in locals already (common for binary ops).
+    // But we take them from stack. Let's use the dup-under pattern:
+
+    // For now, just use the fallback op. Rich compare requires local slots
+    // which the caller must provide. Use emit_rich_compare_with_locals instead.
+    fallback_fn(chunk, line);
+}
+
+/// Emit a rich comparison with pre-allocated local slots.
+/// Caller must store left in `left_slot` and right in `right_slot` before calling.
+/// Stack before: []  Stack after: [bool_result]
+///
+/// Emits: check left.__lt__ → if found, call it(right) → else dyn_lt(left, right)
+pub fn emit_rich_compare_locals(
+    chunk: &mut Chunk,
+    left_slot: u16,
+    right_slot: u16,
+    dunder: &str,
+    fallback_fn: fn(&mut Chunk, u32),
+    line: u32,
+) {
+    let method_slot = chunk.local_count;
+    chunk.local_count = chunk.local_count.max(method_slot + 1);
+    if chunk.local_count > chunk.scratch_high_water {
+        chunk.scratch_high_water = chunk.local_count;
+    }
+
+    // Try struct_get dunder on left
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    let key = chunk.add_constant(Value::String(Arc::from(dunder)));
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    // Found method: call it with self=left, arg=right → result
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_else(line);
+
+    // Not found: try compare-style methods like C# CompareTo / Ruby <=>.
+    let done = chunk.emit_block(line);
+    for method_name in ["compare", "CompareTo", "compareTo", "__cmp__", "<=>"] {
+        let method_key = chunk.add_constant(Value::String(Arc::from(method_name)));
+        chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+        chunk.emit_op_u16(Op::STRUCT_GET, method_key, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+        chunk.emit_op_u8(Op::CALL_REF, 2, line);
+        core_wasm::i32_const(chunk, line, 0);
+        fallback_fn(chunk, line);
+        chunk.emit_br(1, line);
+        chunk.emit_end(line);
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    fallback_fn(chunk, line);
+
+    chunk.emit_end(line);
+    chunk.patch_block(done);
+    chunk.emit_end(line);
+}
+
+// ── Smart length (user-defined __len__ / __get_length) ──────────────────
+//
+// Standard WASM opcodes only. Tries __get_length getter first,
+// falls back to array_length opcode for plain arrays/strings.
+
+/// Emit smart length: tries user-defined __get_length getter, falls back to array_length.
+/// Object must be in `obj_slot`.
+/// Stack before: []  Stack after: [length_value]
+pub fn emit_smart_length(chunk: &mut Chunk, obj_slot: u16, line: u32) {
+    let method_slot = chunk.local_count;
+    chunk.local_count = chunk.local_count.max(method_slot + 1);
+    if chunk.local_count > chunk.scratch_high_water {
+        chunk.scratch_high_water = chunk.local_count;
+    }
+
+    // Try struct_get "__get_length" on object
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    let key = chunk.add_constant(Value::String(Arc::from("__get_length")));
+    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    chunk.emit_end(line);
+}
+

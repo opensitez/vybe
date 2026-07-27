@@ -750,3 +750,46 @@ mod tests {
         assert_eq!(comp.all_class_names(), vec!["Button", "Button", "Button"]);
     }
 }
+
+// ── Descriptor lookup targets ───────────────────────────────────────────
+//
+// What a component-descriptor lookup resolves to. These live here, beside
+// `ConstructorTarget`, because the COMPILER receives them across a registry
+// function pointer — a platform-local type cannot cross that boundary, and
+// that is precisely why `vybe_compiler` still had a Cargo dependency on
+// `vybe_platform_dotnet`.
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StaticPropertyTarget {
+    Host { module: String, func: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstanceMethodTarget {
+    Host {
+        module: String,
+        func: String,
+        arity: u8,
+    },
+    Common {
+        emit: String,
+        arity: u8,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstancePropertyTarget {
+    /// A host-backed property accessor. `key` is `Some(PascalName)` when the
+    /// target is the *generic* `vybe:gui` property host fn
+    /// (`controlGet/SetProperty(this, "Text"[, value])`) — the compiler pushes
+    /// the key as an argument. `None` for dedicated per-property host fns
+    /// (`Environment.NewLine` → `node:os.EOL(this)`).
+    Host {
+        module: String,
+        func: String,
+        key: Option<String>,
+    },
+    Common {
+        emit: String,
+    },
+}

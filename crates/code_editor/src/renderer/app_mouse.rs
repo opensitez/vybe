@@ -567,14 +567,14 @@ impl App {
                                 match action {
                                     crate::form_designer_tab::MenuAction::NewProject => {
                                         self.project =
-                                            vybe_compiler::projects::project::Project::new(
+                                            vybe_platform_dotnet::winforms::designer::project::Project::new(
                                                 "Project1".to_string(),
                                             );
                                         let mut form =
-                                            vybe_compiler::projects::Form::new("Form1".to_string());
+                                            vybe_platform_dotnet::winforms::designer::Form::new("Form1".to_string());
                                         form.width = 640;
                                         form.height = 480;
-                                        let fm = vybe_compiler::projects::project::FormModule::new_classic(form);
+                                        let fm = vybe_platform_dotnet::winforms::designer::project::FormModule::new_classic(form);
                                         self.project.forms.push(fm);
                                         if let Some(idx) = self
                                             .tabs
@@ -595,7 +595,7 @@ impl App {
                                             .pick_file()
                                         {
                                             let path_str = path.to_string_lossy().to_string();
-                                            match vybe_compiler::projects::serialization::load_project_auto(&path_str) {
+                                            match vybe_platform_dotnet::winforms::designer::serialization::load_project_auto(&path_str) {
                                                 Ok(proj) => {
                                                     self.tabs.retain(|t| !matches!(&t.content, TabContent::Code(_)) && !matches!(&t.content, TabContent::Resources(_)));
                                                     if self.active_tab >= self.tabs.len() && !self.tabs.is_empty() {
@@ -628,7 +628,7 @@ impl App {
                                         {
                                             let path_str = path.to_string_lossy().to_string();
                                             self.project_path = Some(path_str.clone());
-                                            match vybe_compiler::projects::serialization::save_project_auto(&self.project, &path_str) {
+                                            match vybe_platform_dotnet::winforms::designer::serialization::save_project_auto(&self.project, &path_str) {
                                                 Ok(_) => {}
                                                 Err(e) => { eprintln!("Save error: {}", e); }
                                             }
@@ -641,11 +641,11 @@ impl App {
                                         self.sync_active_form_to_project();
                                         let name = format!("Form{}", self.project.forms.len() + 1);
                                         let mut form =
-                                            vybe_compiler::projects::Form::new(name.clone());
+                                            vybe_platform_dotnet::winforms::designer::Form::new(name.clone());
                                         form.width = 640;
                                         form.height = 480;
                                         let form_clone = form.clone();
-                                        let fm = vybe_compiler::projects::project::FormModule::new_classic(form);
+                                        let fm = vybe_platform_dotnet::winforms::designer::project::FormModule::new_classic(form);
                                         self.project.forms.push(fm);
                                         if let Some(idx) = self
                                             .tabs
@@ -667,7 +667,7 @@ impl App {
                                             self.project.code_files.len() + 1
                                         );
                                         self.project.code_files.push(
-                                            vybe_compiler::projects::project::CodeFile {
+                                            vybe_platform_dotnet::winforms::designer::project::CodeFile {
                                                 name: name.clone(),
                                                 code: format!(
                                                     "Module {}\n\nEnd Module\n",
@@ -679,7 +679,7 @@ impl App {
                                     crate::form_designer_tab::MenuAction::AddResourceFile => {
                                         if self.project.resource_files.is_empty() {
                                             self.project.resource_files.push(
-                                                vybe_compiler::projects::ResourceManager::new(),
+                                                vybe_platform_dotnet::winforms::designer::ResourceManager::new(),
                                             );
                                         }
                                         if let Some(idx) = self.tabs.iter().position(|t| {
@@ -888,11 +888,11 @@ impl App {
                                             let name =
                                                 format!("Form{}", self.project.forms.len() + 1);
                                             let mut form =
-                                                vybe_compiler::projects::Form::new(name.clone());
+                                                vybe_platform_dotnet::winforms::designer::Form::new(name.clone());
                                             form.width = 640;
                                             form.height = 480;
                                             let form_clone = form.clone();
-                                            self.project.forms.push(vybe_compiler::projects::project::FormModule::new_classic(form));
+                                            self.project.forms.push(vybe_platform_dotnet::winforms::designer::project::FormModule::new_classic(form));
                                             if let Some(idx) = self.tabs.iter().position(|t| {
                                                 matches!(&t.content, TabContent::Form(_))
                                             }) {
@@ -915,7 +915,7 @@ impl App {
                                                 name.replace(".vb", "")
                                             );
                                             self.project.code_files.push(
-                                                vybe_compiler::projects::project::CodeFile {
+                                                vybe_platform_dotnet::winforms::designer::project::CodeFile {
                                                     name: name.clone(),
                                                     code: code.clone(),
                                                 },

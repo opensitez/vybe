@@ -93,6 +93,144 @@ pub fn normalize_class(
     Some(f(span, name, parents, interfaces, members, modifiers))
 }
 
+// ── Platform plugins ────────────────────────────────────────────────────────
+//
+// Platforms (dotnet, flutter, libc, plib, wasm) are plugins in exactly the same
+// sense as languages: they contribute a namespace tree and an emit dispatcher,
+// and the compiler must not name them. They were compile-time dependencies of
+// `vybe_compiler`, which is legacy — the whole point of this seam is that a
+// plugin can become a dylib loaded at run time, and a `Cargo.toml` edge makes
+// that impossible.
+//
+// Same shape as `LanguageDef`: plain function pointers, `Copy`, crosses a dylib
+// boundary cleanly.
+
+/// A registered platform's compiler-facing surface.
+#[derive(Clone, Copy)]
+pub struct PlatformDef {
+    /// The `common:<name>.*` prefix this platform owns (`"dotnet"`, `"libc"`).
+    pub name: &'static str,
+    /// Emit a `common:<name>.*` op inline. `None` for a platform that only
+    /// contributes a namespace tree.
+    pub emit_dispatch: Option<EmitDispatchFn>,
+    /// Mount this platform's namespace tree.
+    pub register_tree: Option<fn()>,
+
+    // ── Data the compiler used to reach by naming the crate ──────────────
+    //
+    // These were direct `crate::platforms::dotnet::…` calls, which is why
+    // `vybe_compiler` had a Cargo dependency on the platform crates at all —
+    // registration was never the reason. Every signature already uses shared
+    // types (`bool`, `Chunk`, `ComponentDescriptor` from `component_model`), so
+    // they are plain function pointers and cross a dylib boundary cleanly.
+    /// Namespace constants this platform contributes (`Math.PI` → 3.14159…).
+    pub namespace_constants: Option<fn() -> &'static [(&'static str, f64)]>,
+    /// This platform's component descriptor (classes/methods it exports).
+    pub component_descriptor: Option<fn() -> crate::component_model::ComponentDescriptor>,
+    /// True when `name` is a class the platform's descriptor owns.
+    pub is_descriptor_class: Option<fn(&str) -> bool>,
+    /// Build the platform's numeric-format runtime helper chunk.
+    pub numeric_format_helper: Option<fn(&mut Chunk) -> Chunk>,
+    // NOTE: there are deliberately NO per-platform lookup hooks here
+    // (constructor / instance-method / instance-property / known-constant /
+    // …). A platform declares its classes ONCE, as `Type` nodes in the
+    // namespace tree, and the compiler resolves through the tree. A second
+    // function-pointer surface answering the same questions is duplication —
+    // adapters over one interface, not a per-platform API.
+    /// Decode a binary module this platform understands into chunks
+    /// (`.wasm` → `Vec<Chunk>`). Both sides of the signature are shared types.
+    pub read_binary_module: Option<fn(&[u8]) -> Result<Vec<Chunk>, String>>,
+}
+
+fn platform_registry() -> &'static Mutex<Vec<PlatformDef>> {
+    static REGISTRY: OnceLock<Mutex<Vec<PlatformDef>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Register a platform. Idempotent by `name`, so a platform crate can call this
+/// from its own initialiser or its dylib entry point.
+pub fn register_platform(def: PlatformDef) {
+    let mut r = platform_registry().lock().unwrap();
+    if !r.iter().any(|p| p.name == def.name) {
+        r.push(def);
+    }
+}
+
+/// All registered platforms (a snapshot).
+pub fn all_platforms() -> Vec<PlatformDef> {
+    platform_registry().lock().unwrap().clone()
+}
+
+/// The emit-dispatcher owning the `common:<prefix>.*` namespace, if a platform
+/// registered one. Replaces a hardcoded `match prefix { "dotnet" => …, "libc"
+/// => … }` in the compiler — the same name-check antipattern as
+/// `profile.name == "<lang>"`, one layer up.
+pub fn platform_emit_dispatch_for(prefix: &str) -> Option<EmitDispatchFn> {
+    platform_registry()
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|p| p.name == prefix)
+        .and_then(|p| p.emit_dispatch)
+}
+
+/// The first registered platform that answers each query. The compiler asks the
+/// REGISTRY, never a named crate — that is what removes the Cargo edge and lets
+/// a platform ship as a dylib.
+pub fn platform_namespace_constants() -> Vec<&'static (&'static str, f64)> {
+    all_platforms()
+        .iter()
+        .filter_map(|p| p.namespace_constants)
+        .flat_map(|f| f().iter())
+        .collect()
+}
+
+/// True when any registered platform's descriptor owns `name`.
+pub fn platform_owns_descriptor_class(name: &str) -> bool {
+    all_platforms()
+        .iter()
+        .filter_map(|p| p.is_descriptor_class)
+        .any(|f| f(name))
+}
+
+/// Every registered platform's component descriptor.
+pub fn platform_component_descriptors() -> Vec<crate::component_model::ComponentDescriptor> {
+    all_platforms()
+        .iter()
+        .filter_map(|p| p.component_descriptor)
+        .map(|f| f())
+        .collect()
+}
+
+/// The numeric-format helper builder, if a platform provides one.
+pub fn platform_numeric_format_helper() -> Option<fn(&mut Chunk) -> Chunk> {
+    all_platforms()
+        .iter()
+        .find_map(|p| p.numeric_format_helper)
+}
+
+
+
+
+/// Decode a binary module through whichever platform can read it.
+pub fn platform_read_binary_module(data: &[u8]) -> Option<Result<Vec<Chunk>, String>> {
+    all_platforms()
+        .iter()
+        .find_map(|p| p.read_binary_module)
+        .map(|f| f(data))
+}
+
+/// Mount every registered platform's namespace tree.
+pub fn register_all_platform_trees() {
+    let fns: Vec<fn()> = all_platforms()
+        .iter()
+        .filter_map(|p| p.register_tree)
+        .collect();
+    for f in fns {
+        f();
+    }
+}
+
 /// Mount every registered language's namespace tree.
 pub fn register_all_trees() {
     let fns: Vec<fn()> = all().iter().filter_map(|p| p.register_tree).collect();

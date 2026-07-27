@@ -1,14 +1,14 @@
 use std::sync::Arc;
 /// Tests for the runtime helpers — pure bytecode implementations that run on any runtime.
 use vybe_bytecode::{Chunk, Op, VM, Value};
-use vybe_compiler::emitter::runtime_helpers::build_runtime_helpers;
+use vybe_compiler::compiler::runtime_helpers::build_runtime_helpers;
 
 /// Link a pre-built helper into a VM and run the script chunk.
 /// Callers build the helper themselves (so they can read out chunk indices
 /// before emitting the script body that references them).
 fn run_with_prebuilt(script: Chunk, helper_chunks: Vec<Chunk>) -> Value {
     let mut vm = VM::new();
-    vybe_emitter::platforms::init_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
     let mut all_chunks = vec![script];
     all_chunks.extend(helper_chunks);
     vm.run(all_chunks).unwrap()

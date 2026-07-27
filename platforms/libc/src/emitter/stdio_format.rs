@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::instructions::core_wasm;
+use vybe_compiler::compiler::instructions::core_wasm;
 
 const CHUNK_NAME: &str = "__libc_fmt_sprintf";
 
@@ -66,7 +66,7 @@ pub fn emit_sprintf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
     chunks[current].emit_op_u16(Op::LOCAL_SET, fmt_slot, line);
 
     // Build args array: []
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
 
     // Push each variadic arg into the array.

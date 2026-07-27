@@ -7,7 +7,7 @@
 //!
 //! Two entry points:
 //! - `launch_gui` — programmatic forms (GuiState already has widgets)
-//! - `launch_vybewidget_form` — designer forms (builds widgets from `vybe_compiler::projects::vbforms::Form`)
+//! - `launch_vybewidget_form` — designer forms (builds widgets from `vybe_platform_dotnet::winforms::designer::Form`)
 //!   (requires `gui_forms` feature)
 
 use std::cell::RefCell;
@@ -76,7 +76,7 @@ struct DataStore {
 // ── Control type → Widget mapping (designer forms only) ────────────────
 
 #[cfg(feature = "gui_forms")]
-fn make_widget(ctrl: &vybe_compiler::projects::vbforms::Control) -> Box<dyn PanelWidget> {
+fn make_widget(ctrl: &vybe_platform_dotnet::winforms::designer::Control) -> Box<dyn PanelWidget> {
     let text = ctrl
         .properties
         .get_string("Text")
@@ -86,39 +86,39 @@ fn make_widget(ctrl: &vybe_compiler::projects::vbforms::Control) -> Box<dyn Pane
     let name = &ctrl.name;
 
     match ctrl.control_type {
-        vybe_compiler::projects::vbforms::ControlType::Button => {
+        vybe_platform_dotnet::winforms::designer::ControlType::Button => {
             let mut w = Button::new(&text).with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::Label
-        | vybe_compiler::projects::vbforms::ControlType::LinkLabel => {
+        vybe_platform_dotnet::winforms::designer::ControlType::Label
+        | vybe_platform_dotnet::winforms::designer::ControlType::LinkLabel => {
             let mut w = Label::new(&text).with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::TextBox
-        | vybe_compiler::projects::vbforms::ControlType::RichTextBox => {
+        vybe_platform_dotnet::winforms::designer::ControlType::TextBox
+        | vybe_platform_dotnet::winforms::designer::ControlType::RichTextBox => {
             let mut w = TextInput::new().with_name(&name);
             w.value = text;
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::MaskedTextBox => {
+        vybe_platform_dotnet::winforms::designer::ControlType::MaskedTextBox => {
             let mut w = MaskedTextBox::new().with_name(&name);
             w.value = text;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::CheckBox => {
+        vybe_platform_dotnet::winforms::designer::ControlType::CheckBox => {
             Box::new(Checkbox::new(&text).with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::RadioButton => {
+        vybe_platform_dotnet::winforms::designer::ControlType::RadioButton => {
             Box::new(Radio::new(&text).with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::ComboBox => {
+        vybe_platform_dotnet::winforms::designer::ControlType::ComboBox => {
             let items = ctrl
                 .properties
                 .get_string_array("Items")
@@ -129,8 +129,8 @@ fn make_widget(ctrl: &vybe_compiler::projects::vbforms::Control) -> Box<dyn Pane
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::ListBox
-        | vybe_compiler::projects::vbforms::ControlType::CheckedListBox => {
+        vybe_platform_dotnet::winforms::designer::ControlType::ListBox
+        | vybe_platform_dotnet::winforms::designer::ControlType::CheckedListBox => {
             let items = ctrl
                 .properties
                 .get_string_array("Items")
@@ -142,93 +142,93 @@ fn make_widget(ctrl: &vybe_compiler::projects::vbforms::Control) -> Box<dyn Pane
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::Panel
-        | vybe_compiler::projects::vbforms::ControlType::UserControl => {
+        vybe_platform_dotnet::winforms::designer::ControlType::Panel
+        | vybe_platform_dotnet::winforms::designer::ControlType::UserControl => {
             let mut w = Panel::new().with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::Frame => {
+        vybe_platform_dotnet::winforms::designer::ControlType::Frame => {
             let mut w = GroupBox::new(&text).with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::PictureBox => {
+        vybe_platform_dotnet::winforms::designer::ControlType::PictureBox => {
             let mut w = PictureBox::new().with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::ProgressBar => {
+        vybe_platform_dotnet::winforms::designer::ControlType::ProgressBar => {
             let mut w = ProgressBar::new().with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::TrackBar => {
+        vybe_platform_dotnet::winforms::designer::ControlType::TrackBar => {
             Box::new(Slider::new(0.0, 100.0, 50.0).with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::NumericUpDown => {
+        vybe_platform_dotnet::winforms::designer::ControlType::NumericUpDown => {
             Box::new(NumericUpDown::new().with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::DateTimePicker => {
+        vybe_platform_dotnet::winforms::designer::ControlType::DateTimePicker => {
             Box::new(DateTimePicker::new().with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::TreeView => {
+        vybe_platform_dotnet::winforms::designer::ControlType::TreeView => {
             Box::new(TreeView::new("", 1.0).with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::DataGridView
-        | vybe_compiler::projects::vbforms::ControlType::DataGrid => {
+        vybe_platform_dotnet::winforms::designer::ControlType::DataGridView
+        | vybe_platform_dotnet::winforms::designer::ControlType::DataGrid => {
             Box::new(DataGrid::new(&[]).with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::ListView => {
+        vybe_platform_dotnet::winforms::designer::ControlType::ListView => {
             Box::new(ListView::new().with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::TabControl => {
+        vybe_platform_dotnet::winforms::designer::ControlType::TabControl => {
             let mut w = Tabs::new(&["Tab1"]).with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::MonthCalendar => {
+        vybe_platform_dotnet::winforms::designer::ControlType::MonthCalendar => {
             Box::new(MonthCalendar::new().with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::HScrollBar => {
+        vybe_platform_dotnet::winforms::designer::ControlType::HScrollBar => {
             let mut w = ScrollBar::new(false).with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::VScrollBar => {
+        vybe_platform_dotnet::winforms::designer::ControlType::VScrollBar => {
             let mut w = ScrollBar::new(true).with_name(&name);
             w.width = ctrl.bounds.width as f32;
             w.height = ctrl.bounds.height as f32;
             Box::new(w)
         }
-        vybe_compiler::projects::vbforms::ControlType::MenuStrip => {
+        vybe_platform_dotnet::winforms::designer::ControlType::MenuStrip => {
             Box::new(MenuStrip::new().with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::ToolStrip => {
+        vybe_platform_dotnet::winforms::designer::ControlType::ToolStrip => {
             Box::new(ToolStrip::new().with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::StatusStrip => {
+        vybe_platform_dotnet::winforms::designer::ControlType::StatusStrip => {
             Box::new(StatusStrip::new().with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::ContextMenuStrip => {
+        vybe_platform_dotnet::winforms::designer::ControlType::ContextMenuStrip => {
             Box::new(ContextMenu::new().with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::SplitContainer => {
+        vybe_platform_dotnet::winforms::designer::ControlType::SplitContainer => {
             Box::new(SplitContainer::new(false).with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::FlowLayoutPanel => {
+        vybe_platform_dotnet::winforms::designer::ControlType::FlowLayoutPanel => {
             Box::new(FlowLayoutPanel::new().with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::TableLayoutPanel => {
+        vybe_platform_dotnet::winforms::designer::ControlType::TableLayoutPanel => {
             Box::new(TableLayoutPanel::new(2, 2).with_name(&name))
         }
-        vybe_compiler::projects::vbforms::ControlType::BindingNavigator => {
+        vybe_platform_dotnet::winforms::designer::ControlType::BindingNavigator => {
             Box::new(BindingNavigator::new(&name))
         }
         _ => {
@@ -906,7 +906,7 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
 
 #[cfg(feature = "gui_forms")]
 fn extract_binding_info(
-    form: &vybe_compiler::projects::vbforms::Form,
+    form: &vybe_platform_dotnet::winforms::designer::Form,
 ) -> (
     Vec<DataBindingEntry>,
     Vec<BindingSourceInfo>,
@@ -984,13 +984,13 @@ fn extract_binding_info(
 
 // ── Public launch functions ────────────────────────────────────────────
 
-/// Launch a designer form — builds widgets from a `vybe_compiler::projects::vbforms::Form` model.
+/// Launch a designer form — builds widgets from a `vybe_platform_dotnet::winforms::designer::Form` model.
 /// Requires the `gui_forms` feature.
 #[cfg(feature = "gui_forms")]
 pub fn launch_vybewidget_form(
     mut vm: vybe_bytecode::VM,
     gui: Arc<Mutex<GuiState>>,
-    form: &vybe_compiler::projects::vbforms::Form,
+    form: &vybe_platform_dotnet::winforms::designer::Form,
 ) {
     register_dialog_fns(&mut vm);
 
@@ -1097,7 +1097,7 @@ pub fn launch_gui(mut vm: vybe_bytecode::VM, gui: Arc<Mutex<GuiState>>) {
 pub fn launch_vm_form(
     vm: vybe_bytecode::VM,
     gui: Arc<Mutex<GuiState>>,
-    initial_form: Option<vybe_compiler::projects::vbforms::Form>,
+    initial_form: Option<vybe_platform_dotnet::winforms::designer::Form>,
 ) {
     let should_launch = gui.lock().unwrap().should_run || initial_form.is_some();
 

@@ -2,7 +2,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_emitter::instructions::host;
+use vybe_compiler::compiler::instructions::host;
 
 pub fn emit_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:bigint", "toString", 1, line);
@@ -24,7 +24,7 @@ pub fn emit_abs(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     emit_bigint_i32(chunks, current, 0, line);
     host::emit(&mut chunks[current], "ecma:bigint", "lt", 2, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     host::emit(&mut chunks[current], "ecma:bigint", "neg", 1, line);
@@ -47,7 +47,7 @@ pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, self_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, other_slot, line);
     host::emit(&mut chunks[current], "ecma:bigint", "lt", 2, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_i32_const(-1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -55,7 +55,7 @@ pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, self_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, other_slot, line);
     host::emit(&mut chunks[current], "ecma:bigint", "gt", 2, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -76,7 +76,7 @@ pub fn emit_signum(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     emit_bigint_i32(chunks, current, 0, line);
     host::emit(&mut chunks[current], "ecma:bigint", "lt", 2, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_i32_const(-1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -84,7 +84,7 @@ pub fn emit_signum(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     emit_bigint_i32(chunks, current, 0, line);
     host::emit(&mut chunks[current], "ecma:bigint", "gt", 2, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -113,7 +113,7 @@ pub fn emit_min_max(chunks: &mut [Chunk], current: usize, want_min: bool, line: 
         2,
         line,
     );
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, self_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -134,7 +134,7 @@ pub fn emit_bit_length(chunks: &mut [Chunk], current: usize, line: u32) {
         2,
         line,
     );
-    vybe_emitter::strings::emit_length(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_length(&mut chunks[current], line);
 }
 
 pub fn emit_test_bit(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -164,7 +164,7 @@ pub fn emit_gcd(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
     emit_bigint_i32(chunks, current, 0, line);
     host::emit(&mut chunks[current], "ecma:bigint", "eq", 2, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
@@ -204,7 +204,7 @@ pub fn emit_next_probable_prime(chunks: &mut [Chunk], current: usize, line: u32)
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, n_slot, line);
     emit_number_is_prime(chunks, current, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_br(2, line);
     chunks[current].emit_end(line);
@@ -232,8 +232,8 @@ fn emit_number_is_prime(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, n_slot, line);
     chunks[current].emit_f64_const(2.0, line);
-    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_bool_const(false, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -247,16 +247,16 @@ fn emit_number_is_prime(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op(Op::F64_MUL, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, n_slot, line);
-    vybe_emitter::ops::emit_dyn_gt(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_gt(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, n_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    vybe_emitter::math::emit_c_fmod(&mut chunks[current], line);
+    vybe_compiler::compiler::math::emit_c_fmod(&mut chunks[current], line);
     chunks[current].emit_f64_const(0.0, line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_bool_const(false, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);

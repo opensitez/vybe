@@ -53,6 +53,20 @@ thread_local! {
     static USER_DECLARED_TYPES: std::cell::RefCell<HashSet<String>> =
         std::cell::RefCell::new(HashSet::new());
 
+    /// Names declared with `mixin`. Read by `normalize_class` to declare
+    /// `Augmentation` records for `class X with M` — the shared model that
+    /// replaces per-language folding (flexclassplan.md §4c).
+    static DART_MIXIN_NAMES: std::cell::RefCell<HashSet<String>> =
+        std::cell::RefCell::new(HashSet::new());
+
+    /// `class name -> mixins it declared`, recorded by `apply_mixins` as it
+    /// strips them from the parent list. `normalize_class` reads this to
+    /// declare `Augmentation` records: by the time the compiler sees the
+    /// ClassDecl the mixins are gone from `parents`, since a mixin is not a
+    /// superclass.
+    static DART_CLASS_MIXINS: std::cell::RefCell<HashMap<String, Vec<String>>> =
+        std::cell::RefCell::new(HashMap::new());
+
     /// The subset of [`USER_DECLARED_TYPES`] declared with `class` — i.e. the
     /// names that `Name(args)` CONSTRUCTS. Dart has no `new` keyword, so
     /// construction parses as an ordinary `Call`; this drives the rewrite to
@@ -99,6 +113,16 @@ fn collect_user_declared_types(source: &str) -> (HashSet<String>, HashSet<String
 
 /// True when `name` is a class the program declares — the names `Name(args)`
 /// constructs.
+/// True when `name` was declared with `mixin`.
+pub(crate) fn is_dart_mixin(name: &str) -> bool {
+    DART_MIXIN_NAMES.with(|m| m.borrow().contains(name))
+}
+
+/// The mixins `class_name` declared with `with`, in source order.
+pub(crate) fn dart_class_mixins(class_name: &str) -> Vec<String> {
+    DART_CLASS_MIXINS.with(|m| m.borrow().get(class_name).cloned().unwrap_or_default())
+}
+
 fn is_user_declared_class(name: &str) -> bool {
     USER_DECLARED_CLASSES.with(|s| s.borrow().contains(name))
 }
@@ -1053,6 +1077,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // declare `with Mixin` (parents). Walker normalisation so the
     // shared class compiler sees a single flat class instead of
     // multi-mixin inheritance.
+    DART_MIXIN_NAMES.with(|m| *m.borrow_mut() = mixin_names.clone());
+    DART_CLASS_MIXINS.with(|m| m.borrow_mut().clear());
     apply_mixins(&mut body, &mixin_names);
     apply_inherited_concrete_members(&mut body, &mixin_names);
     rewrite_inherited_instance_member_idents(&mut body, &mixin_names);
@@ -1252,25 +1278,19 @@ fn apply_mixins(body: &mut Vec<Statement>, mixin_names: &std::collections::HashS
                 members.iter().filter_map(member_name).collect();
             let mut new_parents = Vec::new();
             for parent in parents.drain(..) {
-                if let Some(mm) = mixin_members.get(&parent) {
-                    // Dart linearization is left-to-right with later mixins
-                    // overriding earlier mixins; members declared directly on
-                    // the class still win over all mixins.
-                    for m in mm {
-                        if let Some(name) = member_name(m) {
-                            if original_member_names.contains(&name) {
-                                continue;
-                            }
-                            if same_name_property_member_exists(members, m) {
-                                members.push(m.clone());
-                                continue;
-                            }
-                            members.retain(|existing| {
-                                member_name(existing).as_deref() != Some(name.as_str())
-                            });
-                        }
-                        members.push(m.clone());
-                    }
+                if mixin_members.contains_key(&parent) {
+                    DART_CLASS_MIXINS.with(|m| {
+                        m.borrow_mut()
+                            .entry(cname.clone())
+                            .or_default()
+                            .push(parent.clone())
+                    });
+                    // MEMBER COPYING REMOVED — the shared augmentation pass
+                    // (`compiler/class_augmentation.rs`) folds these now, from
+                    // the `Augmentation` records `dart/normalize_class.rs`
+                    // declares. Only the parent-stripping below is still the
+                    // walker's job: a mixin is not a superclass.
+                    let _ = &original_member_names;
                 } else {
                     new_parents.push(parent);
                 }
@@ -2853,6 +2873,17 @@ fn apply_inherited_concrete_members(
                 continue;
             }
             let mut existing: HashSet<String> = members.iter().filter_map(member_name).collect();
+            // A member a MIXIN supplies must not be pre-empted by copying the
+            // superclass's version in here: Dart says the mixin wins over the
+            // base (`class C extends Base with M` → M.greet, not Base.greet).
+            // The shared augmentation pass folds mixin members later, and it
+            // correctly refuses to overwrite a member the class already has —
+            // so an inherited copy landing first would silently win.
+            for mixin in dart_class_mixins(name) {
+                if let Some((_, mixin_members)) = classes.get(&mixin) {
+                    existing.extend(mixin_members.iter().filter_map(member_name));
+                }
+            }
             let mut inherited = Vec::new();
             for parent in parents.iter() {
                 collect_inherited_concrete_members(
@@ -7476,7 +7507,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         // canonical named-tuple shape (array-backed + by-name key).
                         let name = field_children[0].as_str().to_string();
                         let value = walk_expression(field_children.into_iter().nth(1).unwrap())?;
-                        return Ok(vybe_emitter::tuples::build_named_tuple(vec![(
+                        return Ok(vybe_compiler::compiler::tuples::build_named_tuple(vec![(
                             Some(name),
                             value,
                         )]));
@@ -7503,7 +7534,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             record_fields.push((None, walk_expression(first)?));
                         }
                     }
-                    Ok(vybe_emitter::tuples::build_named_tuple(record_fields))
+                    Ok(vybe_compiler::compiler::tuples::build_named_tuple(record_fields))
                 } else {
                     let exprs: Vec<Expression> = fields
                         .into_iter()

@@ -1,7 +1,7 @@
 //! Go `encoding/binary` fixed-width byte-order helpers.
 //!
 //! Go owns the `encoding/binary` API surface; shared byte/endian mechanics
-//! live in `vybe_emitter::packing`.
+//! live in `vybe_compiler::compiler::packing`.
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
@@ -53,7 +53,7 @@ fn emit_order_branch<F, G>(
     G: FnMut(&mut [Chunk], usize, u32),
 {
     lget(&mut chunks[current], order_slot, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     little(chunks, current, line);
     chunks[current].emit_else(line);
@@ -81,7 +81,7 @@ fn emit_adjust_i16(chunks: &mut [Chunk], current: usize, value_slot: u16, line: 
 
 fn emit_empty_array(chunks: &mut [Chunk], current: usize, line: u32) -> u16 {
     let slot = chunks[current].alloc_scratch(1);
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     lset(&mut chunks[current], slot, line);
     slot
 }
@@ -104,22 +104,22 @@ pub fn emit_put_uint16(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         order,
         line,
         |chunks, current, line| {
-            vybe_emitter::packing::emit_store_u16_to_array_from_number_slot(
+            vybe_compiler::compiler::packing::emit_store_u16_to_array_from_number_slot(
                 chunks,
                 current,
                 buf,
                 value,
-                vybe_emitter::packing::Endian::Little,
+                vybe_compiler::compiler::packing::Endian::Little,
                 line,
             );
         },
         |chunks, current, line| {
-            vybe_emitter::packing::emit_store_u16_to_array_from_number_slot(
+            vybe_compiler::compiler::packing::emit_store_u16_to_array_from_number_slot(
                 chunks,
                 current,
                 buf,
                 value,
-                vybe_emitter::packing::Endian::Big,
+                vybe_compiler::compiler::packing::Endian::Big,
                 line,
             );
         },
@@ -145,22 +145,22 @@ pub fn emit_put_int16(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         order,
         line,
         |chunks, current, line| {
-            vybe_emitter::packing::emit_store_u16_to_array_from_number_slot(
+            vybe_compiler::compiler::packing::emit_store_u16_to_array_from_number_slot(
                 chunks,
                 current,
                 buf,
                 adjusted,
-                vybe_emitter::packing::Endian::Little,
+                vybe_compiler::compiler::packing::Endian::Little,
                 line,
             );
         },
         |chunks, current, line| {
-            vybe_emitter::packing::emit_store_u16_to_array_from_number_slot(
+            vybe_compiler::compiler::packing::emit_store_u16_to_array_from_number_slot(
                 chunks,
                 current,
                 buf,
                 adjusted,
-                vybe_emitter::packing::Endian::Big,
+                vybe_compiler::compiler::packing::Endian::Big,
                 line,
             );
         },
@@ -183,20 +183,20 @@ pub fn emit_uint16(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         base,
         line,
         |chunks, current, line| {
-            vybe_emitter::packing::emit_load_u16_from_array_f64(
+            vybe_compiler::compiler::packing::emit_load_u16_from_array_f64(
                 chunks,
                 current,
                 base + 1,
-                vybe_emitter::packing::Endian::Little,
+                vybe_compiler::compiler::packing::Endian::Little,
                 line,
             );
         },
         |chunks, current, line| {
-            vybe_emitter::packing::emit_load_u16_from_array_f64(
+            vybe_compiler::compiler::packing::emit_load_u16_from_array_f64(
                 chunks,
                 current,
                 base + 1,
-                vybe_emitter::packing::Endian::Big,
+                vybe_compiler::compiler::packing::Endian::Big,
                 line,
             );
         },
@@ -221,22 +221,22 @@ pub fn emit_put_uint32(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         order,
         line,
         |chunks, current, line| {
-            vybe_emitter::packing::emit_store_u32_to_array_from_number_slot(
+            vybe_compiler::compiler::packing::emit_store_u32_to_array_from_number_slot(
                 chunks,
                 current,
                 buf,
                 value,
-                vybe_emitter::packing::Endian::Little,
+                vybe_compiler::compiler::packing::Endian::Little,
                 line,
             );
         },
         |chunks, current, line| {
-            vybe_emitter::packing::emit_store_u32_to_array_from_number_slot(
+            vybe_compiler::compiler::packing::emit_store_u32_to_array_from_number_slot(
                 chunks,
                 current,
                 buf,
                 value,
-                vybe_emitter::packing::Endian::Big,
+                vybe_compiler::compiler::packing::Endian::Big,
                 line,
             );
         },
@@ -259,20 +259,20 @@ pub fn emit_uint32(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         base,
         line,
         |chunks, current, line| {
-            vybe_emitter::packing::emit_load_u32_from_array_f64(
+            vybe_compiler::compiler::packing::emit_load_u32_from_array_f64(
                 chunks,
                 current,
                 base + 1,
-                vybe_emitter::packing::Endian::Little,
+                vybe_compiler::compiler::packing::Endian::Little,
                 line,
             );
         },
         |chunks, current, line| {
-            vybe_emitter::packing::emit_load_u32_from_array_f64(
+            vybe_compiler::compiler::packing::emit_load_u32_from_array_f64(
                 chunks,
                 current,
                 base + 1,
-                vybe_emitter::packing::Endian::Big,
+                vybe_compiler::compiler::packing::Endian::Big,
                 line,
             );
         },
@@ -314,24 +314,24 @@ pub fn emit_put_uint64_parts(chunks: &mut [Chunk], current: usize, argc: u8, lin
         order,
         line,
         |chunks, current, line| {
-            vybe_emitter::packing::emit_store_u64_parts_to_array_from_number_slots(
+            vybe_compiler::compiler::packing::emit_store_u64_parts_to_array_from_number_slots(
                 chunks,
                 current,
                 buf,
                 hi,
                 lo,
-                vybe_emitter::packing::Endian::Little,
+                vybe_compiler::compiler::packing::Endian::Little,
                 line,
             );
         },
         |chunks, current, line| {
-            vybe_emitter::packing::emit_store_u64_parts_to_array_from_number_slots(
+            vybe_compiler::compiler::packing::emit_store_u64_parts_to_array_from_number_slots(
                 chunks,
                 current,
                 buf,
                 hi,
                 lo,
-                vybe_emitter::packing::Endian::Big,
+                vybe_compiler::compiler::packing::Endian::Big,
                 line,
             );
         },
@@ -341,7 +341,7 @@ pub fn emit_put_uint64_parts(chunks: &mut [Chunk], current: usize, argc: u8, lin
 
 pub fn emit_append_uint16(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc < 3 {
-        vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+        vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
         return;
     }
     let base = chunks[current].alloc_scratch(argc as u16);
@@ -358,22 +358,22 @@ pub fn emit_append_uint16(chunks: &mut [Chunk], current: usize, argc: u8, line: 
         order,
         line,
         |chunks, current, line| {
-            vybe_emitter::packing::emit_store_u16_to_array_from_number_slot(
+            vybe_compiler::compiler::packing::emit_store_u16_to_array_from_number_slot(
                 chunks,
                 current,
                 tmp,
                 value,
-                vybe_emitter::packing::Endian::Little,
+                vybe_compiler::compiler::packing::Endian::Little,
                 line,
             );
         },
         |chunks, current, line| {
-            vybe_emitter::packing::emit_store_u16_to_array_from_number_slot(
+            vybe_compiler::compiler::packing::emit_store_u16_to_array_from_number_slot(
                 chunks,
                 current,
                 tmp,
                 value,
-                vybe_emitter::packing::Endian::Big,
+                vybe_compiler::compiler::packing::Endian::Big,
                 line,
             );
         },
@@ -386,7 +386,7 @@ pub fn emit_append_uint16(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 
 pub fn emit_append_uint32(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc < 3 {
-        vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+        vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
         return;
     }
     let base = chunks[current].alloc_scratch(argc as u16);
@@ -403,22 +403,22 @@ pub fn emit_append_uint32(chunks: &mut [Chunk], current: usize, argc: u8, line: 
         order,
         line,
         |chunks, current, line| {
-            vybe_emitter::packing::emit_store_u32_to_array_from_number_slot(
+            vybe_compiler::compiler::packing::emit_store_u32_to_array_from_number_slot(
                 chunks,
                 current,
                 tmp,
                 value,
-                vybe_emitter::packing::Endian::Little,
+                vybe_compiler::compiler::packing::Endian::Little,
                 line,
             );
         },
         |chunks, current, line| {
-            vybe_emitter::packing::emit_store_u32_to_array_from_number_slot(
+            vybe_compiler::compiler::packing::emit_store_u32_to_array_from_number_slot(
                 chunks,
                 current,
                 tmp,
                 value,
-                vybe_emitter::packing::Endian::Big,
+                vybe_compiler::compiler::packing::Endian::Big,
                 line,
             );
         },

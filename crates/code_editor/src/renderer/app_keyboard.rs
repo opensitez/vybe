@@ -109,14 +109,14 @@ impl App {
                         }
                         "n" => {
                             // New project
-                            self.project = vybe_compiler::projects::project::Project::new(
+                            self.project = vybe_platform_dotnet::winforms::designer::project::Project::new(
                                 "Project1".to_string(),
                             );
-                            let mut form = vybe_compiler::projects::Form::new("Form1".to_string());
+                            let mut form = vybe_platform_dotnet::winforms::designer::Form::new("Form1".to_string());
                             form.width = 640;
                             form.height = 480;
                             self.project.forms.push(
-                                vybe_compiler::projects::project::FormModule::new_classic(
+                                vybe_platform_dotnet::winforms::designer::project::FormModule::new_classic(
                                     form.clone(),
                                 ),
                             );
@@ -131,7 +131,7 @@ impl App {
                             {
                                 let path_str = path.to_string_lossy().to_string();
                                 if let Ok(proj) =
-                                    vybe_compiler::projects::serialization::load_project_auto(
+                                    vybe_platform_dotnet::winforms::designer::serialization::load_project_auto(
                                         &path_str,
                                     )
                                 {
@@ -334,7 +334,7 @@ impl App {
                                 cf.code = code;
                             }
                             let msg =
-                                match vybe_compiler::projects::serialization::save_project_auto(
+                                match vybe_platform_dotnet::winforms::designer::serialization::save_project_auto(
                                     &self.project,
                                     &pp,
                                 ) {

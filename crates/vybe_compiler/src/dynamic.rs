@@ -311,7 +311,7 @@ pub fn debug_eval_expression(
     //    to link. The fresh GuiState this creates is immediately shadowed by the
     //    live closures in `overlay_host_fns_from`.
     let mut eval_vm = VM::new();
-    vybe_emitter::platforms::register_platforms_all(&mut eval_vm);
+    crate::compiler::platforms::register_platforms_all(&mut eval_vm);
     ensure_php_runtime_registered(&mut eval_vm);
     ensure_js_runtime_registered(&mut eval_vm);
     // Share the LIVE program's host-function closures (matched by name), so host
@@ -927,7 +927,7 @@ impl JsDynamicRuntime {
         let bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
 
         let mut eval_vm = VM::new();
-        vybe_emitter::platforms::register_platforms_all(&mut eval_vm);
+        crate::compiler::platforms::register_platforms_all(&mut eval_vm);
 
         // Direct eval shares the caller's (global) scope: copy scalar /
         // object globals in. Function values are excluded — their
@@ -1090,7 +1090,7 @@ impl JsDynamicRuntime {
         let bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
 
         let mut eval_vm = VM::new();
-        vybe_emitter::platforms::register_platforms_all(&mut eval_vm);
+        crate::compiler::platforms::register_platforms_all(&mut eval_vm);
 
         // Python's explicit namespace dict: `eval(code, globals[, locals])` /
         // `exec(code, ns)`. The walker forwards it as `attrs.namespace` (a
@@ -1243,7 +1243,7 @@ impl JsDynamicRuntime {
         let function_global_name = symbol.to_lowercase();
 
         let mut function_vm = VM::new();
-        vybe_emitter::platforms::register_platforms_all(&mut function_vm);
+        crate::compiler::platforms::register_platforms_all(&mut function_vm);
         let _ = crate::adapters::register_all(&mut function_vm);
         sync_dynamic_function_globals(vm, &mut function_vm);
 
@@ -1805,7 +1805,7 @@ mod tests {
 
     fn configured_vm() -> VM {
         let mut vm = VM::new();
-        vybe_emitter::platforms::register_platforms_all(&mut vm);
+        crate::compiler::platforms::register_platforms_all(&mut vm);
         vm
     }
 

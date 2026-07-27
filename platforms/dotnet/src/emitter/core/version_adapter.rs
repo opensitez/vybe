@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::instructions::{core_wasm, host};
+use vybe_compiler::compiler::instructions::{core_wasm, host};
 
 const TYPE_KEY: &str = "__type";
 const TYPES_KEY: &str = "__types";
@@ -64,7 +64,7 @@ fn emit_store_optional_array_part_as_number(
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     host::emit(chunk, "wasm:js-undefined", "test", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::F64(default_value), line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
@@ -171,8 +171,8 @@ fn emit_version_compare_internal(chunks: &mut [Chunk], current: usize, line: u32
 
         chunk.emit_op_u16(Op::LOCAL_GET, left_part_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, right_part_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(chunk, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         push_const(chunk, Value::F64(-1.0), line);
         chunk.emit_br(1, line);
@@ -180,8 +180,8 @@ fn emit_version_compare_internal(chunks: &mut [Chunk], current: usize, line: u32
 
         chunk.emit_op_u16(Op::LOCAL_GET, left_part_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, right_part_slot, line);
-        vybe_emitter::ops::emit_dyn_gt(chunk, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         push_const(chunk, Value::F64(1.0), line);
         chunk.emit_br(1, line);
@@ -315,11 +315,11 @@ pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, argc: u8, li
 
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
     push_const(chunk, Value::String(Arc::from(".")), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     emit_version_part(chunk, obj_slot, MINOR_KEY, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
     chunk.emit(1, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
 
     for (idx, key) in [(3.0, BUILD_KEY), (4.0, REVISION_KEY)] {
@@ -335,11 +335,11 @@ pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, argc: u8, li
         chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
         push_const(chunk, Value::String(Arc::from(".")), line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
         emit_version_part(chunk, obj_slot, key, line);
         chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
         chunk.emit(1, line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
         chunk.emit_end(line);
         if argc > 0 {
@@ -390,27 +390,27 @@ pub fn emit_version_equals(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_version_compare_internal(chunks, current, line);
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
-    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
 }
 
 pub fn emit_version_lt(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_version_compare_internal(chunks, current, line);
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_gt(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
-    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
 }
 
 pub fn emit_version_gt(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_version_compare_internal(chunks, current, line);
     let chunk = &mut chunks[current];
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
-    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
 }
 
 pub fn emit_version_eq(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -420,5 +420,5 @@ pub fn emit_version_eq(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_version_ne(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_version_equals(chunks, current, line);
     let chunk = &mut chunks[current];
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
 }

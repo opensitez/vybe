@@ -6,14 +6,22 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+inventory = { workspace = true }
 vybe_bytecode = { workspace = true }
 
 # WASI 0.2.x support crates (moved from vybe_host, incl. the sockets module).
 rusqlite = { workspace = true }
 postgres = { workspace = true }
 mysql = { workspace = true }
+# Digest primitives — the single implementation every interface skin
+# (node:crypto, wasi:crypto, PHP hash(), ...) composes.
 sha2 = { workspace = true }
+sha1 = { workspace = true }
 md-5 = { workspace = true }
+sha3 = { workspace = true }
+blake2 = { workspace = true }
+ripemd = { workspace = true }
+getrandom = { workspace = true }
 
 [dev-dependencies]
-vybe_emitter = { workspace = true }
+vybe_compiler = { workspace = true }

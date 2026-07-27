@@ -27,8 +27,15 @@ use vybe_bytecode::class_normalize::types::*;
 /// Entry point from `compile_stmt`. Receives the raw AST fields from
 /// `StmtKind::ClassDecl`, normalises per language, then hands off to
 /// `emit_class`.
-pub fn emit_class_from_ast(
-    compiler: &mut Compiler,
+/// Produce the normalized class WITHOUT emitting it.
+///
+/// Split out of `emit_class_from_ast` so the declaration pass can normalize
+/// every class up front (`link.rs`), instead of normalization happening once
+/// per class during code generation. That ordering is what makes a class's
+/// member set — and its declared augmentations — knowable before any body
+/// compiles. See flexclassplan.md §3a, §4c.
+pub fn normalize_class_from_ast(
+    compiler: &Compiler,
     span: Span,
     cname: &str,
     parents: &[String],
@@ -36,7 +43,7 @@ pub fn emit_class_from_ast(
     members: &[ClassMember],
     modifiers: &ClassModifiers,
     is_value_type: bool,
-) -> Result<(), String> {
+) -> Result<NormalClass, String> {
     let mut nc = if compiler.profile.uses_normalize_class {
         normalize_for_profile(
             compiler.profile.name.as_str(),
@@ -55,6 +62,46 @@ pub fn emit_class_from_ast(
     // normalizer has to. `parent` stays `parents.first()`; `bases[1..]` is only
     // read behind the `class_multiple_inheritance` opt-in.
     nc.bases = parents.to_vec();
+    Ok(nc)
+}
+
+pub fn emit_class_from_ast(
+    compiler: &mut Compiler,
+    span: Span,
+    cname: &str,
+    parents: &[String],
+    interfaces: &[String],
+    members: &[ClassMember],
+    modifiers: &ClassModifiers,
+    is_value_type: bool,
+) -> Result<(), String> {
+    // Reuse the class normalized during the DECLARATION pass when it is
+    // available. That copy has had its augmentations folded in (traits /
+    // mixins / promoted fields), and re-normalizing from the AST here would
+    // silently discard them — the class would emit without its contributed
+    // members. It is also the point of having one class model: normalize once,
+    // use everywhere. See flexclassplan.md §3a, §4c.
+    let canon = compiler.canon(cname);
+    let nc = match compiler.normalized_classes.get(&canon) {
+        Some(stored) => {
+            let mut nc = stored.clone();
+            // These two are supplied by the caller at definition time; the
+            // declaration pass has no way to know them.
+            nc.is_value_type = is_value_type;
+            nc.bases = parents.to_vec();
+            nc
+        }
+        None => normalize_class_from_ast(
+            compiler,
+            span,
+            cname,
+            parents,
+            interfaces,
+            members,
+            modifiers,
+            is_value_type,
+        )?,
+    };
     emit_class(compiler, nc)
 }
 
@@ -125,6 +172,7 @@ fn normalize_from_ast_legacy(
     }
 
     NormalClass {
+        augmentations: Vec::new(),
         span,
         name: name.to_string(),
         parent: parents.first().cloned(),
@@ -149,7 +197,7 @@ fn normalize_from_ast_legacy(
         event_bindings: Vec::new(),
         raw_extra_members,
     }
-}
+    }
 
 /// Compile a `NormalClass` — the compiler-neutral entry point.
 pub fn emit_class(compiler: &mut Compiler, class: NormalClass) -> Result<(), String> {

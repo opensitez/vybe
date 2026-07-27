@@ -45,7 +45,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, did_break_slot);
 
         // Get iterator method via STRUCT_GET — the TypeRegistry resolves
-        // methods registered by common::classes::register_type, including
+        // methods registered by crate::compiler::classes::register_type, including
         // "iterator" (the walker-normalized [Symbol.iterator]).
         self.emit_u16(Op::LOCAL_GET, iter_slot);
         let iterator_key = self.str_const("iterator");
@@ -84,8 +84,8 @@ impl Compiler {
         let typeof_idx = self.import("ecma:value", "typeof");
         self.emit_host_call(typeof_idx, 1);
         self.emit_const(Value::String(Arc::from("object")));
-        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_not(self.chunk(), line);
         self.chunk().emit_if(line);
         self.emit_const(Value::String(Arc::from("Iterator result is not an object")));
         self.emit_js_exception_ctor_from_message_value("TypeError")?;
@@ -99,7 +99,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, done_slot);
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         };
         self.chunk().emit_br_if(1, line); // done → exit block
 
@@ -146,7 +146,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, did_break_slot);
             {
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             };
             self.chunk().emit_br_if(0, line);
             for s in else_stmts {
@@ -202,7 +202,7 @@ impl Compiler {
         // Advance the generator. GEN_NEXT pops cont and pushes (value, has_more).
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         let line = self.line;
-        crate::emitter::generators::emit_next(self.chunk(), line);
+        crate::compiler::generators::emit_next(self.chunk(), line);
         let has_more_slot = self.define_local("__gen_has_more");
         self.emit_u16(Op::LOCAL_SET, has_more_slot);
         let value_slot = self.define_local("__gen_value");
@@ -214,11 +214,11 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, has_more_slot);
             {
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             };
             {
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_not(self.chunk(), line);
             };
             // br_if_label 1 → jump to $exit when has_more was 0.
             self.chunk().emit_br_if(1, line);
@@ -247,7 +247,7 @@ impl Compiler {
             self.emit_const(Value::F64(1.0));
             {
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_add(self.chunk(), line);
             };
             self.emit_u16(Op::LOCAL_SET, key_index_slot);
         }
@@ -288,11 +288,11 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, did_break_slot);
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         };
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_not(self.chunk(), line);
         };
         self.chunk().emit_br_if(0, line);
 
@@ -301,7 +301,7 @@ impl Compiler {
         self.emit_host_call(is_done_idx, 1);
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         }
         self.emit(Op::I32_EQZ);
         self.chunk().emit_if(line);
@@ -310,7 +310,7 @@ impl Compiler {
         inst!(self, core_wasm::undefined);
         self.emit_generator_control_packet_from_stack("return");
         let line = self.line;
-        crate::emitter::generators::emit_resume(self.chunk(), line);
+        crate::compiler::generators::emit_resume(self.chunk(), line);
         self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         inst!(self, core_wasm::bool_const, true);
@@ -329,7 +329,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, did_break_slot);
             {
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             };
             self.chunk().emit_br_if(0, line);
             for s in else_stmts {
@@ -618,7 +618,7 @@ impl Compiler {
     pub(super) fn promote_local_binding_to_pointer_cell(&mut self, name: &str) -> Option<u16> {
         let slot = self.resolve_named_local_slot(name)?;
         if !self.binding_uses_pointer_cell(name) {
-            common::references::emit_cell_new_from_local(
+            crate::compiler::references::emit_cell_new_from_local(
                 &mut self.chunks,
                 self.current,
                 slot,
@@ -641,7 +641,7 @@ impl Compiler {
             let idx = self.str_const(&canon_name);
             self.emit_u16(Op::GLOBAL_GET, idx);
             self.emit_u16(Op::LOCAL_SET, value_slot);
-            common::references::emit_cell_new(
+            crate::compiler::references::emit_cell_new(
                 &mut self.chunks,
                 self.current,
                 value_slot,
@@ -657,7 +657,7 @@ impl Compiler {
     pub(super) fn emit_wrap_top_of_stack_in_pointer_cell(&mut self) {
         let value_slot = self.define_local("__ref_cell_value");
         self.emit_u16(Op::LOCAL_SET, value_slot);
-        common::references::emit_cell_new(&mut self.chunks, self.current, value_slot, self.line);
+        crate::compiler::references::emit_cell_new(&mut self.chunks, self.current, value_slot, self.line);
     }
 
     pub(super) fn is_pointer_runtime_field(field: &str) -> bool {
@@ -709,7 +709,7 @@ impl Compiler {
         let cell_line = self.line;
         self.chunk().emit_if(cell_line);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
+        crate::compiler::references::emit_cell_load(&mut self.chunks, self.current, self.line);
         self.chunk().emit_else(cell_line);
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -737,7 +737,7 @@ impl Compiler {
         let base_cell_line = self.line;
         self.chunk().emit_if(base_cell_line);
         self.emit_u16(Op::LOCAL_GET, base_slot);
-        common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
+        crate::compiler::references::emit_cell_load(&mut self.chunks, self.current, self.line);
         self.chunk().emit_else(base_cell_line);
         self.emit_u16(Op::LOCAL_GET, base_slot);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -883,15 +883,15 @@ impl Compiler {
         self.emit_const(Value::I32(0));
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_lt(self.chunk(), line);
         };
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         };
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_not(self.chunk(), line);
         };
         let block_p = self.chunk().emit_block(line);
         self.label_depth += 1;
@@ -901,7 +901,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, idx_slot);
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_add(self.chunk(), line);
         };
         self.emit_u16(Op::LOCAL_SET, idx_slot);
         self.chunk().emit_end(line);
@@ -1312,7 +1312,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, return_fn_slot);
         fn_call!(self, "ecma:value", "typeof", 1);
         inst!(self, core_wasm::string_const, "function");
-        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
         self.chunk().emit_if(line);
         self.emit_u16(Op::LOCAL_GET, iterator_slot);
         self.emit_u16(Op::GLOBAL_SET, js_this);

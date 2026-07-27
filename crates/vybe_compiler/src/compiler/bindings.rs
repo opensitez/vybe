@@ -49,7 +49,7 @@ impl Compiler {
         if let Some(idx) = self.shared_env_index(name) {
             if let Some(env_slot) = self.shared_env_slot {
                 let l = self.line;
-                crate::emitter::closures::emit_env_get(self.chunk(), env_slot, idx, l);
+                crate::compiler::closures::emit_env_get(self.chunk(), env_slot, idx, l);
                 return;
             }
         }
@@ -57,7 +57,7 @@ impl Compiler {
         if let Some(slot) = self.scope().resolve(name) {
             self.emit_u16(Op::LOCAL_GET, slot);
             if self.binding_uses_pointer_cell(name) {
-                common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
+                crate::compiler::references::emit_cell_load(&mut self.chunks, self.current, self.line);
             }
             return;
         }
@@ -65,7 +65,7 @@ impl Compiler {
             if let Some(slot) = self.scope().resolve_ci(name) {
                 self.emit_u16(Op::LOCAL_GET, slot);
                 if self.binding_uses_pointer_cell(name) {
-                    common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
+                    crate::compiler::references::emit_cell_load(&mut self.chunks, self.current, self.line);
                 }
                 return;
             }
@@ -75,7 +75,7 @@ impl Compiler {
                 let env = self.closure_env_slot();
                 let idx = self.closure_env_index(name);
                 let l = self.line;
-                crate::emitter::closures::emit_env_get(self.chunk(), env, idx, l);
+                crate::compiler::closures::emit_env_get(self.chunk(), env, idx, l);
                 return;
             }
         }
@@ -307,17 +307,17 @@ impl Compiler {
             self.emit_const(Value::String(Arc::from(
                 format!("{name} is not defined").as_str(),
             )));
-            crate::emitter::errors::emit_exception_new_finalize(
+            crate::compiler::errors::emit_exception_new_finalize(
                 self.chunk(),
                 "ReferenceError",
                 line,
             );
-            crate::emitter::errors::emit_throw(self.chunk(), line);
+            crate::compiler::errors::emit_throw(self.chunk(), line);
             return;
         }
         self.emit_u16(Op::GLOBAL_GET, idx);
         if self.binding_uses_pointer_cell(name) {
-            common::references::emit_cell_load(&mut self.chunks, self.current, self.line);
+            crate::compiler::references::emit_cell_load(&mut self.chunks, self.current, self.line);
         }
     }
 
@@ -381,12 +381,12 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_NEW, 0);
                 inst!(self, core_wasm::dup);
                 self.emit_const(Value::String(Arc::from("Assignment to constant variable.")));
-                crate::emitter::errors::emit_exception_new_finalize(
+                crate::compiler::errors::emit_exception_new_finalize(
                     self.chunk(),
                     "TypeError",
                     line,
                 );
-                crate::emitter::errors::emit_throw(self.chunk(), line);
+                crate::compiler::errors::emit_throw(self.chunk(), line);
                 return;
             }
         }
@@ -394,7 +394,7 @@ impl Compiler {
         if let Some(idx) = self.shared_env_index(name) {
             if let Some(env_slot) = self.shared_env_slot {
                 let l = self.line;
-                crate::emitter::closures::emit_env_set(self.chunk(), env_slot, idx, l);
+                crate::compiler::closures::emit_env_set(self.chunk(), env_slot, idx, l);
                 return;
             }
         }
@@ -404,7 +404,7 @@ impl Compiler {
                 let value_slot = self.define_local("__ref_cell_set_value");
                 self.emit_u16(Op::LOCAL_SET, value_slot);
                 self.emit_u16(Op::LOCAL_GET, slot);
-                common::references::emit_cell_store(
+                crate::compiler::references::emit_cell_store(
                     &mut self.chunks,
                     self.current,
                     value_slot,
@@ -432,7 +432,7 @@ impl Compiler {
                     let value_slot = self.define_local("__ref_cell_set_value");
                     self.emit_u16(Op::LOCAL_SET, value_slot);
                     self.emit_u16(Op::LOCAL_GET, slot);
-                    common::references::emit_cell_store(
+                    crate::compiler::references::emit_cell_store(
                         &mut self.chunks,
                         self.current,
                         value_slot,
@@ -460,7 +460,7 @@ impl Compiler {
                 let env = self.closure_env_slot();
                 let idx = self.closure_env_index(name);
                 let l = self.line;
-                crate::emitter::closures::emit_env_set(self.chunk(), env, idx, l);
+                crate::compiler::closures::emit_env_set(self.chunk(), env, idx, l);
                 return;
             }
         }
@@ -538,12 +538,12 @@ impl Compiler {
             self.emit_const(Value::String(Arc::from(
                 format!("{name} is not defined").as_str(),
             )));
-            crate::emitter::errors::emit_exception_new_finalize(
+            crate::compiler::errors::emit_exception_new_finalize(
                 self.chunk(),
                 "ReferenceError",
                 line,
             );
-            crate::emitter::errors::emit_throw(self.chunk(), line);
+            crate::compiler::errors::emit_throw(self.chunk(), line);
             return;
         }
         if !shadows_named_global && self.emit_with_target_set(name) {
@@ -569,7 +569,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_SET, value_slot);
             let idx = self.global_name_const_idx(&global_key);
             self.emit_u16(Op::GLOBAL_GET, idx);
-            common::references::emit_cell_store(
+            crate::compiler::references::emit_cell_store(
                 &mut self.chunks,
                 self.current,
                 value_slot,

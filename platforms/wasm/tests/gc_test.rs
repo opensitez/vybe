@@ -724,16 +724,31 @@ fn array_get_u_on_regular_array_reads_element() {
 fn array_init_data_copies_into_array() {
     let mut vm = VM::new();
     vm.set_data_segment(0, vec![1, 2, 3, 4]);
+
+    // `array.init_data $t $d` copies `size` ELEMENTS, and `src` is a BYTE
+    // offset — so the element storage width decides how many bytes are read.
+    // Declare an `(array i8)` type and stamp the array with it; without an rtt
+    // the VM must assume i32 (4-byte elements), and reading one element from
+    // byte offset 2 of a 4-byte segment would legitimately trap.
+    let i8_array_type = {
+        let mut td = vybe_bytecode::typedef::TypeDef::new("<array i8>");
+        td.add_field("i8");
+        vm.type_registry.register(td)
+    };
+
     let mut c = Chunk::new("<test>");
     c.local_count = 1;
     {
         let one = c.add_constant(Value::I32(1));
         let two = c.add_constant(Value::I32(2));
         let null = c.add_constant(Value::Null);
+        let tid = c.add_constant(Value::I32(i8_array_type as i32));
         c.emit_op_u16(Op::CONST, null, 0);
         c.emit_op_u16(Op::CONST, null, 0);
         c.emit_op_u16(Op::CONST, null, 0);
         c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
+        c.emit_op_u16(Op::CONST, tid, 0);
+        c.emit_op(Op::SET_TYPE_ID, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);

@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::instructions::core_wasm;
+use vybe_compiler::compiler::instructions::core_wasm;
 
 const TYPE_KEY: &str = "__type";
 const TIME_KEY: &str = "__time";
@@ -482,7 +482,7 @@ fn emit_datetime_create_from_format_impl(
     // `U` → unix seconds string.
     local_get(chunk, fmt_slot, line);
     push_str(chunk, "U", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     emit_parse_int_base10(chunks, current, value_slot, line);
     let chunk = &mut chunks[current];
@@ -495,7 +495,7 @@ fn emit_datetime_create_from_format_impl(
     let chunk = &mut chunks[current];
     local_get(chunk, fmt_slot, line);
     push_str(chunk, "d/m/Y", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     local_get(chunk, value_slot, line);
     push_str(chunk, "/", line);
@@ -537,7 +537,7 @@ fn emit_datetime_create_from_format_impl(
     let chunk = &mut chunks[current];
     local_get(chunk, fmt_slot, line);
     push_str(chunk, "d/m/Y H:i", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     local_get(chunk, value_slot, line);
     push_str(chunk, " ", line);
@@ -684,7 +684,7 @@ fn emit_append_to_result(chunk: &mut Chunk, result_slot: u16, line: u32) {
     local_set(chunk, piece_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, piece_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
 }
 
@@ -695,7 +695,7 @@ fn emit_stringify(chunk: &mut Chunk, line: u32) {
     local_set(chunk, n_slot, line);
     push_str(chunk, "", line);
     chunk.emit_op_u16(Op::LOCAL_GET, n_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
 }
 
 /// Push the f64 result of `ecma:date.<getter>(dt)`.
@@ -730,49 +730,49 @@ fn emit_timezone_name_from_dt_slot(chunk: &mut Chunk, dt_slot: u16, line: u32) {
 fn emit_timezone_offset_seconds_from_name_slot(chunk: &mut Chunk, name_slot: u16, line: u32) {
     local_get(chunk, name_slot, line);
     push_str(chunk, "+02:00", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(7200.0), line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "Europe/Paris", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(7200.0), line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "-04:00", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(-14400.0), line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "+05:30", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(19800.0), line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "America/New_York", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(-14400.0), line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "America/Los_Angeles", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(-28800.0), line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "Asia/Tokyo", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(32400.0), line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "Europe/London", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_else(line);
@@ -790,43 +790,43 @@ fn emit_timezone_offset_seconds_from_name_slot(chunk: &mut Chunk, name_slot: u16
 fn emit_timezone_offset_string_from_name_slot(chunk: &mut Chunk, name_slot: u16, line: u32) {
     local_get(chunk, name_slot, line);
     push_str(chunk, "+02:00", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "+02:00", line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "-04:00", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "-04:00", line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "+05:30", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "+05:30", line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "Europe/Paris", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "+02:00", line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "America/New_York", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "-04:00", line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "America/Los_Angeles", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "-08:00", line);
     chunk.emit_else(line);
     local_get(chunk, name_slot, line);
     push_str(chunk, "Asia/Tokyo", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "+09:00", line);
     chunk.emit_else(line);
@@ -1021,7 +1021,7 @@ fn emit_iso_thursday_ms(chunks: &mut [Chunk], current: usize, dt_slot: u16, line
     push_const(chunk, Value::F64(6.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     push_const(chunk, Value::F64(7.0), line);
-    vybe_emitter::expressions::emit_f64_mod(chunk, line);
+    vybe_compiler::compiler::expressions::emit_f64_mod(chunk, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     let isodow_slot = alloc_local(chunk);
@@ -1115,11 +1115,11 @@ fn emit_pad_to_width(chunk: &mut Chunk, width: u32, line: u32) {
             chunk.emit_call(idx, 1, line);
         }
         push_const(chunk, Value::F64(width as f64), line);
-        vybe_emitter::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
         chunk.emit_if(line);
         push_str(chunk, "0", line);
         chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
         chunk.emit_end(line);
     }
@@ -1144,7 +1144,7 @@ fn emit_code_arm(
         chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, c_slot, line);
         push_str(chunk, code, line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
     }
     body(chunks, current);
@@ -1210,7 +1210,7 @@ fn emit_format_code_dispatch(
                 emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
                 // % 100
                 chunks[current].emit_f64_const(100.0, line);
-                vybe_emitter::expressions::emit_f64_mod(&mut chunks[current], line);
+                vybe_compiler::compiler::expressions::emit_f64_mod(&mut chunks[current], line);
                 emit_pad_to_width(&mut chunks[current], 2, line);
                 emit_append_to_result(&mut chunks[current], result_slot, line);
             },
@@ -1482,7 +1482,7 @@ fn emit_format_code_dispatch(
                 push_const(chunk, Value::F64(6.0), line);
                 chunk.emit_op(Op::F64_ADD, line);
                 push_const(chunk, Value::F64(7.0), line);
-                vybe_emitter::expressions::emit_f64_mod(chunk, line);
+                vybe_compiler::compiler::expressions::emit_f64_mod(chunk, line);
                 push_const(chunk, Value::F64(1.0), line);
                 chunk.emit_op(Op::F64_ADD, line);
                 emit_stringify(chunk, line);
@@ -1545,7 +1545,7 @@ fn emit_format_code_dispatch(
                 chunk.emit_op_u16(Op::LOCAL_GET, dt_slot, line);
                 struct_get(chunk, TIME_KEY, line);
                 push_const(chunk, Value::F64(1000.0), line);
-                vybe_emitter::expressions::emit_f64_mod(chunk, line);
+                vybe_compiler::compiler::expressions::emit_f64_mod(chunk, line);
                 push_const(chunk, Value::F64(1000.0), line);
                 chunk.emit_op(Op::F64_MUL, line);
                 emit_pad_to_width(chunk, 6, line);
@@ -1652,7 +1652,7 @@ fn emit_format_code_dispatch(
             |chunks, current| {
                 emit_dt_getter(chunks, current, dt_slot, "getFullYear", line);
                 chunks[current].emit_f64_const(100.0, line);
-                vybe_emitter::expressions::emit_f64_mod(&mut chunks[current], line);
+                vybe_compiler::compiler::expressions::emit_f64_mod(&mut chunks[current], line);
                 emit_pad_to_width(&mut chunks[current], 2, line);
                 emit_append_to_result(&mut chunks[current], result_slot, line);
             },
@@ -1860,7 +1860,7 @@ fn emit_am_pm(
     emit_dt_getter(chunks, current, dt_slot, "getHours", line);
     let chunk = &mut chunks[current];
     let _idx = chunk.add_constant(Value::F64(12.0));
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
     push_str(chunk, if upper { "AM" } else { "am" }, line);
     chunk.emit_else(line);
@@ -1971,11 +1971,11 @@ fn emit_format_dt_runtime(
     // while i < len:  block { loop { ... } } — WASM structured control flow
     // via the shared loop emitter. The surrounding block makes `br_if 1`
     // (break) and `br 1` (continue, from inside one nested `if`) valid labels.
-    let lstate = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let lstate = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     // i >= len → break out of the enclosing block.
     chunk.emit_br_if(lstate.break_depth(0) as u32, line);
@@ -1993,7 +1993,7 @@ fn emit_format_dt_runtime(
         // Backslash escape: append next char literally.
         chunk.emit_op_u16(Op::LOCAL_GET, c_slot, line);
         push_str(chunk, "\\", line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
         // i++
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -2003,7 +2003,7 @@ fn emit_format_dt_runtime(
         // if i < len: append fmt[i]
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
         chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -2036,7 +2036,7 @@ fn emit_format_dt_runtime(
         let chunk = &mut chunks[current];
         chunk.emit_op_u16(Op::LOCAL_GET, c_slot, line);
         push_str(chunk, "%", line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
         // i++
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -2046,7 +2046,7 @@ fn emit_format_dt_runtime(
         // if i < len: dispatch next code, else append "%"
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
         chunk.emit_if(line);
         // c = fmt.charAt(i)
         chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
@@ -2089,7 +2089,7 @@ fn emit_format_dt_runtime(
         local_set(chunk, i_slot, line);
     }
     // br 0 (continue); end loop; end block — WASM structured CF via common emitter.
-    vybe_emitter::loops::emit_loop_end(chunks, current, lstate, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, lstate, line);
     // push result
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
@@ -2328,14 +2328,14 @@ pub fn emit_php_checkdate(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     ] {
         local_get(chunk, slot, line);
         push_const(chunk, Value::F64(lo), line);
-        vybe_emitter::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
         chunk.emit_if(line);
         push_const(chunk, Value::Bool(false), line);
         local_set(chunk, result_slot, line);
         chunk.emit_end(line);
         local_get(chunk, slot, line);
         push_const(chunk, Value::F64(hi), line);
-        vybe_emitter::ops::emit_dyn_gt(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
         chunk.emit_if(line);
         push_const(chunk, Value::Bool(false), line);
         local_set(chunk, result_slot, line);
@@ -2388,7 +2388,7 @@ pub fn emit_php_checkdate(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     for &(in_slot, back_slot) in &[(y_slot, yb_slot), (m_slot, mb_slot), (d_slot, db_slot)] {
         local_get(chunk, in_slot, line);
         local_get(chunk, back_slot, line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_if(line);
         push_const(chunk, Value::Bool(false), line);
@@ -2560,7 +2560,7 @@ pub fn emit_php_strtotime_rel_calendar(chunks: &mut [Chunk], current: usize, _ar
 
     // is_year ? setFullYear : setMonth
     local_get(chunk, is_year_slot, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     let new_comp_slot = alloc_local(chunk);
     let new_ms_slot = alloc_local(chunk);
     chunk.emit_if(line);
@@ -2656,7 +2656,7 @@ fn emit_clone_if_immutable(chunk: &mut Chunk, dt_slot: u16, line: u32) {
     local_get(chunk, dt_slot, line);
     struct_get(chunk, TYPE_KEY, line);
     push_str(chunk, "DateTimeImmutable", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     // Build the clone: STRUCT_NEW + copy __type + copy __time + copy __tz.
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);

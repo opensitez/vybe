@@ -1,5 +1,5 @@
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::emitter::strings;
+use vybe_compiler::compiler::strings;
 
 #[test]
 fn emit_to_string_adds_import() {

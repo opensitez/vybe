@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+inventory = { workspace = true }
 indexmap = { workspace = true }
 vybe_ast = { workspace = true }
 serde = { workspace = true }

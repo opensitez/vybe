@@ -26,9 +26,12 @@ vybe_language_ruby = { workspace = true }
 vybe_language_vb = { workspace = true }
 vybe_language_wast = { workspace = true }
 vybe_compiler = { workspace = true }
-vybe_emitter = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_platform_wasm = { workspace = true }
+vybe_platform_dotnet = { workspace = true }
+vybe_platform_flutter = { workspace = true }
+vybe_platform_libc = { workspace = true }
+vybe_platform_plib = { workspace = true }
 vybe_platform_ecma = { workspace = true }
 vybe_platform_web = { workspace = true }
 vybe_platform_wasi = { workspace = true }

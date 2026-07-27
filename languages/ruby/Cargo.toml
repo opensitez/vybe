@@ -9,10 +9,11 @@ license.workspace = true
 name = "vybe_language_ruby"
 
 [dependencies]
+vybe_compiler = { workspace = true }
+inventory = { workspace = true }
 vybe_ast = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_platform_vybe = { workspace = true, features = ["gui"] }
-vybe_emitter = { workspace = true }
 vybe_platform_libc = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }
@@ -21,7 +22,6 @@ pest_derive = { workspace = true }
 vybe_compiler = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_ast = { workspace = true }
-vybe_emitter = { workspace = true }
 
 [[test]]
 name = "ruby"

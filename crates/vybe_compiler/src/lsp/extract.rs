@@ -1,7 +1,7 @@
 //! Symbol extraction from the common AST.
 //!
 //! ONE extractor for ALL languages. Each parser converts to
-//! `vybe_compiler::ast::Module`, then this module extracts symbols.
+//! `crate::ast::Module`, then this module extracts symbols.
 
 use super::symbols::*;
 use crate::ast::*;

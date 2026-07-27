@@ -13,7 +13,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, value_slot);
         inst!(self, recipes::is_object);
         let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         let idx = self.import("ecma:value", "toPrimitive");
@@ -88,7 +88,7 @@ impl Compiler {
     /// TypeError. Consumes the Bool left by the strict proxy set dispatch.
     pub(super) fn emit_strict_set_failure_check(&mut self) -> Result<(), String> {
         let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.emit(Op::I32_EQZ);
         self.chunk().emit_if(line);
         self.emit_const(Value::String(Arc::from(
@@ -121,7 +121,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, slot);
             self.emit_const(Value::F64(1.0));
             if add {
-                crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_add(self.chunk(), line);
             } else {
                 self.emit(Op::F64_SUB);
             }
@@ -130,7 +130,7 @@ impl Compiler {
             self.emit_const(Value::F64(1.0));
             if add {
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_add(self.chunk(), line);
             } else {
                 self.emit(Op::F64_SUB);
             }
@@ -159,17 +159,17 @@ impl Compiler {
         self.emit_const(Value::String(Arc::from("string")));
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
         };
         let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
 
         self.emit_u16(Op::LOCAL_GET, t_b);
         fn_call!(self, "ecma:value", "typeof", 1);
         self.emit_const(Value::String(Arc::from("string")));
-        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
 
         self.emit_u16(Op::LOCAL_GET, t_a);
@@ -234,7 +234,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, rhs_slot);
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_add(self.chunk(), line);
         };
         self.chunk().emit_end(rhs_line);
         self.chunk().emit_end(line);
@@ -260,10 +260,10 @@ impl Compiler {
         inst!(self, core_wasm::i32_const, 0);
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_ne(self.chunk(), line);
         };
         let array_line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), array_line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), array_line);
         self.chunk().emit_if_value(array_line);
         self.emit_u16(Op::LOCAL_GET, container_slot);
         self.emit_u16(Op::LOCAL_GET, needle_slot);
@@ -289,10 +289,10 @@ impl Compiler {
         self.emit_const(Value::String(Arc::from("string")));
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
         };
         let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
         self.emit_js_add_string_concat_from_locals(lhs_slot, rhs_slot);
         self.chunk().emit_else(line);
@@ -302,10 +302,10 @@ impl Compiler {
         self.emit_const(Value::String(Arc::from("string")));
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
         };
         let rhs_line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), rhs_line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), rhs_line);
         self.chunk().emit_if_value(rhs_line);
         self.emit_js_add_string_concat_from_locals(lhs_slot, rhs_slot);
         self.chunk().emit_else(rhs_line);
@@ -375,12 +375,12 @@ impl Compiler {
                     // and never consult it. Falls through to the same
                     // dynamic add for every non-object operand.
                     if self.uses_rich_operators() {
-                        self.emit_rich_binop("__add__", crate::emitter::ops::emit_dyn_add);
+                        self.emit_rich_binop("__add__", crate::compiler::ops::emit_dyn_add);
                         return;
                     }
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_add(self.chunk(), line);
                     };
                 } else if self.is_php_profile() {
                     // PHP `+` on arrays = union (first-wins merge).
@@ -483,7 +483,7 @@ impl Compiler {
                     // never a profile-name check.
                     let eq_fallback = vybe_bytecode::registry::hooks(&self.profile.name)
                         .value_eq
-                        .unwrap_or(crate::emitter::ops::emit_dyn_eq);
+                        .unwrap_or(crate::compiler::ops::emit_dyn_eq);
                     common::expressions::emit_rich_compare_locals(
                         self.chunk(),
                         left_slot,
@@ -493,14 +493,14 @@ impl Compiler {
                         line,
                     );
                     if self.profile.materialize_bool_results {
-                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                     }
                 } else {
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                         if self.profile.materialize_bool_results {
-                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                         }
                     };
                 }
@@ -523,7 +523,7 @@ impl Compiler {
                     // never a profile-name check.
                     let eq_fallback = vybe_bytecode::registry::hooks(&self.profile.name)
                         .value_eq
-                        .unwrap_or(crate::emitter::ops::emit_dyn_eq);
+                        .unwrap_or(crate::compiler::ops::emit_dyn_eq);
                     common::expressions::emit_rich_compare_locals(
                         self.chunk(),
                         left_slot,
@@ -532,16 +532,16 @@ impl Compiler {
                         eq_fallback,
                         line,
                     );
-                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                     if self.profile.materialize_bool_results {
-                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                     }
                 } else {
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_ne(self.chunk(), line);
                         if self.profile.materialize_bool_results {
-                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                         }
                     };
                 }
@@ -549,14 +549,14 @@ impl Compiler {
             BinOp::StrictEq => {
                 let line = self.line;
                 if self.profile.ecma_operator_coercion {
-                    crate::emitter::ops::emit_js_strict_eq(self.chunk(), line);
+                    crate::compiler::ops::emit_js_strict_eq(self.chunk(), line);
                 } else {
-                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                 }
                 if self.profile.ecma_boolean_operators {
-                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                 } else if self.profile.materialize_bool_results {
-                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                 }
             }
             BinOp::StrictNotEq => {
@@ -564,15 +564,15 @@ impl Compiler {
                 {
                     let line = self.line;
                     if self.profile.ecma_operator_coercion {
-                        crate::emitter::ops::emit_js_strict_eq(self.chunk(), line);
+                        crate::compiler::ops::emit_js_strict_eq(self.chunk(), line);
                         self.emit(Op::I32_EQZ);
                     } else {
-                        crate::emitter::ops::emit_dyn_ne(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_ne(self.chunk(), line);
                     }
                     if self.profile.ecma_boolean_operators {
-                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                     } else if self.profile.materialize_bool_results {
-                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                     }
                 }
             }
@@ -584,20 +584,20 @@ impl Compiler {
                     vybe_bytecode::registry::hooks(&self.profile.name)
                         .relational_compare
                         .unwrap()(
-                        self.chunk(), crate::emitter::ops::emit_dyn_lt, line
+                        self.chunk(), crate::compiler::ops::emit_dyn_lt, line
                     );
                     return;
                 }
                 if self.profile.name == "pascal" {
-                    self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_lt);
+                    self.emit_pascal_relational_compare(crate::compiler::ops::emit_dyn_lt);
                 } else if self.profile.ecma_operator_coercion {
                     // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
                     let line = self.line;
-                    crate::emitter::ops::emit_js_lt(self.chunk(), line);
-                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_js_lt(self.chunk(), line);
+                    crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                 } else if self.is_php_profile() {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_lt(self.chunk(), line);
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
@@ -609,11 +609,11 @@ impl Compiler {
                         left_slot,
                         right_slot,
                         "__lt__",
-                        crate::emitter::ops::emit_dyn_lt,
+                        crate::compiler::ops::emit_dyn_lt,
                         line,
                     );
                     if self.profile.materialize_bool_results {
-                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                     }
                 }
             }
@@ -625,20 +625,20 @@ impl Compiler {
                     vybe_bytecode::registry::hooks(&self.profile.name)
                         .relational_compare
                         .unwrap()(
-                        self.chunk(), crate::emitter::ops::emit_dyn_gt, line
+                        self.chunk(), crate::compiler::ops::emit_dyn_gt, line
                     );
                     return;
                 }
                 if self.profile.name == "pascal" {
-                    self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_gt);
+                    self.emit_pascal_relational_compare(crate::compiler::ops::emit_dyn_gt);
                 } else if self.profile.ecma_operator_coercion {
                     // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
                     let line = self.line;
-                    crate::emitter::ops::emit_js_gt(self.chunk(), line);
-                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_js_gt(self.chunk(), line);
+                    crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                 } else if self.is_php_profile() {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_gt(self.chunk(), line);
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
@@ -650,11 +650,11 @@ impl Compiler {
                         left_slot,
                         right_slot,
                         "__gt__",
-                        crate::emitter::ops::emit_dyn_gt,
+                        crate::compiler::ops::emit_dyn_gt,
                         line,
                     );
                     if self.profile.materialize_bool_results {
-                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                     }
                 }
             }
@@ -666,20 +666,20 @@ impl Compiler {
                     vybe_bytecode::registry::hooks(&self.profile.name)
                         .relational_compare
                         .unwrap()(
-                        self.chunk(), crate::emitter::ops::emit_dyn_le, line
+                        self.chunk(), crate::compiler::ops::emit_dyn_le, line
                     );
                     return;
                 }
                 if self.profile.name == "pascal" {
-                    self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_le);
+                    self.emit_pascal_relational_compare(crate::compiler::ops::emit_dyn_le);
                 } else if self.profile.ecma_operator_coercion {
                     // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
                     let line = self.line;
-                    crate::emitter::ops::emit_js_le(self.chunk(), line);
-                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_js_le(self.chunk(), line);
+                    crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                 } else if self.is_php_profile() {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_le(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_le(self.chunk(), line);
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
@@ -691,11 +691,11 @@ impl Compiler {
                         left_slot,
                         right_slot,
                         "__le__",
-                        crate::emitter::ops::emit_dyn_le,
+                        crate::compiler::ops::emit_dyn_le,
                         line,
                     );
                     if self.profile.materialize_bool_results {
-                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                     }
                 }
             }
@@ -707,20 +707,20 @@ impl Compiler {
                     vybe_bytecode::registry::hooks(&self.profile.name)
                         .relational_compare
                         .unwrap()(
-                        self.chunk(), crate::emitter::ops::emit_dyn_ge, line
+                        self.chunk(), crate::compiler::ops::emit_dyn_ge, line
                     );
                     return;
                 }
                 if self.profile.name == "pascal" {
-                    self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_ge);
+                    self.emit_pascal_relational_compare(crate::compiler::ops::emit_dyn_ge);
                 } else if self.profile.ecma_operator_coercion {
                     // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
                     let line = self.line;
-                    crate::emitter::ops::emit_js_ge(self.chunk(), line);
-                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_js_ge(self.chunk(), line);
+                    crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                 } else if self.is_php_profile() {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_ge(self.chunk(), line);
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
@@ -732,11 +732,11 @@ impl Compiler {
                         left_slot,
                         right_slot,
                         "__ge__",
-                        crate::emitter::ops::emit_dyn_ge,
+                        crate::compiler::ops::emit_dyn_ge,
                         line,
                     );
                     if self.profile.materialize_bool_results {
-                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                     }
                 }
             }
@@ -755,18 +755,18 @@ impl Compiler {
                     vybe_bytecode::registry::hooks(&self.profile.name)
                         .relational_compare
                         .unwrap()(
-                        self.chunk(), crate::emitter::ops::emit_dyn_lt, line
+                        self.chunk(), crate::compiler::ops::emit_dyn_lt, line
                     );
                 } else if self.profile.name == "pascal" {
-                    self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_lt);
+                    self.emit_pascal_relational_compare(crate::compiler::ops::emit_dyn_lt);
                 } else {
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_lt(self.chunk(), line);
                     };
                 }
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
                 self.emit_const(Value::I32(-1));
                 self.chunk().emit_else(line);
@@ -780,18 +780,18 @@ impl Compiler {
                     vybe_bytecode::registry::hooks(&self.profile.name)
                         .relational_compare
                         .unwrap()(
-                        self.chunk(), crate::emitter::ops::emit_dyn_gt, line
+                        self.chunk(), crate::compiler::ops::emit_dyn_gt, line
                     );
                 } else if self.profile.name == "pascal" {
-                    self.emit_pascal_relational_compare(crate::emitter::ops::emit_dyn_gt);
+                    self.emit_pascal_relational_compare(crate::compiler::ops::emit_dyn_gt);
                 } else {
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_gt(self.chunk(), line);
                     };
                 }
                 let gt_line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), gt_line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), gt_line);
                 self.chunk().emit_if_value(gt_line);
                 self.emit_const(Value::I32(1));
                 self.chunk().emit_else(gt_line);
@@ -804,18 +804,18 @@ impl Compiler {
                 self.emit(Op::I32_XOR);
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
             }
             BinOp::Eqv => {
                 self.emit(Op::I32_XOR);
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                 };
             }
             BinOp::Imp => {
@@ -826,21 +826,21 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, lhs_slot);
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                 };
                 self.emit_u16(Op::LOCAL_GET, rhs_slot);
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
                 self.emit(Op::I32_OR);
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
             }
             BinOp::BitAnd => self.emit(Op::I32_AND),
@@ -946,7 +946,7 @@ impl Compiler {
                     self.emit_python_contains_from_locals(t_y, t_x);
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                     };
                     return;
                 }
@@ -963,7 +963,7 @@ impl Compiler {
                     self.emit_u8(Op::CALL_REF, 2);
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                     };
                     return;
                 }
@@ -980,7 +980,7 @@ impl Compiler {
                 self.chunk().emit_call(idx, 2, l);
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                 };
             }
             BinOp::InstanceOf => {
@@ -1021,8 +1021,8 @@ impl Compiler {
                         let line = self.line;
                         // Convert dynamic result to Bool (consistent with
                         // instanceOf host fn which also returns Bool).
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                        crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                     };
                     let result_slot = self.define_local("__has_inst_result");
                     self.emit_u16(Op::LOCAL_SET, result_slot);
@@ -1068,17 +1068,17 @@ impl Compiler {
                 // Reference equality
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                 };
             }
             BinOp::IsNot => {
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                 };
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                 };
             }
         }
@@ -1097,7 +1097,7 @@ impl Compiler {
                     }
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_add(self.chunk(), line);
                     };
                 } else {
                     self.emit(Op::F64_ADD);
@@ -1152,11 +1152,11 @@ impl Compiler {
             CompoundOp::UShr => self.emit(Op::I32_SHR_U),
             CompoundOp::And => {
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             } // simplified
             CompoundOp::Or => {
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             } // simplified
             CompoundOp::NullCoalesce => {
                 // a ??= b → if a is null, a = b

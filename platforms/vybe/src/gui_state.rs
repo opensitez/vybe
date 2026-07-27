@@ -498,6 +498,38 @@ impl GuiState {
                 self.form
                     .send_command(&name, &WidgetCommand::AddItem(value.to_string()));
             }
+            // Visual/box properties. These carry NUMBERS (a size, a padding, a
+            // packed ARGB colour), so they go over as `CommandValue::Number`
+            // when they parse — a `Text` payload would force every widget to
+            // re-parse. Colours stay textual so names ("red") and `#RRGGBB`
+            // still work; the widgets accept either form.
+            "width" | "height" | "padding" | "spacing" | "fontsize" => {
+                let cmd = format!("Set{}", capitalize_first(&prop_lower));
+                let payload = match value.trim().parse::<f64>() {
+                    Ok(n) => CommandValue::Number(n),
+                    Err(_) => CommandValue::Text(value.to_string()),
+                };
+                self.form
+                    .send_command(&name, &WidgetCommand::Custom(cmd, payload));
+            }
+            "color" | "backcolor" | "backgroundcolor" => {
+                self.form.send_command(
+                    &name,
+                    &WidgetCommand::Custom(
+                        "SetBackColor".into(),
+                        CommandValue::Text(value.to_string()),
+                    ),
+                );
+            }
+            "forecolor" | "textcolor" => {
+                self.form.send_command(
+                    &name,
+                    &WidgetCommand::Custom(
+                        "SetForeColor".into(),
+                        CommandValue::Text(value.to_string()),
+                    ),
+                );
+            }
             other => {
                 self.form.send_command(
                     &name,

@@ -76,6 +76,52 @@ fn struct_embedded() {
         "package main; type Base struct { ID int } type Child struct { Base; Name string } func main() { c := Child{Name: \"test\"}; _ = c }",
     );
 }
+
+// ── Promotion (embedded field) ───────────────────────────────────────
+//
+// `compile_ok` above only proves the program COMPILES — it never reaches a
+// promoted member, so promotion could be entirely broken and it would still
+// pass. These exercise the behaviour: a promoted FIELD and a promoted METHOD
+// are reachable on the outer struct, and depth decides which one wins.
+//
+// Go promotes members of an embedded field onto the outer type, with the
+// receiver rebinding to the inner value. Shallower depth shadows deeper.
+// See flexclassplan.md §4c (`Delegate` mode).
+
+#[test]
+fn struct_embedded_field_is_promoted() {
+    let out = run_prints(
+        "package main\nimport \"fmt\"\ntype Base struct { ID int }\ntype Child struct { Base; Name string }\nfunc main() { c := Child{Base: Base{ID: 7}, Name: \"x\"}; fmt.Println(c.ID) }",
+    );
+    assert_eq!(out, vec!["7"]);
+}
+
+#[test]
+fn struct_embedded_method_is_promoted() {
+    let out = run_prints(
+        "package main\nimport \"fmt\"\ntype Base struct { ID int }\nfunc (b Base) Describe() int { return b.ID }\ntype Child struct { Base; Name string }\nfunc main() { c := Child{Base: Base{ID: 9}, Name: \"x\"}; fmt.Println(c.Describe()) }",
+    );
+    assert_eq!(out, vec!["9"]);
+}
+
+#[test]
+fn struct_ambiguous_promotion_at_equal_depth_is_rejected() {
+    // Go spec: a selector that is ambiguous at the SHALLOWEST depth is a
+    // compile error, not a silent pick. Both `A` and `B` sit at depth 1 and
+    // both supply `ID`, so `c.ID` has no unique promotion.
+    assert!(!compile_ok_check(
+        "package main\nimport \"fmt\"\ntype A struct { ID int }\ntype B struct { ID int }\ntype C struct { A; B }\nfunc main() { c := C{}; fmt.Println(c.ID) }",
+    ));
+}
+
+#[test]
+fn struct_own_field_shadows_promoted_one() {
+    // Depth 0 (declared on Child) beats depth 1 (promoted from Base).
+    let out = run_prints(
+        "package main\nimport \"fmt\"\ntype Base struct { ID int }\ntype Child struct { Base; ID int }\nfunc main() { c := Child{Base: Base{ID: 1}, ID: 2}; fmt.Println(c.ID) }",
+    );
+    assert_eq!(out, vec!["2"]);
+}
 #[test]
 fn struct_with_slice_field() {
     let out = run_prints(

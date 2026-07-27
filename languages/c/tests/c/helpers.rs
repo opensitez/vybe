@@ -83,7 +83,7 @@ pub fn run_prints(src: &str) -> Vec<String> {
     // - `wasi:logging/logging.log` — line-oriented; one record per call,
     //   newline implied.
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_emitter::platforms::init_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
     let out = output.clone();
     vm.register_host_fn(
         "wasi:logging/logging",
@@ -110,7 +110,7 @@ pub fn run_prints(src: &str) -> Vec<String> {
             Value::Null
         }),
     );
-    vybe_emitter::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("run failed");
     // Concatenate fragments and split into lines so each printf line becomes
     // one captured entry. Strip only the final empty artifact of a trailing

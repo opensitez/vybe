@@ -6,7 +6,7 @@ use std::sync::Arc;
 use vybe_bytecode::VM;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 
-use vybe_platform_wasi::crypto::{md5_hex, sha256_hex};
+use vybe_platform_wasi::crypto::{HashAlgorithm, md5_hex, sha256_hex};
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -70,29 +70,77 @@ fn str_arg(args: &[Value], idx: usize) -> String {
     }
 }
 
-#[allow(dead_code)]
-fn sha1_hex(data: &[u8]) -> String {
-    use sha1::{Digest, Sha1};
-    let result = Sha1::digest(data);
-    result.iter().map(|b| format!("{:02x}", b)).collect()
+/// Every digest `crypto.getHashes()` advertises, in OpenSSL spelling — the
+/// names real Node accepts. Must stay in step with [`hash_algorithm`];
+/// advertising an algorithm that does not resolve is how `sha3-256` once
+/// returned a SHA-256 digest.
+pub const HASH_ALGORITHMS: &[&str] = &[
+    "md5",
+    "sha1",
+    "sha224",
+    "sha256",
+    "sha384",
+    "sha512",
+    "sha512-224",
+    "sha512-256",
+    "sha3-224",
+    "sha3-256",
+    "sha3-384",
+    "sha3-512",
+    "shake128",
+    "shake256",
+    "blake2b512",
+    "blake2s256",
+    "ripemd160",
+];
+
+/// Map a Node/OpenSSL algorithm name onto the shared primitive. This is the
+/// ONLY Node-specific part of hashing — the digests themselves live once, in
+/// `vybe_platform_wasi::crypto::HashAlgorithm`.
+///
+/// `None` means unknown: real Node throws `Error: Digest method not
+/// supported`, so callers must never substitute another algorithm.
+/// Also accepts the underscore spellings (`sha3_256`, `shake_128`) and bare
+/// `blake2b`/`blake2s` that Python's hashlib uses.
+fn hash_algorithm(algo: &str) -> Option<HashAlgorithm> {
+    Some(match algo.to_ascii_lowercase().as_str() {
+        "md5" => HashAlgorithm::Md5,
+        "sha1" | "sha-1" => HashAlgorithm::Sha1,
+        "sha224" | "sha-224" => HashAlgorithm::Sha224,
+        "sha256" | "sha-256" => HashAlgorithm::Sha256,
+        "sha384" | "sha-384" => HashAlgorithm::Sha384,
+        "sha512" | "sha-512" => HashAlgorithm::Sha512,
+        "sha512-224" => HashAlgorithm::Sha512_224,
+        "sha512-256" => HashAlgorithm::Sha512_256,
+        "sha3-224" | "sha3_224" => HashAlgorithm::Sha3_224,
+        "sha3-256" | "sha3_256" => HashAlgorithm::Sha3_256,
+        "sha3-384" | "sha3_384" => HashAlgorithm::Sha3_384,
+        "sha3-512" | "sha3_512" => HashAlgorithm::Sha3_512,
+        "shake128" | "shake_128" => HashAlgorithm::Shake128,
+        "shake256" | "shake_256" => HashAlgorithm::Shake256,
+        "blake2b512" | "blake2b" => HashAlgorithm::Blake2b512,
+        "blake2s256" | "blake2s" => HashAlgorithm::Blake2s256,
+        "ripemd160" | "rmd160" | "ripemd-160" => HashAlgorithm::Ripemd160,
+        _ => return None,
+    })
 }
 
-#[allow(dead_code)]
-fn sha512_hex(data: &[u8]) -> String {
-    use sha2::{Digest, Sha512};
-    let result = Sha512::digest(data);
-    result.iter().map(|b| format!("{:02x}", b)).collect()
+fn digest_bytes(algo: &str, data: &[u8]) -> Option<Vec<u8>> {
+    hash_algorithm(algo).map(|h| h.digest(data))
 }
 
-#[allow(dead_code)]
-fn digest_hex(algo: &str, data: &[u8]) -> String {
-    match algo.to_lowercase().as_str() {
-        "sha256" => sha256_hex(data),
-        "sha1" => sha1_hex(data),
-        "md5" => md5_hex(data),
-        "sha512" => sha512_hex(data),
-        _ => sha256_hex(data),
-    }
+fn digest_len(algo: &str) -> Option<usize> {
+    hash_algorithm(algo).map(|h| h.digest_len())
+}
+
+/// HMAC over any digest Node supports. `None` for an unknown algorithm and
+/// for the XOFs — `createHmac('shake128', k)` throws in real Node too.
+fn hmac_digest_checked(algo: &str, key: &[u8], data: &[u8]) -> Option<Vec<u8>> {
+    hash_algorithm(algo)?.hmac(key, data)
+}
+
+fn hmac_digest(algo: &str, key: &[u8], data: &[u8]) -> Vec<u8> {
+    hmac_digest_checked(algo, key, data).unwrap_or_default()
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -137,37 +185,6 @@ fn encode_digest(bytes: &[u8], enc: &str) -> String {
     }
 }
 
-// HMAC-SHA256 implementation using hmac crate
-fn hmac_digest(algo: &str, key: &[u8], data: &[u8]) -> Vec<u8> {
-    use hmac::{Hmac, Mac};
-    match algo.to_lowercase().as_str() {
-        "sha1" => {
-            use sha1::Sha1;
-            type HmacSha1 = Hmac<Sha1>;
-            let mut mac = HmacSha1::new_from_slice(key)
-                .unwrap_or_else(|_| HmacSha1::new_from_slice(&[0u8; 20]).unwrap());
-            mac.update(data);
-            mac.finalize().into_bytes().to_vec()
-        }
-        "sha512" => {
-            use sha2::Sha512;
-            type HmacSha512 = Hmac<Sha512>;
-            let mut mac = HmacSha512::new_from_slice(key)
-                .unwrap_or_else(|_| HmacSha512::new_from_slice(&[0u8; 64]).unwrap());
-            mac.update(data);
-            mac.finalize().into_bytes().to_vec()
-        }
-        _ => {
-            use sha2::Sha256;
-            type HmacSha256 = Hmac<Sha256>;
-            let mut mac = HmacSha256::new_from_slice(key)
-                .unwrap_or_else(|_| HmacSha256::new_from_slice(&[0u8; 32]).unwrap());
-            mac.update(data);
-            mac.finalize().into_bytes().to_vec()
-        }
-    }
-}
-
 // PBKDF2 with HMAC-SHA256/SHA1
 fn pbkdf2_hmac(
     algo: &str,
@@ -176,11 +193,7 @@ fn pbkdf2_hmac(
     iterations: u32,
     keylen: usize,
 ) -> Vec<u8> {
-    let hash_len = match algo.to_lowercase().as_str() {
-        "sha1" => 20,
-        "sha512" => 64,
-        _ => 32,
-    };
+    let hash_len = digest_len(algo).unwrap_or(32);
     let blocks = (keylen + hash_len - 1) / hash_len;
     let mut dk = Vec::new();
     for i in 1..=blocks {
@@ -434,27 +447,10 @@ pub fn register(vm: &mut VM) {
             } else {
                 Vec::new()
             };
-            let hash_bytes = match algo.to_lowercase().as_str() {
-                "sha256" => {
-                    use sha2::{Digest, Sha256};
-                    Sha256::digest(&data).to_vec()
-                }
-                "sha1" => {
-                    use sha1::{Digest, Sha1};
-                    Sha1::digest(&data).to_vec()
-                }
-                "md5" => {
-                    use md5::{Digest, Md5};
-                    Md5::digest(&data).to_vec()
-                }
-                "sha512" => {
-                    use sha2::{Digest, Sha512};
-                    Sha512::digest(&data).to_vec()
-                }
-                _ => {
-                    use sha2::{Digest, Sha256};
-                    Sha256::digest(&data).to_vec()
-                }
+            // Unknown algorithm: real Node throws `Error: Digest method not
+            // supported`. Never substitute another digest — see `digest_bytes`.
+            let Some(hash_bytes) = digest_bytes(&algo, &data) else {
+                return Value::Null;
             };
             Value::String(Arc::from(encode_digest(&hash_bytes, &enc).as_str()))
         }),
@@ -850,17 +846,12 @@ pub fn register(vm: &mut VM) {
         "node:crypto",
         "getHashes",
         Box::new(|_ctx, _args| {
-            let names = vec![
-                "sha256",
-                "sha512",
-                "sha1",
-                "md5",
-                "sha224",
-                "sha384",
-                "sha3-256",
-                "blake2b512",
-            ];
-            let elems: Vec<Value> = names.iter().map(|n| Value::String(Arc::from(*n))).collect();
+            // Exactly the implemented set — advertising more is how callers
+            // ended up with a SHA-256 digest labelled `sha3-256`.
+            let elems: Vec<Value> = HASH_ALGORITHMS
+                .iter()
+                .map(|n| Value::String(Arc::from(*n)))
+                .collect();
             Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elems)))
         }),
     );

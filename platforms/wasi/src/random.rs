@@ -10,10 +10,29 @@
 //!   * `wasi:random/insecure-seed` — DoS-resistance hash seed.
 //!     `insecure-seed: func() -> tuple<u64, u64>`.
 //!
-//! The MVP implementation uses xorshift64 for all paths — not actually
-//! cryptographically strong. When a real CSPRNG backs the host, the
-//! `wasi:random/random` functions switch to it without any caller
-//! change.
+//! `wasi:random/random` is backed by the operating system CSPRNG
+//! (`getrandom`, i.e. `getrandom(2)`/`/dev/urandom` on Unix and
+//! `BCryptGenRandom` on Windows), because the interface's contract is
+//! normative:
+//!
+//! > must produce data at least as cryptographically secure and fast as an
+//! > adequately seeded cryptographically-secure pseudo-random number
+//! > generator (CSPRNG). It must not block … including on the first request
+//! > … The returned data must always be unpredictable.
+//!
+//! The xorshift64 generator below therefore serves ONLY `wasi:random/insecure`
+//! and `wasi:random/insecure-seed`, whose contracts explicitly disclaim
+//! cryptographic strength ("There are no requirements on the values of the
+//! returned bytes"). Routing the secure interface through xorshift — as this
+//! module used to — is a security defect, not a fidelity gap: xorshift64 is
+//! trivially invertible, so one observed output reveals the whole state and
+//! every past and future value with it.
+//!
+//! Numbers are carried as `Value::F64`, the platform's numeric
+//! representation (same as `wasi:clocks`). That costs the low 11 bits of a
+//! `u64`, so `get-random-bytes` — not `get-random-u64` — is the full-entropy
+//! path. The carrier is load-bearing elsewhere: PHP's `rand()` scales this
+//! value by `r / 2^64` in f64 (`php/src/emitter/numeric_adapter.rs`).
 //!
 //! Vybe-convenience extensions live under the same `wasi:random/random`
 //! namespace, on top of the WASI primitives:
@@ -29,10 +48,30 @@ use std::sync::Arc;
 use vybe_bytecode::value::Object;
 use vybe_bytecode::{HostContext, VM, Value};
 
+/// OS entropy for the CSPRNG-grade interface. `None` when the platform has
+/// no entropy source — callers must surface that rather than silently
+/// degrade to a predictable generator.
+///
+/// `getrandom` never blocks after the system pool is initialised, which is
+/// what the interface's "must not block … including on the first request"
+/// requires.
+pub fn secure_bytes(n: usize) -> Option<Vec<u8>> {
+    let mut buf = vec![0u8; n];
+    getrandom::getrandom(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// A single CSPRNG `u64`.
+fn secure_u64() -> Option<u64> {
+    let bytes = secure_bytes(8)?;
+    let mut arr = [0u8; 8];
+    arr.copy_from_slice(&bytes);
+    Some(u64::from_le_bytes(arr))
+}
+
 // Simple xorshift64 PRNG state — thread-local for safety.
-// MVP backing for all random paths (including the nominally-secure
-// `wasi:random/random`). Replace with a real CSPRNG when the host
-// gains access to one.
+// Backs ONLY `wasi:random/insecure` and `wasi:random/insecure-seed`, whose
+// contracts disclaim cryptographic strength. Never the secure interface.
 thread_local! {
     static RNG_STATE: std::cell::RefCell<u64> = std::cell::RefCell::new(
         std::time::SystemTime::now()
@@ -57,14 +96,25 @@ fn next_f64() -> f64 {
     (next_u64() >> 11) as f64 / (1u64 << 53) as f64
 }
 
-/// Build a `list<u8>` as a Vybe Array object, matching what real WASI
-/// `list<u8>` lowers to in our Value representation.
-fn random_bytes_value(n: usize) -> Value {
-    let mut bytes = Vec::with_capacity(n);
-    for _ in 0..n {
-        bytes.push(Value::F64((next_u64() & 0xFF) as f64));
+fn bytes_to_list(bytes: &[u8]) -> Value {
+    let values: Vec<Value> = bytes.iter().map(|b| Value::F64(*b as f64)).collect();
+    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(values)))
+}
+
+/// Insecure `list<u8>` from the xorshift stream.
+fn insecure_bytes_value(n: usize) -> Value {
+    let bytes: Vec<u8> = (0..n).map(|_| (next_u64() & 0xFF) as u8).collect();
+    bytes_to_list(&bytes)
+}
+
+/// CSPRNG `list<u8>`. Falls back to nothing — an empty list is a visible
+/// failure, whereas substituting the insecure stream would hand back
+/// predictable bytes under a name that promises unpredictability.
+fn secure_bytes_value(n: usize) -> Value {
+    match secure_bytes(n) {
+        Some(bytes) => bytes_to_list(&bytes),
+        None => bytes_to_list(&[]),
     }
-    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(bytes)))
 }
 
 pub fn register(vm: &mut VM) {
@@ -76,14 +126,21 @@ pub fn register(vm: &mut VM) {
         "wasi:random/random",
         "get-random-bytes",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let n = args.first().map(|v| v.as_f64() as usize).unwrap_or(0);
-            random_bytes_value(n)
+            let n = args
+                .first()
+                .map(|v| v.as_f64())
+                .filter(|len| *len > 0.0)
+                .map(|len| len as usize)
+                .unwrap_or(0);
+            secure_bytes_value(n)
         }),
     );
     vm.register_host_fn(
         "wasi:random/random",
         "get-random-u64",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::F64(next_u64() as f64)),
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+            Value::F64(secure_u64().unwrap_or(0) as f64)
+        }),
     );
 
     // ── wasi:random/insecure ───────────────────────────────────────────
@@ -94,8 +151,13 @@ pub fn register(vm: &mut VM) {
         "wasi:random/insecure",
         "get-insecure-random-bytes",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let n = args.first().map(|v| v.as_f64() as usize).unwrap_or(0);
-            random_bytes_value(n)
+            let n = args
+                .first()
+                .map(|v| v.as_f64())
+                .filter(|len| *len > 0.0)
+                .map(|len| len as usize)
+                .unwrap_or(0);
+            insecure_bytes_value(n)
         }),
     );
     vm.register_host_fn(

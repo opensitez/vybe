@@ -1,13 +1,13 @@
 use std::sync::Arc;
-use vybe_emitter::instructions::core_wasm;
+use vybe_compiler::compiler::instructions::core_wasm;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
-use vybe_emitter::classes::{
+use vybe_compiler::compiler::object::{
     emit_bind_bound_method_with_aliases, emit_bind_getter, emit_bind_setter,
 };
-use vybe_emitter::functions::create_function_chunk;
+use vybe_compiler::compiler::functions::create_function_chunk;
 
 const SERIAL_KIND_KEY: &str = "vybe$php_ser_kind";
 
@@ -157,7 +157,7 @@ pub fn emit_php_header(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     if let Some(slot) = response_code_slot {
         lget(chunk, slot, line);
         push_const(chunk, Value::F64(0.0), line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
     }
 
@@ -166,12 +166,12 @@ pub fn emit_php_header(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunk.emit_call(lower_import, 1, line);
     push_str(chunk, "location:", line);
     chunk.emit_call(starts_with_import, 2, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     chunk.emit_call(response_code_import, 0, line);
     push_const(chunk, Value::F64(200.0), line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
 
     push_const(chunk, Value::F64(302.0), line);
@@ -209,28 +209,28 @@ pub fn emit_php_extension_loaded(chunks: &mut [Chunk], current: usize, argc: u8,
 
     lget(chunk, ext_slot, line);
     push_str(chunk, "mysqli", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_else(line);
 
     lget(chunk, ext_slot, line);
     push_str(chunk, "mysqlnd", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_else(line);
 
     lget(chunk, ext_slot, line);
     push_str(chunk, "pdo_mysql", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_else(line);
 
     lget(chunk, ext_slot, line);
     push_str(chunk, "mysql", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_else(line);
@@ -260,7 +260,7 @@ pub fn emit_php_phpinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let write_idx = chunk.add_import("wasi:cli/stdout", "write-via-stream");
     let rd_slot = alloc_local(chunk);
     let wr_slot = alloc_local(chunk);
-    vybe_emitter::io::emit_write_stdout_with_imports(
+    vybe_compiler::compiler::io::emit_write_stdout_with_imports(
         chunk,
         write_idx,
         rd_slot,
@@ -324,7 +324,7 @@ pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, l
     chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::GLOBAL_GET, needs_cookie, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     push_str(chunk, "PHPSESSID", line);
@@ -368,10 +368,10 @@ pub fn emit_php_session_destroy(chunks: &mut [Chunk], current: usize, _argc: u8,
     push_const(chunk, Value::Bool(true), line);
 }
 
-fn helper_loop_start(chunk: &mut Chunk, line: u32) -> vybe_emitter::loops::LoopState {
+fn helper_loop_start(chunk: &mut Chunk, line: u32) -> vybe_compiler::compiler::loops::LoopState {
     let block_patch = chunk.emit_block(line);
     let (loop_patch, _) = chunk.emit_loop_s(line);
-    vybe_emitter::loops::LoopState {
+    vybe_compiler::compiler::loops::LoopState {
         block_patch,
         loop_patch,
         body_block_patch: None,
@@ -379,12 +379,12 @@ fn helper_loop_start(chunk: &mut Chunk, line: u32) -> vybe_emitter::loops::LoopS
 }
 
 fn helper_loop_cond(chunk: &mut Chunk, line: u32) {
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line);
 }
 
-fn helper_loop_end(chunk: &mut Chunk, state: vybe_emitter::loops::LoopState, line: u32) {
+fn helper_loop_end(chunk: &mut Chunk, state: vybe_compiler::compiler::loops::LoopState, line: u32) {
     chunk.emit_br(0, line);
     chunk.emit_end(line);
     chunk.patch_loop(state.loop_patch);
@@ -415,7 +415,7 @@ fn emit_nullish_return(chunk: &mut Chunk, value_slot: u16, line: u32) {
 fn emit_is_array_into(imports: &mut Chunk, code: &mut Chunk, value_slot: u16, line: u32) {
     lget(code, value_slot, line);
     call_import_into(imports, code, "ecma:array", "isArray", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(code, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(code, line);
 }
 
 fn bump_loop_index(chunk: &mut Chunk, i_slot: u16, line: u32) {
@@ -441,7 +441,7 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         for ty in types.iter().filter(|ty| !ty.is_interface) {
             lget(&mut helper, class_slot, line);
             push_str(&mut helper, &ty.name, line);
-            vybe_emitter::ops::emit_dyn_eq(&mut helper, line);
+            vybe_compiler::compiler::ops::emit_dyn_eq(&mut helper, line);
             helper.emit_if(line);
 
             helper.emit_op_u16(Op::STRUCT_NEW, 0, line);
@@ -553,7 +553,7 @@ fn build_php_json_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize 
         // Sequential array → new array of normalized elements.
         lget(&mut helper, value_slot, line);
         call_import_into(imports, &mut helper, "ecma:array", "isArray", 1, line);
-        vybe_emitter::ops::emit_dyn_to_bool_into(imports, &mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool_into(imports, &mut helper, line);
         helper.emit_if(line);
         helper.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
         lset(&mut helper, out_slot, line);
@@ -565,9 +565,9 @@ fn build_php_json_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize 
         let arr_loop = helper_loop_start(&mut helper, line);
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        vybe_emitter::ops::emit_dyn_lt_into(imports, &mut helper, line);
-        vybe_emitter::ops::emit_dyn_to_bool_into(imports, &mut helper, line);
-        vybe_emitter::ops::emit_dyn_not_into(imports, &mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt_into(imports, &mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool_into(imports, &mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_not_into(imports, &mut helper, line);
         helper.emit_br_if(1, line);
         lget(&mut helper, out_slot, line);
         ref_func(&mut helper, helper_idx, line);
@@ -624,9 +624,9 @@ fn build_php_json_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize 
         let obj_loop = helper_loop_start(&mut helper, line);
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        vybe_emitter::ops::emit_dyn_lt_into(imports, &mut helper, line);
-        vybe_emitter::ops::emit_dyn_to_bool_into(imports, &mut helper, line);
-        vybe_emitter::ops::emit_dyn_not_into(imports, &mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt_into(imports, &mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool_into(imports, &mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_not_into(imports, &mut helper, line);
         helper.emit_br_if(1, line);
         lget(&mut helper, keys_slot, line);
         lget(&mut helper, i_slot, line);
@@ -667,7 +667,7 @@ pub fn emit_php_json_normalize(
     value_slot: u16,
     line: u32,
 ) {
-    // Delegate to the shared `vybe_emitter::json` normalizer. PHP serializes
+    // Delegate to the shared `vybe_compiler::compiler::json` normalizer. PHP serializes
     // every object's own enumerable keys (props mode), applies no encoder hook,
     // and preserves native key order — byte-compatible with the former
     // hand-rolled helper, now unified with Python's json path.
@@ -684,7 +684,7 @@ pub fn emit_php_json_normalize(
         c.emit_bool_const(true, line); // serialize props
         lset(c, props_slot, line);
     }
-    vybe_emitter::json::emit_normalize(
+    vybe_compiler::compiler::json::emit_normalize(
         chunks,
         current,
         value_slot,
@@ -760,7 +760,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         let items_loop = helper_loop_start(&mut helper, line);
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(&mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(&mut helper, line);
         helper_loop_cond(&mut helper, line);
         lget(&mut helper, items_slot, line);
         ref_func(&mut helper, helper_idx, line);
@@ -803,7 +803,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         let assoc_loop = helper_loop_start(&mut helper, line);
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(&mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(&mut helper, line);
         helper_loop_cond(&mut helper, line);
         lget(&mut helper, names_slot, line);
         lget(&mut helper, i_slot, line);
@@ -925,7 +925,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         let sleep_loop = helper_loop_start(&mut helper, line);
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(&mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(&mut helper, line);
         helper_loop_cond(&mut helper, line);
         lget(&mut helper, names_slot, line);
         lget(&mut helper, i_slot, line);
@@ -967,7 +967,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         let object_loop = helper_loop_start(&mut helper, line);
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(&mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(&mut helper, line);
         helper_loop_cond(&mut helper, line);
         lget(&mut helper, names_slot, line);
         lget(&mut helper, i_slot, line);
@@ -983,7 +983,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         ] {
             lget(&mut helper, key_slot, line);
             push_str(&mut helper, internal_key, line);
-            vybe_emitter::ops::emit_dyn_eq(&mut helper, line);
+            vybe_compiler::compiler::ops::emit_dyn_eq(&mut helper, line);
             helper.emit_if(line);
             bump_loop_index(&mut helper, i_slot, line);
             helper.emit_br(1, line);
@@ -1107,7 +1107,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
 
         lget(&mut helper, kind_slot, line);
         push_str(&mut helper, "array", line);
-        vybe_emitter::ops::emit_dyn_eq(&mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(&mut helper, line);
         helper.emit_if(line);
         helper.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
         lset(&mut helper, out_slot, line);
@@ -1122,7 +1122,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         let items_loop = helper_loop_start(&mut helper, line);
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(&mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(&mut helper, line);
         helper_loop_cond(&mut helper, line);
         ref_func(&mut helper, helper_idx, line);
         lget(&mut helper, items_slot, line);
@@ -1163,7 +1163,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         let assoc_loop = helper_loop_start(&mut helper, line);
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(&mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(&mut helper, line);
         helper_loop_cond(&mut helper, line);
         lget(&mut helper, names_slot, line);
         lget(&mut helper, i_slot, line);
@@ -1196,7 +1196,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
 
         lget(&mut helper, kind_slot, line);
         push_str(&mut helper, "custom_object", line);
-        vybe_emitter::ops::emit_dyn_eq(&mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(&mut helper, line);
         helper.emit_if(line);
         lget(&mut helper, out_slot, line);
         struct_get_key(&mut helper, "__unserialize", line);
@@ -1253,7 +1253,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         let fields_loop = helper_loop_start(&mut helper, line);
         lget(&mut helper, i_slot, line);
         lget(&mut helper, n_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(&mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(&mut helper, line);
         helper_loop_cond(&mut helper, line);
         lget(&mut helper, names_slot, line);
         lget(&mut helper, i_slot, line);
@@ -1269,7 +1269,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
 
         lget(&mut helper, kind_slot, line);
         push_str(&mut helper, "sleep_object", line);
-        vybe_emitter::ops::emit_dyn_eq(&mut helper, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(&mut helper, line);
         helper.emit_if(line);
         lget(&mut helper, out_slot, line);
         struct_get_key(&mut helper, "__wakeup", line);
@@ -1344,8 +1344,8 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_call(test_bool_empty, 1, line);
     chunk.emit_if_value(line);
     lget(chunk, value_slot, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_else(line);
 
     // number test
@@ -1355,7 +1355,7 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_if_value(line);
     lget(chunk, value_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_else(line);
 
     // string test
@@ -1366,14 +1366,14 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 
     lget(chunk, value_slot, line);
     push_str(chunk, "", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_else(line);
 
     lget(chunk, value_slot, line);
     push_str(chunk, "0", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_end(line);
     chunk.emit_else(line);
 
@@ -1406,7 +1406,7 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     let _ = chunk;
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
     let chunk = &mut chunks[current];
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
 
     lget(chunk, value_slot, line);
@@ -1424,7 +1424,7 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_op(Op::DROP, line);
     lget(chunk, base_len_slot, line);
     core_wasm::i32_const(chunk, line, 0);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_else(line);
     push_str(chunk, "\x1F", line);
     let _ = chunk;
@@ -1434,9 +1434,9 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     lset(chunk, extra_len_slot, line);
     lget(chunk, base_len_slot, line);
     lget(chunk, extra_len_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     core_wasm::i32_const(chunk, line, 0);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_end(line);
     chunk.emit_else(line);
 

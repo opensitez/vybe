@@ -497,6 +497,10 @@ DateTime        = ["common", "dart.datetime_new"]
 # ────────────────────────────────────────────────────────────────────────────
 
 [namespaces]
+
+# Namespace-tree roots this language resolves platform types against, and
+# mounts ambiently so unqualified names resolve to their `Type` node.
+type_scopes = ["flutter"]
 use_dotnet = false
 roots = []
 extra_imports = []

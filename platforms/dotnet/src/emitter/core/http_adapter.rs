@@ -22,7 +22,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::instructions::core_wasm;
+use vybe_compiler::compiler::instructions::core_wasm;
 
 fn call_import(chunk: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
     let idx = chunk.add_import(module, name);

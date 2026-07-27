@@ -33,7 +33,10 @@ use regex::{Captures, Regex};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vybe_ast::*;
-use vybe_emitter::{channels, reflection};
+// Channels are normalized into COMMON AST shapes — the walker builds AST,
+// not bytecode. The emit side lives in the compiler.
+use vybe_ast::channels;
+use vybe_compiler::compiler::reflection;
 
 // ══════════════════════════════════════════════════════════════════════════════════════════
 // Entry point

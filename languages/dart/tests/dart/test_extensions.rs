@@ -2,6 +2,45 @@
 //! methods, getters, and static extension helpers.
 
 dart_cases! {
+    // ── extension on a USER-DECLARED class ───────────────────────────
+    //
+    // Distinct mechanism from every other case in this file. Extending a type
+    // you OWN is member augmentation — the same operation as a mixin or a PHP
+    // trait, and it folds into the class. Extending a BUILT-IN (every other
+    // case below) cannot fold, because the type is not yours; that resolves
+    // through the receiver's prototype instead. Two mechanisms, one syntax.
+    // See flexclassplan.md §4c / §4d.
+
+    extension_on_user_class_method => {
+        r#"class Box { int v = 3; }
+extension BoxX on Box { int twice() => v * 2; }
+void main() {
+  print(Box().twice());
+}"#,
+        ["6"]
+    };
+
+    extension_on_user_class_getter => {
+        r#"class Box { int v = 4; }
+extension BoxX on Box { int get tripled => v * 3; }
+void main() {
+  print(Box().tripled);
+}"#,
+        ["12"]
+    };
+
+    extension_on_user_class_does_not_override_own_member => {
+        r#"class Box {
+  int v = 5;
+  int twice() => 999;
+}
+extension BoxX on Box { int twice() => v * 2; }
+void main() {
+  print(Box().twice());
+}"#,
+        ["999"]
+    };
+
     // ── int: static extension methods ────────────────────────────────
 
     int_static_max_of_two_values => {

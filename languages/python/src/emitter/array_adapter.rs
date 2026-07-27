@@ -11,7 +11,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_emitter::instructions::core_wasm;
+use vybe_compiler::compiler::instructions::core_wasm;
 
 /// Width in bytes of each `array` typecode, per CPython's table.
 const ITEMSIZES: &[(&str, i32)] = &[
@@ -46,7 +46,7 @@ fn emit_itemsize_of(chunk: &mut Chunk, tc: u16, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_GET, tc, line);
         chunk.emit_string_const(code, line);
         chunk.emit_call(equals, 2, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         core_wasm::i32_const(chunk, line, *size);
         chunk.emit_else(line);
@@ -67,7 +67,7 @@ pub fn emit_array_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, tc, line);
     if argc < 2 {
-        vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+        vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, init, line);
     }
 
@@ -109,9 +109,9 @@ pub fn emit_buffer_info(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     chunks[current].emit_op_u16(Op::LOCAL_SET, a, line);
     core_wasm::f64_const(&mut chunks[current], line, 0.0);
     chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
-    vybe_emitter::collections::emit_len(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_len(chunks, current, line);
     // Python returns a real tuple — built the one canonical way.
-    vybe_emitter::tuples::emit_tuple(chunks, current, 2, line);
+    vybe_compiler::compiler::tuples::emit_tuple(chunks, current, 2, line);
 }
 
 /// `a.frombytes(b)` — append each byte. Stack: `[a, b]` → `[null]`.
@@ -126,15 +126,15 @@ pub fn emit_frombytes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
-    vybe_emitter::collections::emit_len(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op_u16(Op::LOCAL_GET, n, line);
     chunk.emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, a, line);
     chunk.emit_op_u16(Op::LOCAL_GET, b, line);
@@ -148,7 +148,7 @@ pub fn emit_frombytes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
 
     chunks[current].emit_op(Op::NULL, line);
 }

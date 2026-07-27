@@ -12,15 +12,56 @@
 //! Each sibling is a separate `impl Compiler { ... }` block; the public
 //! surface is unchanged (`Compiler::with_profile`, `Compiler::compile`).
 
+
+// ── Chunk-level emit surface ────────────────────────────────────────────
+// The former `emitter` module. Its free functions over `&mut Chunk` and the
+// `impl Compiler` walkers alongside them are one layer now — this crate IS
+// the emitter, so there is no second module to route through.
+pub mod collections;
+pub mod convert;
+pub mod delegates;
+pub mod dict;
+pub mod errors;
+pub mod functions;
+pub mod generators;
+pub mod gui;
+pub mod heap;
+pub mod instructions;
+pub mod invoke;
+pub mod io;
+pub mod json;
+pub mod loops;
+pub mod math;
+pub mod multivalue;
+pub mod platforms;
+pub mod object;
+pub mod ops;
+pub mod packing;
+pub mod random;
+pub mod sorted_collection;
+pub mod sprintf;
+pub mod strings;
+pub mod target;
+pub mod type_registry;
+pub mod threading;
+pub mod tuples;
+pub mod xml;
+pub mod bundle;
+pub mod dispatch;
+pub mod runtime_helpers;
+pub use target::Target;
+pub use type_registry::CompileTimeTypes;
+pub use runtime_helpers::RuntimeHelpers;
+
 macro_rules! inst {
     ($self:expr, $($path:ident)::+ $(, $arg:expr)*) => {{
-        crate::emitter::instructions::$($path)::+(&mut $self.chunks[$self.current], $self.line $(, $arg)*)
+        crate::compiler::instructions::$($path)::+(&mut $self.chunks[$self.current], $self.line $(, $arg)*)
     }};
 }
 
 macro_rules! fn_call {
     ($self:expr, $module:literal, $name:literal, $argc:expr) => {{
-        crate::emitter::instructions::host::CapabilityContext::get()
+        crate::compiler::instructions::host::CapabilityContext::get()
             .functions
             .emit(
                 &mut $self.chunks[$self.current],
@@ -39,19 +80,32 @@ mod calls;
 mod case_insensitive_collections;
 mod class_context;
 pub mod class_normalize; // cross-language class normalisation (was crate::common::classes)
-mod classes;
+pub mod canonical;
+pub mod channels;
+pub mod closures;
+pub mod components;
+pub mod imports;
+pub mod promises;
+pub mod prototypes;
+pub mod references;
+pub mod slices;
+#[path = "enum.rs"]
+pub mod r#enum;
+pub mod namespaces;
+mod class_augmentation;
+pub mod classes;
 mod control_flow;
 mod emit_helpers;
 mod enums;
-mod events;
-mod expressions;
+pub mod events;
+pub mod expressions;
 mod lambdas;
 mod link;
 mod metadata;
 mod operators;
 mod overloads;
 mod php_lang;
-mod reflection;
+pub mod reflection;
 mod resolver;
 mod scope;
 mod statements;
@@ -59,10 +113,10 @@ mod type_inference;
 
 use crate::ast::*;
 use crate::compiler::scope::Scope;
-use crate::emitter as common;
+use crate::compiler as common;
 #[allow(unused_imports)]
-use crate::emitter::instructions as inst;
-use crate::emitter::loops::LoopState;
+use crate::compiler::instructions as inst;
+use crate::compiler::loops::LoopState;
 use crate::profile::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -398,6 +452,12 @@ pub struct Compiler {
     current_result_slot: Option<u16>,
     current_ref_out_params: Option<Vec<u16>>,
     pending_classes: HashMap<String, PendingClass>,
+    /// Every class NORMALIZED ONCE, during the declaration pass, keyed by
+    /// canonical name. This is the single class model: computed before any
+    /// body compiles, so a class's member set is knowable regardless of
+    /// compilation order, and augmenting types (traits / mixins / promoted
+    /// fields) can be resolved by name. See flexclassplan.md §3a, §4c.
+    normalized_classes: HashMap<String, vybe_bytecode::class_normalize::NormalClass>,
     current_class: Option<String>,
     current_namespace: Option<String>,
     /// Mirrors `NormalClass.implicit_self_fields` for the class the
@@ -2145,6 +2205,7 @@ impl Compiler {
             current_result_slot: None,
             current_ref_out_params: None,
             pending_classes: HashMap::new(),
+            normalized_classes: HashMap::new(),
             current_class: None,
             current_namespace: None,
             current_class_implicit_self: false,
@@ -2408,12 +2469,13 @@ impl Compiler {
         // the retired `registry::dotnet` (keep-set went empty once the drawing
         // Body methods migrated to `MethodBody::Common`).
 
-        if crate::registry::plib::module_uses_plib_gcl(module) {
-            self.register_plib_gcl_classes()?;
-        }
-
-        if crate::registry::flutter::module_uses_flutter(module) {
-            self.mount_flutter_ambient();
+        // Ambient platform roots — the SAME `type_scopes` the language
+        // declares for member resolution. Mounting them makes unqualified
+        // platform names (`Scaffold(...)`, `TForm`, `Button`) resolve to their
+        // tree `Type` and construct through the one common-resolver path. One
+        // declaration, not a second list and not a per-platform hook.
+        for root in self.profile.namespaces.type_scopes.clone() {
+            self.mount_ambient_root(&root);
         }
 
         // Pre-pass: merge `Partial Class` declarations sharing the same name.
@@ -2442,6 +2504,12 @@ impl Compiler {
         }
 
         self.predeclare_type_names(&merged_body, None);
+        // Declaration pass, phases 2 and 3: fold declared augmentations across
+        // ALL normalized classes, THEN register member surfaces. Order matters
+        // — a contributed member missing from registration reintroduces the
+        // order-dependence bug (flexclassplan.md §3a, §4c).
+        self.apply_class_augmentations()?;
+        self.predeclare_class_surfaces();
         self.predeclare_function_names(&merged_body);
         self.predeclare_interface_signatures_in_body(&merged_body);
 
@@ -2529,7 +2597,7 @@ impl Compiler {
         // compilation and recurse through `Compiler::compile`.
         // and recurse forever. Cheap thread-local guard since polyfill
         // compilation is single-threaded at vybex build time.
-        if !crate::emitter::runtime_helpers::is_compiling_runtime_helper() {
+        if !crate::compiler::runtime_helpers::is_compiling_runtime_helper() {
             if self.profile.name == "c" {
                 common::bundle::finalize_with_runtime_helpers_excluding(
                     &mut self.chunks,
@@ -2903,4 +2971,17 @@ fn is_host_specifier(path: &str) -> bool {
             | "node:process"
             | "node:child_process"
             | "node:crypto")
+}
+
+/// Resolve a shared *platform* emit dispatcher by its `common:<prefix>.*`
+/// prefix, through the plugin registry.
+///
+/// This was a hardcoded `match prefix { "dotnet" => …, "libc" => … }` — the
+/// same name-check antipattern as `profile.name == "<lang>"`, one layer up, and
+/// it forced `vybe_compiler` to depend on the platform crates at COMPILE time.
+/// Platforms are plugins: they register themselves (see each platform's
+/// `register_platform()`), so the compiler never names one and a platform can
+/// become a dylib.
+pub fn platform_emit_dispatch(prefix: &str) -> Option<crate::languages::EmitDispatch> {
+    vybe_bytecode::registry::platform_emit_dispatch_for(prefix)
 }

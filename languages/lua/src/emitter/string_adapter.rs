@@ -50,7 +50,7 @@ pub fn emit_lua_string_dump(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         chunks[current].emit_op(Op::DROP, line);
     }
     chunks[current].emit_string_const("unable to dump C function", line);
-    vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+    vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
 }
 
 /// Call a host import on `chunks[current]` with `argc` args already on stack.
@@ -78,7 +78,7 @@ fn emit_str_eq_const(chunk: &mut Chunk, slot: u16, value: &str, line: u32) {
 fn emit_slot_eq_bool(chunk: &mut Chunk, slot: u16, value: bool, line: u32) {
     lget(chunk, slot, line);
     chunk.emit_bool_const(value, line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
 }
 
 fn emit_type_is_slot(
@@ -106,7 +106,7 @@ fn emit_slot_is_missing_or_false(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op(Op::I32_OR, line);
     lget(chunk, slot, line);
     chunk.emit_bool_const(false, line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op(Op::I32_OR, line);
 }
 
@@ -140,7 +140,7 @@ fn emit_push_match_part_if_present(
     chunks[current].emit_if(line);
     lget(&mut chunks[current], item_slot, line);
     chunks[current].emit_i32_const(index, line);
-    vybe_emitter::collections::emit_get(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_get(chunks, current, line);
     lset(&mut chunks[current], value_slot, line);
     emit_array_push_slot(chunks, current, row_slot, value_slot, line);
     chunks[current].emit_end(line);
@@ -181,7 +181,7 @@ fn emit_lua_gsub_manual_replace(
     lset(&mut chunks[current], cursor_slot, line);
 
     let loop_state =
-        vybe_emitter::loops::emit_for_in_start(chunks, current, matches_slot, idx_slot, line);
+        vybe_compiler::compiler::loops::emit_for_in_start(chunks, current, matches_slot, idx_slot, line);
     lset(&mut chunks[current], item_slot, line);
 
     lget(&mut chunks[current], item_slot, line);
@@ -190,7 +190,7 @@ fn emit_lua_gsub_manual_replace(
 
     lget(&mut chunks[current], item_slot, line);
     chunks[current].emit_i32_const(0, line);
-    vybe_emitter::collections::emit_get(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_get(chunks, current, line);
     lset(&mut chunks[current], match_slot, line);
 
     {
@@ -211,8 +211,8 @@ fn emit_lua_gsub_manual_replace(
     lget(&mut chunks[current], s_slot, line);
     lget(&mut chunks[current], cursor_slot, line);
     lget(&mut chunks[current], start_slot, line);
-    vybe_emitter::strings::emit_substring(&mut chunks[current], line);
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_substring(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
     lset(&mut chunks[current], out_slot, line);
 
     lget(&mut chunks[current], len_slot, line);
@@ -221,7 +221,7 @@ fn emit_lua_gsub_manual_replace(
     chunks[current].emit_if(line);
     lget(&mut chunks[current], item_slot, line);
     chunks[current].emit_i32_const(1, line);
-    vybe_emitter::collections::emit_get(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_get(chunks, current, line);
     lset(&mut chunks[current], key_slot, line);
     chunks[current].emit_else(line);
     lget(&mut chunks[current], match_slot, line);
@@ -238,10 +238,10 @@ fn emit_lua_gsub_manual_replace(
     push_null(&mut chunks[current], line);
     lget(&mut chunks[current], item_slot, line);
     chunks[current].emit_i32_const(1, line);
-    vybe_emitter::collections::emit_get(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_get(chunks, current, line);
     lget(&mut chunks[current], item_slot, line);
     chunks[current].emit_i32_const(2, line);
-    vybe_emitter::collections::emit_get(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_get(chunks, current, line);
     chunks[current].emit_call(fn_call, 4, line);
     lset(&mut chunks[current], replacement_slot, line);
     chunks[current].emit_else(line);
@@ -254,7 +254,7 @@ fn emit_lua_gsub_manual_replace(
     chunks[current].emit_else(line);
     lget(&mut chunks[current], repl_slot, line);
     lget(&mut chunks[current], key_slot, line);
-    vybe_emitter::collections::emit_get(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_get(chunks, current, line);
     lset(&mut chunks[current], replacement_slot, line);
     chunks[current].emit_end(line);
 
@@ -266,13 +266,13 @@ fn emit_lua_gsub_manual_replace(
 
     lget(&mut chunks[current], out_slot, line);
     lget(&mut chunks[current], replacement_slot, line);
-    vybe_emitter::strings::emit_to_string(&mut chunks[current], line);
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_to_string(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
     lset(&mut chunks[current], out_slot, line);
 
     lget(&mut chunks[current], end_slot, line);
     lset(&mut chunks[current], cursor_slot, line);
-    vybe_emitter::loops::emit_for_in_end(chunks, current, idx_slot, loop_state, line);
+    vybe_compiler::compiler::loops::emit_for_in_end(chunks, current, idx_slot, loop_state, line);
 
     lget(&mut chunks[current], out_slot, line);
     lget(&mut chunks[current], s_slot, line);
@@ -280,8 +280,8 @@ fn emit_lua_gsub_manual_replace(
     lget(&mut chunks[current], s_slot, line);
     call_import(chunks, current, "wasm:js-string", "length", 1, line);
     chunks[current].emit_op(Op::F64_FROM_I32, line);
-    vybe_emitter::strings::emit_substring(&mut chunks[current], line);
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_substring(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
     lset(&mut chunks[current], result_slot, line);
 
     lget(&mut chunks[current], matches_slot, line);
@@ -316,7 +316,7 @@ fn emit_lua_balanced_match_row(
     chunks[current].emit_i32_const(0, line);
     lset(&mut chunks[current], depth_slot, line);
 
-    let loop_state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     lget(&mut chunks[current], i_slot, line);
     lget(&mut chunks[current], len_slot, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
@@ -324,7 +324,7 @@ fn emit_lua_balanced_match_row(
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
     chunks[current].emit_op(Op::I32_AND, line);
-    vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
 
     lget(&mut chunks[current], s_slot, line);
     lget(&mut chunks[current], i_slot, line);
@@ -372,7 +372,7 @@ fn emit_lua_balanced_match_row(
     chunks[current].emit_op(Op::I32_ADD, line);
     lset(&mut chunks[current], i_slot, line);
 
-    vybe_emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
 
     lget(&mut chunks[current], end_slot, line);
     chunks[current].emit_i32_const(0, line);
@@ -387,7 +387,7 @@ fn emit_lua_balanced_match_row(
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op(Op::F64_FROM_I32, line);
-    vybe_emitter::strings::emit_substring(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_substring(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
     chunks[current].emit_end(line);
 }
@@ -502,7 +502,7 @@ pub fn emit_lua_string_sub(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
     lget(&mut chunks[current], s_slot, line);
     lget(&mut chunks[current], start0_slot, line);
     lget(&mut chunks[current], endx_slot, line);
-    vybe_emitter::strings::emit_substring(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_substring(&mut chunks[current], line);
     chunks[current].emit_end(line);
 }
 
@@ -534,13 +534,13 @@ pub fn emit_lua_string_rep(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
 
     lget(&mut chunks[current], s_slot, line);
     lget(&mut chunks[current], sep_slot, line);
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
     lget(&mut chunks[current], n_slot, line);
     chunks[current].emit_f64_const(1.0, line);
     chunks[current].emit_op(Op::F64_SUB, line);
-    vybe_emitter::strings::emit_repeat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_repeat(&mut chunks[current], line);
     lget(&mut chunks[current], s_slot, line);
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
     chunks[current].emit_end(line);
 }
 
@@ -583,26 +583,26 @@ pub fn emit_lua_string_byte(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         lset(&mut chunks[current], end0_slot, line);
         let row_slot = alloc_local(&mut chunks[current]);
         let i_slot = alloc_local(&mut chunks[current]);
-        vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+        vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
         lset(&mut chunks[current], row_slot, line);
         lget(&mut chunks[current], start0_slot, line);
         lset(&mut chunks[current], i_slot, line);
-        let loop_state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+        let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
         lget(&mut chunks[current], i_slot, line);
         lget(&mut chunks[current], end0_slot, line);
         chunks[current].emit_op(Op::F64_LE, line);
-        vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+        vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
         lget(&mut chunks[current], row_slot, line);
         lget(&mut chunks[current], s_slot, line);
         lget(&mut chunks[current], i_slot, line);
         call_import(chunks, current, "wasm:js-string", "charCodeAt", 2, line);
-        vybe_emitter::collections::emit_push(chunks, current, line);
+        vybe_compiler::compiler::collections::emit_push(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
         lget(&mut chunks[current], i_slot, line);
         chunks[current].emit_f64_const(1.0, line);
         chunks[current].emit_op(Op::F64_ADD, line);
         lset(&mut chunks[current], i_slot, line);
-        vybe_emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+        vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
         lget(&mut chunks[current], row_slot, line);
     } else {
         lget(&mut chunks[current], start0_slot, line);
@@ -631,11 +631,11 @@ fn emit_lua_pack_u16_from_slot(
     line: u32,
 ) {
     let endian = if little_endian {
-        vybe_emitter::packing::Endian::Little
+        vybe_compiler::compiler::packing::Endian::Little
     } else {
-        vybe_emitter::packing::Endian::Big
+        vybe_compiler::compiler::packing::Endian::Big
     };
-    vybe_emitter::packing::emit_pack_u16_from_f64_slot(
+    vybe_compiler::compiler::packing::emit_pack_u16_from_f64_slot(
         chunks, current, value_slot, endian, line,
     );
 }
@@ -646,7 +646,7 @@ fn emit_lua_pack_byte_from_slot(
     value_slot: u16,
     line: u32,
 ) {
-    vybe_emitter::packing::emit_pack_byte_from_f64_slot(chunks, current, value_slot, line);
+    vybe_compiler::compiler::packing::emit_pack_byte_from_f64_slot(chunks, current, value_slot, line);
 }
 
 fn emit_lua_pack_u32_from_slot(
@@ -657,11 +657,11 @@ fn emit_lua_pack_u32_from_slot(
     line: u32,
 ) {
     let endian = if little_endian {
-        vybe_emitter::packing::Endian::Little
+        vybe_compiler::compiler::packing::Endian::Little
     } else {
-        vybe_emitter::packing::Endian::Big
+        vybe_compiler::compiler::packing::Endian::Big
     };
-    vybe_emitter::packing::emit_pack_u32_from_f64_slot(
+    vybe_compiler::compiler::packing::emit_pack_u32_from_f64_slot(
         chunks, current, value_slot, endian, line,
     );
 }
@@ -683,28 +683,28 @@ pub fn emit_lua_string_pack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     chunks[current].emit_if_value(line);
     emit_lua_pack_byte_from_slot(chunks, current, value_slot, line);
     emit_lua_pack_byte_from_slot(chunks, current, base + 2, line);
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
     chunks[current].emit_else(line);
 
     emit_str_eq_const(&mut chunks[current], fmt_slot, "bBi", line);
     chunks[current].emit_if_value(line);
     emit_lua_pack_byte_from_slot(chunks, current, value_slot, line);
     emit_lua_pack_byte_from_slot(chunks, current, base + 2, line);
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
     emit_lua_pack_byte_from_slot(chunks, current, base + 3, line);
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
     chunks[current].emit_else(line);
 
     emit_str_eq_const(&mut chunks[current], fmt_slot, "b H z", line);
     chunks[current].emit_if_value(line);
     emit_lua_pack_byte_from_slot(chunks, current, value_slot, line);
     emit_lua_pack_u16_from_slot(chunks, current, base + 2, true, line);
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
     lget(&mut chunks[current], base + 3, line);
-    vybe_emitter::strings::emit_to_string(&mut chunks[current], line);
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_to_string(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
     push_str(&mut chunks[current], "\0", line);
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
     chunks[current].emit_else(line);
 
     emit_str_eq_const(&mut chunks[current], fmt_slot, "< H", line);
@@ -742,13 +742,13 @@ pub fn emit_lua_string_pack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     emit_str_eq_const(&mut chunks[current], fmt_slot, "z", line);
     chunks[current].emit_if_value(line);
     lget(&mut chunks[current], value_slot, line);
-    vybe_emitter::strings::emit_to_string(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_to_string(&mut chunks[current], line);
     push_str(&mut chunks[current], "\0", line);
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
     chunks[current].emit_else(line);
 
     lget(&mut chunks[current], value_slot, line);
-    vybe_emitter::strings::emit_to_string(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_to_string(&mut chunks[current], line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -831,7 +831,7 @@ fn emit_lua_char_code_at_lua_pos(
     pos_slot: u16,
     line: u32,
 ) {
-    vybe_emitter::packing::emit_char_code_at_one_based_pos_f64(
+    vybe_compiler::compiler::packing::emit_char_code_at_one_based_pos_f64(
         chunks, current, s_slot, pos_slot, line,
     );
 }
@@ -843,7 +843,7 @@ fn emit_lua_char_code_at_zero(
     index: f64,
     line: u32,
 ) {
-    vybe_emitter::packing::emit_char_code_at_zero_f64(chunks, current, s_slot, index, line);
+    vybe_compiler::compiler::packing::emit_char_code_at_zero_f64(chunks, current, s_slot, index, line);
 }
 
 fn emit_lua_unpack_u16(
@@ -854,11 +854,11 @@ fn emit_lua_unpack_u16(
     line: u32,
 ) {
     let endian = if little_endian {
-        vybe_emitter::packing::Endian::Little
+        vybe_compiler::compiler::packing::Endian::Little
     } else {
-        vybe_emitter::packing::Endian::Big
+        vybe_compiler::compiler::packing::Endian::Big
     };
-    vybe_emitter::packing::emit_unpack_u16_from_string_slot_f64(
+    vybe_compiler::compiler::packing::emit_unpack_u16_from_string_slot_f64(
         chunks, current, s_slot, endian, line,
     );
 }
@@ -871,11 +871,11 @@ fn emit_lua_unpack_u32(
     line: u32,
 ) {
     let endian = if little_endian {
-        vybe_emitter::packing::Endian::Little
+        vybe_compiler::compiler::packing::Endian::Little
     } else {
-        vybe_emitter::packing::Endian::Big
+        vybe_compiler::compiler::packing::Endian::Big
     };
-    vybe_emitter::packing::emit_unpack_u32_from_string_slot_f64(
+    vybe_compiler::compiler::packing::emit_unpack_u32_from_string_slot_f64(
         chunks, current, s_slot, endian, line,
     );
 }
@@ -1025,7 +1025,7 @@ pub fn emit_lua_string_unpack(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
     lget(&mut chunks[current], s_slot, line);
     chunks[current].emit_f64_const(0.0, line);
     lget(&mut chunks[current], nul_slot, line);
-    vybe_emitter::strings::emit_substring(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_substring(&mut chunks[current], line);
     lset(&mut chunks[current], value_slot, line);
     lget(&mut chunks[current], nul_slot, line);
     chunks[current].emit_f64_const(2.0, line);
@@ -1411,7 +1411,7 @@ pub fn emit_lua_string_match(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     lget(&mut chunks[current], start0_slot, line);
     lget(&mut chunks[current], len_slot, line);
     chunks[current].emit_op(Op::F64_FROM_I32, line);
-    vybe_emitter::strings::emit_substring(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_substring(&mut chunks[current], line);
     lset(&mut chunks[current], search_slot, line);
 
     lget(&mut chunks[current], search_slot, line);
@@ -1453,7 +1453,7 @@ pub fn emit_lua_string_match(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     lget(&mut chunks[current], result_slot, line);
     call_import(chunks, current, "ecma:array", "length", 1, line);
     lset(&mut chunks[current], len_slot, line);
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     lset(&mut chunks[current], row_slot, line);
 
     lget(&mut chunks[current], len_slot, line);
@@ -1545,11 +1545,11 @@ pub fn emit_lua_string_find(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     lget(&mut chunks[current], start0_slot, line);
     lget(&mut chunks[current], len_slot, line);
     chunks[current].emit_op(Op::F64_FROM_I32, line);
-    vybe_emitter::strings::emit_substring(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_substring(&mut chunks[current], line);
     lset(&mut chunks[current], search_slot, line);
 
     lget(&mut chunks[current], _plain_slot, line);
-    vybe_emitter::ops::emit_lua_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_lua_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     let plain_idx_slot = alloc_local(&mut chunks[current]);
@@ -1631,7 +1631,7 @@ pub fn emit_lua_string_find(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         let cap_len_import = c.add_import("ecma:array", "length");
         c.emit_call(cap_len_import, 1, line);
         lset(c, cap_len_slot, line);
-        vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+        vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
         lset(&mut chunks[current], row_slot, line);
         emit_array_push_slot(chunks, current, row_slot, start_slot, line);
         emit_array_push_slot(chunks, current, row_slot, end_slot, line);
@@ -1710,17 +1710,17 @@ pub fn emit_lua_string_gsub(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // Build global pattern "/" + pattern + "/g" for counting and default replacement.
         push_str(c, "/", line);
         lget(c, js_pat_tmp, line);
-        vybe_emitter::ops::emit_dyn_add(c, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(c, line);
         push_str(c, "/g", line);
-        vybe_emitter::ops::emit_dyn_add(c, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(c, line);
         lset(c, js_pat_slot, line);
 
         // Build single pattern "/" + pattern + "/" for n-limited MVP replacement.
         push_str(c, "/", line);
         lget(c, js_pat_tmp, line);
-        vybe_emitter::ops::emit_dyn_add(c, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(c, line);
         push_str(c, "/", line);
-        vybe_emitter::ops::emit_dyn_add(c, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(c, line);
         lset(c, replace_pat_slot, line);
     }
 
@@ -1731,7 +1731,7 @@ pub fn emit_lua_string_gsub(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     // string-like replacements. Callable replacements must pass through as
     // functions, and tables must keep their Map/Object identity.
     lget(&mut chunks[current], repl_slot, line);
-    vybe_emitter::reflection::emit_is_callable(chunks, current, line);
+    vybe_compiler::compiler::reflection::emit_is_callable(chunks, current, line);
     chunks[current].emit_if(line);
     chunks[current].emit_else(line);
     emit_type_is_slot(
@@ -1771,7 +1771,7 @@ pub fn emit_lua_string_gsub(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     let object_slot = alloc_local(&mut chunks[current]);
 
     lget(&mut chunks[current], repl_slot, line);
-    vybe_emitter::reflection::emit_is_callable(chunks, current, line);
+    vybe_compiler::compiler::reflection::emit_is_callable(chunks, current, line);
     lset(&mut chunks[current], callable_slot, line);
     emit_type_is_slot(
         &mut chunks[current],
@@ -1853,7 +1853,7 @@ pub fn emit_lua_string_gsub(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     }
     chunks[current].emit_else(line);
     push_str(&mut chunks[current], "bad argument #3 to 'gsub'", line);
-    vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+    vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_end(line);
@@ -1915,9 +1915,9 @@ pub fn emit_lua_string_gmatch_match_all(
         lset(c, tmp, line);
         push_str(c, "/", line);
         lget(c, tmp, line);
-        vybe_emitter::ops::emit_dyn_add(c, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(c, line);
         push_str(c, "/g", line);
-        vybe_emitter::ops::emit_dyn_add(c, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(c, line);
         lset(c, js_pat_slot, line);
     }
 
@@ -1927,18 +1927,18 @@ pub fn emit_lua_string_gmatch_match_all(
     call_import(chunks, current, "ecma:regexp", "matchAll", 2, line);
     lset(&mut chunks[current], matches_slot, line);
 
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     lset(&mut chunks[current], out_slot, line);
 
     let loop_state =
-        vybe_emitter::loops::emit_for_in_start(chunks, current, matches_slot, idx_slot, line);
+        vybe_compiler::compiler::loops::emit_for_in_start(chunks, current, matches_slot, idx_slot, line);
     lset(&mut chunks[current], item_slot, line);
 
     lget(&mut chunks[current], item_slot, line);
     call_import(chunks, current, "ecma:array", "length", 1, line);
     lset(&mut chunks[current], len_slot, line);
 
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     lset(&mut chunks[current], row_slot, line);
 
     lget(&mut chunks[current], len_slot, line);
@@ -1955,7 +1955,7 @@ pub fn emit_lua_string_gmatch_match_all(
     chunks[current].emit_end(line);
 
     emit_array_push_slot(chunks, current, out_slot, row_slot, line);
-    vybe_emitter::loops::emit_for_in_end(chunks, current, idx_slot, loop_state, line);
+    vybe_compiler::compiler::loops::emit_for_in_end(chunks, current, idx_slot, loop_state, line);
 
     lget(&mut chunks[current], out_slot, line);
 }
@@ -1971,10 +1971,10 @@ pub fn emit_lua_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
             "bad argument #2 to 'format' (number expected, got no value)",
             line,
         );
-        vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+        vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_else(line);
         lget(&mut chunks[current], fmt_slot, line);
-        vybe_emitter::sprintf::emit_sprintf(chunks, current, argc, line);
+        vybe_compiler::compiler::sprintf::emit_sprintf(chunks, current, argc, line);
         chunks[current].emit_end(line);
         return;
     }
@@ -1993,18 +1993,18 @@ pub fn emit_lua_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
             "invalid option '%*' to 'format'",
             line,
         );
-        vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+        vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_else(line);
         lget(&mut chunks[current], fmt_slot, line);
         lget(&mut chunks[current], first_slot, line);
         lget(&mut chunks[current], second_slot, line);
-        vybe_emitter::sprintf::emit_sprintf(chunks, current, argc, line);
+        vybe_compiler::compiler::sprintf::emit_sprintf(chunks, current, argc, line);
         chunks[current].emit_end(line);
         return;
     }
 
     if argc != 2 {
-        vybe_emitter::sprintf::emit_sprintf(chunks, current, argc, line);
+        vybe_compiler::compiler::sprintf::emit_sprintf(chunks, current, argc, line);
         return;
     }
 
@@ -2019,7 +2019,7 @@ pub fn emit_lua_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
     chunks[current].emit_if(line);
 
     lget(&mut chunks[current], value_slot, line);
-    vybe_emitter::strings::emit_to_string(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_to_string(&mut chunks[current], line);
     push_str(&mut chunks[current], "\\", line);
     push_str(&mut chunks[current], "\\\\", line);
     call_import(chunks, current, "ecma:string", "replaceAll", 3, line);
@@ -2045,9 +2045,9 @@ pub fn emit_lua_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
 
     push_str(&mut chunks[current], "\"", line);
     lget(&mut chunks[current], escaped_slot, line);
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
     push_str(&mut chunks[current], "\"", line);
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
 
     chunks[current].emit_else(line);
 
@@ -2069,11 +2069,11 @@ pub fn emit_lua_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
         "bad argument #2 to 'format' (number expected, got string)",
         line,
     );
-    vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+    vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_else(line);
     lget(&mut chunks[current], fmt_slot, line);
     lget(&mut chunks[current], value_slot, line);
-    vybe_emitter::sprintf::emit_sprintf(chunks, current, argc, line);
+    vybe_compiler::compiler::sprintf::emit_sprintf(chunks, current, argc, line);
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
 
@@ -2081,9 +2081,9 @@ pub fn emit_lua_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
     chunks[current].emit_if(line);
     lget(&mut chunks[current], fmt_slot, line);
     lget(&mut chunks[current], value_slot, line);
-    vybe_emitter::sprintf::emit_sprintf(chunks, current, argc, line);
+    vybe_compiler::compiler::sprintf::emit_sprintf(chunks, current, argc, line);
     push_str(&mut chunks[current], ".0", line);
-    vybe_emitter::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
     chunks[current].emit_else(line);
 
     emit_str_eq_const(&mut chunks[current], fmt_slot, "%.1f", line);
@@ -2145,7 +2145,7 @@ pub fn emit_lua_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
     chunks[current].emit_if(line);
     lget(&mut chunks[current], fmt_slot, line);
     lget(&mut chunks[current], value_slot, line);
-    vybe_emitter::sprintf::emit_sprintf(chunks, current, argc, line);
+    vybe_compiler::compiler::sprintf::emit_sprintf(chunks, current, argc, line);
     lset(&mut chunks[current], escaped_slot, line);
     lget(&mut chunks[current], escaped_slot, line);
     push_str(&mut chunks[current], "/\\.0+(e[+-]\\d+)/", line);
@@ -2155,7 +2155,7 @@ pub fn emit_lua_string_format(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
 
     lget(&mut chunks[current], fmt_slot, line);
     lget(&mut chunks[current], value_slot, line);
-    vybe_emitter::sprintf::emit_sprintf(chunks, current, argc, line);
+    vybe_compiler::compiler::sprintf::emit_sprintf(chunks, current, argc, line);
     lset(&mut chunks[current], escaped_slot, line);
 
     lget(&mut chunks[current], escaped_slot, line);
@@ -2204,11 +2204,11 @@ fn emit_row_string_format_fixed(
 ) {
     lget(&mut chunks[current], prefix, line);
     chunks[current].emit_i32_const(0, line);
-    vybe_emitter::collections::emit_get(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_get(chunks, current, line);
     for i in 0..row_len {
         lget(&mut chunks[current], row, line);
         chunks[current].emit_i32_const(i as i32, line);
-        vybe_emitter::collections::emit_get(chunks, current, line);
+        vybe_compiler::compiler::collections::emit_get(chunks, current, line);
     }
     emit_lua_string_format(chunks, current, row_len + 1, line);
 }
@@ -2235,7 +2235,7 @@ pub fn emit_lua_string_format_row(chunks: &mut Vec<Chunk>, current: usize, argc:
     lset(&mut chunks[current], prefix, line);
 
     lget(&mut chunks[current], row, line);
-    vybe_emitter::collections::emit_len(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_len(chunks, current, line);
     lset(&mut chunks[current], len, line);
 
     emit_i32_slot_eq_const(&mut chunks[current], len, 0, line);
@@ -2287,7 +2287,7 @@ pub fn emit_lua_string_char(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         chunks[current].emit_op(Op::I32_OR, line);
         chunks[current].emit_if(line);
         chunks[current].emit_string_const("bad argument to 'char' (value out of range)", line);
-        vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+        vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_end(line);
     }
 

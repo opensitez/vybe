@@ -222,6 +222,18 @@ use_dotnet = true
 # while real .NET namespace/type calls share the same surface as VB.
 use_dotnet_resolver = true
 
+# Types under this namespace-tree path dispatch at RUNTIME through the type
+# registry rather than through this language's value-method tables — `xs.Add(v)`
+# on a .NET collection must reach the collection's own method, not an array
+# builtin that happens to share the name. A PATH, not a language switch: the
+# answer depends on where the declaring type lives.
+runtime_collection_scope = ["dotnet", "system", "collections"]
+
+# Namespace-tree roots this language resolves platform types against. `Button`
+# / `Form` / `Dictionary` are .NET catalog entries, so member access on a
+# statically-typed receiver looks them up under `dotnet`.
+type_scopes = ["dotnet"]
+
 # Ambient tree roots — .NET default Imports/using context as data: bare
 # qualified chains (`Thread.Sleep`, `File.ReadAllText`, `Regex.IsMatch`)
 # search under these tree paths in order.

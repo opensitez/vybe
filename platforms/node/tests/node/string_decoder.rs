@@ -13,7 +13,7 @@ use std::sync::Arc;
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::{Chunk, Op, VM};
 use vybe_bytecode::capabilities::Capabilities;
-use vybe_emitter::platforms::register_platforms;
+use vybe_compiler::compiler::platforms::register_platforms;
 
 fn call_sd(name: &str, args: Vec<Value>) -> Value {
     let mut chunk = Chunk::new("<node-string_decoder-test>");

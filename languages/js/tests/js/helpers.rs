@@ -78,9 +78,9 @@ pub fn run_js(src: &str) -> Vec<String> {
 
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_emitter::platforms::init_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
     register_output_capture(&mut vm, &output);
-    vybe_emitter::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
     vybe_compiler::dynamic::run_with_js_dynamic_runtime(
         &mut vm,
         vybe_bytecode::capabilities::Capabilities::all(),
@@ -107,9 +107,9 @@ pub fn run_js_with_imports(src: &str) -> Vec<String> {
 
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_emitter::platforms::init_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
     register_output_capture(&mut vm, &output);
-    vybe_emitter::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
     vybe_compiler::adapters::register_all(&mut vm).expect("adapter registration failed");
 
     let module_exports = vybe_compiler::bundle::flatten_module_exports(&vm.modules);
@@ -148,9 +148,9 @@ pub fn run_js_vm(src: &str) -> (VM, Arc<Mutex<Vec<String>>>) {
 
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_emitter::platforms::init_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
     register_output_capture(&mut vm, &output);
-    vybe_emitter::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
     vybe_compiler::dynamic::run_with_js_dynamic_runtime(
         &mut vm,
         vybe_bytecode::capabilities::Capabilities::all(),

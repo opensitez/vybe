@@ -21,7 +21,7 @@
 
 use std::sync::Once;
 
-use vybe_emitter::namespaces::{self, NamespaceNode, Subtree};
+use vybe_bytecode::namespaces::{self, NamespaceNode, Subtree};
 
 /// Register the `collections` module surface under the `collections` root.
 /// Idempotent; first call wins.

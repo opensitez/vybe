@@ -263,7 +263,8 @@ impl Bundle {
         {
             static SEED: std::sync::Once = std::sync::Once::new();
             SEED.call_once(|| {
-                let m = crate::platforms::dotnet::emitter::namespace_constant_mappings()
+                let constants = vybe_bytecode::registry::platform_namespace_constants();
+                let m = constants.iter().map(|c| **c).collect::<Vec<_>>()
                     .iter()
                     .map(|(n, v)| (n.to_string(), *v))
                     .collect();
@@ -287,7 +288,15 @@ impl Bundle {
 
         // Load and append WASM binary chunks
         for wf in &self.wasm_files {
-            let wasm_chunks = vybe_platform_wasm::read_wasm(&wf.data)
+            // Through the registry: the platform that can decode this format
+            // registered a reader. The compiler does not name `vybe_platform_wasm`.
+            let wasm_chunks = vybe_bytecode::registry::platform_read_binary_module(&wf.data)
+                .ok_or_else(|| {
+                    format!(
+                        "no platform registered a reader for {}",
+                        wf.path.display()
+                    )
+                })?
                 .map_err(|e| format!("WASM error in {}: {}", wf.path.display(), e))?;
             if std::env::var_os("VYBE_TRACE").is_some() {
                 eprintln!(
@@ -2280,6 +2289,16 @@ fn resolve_imports(module: &mut Module, lang: &Language, base_dir: &Path) {
 
 #[cfg(test)]
 mod tests {
+    /// Register the frontends these tests need. `vybe_compiler` links no
+    /// language crate in production — languages register THEMSELVES through
+    /// `vybe_bytecode::registry` — so this crate's test binary starts with an
+    /// empty registry. This is the same `register()` entry point vybex and a
+    /// dylib host would call.
+    fn register_test_languages() {
+        vybe_language_php::register();
+        vybe_language_cobol::register();
+    }
+
     use super::*;
 
     fn run_php_bundle_prints(bundle: &Bundle) -> Vec<String> {
@@ -2291,7 +2310,7 @@ mod tests {
         let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let captured = output.clone();
 
-        vybe_emitter::platforms::register_platforms_all(&mut vm);
+        crate::compiler::platforms::register_platforms_all(&mut vm);
         vm.register_host_fn(
             "wasi:logging/logging",
             "log",
@@ -2326,6 +2345,7 @@ mod tests {
         let entry_src = "<?php\n$basedir = dirname(__DIR__);\nrequire_once $basedir . '/lib.php';\necho shared_helper();\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2356,6 +2376,7 @@ mod tests {
         let entry_src = "<?php\necho __DIR__;\necho __FILE__;\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2406,6 +2427,7 @@ PROCEDURE DIVISION.
 "#;
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("cobol").expect("cobol language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2445,6 +2467,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\ndefine('ABSPATH', __DIR__ . '/');\ndefine('WPINC', 'includes');\nrequire_once ABSPATH . WPINC . '/shared.php';\necho shared_constant_helper();\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2491,6 +2514,7 @@ PROCEDURE DIVISION.
         )
         .expect("write view");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2535,6 +2559,7 @@ PROCEDURE DIVISION.
         std::fs::write(&controller_path, controller_src).expect("write controller");
         std::fs::write(&view_path, view_src).expect("write view");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2582,6 +2607,7 @@ PROCEDURE DIVISION.
         std::fs::write(&controller_path, controller_src).expect("write controller");
         std::fs::write(&include_path, include_src).expect("write include");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2615,6 +2641,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\nfunction load_dynamic($file) {\n    require_once $file;\n}\nfunction still_present() { return 1; }\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2653,6 +2680,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\nrequire_once 'autoload.php';\necho 'done';\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2695,6 +2723,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\ndefine('ABSPATH', __DIR__ . '/');\ndefine('WP_CONTENT_DIR', ABSPATH . 'wp-content'); // trailing comment\nrequire_once WP_CONTENT_DIR . '/db-error.php';\necho db_error_helper();\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2725,6 +2754,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\nif (file_exists(WP_CONTENT_DIR . '/db-error.php')) {\n    require_once WP_CONTENT_DIR . '/db-error.php';\n}\nfunction after_optional_include() { return 1; }\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2755,6 +2785,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\ndefine('ABSPATH', __DIR__ . '/');\nif ( ! file_exists( ABSPATH . '.maintenance' ) ) {\n    return;\n}\nrequire ABSPATH . '.maintenance';\nfunction after_optional_file() { return 1; }\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2785,6 +2816,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\nfunction load_runtime($engine) {\n    $file = __DIR__ . '/' . $engine . '.php';\n    require_once $file;\n}\nfunction after_runtime_loader() { return 1; }\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2816,6 +2848,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\ndefine('ABSPATH', __DIR__ . '/');\nfunction load_runtime($name) {\n    require_once ABSPATH . 'lib/' . $name . '.php';\n}\nfunction after_mixed_runtime_loader() { return 1; }\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2847,6 +2880,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\ndefine('WP_LANG_DIR', __DIR__ . '/languages');\n$locale = get_locale();\n$locale_file = WP_LANG_DIR . \"/$locale.php\";\nif ( is_readable( $locale_file ) ) {\n    require $locale_file;\n}\nfunction after_locale_include() { return 1; }\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2877,6 +2911,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\nfunction includes_url($path) { return $path; }\n$css = includes_url('style.css');\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2906,6 +2941,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\nfunction render_template($base, $file) {\n    require trailingslashit($base) . $file;\n}\nfunction after_helper_include() { return 1; }\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2936,6 +2972,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\nif ( defined('SUNRISE') ) {\n    include_once __DIR__ . '/sunrise.php';\n}\nfunction after_defined_guard() { return 1; }\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2966,6 +3003,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\ndefine('WP_PLUGIN_DIR', __DIR__ . '/wp-content/plugins');\nif ( is_plugin_active( 'press-this/press-this-plugin.php' ) ) {\n    include WP_PLUGIN_DIR . '/press-this/class-wp-press-this-plugin.php';\n}\nfunction after_plugin_guard() { return 1; }\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -2995,6 +3033,7 @@ PROCEDURE DIVISION.
             "<?php\n$value = true;\n?>\n<?php if ($value): ?>\n<div>ok</div>\n<?php endif; ?>\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -3025,6 +3064,7 @@ PROCEDURE DIVISION.
             "<?php\n$i = 0;\nwhile ($i < 1) : ?>\n<div>ok</div>\n<?php\n$i++;\nendwhile;\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -3054,6 +3094,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\n$items = ['mp4'];\nforeach ($items as $type) : ?>\n<span><?php echo $type; ?></span>\n<?php\nendforeach;\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -3083,6 +3124,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\nforeach ( ['autoplay'] as $attr ) :\n?>\n<# <?php echo $attr; ?> #>\n<?php endforeach; ?>#>\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -3112,6 +3154,7 @@ PROCEDURE DIVISION.
         let entry_src = "<?php\nforeach ( array(\n    'artist' => 'Artist',\n    'album' => 'Album',\n) as $key => $label ) :\n?>\n<span><?php echo $label; ?></span>\n<?php endforeach; ?>\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -3165,6 +3208,7 @@ $notesTree = [
 "#;
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -3195,6 +3239,7 @@ $notesTree = [
             "<?php\nif (true) :\n?>\n<div>ok</div>\n<?php\nendif; // keep parser aligned\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -3228,6 +3273,7 @@ $notesTree = [
         let entry_src = "<?php\ninclude 'header.php';\n?>\n<div>body</div>\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -3282,6 +3328,7 @@ $notesTree = [
         let entry_src = "<?php\ninclude 'helper.php';\nheader('Location: /next.php');\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -3331,6 +3378,7 @@ $notesTree = [
         let entry_src = "<?php\nrequire_once __DIR__ . '/ixr.php';\nnew IXR_Request();\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -3363,6 +3411,7 @@ $notesTree = [
         let entry_src = "<?php\nfunction classify($mode) {\n    switch ($mode) {\n        case 0:\n            return 'zero';\n        default:\n            return 'other';\n    }\n}\necho classify(0);\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -3393,6 +3442,7 @@ $notesTree = [
             .join("kses.php");
         let entry_src = std::fs::read_to_string(&kses_path).expect("read kses.php");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "kses".to_string(),
@@ -3420,6 +3470,7 @@ $notesTree = [
             .join("index.php");
         let entry_src = std::fs::read_to_string(&index_path).expect("read index.php");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "wordpress-index".to_string(),
@@ -3447,6 +3498,7 @@ $notesTree = [
             .join("wp-includes")
             .join("widgets.php");
         let source = std::fs::read_to_string(&widgets_path).expect("read widgets.php");
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "widgets".to_string(),
@@ -3475,6 +3527,7 @@ $notesTree = [
             .join("media-template.php");
         let source =
             std::fs::read_to_string(&media_template_path).expect("read media-template.php");
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "media-template".to_string(),
@@ -3502,6 +3555,7 @@ $notesTree = [
         let entry_src = "<?php\n$commandline = 'printf ok';\n$result = `$commandline`;\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -3531,6 +3585,7 @@ $notesTree = [
         let entry_src = "<?php\n/**\n * Example:\n * <main><p><?php echo \"Hello\"; ?></p></main>\n */\nfunction demo() {\n    $can_use_cached = ! wp_is_development_mode( 'theme' );\n    return $can_use_cached;\n}\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -3560,6 +3615,7 @@ $notesTree = [
         let entry_src = "<?php\nfunction readonly( $readonly_value, $current = true, $display = true ) {\n    return $readonly_value;\n}\nreadonly( true );\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),
@@ -3589,6 +3645,7 @@ $notesTree = [
         let entry_src = "<?php\n$first = true;\n$second = true;\nif ( $first ) : ?>\n<div>first</div>\n<?php endif; if ( $second ) : ?>\n<div>second</div>\n<?php endif; ?>\n";
         std::fs::write(&entry_path, entry_src).expect("write entry");
 
+        register_test_languages();
         let lang = crate::languages::find_by_name("php").expect("php language");
         let bundle = Bundle {
             name: "entry".to_string(),

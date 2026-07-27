@@ -50,10 +50,14 @@ pub mod project;
 // the process-global language/hook registry, the language `profile`, and the
 // language-agnostic class IR (`class_normalize`).
 pub mod class_normalize;
+pub mod namespaces;
 pub mod framework;
 pub mod profile;
 pub mod registry;
+pub use inventory;
 pub use framework::{
+    PluginEntry, init_all_registered, init_registered, init_registered_plugins,
+    finalize_registered_plugins, plugins,
     finalize_plugins, init_plugins,
     Framework, Plugin, init_all, init_all_on_vm, init_all_on_vm_with_caps,
 };

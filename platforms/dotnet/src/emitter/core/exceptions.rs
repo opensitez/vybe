@@ -80,7 +80,7 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
         )
     };
 
-    let canon = vybe_emitter::errors::canonical_exception_name(name).to_string();
+    let canon = vybe_compiler::compiler::errors::canonical_exception_name(name).to_string();
     let assign_name = assign_expr("name", Expression::string(name));
     let assign_extype = Statement::with_span(
         StmtKind::Assign {
@@ -228,10 +228,10 @@ fn dotnet_exception_types_expr(name: &str, parent: &str) -> Expression {
             .find_map(|(child, next)| (*child == current).then_some(*next))
             .unwrap_or("");
     }
-    for canon in vybe_emitter::errors::exception_ancestors(name) {
+    for canon in vybe_compiler::compiler::errors::exception_ancestors(name) {
         push_unique(&mut names, canon);
     }
-    let canonical = vybe_emitter::errors::canonical_exception_name(name);
+    let canonical = vybe_compiler::compiler::errors::canonical_exception_name(name);
     push_unique(&mut names, canonical);
     push_unique(&mut names, "Exception");
     let elements = names

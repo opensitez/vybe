@@ -1768,6 +1768,7 @@ pub fn normalize_class(
     }
 
     NormalClass {
+        augmentations: Vec::new(),
         span,
         name: name.to_string(),
         parent: parents.first().cloned(),
@@ -1792,7 +1793,7 @@ pub fn normalize_class(
         event_bindings: Vec::new(),
         raw_extra_members,
     }
-}
+    }
 
 #[derive(Clone)]
 struct PascalOverloadCase {

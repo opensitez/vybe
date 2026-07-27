@@ -1,6 +1,6 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_emitter::instructions::host;
+use vybe_compiler::compiler::instructions::host;
 
 const I32_MIN_F64: f64 = i32::MIN as f64;
 const I32_MAX_F64: f64 = i32::MAX as f64;
@@ -17,12 +17,12 @@ fn emit_arithmetic_exception(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("", line);
-    vybe_emitter::errors::emit_exception_new_finalize(
+    vybe_compiler::compiler::errors::emit_exception_new_finalize(
         &mut chunks[current],
         "ArithmeticException",
         line,
     );
-    vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+    vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
 }
 
 fn emit_throw_if_i32_overflow(chunks: &mut [Chunk], current: usize, result: u16, line: u32) {

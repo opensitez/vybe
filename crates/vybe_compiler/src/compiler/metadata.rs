@@ -139,7 +139,10 @@ impl Compiler {
             return;
         }
 
-        for export in crate::platforms::dotnet::emitter::dotnet_component_descriptor().exports {
+        for export in vybe_bytecode::registry::platform_component_descriptors()
+            .into_iter()
+            .flat_map(|d| d.exports)
+        {
             let ComponentItemKind::Class(class) = export.kind else {
                 continue;
             };
@@ -1096,7 +1099,7 @@ impl Compiler {
         let has_idx = self.import("ecma:object", "has");
         let line = self.line;
         self.emit_host_call(has_idx, 2);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
         self.chunk().emit_else(line);
         self.emit_const(Value::String(Arc::from(
@@ -1145,7 +1148,7 @@ impl Compiler {
             let env = self.closure_env_slot();
             let idx = self.closure_env_index(&self_kw);
             let line = self.line;
-            crate::emitter::closures::emit_env_get(self.chunk(), env, idx, line);
+            crate::compiler::closures::emit_env_get(self.chunk(), env, idx, line);
         } else if self.scopes.len() > 1
             && self
                 .resolve_upvalue(self.scopes.len() - 1, "__js_this")
@@ -1154,7 +1157,7 @@ impl Compiler {
             let env = self.closure_env_slot();
             let idx = self.closure_env_index("__js_this");
             let line = self.line;
-            crate::emitter::closures::emit_env_get(self.chunk(), env, idx, line);
+            crate::compiler::closures::emit_env_get(self.chunk(), env, idx, line);
         } else if self.profile.ambient_this_binding {
             let js_this = self.str_const("__js_this");
             self.emit_u16(Op::GLOBAL_GET, js_this);

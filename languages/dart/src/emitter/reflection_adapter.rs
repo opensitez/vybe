@@ -3,8 +3,8 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::instructions::{core_wasm, host};
-use vybe_emitter::{loops, reflection};
+use vybe_compiler::compiler::instructions::{core_wasm, host};
+use vybe_compiler::compiler::{loops, reflection};
 
 const SET_MARKER_KEY: &str = "__dart_set_marker";
 const MAP_ORDER_KEY: &str = "__dart_map_order";
@@ -101,7 +101,7 @@ fn emit_type_descriptor_from_name_on_stack(
 fn emit_slot_truthy_field(chunk: &mut Chunk, value_slot: u16, name: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     get_field(chunk, name, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
 }
 
 /// Dart `value.runtimeType`.
@@ -129,7 +129,7 @@ pub fn emit_dart_runtime_type(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     host::emit(chunk, "ecma:number", "isInteger", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     emit_type_descriptor(chunk, "int", reflection::ReflectKind::Number, line);
     chunk.emit_else(line);
@@ -150,7 +150,7 @@ pub fn emit_dart_runtime_type(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_else(line);
     }
 
-    emit_slot_truthy_field(chunk, value_slot, vybe_emitter::tuples::TUPLE_TAG, line);
+    emit_slot_truthy_field(chunk, value_slot, vybe_compiler::compiler::tuples::TUPLE_TAG, line);
     chunk.emit_if(line);
     emit_type_descriptor(chunk, "Record", reflection::ReflectKind::Struct, line);
     chunk.emit_else(line);
@@ -162,7 +162,7 @@ pub fn emit_dart_runtime_type(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     host::emit(chunk, "ecma:array", "isArray", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     emit_type_descriptor(chunk, "List", reflection::ReflectKind::Array, line);
     chunk.emit_else(line);
@@ -202,7 +202,7 @@ pub fn emit_dart_is_list_of_int(chunks: &mut [Chunk], current: usize, line: u32)
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     let state = loops::emit_for_in_start(chunks, current, value_slot, idx_slot, line);
@@ -210,12 +210,12 @@ pub fn emit_dart_is_list_of_int(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     reflection::emit_typeof_in_chunk(&mut chunks[current], line);
     chunks[current].emit_string_const("number", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     host::emit(&mut chunks[current], "ecma:number", "isInteger", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_AND, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     chunks[current].emit_bool_const(false, line);

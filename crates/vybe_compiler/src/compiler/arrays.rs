@@ -342,7 +342,7 @@ impl Compiler {
         self.emit_const(Value::F64(1.0));
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_add(self.chunk(), line);
         };
 
         if bounds.len() == 1 {
@@ -368,11 +368,11 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, len_slot);
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_lt(self.chunk(), line);
         };
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_not(self.chunk(), line);
         };
         self.chunk().emit_br_if(1, line);
 
@@ -386,7 +386,7 @@ impl Compiler {
         self.emit_const(Value::F64(1.0));
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_add(self.chunk(), line);
         };
         self.emit_u16(Op::LOCAL_SET, index_slot);
         self.chunk().emit_br(0, line);
@@ -434,11 +434,11 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, len_slot);
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_lt(self.chunk(), line);
         };
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_not(self.chunk(), line);
         };
         self.chunk().emit_br_if(1, line);
 
@@ -452,7 +452,7 @@ impl Compiler {
         self.emit_const(Value::F64(1.0));
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_add(self.chunk(), line);
         };
         self.emit_u16(Op::LOCAL_SET, index_slot);
         self.chunk().emit_br(0, line);
@@ -500,11 +500,11 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, len_slot);
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_lt(self.chunk(), line);
         };
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_not(self.chunk(), line);
         };
         self.chunk().emit_br_if(1, line);
 
@@ -518,7 +518,7 @@ impl Compiler {
         self.emit_const(Value::F64(1.0));
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_add(self.chunk(), line);
         };
         self.emit_u16(Op::LOCAL_SET, index_slot);
         self.chunk().emit_br(0, line);
@@ -605,7 +605,7 @@ impl Compiler {
                 self.emit_const(Value::F64(1.0));
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_add(self.chunk(), line);
                 };
                 common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
             } else {
@@ -699,12 +699,12 @@ impl Compiler {
             "bool" | "boolean" | "_bool" => {
                 if self.profile.materialize_bool_results || self.profile.name == "pascal" {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                    crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                     return Ok(());
                 }
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             }
             "char" if self.profile.name == "pascal" => {}
             "char" | "uint8" | "unsigned char" | "byte" => {

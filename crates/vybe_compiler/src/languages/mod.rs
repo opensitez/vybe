@@ -27,13 +27,13 @@ pub fn all() -> Vec<Language> {
 /// Resolve the emit dispatcher that owns `prefix` in a `common:<prefix>.*`
 /// name. Languages register theirs via [`Language::emit_dispatch`]; shared
 /// platforms (currently only `dotnet`, used by VB/C#/JS) resolve through
-/// [`crate::emitter::platform_emit_dispatch`]. Returns `None` for the
+/// [`crate::compiler::platform_emit_dispatch`]. Returns `None` for the
 /// genuinely-shared prefixes (collections, dict, strings, ...) which the
 /// central dispatcher owns directly.
 pub fn emit_dispatch_for(prefix: &str) -> Option<EmitDispatch> {
     crate::ensure_languages_registered();
     vybe_bytecode::registry::emit_dispatch_for(prefix)
-        .or_else(|| crate::emitter::platform_emit_dispatch(prefix))
+        .or_else(|| crate::compiler::platform_emit_dispatch(prefix))
 }
 
 /// Find a language by canonical name (e.g. `"js"`, `"php"`, `"python"`).

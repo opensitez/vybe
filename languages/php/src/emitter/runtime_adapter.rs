@@ -3,11 +3,11 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::Value;
 use vybe_bytecode::opcode::Op;
-use vybe_emitter::collections;
+use vybe_compiler::compiler::collections;
 
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
     // `array_map(null, a, b, …)` (walker-rewritten to `zip`) → array of tuples
-    // padded to the LONGEST input (PHP semantics). Shared `vybe_emitter` op.
+    // padded to the LONGEST input (PHP semantics). Shared `vybe_compiler::emitter` op.
     if name == "php.zip" {
         collections::emit_zip(chunks, current, argc, collections::ZipLen::Longest, line);
         return true;
@@ -172,8 +172,8 @@ fn emit_php_gz_encode(
             chunk.emit_call(len, 1, line);
             let limit_idx = chunk.add_constant(Value::F64(40.0));
             chunk.emit_op_u16(Op::CONST, limit_idx, line);
-            vybe_emitter::ops::emit_dyn_gt(chunk, line);
-            vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+            vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
+            vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
             chunk.emit_if_value(line);
             push_str(chunk, prefix, line);
             chunk.emit_else(line);
@@ -200,7 +200,7 @@ fn emit_php_gz_decode(chunks: &mut [Chunk], current: usize, argc: u8, prefix: &s
         push_str(chunk, prefix, line);
         let starts_with = chunk.add_import("ecma:string", "startsWith");
         chunk.emit_call(starts_with, 2, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
         push_str(chunk, prefix, line);
@@ -301,7 +301,7 @@ fn emit_php_password_verify(chunks: &mut [Chunk], current: usize, line: u32) {
         let concat = chunk.add_import("wasm:js-string", "concat");
         chunk.emit_call(concat, 2, line);
         chunk.emit_op_u16(Op::LOCAL_GET, hash_slot, line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     }
 }
 

@@ -25,3 +25,5 @@ pub use plugin::Plugin;
 
 pub mod stubs;
 pub use stubs::register_gui_stubs;
+#[cfg(feature = "gui")]
+pub use plugin::init_platforms_with_gui;

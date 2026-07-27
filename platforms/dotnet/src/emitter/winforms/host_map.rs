@@ -45,9 +45,9 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
 pub fn map_host_func(module: &str, func: &str) -> Option<String> {
     match (module, func) {
         ("vybe:gui", f) => {
-            let canonical = vybe_emitter::gui::canonical_control_name(f);
+            let canonical = vybe_compiler::compiler::gui::canonical_control_name(f);
             if !canonical.is_empty() && canonical != f {
-                Some(vybe_emitter::gui::host_fn_new_control(&canonical))
+                Some(vybe_compiler::compiler::gui::host_fn_new_control(&canonical))
             } else {
                 Some(f.to_string())
             }

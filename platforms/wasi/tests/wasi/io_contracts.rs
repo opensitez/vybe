@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::{Chunk, Op, VM};
 use vybe_bytecode::capabilities::Capabilities;
-use vybe_emitter::platforms::register_platforms;
+use vybe_compiler::compiler::platforms::register_platforms;
 
 fn call_import(module: &str, name: &str, args: Vec<Value>) -> Value {
     let mut chunk = Chunk::new("<wasi-io-contracts-test>");

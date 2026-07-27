@@ -45,7 +45,7 @@ pub fn compile(src: &str) -> Vec<vybe_bytecode::Chunk> {
 pub fn run(src: &str) -> Value {
     let chunks = compile(src);
     let mut vm = VM::new();
-    vybe_emitter::platforms::init_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
     vm.run(chunks).expect("run failed")
 }
 
@@ -54,7 +54,7 @@ pub fn run_prints(src: &str) -> Vec<String> {
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
-    vybe_emitter::platforms::init_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
     vm.register_host_fn(
         "wasi:logging/logging",
         "log",
@@ -64,7 +64,7 @@ pub fn run_prints(src: &str) -> Vec<String> {
             Value::Null
         }),
     );
-    vybe_emitter::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("run failed");
     let result = output.lock().unwrap().clone();
     result

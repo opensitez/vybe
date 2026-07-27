@@ -12,7 +12,7 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
-use vybe_emitter::{collections, ops, strings, tuples};
+use vybe_compiler::compiler::{collections, ops, strings, tuples};
 
 /// `substring(start, END)` extends to the end of the string.
 const END: i32 = 0x7FFF_FFFF;

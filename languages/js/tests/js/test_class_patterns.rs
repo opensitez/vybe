@@ -608,3 +608,68 @@ console.log(a + 5);
         &["default", "12"]
     );
 }
+
+// ===================================================================
+// USER AUGMENTATION OF INTRINSIC PROTOTYPES
+// ===================================================================
+//
+// Assigning a user function to a PRIMITIVE's intrinsic prototype and reaching
+// it from a primitive receiver. Distinct from the cases above, which only READ
+// builtins off a prototype (`String.prototype.slice.call(...)`). ECMA-262
+// §6.1.5: member access on a primitive boxes it and consults the intrinsic
+// prototype, so a user-added member must resolve exactly like a builtin one.
+//
+// Arrays are covered separately and already work — they are ordinary objects,
+// so they never exercised this path. See flexclassplan.md §4d.
+
+#[test]
+fn number_prototype_user_method_resolves_off_primitive() {
+    assert_eq!(
+        run_js(
+            r#"
+Number.prototype.doubled = function () { return this * 2; };
+console.log((5).doubled());
+"#
+        ),
+        vec!["10"]
+    );
+}
+
+#[test]
+fn string_prototype_user_method_resolves_off_primitive() {
+    assert_eq!(
+        run_js(
+            r#"
+String.prototype.shout = function () { return this + "!"; };
+console.log("hi".shout());
+"#
+        ),
+        vec!["hi!"]
+    );
+}
+
+#[test]
+fn array_prototype_user_method_resolves_off_literal() {
+    assert_eq!(
+        run_js(
+            r#"
+Array.prototype.second = function () { return this[1]; };
+console.log([1, 2, 3].second());
+"#
+        ),
+        vec!["2"]
+    );
+}
+
+#[test]
+fn intrinsic_prototype_augmentation_does_not_shadow_builtin() {
+    assert_eq!(
+        run_js(
+            r#"
+Number.prototype.doubled = function () { return this * 2; };
+console.log((5).toFixed(2));
+"#
+        ),
+        vec!["5.00"]
+    );
+}

@@ -142,6 +142,39 @@ impl Compiler {
                     // compiles, not when the class body does — a caller can be
                     // compiled first, and `x[i]` resolves the indexer from the
                     // receiver's static type.
+                    if let StmtKind::ClassDecl {
+                        parents,
+                        interfaces: class_interfaces,
+                        members,
+                        modifiers,
+                        ..
+                    } = &stmt.kind
+                    {
+                        // Declaration pass: NORMALIZE the class once, here,
+                        // and keep it. Normalization used to happen during
+                        // code generation, one class at a time, so a class's
+                        // member set depended on compilation order and an
+                        // augmenting type (trait / mixin / promoted field)
+                        // could not be looked up by name at all.
+                        if let Ok(nc) = crate::compiler::class_normalize::emit::normalize_class_from_ast(
+                            self,
+                            stmt.span.clone(),
+                            &member,
+                            parents,
+                            class_interfaces,
+                            members,
+                            modifiers,
+                            false,
+                        ) {
+                            self.normalized_classes.insert(member.clone(), nc);
+                        }
+                        // NOTE: the member surface is registered later, by
+                        // `predeclare_class_surfaces`, because augmentations
+                        // (traits / mixins / promoted fields) must be folded in
+                        // first — otherwise contributed members are missing from
+                        // the registration and the order-dependence bug returns
+                        // by another route. See flexclassplan.md §4c.
+                    }
                     if let StmtKind::ClassDecl { members, .. } = &stmt.kind {
                         if class_declares_op(members, "__getitem__") {
                             self.classes_with_indexer.insert(member.clone());
@@ -228,6 +261,169 @@ impl Compiler {
                     .or_insert_with(|| return_type.clone());
             }
         }
+    }
+
+    /// Register a CLASS in `pending_classes` during the declaration pass —
+    /// before any body is compiled.
+    ///
+    /// `pending_classes` was previously filled only by `compile_normal_class`,
+    /// i.e. *while generating code*, so a call site compiled earlier saw an
+    /// empty table: `main`'s body saw no classes at all, and a method saw only
+    /// the classes declared above it (forward references were invisible).
+    /// Receiver-typed resolution therefore depended on compilation order, and a
+    /// user method lost to a same-named profile value-method (`K().length()`)
+    /// purely by position. `predeclare_struct_surface` already did this for
+    /// structs; classes had no equivalent, and `defined_class_methods`
+    /// (a flat, class-less name set) was the workaround.
+    ///
+    /// `compile_normal_class` still `insert`s the complete entry later, which
+    /// overwrites this one — this is the *declaration*, that is the definition.
+    /// Phase 2 of the declaration pass: fold every class's declared
+    /// augmentations (PHP traits, Dart mixins, Ruby include/prepend, Java
+    /// defaults, Go promotion) into its normalized member set.
+    ///
+    /// Runs after ALL classes are normalized — an augmenting type may be
+    /// declared after its user — and before any member surface is registered.
+    /// A language that declares no augmentations is untouched, so languages
+    /// migrate one at a time with no flag day.
+    pub(super) fn apply_class_augmentations(&mut self) -> Result<(), String> {
+        if self
+            .normalized_classes
+            .values()
+            .all(|nc| nc.augmentations.is_empty())
+        {
+            return Ok(());
+        }
+        // Dependency order: a class must be folded AFTER every type it draws
+        // from, or it copies a pre-augmentation snapshot. PHP traits may use
+        // traits and Dart mixins may apply to mixins, so `trait A { use B; }`
+        // + `class C { use A; }` must reach B's members through A. Iterating
+        // the map in hash order would silently drop them.
+        //
+        // Cycles cannot be ordered; those entries are folded last, with
+        // whatever their sources hold at that point. A cyclic `use` is an
+        // error in every language concerned, and the languages reject it
+        // before reaching here.
+        let order = self.augmentation_fold_order();
+        let mut available = self.normalized_classes.clone();
+        for name in order {
+            let Some(mut nc) = self.normalized_classes.get(&name).cloned() else {
+                continue;
+            };
+            let errors = super::class_augmentation::apply_augmentations(&mut nc, &available);
+            if let Some(first) = errors.first() {
+                // Go equal-depth promotion and Java default-method diamonds are
+                // errors in the SOURCE language. Reported, never silently
+                // resolved — flexclassplan.md §2f. A last-one-wins fold is what
+                // hides them today.
+                return Err(format!("augmentation conflict — {first}"));
+            }
+            available.insert(name.clone(), nc.clone());
+            self.normalized_classes.insert(name, nc);
+        }
+        Ok(())
+    }
+
+    /// Classes ordered so that every augmenting type is folded before the
+    /// classes that draw from it (topological over `augmentations.from`).
+    /// Entries in a cycle come last — a cyclic `use`/`with` is an error in
+    /// every language concerned and is rejected upstream.
+    fn augmentation_fold_order(&self) -> Vec<String> {
+        let mut ordered: Vec<String> = Vec::with_capacity(self.normalized_classes.len());
+        let mut placed: HashSet<String> = HashSet::new();
+        // Repeat until a full sweep places nothing new: anything still missing
+        // is in a cycle, and is appended as-is.
+        loop {
+            let mut progressed = false;
+            for (name, nc) in &self.normalized_classes {
+                if placed.contains(name) {
+                    continue;
+                }
+                let ready = nc.augmentations.iter().all(|aug| {
+                    !self.normalized_classes.contains_key(&aug.from) || placed.contains(&aug.from)
+                });
+                if ready {
+                    ordered.push(name.clone());
+                    placed.insert(name.clone());
+                    progressed = true;
+                }
+            }
+            if !progressed {
+                break;
+            }
+        }
+        for name in self.normalized_classes.keys() {
+            if !placed.contains(name) {
+                ordered.push(name.clone());
+            }
+        }
+        ordered
+    }
+
+    /// Phase 3 of the declaration pass: register every class's member surface,
+    /// now that augmentations have been folded in.
+    pub(super) fn predeclare_class_surfaces(&mut self) {
+        let entries: Vec<(String, Vec<String>)> = self
+            .normalized_classes
+            .iter()
+            .map(|(name, nc)| (name.clone(), nc.bases.clone()))
+            .collect();
+        for (name, bases) in entries {
+            self.predeclare_class_surface(&name, &bases);
+        }
+    }
+
+    pub(super) fn predeclare_class_surface(&mut self, name: &str, parents: &[String]) {
+        // Derived from the class NORMALIZED in the same pass — not a second
+        // hand-walk over `ClassMember`. There were already three of those
+        // (`predeclare_struct_surface`, `compile_normal_class`, each language's
+        // normalizer); adding a fourth to fix an ordering bug would have been
+        // the same shortcut this work removes.
+        let Some(nc) = self.normalized_classes.get(name).cloned() else {
+            return;
+        };
+
+        // Methods only. Properties are NOT registered: a getter named after a
+        // profile value-method (`isEmpty`, `length`, `charAt`) would shadow
+        // into the user-method path — measured at 6 dart failures. Fields are
+        // NOT registered either: their storage names depend on collision
+        // resolution done while the body compiles, and `instance_field_types`
+        // feeds `infer_expr_type_hint`, so partial data is worse than none —
+        // measured at 2 flutter failures. `compile_normal_class` fills both
+        // accurately at definition time.
+        let instance_member_names: Vec<String> = nc
+            .instance_methods
+            .iter()
+            .map(|m| self.js_member_storage_name_for_class(name, &m.source_name))
+            .collect();
+        let static_method_names: Vec<String> = nc
+            .static_methods
+            .iter()
+            .map(|m| self.js_member_storage_name_for_class(name, &m.source_name))
+            .collect();
+
+        let bases: Vec<String> = parents.iter().map(|p| self.canon(p)).collect();
+        let parent = bases.first().cloned();
+        self.pending_classes
+            .entry(name.to_string())
+            .or_insert(PendingClass {
+                parent,
+                bases,
+                enclosing_class: self.current_class.clone(),
+                fields: Vec::new(),
+                field_storage_names: HashMap::new(),
+                is_value_type: false,
+                instance_member_names,
+                instance_pointer_method_names: Vec::new(),
+                instance_field_types: HashMap::new(),
+                static_fields: Vec::new(),
+                static_field_types: HashMap::new(),
+                static_method_names,
+                instance_method_overloads: HashMap::new(),
+                static_method_overloads: HashMap::new(),
+                nested_types: Vec::new(),
+                statics: Vec::new(),
+            });
     }
 
     pub(super) fn predeclare_struct_surface(&mut self, name: &str, members: &[ClassMember]) {
@@ -662,6 +858,6 @@ fn class_declares_op(members: &[ClassMember], op: &'static str) -> bool {
         let StmtKind::FunctionDecl { name, .. } = &stmt.kind else {
             return false;
         };
-        common::classes::cross_language_aliases(name).contains(&op)
+        crate::compiler::object::cross_language_aliases(name).contains(&op)
     })
 }

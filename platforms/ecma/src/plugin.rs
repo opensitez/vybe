@@ -42,3 +42,7 @@ impl vybe_bytecode::Plugin for Plugin {
         crate::builtin_types::register_types(fw);
     }
 }
+
+// Link-time registration: this crate submits its plugin to the one registry.
+// Nothing lists plugins in code — linking this crate IS the registration.
+vybe_bytecode::register_plugin!(Plugin);

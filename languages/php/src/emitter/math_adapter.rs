@@ -105,8 +105,8 @@ fn emit_min_or_max(chunks: &mut [Chunk], current: usize, argc: u8, want_lt: bool
         lget(chunk, base, line);
         chunk.emit_op(Op::ARRAY_LENGTH, line);
         push_const(chunk, Value::F64(0.0), line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         let _ = chunk;
         crate::emitter::type_guard::emit_throw_const(
@@ -137,9 +137,9 @@ fn emit_min_or_max(chunks: &mut [Chunk], current: usize, argc: u8, want_lt: bool
         lget(chunk, best_slot, line);
         emit_to_number(chunk, pf_idx, line);
         if want_lt {
-            vybe_emitter::ops::emit_dyn_lt(chunk, line)
+            vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line)
         } else {
-            vybe_emitter::ops::emit_dyn_gt(chunk, line)
+            vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line)
         };
         chunk.emit_if(line);
         lget(chunk, base + i as u16, line);
@@ -167,7 +167,7 @@ fn emit_reduce_array(chunk: &mut Chunk, arr_slot: u16, want_lt: bool, line: u32)
     // if len === 0: result = false; break
     lget(chunk, len_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::Bool(false), line);
     lset(chunk, result_slot, line);
@@ -188,7 +188,7 @@ fn emit_reduce_array(chunk: &mut Chunk, arr_slot: u16, want_lt: bool, line: u32)
     let (loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
 
@@ -197,15 +197,15 @@ fn emit_reduce_array(chunk: &mut Chunk, arr_slot: u16, want_lt: bool, line: u32)
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     // best_n = +best
     lget(chunk, best_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     if want_lt {
-        vybe_emitter::ops::emit_dyn_lt(chunk, line)
+        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line)
     } else {
-        vybe_emitter::ops::emit_dyn_gt(chunk, line)
+        vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line)
     };
     chunk.emit_if(line);
     lget(chunk, arr_slot, line);
@@ -259,7 +259,7 @@ fn emit_dec_to_radix(
 
     // n = +arg ; out = ""
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     lset(chunk, n_slot, line);
     push_str(chunk, "", line);
     lset(chunk, out_slot, line);
@@ -270,7 +270,7 @@ fn emit_dec_to_radix(
     // if n === 0 { out = "0"; break B_outer }
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     push_str(chunk, "0", line);
     lset(chunk, out_slot, line);
@@ -286,14 +286,14 @@ fn emit_dec_to_radix(
     // while n > 0  (exit B_loop when !(n > 0))
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line); // exit B_loop
 
     // digit = n % radix
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(radix as f64), line);
-    vybe_emitter::math::emit_c_fmod(chunk, line);
+    vybe_compiler::compiler::math::emit_c_fmod(chunk, line);
     lset(chunk, digit_slot, line);
 
     // out = (table.charAt(digit) | String(digit)) + out
@@ -307,10 +307,10 @@ fn emit_dec_to_radix(
     } else {
         push_str(chunk, "", line);
         lget(chunk, digit_slot, line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     }
     lget(chunk, out_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
 
     // n = floor(n / radix)
@@ -361,11 +361,11 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
         lget(chunk, slot, line);
         push_const(chunk, Value::F64(if lo { 2.0 } else { 36.0 }), line);
         if lo {
-            vybe_emitter::ops::emit_dyn_lt(chunk, line);
+            vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
         } else {
-            vybe_emitter::ops::emit_dyn_gt(chunk, line);
+            vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
         }
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     }
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_op(Op::I32_OR, line);
@@ -385,7 +385,7 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     // s = ("" + s).toLowerCase()
     push_str(chunk, "", line);
     lget(chunk, s_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     {
         let idx = chunk.add_import("ecma:string", "toLowerCase");
         chunk.emit_call(idx, 1, line);
@@ -412,7 +412,7 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     let (scan_loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
 
@@ -433,12 +433,12 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     // if d >= 0 && d < from: n = n*from + d
     lget(chunk, d_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_if(line);
     lget(chunk, d_slot, line);
     lget(chunk, from_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
     lget(chunk, n_slot, line);
     lget(chunk, from_slot, line);
@@ -465,7 +465,7 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     // if n === 0: push "0" and break
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     push_str(chunk, "0", line);
     chunk.emit_br(1, line);
@@ -484,14 +484,14 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
     let (out_loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
 
     // digit_idx = n % to
     lget(chunk, n_slot, line);
     lget(chunk, to_slot, line);
-    vybe_emitter::math::emit_c_fmod(chunk, line);
+    vybe_compiler::compiler::math::emit_c_fmod(chunk, line);
     let digit_slot = alloc_local(chunk);
     lset(chunk, digit_slot, line);
 
@@ -502,7 +502,7 @@ pub fn emit_php_base_convert(chunks: &mut [Chunk], current: usize, _argc: u8, li
         chunk.emit_call(idx, 2, line);
     }
     lget(chunk, out_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
 
     // n = floor(n / to)

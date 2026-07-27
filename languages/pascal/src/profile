@@ -256,4 +256,8 @@ tostring      = { emit = "common:pascal.tostring", min_args = 0, max_args = 0 }
 # ────────────────────────────────────────────────────────────────────────────
 
 [namespaces]
+
+# Namespace-tree roots this language resolves platform types against, and
+# mounts ambiently so unqualified names resolve to their `Type` node.
+type_scopes = ["plib"]
 use_dotnet = false

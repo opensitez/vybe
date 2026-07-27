@@ -375,3 +375,27 @@ echo HandlerRegistry::make('report');
         vec!["created:report"]
     );
 }
+
+use crate::helpers::compile_ok_check;
+
+// ── Trait conflict must be resolved explicitly ───────────────────────
+//
+// PHP: when two used traits supply the same method and the class does not
+// resolve it with `insteadof`, that is a fatal error — not a silent
+// last-one-wins pick. The counterpart cases (`insteadof` / `as`) are covered
+// elsewhere in this suite; this pins the UNRESOLVED case, which is the one a
+// folding implementation is most likely to get wrong.
+// See flexclassplan.md §4c (`AugmentationConflict::RequireExplicit`).
+
+#[test]
+fn unresolved_trait_method_collision_is_rejected() {
+    assert!(!compile_ok_check(
+        r#"<?php
+trait A { public function hello() { return "a"; } }
+trait B { public function hello() { return "b"; } }
+class C { use A, B; }
+$c = new C();
+echo $c->hello();
+"#
+    ));
+}

@@ -1,4 +1,4 @@
-use vybe_emitter::instructions::host;
+use vybe_compiler::compiler::instructions::host;
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;

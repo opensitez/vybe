@@ -10,17 +10,16 @@ default = []
 gui_forms = []
 
 [dependencies]
+vybe_platform_ecma = { workspace = true }
+vybe_platform_web = { workspace = true }
+vybe_platform_wasi = { workspace = true }
+vybe_platform_node = { workspace = true }
+vybe_platform_vybe = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }
 chrono = { workspace = true }
 vybe_ast = { workspace = true }
 vybe_bytecode = { workspace = true }
-vybe_emitter = { workspace = true }
-vybe_platform_dotnet = { workspace = true }
-vybe_platform_flutter = { workspace = true }
-vybe_platform_libc = { workspace = true }
-vybe_platform_plib = { workspace = true }
-vybe_platform_wasm = { workspace = true }
 vybe_widgets = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }
@@ -31,6 +30,12 @@ quick-xml = "0.39"
 
 
 [dev-dependencies]
+# Test-only. These tests exercise the BUNDLER against real php/cobol sources,
+# so a frontend must be registered — the registry is empty in this crate's test
+# binary because `vybe_compiler` links no language by design. Dev-dependency
+# cycles are permitted by Cargo, and this keeps the production graph unchanged.
+vybe_language_php = { workspace = true }
+vybe_language_cobol = { workspace = true }
 vybex = { path = "../vybex" }
 
 [[test]]

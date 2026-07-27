@@ -1,8 +1,8 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_emitter::instructions::{core_wasm, host};
+use vybe_compiler::compiler::instructions::{core_wasm, host};
 
-use vybe_emitter::{collections, dict, ops, strings, tuples};
+use vybe_compiler::compiler::{collections, dict, ops, strings, tuples};
 
 /// Merge every `[k, v]` entry of `src` into the Map in `recv` (Python
 /// `dict.update`). Loops `entries(src)` and calls the shared `ecma:map.set`.
@@ -321,7 +321,7 @@ pub fn emit_popitem(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     };
     if argc >= 2 {
         chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
-        vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if_value(line);
         last_index(chunks, current, n);
         chunks[current].emit_else(line);
@@ -379,7 +379,7 @@ pub fn emit_popitem(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // return (key, val)
     chunks[current].emit_op_u16(Op::LOCAL_GET, keyv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, valv, line);
-    vybe_emitter::tuples::emit_tuple(chunks, current, 2, line);
+    vybe_compiler::compiler::tuples::emit_tuple(chunks, current, 2, line);
 }
 
 /// `Counter(iterable)` / `Counter()` — build a counting dict. `argc == 0` yields
@@ -518,7 +518,7 @@ pub fn emit_gen_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     } else {
         chunks[current].emit_op(Op::NULL, line);
     }
-    vybe_emitter::generators::emit_resume(&mut chunks[current], line);
+    vybe_compiler::compiler::generators::emit_resume(&mut chunks[current], line);
 }
 
 /// Python `gen.throw(exc)` — resume the generator by throwing `exc` at the
@@ -535,9 +535,9 @@ pub fn emit_gen_throw(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
         core_wasm::dup(&mut chunks[current], line);
         chunks[current].emit_string_const("", line);
-        vybe_emitter::errors::emit_exception_new_finalize(&mut chunks[current], "Exception", line);
+        vybe_compiler::compiler::errors::emit_exception_new_finalize(&mut chunks[current], "Exception", line);
     }
-    vybe_emitter::generators::emit_resume_throw(&mut chunks[current], line);
+    vybe_compiler::compiler::generators::emit_resume_throw(&mut chunks[current], line);
 }
 
 /// Python `next(it[, default])`. For a generator, resume it through the shared
@@ -551,12 +551,12 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // if isGenerator(it)
     chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
     call_import(chunks, current, "ecma:value", "isGenerator", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
 
     // generator: GEN_NEXT → [value, has_more]
     chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
-    vybe_emitter::generators::emit_next(&mut chunks[current], line);
+    vybe_compiler::compiler::generators::emit_next(&mut chunks[current], line);
     let has_more = chunks[current].local_count;
     chunks[current].alloc_scratch(1);
     let value = chunks[current].local_count;
@@ -565,7 +565,7 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, has_more, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line); // has_more → value
     chunks[current].emit_else(line);
@@ -576,12 +576,12 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
         core_wasm::dup(&mut chunks[current], line);
         chunks[current].emit_string_const("", line);
-        vybe_emitter::errors::emit_exception_new_finalize(
+        vybe_compiler::compiler::errors::emit_exception_new_finalize(
             &mut chunks[current],
             "StopIteration",
             line,
         );
-        vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+        vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_op(Op::NULL, line); // unreachable (throw diverges)
     }
     chunks[current].emit_end(line);
@@ -612,27 +612,27 @@ pub fn emit_from_end(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     // if isNumber(idx)  (short-circuits the `< 0` test for string keys)
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
     host::emit(&mut chunks[current], "wasm:js-number", "test", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
 
     // if idx < 0
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
-    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
 
     // if isArray(obj) → len(obj) + idx
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     emit_len_plus(chunks, current, obj, idx, line);
     chunks[current].emit_else(line);
     // else if isString(obj) → len(obj) + idx
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
     host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     emit_len_plus(chunks, current, obj, idx, line);
     chunks[current].emit_else(line);
@@ -694,7 +694,7 @@ pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, container, line);
     chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
     chunk.emit_call(set_has, 2, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_bool_const(true, line);
     chunk.emit_else(line);
@@ -730,7 +730,7 @@ fn emit_len_plus(chunks: &mut [Chunk], current: usize, obj: u16, idx: u16, line:
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
     emit_length(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
 }
 
 pub fn emit_index(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -740,7 +740,7 @@ pub fn emit_index(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, needle, line);
@@ -772,7 +772,7 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -844,7 +844,7 @@ pub fn emit_set_predicate(chunks: &mut [Chunk], current: usize, host_fn: &str, l
     chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
     call_import(chunks, current, "ecma:set", host_fn, 2, line);
-    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 pub fn emit_add(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -865,7 +865,7 @@ fn emit_remove_impl(chunks: &mut [Chunk], current: usize, raises: bool, line: u3
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
     // `isArray` returns a real bool; `!= 0` (Bool vs I32) is cross-type and
     // always true, sending a Set down the array branch. Coerce to i32 first.
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -880,14 +880,14 @@ fn emit_remove_impl(chunks: &mut [Chunk], current: usize, raises: bool, line: u3
     call_import(chunks, current, "ecma:set", "delete", 2, line);
     if raises {
         // `set.remove(x)` raises KeyError when x is absent; `discard` does not.
-        vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_op(Op::I32_EQZ, line); // 1 if NOT removed
         chunks[current].emit_if(line);
         chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
         core_wasm::dup(&mut chunks[current], line);
         chunks[current].emit_string_const("", line);
-        vybe_emitter::errors::emit_exception_new_finalize(&mut chunks[current], "KeyError", line);
-        vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+        vybe_compiler::compiler::errors::emit_exception_new_finalize(&mut chunks[current], "KeyError", line);
+        vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_end(line);
     } else {
         chunks[current].emit_op(Op::DROP, line);
@@ -925,7 +925,7 @@ pub fn emit_copy(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -1035,7 +1035,7 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
         call_import(chunks, current, "ecma:array", "isArray", 1, line);
-        vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if(line);
 
         // list.pop(): value = recv[len-1]; remove_at(recv, len-1)
@@ -1069,8 +1069,8 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
         core_wasm::dup(&mut chunks[current], line);
         chunks[current].emit_string_const("pop from an empty set", line);
-        vybe_emitter::errors::emit_exception_new_finalize(&mut chunks[current], "KeyError", line);
-        vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+        vybe_compiler::compiler::errors::emit_exception_new_finalize(&mut chunks[current], "KeyError", line);
+        vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_end(line);
         // v = arr[0]
         chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
@@ -1094,7 +1094,7 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         // value then removes the property natively via `ecma:object.delete`.
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
         call_import(chunks, current, "ecma:array", "isArray", 1, line);
-        vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if(line);
 
         // list.pop(i): value = recv[i]; remove_at(recv, i); value
@@ -1182,7 +1182,7 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     // isString(recv) → string length
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     strings::emit_length(&mut chunks[current], line);
@@ -1191,7 +1191,7 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     // isArray(recv) → element count
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     collections::emit_len(chunks, current, line);
@@ -1200,7 +1200,7 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     // isView(recv) → typed-array (bytes) length
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:arraybuffer", "isView", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:uint8array", "length", 1, line);

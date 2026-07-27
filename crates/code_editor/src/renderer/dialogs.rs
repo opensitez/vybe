@@ -14,12 +14,12 @@ impl ProjectPropsDialog {
         }
     }
 
-    pub fn open(&mut self, project: &vybe_compiler::projects::project::Project) {
+    pub fn open(&mut self, project: &vybe_platform_dotnet::winforms::designer::project::Project) {
         self.visible = true;
         self.selected_startup = match &project.startup_object {
-            vybe_compiler::projects::project::StartupObject::SubMain => 0,
-            vybe_compiler::projects::project::StartupObject::None => 1,
-            vybe_compiler::projects::project::StartupObject::Form(name) => project
+            vybe_platform_dotnet::winforms::designer::project::StartupObject::SubMain => 0,
+            vybe_platform_dotnet::winforms::designer::project::StartupObject::None => 1,
+            vybe_platform_dotnet::winforms::designer::project::StartupObject::Form(name) => project
                 .forms
                 .iter()
                 .position(|f| &f.form.name == name)
@@ -32,14 +32,14 @@ impl ProjectPropsDialog {
         self.visible = false;
     }
 
-    pub fn apply(&self, project: &mut vybe_compiler::projects::project::Project) {
+    pub fn apply(&self, project: &mut vybe_platform_dotnet::winforms::designer::project::Project) {
         match self.selected_startup {
             0 => {
-                project.startup_object = vybe_compiler::projects::project::StartupObject::SubMain;
+                project.startup_object = vybe_platform_dotnet::winforms::designer::project::StartupObject::SubMain;
                 project.startup_form = None;
             }
             1 => {
-                project.startup_object = vybe_compiler::projects::project::StartupObject::None;
+                project.startup_object = vybe_platform_dotnet::winforms::designer::project::StartupObject::None;
                 project.startup_form = None;
             }
             n => {
@@ -47,7 +47,7 @@ impl ProjectPropsDialog {
                 if let Some(fm) = project.forms.get(idx) {
                     let name = fm.form.name.clone();
                     project.startup_object =
-                        vybe_compiler::projects::project::StartupObject::Form(name.clone());
+                        vybe_platform_dotnet::winforms::designer::project::StartupObject::Form(name.clone());
                     project.startup_form = Some(name);
                 }
             }
@@ -56,7 +56,7 @@ impl ProjectPropsDialog {
 
     pub fn startup_options(
         &self,
-        project: &vybe_compiler::projects::project::Project,
+        project: &vybe_platform_dotnet::winforms::designer::project::Project,
     ) -> Vec<String> {
         let mut opts = vec!["Sub Main".into(), "(None)".into()];
         for fm in &project.forms {
@@ -73,7 +73,7 @@ impl ProjectPropsDialog {
         win_w: f32,
         win_h: f32,
         scale: f32,
-        project: &vybe_compiler::projects::project::Project,
+        project: &vybe_platform_dotnet::winforms::designer::project::Project,
     ) {
         if !self.visible {
             return;
@@ -244,7 +244,7 @@ impl ProjectPropsDialog {
         my: f32,
         win_w: f32,
         win_h: f32,
-        project: &vybe_compiler::projects::project::Project,
+        project: &vybe_platform_dotnet::winforms::designer::project::Project,
     ) -> bool {
         if !self.visible {
             return false;

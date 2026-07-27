@@ -6,7 +6,7 @@
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::instructions::host;
+use vybe_compiler::compiler::instructions::host;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -53,7 +53,7 @@ fn emit_numeric_one(chunk: &mut Chunk, line: u32) {
 
 fn emit_numeric_coerce_from_top(chunk: &mut Chunk, line: u32) {
     emit_numeric_zero(chunk, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
 }
 
 fn emit_array_get_into_slot(
@@ -72,7 +72,7 @@ fn emit_array_get_into_slot(
 fn emit_increment_slot(chunk: &mut Chunk, slot: u16, line: u32) {
     lget(chunk, slot, line);
     emit_numeric_one(chunk, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     lset(chunk, slot, line);
 }
 
@@ -129,7 +129,7 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
 
     lget(chunk, right_len_slot, line);
     emit_numeric_zero(chunk, line);
-    vybe_emitter::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
     chunk.emit_if(line);
     emit_numeric_zero(chunk, line);
     lset(chunk, k_slot, line);
@@ -139,7 +139,7 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lset(chunk, right_is_matrix_slot, line);
 
     lget(chunk, right_is_matrix_slot, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, right_first_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
@@ -155,7 +155,7 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let (outer_loop, _) = chunk.emit_loop_s(line);
     lget(chunk, i_slot, line);
     lget(chunk, left_len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
 
@@ -165,7 +165,7 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lset(chunk, row_len_slot, line);
 
     lget(chunk, right_is_matrix_slot, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     lget(chunk, col_count_slot, line);
@@ -181,7 +181,7 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let (col_loop, _) = chunk.emit_loop_s(line);
     lget(chunk, j_slot, line);
     lget(chunk, col_count_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
 
@@ -195,7 +195,7 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let (dot_loop, _) = chunk.emit_loop_s(line);
     lget(chunk, k_slot, line);
     lget(chunk, row_len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
 
@@ -247,7 +247,7 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let (vec_dot_loop, _) = chunk.emit_loop_s(line);
     lget(chunk, k_slot, line);
     lget(chunk, row_len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
 

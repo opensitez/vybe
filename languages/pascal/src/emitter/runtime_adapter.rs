@@ -3,7 +3,7 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::Op;
 use vybe_bytecode::Value;
-use vybe_emitter::collections;
+use vybe_compiler::compiler::collections;
 
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
     if name == "pascal.tostring" {
@@ -78,7 +78,7 @@ fn emit_pascal_file_eof(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_GET, eof_map_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, handle_slot, line);
         chunk.emit_op(Op::ARRAY_GET, line);
-        vybe_emitter::instructions::core_wasm::dup(chunk, line);
+        vybe_compiler::compiler::instructions::core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
     chunks[current].emit_if(line);
@@ -98,7 +98,7 @@ fn emit_pascal_file_eof(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_GET, eof_map_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, handle_slot, line);
         chunk.emit_op(Op::ARRAY_GET, line);
-        vybe_emitter::instructions::core_wasm::dup(chunk, line);
+        vybe_compiler::compiler::instructions::core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
     chunks[current].emit_if(line);
@@ -117,7 +117,7 @@ fn emit_pascal_file_eof(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, next_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-        vybe_emitter::ops::emit_dyn_ge(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
     }
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -127,12 +127,12 @@ fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32
     let slot = chunks[current].alloc_scratch(1);
     let key = chunks[current].add_constant(Value::String(std::sync::Arc::from(name)));
     chunks[current].emit_op_u16(Op::GLOBAL_GET, key, line);
-    vybe_emitter::instructions::core_wasm::dup(&mut chunks[current], line);
+    vybe_compiler::compiler::instructions::core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op(Op::DROP, line);
     collections::emit_map_new(chunks, current, line);
-    vybe_emitter::instructions::core_wasm::dup(&mut chunks[current], line);
+    vybe_compiler::compiler::instructions::core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::GLOBAL_SET, key, line);
     chunks[current].emit_else(line);
     chunks[current].emit_end(line);

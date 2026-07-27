@@ -1,10 +1,10 @@
 use std::sync::Arc;
-use vybe_emitter::instructions::host;
+use vybe_compiler::compiler::instructions::host;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
-use vybe_emitter::{collections, loops};
+use vybe_compiler::compiler::{collections, loops};
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
@@ -188,7 +188,7 @@ pub fn emit_path_has_extension(chunks: &mut [Chunk], current: usize, line: u32) 
     let chunk = &mut chunks[current];
     push_const(chunk, Value::String(Arc::from("")), line);
     chunk.emit_op(Op::NE, line);
-    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
 }
 
 pub fn emit_path_is_path_rooted(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -274,13 +274,13 @@ fn emit_directory_entries(chunks: &mut [Chunk], current: usize, line: u32, want_
     chunk.emit_op_u16(Op::LOCAL_GET, full_path_slot, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, is_dir_idx, line);
     chunk.emit(1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     if !want_directories {
-        vybe_emitter::ops::emit_dyn_not(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     }
 
     let skip_push = chunk.emit_block(line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);

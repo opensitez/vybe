@@ -26,7 +26,7 @@ use vybe_bytecode::opcode::Op;
 /// structured block would leak the block label to the caller's `label_stack`
 /// (the trap iter_drain hit), so every path branches to the shared exit.
 pub(crate) fn emit_dotnet_stringify(chunk: &mut Chunk, v_local: u16, result_local: u16, line: u32) {
-    use vybe_emitter::instructions::host;
+    use vybe_compiler::compiler::instructions::host;
 
     let exit_block = chunk.emit_block(line);
 
@@ -35,11 +35,11 @@ pub(crate) fn emit_dotnet_stringify(chunk: &mut Chunk, v_local: u16, result_loca
     chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
     host::emit(chunk, "ecma:value", "typeof", 1, line);
     chunk.emit_string_const("boolean", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_string_const("True", line);
     chunk.emit_else(line);
@@ -54,7 +54,7 @@ pub(crate) fn emit_dotnet_stringify(chunk: &mut Chunk, v_local: u16, result_loca
     let not_null = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_string_const("", line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
@@ -67,7 +67,7 @@ pub(crate) fn emit_dotnet_stringify(chunk: &mut Chunk, v_local: u16, result_loca
     // requires routing through method dispatch; call `Console.WriteLine(
     // p.ToString())` explicitly to get the override.
     chunk.emit_op_u16(Op::LOCAL_GET, v_local, line);
-    vybe_emitter::strings::emit_to_string(chunk, line);
+    vybe_compiler::compiler::strings::emit_to_string(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
 
     chunk.emit_end(line);
@@ -116,7 +116,7 @@ pub fn emit_console_writeline(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
     chunk.emit_string_const("\n", line);
-    vybe_emitter::strings::emit_concat(chunk, 2, line);
+    vybe_compiler::compiler::strings::emit_concat(chunk, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
 
     emit_stream_write(
@@ -161,7 +161,7 @@ pub fn emit_console_writeline_empty(chunks: &mut [Chunk], current: usize, line: 
 /// `Console.ReadLine()` — wasi:cli/stdin.get-stdin → [method]input-stream.blocking-read.
 /// Stack: [] → [string]
 pub fn emit_console_readline(chunks: &mut [Chunk], current: usize, line: u32) {
-    vybe_emitter::io::emit_input(&mut chunks[current], line);
+    vybe_compiler::compiler::io::emit_input(&mut chunks[current], line);
 }
 
 fn emit_console_stderr(chunks: &mut [Chunk], current: usize, append_newline: bool, line: u32) {
@@ -174,7 +174,7 @@ fn emit_console_stderr(chunks: &mut [Chunk], current: usize, append_newline: boo
         let chunk = &mut chunks[current];
         chunk.emit_op_u16(Op::LOCAL_GET, result_local, line);
         chunk.emit_string_const("\n", line);
-        vybe_emitter::strings::emit_concat(chunk, 2, line);
+        vybe_compiler::compiler::strings::emit_concat(chunk, 2, line);
         chunk.emit_op_u16(Op::LOCAL_SET, result_local, line);
     }
 

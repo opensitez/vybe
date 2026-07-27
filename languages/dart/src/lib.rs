@@ -1,3 +1,6 @@
+// Force-link every plugin crate in `[dependencies]` so its link-time
+// registration reaches the registry. Generated from Cargo.toml — see build.rs.
+include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
 pub mod emitter;
 pub mod normalize_class;
 pub mod tree_register;
@@ -20,6 +23,12 @@ pub fn profile_source() -> &'static str {
 
 /// Register this language with the shared plugin registry (dylib entry point).
 pub fn register() {
+    // Platforms this language needs. A language already links them (see
+    // Cargo.toml), so registering them here means the compiler never has to —
+    // and it works from ANY host, including language test binaries that never
+    // construct vybex. See flexclassplan.md.
+    vybe_platform_flutter::register();
+
     vybe_bytecode::registry::register_language(vybe_bytecode::registry::LanguageDef {
         name: "dart",
         parse,
@@ -29,11 +38,11 @@ pub fn register() {
         register_tree: Some(tree_register::register_namespace_tree),
     });
     // Dart records compare by value while Lists compare by reference, so the
-    // equality fallback deep-compares only tagged tuples (see vybe_emitter).
+    // equality fallback deep-compares only tagged tuples (see vybe_compiler::emitter).
     vybe_bytecode::registry::register_hooks(
         "dart",
         vybe_bytecode::registry::LanguageHooks {
-            value_eq: Some(vybe_emitter::tuples::emit_tuple_value_eq),
+            value_eq: Some(vybe_compiler::compiler::tuples::emit_tuple_value_eq),
             ..Default::default()
         },
     );
@@ -50,3 +59,7 @@ impl vybe_bytecode::Plugin for Plugin {
         register();
     }
 }
+
+// Link-time registration: this crate submits its plugin to the one registry.
+// Nothing lists plugins in code — linking this crate IS the registration.
+vybe_bytecode::register_plugin!(Plugin);

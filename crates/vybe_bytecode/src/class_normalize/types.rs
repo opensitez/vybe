@@ -95,6 +95,17 @@ pub struct NormalClass {
     /// replaces this pass-through by adding first-class fields to
     /// `NormalClass` for every member kind actually in use.
     pub raw_extra_members: Vec<vybe_ast::ClassMember>,
+
+    /// Declared AUGMENTATIONS — where this class's members come from besides
+    /// its own body (PHP traits, Dart mixins, Ruby include/prepend, Java
+    /// interface defaults, Go field promotion, Dart `extension on MyClass`).
+    ///
+    /// A language's normalizer declares these as DATA; the compiler's
+    /// `class_augmentation` pass applies them ONCE, before member
+    /// registration. Empty for a language that has not been migrated yet —
+    /// those still fold in their own walker, which is exactly the duplication
+    /// this replaces. See flexclassplan.md §4c.
+    pub augmentations: Vec<Augmentation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,4 +288,128 @@ pub struct EventBinding {
     pub control: String, // "btn1"
     pub event: String,   // "Click"
     pub handler: String, // method name on this class
+}
+
+// ── Class augmentation ──────────────────────────────────────────────────
+//
+// Where a class's members come from BESIDES its own body: PHP traits, Dart
+// mixins, Ruby `include`/`prepend`, Java interface defaults, Go field
+// promotion, Dart `extension E on MyClass`.
+//
+// One vocabulary, per-language declared data — NOT one algorithm. These
+// mechanisms differ in KIND, so a single fold would be wrong for most of them.
+// See flexclassplan.md §4c.
+//
+// "Augmentation" is reserved for this concept. The primitive prototype
+// FALLBACK (§4d) is a different mechanism and never uses the word.
+
+/// How an augmenting type's members reach the class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AugmentationMode {
+    /// Members are duplicated into the class. PHP traits, Dart mixins,
+    /// Dart `extension E on MyClass`.
+    Copy,
+    /// Members are inserted into the LOOKUP ORDER, not copied. Ruby
+    /// `include`/`prepend`; Java default methods resolve at dispatch.
+    Chain,
+    /// Members are PROMOTED from an inner value and the receiver rebinds to
+    /// it. Go field promotion — and Go's own spec word, chosen because
+    /// "delegate" already means a first-class function type in this codebase
+    /// (C# `delegate_declaration`, `vybe_compiler::emitter/src/delegates.rs`).
+    Promote,
+}
+
+/// Where the augmenting type sits relative to the class's own members.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AugmentationPosition {
+    /// The class's own members win. PHP traits, Dart mixins, Ruby `include`.
+    AfterOwn,
+    /// The augmenting type wins over the class's own members. Ruby `prepend`.
+    BeforeOwn,
+}
+
+/// What happens when two augmenting types supply the same member name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AugmentationConflict {
+    /// Later augmentation overrides earlier. Dart mixin linearization.
+    LastWins,
+    /// Earlier wins; later is ignored.
+    FirstWins,
+    /// A diagnosable error. Go promotion at EQUAL depth; Java default-method
+    /// diamonds. Silently picking one is a bug, not a policy.
+    Error,
+    /// An error unless the class explicitly resolves it (PHP `insteadof`,
+    /// Java overriding the diamond, `X.super.m()`).
+    RequireExplicit,
+}
+
+/// What `super` means inside an augmenting type's member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AugmentationSuper {
+    /// The augmented class's own parent. PHP traits.
+    OwnParent,
+    /// The next entry in the resolution order — NOT the augmenting type's
+    /// own parent. Dart mixins, Ruby modules.
+    NextInOrder,
+}
+
+/// A per-member adjustment applied while augmenting: PHP `as` (rename and/or
+/// change visibility) and `insteadof` (exclude).
+#[derive(Debug, Clone, Default)]
+pub struct AugmentationAdjustment {
+    /// Source member name this applies to.
+    pub member: String,
+    /// Bind under this name instead (PHP `as other`).
+    pub rename_to: Option<String>,
+    /// Override the member's visibility (PHP `as protected foo`). Uses the
+    /// normalized model's `Access`, not the AST `Visibility`, so the record
+    /// stays in the same vocabulary as `NormalMethod.access`.
+    pub visibility: Option<Access>,
+    /// Drop this member from THIS augmentation (PHP `insteadof`).
+    pub exclude: bool,
+}
+
+/// Which member kinds may cross from the augmenting type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AugmentationContributes {
+    pub methods: bool,
+    pub fields: bool,
+    /// PHP quirk: a trait's static property gives each using class its OWN
+    /// copy, not a shared one.
+    pub statics: bool,
+    /// Dart mixins declare no constructors.
+    pub constructors: bool,
+    pub abstract_members: bool,
+}
+
+impl Default for AugmentationContributes {
+    fn default() -> Self {
+        Self {
+            methods: true,
+            fields: true,
+            statics: false,
+            constructors: false,
+            abstract_members: true,
+        }
+    }
+}
+
+/// One declared augmentation of a class. A language's normalizer produces
+/// these as DATA; the compiler's `class_augmentation` pass applies them once.
+#[derive(Debug, Clone)]
+pub struct Augmentation {
+    /// The augmenting type's name. For `Promote` this is the field's type,
+    /// and `via_field` names the field.
+    pub from: String,
+    /// `Promote` only: the field the receiver rebinds to (Go promotion).
+    pub via_field: Option<String>,
+    pub mode: AugmentationMode,
+    pub position: AugmentationPosition,
+    pub conflict: AugmentationConflict,
+    pub super_target: AugmentationSuper,
+    pub adjustments: Vec<AugmentationAdjustment>,
+    pub contributes: AugmentationContributes,
+    /// `Promote` only: promotion depth. Shallower wins; EQUAL depth with the
+    /// same name is an `Error` (Go).
+    pub depth: u8,
 }

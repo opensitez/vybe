@@ -58,20 +58,25 @@ fn array_element_type_hint(type_hint: &str) -> Option<String> {
     None
 }
 
-fn dotnet_factory_return_type(callee: &Expression) -> Option<String> {
+/// Borrow a configured namespace path as the `&[&str]` the tree walk takes.
+fn scope_segments(scope: &[String]) -> Vec<&str> {
+    scope.iter().map(String::as_str).collect()
+}
+
+fn dotnet_factory_return_type(scope: &[String], callee: &Expression) -> Option<String> {
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
     };
     let class_name = terminal_type_name(object)?;
-    common::dotnet::static_method_return_type(&class_name, field).map(str::to_string)
+    vybe_bytecode::namespaces::lookup_type_member_return(scope, &class_name, field)
 }
 
-fn dotnet_static_member_return_type(expr: &Expression) -> Option<String> {
+fn dotnet_static_member_return_type(scope: &[String], expr: &Expression) -> Option<String> {
     let ExprKind::Member { object, field, .. } = &expr.kind else {
         return None;
     };
     let class_name = terminal_type_name(object)?;
-    common::dotnet::static_method_return_type(&class_name, field).map(str::to_string)
+    vybe_bytecode::namespaces::lookup_type_member_return(scope, &class_name, field)
 }
 
 fn js_dynamic_import_alias(module: &str) -> String {
@@ -287,7 +292,7 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
             .or_else(|| compiler.is_class_static_field_type_hint(local_name))
             .map(|name| compiler.resolve_source_type_alias(&name)),
         ExprKind::Member { object, field, .. } => {
-            if let Some(type_name) = dotnet_static_member_return_type(recv) {
+            if let Some(type_name) = dotnet_static_member_return_type(&compiler.profile.namespaces.type_scopes, recv) {
                 return Some(type_name);
             }
             let owner_is_self = matches!(&object.kind, ExprKind::This | ExprKind::Super)
@@ -362,11 +367,11 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                             .is_none()
                         {
                             let class_name = Compiler::normalize_type_hint(&receiver_type);
-                            if let Some(return_type) = common::dotnet::surface()
-                                .lookup_instance_method_return_type(
+                            if let Some(return_type) =
+                                vybe_bytecode::namespaces::lookup_type_member_return(
+                                    &compiler.profile.namespaces.type_scopes,
                                     &class_name,
                                     field,
-                                    args.len() as u8,
                                 )
                             {
                                 return Some(return_type);
@@ -378,19 +383,23 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
 
             let inferred = compiler
                 .infer_function_return_type(callee)
-                .or_else(|| dotnet_factory_return_type(callee))
+                .or_else(|| dotnet_factory_return_type(&compiler.profile.namespaces.type_scopes, callee))
                 .or_else(|| match &callee.kind {
                     ExprKind::Ident(name) => {
                         let resolved = compiler.resolve_source_type_alias(name);
-                        common::dotnet::surface()
-                            .lookup_constructor(&resolved)
-                            .map(|_| resolved)
+                        vybe_bytecode::namespaces::lookup_type_ctor_target(
+                            &compiler.profile.namespaces.type_scopes,
+                            &resolved,
+                        )
+                        .map(|_| resolved)
                     }
                     ExprKind::Member { field, .. } => {
                         let resolved = compiler.resolve_source_type_alias(field);
-                        common::dotnet::surface()
-                            .lookup_constructor(&resolved)
-                            .map(|_| resolved)
+                        vybe_bytecode::namespaces::lookup_type_ctor_target(
+                            &compiler.profile.namespaces.type_scopes,
+                            &resolved,
+                        )
+                        .map(|_| resolved)
                     }
                     _ => None,
                 });
@@ -836,16 +845,20 @@ impl Compiler {
         method_name: &str,
         arg_count: u8,
     ) -> Option<String> {
-        let surface = common::dotnet::surface();
+        let scope = &self.profile.namespaces.type_scopes;
         let mut current = self
             .resolve_pending_class_name_for_type_hint(type_hint)
             .unwrap_or_else(|| Self::normalize_type_hint(type_hint));
         loop {
-            if surface.is_descriptor_class(&current) {
-                // Framework class — the descriptor walks the rest of the chain.
-                return surface
-                    .lookup_instance_method(&current, method_name, arg_count)
-                    .map(|_| current);
+            if vybe_bytecode::namespaces::is_registered_type(scope, &current) {
+                // Platform class — its registered members finish the chain.
+                return vybe_bytecode::namespaces::lookup_type_instance_target(
+                    scope,
+                    &current,
+                    method_name,
+                    arg_count,
+                )
+                .map(|_| current);
             }
             let pending = self.pending_classes.get(&current)?;
             let key = self.js_member_storage_name_for_class(&current, method_name);
@@ -1123,7 +1136,7 @@ impl Compiler {
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, global_this_slot);
         fn_call!(self, "wasm:js-undefined", "test", 1);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
         self.emit_common("object.new", 0, self.line);
         inst!(self, core_wasm::dup);
@@ -1224,10 +1237,10 @@ impl Compiler {
         self.emit_const(Value::F64(index as f64));
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_gt(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_gt(self.chunk(), line);
         };
         let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
         self.emit_u16(Op::LOCAL_GET, args_slot);
         self.emit_const(Value::F64(index as f64));
@@ -1415,10 +1428,10 @@ impl Compiler {
             self.emit_const(Value::F64(fixed_count as f64));
             {
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
             };
             let line = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if(line);
             self.emit_rest_call_from_arg_slots(
                 callee_slot,
@@ -1577,7 +1590,7 @@ impl Compiler {
         let has_own_idx = self.import("ecma:object", "hasOwn");
         self.emit_host_call(has_own_idx, 2);
         let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         let slot = self.define_local(local_name);
         self.emit_u16(Op::LOCAL_SET, slot);
         slot
@@ -1748,10 +1761,10 @@ impl Compiler {
                 self.emit_const(Value::F64(fixed_count as f64));
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                 };
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if(line);
                 self.emit_rest_call_from_args_array(
                     callee_slot,
@@ -2291,7 +2304,7 @@ impl Compiler {
 
         if self.profile.ecma_error_object_shape {
             for name in Self::error_instanceof_chain(type_name) {
-                common::classes::emit_instanceof_chain(
+                crate::compiler::reflection::emit_instanceof_chain(
                     &mut self.chunks,
                     self.current,
                     exc_tmp,
@@ -2306,7 +2319,7 @@ impl Compiler {
             // §20.5: link [[Prototype]] to the prelude-wired
             // `__ctor_<Kind>.prototype` and drop the own `name` stamp —
             // instances resolve `name`/`toString` through the chain.
-            crate::emitter::errors::emit_finish_js_error_instance(self.chunk(), type_name, line);
+            crate::compiler::errors::emit_finish_js_error_instance(self.chunk(), type_name, line);
         }
         Ok(())
     }
@@ -2728,7 +2741,7 @@ impl Compiler {
                 && !self.defined_classes.contains(&canon)
             {
                 if let Some(super::resolver::Resolution::Tree(
-                    crate::emitter::namespaces::ResolutionTarget::Ctor {
+                    crate::compiler::namespaces::ResolutionTarget::Ctor {
                         spec: Some(spec), ..
                     },
                 )) = self.resolve_profile_namespace_chain(&[name.to_string()])
@@ -2906,10 +2919,10 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from("symbol")));
                         {
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                         };
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if(line);
                         self.emit_const(Value::String(Arc::from(
                             "Cannot convert a Symbol value to a number",
@@ -3288,7 +3301,7 @@ impl Compiler {
                             self.emit_const(Value::I64(1));
                             {
                                 let line = self.line;
-                                crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                                crate::compiler::ops::emit_dyn_add(self.chunk(), line);
                             };
                             self.emit_u16(Op::LOCAL_SET, count_slot);
                             self.chunk().emit_end(line);
@@ -3315,7 +3328,7 @@ impl Compiler {
                     if let Some((ctx_chunk, ctx_slot)) = self.js_derived_ctor_ctx {
                         if ctx_chunk == self.current {
                             let l = self.line;
-                            common::classes::emit_super_once_guard(self.chunk(), ctx_slot, l);
+                            crate::compiler::classes::emit_super_once_guard(self.chunk(), ctx_slot, l);
                         }
                     }
                     if !self.shadows_builtin_type(&parent_name)
@@ -3398,7 +3411,7 @@ impl Compiler {
                         let cur_canon = self.canon(class_name.as_deref().unwrap_or(""));
                         let line = self.line;
                         let helper =
-                            common::classes::ensure_super_lookup_chunk(&mut self.chunks, line);
+                            crate::compiler::classes::ensure_super_lookup_chunk(&mut self.chunks, line);
                         self.emit_u16(Op::REF_FUNC, helper as u16);
                         self.chunk().emit(0, line); // 0 upvalues
                         if let Some(s) = self_slot {
@@ -3558,10 +3571,12 @@ impl Compiler {
                     // like `Stack`, `Queue`, or `Dictionary`.
                 } else {
                     let class_name = Self::normalize_type_hint(&class_name);
-                    let surface = common::dotnet::surface();
-                    if let Some(target) =
-                        surface.lookup_instance_method(&class_name, field, arg_exprs.len() as u8)
-                    {
+                    if let Some(target) = vybe_bytecode::namespaces::lookup_type_instance_target(
+                        &self.profile.namespaces.type_scopes,
+                        &class_name,
+                        field,
+                        arg_exprs.len() as u8,
+                    ) {
                         if self.profile.namespaces.use_dotnet && field.eq_ignore_ascii_case("Add") {
                             if let ExprKind::Index {
                                 object: indexed_owner,
@@ -3593,7 +3608,7 @@ impl Compiler {
                                 }
                                 let total_argc = (arg_exprs.len() + 1) as u8;
                                 match &target {
-                                    common::dotnet::InstanceMethodTarget::Host {
+                                    vybe_bytecode::component_model::InstanceMethodTarget::Host {
                                         module,
                                         func,
                                         ..
@@ -3601,7 +3616,7 @@ impl Compiler {
                                         let idx = self.import(module, func);
                                         self.emit_host_call(idx, total_argc);
                                     }
-                                    common::dotnet::InstanceMethodTarget::Common {
+                                    vybe_bytecode::component_model::InstanceMethodTarget::Common {
                                         emit, ..
                                     } => {
                                         let line = self.line;
@@ -3624,7 +3639,7 @@ impl Compiler {
                             }
                         }
 
-                        if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
+                        if matches!(&target, vybe_bytecode::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
                             && arg_exprs.is_empty()
                         {
                             self.compile_expr(object)?;
@@ -3684,7 +3699,7 @@ impl Compiler {
                             return Ok(());
                         }
 
-                        if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
+                        if matches!(&target, vybe_bytecode::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
                             && arg_exprs.len() == 1
                             && class_name.rsplit('.').next().is_some_and(|name| {
                                 name.eq_ignore_ascii_case("List")
@@ -3708,11 +3723,11 @@ impl Compiler {
                         }
                         let total_argc = (arg_exprs.len() + 1) as u8;
                         match target {
-                            common::dotnet::InstanceMethodTarget::Host { module, func, .. } => {
+                            vybe_bytecode::component_model::InstanceMethodTarget::Host { module, func, .. } => {
                                 let idx = self.import(&module, &func);
                                 self.emit_host_call(idx, total_argc);
                             }
-                            common::dotnet::InstanceMethodTarget::Common { emit, .. } => {
+                            vybe_bytecode::component_model::InstanceMethodTarget::Common { emit, .. } => {
                                 let line = self.line;
                                 self.emit_common(&emit, total_argc, line);
                             }
@@ -3990,7 +4005,7 @@ impl Compiler {
                         .and_then(|exports| exports.get(field))
                         .cloned()
                         .or_else(|| {
-                            let ctx = crate::emitter::instructions::host::CapabilityContext::get();
+                            let ctx = crate::compiler::instructions::host::CapabilityContext::get();
                             if ctx.functions.has(&ns_module, field) {
                                 Some((ns_module.clone(), field.clone()))
                             } else {
@@ -4086,7 +4101,7 @@ impl Compiler {
                             // component-model call, no per-profile
                             // package-root data required.
                             Some(super::resolver::Resolution::Tree(
-                                crate::emitter::namespaces::ResolutionTarget::HostCall {
+                                crate::compiler::namespaces::ResolutionTarget::HostCall {
                                     module,
                                     func,
                                     ..
@@ -4194,13 +4209,13 @@ impl Compiler {
                         self.resolve_profile_namespace_chain(&parts),
                         Some(super::resolver::Resolution::HostImport { .. })
                             | Some(super::resolver::Resolution::Tree(
-                                crate::emitter::namespaces::ResolutionTarget::CommonEmit(_)
+                                crate::compiler::namespaces::ResolutionTarget::CommonEmit(_)
                             ))
                             | Some(super::resolver::Resolution::Tree(
-                                crate::emitter::namespaces::ResolutionTarget::HostCall { .. }
+                                crate::compiler::namespaces::ResolutionTarget::HostCall { .. }
                             ))
                             | Some(super::resolver::Resolution::Tree(
-                                crate::emitter::namespaces::ResolutionTarget::Const(_)
+                                crate::compiler::namespaces::ResolutionTarget::Const(_)
                             ))
                             | Some(super::resolver::Resolution::ResolvedPrefix { .. })
                     );
@@ -4402,7 +4417,7 @@ impl Compiler {
                                 return Ok(());
                             }
                             Some(super::resolver::Resolution::Tree(
-                                crate::emitter::namespaces::ResolutionTarget::CommonEmit(emit),
+                                crate::compiler::namespaces::ResolutionTarget::CommonEmit(emit),
                             )) => {
                                 if emit.eq_ignore_ascii_case("dotnet.array_resize")
                                     && args.len() == 2
@@ -4437,7 +4452,7 @@ impl Compiler {
                             Some(
                                 super::resolver::Resolution::HostImport { module, func }
                                 | super::resolver::Resolution::Tree(
-                                    crate::emitter::namespaces::ResolutionTarget::HostCall {
+                                    crate::compiler::namespaces::ResolutionTarget::HostCall {
                                         module,
                                         func,
                                         ..
@@ -4594,7 +4609,7 @@ impl Compiler {
                                 }
                                 let is_const = ns_parts
                                     .last()
-                                    .map(|name| common::dotnet::surface().is_known_constant(name))
+                                    .map(|name| vybe_bytecode::namespaces::lookup_type_static_member(&self.profile.namespaces.type_scopes, name, name).is_some())
                                     .unwrap_or(false);
                                 if !is_const {
                                     for a in &arg_exprs {
@@ -4650,7 +4665,11 @@ impl Compiler {
                                         "waitforexit" => {
                                             self.emit_var_get(&local);
                                             let line = self.line;
-                                            common::dotnet::core::process_adapter::emit_process_wait_for_exit(&mut self.chunks, self.current, line);
+                                            // Through the emit registry, like
+                                            // every other platform emit — the
+                                            // name is already registered by
+                                            // the dotnet dispatch table.
+                                            self.emit_common("dotnet.process_wait_for_exit", 1, line);
                                             return Ok(());
                                         }
                                         _ => {}
@@ -5338,8 +5357,11 @@ impl Compiler {
                 None if self.profile.namespaces.use_dotnet
                     && !self.direct_receiver_has_own_pending_method(object, field)
                     && !self.defined_class_methods.contains(&self.canon(field))
-                    && !common::dotnet::surface()
-                        .uses_runtime_collection_dispatch_arity(field, arg_exprs.len() as u8) =>
+                    && !vybe_bytecode::namespaces::scope_declares_member_arity(
+                        &scope_segments(&self.profile.namespaces.runtime_collection_scope),
+                        field,
+                        arg_exprs.len() as u8,
+                    ) =>
                 {
                     Some("IEnumerable".to_string())
                 }
@@ -5347,11 +5369,13 @@ impl Compiler {
             };
             if let Some(class_name) = surface_type {
                 {
-                    let surface = common::dotnet::surface();
-                    if let Some(target) =
-                        surface.lookup_instance_method(&class_name, field, arg_exprs.len() as u8)
-                    {
-                        if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
+                    if let Some(target) = vybe_bytecode::namespaces::lookup_type_instance_target(
+                        &self.profile.namespaces.type_scopes,
+                        &class_name,
+                        field,
+                        arg_exprs.len() as u8,
+                    ) {
+                        if matches!(&target, vybe_bytecode::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
                             && arg_exprs.is_empty()
                         {
                             self.compile_expr(object)?;
@@ -5411,7 +5435,7 @@ impl Compiler {
                             return Ok(());
                         }
 
-                        if matches!(&target, common::dotnet::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
+                        if matches!(&target, vybe_bytecode::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
                             && arg_exprs.len() == 1
                             && class_name.rsplit('.').next().is_some_and(|name| {
                                 name.eq_ignore_ascii_case("List")
@@ -5436,11 +5460,11 @@ impl Compiler {
                         }
                         let total_argc = (arg_exprs.len() + 1) as u8;
                         match target {
-                            common::dotnet::InstanceMethodTarget::Host { module, func, .. } => {
+                            vybe_bytecode::component_model::InstanceMethodTarget::Host { module, func, .. } => {
                                 let idx = self.import(&module, &func);
                                 self.emit_host_call(idx, total_argc);
                             }
-                            common::dotnet::InstanceMethodTarget::Common { emit, .. } => {
+                            vybe_bytecode::component_model::InstanceMethodTarget::Common { emit, .. } => {
                                 let line = self.line;
                                 self.emit_common(&emit, total_argc, line);
                             }
@@ -5576,13 +5600,34 @@ impl Compiler {
                 && receiver_is_direct
                 && receiver_is_user_type
                 && field != "toString";
+            // `defined_class_methods` is a FLAT, class-less set of every method
+            // name declared by any class (`link.rs`). It predates the
+            // declaration pass and exists only because `pending_classes` used
+            // to be empty at call sites. Now that classes are registered before
+            // any body compiles, the class-associated answer above is
+            // authoritative — and consulting the flat set on top of it is
+            // actively wrong: it claims a class has an inherited framework
+            // member (`notifyListeners`, `findRenderObject`) merely because
+            // some unrelated class declares that name, diverting the call away
+            // from the framework adapter.
+            //
+            // So the flat set stays as a fallback ONLY where the receiver's
+            // class cannot be resolved (untyped locals). Delete it outright
+            // once receiver typing covers those — flexclassplan.md §3a.
+            let receiver_class_known = self
+                .infer_expr_type_hint(object)
+                .as_deref()
+                .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(type_hint))
+                .is_some();
             let user_method_shadow = self.direct_receiver_has_own_pending_method(object, field)
                 || receiver_has_pending_user_method
                 || java_direct_user_typed_receiver
                 || (receiver_is_direct
+                    && !receiver_class_known
                     && !receiver_is_known_builtin_value
                     && self.defined_class_methods.contains(&canon_field))
                 || (receiver_is_direct
+                    && !receiver_class_known
                     && receiver_is_user_type
                     && self.defined_class_methods.contains(&canon_field));
             let java_member_apply =
@@ -5606,7 +5651,8 @@ impl Compiler {
                 // Array-only value methods like `.entries()` must not steal
                 // Map/Set receivers away from runtime method dispatch.
             } else if self.profile.namespaces.use_dotnet
-                && common::dotnet::uses_runtime_collection_dispatch_arity(
+                && vybe_bytecode::namespaces::scope_declares_member_arity(
+                    &scope_segments(&self.profile.namespaces.runtime_collection_scope),
                     field,
                     arg_exprs.len() as u8,
                 )
@@ -5645,11 +5691,11 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, len_slot);
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_lt(self.chunk(), line);
                     };
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                    crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                     self.chunk().emit_br_if(1, line);
 
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -5663,7 +5709,7 @@ impl Compiler {
                     self.emit_const(Value::I32(1));
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_add(self.chunk(), line);
                     };
                     self.emit_u16(Op::LOCAL_SET, idx_slot);
                     self.chunk().emit_br(0, line);
@@ -5886,11 +5932,11 @@ impl Compiler {
                             }
                             {
                                 let line = self.line;
-                                crate::emitter::ops::emit_dyn_lt(self.chunk(), line);
+                                crate::compiler::ops::emit_dyn_lt(self.chunk(), line);
                             };
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                             self.chunk().emit_br_if(1, line);
                             // acc = fn(acc, arr[i], i)  — ECMA-262 §23.1.3.26 passes (acc, elem, index, array)
                             self.emit_u16(Op::LOCAL_GET, fn_slot);
@@ -5909,7 +5955,7 @@ impl Compiler {
                             self.emit_const(Value::I32(1));
                             {
                                 let line = self.line;
-                                crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                                crate::compiler::ops::emit_dyn_add(self.chunk(), line);
                             };
                             self.emit_u16(Op::LOCAL_SET, idx_slot);
                             self.chunk().emit_br(0, line);
@@ -6012,7 +6058,7 @@ impl Compiler {
                         self.emit_u8(Op::CALL_REF, 1);
                         {
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                         };
                         let line = self.line;
                         self.chunk().emit_if(line);
@@ -6048,7 +6094,7 @@ impl Compiler {
                         self.emit_u8(Op::CALL_REF, 2);
                         {
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                         };
                         let line = self.line;
                         self.chunk().emit_if(line);
@@ -6255,11 +6301,11 @@ impl Compiler {
                         self.emit_const(Value::I32(0));
                         {
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_ge(self.chunk(), line);
                         };
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                         self.chunk().emit_br_if(1, line);
                         // acc = fn(acc, arr[i], i)  — ECMA-262 §23.1.3.27
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
@@ -6303,11 +6349,11 @@ impl Compiler {
                         self.emit_const(Value::I32(0));
                         {
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_ge(self.chunk(), line);
                         };
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                         self.chunk().emit_br_if(1, line);
                         let elem_slot = self.define_local("__fl_elem");
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
@@ -6322,7 +6368,7 @@ impl Compiler {
                         self.emit_u8(Op::CALL_REF, 1);
                         {
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                         };
                         let line = self.line;
                         self.chunk().emit_if(line);
@@ -6359,11 +6405,11 @@ impl Compiler {
                         self.emit_const(Value::I32(0));
                         {
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_ge(self.chunk(), line);
                         };
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                         self.chunk().emit_br_if(1, line);
                         let elem_slot2 = self.define_local("__fli_elem");
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
@@ -6378,7 +6424,7 @@ impl Compiler {
                         self.emit_u8(Op::CALL_REF, 1);
                         {
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                         };
                         let line = self.line;
                         self.chunk().emit_if(line);
@@ -6419,11 +6465,11 @@ impl Compiler {
                         self.emit_const(Value::I32(0));
                         {
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_ge(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_ge(self.chunk(), line);
                         };
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
-                        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                         self.chunk().emit_br_if(1, line);
                         // elem = arr[i]
                         let ra_elem = self.define_local("__ra_elem");
@@ -6440,7 +6486,7 @@ impl Compiler {
                         self.emit_u8(Op::CALL_REF, 1);
                         {
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                         };
                         let line = self.line;
                         self.chunk().emit_if(line);
@@ -6457,7 +6503,7 @@ impl Compiler {
                         self.emit_const(Value::I32(1));
                         {
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_add(self.chunk(), line);
                         };
                         self.emit_u16(Op::LOCAL_SET, removed_slot);
                         self.chunk().emit_end(line);
@@ -6675,7 +6721,7 @@ impl Compiler {
                     let is_gen_idx = self.import("ecma:value", "isGenerator");
                     self.emit_host_call(is_gen_idx, 1);
                     let gen_if_line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), gen_if_line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), gen_if_line);
                     self.chunk().emit_if(gen_if_line);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
@@ -6693,7 +6739,7 @@ impl Compiler {
                     let is_gen_idx = self.import("ecma:value", "isGenerator");
                     self.emit_host_call(is_gen_idx, 1);
                     let gen_if_line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), gen_if_line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), gen_if_line);
                     self.chunk().emit_if(gen_if_line);
 
                     let value_slot = self.define_local("__gen_return_value");
@@ -6704,7 +6750,7 @@ impl Compiler {
                     let is_done_idx = self.import("ecma:value", "isGeneratorDone");
                     self.emit_host_call(is_done_idx, 1);
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
 
                     if arg_exprs.is_empty() {
@@ -6724,7 +6770,7 @@ impl Compiler {
                     }
                     self.emit_generator_control_packet_from_stack("return");
                     let line = self.line;
-                    crate::emitter::generators::emit_resume(self.chunk(), line);
+                    crate::compiler::generators::emit_resume(self.chunk(), line);
                     self.emit_u16(Op::LOCAL_SET, value_slot);
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -6771,7 +6817,7 @@ impl Compiler {
                     let is_gen_idx = self.import("ecma:value", "isGenerator");
                     self.emit_host_call(is_gen_idx, 1);
                     let gen_if_line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), gen_if_line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), gen_if_line);
                     // ASYNC generators skip this raw fast path — their
                     // attached `__vybe_async_generator_next` driver returns
                     // the §27.6.1.2 promise-wrapped IteratorResult (and
@@ -6780,7 +6826,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     let async_gen_key = self.str_const("__vybe_async_gen");
                     self.emit_u16(Op::STRUCT_GET, async_gen_key);
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), gen_if_line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), gen_if_line);
                     self.emit(Op::I32_EQZ);
                     self.emit(Op::I32_AND);
                     self.chunk().emit_if(gen_if_line);
@@ -6795,7 +6841,7 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_GET, returned_key2);
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     };
                     let line = self.line;
                     self.chunk().emit_if(line);
@@ -6808,21 +6854,21 @@ impl Compiler {
                         // `g.next()` — GEN_NEXT path: pushes value+has_more.
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         let line = self.line;
-                        crate::emitter::generators::emit_next(self.chunk(), line);
+                        crate::compiler::generators::emit_next(self.chunk(), line);
                         let has_more_slot = self.define_local("__gen_has_more");
                         self.emit_u16(Op::LOCAL_SET, has_more_slot);
                         self.emit_u16(Op::LOCAL_SET, value_slot);
                         self.emit_u16(Op::LOCAL_GET, has_more_slot);
                         {
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                         };
                         {
                             let line = self.line;
                             // emit_dyn_not: has_more → i32 (1 if done, 0 if not done)
                             // emit_i32_to_bool: convert to Bool for ECMA `done` property
-                            crate::emitter::ops::emit_dyn_not(self.chunk(), line);
-                            crate::emitter::ops::emit_i32_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_not(self.chunk(), line);
+                            crate::compiler::ops::emit_i32_to_bool(self.chunk(), line);
                         };
                         self.emit_u16(Op::LOCAL_SET, done_slot);
                         // Per ECMA-262 §27.5.3.5: when a generator completes
@@ -6832,7 +6878,7 @@ impl Compiler {
                         if self.profile.ecma_iterator_result_shape {
                             self.emit_u16(Op::LOCAL_GET, done_slot);
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                             self.chunk().emit_if(line);
                             self.emit_u16(Op::LOCAL_GET, value_slot);
                             self.emit(Op::REF_IS_NULL);
@@ -6851,7 +6897,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         self.compile_expr(&arg_exprs[0])?;
                         let line = self.line;
-                        crate::emitter::generators::emit_resume(self.chunk(), line);
+                        crate::compiler::generators::emit_resume(self.chunk(), line);
                         self.emit_u16(Op::LOCAL_SET, value_slot);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         let is_done_idx = self.import("ecma:value", "isGeneratorDone");
@@ -6888,7 +6934,7 @@ impl Compiler {
                     let is_gen_idx = self.import("ecma:value", "isGenerator");
                     self.emit_host_call(is_gen_idx, 1);
                     let gen_if_line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), gen_if_line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), gen_if_line);
                     self.chunk().emit_if(gen_if_line);
 
                     let value_slot = self.define_local("__gen_throw_value");
@@ -6899,7 +6945,7 @@ impl Compiler {
                     self.emit_u16(Op::STRUCT_GET, started_key);
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     };
                     self.emit(Op::I32_EQZ);
                     let line = self.line;
@@ -6907,7 +6953,7 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     let line = self.line;
-                    crate::emitter::generators::emit_next(self.chunk(), line);
+                    crate::compiler::generators::emit_next(self.chunk(), line);
                     let has_more_slot = self.define_local("__gen_throw_has_more");
                     self.emit_u16(Op::LOCAL_SET, has_more_slot);
                     let primed_value_slot = self.define_local("__gen_throw_primed_value");
@@ -6921,7 +6967,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, has_more_slot);
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     };
                     self.emit(Op::I32_EQZ);
                     let line = self.line;
@@ -6933,7 +6979,7 @@ impl Compiler {
                     }
                     {
                         let line = self.line;
-                        crate::emitter::errors::emit_throw(self.chunk(), line);
+                        crate::compiler::errors::emit_throw(self.chunk(), line);
                     }
                     self.chunk().emit_end(line);
                     self.chunk().emit_end(line);
@@ -6945,7 +6991,7 @@ impl Compiler {
                         self.compile_expr(&arg_exprs[0])?;
                     }
                     let line = self.line;
-                    crate::emitter::generators::emit_resume_throw(self.chunk(), line);
+                    crate::compiler::generators::emit_resume_throw(self.chunk(), line);
                     self.emit_u16(Op::LOCAL_SET, value_slot);
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -7001,6 +7047,36 @@ impl Compiler {
                         let fn_slot = self.define_local("__js_typed_method_fn");
                         self.emit_u16(Op::LOCAL_SET, fn_slot);
 
+                        // The member may not be there. Knowing the receiver's
+                        // class does NOT mean knowing all its members: a class
+                        // whose ancestry reaches a type the compiler doesn't
+                        // model (a framework/catalog parent such as Flutter's
+                        // `ChangeNotifier`) has a PARTIAL member list, and an
+                        // inherited member is absent from it. Reading
+                        // `fn.__vybe_method_receiver` before establishing that
+                        // `fn` exists traps on undefined, so the lenient
+                        // fallback below was unreachable exactly when it was
+                        // needed. Guard the read.
+                        let miss_line = self.line;
+                        self.emit_u16(Op::LOCAL_GET, fn_slot);
+                        self.emit(Op::REF_IS_NULL);
+                        self.chunk().emit_if_value(miss_line);
+                        self.emit_js_lookup_or_invoke_method_call(
+                            obj_tmp,
+                            &method_name,
+                            &arg_slots,
+                        )?;
+                        self.chunk().emit_else(miss_line);
+                        self.emit_u16(Op::LOCAL_GET, fn_slot);
+                        fn_call!(self, "wasm:js-undefined", "test", 1);
+                        self.chunk().emit_if_value(miss_line);
+                        self.emit_js_lookup_or_invoke_method_call(
+                            obj_tmp,
+                            &method_name,
+                            &arg_slots,
+                        )?;
+                        self.chunk().emit_else(miss_line);
+
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::STRUCT_GET, receiver_marker);
                         let marker_slot = self.define_local("__js_typed_receiver_marker");
@@ -7034,6 +7110,9 @@ impl Compiler {
                         self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
                         self.chunk().emit_end(line);
                         self.chunk().emit_end(line);
+                        // close the two member-present guards
+                        self.chunk().emit_end(miss_line);
+                        self.chunk().emit_end(miss_line);
                     } else {
                         self.emit_js_lookup_or_invoke_method_call(
                             obj_tmp,
@@ -7131,11 +7210,42 @@ impl Compiler {
                         // argument 0 and shift every real argument
                         // (`c.f(7)` → f receives the object, not 7).
                         if self.class_prototype_dispatch() {
+                            // Knowing the receiver's class does NOT mean the
+                            // member is present on it. A class whose ancestry
+                            // reaches a type the compiler doesn't model (a
+                            // framework/catalog parent such as Flutter's
+                            // `ChangeNotifier`) has a PARTIAL member list, so an
+                            // INHERITED member reads as undefined here. Handing
+                            // that to the receiver-marker dispatch calls
+                            // `hasOwn(undefined, …)`, which throws.
+                            //
+                            // Guard the miss and fall back to dynamic lookup —
+                            // the same shape the sibling dispatch site already
+                            // uses. Before the declaration pass this was
+                            // unreachable, because a call in `main` never
+                            // resolved its receiver's class at all.
+                            let miss_line = self.line;
+                            self.emit_u16(Op::LOCAL_GET, class_fn_slot);
+                            self.emit(Op::REF_IS_NULL);
+                            self.chunk().emit_if(miss_line);
+                            self.emit_js_lookup_or_invoke_method_call(
+                                obj_tmp, field, &arg_slots,
+                            )?;
+                            self.chunk().emit_else(miss_line);
+                            self.emit_u16(Op::LOCAL_GET, class_fn_slot);
+                            fn_call!(self, "wasm:js-undefined", "test", 1);
+                            self.chunk().emit_if(miss_line);
+                            self.emit_js_lookup_or_invoke_method_call(
+                                obj_tmp, field, &arg_slots,
+                            )?;
+                            self.chunk().emit_else(miss_line);
                             self.emit_js_receiver_host_or_bound_this_call(
                                 class_fn_slot,
                                 obj_tmp,
                                 &arg_slots,
                             );
+                            self.chunk().emit_end(miss_line);
+                            self.chunk().emit_end(miss_line);
                         } else {
                             self.emit_call_ref_with_arg_slots(
                                 class_fn_slot,
@@ -7400,7 +7510,7 @@ impl Compiler {
                     let is_gen_idx = self.import("ecma:value", "isGenerator");
                     self.emit_host_call(is_gen_idx, 1);
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
 
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -7411,19 +7521,19 @@ impl Compiler {
                         "throw" => {
                             self.compile_expr(&arg_exprs[0])?;
                             let line = self.line;
-                            crate::emitter::generators::emit_resume_throw(self.chunk(), line);
+                            crate::compiler::generators::emit_resume_throw(self.chunk(), line);
                         }
                         "close" => {
                             self.emit(Op::NULL);
                             self.emit_generator_control_packet_from_stack("return");
                             let line = self.line;
-                            crate::emitter::generators::emit_resume(self.chunk(), line);
+                            crate::compiler::generators::emit_resume(self.chunk(), line);
                         }
                         _ => unreachable!(),
                     }
                     if field_name == "send" {
                         let line = self.line;
-                        crate::emitter::generators::emit_resume(self.chunk(), line);
+                        crate::compiler::generators::emit_resume(self.chunk(), line);
                     }
                     self.chunk().emit_end(line);
                 }
@@ -7433,7 +7543,11 @@ impl Compiler {
                 if self.profile.namespaces.use_dotnet
                     && arg_exprs.is_empty()
                     && field.eq_ignore_ascii_case("sort")
-                    && common::dotnet::uses_runtime_collection_dispatch_arity(field, 0)
+                    && vybe_bytecode::namespaces::scope_declares_member_arity(
+                        &scope_segments(&self.profile.namespaces.runtime_collection_scope),
+                        field,
+                        0,
+                    )
                 {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     let line = self.line;
@@ -7660,10 +7774,10 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from(type_name)));
                         {
                             let line = self.line;
-                            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                            crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                         };
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                         self.chunk().emit_if(line);
                         self.emit_const(Value::I32(1));
                         self.emit_u16(Op::LOCAL_SET, primitive_slot);
@@ -7690,10 +7804,10 @@ impl Compiler {
                     self.emit_const(Value::String(Arc::from("function")));
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                     };
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if_value(line);
 
                     self.emit_u16(Op::LOCAL_GET, fn_tmp);
@@ -7868,7 +7982,11 @@ impl Compiler {
             if self.profile.namespaces.use_dotnet
                 && arg_exprs.is_empty()
                 && field.eq_ignore_ascii_case("sort")
-                && common::dotnet::uses_runtime_collection_dispatch_arity(field, 0)
+                && vybe_bytecode::namespaces::scope_declares_member_arity(
+                        &scope_segments(&self.profile.namespaces.runtime_collection_scope),
+                        field,
+                        0,
+                    )
             {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 let line = self.line;
@@ -8014,10 +8132,10 @@ impl Compiler {
                 self.emit_const(Value::String(Arc::from("function")));
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                 };
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
                 Some(line)
             } else {
@@ -8169,10 +8287,10 @@ impl Compiler {
                     self.emit_const(Value::String(Arc::from(type_name)));
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                     };
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, primitive_slot);
@@ -8199,10 +8317,10 @@ impl Compiler {
                 self.emit_const(Value::String(Arc::from("function")));
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                 };
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
 
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
@@ -8592,10 +8710,10 @@ impl Compiler {
                     self.emit_const(Value::String(Arc::from("string")));
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                     };
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
 
                     let log_idx = self.import("wasi:logging/logging", "log");
@@ -8881,7 +8999,8 @@ impl Compiler {
                                 name,
                                 arg_exprs.len() as u8,
                             ) {
-                                let target = common::dotnet::surface().lookup_instance_method(
+                                let target = vybe_bytecode::namespaces::lookup_type_instance_target(
+                                    &self.profile.namespaces.type_scopes,
                                     &owner,
                                     name,
                                     arg_exprs.len() as u8,
@@ -8893,7 +9012,7 @@ impl Compiler {
                                         }
                                         let total_argc = (arg_exprs.len() + 1) as u8;
                                         match target {
-                                            common::dotnet::InstanceMethodTarget::Host {
+                                            vybe_bytecode::component_model::InstanceMethodTarget::Host {
                                                 module,
                                                 func,
                                                 ..
@@ -8901,7 +9020,7 @@ impl Compiler {
                                                 let idx = self.import(&module, &func);
                                                 self.emit_host_call(idx, total_argc);
                                             }
-                                            common::dotnet::InstanceMethodTarget::Common {
+                                            vybe_bytecode::component_model::InstanceMethodTarget::Common {
                                                 emit,
                                                 ..
                                             } => {
@@ -9157,10 +9276,10 @@ impl Compiler {
                 self.emit_const(Value::String(Arc::from("function")));
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                 };
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
 
                 self.emit_u16(Op::LOCAL_GET, callee_slot);
@@ -9456,7 +9575,7 @@ impl Compiler {
                 // receiver yields undefined (Reflect.get throws on non-object,
                 // where the old __vybe_js_get_method returned undefined).
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                crate::emitter::instructions::recipes::is_object(self.chunk(), line);
+                crate::compiler::instructions::recipes::is_object(self.chunk(), line);
                 self.chunk().emit_if_value(line);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 match &index.kind {
@@ -9495,7 +9614,7 @@ impl Compiler {
                 // receiver yields undefined (Reflect.get throws on non-object,
                 // where the old __vybe_js_get_method returned undefined).
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                crate::emitter::instructions::recipes::is_object(self.chunk(), line);
+                crate::compiler::instructions::recipes::is_object(self.chunk(), line);
                 self.chunk().emit_if_value(line);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 match &index.kind {

@@ -1,6 +1,6 @@
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::emitter::functions;
+use vybe_compiler::compiler::functions;
 
 #[test]
 fn default_param_roundtrip() {

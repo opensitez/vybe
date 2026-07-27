@@ -78,7 +78,7 @@ pub struct LanguageProfile {
     pub slice_step_zero_raises: bool,
 
     /// Tuple literals produce a distinct tuple value (array-backed, but tagged
-    /// via `vybe_emitter::tuples::TUPLE_TAG`) rather than a plain list, so
+    /// via `vybe_compiler::compiler::tuples::TUPLE_TAG`) rather than a plain list, so
     /// `repr`/`type()`/slicing tell a tuple from a list. Python opts in;
     /// languages whose `(a, b)` is just grouping/an array keep this `false`.
     pub tuple_literals_tagged: bool,
@@ -642,6 +642,27 @@ pub struct NamespaceConfig {
     pub default_imports: Vec<String>,
     /// Known constants (property access, not function call).
     pub constants: Vec<String>,
+    /// Namespace-tree ROOTS whose registered types this language resolves
+    /// member access against (`["dotnet"]`, `["flutter"]`, `["gcl"]`).
+    ///
+    /// A statically-typed receiver (`Button b; b.Text`) resolves its members
+    /// through the platform's `Type` node — its properties, its methods, its
+    /// constructor. The same roots are mounted AMBIENTLY, so an unqualified
+    /// name (`Scaffold(...)`, `TForm`, `new Button()`) resolves to its `Type`
+    /// and constructs through the one common-resolver `Ctor` path. That is why
+    /// a GUI platform needs no compiler-side registration pass: declaring the
+    /// root is the whole integration. Naming the roots is what makes that language-neutral: the
+    /// question is never "is this C#", it is "which catalogs did this language
+    /// import". Empty means the language has no platform types.
+    pub type_scopes: Vec<String>,
+    /// Namespace-tree path under which registered types are dispatched at
+    /// RUNTIME through the type registry rather than through the language's
+    /// value-method tables (`["dotnet", "system", "collections"]`).
+    ///
+    /// A PATH, not a language name: the question "should `xs.Add(v)` defer to
+    /// runtime dispatch" is answered by where the declaring type lives, so a
+    /// language opts in by naming the subtree. Empty means never defer.
+    pub runtime_collection_scope: Vec<String>,
 }
 
 /// How a function returns its value.
@@ -1381,6 +1402,24 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                 .unwrap_or_default(),
             default_imports: ns
                 .get("default_imports")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            type_scopes: ns
+                .get("type_scopes")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            runtime_collection_scope: ns
+                .get("runtime_collection_scope")
                 .and_then(|v| v.as_array())
                 .map(|a| {
                     a.iter()

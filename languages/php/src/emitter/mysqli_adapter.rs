@@ -3,12 +3,12 @@
 //! `pdo_adapter.rs`. Both share the same in-memory backend shape.
 
 use std::sync::Arc;
-use vybe_emitter::instructions::core_wasm;
+use vybe_compiler::compiler::instructions::core_wasm;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
-use vybe_emitter::collections;
+use vybe_compiler::compiler::collections;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -115,7 +115,7 @@ fn emit_slot_is_nonempty_string(chunk: &mut Chunk, slot: u16, line: u32) {
     }
     lget(chunk, slot, line);
     push_str(chunk, "", line);
-    vybe_emitter::ops::emit_dyn_ne(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_ne(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
 }
 
@@ -130,8 +130,8 @@ fn emit_mysqli_result_fields(
     {
         let chunk = &mut chunks[current];
         lget(chunk, rows_slot, line);
-        vybe_emitter::ops::emit_dyn_ne(chunk, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_ne(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
 
         lget(chunk, rows_slot, line);

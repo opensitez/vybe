@@ -158,47 +158,18 @@ fn print_chunk_summary(chunks: &[Chunk], filter: Option<&str>) {
     }
 }
 
-/// Every bundled plugin — languages AND platforms, one type (`Plugin`), one
-/// list. `vybe` is the one stateful plugin (drawing-only via `new()`, or
-/// widget-backed via `with_gui()`), passed in so both variants share this list.
-/// Each entry registers whatever it provides (a language descriptor, host
-/// functions, types) through the framework, in the single init/finalize loop.
-fn init_all_plugins(
-    vm: &mut vybe_bytecode::VM,
-    caps: &vybe_bytecode::capabilities::Capabilities,
-    vybe: &dyn vybe_bytecode::Plugin,
-) {
-    let plugins: [&dyn vybe_bytecode::Plugin; 20] = [
-        &vybe_language_c::Plugin,
-        &vybe_language_cobol::Plugin,
-        &vybe_language_csharp::Plugin,
-        &vybe_language_dart::Plugin,
-        &vybe_language_fortran::Plugin,
-        &vybe_language_go::Plugin,
-        &vybe_language_java::Plugin,
-        &vybe_language_js::Plugin,
-        &vybe_language_lua::Plugin,
-        &vybe_language_pascal::Plugin,
-        &vybe_language_php::Plugin,
-        &vybe_language_python::Plugin,
-        &vybe_language_ruby::Plugin,
-        &vybe_language_vb::Plugin,
-        &vybe_language_wast::Plugin,
-        &vybe_platform_ecma::Plugin,
-        &vybe_platform_web::Plugin,
-        &vybe_platform_wasi::Plugin,
-        &vybe_platform_node::Plugin,
-        vybe,
-    ];
-    vybe_bytecode::init_all_on_vm_with_caps(vm, caps, &plugins);
-}
+/// Registration for the whole binary: ONE loop over the ONE registry.
+///
+/// There is no plugin list here. Every plugin crate — language, platform,
+/// host-function provider, all the same `vybe_bytecode::Plugin` — submits
+/// itself at link time, and this runs whatever `vybex` linked. Adding or
+/// removing a plugin is a Cargo edit; this file never changes.
 
-/// The one and only registration: every plugin (language + platform) registers
-/// into `vm` in a single loop. Non-GUI (drawing-only) — installs `vybe:gui`
-/// no-op stubs so compiled control/form code doesn't hit unresolved imports.
+/// Every plugin registers into `vm` in a single loop. Non-GUI (drawing-only) —
+/// installs `vybe:gui` no-op stubs so compiled control/form code doesn't hit
+/// unresolved imports.
 pub fn register_plugins(vm: &mut vybe_bytecode::VM, caps: &vybe_bytecode::capabilities::Capabilities) {
-    let vybe = vybe_platform_vybe::Plugin::new();
-    init_all_plugins(vm, caps, &vybe);
+    vybe_bytecode::init_all_registered(vm, caps);
     if vm
         .host_registry
         .get(&("vybe:gui".to_string(), "controlSetProperty".to_string()))
@@ -208,16 +179,16 @@ pub fn register_plugins(vm: &mut vybe_bytecode::VM, caps: &vybe_bytecode::capabi
     }
 }
 
-/// GUI variant of [`register_plugins`]: the `vybe` plugin owns a fresh
-/// `GuiState`; the same one list/loop runs, and the shared handle is returned
-/// for the form launcher.
+/// GUI variant of [`register_plugins`]: a fresh `GuiState` is installed before
+/// the same one loop runs, and the shared handle is returned for the form
+/// launcher.
 pub fn register_plugins_with_gui(
     vm: &mut vybe_bytecode::VM,
     caps: &vybe_bytecode::capabilities::Capabilities,
 ) -> std::sync::Arc<std::sync::Mutex<vybe_platform_vybe::gui_state::GuiState>> {
     let vybe = vybe_platform_vybe::Plugin::with_gui();
-    init_all_plugins(vm, caps, &vybe);
-    vybe.gui_state().expect("with_gui() always creates a GuiState")
+    vybe_bytecode::init_all_registered(vm, caps);
+    vybe.gui_state().expect("with_gui() always installs a GuiState")
 }
 
 pub fn run() {
@@ -802,3 +773,5 @@ fn looks_like_addr(s: &str) -> bool {
     }
     false
 }
+
+

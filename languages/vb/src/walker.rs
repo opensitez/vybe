@@ -14763,7 +14763,7 @@ fn inject_implicit_mybase_new(members: &mut Vec<ClassMember>, class_name: &str, 
 
 fn vb_dotnet_descriptor_parent_skips_mybase_new(parent_name: &str) -> bool {
     vybe_platform_dotnet::emitter::is_component_descriptor_class(parent_name)
-        && vybe_emitter::gui::canonical_control_name(parent_name).is_empty()
+        && vybe_compiler::compiler::gui::canonical_control_name(parent_name).is_empty()
 }
 
 fn normalize_vb_withevents_assignments(members: &mut Vec<ClassMember>) {
@@ -15034,7 +15034,7 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
                 field: method_name.clone(),
                 null_safe: false,
             });
-            new_stmts.push(Statement::new(vybe_emitter::events::add_handler_stmt(
+            new_stmts.push(Statement::new(vybe_compiler::compiler::events::add_handler_stmt(
                 control, event, handler,
             )));
         }

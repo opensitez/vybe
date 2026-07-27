@@ -1160,6 +1160,31 @@ fn validate_instruction_stream(
                 st.pop(1, "ref.as_non_null")?;
                 st.push(1);
             }
+            // function-references: value-carrying null branches.
+            //   `br_on_null $l     : [t* (ref null ht)] -> [t* (ref ht)]`
+            //     iff `$l : [t*]`      — branches WITHOUT the ref (label takes t*)
+            //   `br_on_non_null $l : [t* (ref null ht)] -> [t*]`
+            //     iff `$l : [t* (ref ht)]` — branches WITH the ref
+            0xD5 | 0xD6 => {
+                let (depth, read) = read_leb128_u32(&code[pos..]);
+                pos += read;
+                let arity = st.label_arity(depth)?;
+                let name = if op == 0xD5 {
+                    "br_on_null"
+                } else {
+                    "br_on_non_null"
+                };
+                // Both consume the nullable reference from the top of stack.
+                st.pop(1, name)?;
+                // The label's own arity must still be satisfied on the branch
+                // edge; validate it is present, then restore for fallthrough.
+                st.pop(arity, name)?;
+                st.push(arity);
+                if op == 0xD5 {
+                    // Fallthrough re-types the ref as non-null and keeps it.
+                    st.push(1);
+                }
+            }
             0xE0 => {
                 skip_leb128(code, &mut pos); // continuation type index
                 st.pop(1, "cont.new")?;
@@ -2144,11 +2169,19 @@ fn translate_wasm_to_chunk(
                 pos += read;
                 let (table_idx, read) = read_leb128_u32(&wasm[pos..]);
                 pos += read;
-                let argc = types
+                // `call_indirect` carries THREE operand bytes
+                // (`U8_U8_U8`): argc, tableidx, and the expected result count.
+                // The VM compares the callee's `result_arity` against that
+                // third byte to enforce the spec's runtime type check, so it
+                // must be emitted — otherwise the VM reads the next
+                // instruction's byte as the result arity and every
+                // result-returning callee trips a bogus signature mismatch.
+                let (argc, expected_results) = types
                     .get(type_idx as usize)
-                    .map(|(params, _)| params.len() as u8)
-                    .unwrap_or(0);
+                    .map(|(params, results)| (params.len() as u8, results.len() as u8))
+                    .unwrap_or((0, 0));
                 chunk.emit_op_u8_u8(Op::CALL_INDIRECT, argc, table_idx as u8, 0);
+                chunk.emit(expected_results, 0);
             }
 
             // 0xFC prefix — nontrapping-float-to-int (0x00–0x07) + bulk-memory/table ops
@@ -3159,10 +3192,19 @@ fn read_emit_optional_memidx(chunk: &mut Chunk, data: &[u8], pos: &mut usize) ->
     value
 }
 
+/// Emit the VM's multi-memory selector.
+///
+/// SINGLE SOURCE OF TRUTH for the layout is the VM
+/// (`dispatch::read_optional_memidx_immediate`): a **fixed 4-byte** block
+/// `0xEE 0x00 <memidx u16 BE>`. VM instructions are always 4 bytes, so the
+/// selector must be 4 too or the following instruction loses alignment and
+/// execution desyncs. A LEB-encoded memidx here would be 3 bytes for small
+/// values — one short — which ran the interpreter off the end of the code.
 fn emit_explicit_memidx(chunk: &mut Chunk, value: u32) {
     chunk.emit(0xEE, 0);
     chunk.emit(0x00, 0);
-    chunk.emit_leb_u32(value, 0);
+    chunk.emit((value >> 8) as u8, 0);
+    chunk.emit((value & 0xFF) as u8, 0);
 }
 
 fn read_emit_memarg(chunk: &mut Chunk, data: &[u8], pos: &mut usize) {

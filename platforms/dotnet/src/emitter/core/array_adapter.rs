@@ -13,14 +13,14 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_emitter::instructions::{core_wasm, host};
+use vybe_compiler::compiler::instructions::{core_wasm, host};
 
 fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_dup(line);
     chunk.emit_string_const(message, line);
-    vybe_emitter::errors::emit_exception_new_finalize(chunk, exception_name, line);
-    vybe_emitter::errors::emit_throw(chunk, line);
+    vybe_compiler::compiler::errors::emit_exception_new_finalize(chunk, exception_name, line);
+    vybe_compiler::compiler::errors::emit_throw(chunk, line);
 }
 
 fn emit_index_bounds_check(
@@ -33,11 +33,11 @@ fn emit_index_bounds_check(
 ) {
     chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
     chunk.emit_i32_const(0, line);
-    vybe_emitter::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
@@ -78,13 +78,13 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, target_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
@@ -96,13 +96,13 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, target_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     host::emit(chunk, "wasm:js-boolean", "test", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     core_wasm::bool_const(chunk, line, false);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     host::emit(chunk, "wasm:js-number", "test", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     core_wasm::i32_const(chunk, line, 0);
     chunk.emit_else(line);
@@ -115,7 +115,7 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     // i++
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_i32_const(1, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
 
     chunk.emit_br(0, line);
@@ -142,16 +142,16 @@ pub fn emit_array_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, src_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
     chunk.emit_i32_const(0, line);
-    vybe_emitter::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, src_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
-    vybe_emitter::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, dst_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
-    vybe_emitter::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
@@ -165,7 +165,7 @@ pub fn emit_array_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, src_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, dst_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    vybe_emitter::collections::emit_runtime_helper_call(
+    vybe_compiler::compiler::collections::emit_runtime_helper_call(
         chunks,
         current,
         "__vybe_array_copy",
@@ -230,19 +230,19 @@ pub fn emit_get_range_checked(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, end_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
     chunk.emit_i32_const(0, line);
-    vybe_emitter::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunk.emit_i32_const(0, line);
-    vybe_emitter::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
-    vybe_emitter::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
@@ -256,7 +256,7 @@ pub fn emit_get_range_checked(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_emitter::collections::emit_get_range(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_get_range(chunks, current, line);
 }
 
 /// Bounds-checked `Array.SetValue(value, index)`.
@@ -292,7 +292,7 @@ pub fn emit_array_set_checked(chunks: &mut [Chunk], current: usize, line: u32) {
 /// runtime helper returns the resized array; .NET `Array.Resize`
 /// signature is by-ref but the bytecode propagates the value).
 pub fn emit_array_resize(chunks: &mut [Chunk], current: usize, line: u32) {
-    vybe_emitter::collections::emit_runtime_helper_call(chunks, current, "__vybe_redim", 2, line);
+    vybe_compiler::compiler::collections::emit_runtime_helper_call(chunks, current, "__vybe_redim", 2, line);
 }
 
 /// `Array.Sort(arr)` — in-place sort. Lowers to `__vybe_sort_in_place`
@@ -301,7 +301,7 @@ pub fn emit_array_resize(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack on entry: `[arr]` ; Stack on exit: `[null]` (sort is void in
 /// .NET; the runtime helper returns the array but we drop it).
 pub fn emit_array_sort(chunks: &mut [Chunk], current: usize, line: u32) {
-    vybe_emitter::collections::emit_runtime_helper_call(
+    vybe_compiler::compiler::collections::emit_runtime_helper_call(
         chunks,
         current,
         "__vybe_sort_in_place",
@@ -315,7 +315,7 @@ pub fn emit_array_sort(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `Array.Reverse(arr)` — in-place reverse. Stack: `[arr]` → `[null]`.
 /// Reverse mutates the array; .NET's signature returns void.
 pub fn emit_array_reverse(chunks: &mut [Chunk], current: usize, line: u32) {
-    vybe_emitter::collections::emit_reverse(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_reverse(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::NULL, line);
 }
@@ -343,8 +343,8 @@ pub fn emit_list_remove_all(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
     chunks[current].emit_op(Op::ARRAY_LENGTH, line);
-    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
@@ -352,7 +352,7 @@ pub fn emit_list_remove_all(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op(Op::ARRAY_GET, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, matched_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, matched_slot, line);
@@ -360,19 +360,19 @@ pub fn emit_list_remove_all(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    vybe_emitter::collections::emit_remove_at(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_remove_at(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, removed_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, removed_slot, line);
 
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
 
     chunks[current].emit_end(line);
@@ -392,7 +392,7 @@ pub fn emit_list_remove_all(chunks: &mut [Chunk], current: usize, line: u32) {
 /// which only works for strings. Routing through this adapter uses the
 /// shared array `indexOf` opcode that ECMA-262 §23.1.3.16 specifies.
 pub fn emit_array_index_of(chunks: &mut [Chunk], current: usize, line: u32) {
-    vybe_emitter::collections::emit_index_of(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_index_of(chunks, current, line);
 }
 
 // ── Static `Array.<HOF>(arr, fn)` predicates ──────────────────────────────
@@ -419,7 +419,7 @@ pub fn emit_array_exists(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    vybe_emitter::loops::emit_any_every(
+    vybe_compiler::compiler::loops::emit_any_every(
         chunks, current, fn_slot, arr_slot, idx_slot, /* is_some= */ true, line,
     );
 }
@@ -433,7 +433,7 @@ pub fn emit_array_true_for_all(chunks: &mut [Chunk], current: usize, line: u32) 
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    vybe_emitter::loops::emit_any_every(
+    vybe_compiler::compiler::loops::emit_any_every(
         chunks, current, fn_slot, arr_slot, idx_slot, /* is_some= */ false, line,
     );
 }
@@ -452,7 +452,7 @@ pub fn emit_array_find(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    vybe_emitter::loops::emit_filter(
+    vybe_compiler::compiler::loops::emit_filter(
         chunks,
         current,
         fn_slot,
@@ -464,7 +464,7 @@ pub fn emit_array_find(chunks: &mut [Chunk], current: usize, line: u32) {
     );
     // The result is on the stack as an array — take element 0.
     core_wasm::i32_const(&mut chunks[current], line, 0);
-    vybe_emitter::collections::emit_get(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, found_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, found_slot, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -493,7 +493,7 @@ pub fn emit_array_find_all(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    vybe_emitter::loops::emit_filter(
+    vybe_compiler::compiler::loops::emit_filter(
         chunks,
         current,
         fn_slot,
@@ -535,9 +535,9 @@ pub fn emit_array_binary_search(chunks: &mut [Chunk], current: usize, line: u32)
 
     // result = ~len (value sorts after every element → insertion point == len)
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_emitter::ops::emit_dyn_neg(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_neg(chunk, line);
     core_wasm::i32_const(chunk, line, -1);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
     let block_p = chunk.emit_block(line);
@@ -546,8 +546,8 @@ pub fn emit_array_binary_search(chunks: &mut [Chunk], current: usize, line: u32)
     // while i < len — else break, keeping result = ~len
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line);
 
     // elem = arr[i]
@@ -559,8 +559,8 @@ pub fn emit_array_binary_search(chunks: &mut [Chunk], current: usize, line: u32)
     // if elem == value { result = i; break }  (br 2: if → loop → block)
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -570,13 +570,13 @@ pub fn emit_array_binary_search(chunks: &mut [Chunk], current: usize, line: u32)
     // if elem > value { result = ~i; break }  (insertion point is i)
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    vybe_emitter::ops::emit_dyn_gt(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    vybe_emitter::ops::emit_dyn_neg(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_neg(chunk, line);
     core_wasm::i32_const(chunk, line, -1);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_br(2, line);
     chunk.emit_end(line);
@@ -584,7 +584,7 @@ pub fn emit_array_binary_search(chunks: &mut [Chunk], current: usize, line: u32)
     // i++
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_i32_const(1, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
 
     chunk.emit_br(0, line);
@@ -605,7 +605,7 @@ pub fn emit_array_convert_all(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    vybe_emitter::loops::emit_map(
+    vybe_compiler::compiler::loops::emit_map(
         chunks,
         current,
         fn_slot,
@@ -629,15 +629,15 @@ pub fn emit_list_add_range(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, list_slot, line);
 
     // for elem in other: list.push(elem)
-    let state = vybe_emitter::loops::emit_for_in_start(chunks, current, other_slot, idx_slot, line);
+    let state = vybe_compiler::compiler::loops::emit_for_in_start(chunks, current, other_slot, idx_slot, line);
     let chunk = &mut chunks[current];
     let elem_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, list_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    vybe_emitter::collections::emit_push(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line); // discard new length
-    vybe_emitter::loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    vybe_compiler::compiler::loops::emit_for_in_end(chunks, current, idx_slot, state, line);
     chunks[current].emit_op(Op::NULL, line);
 }
 
@@ -649,5 +649,5 @@ pub fn emit_array_for_each(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-    vybe_emitter::loops::emit_foreach(chunks, current, fn_slot, arr_slot, idx_slot, line);
+    vybe_compiler::compiler::loops::emit_foreach(chunks, current, fn_slot, arr_slot, idx_slot, line);
 }

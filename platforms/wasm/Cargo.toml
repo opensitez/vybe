@@ -6,4 +6,5 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+inventory = { workspace = true }
 vybe_bytecode = { workspace = true }

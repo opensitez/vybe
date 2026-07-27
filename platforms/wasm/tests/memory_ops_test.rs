@@ -335,9 +335,13 @@ fn call_indirect_vm_function() {
     main.emit(0, 0); // 0 upvalues
     main.emit_op_u8(Op::TABLE_SET, 0, 0);
 
-    // call_indirect table 0 with index 0, 0 args.
+    // call_indirect table 0 with index 0, 0 args, 1 result.
+    // `call_indirect` is `U8_U8_U8`: argc, tableidx, expected_results. The
+    // third byte is required — the VM checks it against the callee's
+    // `result_arity` for the spec's runtime type check.
     main.emit_op_u16(Op::CONST, zero, 0);
     main.emit_op_u8_u8(Op::CALL_INDIRECT, 0, 0, 0);
+    main.emit(1, 0); // expected_results: `get99` returns one value
     main.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![main, f]).unwrap();

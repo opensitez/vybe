@@ -1,4 +1,4 @@
-//! Python `json.dumps` — Python semantics over the shared `vybe_emitter::json`
+//! Python `json.dumps` — Python semantics over the shared `vybe_compiler::compiler::json`
 //! core.
 //!
 //! The walker reshapes `json.dumps(obj, cls=…, default=…, sort_keys=…,
@@ -47,7 +47,7 @@ pub fn emit_json_dumps(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line:
     }
 
     // normalized = normalize(value, default, sort_keys, props=false)
-    vybe_emitter::json::emit_normalize(
+    vybe_compiler::compiler::json::emit_normalize(
         chunks,
         current,
         value_slot,
@@ -74,6 +74,6 @@ pub fn emit_json_dumps(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line:
         c.emit_call(idx, 3, line);
         c.emit_else(line);
     }
-    vybe_emitter::json::emit_render_separated(chunks, current, norm_slot, item_slot, kv_slot, line);
+    vybe_compiler::compiler::json::emit_render_separated(chunks, current, norm_slot, item_slot, kv_slot, line);
     chunks[current].emit_end(line);
 }

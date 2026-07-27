@@ -444,3 +444,23 @@ fn class_implements_interface_and_uses_default_in_constructor_path() {
     );
     assert_eq!(out, vec!["8"]);
 }
+
+use crate::helpers::compile_ok_check;
+
+// ── Default-method diamond must be resolved explicitly ───────────────
+//
+// Java: when a class inherits the SAME default method from two unrelated
+// interfaces it must override it (typically delegating via `X.super.m()`), or
+// compilation fails. A silent pick is wrong. `X.super.m()` itself is covered
+// elsewhere; this pins the UNRESOLVED diamond.
+// See flexclassplan.md §4c (`AugmentationConflict::RequireExplicit`).
+
+#[test]
+fn unresolved_default_method_diamond_is_rejected() {
+    assert!(!compile_ok_check(
+        "interface A { default String who() { return \"a\"; } } \
+         interface B { default String who() { return \"b\"; } } \
+         class C implements A, B { } \
+         public class Main { public static void main(String[] a) { System.out.println(new C().who()); } }",
+    ));
+}

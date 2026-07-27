@@ -64,3 +64,7 @@ impl vybe_bytecode::Plugin for Plugin {
         }
     }
 }
+
+// Link-time registration: this crate submits its plugin to the one registry.
+// Nothing lists plugins in code — linking this crate IS the registration.
+vybe_bytecode::register_plugin!(Plugin);

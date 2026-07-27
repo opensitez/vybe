@@ -72,7 +72,7 @@ pub fn run_wast_result(src: &str) -> Result<Vec<String>, String> {
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
-    vybe_emitter::platforms::init_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
     let out_cloned = out.clone();
     vm.register_host_fn(
         "wasi:logging/logging",
@@ -176,7 +176,7 @@ pub fn run_wast_result(src: &str) -> Result<Vec<String>, String> {
             Value::Null
         }),
     );
-    vybe_emitter::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).map_err(|e| e.to_string())?;
     let result = output.lock().unwrap().clone();
     // Surface assertion failures as an error so result-checking tests fail loudly.

@@ -1,6 +1,6 @@
 //! .NET enum call compilation (GetName/GetNames/GetValues/Parse/TryParse/
 //! IsDefined/ToString/HasFlag/console-arg) — moved out of the former dotnet_calls.rs.
-//! The runtime value<->name machinery lives in `vybe_emitter::r#enum`; this
+//! The runtime value<->name machinery lives in `crate::compiler::r#enum`; this
 //! layer is the compile-time enum-type resolution + dispatch glue.
 
 use super::*;
@@ -117,7 +117,7 @@ impl Compiler {
             self.compile_expr(&Expression::ident(enum_type))?;
             self.compile_expr(value_expr)?;
             let line = self.line;
-            crate::emitter::r#enum::emit_name_to_member_or_null(self.chunk(), line);
+            crate::compiler::r#enum::emit_name_to_member_or_null(self.chunk(), line);
             return Ok(());
         }
 
@@ -147,10 +147,10 @@ impl Compiler {
             self.emit_const(Value::String(Arc::from(name.to_ascii_lowercase().as_str())));
             {
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
             };
             let line = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if(line);
             self.emit_const(Value::String(Arc::from(name.as_str())));
             self.emit_u16(Op::LOCAL_SET, result_slot);
@@ -187,7 +187,7 @@ impl Compiler {
             self.compile_expr(&Expression::ident(enum_type))?;
             self.compile_expr(value_expr)?;
             let line = self.line;
-            crate::emitter::r#enum::emit_value_to_name(self.chunk(), line);
+            crate::compiler::r#enum::emit_value_to_name(self.chunk(), line);
             return Ok(());
         }
 
@@ -210,10 +210,10 @@ impl Compiler {
             self.emit_const(Value::F64(*value as f64));
             {
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
             };
             let line = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if(line);
             self.emit_const(Value::String(Arc::from(name.as_str())));
             self.emit_u16(Op::LOCAL_SET, result_slot);
@@ -243,25 +243,25 @@ impl Compiler {
                 self.emit_const(Value::F64(*value as f64));
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
                 };
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if(line);
 
                 self.emit_u16(Op::LOCAL_GET, matched_slot);
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
                 self.emit_u16(Op::LOCAL_GET, result_slot);
                 self.emit_const(Value::String(Arc::from(", ")));
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_add(self.chunk(), line);
                 };
                 self.emit_const(Value::String(Arc::from(name.as_str())));
                 {
                     let line = self.line;
-                    crate::emitter::ops::emit_dyn_add(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_add(self.chunk(), line);
                 };
                 self.chunk().emit_else(line);
                 self.emit_const(Value::String(Arc::from(name.as_str())));
@@ -275,7 +275,7 @@ impl Compiler {
 
             self.emit_u16(Op::LOCAL_GET, matched_slot);
             let line = self.line;
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if(line);
             self.emit_u16(Op::LOCAL_GET, result_slot);
             self.emit_u16(Op::LOCAL_SET, result_slot);
@@ -285,7 +285,7 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, matched_slot);
         let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
         self.emit_u16(Op::LOCAL_GET, result_slot);
         self.chunk().emit_else(line);
@@ -316,10 +316,10 @@ impl Compiler {
         self.emit_const(Value::String(Arc::from("number")));
         {
             let line = self.line;
-            crate::emitter::ops::emit_dyn_eq(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
         };
         let line = self.line;
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
 
         let helper = self.str_const("__vybe_dotnet_numeric_format");
@@ -344,7 +344,7 @@ impl Compiler {
         self.compile_expr(value_expr)?;
         self.compile_expr(flag_expr)?;
         let line = self.line;
-        crate::emitter::r#enum::emit_has_flag(self.chunk(), line);
+        crate::compiler::r#enum::emit_has_flag(self.chunk(), line);
         Ok(())
     }
 
@@ -431,7 +431,7 @@ impl Compiler {
                     self.emit(Op::REF_IS_NULL);
                     {
                         let line = self.line;
-                        crate::emitter::ops::emit_dyn_not(self.chunk(), line);
+                        crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                     };
                     return Ok(true);
                 }

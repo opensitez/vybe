@@ -16,7 +16,7 @@
 
 use std::sync::Once;
 
-use vybe_emitter::namespaces::{self, NamespaceNode, Subtree};
+use vybe_bytecode::namespaces::{self, NamespaceNode, Subtree};
 use vybe_bytecode::profile::{BuiltinEmit, parse_profile};
 
 /// Register the PHP stdlib surface under the `php` root. Idempotent;

@@ -1,6 +1,6 @@
 use tiny_skia::{Paint, PathBuilder, Pixmap, Stroke, Transform};
 use uuid::Uuid;
-use vybe_compiler::projects::{Control, ControlType, Form};
+use vybe_platform_dotnet::winforms::designer::{Control, ControlType, Form};
 use vybe_widgets::{FontSystem, SwashCache, TextColor as CosmicColor};
 use vybe_widgets::{PropEvent, PropItem, PropTab, PropertiesPanel};
 
@@ -1946,7 +1946,7 @@ impl FormDesignerState {
                 "Checked" => {
                     if let Ok(b) = parse_bool(value) {
                         ctrl.properties.set("Checked", b);
-                        use vybe_compiler::projects::PropertyValue;
+                        use vybe_platform_dotnet::winforms::designer::PropertyValue;
                         let int_val = if b { 1 } else { 0 };
                         ctrl.properties
                             .set_raw("CheckState", PropertyValue::Integer(int_val));
@@ -1992,7 +1992,7 @@ impl FormDesignerState {
                 "Value" | "Minimum" | "Maximum" | "Increment" | "DecimalPlaces" | "MaxLength"
                 | "SelectedIndex" | "Cols" | "Rows" => {
                     if let Ok(v) = value.parse::<i32>() {
-                        use vybe_compiler::projects::PropertyValue;
+                        use vybe_platform_dotnet::winforms::designer::PropertyValue;
                         ctrl.properties.set_raw(key, PropertyValue::Integer(v));
                     }
                 }

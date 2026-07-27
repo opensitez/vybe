@@ -53,7 +53,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             let chunk = &mut chunks[current];
             super::relational_adapter::emit_relational_compare(
                 chunk,
-                vybe_emitter::ops::emit_dyn_gt,
+                vybe_compiler::compiler::ops::emit_dyn_gt,
                 line,
             );
         }
@@ -61,7 +61,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             let chunk = &mut chunks[current];
             super::relational_adapter::emit_relational_compare(
                 chunk,
-                vybe_emitter::ops::emit_dyn_lt,
+                vybe_compiler::compiler::ops::emit_dyn_lt,
                 line,
             );
         }
@@ -69,7 +69,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             let chunk = &mut chunks[current];
             super::relational_adapter::emit_relational_compare(
                 chunk,
-                vybe_emitter::ops::emit_dyn_ge,
+                vybe_compiler::compiler::ops::emit_dyn_ge,
                 line,
             );
         }
@@ -77,7 +77,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             let chunk = &mut chunks[current];
             super::relational_adapter::emit_relational_compare(
                 chunk,
-                vybe_emitter::ops::emit_dyn_le,
+                vybe_compiler::compiler::ops::emit_dyn_le,
                 line,
             );
         }
@@ -99,7 +99,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 "array_push(): Argument #1 ($array) must be of type array",
                 line,
             );
-            vybe_emitter::collections::emit_push(chunks, current, line);
+            vybe_compiler::compiler::collections::emit_push(chunks, current, line);
         }
         "php.array_pop_g" => {
             super::type_guard::guard_arg(
@@ -112,7 +112,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 "array_pop(): Argument #1 ($array) must be of type array",
                 line,
             );
-            vybe_emitter::collections::emit_pop(chunks, current, line);
+            vybe_compiler::compiler::collections::emit_pop(chunks, current, line);
         }
         "php.sort_g" => {
             // `sort($x)` on a non-array throws (base `\Error` in PHP because
@@ -606,7 +606,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::string_adapter::emit_base64_decode(chunks, current, argc, line)
         }
         "php.explode" => crate::emitter::string_adapter::emit_explode(chunks, current, argc, line),
-        "php.sscanf" => vybe_emitter::sprintf::emit_sscanf(chunks, current, argc, line),
+        "php.sscanf" => vybe_compiler::compiler::sprintf::emit_sscanf(chunks, current, argc, line),
         "php.uniqid" => {
             crate::emitter::string_adapter::emit_php_uniqid(chunks, current, argc, line)
         }

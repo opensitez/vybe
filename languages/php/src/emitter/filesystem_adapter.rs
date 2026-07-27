@@ -101,12 +101,12 @@ pub fn emit_basename(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         let idx = chunk.add_import("ecma:string", "endsWith");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, name_slot, line);
     lget(chunk, suffix_slot, line);
-    vybe_emitter::ops::emit_dyn_ne(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_ne(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // name = name.substring(0, name.length - suffix.length)
     lget(chunk, name_slot, line);
@@ -115,8 +115,8 @@ pub fn emit_basename(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     str_len(chunk, line);
     lget(chunk, suffix_slot, line);
     str_len(chunk, line);
-    vybe_emitter::ops::emit_dyn_neg(chunk, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_neg(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     {
         let idx = chunk.add_import("ecma:string", "substring");
         chunk.emit_call(idx, 3, line);
@@ -152,14 +152,14 @@ pub fn emit_dirname(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lset(chunk, n_slot, line);
         lset(chunk, path_slot, line);
     }
-    let loop_state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, n_slot, line);
         push_const(chunk, Value::F64(0.0), line);
-        vybe_emitter::ops::emit_dyn_gt(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
     }
-    vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, path_slot, line);
@@ -177,10 +177,10 @@ pub fn emit_dirname(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lset(chunk, path_slot, line);
         lget(chunk, n_slot, line);
         push_const(chunk, Value::F64(-1.0), line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
         lset(chunk, n_slot, line);
     }
-    vybe_emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, path_slot, line);
@@ -224,8 +224,8 @@ pub fn emit_file_put_contents(chunks: &mut [Chunk], current: usize, argc: u8, li
         // if flags >= FILE_APPEND(8) -> append, else write
         lget(chunk, flags_slot, line);
         push_const(chunk, Value::F64(8.0), line);
-        vybe_emitter::ops::emit_dyn_ge(chunk, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         lget(chunk, path_slot, line);
         lget(chunk, data_slot, line);
@@ -304,8 +304,8 @@ pub fn emit_filesize(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
         // if registry != null && registry.has(path)
         lget(chunk, reg_slot, line);
         chunk.emit_op(Op::NULL, line);
-        vybe_emitter::ops::emit_dyn_ne(chunk, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_ne(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         lget(chunk, reg_slot, line);
         lget(chunk, path_slot, line);
@@ -313,7 +313,7 @@ pub fn emit_filesize(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     call_import(chunks, current, "ecma:map", "has", 2, line);
     {
         let chunk = &mut chunks[current];
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         // registry.get(path).__buf.length
         lget(chunk, reg_slot, line);
@@ -368,7 +368,7 @@ pub fn emit_unlink(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lset(chunk, slot, line);
         lget(chunk, slot, line);
         push_const(chunk, Value::Bool(false), line);
-        vybe_emitter::ops::emit_js_strict_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_js_strict_eq(chunk, line);
         chunk.emit_if(line);
         push_str(chunk, "unlink failed", line);
         push_const(chunk, Value::F64(512.0), line);
@@ -408,8 +408,8 @@ fn emit_pathinfo_flag(chunks: &mut [Chunk], current: usize, line: u32) {
         // if flag == 1 (DIRNAME)
         lget(chunk, flag_slot, line);
         push_const(chunk, Value::F64(1.0), line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         lget(chunk, path_slot, line);
     }
@@ -427,8 +427,8 @@ fn emit_pathinfo_flag(chunks: &mut [Chunk], current: usize, line: u32) {
         // if flag == 2 (BASENAME)
         lget(chunk, flag_slot, line);
         push_const(chunk, Value::F64(2.0), line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         lget(chunk, path_slot, line);
     }
@@ -446,8 +446,8 @@ fn emit_pathinfo_flag(chunks: &mut [Chunk], current: usize, line: u32) {
         // if flag == 4 (EXTENSION)
         lget(chunk, flag_slot, line);
         push_const(chunk, Value::F64(4.0), line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         lget(chunk, path_slot, line);
     }
@@ -642,7 +642,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let idx = chunk.add_import("ecma:string", "includes");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     let parts_slot = alloc_local(chunk);
@@ -676,7 +676,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, parts_len_slot, line);
     push_const(chunk, Value::F64(-1.0), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     lset(chunk, last_part_idx_slot, line);
 
     lget(chunk, parts_slot, line);
@@ -694,7 +694,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     lset(chunk, entries_len_slot, line);
 
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     let chunk = &mut chunks[current];
     lset(chunk, result_slot, line);
 
@@ -704,7 +704,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let (loop_patch, _) = chunk.emit_loop_s(line);
     lget(chunk, index_slot, line);
     lget(chunk, entries_len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
 
@@ -719,7 +719,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lset(chunk, pass_slot, line);
     lget(chunk, prefix_slot, line);
     push_str(chunk, "", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     lget(chunk, entry_slot, line);
@@ -728,7 +728,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let idx = chunk.add_import("ecma:string", "startsWith");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     lset(chunk, pass_slot, line);
     chunk.emit_end(line);
     lget(chunk, pass_slot, line);
@@ -739,7 +739,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lset(chunk, pass_slot, line);
     lget(chunk, suffix_slot, line);
     push_str(chunk, "", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     lget(chunk, entry_slot, line);
@@ -748,7 +748,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let idx = chunk.add_import("ecma:string", "endsWith");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     lset(chunk, pass_slot, line);
     chunk.emit_end(line);
     lget(chunk, pass_slot, line);
@@ -772,14 +772,14 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let _ = chunk;
     call_import(chunks, current, "wasi:filesystem", "isFile", 1, line);
     let chunk = &mut chunks[current];
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(0, line);
 
     lget(chunk, result_slot, line);
     lget(chunk, full_path_slot, line);
     let _ = chunk;
-    vybe_emitter::collections::emit_push(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_push(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DROP, line);
 
@@ -787,7 +787,7 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.patch_block(skip_entry);
     lget(chunk, index_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     lset(chunk, index_slot, line);
     chunk.emit_br(0, line);
     chunk.emit_end(line);
@@ -799,21 +799,21 @@ pub fn emit_glob(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let _ = chunk;
     call_import(chunks, current, "wasi:filesystem", "exists", 1, line);
     let chunk = &mut chunks[current];
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     let chunk = &mut chunks[current];
     lset(chunk, result_slot, line);
     lget(chunk, result_slot, line);
     lget(chunk, pattern_slot, line);
     let _ = chunk;
-    vybe_emitter::collections::emit_push(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_push(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_else(line);
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     let chunk = &mut chunks[current];
     lset(chunk, result_slot, line);
     chunk.emit_end(line);
@@ -884,7 +884,7 @@ pub fn emit_dir_read(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
 
     lget(chunk, index_slot, line);
     lget(chunk, len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
 
     lget(chunk, entries_slot, line);
@@ -896,7 +896,7 @@ pub fn emit_dir_read(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     chunk.emit_dup(line);
     lget(chunk, index_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, index_key, line);
     chunk.emit_op(Op::DROP, line);
     lget(chunk, entry_slot, line);
@@ -993,7 +993,7 @@ pub fn emit_filetype(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     emit_stat_at(chunks, current, line);
     let chunk = &mut chunks[current];
     struct_get_key(chunk, "isDir", line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_str(chunk, "dir", line);
     chunk.emit_else(line);
@@ -1026,21 +1026,21 @@ pub fn emit_scandir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lset(chunk, dir_slot, line);
     }
 
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     {
         let chunk = &mut chunks[current];
         lset(chunk, result_slot, line);
         lget(chunk, result_slot, line);
         push_str(chunk, ".", line);
     }
-    vybe_emitter::collections::emit_push(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, result_slot, line);
         push_str(chunk, "..", line);
     }
-    vybe_emitter::collections::emit_push(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
     {
@@ -1058,14 +1058,14 @@ pub fn emit_scandir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lset(chunk, idx_slot, line);
     }
 
-    let loop_state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, idx_slot, line);
         lget(chunk, len_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     }
-    vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, result_slot, line);
@@ -1073,16 +1073,16 @@ pub fn emit_scandir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lget(chunk, idx_slot, line);
         chunk.emit_op(Op::ARRAY_GET, line);
     }
-    vybe_emitter::collections::emit_push(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_push(chunks, current, line);
     {
         let chunk = &mut chunks[current];
         chunk.emit_op(Op::DROP, line);
         lget(chunk, idx_slot, line);
         push_const(chunk, Value::F64(1.0), line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
         lset(chunk, idx_slot, line);
     }
-    vybe_emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, result_slot, line);
@@ -1145,8 +1145,8 @@ pub fn emit_mime_content_type(chunks: &mut [Chunk], current: usize, _argc: u8, l
     let emit_case = |chunk: &mut Chunk, ext: &str, mime: &str| {
         lget(chunk, ext_slot, line);
         push_str(chunk, ext, line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         push_str(chunk, mime, line);
         chunk.emit_else(line);
@@ -1177,7 +1177,7 @@ pub fn emit_fileperms(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     emit_stat_at(chunks, current, line);
     let chunk = &mut chunks[current];
     struct_get_key(chunk, "isDir", line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // 0o40755 = 16877 (S_IFDIR | 0755)
     push_const(chunk, Value::F64(16877.0), line);
@@ -1218,8 +1218,8 @@ fn emit_stream_registry(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_dup(line);
     chunk.emit_op(Op::NULL, line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // was null: drop it, make a fresh map, store, leave map on stack
     chunk.emit_op(Op::DROP, line);
@@ -1261,18 +1261,18 @@ pub fn emit_fopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         push_str(chunk, "r", line);
         let starts_with = chunk.add_import("ecma:string", "startsWith");
         chunk.emit_call(starts_with, 2, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         lget(chunk, path_slot, line);
         push_str(chunk, "php://", line);
         let starts_with = chunk.add_import("ecma:string", "startsWith");
         chunk.emit_call(starts_with, 2, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_op(Op::I32_AND, line);
         lget(chunk, path_slot, line);
         let exists = chunk.add_import("wasi:filesystem", "exists");
         chunk.emit_call(exists, 1, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_op(Op::I32_AND, line);
         chunk.emit_if(line);
@@ -1318,12 +1318,12 @@ pub fn emit_fopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         // stdout schemes
         lget(chunk, path_slot, line);
         push_str(chunk, "php://output", line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         lget(chunk, path_slot, line);
         push_str(chunk, "php://stdout", line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_op(Op::I32_OR, line);
         chunk.emit_if(line);
         push_str(chunk, "stdout", line);
@@ -1332,8 +1332,8 @@ pub fn emit_fopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         // stderr scheme
         lget(chunk, path_slot, line);
         push_str(chunk, "php://stderr", line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         push_str(chunk, "stderr", line);
         lset(chunk, sink_slot, line);
@@ -1386,14 +1386,14 @@ pub fn emit_fwrite(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // if sink == "stdout"
     lget(chunk, sink_slot, line);
     push_str(chunk, "stdout", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     {
         let write_idx = chunk.add_import("wasi:cli/stdout", "write-via-stream");
         let rd_slot = chunk.alloc_scratch(1);
         let wr_slot = chunk.alloc_scratch(1);
-        vybe_emitter::io::emit_write_stdout_with_imports(
+        vybe_compiler::compiler::io::emit_write_stdout_with_imports(
             chunk,
             write_idx,
             rd_slot,
@@ -1408,8 +1408,8 @@ pub fn emit_fwrite(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // if sink == "stderr" -> discard (no stdout pollution); else memory buffer
     lget(chunk, sink_slot, line);
     push_str(chunk, "stderr", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // stderr: nothing to emit
     chunk.emit_else(line);
@@ -1450,7 +1450,7 @@ pub fn emit_fread(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     // end = pos + length
     lget(chunk, pos_slot, line);
     lget(chunk, length_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     lset(chunk, end_slot, line);
 
     // result = buf.substring(pos, end)
@@ -1474,8 +1474,8 @@ pub fn emit_fread(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     lset(chunk, buflen_slot, line);
     lget(chunk, end_slot, line);
     lget(chunk, buflen_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, end_slot, line);
     chunk.emit_else(line);
@@ -1524,15 +1524,15 @@ pub fn emit_fgets(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // end = nl < 0 ? buf.length : nl + 1
     lget(chunk, nl_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, buf_slot, line);
     str_len(chunk, line);
     chunk.emit_else(line);
     lget(chunk, nl_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_end(line);
     lset(chunk, end_slot, line);
 
@@ -1581,7 +1581,7 @@ pub fn emit_fgetc(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     lget(chunk, stream_slot, line);
     lget(chunk, pos_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     struct_set_key(chunk, "__pos", line);
 
     lget(chunk, result_slot, line);
@@ -1599,8 +1599,8 @@ pub fn emit_feof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     str_len(chunk, line);
     lget(chunk, stream_slot, line);
     struct_get_key(chunk, "__pos", line);
-    vybe_emitter::ops::emit_dyn_le(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
 }
 
 /// PHP `ftell($stream)` — current cursor position.
@@ -1633,27 +1633,27 @@ pub fn emit_fseek(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // if whence == SEEK_CUR: target = pos + offset
     lget(chunk, whence_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, stream_slot, line);
     struct_get_key(chunk, "__pos", line);
     lget(chunk, offset_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     lset(chunk, target_slot, line);
     chunk.emit_end(line);
 
     // if whence == SEEK_END: target = buf.length + offset
     lget(chunk, whence_slot, line);
     push_const(chunk, Value::F64(2.0), line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, stream_slot, line);
     struct_get_key(chunk, "__buf", line);
     str_len(chunk, line);
     lget(chunk, offset_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     lset(chunk, target_slot, line);
     chunk.emit_end(line);
 

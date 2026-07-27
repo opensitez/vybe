@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::classes::emit_bind_method_with_aliases;
-use vybe_emitter::functions::create_function_chunk;
-use vybe_emitter::instructions::host;
+use vybe_compiler::compiler::object::emit_bind_method_with_aliases;
+use vybe_compiler::compiler::functions::create_function_chunk;
+use vybe_compiler::compiler::instructions::host;
 
 fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
     chunk.emit_string_const(value, line);
@@ -139,9 +139,9 @@ fn emit_finalize_uri(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     struct_get(chunk, "protocol", line);
     push_str(chunk, "file:", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
-    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
     struct_set_drop(chunk, "IsFile", line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -189,9 +189,9 @@ pub fn emit_uri_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
             chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
             chunk.emit_dup(line);
             chunk.emit_string_const("Invalid URI: The format of the URI could not be determined.", line);
-            vybe_emitter::errors::emit_exception_new_finalize(chunk, "UriFormatException", line);
-            vybe_emitter::errors::emit_stamp_exception_ancestors(chunk, "UriFormatException", line);
-            vybe_emitter::errors::emit_throw(chunk, line);
+            vybe_compiler::compiler::errors::emit_exception_new_finalize(chunk, "UriFormatException", line);
+            vybe_compiler::compiler::errors::emit_stamp_exception_ancestors(chunk, "UriFormatException", line);
+            vybe_compiler::compiler::errors::emit_throw(chunk, line);
             chunk.emit_end(line);
             chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
             chunk.emit_op_u16(Op::CALL_IMPORT, url_idx, line);
@@ -279,7 +279,7 @@ pub fn emit_uri_is_base_of(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, base_slot, line);
     struct_get(chunk, "href", line);
     host::emit(chunk, "ecma:string", "startsWith", 2, line);
-    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
 }
 
 fn bind_uri_tostring_only(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line: u32) {

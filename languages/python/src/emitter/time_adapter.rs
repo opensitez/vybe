@@ -8,7 +8,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_emitter::instructions::core_wasm;
+use vybe_compiler::compiler::instructions::core_wasm;
 
 const MS_PER_SECOND: f64 = 1_000.0;
 const MS_PER_DAY: f64 = 86_400_000.0;
@@ -72,9 +72,9 @@ fn emit_struct_time_from_ms(chunks: &mut [Chunk], current: usize, ms: u16, line:
 fn emit_pack_and_name(chunks: &mut [Chunk], current: usize, line: u32) {
     let n = TM_FIELDS.len() as u16;
     let base = chunks[current].alloc_scratch(n);
-    vybe_emitter::collections::emit_pack_n(chunks, current, n, base, line);
+    vybe_compiler::compiler::collections::emit_pack_n(chunks, current, n, base, line);
     let names: Vec<Option<String>> = TM_FIELDS.iter().map(|f| Some((*f).to_string())).collect();
-    vybe_emitter::tuples::emit_named_tuple(chunks, current, &names, Some("struct_time"), line);
+    vybe_compiler::compiler::tuples::emit_named_tuple(chunks, current, &names, Some("struct_time"), line);
 }
 
 /// `time.gmtime(secs=now)` / `time.localtime(secs=now)` — UTC struct_time.
@@ -103,7 +103,7 @@ pub fn emit_struct_time(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     chunks[current].emit_op_u16(Op::LOCAL_SET, seq, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, seq, line);
     let names: Vec<Option<String>> = TM_FIELDS.iter().map(|f| Some((*f).to_string())).collect();
-    vybe_emitter::tuples::emit_named_tuple(chunks, current, &names, Some("struct_time"), line);
+    vybe_compiler::compiler::tuples::emit_named_tuple(chunks, current, &names, Some("struct_time"), line);
 }
 
 /// `time.mktime(t)` — struct_time → seconds since epoch. Stack: `[t]` → `[num]`.

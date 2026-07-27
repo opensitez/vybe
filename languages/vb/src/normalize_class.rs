@@ -261,6 +261,7 @@ pub fn normalize_class(
     }
 
     NormalClass {
+        augmentations: Vec::new(),
         span,
         name: name.to_string(),
         parent: parents.first().cloned(),
@@ -285,7 +286,7 @@ pub fn normalize_class(
         event_bindings: Vec::new(), // walker already turned `Handles` into AddHandler statements
         raw_extra_members,
     }
-}
+    }
 
 fn vb_default_field_init(type_hint: &Option<String>) -> Option<vybe_ast::Expression> {
     let ty = type_hint.as_deref()?.trim();

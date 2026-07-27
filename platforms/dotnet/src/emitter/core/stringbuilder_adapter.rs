@@ -17,7 +17,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::instructions::{core_wasm, host};
+use vybe_compiler::compiler::instructions::{core_wasm, host};
 
 const BUFFER_KEY: &str = "__buffer";
 const CAPACITY_KEY: &str = "Capacity";
@@ -110,8 +110,8 @@ fn emit_update_capacity_from_buffer(chunk: &mut Chunk, sb_slot: u16, line: u32) 
 
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, capacity_slot, line);
-    vybe_emitter::ops::emit_dyn_gt(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
@@ -263,14 +263,14 @@ pub fn emit_sb_append(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         let (loop_patch, _) = chunk.emit_loop_s(line);
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(chunk, line);
-        vybe_emitter::ops::emit_dyn_not(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
         chunk.emit_br_if(1, line);
         chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
         push_const(chunk, Value::I32(1), line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
         chunk.emit_br(0, line);
         chunk.emit_end(line);
@@ -282,12 +282,12 @@ pub fn emit_sb_append(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
         host::emit(chunk, "wasm:js-string", "substring", 3, line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     } else {
         emit_format_append_value(chunk, s_slot, line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     }
     // STRUCT_SET pops [sb, buffer+s], pushes [buffer+s]; drop it.
     chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
@@ -316,9 +316,9 @@ pub fn emit_sb_append_line(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
     emit_format_append_value(chunk, s_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     push_const(chunk, Value::String(Arc::from("\n")), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
     chunk.emit_op(Op::DROP, line);
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
@@ -382,7 +382,7 @@ pub fn emit_sb_append_format(chunks: &mut [Chunk], current: usize, argc: u8, lin
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, formatted_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
     chunk.emit_op(Op::DROP, line);
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
@@ -410,7 +410,7 @@ pub fn emit_sb_append_join(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, joined_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
     chunk.emit_op(Op::DROP, line);
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
@@ -435,7 +435,7 @@ pub fn emit_sb_to_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
         host::emit(chunk, "wasm:js-string", "substring", 3, line);
     } else {
         chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
@@ -518,8 +518,8 @@ pub fn emit_sb_set_length(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, new_len_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, cur_len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
@@ -536,18 +536,18 @@ pub fn emit_sb_set_length(chunks: &mut [Chunk], current: usize, line: u32) {
     let (loop_patch, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, cur_len_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, new_len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
     push_const(chunk, Value::String(Arc::from("\0")), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, cur_len_slot, line);
     push_const(chunk, Value::I32(1), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, cur_len_slot, line);
     chunk.emit_br(0, line);
     chunk.emit_end(line);
@@ -581,8 +581,8 @@ pub fn emit_sb_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u32) 
 
     chunk.emit_op_u16(Op::LOCAL_GET, desired_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, capacity_slot, line);
-    vybe_emitter::ops::emit_dyn_gt(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, desired_slot, line);
@@ -628,18 +628,18 @@ pub fn emit_sb_copy_to(chunks: &mut [Chunk], current: usize, line: u32) {
     let (loop_patch, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, source_index_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, src_pos_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, dest_index_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, target_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
@@ -655,7 +655,7 @@ pub fn emit_sb_copy_to(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     push_const(chunk, Value::I32(1), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_br(0, line);
     chunk.emit_end(line);
@@ -678,7 +678,7 @@ pub fn emit_sb_equals(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, other_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buffer_key, line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
 }
 
 /// `sb.Insert(idx, text)` — splice `text` into `sb.__buffer` at `idx`.
@@ -716,7 +716,7 @@ pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // before + text
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     // Stack: [sb, before+text]
 
     // after = buf.substring(idx, buf.length)
@@ -728,7 +728,7 @@ pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
     // Stack: [sb, before+text, after]
 
     // (before + text) + after
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     // Stack: [sb, full]
 
     // sb.__buffer = full
@@ -766,12 +766,12 @@ pub fn emit_sb_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     host::emit(chunk, "wasm:js-string", "substring", 3, line);
 
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
     chunk.emit_op(Op::DROP, line);
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
@@ -823,16 +823,16 @@ pub fn emit_sb_index_set(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_format_append_value(chunk, value_slot, line);
     push_const(chunk, Value::I32(0), line);
     host::emit(chunk, "ecma:string", "charAt", 2, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
     push_const(chunk, Value::I32(1), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     host::emit(chunk, "wasm:js-string", "substring", 3, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
 
     chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
     chunk.emit_op(Op::DROP, line);
@@ -880,22 +880,22 @@ pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
         host::emit(chunk, "wasm:js-string", "substring", 3, line);
         chunk.emit_op_u16(Op::LOCAL_GET, old_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, new_slot, line);
         chunk.emit_op_u16(Op::CALL_IMPORT, replace_idx, line);
         chunk.emit(3, line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
 
         chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, start_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
         host::emit(chunk, "wasm:js-string", "length", 1, line);
         host::emit(chunk, "wasm:js-string", "substring", 3, line);
-        vybe_emitter::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
 
         chunk.emit_op_u16(Op::STRUCT_SET, buffer_key, line);
         chunk.emit_op(Op::DROP, line);

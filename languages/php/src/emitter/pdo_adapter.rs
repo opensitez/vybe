@@ -2,13 +2,13 @@
 //! `database_adapter.rs`; the mysqli surface lives in `mysqli_adapter.rs`.
 
 use std::sync::Arc;
-use vybe_emitter::instructions::core_wasm;
+use vybe_compiler::compiler::instructions::core_wasm;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
 use crate::emitter::string_adapter;
-use vybe_emitter::{collections, convert};
+use vybe_compiler::compiler::{collections, convert};
 
 const PDO_FETCH_COLUMN: f64 = 7.0;
 const PDO_FETCH_KEY_PAIR: f64 = 12.0;
@@ -81,7 +81,7 @@ fn global_get_key(chunk: &mut Chunk, key: &str, line: u32) {
 fn emit_string_slot_nonempty(chunk: &mut Chunk, slot: u16, line: u32) {
     lget(chunk, slot, line);
     push_str(chunk, "", line);
-    vybe_emitter::ops::emit_dyn_ne(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_ne(chunk, line);
 }
 
 fn concat_slot_with_literal(chunk: &mut Chunk, slot: u16, suffix: &str, line: u32) {
@@ -158,7 +158,7 @@ fn normalize_pdo_dsn(
         let idx = chunk.add_import("ecma:string", "startsWith");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     replace_in_slot(chunk, normalized_slot, "mysql:", "", line);
@@ -172,7 +172,7 @@ fn normalize_pdo_dsn(
         let idx = chunk.add_import("ecma:string", "startsWith");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     replace_in_slot(chunk, normalized_slot, "pgsql:", "", line);
@@ -183,7 +183,7 @@ fn normalize_pdo_dsn(
         let idx = chunk.add_import("ecma:string", "includes");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     concat_slot_with_literal(chunk, normalized_slot, ";port=5432", line);
@@ -197,7 +197,7 @@ fn normalize_pdo_dsn(
         let idx = chunk.add_import("ecma:string", "startsWith");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     replace_in_slot(chunk, normalized_slot, "postgres:", "", line);
@@ -208,7 +208,7 @@ fn normalize_pdo_dsn(
         let idx = chunk.add_import("ecma:string", "includes");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     concat_slot_with_literal(chunk, normalized_slot, ";port=5432", line);
@@ -247,7 +247,7 @@ fn emit_column_value(chunks: &mut [Chunk], current: usize, row_slot: u16, index:
         let undef_idx = chunk.add_import("wasm:js-undefined", "test");
         chunk.emit_call(undef_idx, 1, line);
     }
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
 
     lget(chunk, row_slot, line);
@@ -327,7 +327,7 @@ fn emit_sql_literal_from_slot(
             let undef_idx = chunk.add_import("wasm:js-undefined", "test");
             chunk.emit_call(undef_idx, 1, line);
         }
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_if(line);
 
@@ -466,14 +466,14 @@ fn emit_apply_named_bound_pairs(
         lset(chunk, len_slot, line);
     }
 
-    let loop_state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, index_slot, line);
         lget(chunk, len_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     }
-    vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
 
     {
         let chunk = &mut chunks[current];
@@ -515,7 +515,7 @@ fn emit_apply_named_bound_pairs(
         chunk.emit_op(Op::F64_ADD, line);
         lset(chunk, index_slot, line);
     }
-    vybe_emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
 }
 
 fn emit_apply_named_params_from_entries(
@@ -548,13 +548,13 @@ fn emit_apply_named_params_from_entries(
     let value_slot = alloc_local(chunk);
 
     let _ = chunk;
-    let loop_state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, index_slot, line);
     lget(chunk, len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, entries_slot, line);
@@ -579,7 +579,7 @@ fn emit_apply_named_params_from_entries(
         let idx = chunk.add_import("ecma:string", "startsWith");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_if(line);
 
     push_str(chunk, ":", line);
@@ -612,7 +612,7 @@ fn emit_apply_named_params_from_entries(
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, index_slot, line);
     let _ = chunk;
-    vybe_emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
 }
 
 fn emit_new_statement(
@@ -712,7 +712,7 @@ fn emit_select_column_count_from_sql_slot(chunk: &mut Chunk, sql_slot: u16, line
         let idx = chunk.add_import("ecma:string", "startsWith");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, lower_slot, line);
     push_str(chunk, ",", line);
@@ -720,7 +720,7 @@ fn emit_select_column_count_from_sql_slot(chunk: &mut Chunk, sql_slot: u16, line
         let idx = chunk.add_import("ecma:string", "split");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_emitter::collections::emit_array_length(chunk, line);
+    vybe_compiler::compiler::collections::emit_array_length(chunk, line);
     chunk.emit_else(line);
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_end(line);
@@ -1103,7 +1103,7 @@ pub fn emit_php_pdo_statement_execute(chunks: &mut [Chunk], current: usize, argc
     struct_set_key(chunk, "__row_count", line);
     lget(chunk, count_slot, line);
     push_const(chunk, Value::F64(-1.0), line);
-    vybe_emitter::ops::emit_dyn_ne(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_ne(chunk, line);
 
     chunk.emit_end(line);
 }
@@ -1149,7 +1149,7 @@ pub fn emit_php_pdo_statement_fetch(chunks: &mut [Chunk], current: usize, argc: 
     if let Some(slot) = mode_slot {
         lget(chunk, slot, line);
         push_const(chunk, Value::F64(PDO_FETCH_COLUMN), line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if_value(line);
 
         lget(chunk, row_slot, line);
@@ -1199,7 +1199,7 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
     if let Some(slot) = mode_slot {
         lget(chunk, slot, line);
         push_const(chunk, Value::F64(65_535.0), line);
-        vybe_emitter::ops::emit_dyn_gt(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
         chunk.emit_if_value(line);
 
         call_import(chunks, current, "ecma:object", "new", 0, line);
@@ -1224,13 +1224,13 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
         lset(chunk, len_slot, line);
 
         let _ = chunk;
-        let loop_state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+        let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
         let chunk = &mut chunks[current];
         lget(chunk, index_slot, line);
         lget(chunk, len_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
         let _ = chunk;
-        vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+        vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
         let chunk = &mut chunks[current];
 
         lget(chunk, rows_slot, line);
@@ -1252,7 +1252,7 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
             let idx = chunk.add_import("ecma:map", "has");
             chunk.emit_call(idx, 2, line);
         }
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         lget(chunk, groups_slot, line);
         lget(chunk, key_slot, line);
@@ -1297,14 +1297,14 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
         chunk.emit_op(Op::F64_ADD, line);
         lset(chunk, index_slot, line);
         let _ = chunk;
-        vybe_emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+        vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
         let chunk = &mut chunks[current];
         lget(chunk, out_slot, line);
         chunk.emit_else(line);
 
         lget(chunk, slot, line);
         push_const(chunk, Value::F64(PDO_FETCH_KEY_PAIR), line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if_value(line);
 
         call_import(chunks, current, "ecma:map", "new", 0, line);
@@ -1324,13 +1324,13 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
         lset(chunk, len_slot, line);
 
         let _ = chunk;
-        let loop_state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+        let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
         let chunk = &mut chunks[current];
         lget(chunk, index_slot, line);
         lget(chunk, len_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
         let _ = chunk;
-        vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+        vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
         let chunk = &mut chunks[current];
 
         lget(chunk, rows_slot, line);
@@ -1342,7 +1342,7 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
 
         lget(chunk, row_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
-        vybe_emitter::ops::emit_dyn_not(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
         chunk.emit_if(line);
 
         lget(chunk, row_slot, line);
@@ -1352,7 +1352,7 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
             let undef_idx = chunk.add_import("wasm:js-undefined", "test");
             chunk.emit_call(undef_idx, 1, line);
         }
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_if(line);
         let _ = chunk;
@@ -1389,14 +1389,14 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
         chunk.emit_op(Op::F64_ADD, line);
         lset(chunk, index_slot, line);
         let _ = chunk;
-        vybe_emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+        vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
         let chunk = &mut chunks[current];
         lget(chunk, out_slot, line);
         chunk.emit_else(line);
 
         lget(chunk, slot, line);
         push_const(chunk, Value::F64(PDO_FETCH_COLUMN), line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if_value(line);
 
         emit_empty_array(chunks, current, line);
@@ -1416,13 +1416,13 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
         lset(chunk, len_slot, line);
 
         let _ = chunk;
-        let loop_state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+        let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
         let chunk = &mut chunks[current];
         lget(chunk, index_slot, line);
         lget(chunk, len_slot, line);
-        vybe_emitter::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
         let _ = chunk;
-        vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+        vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
         let chunk = &mut chunks[current];
 
         lget(chunk, rows_slot, line);
@@ -1434,7 +1434,7 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
 
         lget(chunk, row_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
-        vybe_emitter::ops::emit_dyn_not(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
         chunk.emit_if(line);
         lget(chunk, out_slot, line);
         let _ = chunk;
@@ -1449,7 +1449,7 @@ pub fn emit_php_pdo_statement_fetch_all(chunks: &mut [Chunk], current: usize, ar
         chunk.emit_op(Op::F64_ADD, line);
         lset(chunk, index_slot, line);
         let _ = chunk;
-        vybe_emitter::loops::emit_loop_end(chunks, current, loop_state, line);
+        vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
         let chunk = &mut chunks[current];
         lget(chunk, out_slot, line);
         chunk.emit_else(line);
@@ -1587,10 +1587,10 @@ pub fn emit_php_pdo_statement_column_count(
     lset(chunk, rows_slot, line);
     // rows.length > 0 ? Object.keys(rows[0]).length : stmt.field_count
     lget(chunk, rows_slot, line);
-    vybe_emitter::collections::emit_array_length(chunk, line);
+    vybe_compiler::compiler::collections::emit_array_length(chunk, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_gt(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, rows_slot, line);
     push_const(chunk, Value::F64(0.0), line);
@@ -1598,7 +1598,7 @@ pub fn emit_php_pdo_statement_column_count(
     let _ = chunk;
     call_import(chunks, current, "ecma:object", "keys", 1, line);
     let chunk = &mut chunks[current];
-    vybe_emitter::collections::emit_array_length(chunk, line);
+    vybe_compiler::compiler::collections::emit_array_length(chunk, line);
     chunk.emit_else(line);
     lget(chunk, stmt_slot, line);
     struct_get_key(chunk, "field_count", line);
@@ -1606,7 +1606,7 @@ pub fn emit_php_pdo_statement_column_count(
         let undef_idx = chunk.add_import("wasm:js-undefined", "test");
         chunk.emit_call(undef_idx, 1, line);
     }
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_else(line);
@@ -1664,9 +1664,9 @@ pub fn emit_php_pdo_quote(chunks: &mut [Chunk], current: usize, _argc: u8, line:
         let idx = chunk.add_import("ecma:string", "replaceAll");
         chunk.emit_call(idx, 3, line);
     }
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     push_str(chunk, "'", line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
 }
 
 /// `$stmt->errorCode()` → SQLSTATE "00000" on success. Stack: `[stmt]` → `[str]`.

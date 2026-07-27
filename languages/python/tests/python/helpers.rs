@@ -90,9 +90,9 @@ pub fn run_python(src: &str) -> Vec<String> {
     }
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_emitter::platforms::init_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
     register_output_capture(&mut vm, &output);
-    vybe_emitter::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
 
     let language =
         vybe_compiler::languages::find_by_name("python").expect("python language not found");

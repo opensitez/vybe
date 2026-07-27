@@ -1,6 +1,6 @@
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::instructions::{core_wasm, host};
+use vybe_compiler::compiler::instructions::{core_wasm, host};
 
 const STATE_KEY: &str = "__state";
 
@@ -36,8 +36,8 @@ fn emit_random_unit_from_receiver(chunks: &mut [Chunk], current: usize, receiver
 
     chunk.emit_op_u16(Op::LOCAL_GET, state_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op_u16(Op::LOCAL_SET, state_slot, line);
@@ -49,7 +49,7 @@ fn emit_random_unit_from_receiver(chunks: &mut [Chunk], current: usize, receiver
     push_const(chunk, Value::F64(12345.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     push_const(chunk, Value::F64(2147483648.0), line);
-    vybe_emitter::math::emit_c_fmod(chunk, line);
+    vybe_compiler::compiler::math::emit_c_fmod(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, state_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
@@ -160,8 +160,8 @@ pub fn emit_random_next_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line);
 
     emit_random_unit_from_receiver(chunks, current, receiver_slot, line);

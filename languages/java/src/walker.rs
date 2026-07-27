@@ -25,7 +25,7 @@ use pest::iterators::Pair;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use vybe_ast::*;
-use vybe_emitter::reflection as common_reflection;
+use vybe_compiler::compiler::reflection as common_reflection;
 
 #[derive(Clone, Debug, Default)]
 struct JavaReflectionClassMeta {

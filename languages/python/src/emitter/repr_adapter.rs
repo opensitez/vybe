@@ -18,8 +18,8 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::functions::create_function_chunk;
-use vybe_emitter::tuples::{FIELDS_TAG, TUPLE_TAG, TYPENAME_TAG};
+use vybe_compiler::compiler::functions::create_function_chunk;
+use vybe_compiler::compiler::tuples::{FIELDS_TAG, TUPLE_TAG, TYPENAME_TAG};
 
 const REPR_CHUNK: &str = "__py_repr";
 
@@ -127,11 +127,11 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(&mut c, esc, line);
         str_const(&mut c, "'", line);
         c.emit_call(includes, 2, line);
-        vybe_emitter::ops::emit_dyn_to_bool(&mut c, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut c, line);
         lget(&mut c, esc, line);
         str_const(&mut c, "\"", line);
         c.emit_call(includes, 2, line);
-        vybe_emitter::ops::emit_dyn_to_bool(&mut c, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut c, line);
         c.emit_op(Op::I32_EQZ, line); // no double quote
         c.emit_op(Op::I32_AND, line); // has ' AND no "
         c.emit_if_value(line);
@@ -177,7 +177,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         let idx = c.add_import("ecma:array", "isArray");
         c.emit_call(idx, 1, line);
     }
-    vybe_emitter::ops::emit_dyn_to_bool(&mut c, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut c, line);
     c.emit_if(line);
     {
         // n = value.length; i = 0
@@ -298,7 +298,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(&mut c, value, line);
         struct_get(&mut c, "__type", line);
         str_const(&mut c, "Set", line);
-        vybe_emitter::ops::emit_dyn_eq(&mut c, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(&mut c, line);
         c.emit_if(line);
         {
             let set_arr = c.alloc_scratch(1);
@@ -307,7 +307,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             let frozen = c.alloc_scratch(1);
             lget(&mut c, value, line);
             struct_get(&mut c, "__frozenset", line);
-            vybe_emitter::ops::emit_dyn_to_bool(&mut c, line);
+            vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut c, line);
             lset(&mut c, frozen, line);
 
             lget(&mut c, value, line);
@@ -353,7 +353,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(&mut c, value, line);
         str_const(&mut c, "__type", line);
         c.emit_call(has_own, 2, line);
-        vybe_emitter::ops::emit_dyn_to_bool(&mut c, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut c, line);
         c.emit_if(line);
         str_const(&mut c, "<", line);
         lget(&mut c, value, line);
@@ -426,7 +426,7 @@ fn struct_get(chunk: &mut Chunk, key: &str, line: u32) {
 }
 
 fn emit_i32_const(chunk: &mut Chunk, v: i32, line: u32) {
-    vybe_emitter::instructions::core_wasm::i32_const(chunk, line, v);
+    vybe_compiler::compiler::instructions::core_wasm::i32_const(chunk, line, v);
 }
 fn emit_i32_zero_val(chunk: &mut Chunk, line: u32) {
     emit_i32_const(chunk, 0, line);
@@ -442,16 +442,16 @@ fn bump(chunk: &mut Chunk, slot: u16, line: u32) {
     lset(chunk, slot, line);
 }
 
-fn loop_start(chunk: &mut Chunk, line: u32) -> vybe_emitter::loops::LoopState {
+fn loop_start(chunk: &mut Chunk, line: u32) -> vybe_compiler::compiler::loops::LoopState {
     let block_patch = chunk.emit_block(line);
     let (loop_patch, _) = chunk.emit_loop_s(line);
-    vybe_emitter::loops::LoopState {
+    vybe_compiler::compiler::loops::LoopState {
         block_patch,
         loop_patch,
         body_block_patch: None,
     }
 }
-fn loop_end(chunk: &mut Chunk, state: vybe_emitter::loops::LoopState, line: u32) {
+fn loop_end(chunk: &mut Chunk, state: vybe_compiler::compiler::loops::LoopState, line: u32) {
     chunk.emit_br(0, line);
     chunk.emit_end(line);
     chunk.patch_loop(state.loop_patch);

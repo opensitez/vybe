@@ -2,7 +2,7 @@ use crate::compiler::*;
 use std::sync::Arc;
 use vybe_ast::{ExprKind, Expression, Literal};
 use vybe_bytecode::{Op, Value};
-use vybe_emitter as common;
+use crate::compiler as common;
 
 #[derive(Clone, Copy)]
 enum BufferedGeneratorStepMode {
@@ -89,7 +89,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, has_more_slot);
         {
             let line = self.line;
-            vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         };
         let line = self.line;
         self.chunk().emit_if(line);
@@ -130,7 +130,7 @@ impl Compiler {
         self.emit_host_call(is_done_idx, 1);
         {
             let line = self.line;
-            vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         };
         let line = self.line;
         self.chunk().emit_if(line);
@@ -179,7 +179,7 @@ impl Compiler {
     ) {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         let line = self.line;
-        vybe_emitter::generators::emit_next(self.chunk(), line);
+        crate::compiler::generators::emit_next(self.chunk(), line);
         let has_more_slot = self.define_local("__php_gen_has_more");
         self.emit_u16(Op::LOCAL_SET, has_more_slot);
         let value_slot = self.define_local("__php_gen_value");
@@ -231,7 +231,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, has_more_slot);
         {
             let line = self.line;
-            vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         };
         let line = self.line;
         self.chunk().emit_if(line);
@@ -306,7 +306,7 @@ impl Compiler {
         let is_gen_idx = self.import("ecma:value", "isGenerator");
         self.emit_host_call(is_gen_idx, 1);
         let line = self.line;
-        vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
         match field_name {
@@ -320,7 +320,7 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, started_key);
                 {
                     let line = self.line;
-                    vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
                 let line = self.line;
                 self.chunk().emit_if(line);
@@ -329,11 +329,11 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, done_key);
                 {
                     let line = self.line;
-                    vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
                 {
                     let line = self.line;
-                    vybe_emitter::ops::emit_dyn_not(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_not(self.chunk(), line);
                 };
                 self.emit_u16(Op::LOCAL_SET, result_slot);
 
@@ -354,7 +354,7 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, started_key);
                 {
                     let line = self.line;
-                    vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
                 let line = self.line;
                 self.chunk().emit_if(line);
@@ -363,7 +363,7 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, done_key);
                 {
                     let line = self.line;
-                    vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
                 self.chunk().emit_if(line);
                 self.emit_const(Value::Bool(false));
@@ -392,7 +392,7 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, started_key);
                 {
                     let line = self.line;
-                    vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
                 let line = self.line;
                 self.chunk().emit_if(line);
@@ -401,7 +401,7 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, done_key);
                 {
                     let line = self.line;
-                    vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
                 self.chunk().emit_if(line);
                 self.emit_const(Value::Bool(false));
@@ -415,7 +415,7 @@ impl Compiler {
                     self.emit(Op::NULL);
                 }
                 let line = self.line;
-                vybe_emitter::generators::emit_resume(self.chunk(), line);
+                crate::compiler::generators::emit_resume(self.chunk(), line);
                 let value_slot = self.define_local("__php_gen_resume_value");
                 self.emit_u16(Op::LOCAL_SET, value_slot);
                 self.emit_buffered_generator_apply_resume_result(
@@ -451,7 +451,7 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, started_key);
                 {
                     let line = self.line;
-                    vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
                 let line = self.line;
                 self.chunk().emit_if(line);
@@ -460,7 +460,7 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, done_key);
                 {
                     let line = self.line;
-                    vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
                 self.chunk().emit_if(line);
                 self.emit_const(Value::Bool(false));
@@ -470,7 +470,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.compile_expr(&arg_exprs[0])?;
                 let line = self.line;
-                vybe_emitter::generators::emit_resume_throw(self.chunk(), line);
+                crate::compiler::generators::emit_resume_throw(self.chunk(), line);
                 let value_slot = self.define_local("__php_gen_throw_value");
                 self.emit_u16(Op::LOCAL_SET, value_slot);
                 self.emit_buffered_generator_apply_resume_result(
@@ -486,7 +486,7 @@ impl Compiler {
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 let line = self.line;
-                vybe_emitter::generators::emit_next(self.chunk(), line);
+                crate::compiler::generators::emit_next(self.chunk(), line);
                 let has_more_slot = self.define_local("__php_gen_throw_has_more");
                 self.emit_u16(Op::LOCAL_SET, has_more_slot);
                 let start_value_slot = self.define_local("__php_gen_throw_start_value");
@@ -500,14 +500,14 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
                 {
                     let line = self.line;
-                    vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
                 self.chunk().emit_if(line);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.compile_expr(&arg_exprs[0])?;
                 let line = self.line;
-                vybe_emitter::generators::emit_resume_throw(self.chunk(), line);
+                crate::compiler::generators::emit_resume_throw(self.chunk(), line);
                 let start_resume_slot = self.define_local("__php_gen_throw_resume_value");
                 self.emit_u16(Op::LOCAL_SET, start_resume_slot);
                 self.emit_buffered_generator_apply_resume_result(
@@ -545,7 +545,7 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_GET, moved_key);
                 {
                     let line = self.line;
-                    vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
                 };
                 let line = self.line;
                 self.chunk().emit_if(line);
@@ -578,19 +578,19 @@ impl Compiler {
         let is_generator = self.import("ecma:value", "isGenerator");
         self.emit_host_call(is_generator, 1);
         let line = self.line;
-        vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, gen_slot);
         let started_key = self.str_const("__php_gen_started");
         self.emit_u16(Op::STRUCT_GET, started_key);
-        vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, gen_slot);
         let done_key = self.str_const("__php_gen_done");
         self.emit_u16(Op::STRUCT_GET, done_key);
-        vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.emit(Op::I32_EQZ);
         self.chunk().emit_if(line);
 
@@ -598,7 +598,7 @@ impl Compiler {
         self.emit(Op::NULL);
         self.emit_generator_control_packet_from_stack("return");
         let line = self.line;
-        vybe_emitter::generators::emit_resume(self.chunk(), line);
+        crate::compiler::generators::emit_resume(self.chunk(), line);
         self.emit(Op::DROP);
 
         self.chunk().emit_end(line);
@@ -619,7 +619,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, callee_slot);
         {
             let l = self.line;
-            vybe_emitter::instructions::host::CapabilityContext::get()
+            crate::compiler::instructions::host::CapabilityContext::get()
                 .functions
                 .emit(&mut self.chunks[self.current], "ecma:value", "typeof", 1, l);
         };
@@ -684,17 +684,17 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, class_slot);
         {
             let l = self.line;
-            vybe_emitter::instructions::host::CapabilityContext::get()
+            crate::compiler::instructions::host::CapabilityContext::get()
                 .functions
                 .emit(&mut self.chunks[self.current], "ecma:value", "typeof", 1, l);
         };
         self.emit_const(Value::String(Arc::from("string")));
         {
             let line = self.line;
-            vybe_emitter::ops::emit_dyn_eq(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
         };
         let line = self.line;
-        vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, class_slot);
@@ -719,10 +719,10 @@ impl Compiler {
             self.emit_const(Value::String(Arc::from(lowered_name.as_str())));
             {
                 let line = self.line;
-                vybe_emitter::ops::emit_dyn_eq(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
             };
             let line = self.line;
-            vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if(line);
 
             let canon = self.canon(&bare);
@@ -801,13 +801,13 @@ impl Compiler {
         self.chunk()
             .emit_op_u16(Op::CALL_IMPORT, is_array_idx, line);
         self.chunk().emit(1, line);
-        vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, key_slot);
         {
             let l = self.line;
-            vybe_emitter::instructions::host::CapabilityContext::get()
+            crate::compiler::instructions::host::CapabilityContext::get()
                 .functions
                 .emit(
                     &mut self.chunks[self.current],
@@ -817,20 +817,20 @@ impl Compiler {
                     l,
                 );
         };
-        vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit(Op::ARRAY_LENGTH);
         {
             let l = self.line;
-            vybe_emitter::instructions::core_wasm::i32_const(&mut self.chunks[self.current], l, 0);
+            crate::compiler::instructions::core_wasm::i32_const(&mut self.chunks[self.current], l, 0);
         };
         {
             let line = self.line;
-            vybe_emitter::ops::emit_dyn_ne(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_ne(self.chunk(), line);
         };
-        vybe_emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.emit(Op::I32_EQZ);
         self.chunk().emit_if(line);
         let map_new_idx = self.import("ecma:map", "new");

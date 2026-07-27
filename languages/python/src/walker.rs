@@ -5515,7 +5515,7 @@ thread_local! {
     // `Name = namedtuple('Type', 'f1 f2', defaults=[...])` records the type
     // name, ordered field names, and trailing defaults here. A later
     // `Name(args)` lowers to the shared `ExprKind::NamedTuple` (array-backed,
-    // cross-language) via `call_or_new`. See `vybe_emitter::tuples`.
+    // cross-language) via `call_or_new`. See `vybe_compiler::compiler::tuples`.
     static PY_NAMEDTUPLE_DEFS: std::cell::RefCell<std::collections::HashMap<String, NamedTupleDef>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }

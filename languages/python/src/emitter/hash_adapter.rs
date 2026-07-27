@@ -19,8 +19,8 @@ use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
-use vybe_emitter::errors::{emit_exception_new_finalize, emit_throw};
-use vybe_emitter::ops;
+use vybe_compiler::compiler::errors::{emit_exception_new_finalize, emit_throw};
+use vybe_compiler::compiler::ops;
 
 const CRYPTO: &str = "node:crypto";
 

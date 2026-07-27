@@ -261,9 +261,15 @@ fn next_bytes_decode_opcode(chunk: &Chunk, ip: usize) -> bool {
 }
 
 fn read_optional_memidx_immediate(chunk: &Chunk, ip: &mut usize) -> u32 {
+    // Multi-memory selector — must mirror the VM
+    // (`dispatch::read_optional_memidx_immediate`) exactly: a fixed 4-byte
+    // block `0xEE 0x00 <memidx u16 BE>`. The memidx lives *inside* those 4
+    // bytes; reading a further LEB after skipping them consumed the next
+    // instruction's opcode bytes.
     if chunk.code.get(*ip) == Some(&0xEE) && chunk.code.get(*ip + 1) == Some(&0x00) {
+        let memidx = ((chunk.code[*ip + 2] as u32) << 8) | (chunk.code[*ip + 3] as u32);
         *ip += 4;
-        return read_leb_u32(&chunk.code, ip);
+        return memidx;
     }
     if next_bytes_decode_opcode(chunk, *ip) {
         return 0;

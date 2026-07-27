@@ -22,6 +22,9 @@ pub use core::dotnet_core_component_descriptor;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use vybe_bytecode::component_model::{
+    InstanceMethodTarget, InstancePropertyTarget, StaticPropertyTarget,
+};
+use vybe_bytecode::component_model::{
     ComponentDescriptor, ComponentItemKind, ConstructorTarget, MethodBody,
 };
 pub use winforms::classes;
@@ -30,38 +33,6 @@ pub use winforms::dotnet_winforms_component_descriptor;
 pub enum StaticMethodTarget {
     Host { module: String, func: String },
     Common { emit: String },
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StaticPropertyTarget {
-    Host { module: String, func: String },
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InstanceMethodTarget {
-    Host {
-        module: String,
-        func: String,
-        arity: u8,
-    },
-    Common {
-        emit: String,
-        arity: u8,
-    },
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InstancePropertyTarget {
-    /// A host-backed property accessor. `key` is `Some(PascalName)` when the
-    /// target is the *generic* `vybe:gui` property host fn
-    /// (`controlGet/SetProperty(this, "Text"[, value])`) — the compiler pushes
-    /// the key as an argument. `None` for dedicated per-property host fns
-    /// (`Environment.NewLine` → `node:os.EOL(this)`).
-    Host {
-        module: String,
-        func: String,
-        key: Option<String>,
-    },
-    Common {
-        emit: String,
-    },
 }
 pub struct DotnetSurface {
     default_imports: Vec<String>,
@@ -524,8 +495,8 @@ impl DotnetSurface {
                     property.getter.as_ref()
                 };
                 return target.map(|target| {
-                    let keyed = target.name == vybe_emitter::gui::HOST_FN_GET_PROPERTY
-                        || target.name == vybe_emitter::gui::HOST_FN_SET_PROPERTY;
+                    let keyed = target.name == vybe_compiler::compiler::gui::HOST_FN_GET_PROPERTY
+                        || target.name == vybe_compiler::compiler::gui::HOST_FN_SET_PROPERTY;
                     InstancePropertyTarget::Host {
                         module: target.module.clone(),
                         func: target.name.clone(),
@@ -637,6 +608,12 @@ impl DotnetSurface {
             })
         })
     }
+}
+
+/// The declared return type of an INSTANCE member, for tree registration.
+/// Public so `tree_register` can declare it with the class.
+pub fn instance_method_return_type(class_name: &str, method_name: &str) -> Option<String> {
+    dotnet_instance_method_return_type(class_name, method_name)
 }
 
 fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Option<String> {
@@ -1356,7 +1333,7 @@ mod tests {
                 .imports
                 .iter()
                 .any(|imp| imp.interface == "vybe:gui"
-                    && imp.name == vybe_emitter::gui::HOST_FN_SET_PROPERTY)
+                    && imp.name == vybe_compiler::compiler::gui::HOST_FN_SET_PROPERTY)
         );
         assert!(
             descriptor
@@ -1414,7 +1391,7 @@ mod tests {
                 .imports
                 .iter()
                 .any(|imp| imp.interface == "vybe:gui"
-                    && imp.name == vybe_emitter::gui::HOST_FN_RUN_APPLICATION)
+                    && imp.name == vybe_compiler::compiler::gui::HOST_FN_RUN_APPLICATION)
         );
     }
 
@@ -1440,7 +1417,7 @@ mod tests {
                 .imports
                 .iter()
                 .any(|imp| imp.interface == "vybe:gui"
-                    && imp.name == vybe_emitter::gui::HOST_FN_RUN_APPLICATION)
+                    && imp.name == vybe_compiler::compiler::gui::HOST_FN_RUN_APPLICATION)
         );
         assert!(
             !descriptor
@@ -1521,4 +1498,34 @@ mod tests {
         assert!(is_noop_method("SuspendLayout"));
         assert!(is_known_constant("PI"));
     }
+}
+
+// ── Registry shims ──────────────────────────────────────────────────────
+//
+// Free functions over `surface()` so the compiler can reach these through
+// `PlatformDef` function pointers instead of naming this crate.
+
+pub fn registry_lookup_constructor(
+    name: &str,
+) -> Option<vybe_bytecode::component_model::ConstructorTarget> {
+    surface().lookup_constructor(name)
+}
+
+pub fn registry_lookup_instance_method(
+    class_name: &str,
+    method_name: &str,
+    arg_count: u8,
+) -> Option<vybe_bytecode::component_model::InstanceMethodTarget> {
+    surface().lookup_instance_method(class_name, method_name, arg_count)
+}
+
+pub fn registry_lookup_instance_property(
+    class_name: &str,
+    property_name: &str,
+) -> Option<vybe_bytecode::component_model::InstancePropertyTarget> {
+    surface().lookup_instance_property(class_name, property_name)
+}
+
+pub fn registry_is_known_constant(name: &str) -> bool {
+    surface().is_known_constant(name)
 }

@@ -7,7 +7,7 @@
 //! (C#, VB, …) reaches it through the common resolver, so the formatting is
 //! never reimplemented per grammar.
 //!
-//! Relocated out of the shared compiler (`vybe_compiler::emitter::
+//! Relocated out of the shared compiler (`vybe_compiler::compiler::
 //! runtime_helpers`) — this is dotnet-specific codegen and belongs in the
 //! dotnet platform. The shared bundler calls [`build_dotnet_numeric_format`]
 //! only to include the chunk when a program uses it.
@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::instructions::core_wasm;
-use vybe_emitter::ops::{
+use vybe_compiler::compiler::instructions::core_wasm;
+use vybe_compiler::compiler::ops::{
     emit_dyn_add_into, emit_dyn_eq_into, emit_dyn_ge_into, emit_dyn_gt_into, emit_dyn_lt_into,
     emit_dyn_not_into,
 };

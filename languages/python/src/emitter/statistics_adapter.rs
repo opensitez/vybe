@@ -11,7 +11,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_emitter::instructions::core_wasm;
+use vybe_compiler::compiler::instructions::core_wasm;
 
 /// `sum(data)`. Stack: `[data]` → `[num]`.
 fn emit_sum(chunk: &mut Chunk, data: u16, line: u32) {
@@ -23,7 +23,7 @@ fn emit_sum(chunk: &mut Chunk, data: u16, line: u32) {
 /// `len(data)` as f64. Stack: `[]` → `[num]`.
 fn emit_len(chunks: &mut [Chunk], current: usize, data: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
-    vybe_emitter::collections::emit_len(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_len(chunks, current, line);
 }
 
 /// Stash the single list argument into a local. Stack: `[data]` → `[]`.
@@ -142,12 +142,12 @@ fn emit_sq_dev_sum(chunks: &mut [Chunk], current: usize, data: u16, mean: u16, l
     emit_len(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op_u16(Op::LOCAL_GET, n, line);
     chunk.emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
 
     // acc += (data[i] - mean) ** 2
     chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
@@ -168,7 +168,7 @@ fn emit_sq_dev_sum(chunks: &mut [Chunk], current: usize, data: u16, mean: u16, l
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, acc, line);
 }
@@ -227,12 +227,12 @@ fn emit_count_of(chunks: &mut [Chunk], current: usize, data: u16, i: u16, n: u16
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, j, line);
     chunk.emit_op_u16(Op::LOCAL_GET, n, line);
     chunk.emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, data, line);
     chunk.emit_op_u16(Op::LOCAL_GET, j, line);
@@ -240,7 +240,7 @@ fn emit_count_of(chunks: &mut [Chunk], current: usize, data: u16, i: u16, n: u16
     chunk.emit_op_u16(Op::LOCAL_GET, data, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, count, line);
     core_wasm::i32_const(chunk, line, 1);
@@ -252,7 +252,7 @@ fn emit_count_of(chunks: &mut [Chunk], current: usize, data: u16, i: u16, n: u16
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, j, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, count, line);
 }
@@ -275,11 +275,11 @@ pub fn emit_mode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunks[current].emit_op(Op::NULL, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, best, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
 
     emit_count_of(chunks, current, data, i, n, line);
     let c = chunks[current].alloc_scratch(1);
@@ -303,7 +303,7 @@ pub fn emit_mode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, best, line);
 }
@@ -325,11 +325,11 @@ pub fn emit_multimode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     // Pass 1 — the winning count.
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
-    let s1 = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let s1 = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
     emit_count_of(chunks, current, data, i, n, line);
     let c1 = chunks[current].alloc_scratch(1);
     let chunk = &mut chunks[current];
@@ -345,18 +345,18 @@ pub fn emit_multimode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, s1, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, s1, line);
 
     // Pass 2 — collect the winners, skipping duplicates.
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
-    let s2 = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let s2 = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
     emit_count_of(chunks, current, data, i, n, line);
     let c2 = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, c2, line);
@@ -371,14 +371,14 @@ pub fn emit_multimode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunks[current].emit_op(Op::ARRAY_GET, line);
     let includes = chunks[current].add_import("ecma:array", "includes");
     chunks[current].emit_call(includes, 2, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
     chunks[current].emit_op(Op::ARRAY_GET, line);
-    vybe_emitter::collections::emit_push(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -386,7 +386,7 @@ pub fn emit_multimode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, s2, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, s2, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
@@ -421,17 +421,17 @@ pub fn emit_quantiles(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, m, line);
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op_u16(Op::LOCAL_GET, nq, line);
     chunk.emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
 
     // j = clamp(i * m / nq, 1, ld - 1)
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
@@ -488,14 +488,14 @@ pub fn emit_quantiles(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     chunk.emit_op(Op::F64_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_GET, nq, line);
     chunk.emit_op(Op::F64_DIV, line);
-    vybe_emitter::collections::emit_push(chunks, current, line);
+    vybe_compiler::compiler::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
@@ -535,18 +535,18 @@ pub fn emit_median_grouped(chunks: &mut [Chunk], current: usize, _argc: u8, line
     core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op_u16(Op::LOCAL_GET, n, line);
     chunk.emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, s, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, cf, line);
     core_wasm::i32_const(chunk, line, 1);
@@ -558,7 +558,7 @@ pub fn emit_median_grouped(chunks: &mut [Chunk], current: usize, _argc: u8, line
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, f, line);
     core_wasm::i32_const(chunk, line, 1);
@@ -570,7 +570,7 @@ pub fn emit_median_grouped(chunks: &mut [Chunk], current: usize, _argc: u8, line
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
 
     // (x - 0.5) + (n/2 - cf) / f      [interval = 1]
     let chunk = &mut chunks[current];
@@ -601,12 +601,12 @@ pub fn emit_harmonic_mean(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     emit_len(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op_u16(Op::LOCAL_GET, n, line);
     chunk.emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
     core_wasm::f64_const(chunk, line, 1.0);
@@ -621,7 +621,7 @@ pub fn emit_harmonic_mean(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
 
     emit_len(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, acc, line);
@@ -643,12 +643,12 @@ pub fn emit_geometric_mean(chunks: &mut [Chunk], current: usize, _argc: u8, line
     emit_len(chunks, current, data, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
 
-    let state = vybe_emitter::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op_u16(Op::LOCAL_GET, n, line);
     chunk.emit_op(Op::I32_LT_S, line);
-    vybe_emitter::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+    vybe_compiler::compiler::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
     chunk.emit_op_u16(Op::LOCAL_GET, data, line);
@@ -663,7 +663,7 @@ pub fn emit_geometric_mean(chunks: &mut [Chunk], current: usize, _argc: u8, line
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
-    vybe_emitter::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, acc, line);
     emit_len(chunks, current, data, line);

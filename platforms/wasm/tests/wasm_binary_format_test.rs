@@ -937,12 +937,16 @@ fn reader_preserves_multi_memory_bulk_indices() {
     let mg = Op::MEMORY_GROW.encode();
     let mc = Op::MEMORY_COPY.encode();
     let mf = Op::MEMORY_FILL.encode();
+    // The multi-memory selector is a FIXED 4-byte block
+    // `0xEE 0x00 <memidx u16 BE>` — see the VM's
+    // `dispatch::read_optional_memidx_immediate`. VM instructions are 4 bytes,
+    // so the selector must be 4 as well to keep the next instruction aligned.
     let patterns: Vec<Vec<u8>> = vec![
-        vec![mg[0], mg[1], mg[2], mg[3], 0xEE, 0x00, 0x01],
+        vec![mg[0], mg[1], mg[2], mg[3], 0xEE, 0x00, 0x00, 0x01],
         vec![
-            mc[0], mc[1], mc[2], mc[3], 0xEE, 0x00, 0x01, 0xEE, 0x00, 0x02,
+            mc[0], mc[1], mc[2], mc[3], 0xEE, 0x00, 0x00, 0x01, 0xEE, 0x00, 0x00, 0x02,
         ],
-        vec![mf[0], mf[1], mf[2], mf[3], 0xEE, 0x00, 0x01],
+        vec![mf[0], mf[1], mf[2], mf[3], 0xEE, 0x00, 0x00, 0x01],
     ];
     for pattern in &patterns {
         assert!(

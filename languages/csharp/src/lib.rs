@@ -1,3 +1,6 @@
+// Force-link every plugin crate in `[dependencies]` so its link-time
+// registration reaches the registry. Generated from Cargo.toml — see build.rs.
+include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
 pub mod forms;
 pub mod normalize_class;
 pub mod walker;
@@ -28,6 +31,12 @@ pub fn profile_source() -> &'static str {
 
 /// Register this language with the shared plugin registry (dylib entry point).
 pub fn register() {
+    // Platforms this language needs. A language already links them (see
+    // Cargo.toml), so registering them here means the compiler never has to —
+    // and it works from ANY host, including language test binaries that never
+    // construct vybex. See flexclassplan.md.
+    vybe_platform_dotnet::register();
+
     vybe_bytecode::registry::register_language(vybe_bytecode::registry::LanguageDef {
         name: "csharp",
         parse,
@@ -58,3 +67,7 @@ impl vybe_bytecode::Plugin for Plugin {
         register();
     }
 }
+
+// Link-time registration: this crate submits its plugin to the one registry.
+// Nothing lists plugins in code — linking this crate IS the registration.
+vybe_bytecode::register_plugin!(Plugin);

@@ -5,8 +5,8 @@ use std::sync::Arc;
 use vybe_bytecode::Chunk;
 use vybe_bytecode::Op;
 use vybe_bytecode::Value;
-use vybe_emitter::collections;
-use vybe_emitter::instructions::host;
+use vybe_compiler::compiler::collections;
+use vybe_compiler::compiler::instructions::host;
 
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
     if name == "dotnet.tostring" {
@@ -34,7 +34,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             argc,
             line,
         );
-        vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+        vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
         return true;
     }
 
@@ -46,7 +46,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             argc,
             line,
         );
-        vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+        vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
         return true;
     }
 
@@ -99,8 +99,8 @@ fn emit_cchar(chunk: &mut Chunk, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, ty, line);
     chunk.emit_string_const("string", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
@@ -152,8 +152,8 @@ fn emit_tostring_runtime(chunk: &mut Chunk, argc: u8, line: u32) {
         chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, ty, line);
         chunk.emit_string_const(type_name, line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         chunk.emit_i32_const(1, line);
         chunk.emit_op_u16(Op::LOCAL_SET, is_numeric, line);
@@ -212,8 +212,8 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
         chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, ty, line);
         chunk.emit_string_const(type_name, line);
-        vybe_emitter::ops::emit_dyn_eq(chunk, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         chunk.emit_i32_const(1, line);
         chunk.emit_op_u16(Op::LOCAL_SET, is_primitive, line);
@@ -225,7 +225,7 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     chunk.emit_if(line);
     // Primitive: plain String() coercion.
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    vybe_emitter::strings::emit_to_string(chunk, line);
+    vybe_compiler::compiler::strings::emit_to_string(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
     chunk.emit_else(line);
 
@@ -242,8 +242,8 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);
     chunk.emit_string_const("Guid", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
@@ -251,14 +251,14 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);
     chunk.emit_string_const("StringWriter", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    vybe_emitter::strings::emit_to_string(chunk, line);
+    vybe_compiler::compiler::strings::emit_to_string(chunk, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);

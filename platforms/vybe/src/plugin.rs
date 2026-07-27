@@ -11,41 +11,40 @@
 /// [`Plugin::with_gui`] (creates a fresh `GuiState`), then read the handle back
 /// with [`Plugin::gui_state`]. In a dylib this factory becomes state the
 /// plugin's own `init` creates, and the accessor a registered handle.
-pub struct Plugin {
-    #[cfg(feature = "gui")]
-    gui: Option<std::sync::Arc<std::sync::Mutex<crate::gui_state::GuiState>>>,
-}
+#[derive(Default)]
+pub struct Plugin;
 
-impl Default for Plugin {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// The widget state this plugin registers over. It lives BESIDE the plugin
+/// rather than inside the value because the registry holds `&'static dyn
+/// Plugin` — a plugin is identified by what it registers, not by an instance
+/// someone constructed. This is the shape the doc above anticipated for a
+/// dylib: the plugin's own `init` finds the state, and the accessor hands back
+/// a registered handle.
+#[cfg(feature = "gui")]
+static GUI: std::sync::Mutex<
+    Option<std::sync::Arc<std::sync::Mutex<crate::gui_state::GuiState>>>,
+> = std::sync::Mutex::new(None);
 
 impl Plugin {
     /// A drawing-only vybe plugin (no widget state).
     pub fn new() -> Self {
-        Self {
-            #[cfg(feature = "gui")]
-            gui: None,
-        }
+        Plugin
     }
 
-    /// A gui-capable vybe plugin that **owns** a freshly created `GuiState`.
-    /// The host retrieves the shared handle afterwards via [`gui_state`].
+    /// Install a freshly created `GuiState` and return the shared handle. Each
+    /// call replaces the previous one, so a new VM starts from clean widget
+    /// state — the behaviour of the old per-instance `with_gui()`.
     #[cfg(feature = "gui")]
     pub fn with_gui() -> Self {
-        Self {
-            gui: Some(std::sync::Arc::new(std::sync::Mutex::new(
-                crate::gui_state::GuiState::new(),
-            ))),
-        }
+        let state = std::sync::Arc::new(std::sync::Mutex::new(crate::gui_state::GuiState::new()));
+        *GUI.lock().unwrap() = Some(state);
+        Plugin
     }
 
-    /// The shared `GuiState` this plugin owns, if any (for the form launcher).
+    /// The shared `GuiState`, if one is installed (for the form launcher).
     #[cfg(feature = "gui")]
     pub fn gui_state(&self) -> Option<std::sync::Arc<std::sync::Mutex<crate::gui_state::GuiState>>> {
-        self.gui.clone()
+        GUI.lock().unwrap().clone()
     }
 }
 
@@ -55,6 +54,13 @@ impl vybe_bytecode::Plugin for Plugin {
     }
 
     fn init(&self, fw: &mut vybe_bytecode::Framework<'_>) {
+        // Whether the widget-backed surface got registered below. When it
+        // did not, this plugin installs its own no-op `vybe:gui` stubs so
+        // compiled control/form code still links. That fallback used to live
+        // in the compiler, which had to name this crate to call it — a
+        // plugin installs its own surface.
+        #[allow(unused_mut)]
+        let mut widgets_registered = false;
         #[cfg(feature = "gui")]
         let gui_granted = fw.granted(vybe_bytecode::capabilities::Capability::Gui);
 
@@ -66,10 +72,17 @@ impl vybe_bytecode::Plugin for Plugin {
             // this plugin carries the shared state.
             #[cfg(feature = "gui")]
             if gui_granted {
-                if let Some(g) = &self.gui {
+                if let Some(g) = GUI.lock().unwrap().as_ref() {
+                    widgets_registered = true;
                     crate::gui::register(vm, g.clone());
                     crate::canvas::register(vm, g.clone());
                 }
+            }
+
+            // No widget surface — install the no-op stubs so compiled
+            // control/form code still links.
+            if !widgets_registered {
+                crate::register_gui_stubs(vm);
             }
         }
     }
@@ -81,3 +94,24 @@ impl vybe_bytecode::Plugin for Plugin {
         crate::builtin_types::register_types(fw);
     }
 }
+
+/// Install a fresh widget `GuiState`, then run phase 1 of the ONE registration
+/// loop over every linked plugin. Returns the shared handle for the form
+/// launcher / test assertions. Pair with `finalize_platforms`.
+///
+/// This lives here, not in the compiler: the gui-variant needs this crate's
+/// `GuiState`, and the compiler must not name a platform crate.
+#[cfg(feature = "gui")]
+pub fn init_platforms_with_gui(
+    vm: &mut vybe_bytecode::VM,
+) -> std::sync::Arc<std::sync::Mutex<crate::gui_state::GuiState>> {
+    let plugin = Plugin::with_gui();
+    vybe_bytecode::init_registered_plugins(vm, &vybe_bytecode::capabilities::Capabilities::all());
+    plugin
+        .gui_state()
+        .expect("with_gui() always installs a GuiState")
+}
+
+// Link-time registration: this crate submits its plugin to the one registry.
+// Nothing lists plugins in code — linking this crate IS the registration.
+vybe_bytecode::register_plugin!(Plugin);

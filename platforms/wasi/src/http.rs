@@ -1278,76 +1278,389 @@ fn register_outgoing_handler(vm: &mut VM, type_ids: HttpTypeIds) {
     );
 }
 
-fn register_legacy_shim(vm: &mut VM) {
-    vm.register_host_fn(
-        "vybe:http",
-        "get",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let url = string_arg(args, 0).unwrap_or_default();
-            match http_request("GET", &url, None) {
-                Ok(response) => Value::String(Arc::from(response.body.as_str())),
-                Err(error) => Value::String(Arc::from(format!("Error: {}", error))),
-            }
-        }),
-    );
-
-    vm.register_host_fn(
-        "vybe:http",
-        "post",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let url = string_arg(args, 0).unwrap_or_default();
-            let body = string_arg(args, 1).unwrap_or_default();
-            match http_request("POST", &url, Some(&body)) {
-                Ok(response) => Value::String(Arc::from(response.body.as_str())),
-                Err(error) => Value::String(Arc::from(format!("Error: {}", error))),
-            }
-        }),
-    );
-
-    vm.register_host_fn(
-        "vybe:http",
-        "fetch",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let url = string_arg(args, 0).unwrap_or_default();
-            let method = string_arg(args, 1).unwrap_or_else(|| "GET".into());
-            let body = string_arg(args, 2);
-
-            match http_request(&method, &url, body.as_deref()) {
-                Ok(response) => {
-                    let mut object = Object::new();
-                    object
-                        .properties
-                        .insert("status".into(), Value::F64(response.status as f64));
-                    object.properties.insert(
-                        "body".into(),
-                        Value::String(Arc::from(response.body.as_str())),
-                    );
-                    object.properties.insert(
-                        "ok".into(),
-                        Value::Bool((200..300).contains(&response.status)),
-                    );
-                    Value::Object(vybe_bytecode::heap::alloc(object))
-                }
-                Err(error) => {
-                    let mut object = Object::new();
-                    object.properties.insert("status".into(), Value::F64(0.0));
-                    object
-                        .properties
-                        .insert("body".into(), Value::String(Arc::from(error.as_str())));
-                    object.properties.insert("ok".into(), Value::Bool(false));
-                    Value::Object(vybe_bytecode::heap::alloc(object))
-                }
-            }
-        }),
-    );
-}
-
 pub fn register(vm: &mut VM) {
     let type_ids = register_resource_types(vm);
     register_types(vm, type_ids);
     register_outgoing_handler(vm, type_ids);
     register_wasi3(vm, type_ids);
-    register_legacy_shim(vm);
+    register_wasi3_handler(vm, type_ids);
+    register_wasi3_accessors(vm, type_ids);
+}
+
+/// WASI 0.3 accessors for the `request` / `response` resources.
+///
+/// 0.3 renamed both the resources and their getters relative to 0.2:
+///   * `outgoing-request` → `request`, `incoming-response` → `response`
+///   * bare getters gained a `get-` prefix (`method` → `get-method`,
+///     `status` → `get-status-code`, `headers` → `get-headers`, …)
+///
+/// The underlying resources are shared with the 0.2 surface (a request made by
+/// `[static]request.new` is the same `KIND_OUTGOING_REQUEST` a 0.2 constructor
+/// produces), so these are spec-named views over the same registry state, not
+/// a second implementation.
+fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
+    // ── request getters ────────────────────────────────────────────────
+    fn with_request<T>(args: &[Value], f: impl FnOnce(&OutgoingRequestResource) -> T) -> Option<T> {
+        let request_id = resource_id(&args[0], KIND_OUTGOING_REQUEST)?;
+        let registry = registry().lock().unwrap();
+        registry.outgoing_requests.get(&request_id).map(f)
+    }
+
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]request.get-method",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            match with_request(args, |r| r.method.clone()) {
+                Some(method) => Value::String(Arc::from(method.as_str())),
+                None => err("invalid-argument"),
+            }
+        }),
+    );
+    for (name, pick) in [
+        (
+            "[method]request.get-path-with-query",
+            (|r: &OutgoingRequestResource| r.path_with_query.clone()) as fn(&_) -> Option<String>,
+        ),
+        ("[method]request.get-scheme", |r| r.scheme.clone()),
+        ("[method]request.get-authority", |r| r.authority.clone()),
+    ] {
+        vm.register_host_fn(
+            "wasi:http/types",
+            name,
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                // `option<string>` — absent is null.
+                match with_request(args, pick) {
+                    Some(Some(value)) => Value::String(Arc::from(value.as_str())),
+                    Some(None) => Value::Null,
+                    None => err("invalid-argument"),
+                }
+            }),
+        );
+    }
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]request.get-headers",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            match with_request(args, |r| r.headers_id) {
+                Some(headers_id) => make_resource(KIND_HEADERS, headers_id, type_ids.headers),
+                None => err("invalid-argument"),
+            }
+        }),
+    );
+    // `get-options` — request-options are not retained per request (the 0.3
+    // `request.new` accepts them but the transport applies no timeouts), so
+    // the option is always absent rather than fabricated.
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]request.get-options",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
+    );
+
+    // ── fields (0.3 additions) ─────────────────────────────────────────
+    // `copy-all` is 0.3's name for the full name/value list (0.2: `entries`).
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]fields.copy-all",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let Some(headers_id) = resource_id(&args[0], KIND_HEADERS) else {
+                return err("invalid-argument");
+            };
+            let registry = registry().lock().unwrap();
+            match registry.headers.get(&headers_id) {
+                Some(headers) => header_entries_array(&headers.entries),
+                None => err("invalid-argument"),
+            }
+        }),
+    );
+    // `get-and-delete(name) -> list<field-value>` — read every value for the
+    // name, then remove them all (case-insensitive, per field-name matching).
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]fields.get-and-delete",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let Some(headers_id) = resource_id(&args[0], KIND_HEADERS) else {
+                return err("invalid-argument");
+            };
+            let Some(name) = string_arg(args, 1) else {
+                return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())));
+            };
+            let target = name.to_ascii_lowercase();
+            let mut registry = registry().lock().unwrap();
+            let Some(headers) = registry.headers.get_mut(&headers_id) else {
+                return err("invalid-argument");
+            };
+            let values = headers
+                .entries
+                .iter()
+                .filter(|(key, _)| key.to_ascii_lowercase() == target)
+                .map(|(_, value)| value.clone())
+                .collect::<Vec<_>>();
+            headers
+                .entries
+                .retain(|(key, _)| key.to_ascii_lowercase() != target);
+            header_values_array(&values)
+        }),
+    );
+
+    // ── request-options (0.3 `get-` prefixed names + clone) ────────────
+    for (name, pick) in [
+        (
+            "[method]request-options.get-connect-timeout",
+            (|o: &RequestOptionsResource| o.connect_timeout_ns) as fn(&_) -> Option<u64>,
+        ),
+        ("[method]request-options.get-first-byte-timeout", |o| {
+            o.first_byte_timeout_ns
+        }),
+        ("[method]request-options.get-between-bytes-timeout", |o| {
+            o.between_bytes_timeout_ns
+        }),
+    ] {
+        vm.register_host_fn(
+            "wasi:http/types",
+            name,
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                let Some(id) = resource_id(&args[0], KIND_REQUEST_OPTIONS) else {
+                    return err("invalid-argument");
+                };
+                let registry = registry().lock().unwrap();
+                match registry.request_options.get(&id) {
+                    // `option<duration>` — absent is null.
+                    Some(options) => pick(options)
+                        .map(|ns| Value::F64(ns as f64))
+                        .unwrap_or(Value::Null),
+                    None => err("invalid-argument"),
+                }
+            }),
+        );
+    }
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]request-options.clone",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let Some(id) = resource_id(&args[0], KIND_REQUEST_OPTIONS) else {
+                return err("invalid-argument");
+            };
+            let mut registry = registry().lock().unwrap();
+            let Some(source) = registry.request_options.get(&id).cloned() else {
+                return err("invalid-argument");
+            };
+            let new_id = registry.alloc_id();
+            registry.request_options.insert(new_id, source);
+            drop(registry);
+            make_resource(KIND_REQUEST_OPTIONS, new_id, type_ids.request_options)
+        }),
+    );
+
+    // ── request setters (0.3 names over the shared resource) ───────────
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]request.set-method",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let Some(id) = resource_id(&args[0], KIND_OUTGOING_REQUEST) else {
+                return err("invalid-argument");
+            };
+            let Some(method) = string_arg(args, 1) else {
+                return err("HTTP-request-method-invalid");
+            };
+            if method.trim().is_empty() {
+                return err("HTTP-request-method-invalid");
+            }
+            let mut registry = registry().lock().unwrap();
+            match registry.outgoing_requests.get_mut(&id) {
+                Some(request) => {
+                    request.method = method.trim().to_ascii_uppercase();
+                    Value::Null
+                }
+                None => err("invalid-argument"),
+            }
+        }),
+    );
+    // `option<string>` setters — a null argument clears the field.
+    for (name, apply) in [
+        (
+            "[method]request.set-path-with-query",
+            (|r: &mut OutgoingRequestResource, v: Option<String>| r.path_with_query = v)
+                as fn(&mut _, Option<String>),
+        ),
+        ("[method]request.set-scheme", |r, v| r.scheme = v),
+        ("[method]request.set-authority", |r, v| r.authority = v),
+    ] {
+        vm.register_host_fn(
+            "wasi:http/types",
+            name,
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                let Some(id) = resource_id(&args[0], KIND_OUTGOING_REQUEST) else {
+                    return err("invalid-argument");
+                };
+                let value = string_arg(args, 1);
+                let mut registry = registry().lock().unwrap();
+                match registry.outgoing_requests.get_mut(&id) {
+                    Some(request) => {
+                        apply(request, value);
+                        Value::Null
+                    }
+                    None => err("invalid-argument"),
+                }
+            }),
+        );
+    }
+
+    // ── response getters / setters ─────────────────────────────────────
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]response.get-status-code",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            if let Some(id) = resource_id(&args[0], KIND_INCOMING_RESPONSE) {
+                let registry = registry().lock().unwrap();
+                return match registry.incoming_responses.get(&id) {
+                    Some(response) => Value::I32(response.status as i32),
+                    None => err("invalid-argument"),
+                };
+            }
+            if let Some(id) = resource_id(&args[0], KIND_OUTGOING_RESPONSE) {
+                let registry = registry().lock().unwrap();
+                return match registry.outgoing_responses.get(&id) {
+                    Some(response) => Value::I32(response.status as i32),
+                    None => err("invalid-argument"),
+                };
+            }
+            err("invalid-argument")
+        }),
+    );
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]response.set-status-code",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let Some(id) = resource_id(&args[0], KIND_OUTGOING_RESPONSE) else {
+                return err("invalid-argument");
+            };
+            let status = args.get(1).map(|v| v.as_f64() as i64).unwrap_or(0);
+            if !(100..=599).contains(&status) {
+                return err("invalid-argument");
+            }
+            let mut registry = registry().lock().unwrap();
+            match registry.outgoing_responses.get_mut(&id) {
+                Some(response) => {
+                    response.status = status as u16;
+                    Value::Null
+                }
+                None => err("invalid-argument"),
+            }
+        }),
+    );
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]response.get-headers",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let headers_id = if let Some(id) = resource_id(&args[0], KIND_INCOMING_RESPONSE) {
+                registry()
+                    .lock()
+                    .unwrap()
+                    .incoming_responses
+                    .get(&id)
+                    .map(|r| r.headers_id)
+            } else if let Some(id) = resource_id(&args[0], KIND_OUTGOING_RESPONSE) {
+                registry()
+                    .lock()
+                    .unwrap()
+                    .outgoing_responses
+                    .get(&id)
+                    .map(|r| r.headers_id)
+            } else {
+                None
+            };
+            match headers_id {
+                Some(headers_id) => make_resource(KIND_HEADERS, headers_id, type_ids.headers),
+                None => err("invalid-argument"),
+            }
+        }),
+    );
+}
+
+/// WASI 0.3 (`wasi:http@0.3.0-rc-2025-09-16`) `client` + `handler` interfaces.
+///
+/// 0.3 collapses the 0.2 dance (`outgoing-handler.handle` → `future-incoming-
+/// response` → `.get()`) into a single async call that yields the response
+/// directly:
+///
+/// ```wit
+/// interface client  { send:   async func(request) -> result<response, error-code>; }
+/// interface handler { handle: async func(request) -> result<response, error-code>; }
+/// ```
+///
+/// `client.send` and `handler.handle` are intentionally identical in signature
+/// (per the spec note: WIT can't represent importing two instances of the same
+/// interface, so `client` duplicates `handler`). Both are wired to the same
+/// implementation here.
+///
+/// Async is executed synchronously host-side: the result is the resolved
+/// `incoming-response` resource, or an `error-code` on transport failure.
+fn register_wasi3_handler(vm: &mut VM, type_ids: HttpTypeIds) {
+    for (module, name) in [("wasi:http/client", "send"), ("wasi:http/handler", "handle")] {
+        vm.register_host_fn(
+            module,
+            name,
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                let Some(request_id) = resource_id(&args[0], KIND_OUTGOING_REQUEST) else {
+                    return err("HTTP-request-denied");
+                };
+
+                let request = {
+                    let registry = registry().lock().unwrap();
+                    let Some(request) = registry.outgoing_requests.get(&request_id) else {
+                        return err("HTTP-request-denied");
+                    };
+                    request.clone()
+                };
+
+                let scheme = request.scheme.unwrap_or_else(|| "http".into());
+                if scheme != "http" {
+                    return err("HTTP-request-URI-invalid");
+                }
+                let Some(authority) = request
+                    .authority
+                    .filter(|authority| !authority.trim().is_empty())
+                else {
+                    return err("HTTP-request-URI-invalid");
+                };
+
+                let mut path = request.path_with_query.unwrap_or_else(|| "/".into());
+                if !path.starts_with('/') {
+                    path = format!("/{}", path);
+                }
+                let url = format!("{}://{}{}", scheme, authority, path);
+
+                match http_request(&request.method, &url, None) {
+                    Ok(response) => {
+                        let mut registry = registry().lock().unwrap();
+                        let headers_id = registry.alloc_id();
+                        registry.headers.insert(
+                            headers_id,
+                            HeadersResource {
+                                entries: response.headers,
+                            },
+                        );
+                        let response_id = registry.alloc_id();
+                        registry.incoming_responses.insert(
+                            response_id,
+                            IncomingResponseResource {
+                                status: response.status,
+                                headers_id,
+                                body: response.body,
+                            },
+                        );
+                        drop(registry);
+                        make_resource(
+                            KIND_INCOMING_RESPONSE,
+                            response_id,
+                            type_ids.incoming_response,
+                        )
+                    }
+                    Err(message) => err(map_transport_error(&message)),
+                }
+            }),
+        );
+    }
 }
 
 fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {

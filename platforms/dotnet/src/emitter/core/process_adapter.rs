@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::instructions::{core_wasm, host};
+use vybe_compiler::compiler::instructions::{core_wasm, host};
 
 const FILENAME_KEY: &str = "filename";
 const ARGUMENTS_KEY: &str = "arguments";
@@ -360,10 +360,10 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     core_wasm::dup(chunk, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     push_const(chunk, Value::I32(0), line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op(Op::DROP, line);
-    vybe_emitter::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_else(line);
     let chunk = &mut chunks[current];
     push_const(chunk, Value::String(Arc::from(" ")), line);
@@ -452,17 +452,17 @@ pub fn emit_process_get_by_id(chunks: &mut Vec<Chunk>, current: usize, line: u32
     chunks[current].emit_op_u16(Op::LOCAL_SET, id_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, id_slot, line);
     chunks[current].emit_i32_const(0, line);
-    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Process not found.", line);
-    vybe_emitter::errors::emit_exception_new_finalize(
+    vybe_compiler::compiler::errors::emit_exception_new_finalize(
         &mut chunks[current],
         "ArgumentException",
         line,
     );
-    vybe_emitter::errors::emit_throw(&mut chunks[current], line);
+    vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_else(line);
     emit_build_current_process(chunks, current, line);
     chunks[current].emit_end(line);

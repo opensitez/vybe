@@ -419,7 +419,7 @@ pub fn emit_trigger_error(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     //     if ret === false → record for error_get_last
     lget(chunk, ret_slot, line);
     chunk.emit_bool_const(false, line);
-    vybe_emitter::ops::emit_js_strict_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_js_strict_eq(chunk, line);
     chunk.emit_if(line);
     lget(chunk, map_slot, line);
     global_set(chunk, LAST_G, line);

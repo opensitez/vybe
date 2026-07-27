@@ -2,7 +2,7 @@ use super::{PascalParser, Rule};
 use pest::Parser;
 use pest::iterators::Pair;
 use vybe_ast::*;
-use vybe_emitter::reflection as common_reflection;
+use vybe_compiler::compiler::reflection as common_reflection;
 
 const PASCAL_HELPER_TARGET_PREFIX: &str = "__pascal_helper_target__:";
 const PASCAL_VARIANT_FIELD_MARKER: &str = "__pascal_variant_field__";

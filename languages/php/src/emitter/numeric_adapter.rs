@@ -78,8 +78,8 @@ pub fn emit_pack_float_bytes(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lget(chunk, dv_slot, line);
     lget(chunk, b_slot, line);
     push_const(chunk, Value::F64(4.0), line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "setFloat32", line);
     chunk.emit_else(line);
@@ -123,14 +123,14 @@ pub fn emit_php_is_int(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
 
     lget(chunk, v_slot, line);
     chunk.emit_call(number_is_integer, 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, v_slot, line);
     chunk.emit_call(to_f64, 1, line);
     chunk.emit_op(Op::F64_ABS, line);
     push_const(chunk, Value::F64(9_223_372_036_854_774_784.0), line);
     chunk.emit_op(Op::F64_LE, line);
-    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_end(line);
@@ -176,7 +176,7 @@ pub fn emit_php_abs(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     lget(chunk, v_slot, line);
     push_const(chunk, Value::bigint_i64(0), line);
     chunk.emit_call(bigint_lt, 2, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, v_slot, line);
     chunk.emit_call(bigint_neg, 1, line);
@@ -199,26 +199,26 @@ pub fn emit_php_intdiv(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
 
     lget(chunk, b_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_dup(line);
     push_str(chunk, "Division by zero", line);
-    vybe_emitter::errors::emit_exception_new_finalize(chunk, "DivisionByZeroError", line);
-    vybe_emitter::errors::emit_throw(chunk, line);
+    vybe_compiler::compiler::errors::emit_exception_new_finalize(chunk, "DivisionByZeroError", line);
+    vybe_compiler::compiler::errors::emit_throw(chunk, line);
     chunk.emit_else(line);
     lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
     chunk.emit_op(Op::F64_DIV, line);
-    vybe_emitter::math::emit_trunc(chunk, line);
+    vybe_compiler::compiler::math::emit_trunc(chunk, line);
     chunk.emit_end(line);
 }
 
 fn coerce_to_str(chunk: &mut Chunk, slot: u16, line: u32) {
     push_str(chunk, "", line);
     lget(chunk, slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
 }
 
 fn emit_numeric_fallback(
@@ -232,7 +232,7 @@ fn emit_numeric_fallback(
     chunk.emit_call(parse_float, 1, line);
     push_const(chunk, Value::F64(1.0), line);
     if plus {
-        vybe_emitter::ops::emit_dyn_add(chunk, line)
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line)
     } else {
         chunk.emit_op(Op::F64_SUB, line)
     };
@@ -251,7 +251,7 @@ fn emit_pad_to_width_from_slots(chunk: &mut Chunk, out_slot: u16, width_slot: u1
         chunk.emit_call(idx, 1, line);
     }
     lget(chunk, width_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
     push_str(chunk, "0", line);
@@ -328,7 +328,7 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
     // Recognise a non-digit prefix followed by a one- or two-digit suffix.
     lget(chunk, len_slot, line);
     push_const(chunk, Value::F64(2.0), line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     lget(chunk, len_slot, line);
@@ -346,11 +346,11 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
 
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(47.0), line);
-    vybe_emitter::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
     chunk.emit_if(line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(58.0), line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
     lget(chunk, len_slot, line);
     push_const(chunk, Value::F64(2.0), line);
@@ -367,15 +367,15 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
 
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(47.0), line);
-    vybe_emitter::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
     chunk.emit_if(line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(58.0), line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
     lget(chunk, len_slot, line);
     push_const(chunk, Value::F64(3.0), line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     lget(chunk, len_slot, line);
@@ -393,11 +393,11 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
 
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(47.0), line);
-    vybe_emitter::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
     chunk.emit_if(line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(58.0), line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
     lget(chunk, len_slot, line);
@@ -430,7 +430,7 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
 
     lget(chunk, suffix_start_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
     emit_numeric_fallback(chunk, s_slot, parse_float, plus, line);
     chunk.emit_else(line);
@@ -465,7 +465,7 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
     chunk.emit_op(if plus { Op::F64_ADD } else { Op::F64_SUB }, line);
 
     push_str(chunk, "", line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     emit_pad_to_width_from_slots(chunk, out_slot, width_slot, line);
 
@@ -482,7 +482,7 @@ fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32)
     chunk.emit_op_u16(Op::LOCAL_GET, v_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     if plus {
-        vybe_emitter::ops::emit_dyn_add(chunk, line)
+        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line)
     } else {
         chunk.emit_op(Op::F64_SUB, line)
     };
@@ -528,7 +528,7 @@ pub fn emit_rand(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lget(chunk, min_slot, line);
     chunk.emit_op(Op::F64_SUB, line);
     push_const(chunk, Value::F64(1.0), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     lset(chunk, range_slot, line);
 
     // result = min + floor( (abs(r) / 2^64) * range )
@@ -540,7 +540,7 @@ pub fn emit_rand(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lget(chunk, range_slot, line);
     chunk.emit_op(Op::F64_MUL, line);
     chunk.emit_op(Op::F64_FLOOR, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
 }
 
 /// PHP `lcg_value()` — a pseudo-random float in the half-open range [0, 1).
@@ -575,7 +575,7 @@ pub fn emit_php_compare_gt(chunks: &mut [Chunk], current: usize, _argc: u8, line
     lget(chunk, b_slot, line);
     chunk.emit_call(number_fn, 1, line);
     chunk.emit_op(Op::F64_GT, line);
-    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
 }
 
 /// PHP numeric comparison: less-than.
@@ -592,5 +592,5 @@ pub fn emit_php_compare_lt(chunks: &mut [Chunk], current: usize, _argc: u8, line
     lget(chunk, b_slot, line);
     chunk.emit_call(number_fn, 1, line);
     chunk.emit_op(Op::F64_LT, line);
-    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
 }

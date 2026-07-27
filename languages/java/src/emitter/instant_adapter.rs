@@ -2,7 +2,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_emitter::instructions::{core_wasm, host};
+use vybe_compiler::compiler::instructions::{core_wasm, host};
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -87,7 +87,7 @@ fn date_utc_from_slots(
     get(&mut chunks[current], year, line);
     get(&mut chunks[current], month_one_based, line);
     core_wasm::i32_const(&mut chunks[current], line, -1);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
     get(&mut chunks[current], day, line);
     get(&mut chunks[current], hour, line);
     get(&mut chunks[current], minute, line);
@@ -239,7 +239,7 @@ pub fn emit_local_datetime_of(chunks: &mut [Chunk], current: usize, argc: u8, li
 
 pub fn emit_local_date_parse(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_string_const("T00:00:00Z", line);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
     host::emit(&mut chunks[current], "ecma:date", "parse", 1, line);
     let ms = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], ms, line);
@@ -252,9 +252,9 @@ pub fn emit_local_time_parse(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], time, line);
     chunks[current].emit_string_const("1970-01-01T", line);
     get(&mut chunks[current], time, line);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_string_const("Z", line);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
     host::emit(&mut chunks[current], "ecma:date", "parse", 1, line);
     let ms = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], ms, line);
@@ -264,7 +264,7 @@ pub fn emit_local_time_parse(chunks: &mut [Chunk], current: usize, line: u32) {
 
 pub fn emit_local_datetime_parse(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_string_const("Z", line);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
     host::emit(&mut chunks[current], "ecma:date", "parse", 1, line);
     let ms = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], ms, line);
@@ -341,8 +341,8 @@ pub fn emit_offset_datetime_parse(chunks: &mut [Chunk], current: usize, line: u3
     core_wasm::i32_const(&mut chunks[current], line, 20);
     host::emit(&mut chunks[current], "ecma:string", "substring", 3, line);
     chunks[current].emit_string_const("Z", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_string_const("Z", line);
     chunks[current].emit_else(line);
@@ -454,8 +454,8 @@ pub fn emit_zoned_datetime_parse(chunks: &mut [Chunk], current: usize, line: u32
     core_wasm::i32_const(&mut chunks[current], line, 20);
     host::emit(&mut chunks[current], "ecma:string", "substring", 3, line);
     chunks[current].emit_string_const("Z", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], text, line);
     chunks[current].emit_else(line);
@@ -480,8 +480,8 @@ pub fn emit_get_zone(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], zone, line);
     host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
     chunks[current].emit_string_const("undefined", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     prop_get(chunks, current, inst, "offset", line);
     chunks[current].emit_else(line);
@@ -644,15 +644,15 @@ pub fn emit_compare(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], inst, line);
     emit_epoch_milli_from_slot(chunks, current, inst, line);
     emit_epoch_milli_from_slot(chunks, current, other, line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_else(line);
     emit_epoch_milli_from_slot(chunks, current, inst, line);
     emit_epoch_milli_from_slot(chunks, current, other, line);
-    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     core_wasm::i32_const(&mut chunks[current], line, -1);
     chunks[current].emit_else(line);
@@ -665,20 +665,20 @@ pub fn emit_is_before_after(chunks: &mut [Chunk], current: usize, after: bool, l
     emit_compare(chunks, current, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     if after {
-        vybe_emitter::ops::emit_dyn_gt(&mut chunks[current], line);
+        vybe_compiler::compiler::ops::emit_dyn_gt(&mut chunks[current], line);
     } else {
-        vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
+        vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
     }
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 pub fn emit_equals(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_compare(chunks, current, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 pub fn emit_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -782,8 +782,8 @@ pub fn emit_zone_offset_hours(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], hours, line);
     get(&mut chunks[current], hours, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
-    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_string_const("-", line);
     get(&mut chunks[current], hours, line);
@@ -799,21 +799,21 @@ pub fn emit_zone_offset_hours(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], sign, line);
     get(&mut chunks[current], abs_hours, line);
     core_wasm::i32_const(&mut chunks[current], line, 10);
-    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], sign, line);
     chunks[current].emit_string_const("0", line);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_else(line);
     get(&mut chunks[current], sign, line);
     chunks[current].emit_end(line);
     get(&mut chunks[current], abs_hours, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     host::emit(&mut chunks[current], "ecma:number", "toFixed", 2, line);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_string_const(":00", line);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
 }
 
 pub fn emit_zone_id_utc(_chunks: &mut [Chunk], _current: usize, _line: u32) {
@@ -859,8 +859,8 @@ pub fn emit_zone_normalized(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], zone, line);
     get(&mut chunks[current], zone, line);
     chunks[current].emit_string_const("UTC", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_string_const("Z", line);
     chunks[current].emit_else(line);
@@ -879,10 +879,10 @@ pub fn emit_zone_rules_fixed(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], zone, line);
     get(&mut chunks[current], zone, line);
     chunks[current].emit_string_const("Europe/Paris", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
-    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 pub fn emit_get_offset(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -900,32 +900,32 @@ fn emit_offset_seconds_from_value(
     get(&mut chunks[current], value_slot, line);
     host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
     chunks[current].emit_string_const("string", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], value_slot, line);
     chunks[current].emit_string_const("Z", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     get(&mut chunks[current], value_slot, line);
     chunks[current].emit_string_const("UTC", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if_value(line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_else(line);
     get(&mut chunks[current], value_slot, line);
     chunks[current].emit_string_const("Asia/Tokyo", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     core_wasm::i32_const(&mut chunks[current], line, 32400);
     chunks[current].emit_else(line);
     get(&mut chunks[current], value_slot, line);
     chunks[current].emit_string_const("Europe/Paris", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     core_wasm::i32_const(&mut chunks[current], line, 7200);
     chunks[current].emit_else(line);
@@ -934,8 +934,8 @@ fn emit_offset_seconds_from_value(
     core_wasm::i32_const(&mut chunks[current], line, 1);
     host::emit(&mut chunks[current], "ecma:string", "substring", 3, line);
     chunks[current].emit_string_const("-", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     core_wasm::f64_const(&mut chunks[current], line, -1.0);
     chunks[current].emit_else(line);
@@ -985,15 +985,15 @@ pub fn emit_zone_rules_get_offset(chunks: &mut [Chunk], current: usize, line: u3
     core_wasm::i32_const(&mut chunks[current], line, 1);
     host::emit(&mut chunks[current], "ecma:string", "substring", 3, line);
     chunks[current].emit_string_const("+", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     get(&mut chunks[current], zone, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     host::emit(&mut chunks[current], "ecma:string", "substring", 3, line);
     chunks[current].emit_string_const("-", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_OR, line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], zone, line);
@@ -1038,7 +1038,7 @@ pub fn emit_component(
     host::emit(&mut chunks[current], "ecma:date", method, 1, line);
     if add_one {
         core_wasm::i32_const(&mut chunks[current], line, 1);
-        vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+        vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
     }
 }
 
@@ -1146,7 +1146,7 @@ pub fn emit_time_with_field(
     get(&mut chunks[current], value, line);
     if adjust_one_based {
         core_wasm::i32_const(&mut chunks[current], line, -1);
-        vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+        vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
     }
     host::emit(&mut chunks[current], "ecma:date", setter, 2, line);
     let ms = chunks[current].alloc_scratch(1);
@@ -1172,7 +1172,7 @@ pub fn emit_time_length_of_month(chunks: &mut [Chunk], current: usize, line: u32
     get(&mut chunks[current], date, line);
     host::emit(&mut chunks[current], "ecma:date", "getUTCMonth", 1, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     core_wasm::i32_const(&mut chunks[current], line, 0);
@@ -1207,9 +1207,9 @@ pub fn emit_time_is_leap_year(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:date", "new", 1, line);
     host::emit(&mut chunks[current], "ecma:date", "getUTCDate", 1, line);
     core_wasm::i32_const(&mut chunks[current], line, 29);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 pub fn emit_time_day_of_year(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1242,8 +1242,8 @@ pub fn emit_time_day_of_week(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:date", "new", 1, line);
     host::emit(&mut chunks[current], "ecma:date", "getUTCDay", 1, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_string_const("MONDAY", line);
     chunks[current].emit_else(line);
@@ -1261,8 +1261,8 @@ pub fn emit_truncated(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], raw_sec, line);
     get(&mut chunks[current], unit, line);
     chunks[current].emit_string_const("HOURS", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], raw_sec, line);
     core_wasm::f64_const(&mut chunks[current], line, 3600.0);
@@ -1273,8 +1273,8 @@ pub fn emit_truncated(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
     get(&mut chunks[current], unit, line);
     chunks[current].emit_string_const("MINUTES", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], raw_sec, line);
     core_wasm::f64_const(&mut chunks[current], line, 60.0);
@@ -1290,8 +1290,8 @@ pub fn emit_truncated(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], sec, line);
     get(&mut chunks[current], unit, line);
     chunks[current].emit_string_const("MILLIS", line);
-    vybe_emitter::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     prop_get(chunks, current, inst, "nano", line);
     core_wasm::f64_const(&mut chunks[current], line, 1_000_000.0);

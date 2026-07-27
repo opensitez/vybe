@@ -3,8 +3,8 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::instructions::{core_wasm, host};
-use vybe_emitter::{collections, reflection};
+use vybe_compiler::compiler::instructions::{core_wasm, host};
+use vybe_compiler::compiler::{collections, reflection};
 
 fn key(chunk: &mut Chunk, name: &str) -> u16 {
     chunk.add_constant(Value::String(Arc::from(name)))
@@ -24,7 +24,7 @@ fn get_field(chunk: &mut Chunk, name: &str, line: u32) {
 fn emit_slot_is_bigint(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     host::emit(chunk, "wasm:js-bigint", "test", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
 }
 
 fn emit_bigint_i32(chunks: &mut [Chunk], current: usize, value: i32, line: u32) {
@@ -100,8 +100,8 @@ fn wrap_duration_ms(chunk: &mut Chunk, line: u32) {
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
     chunk.emit_f64_const(0.0, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
-    vybe_emitter::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
     set_field(chunk, "isNegative", line);
 }
 
@@ -178,7 +178,7 @@ pub fn emit_num_to_double(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_num_remainder(chunks: &mut [Chunk], current: usize, line: u32) {
-    vybe_emitter::math::emit_c_fmod(&mut chunks[current], line);
+    vybe_compiler::compiler::math::emit_c_fmod(&mut chunks[current], line);
 }
 
 pub fn emit_num_is_negative(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -191,8 +191,8 @@ pub fn emit_num_is_negative(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     chunks[current].emit_f64_const(0.0, line);
-    vybe_emitter::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
     chunks[current].emit_end(line);
 }
 
@@ -202,14 +202,14 @@ pub fn emit_num_is_infinite(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     host::emit(&mut chunks[current], "ecma:number", "isFinite", 1, line);
-    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     host::emit(&mut chunks[current], "ecma:number", "isNaN", 1, line);
-    vybe_emitter::ops::emit_dyn_not(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
 
     chunks[current].emit_op(Op::I32_AND, line);
-    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 pub fn emit_num_sign(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -316,7 +316,7 @@ fn wrap_datetime_ms(chunks: &mut [Chunk], current: usize, is_utc: bool, line: u3
     chunks[current].emit_op_u16(Op::LOCAL_SET, dow, line);
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, dow, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, dow, line);
     chunks[current].emit_else(line);
@@ -337,14 +337,14 @@ fn comparable_value_from_obj(chunk: &mut Chunk, slot: u16, out: u16, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_SET, out, line);
     chunk.emit_op_u16(Op::LOCAL_GET, out, line);
     host::emit(chunk, "wasm:js-undefined", "test", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     get_field(chunk, "inMilliseconds", line);
     chunk.emit_op_u16(Op::LOCAL_SET, out, line);
     chunk.emit_op_u16(Op::LOCAL_GET, out, line);
     host::emit(chunk, "wasm:js-undefined", "test", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out, line);
@@ -355,13 +355,13 @@ fn comparable_value_from_obj(chunk: &mut Chunk, slot: u16, out: u16, line: u32) 
 fn emit_compare_slots(chunk: &mut Chunk, left: u16, right: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, left, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
     chunk.emit_i32_const(-1, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, left, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right, line);
-    vybe_emitter::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
     chunk.emit_if(line);
     chunk.emit_i32_const(1, line);
     chunk.emit_else(line);
@@ -441,7 +441,7 @@ fn compare_ms(chunks: &mut [Chunk], current: usize, line: u32, op: Op) {
     datetime_ms_from_obj(&mut chunks[current], left, line);
     datetime_ms_from_obj(&mut chunks[current], right, line);
     chunks[current].emit_op(op, line);
-    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 pub fn emit_datetime_is_before(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -469,14 +469,14 @@ pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, left, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, right, line);
     host::emit(&mut chunks[current], "ecma:bigint", "lt", 2, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_i32_const(-1, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, left, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, right, line);
     host::emit(&mut chunks[current], "ecma:bigint", "gt", 2, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_else(line);
@@ -486,7 +486,7 @@ pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, left, line);
     host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, left, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, right, line);
@@ -494,7 +494,7 @@ pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, left, line);
     host::emit(&mut chunks[current], "wasm:js-number", "test", 1, line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     emit_compare_slots(&mut chunks[current], left, right, line);
     chunks[current].emit_else(line);
@@ -592,15 +592,15 @@ pub fn emit_uri_http(chunks: &mut [Chunk], current: usize, argc: u8, https: bool
     chunks[current].emit_op_u16(Op::LOCAL_SET, host_slot, line);
     chunks[current].emit_string_const(if https { "https://" } else { "http://" }, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, host_slot, line);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, path, line);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
     emit_uri_parse(chunks, current, line);
 }
 
 pub fn emit_uri_file(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_string_const("file://", line);
-    vybe_emitter::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
     emit_uri_parse(chunks, current, line);
 }
 

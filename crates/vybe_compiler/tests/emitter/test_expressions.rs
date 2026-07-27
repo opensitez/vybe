@@ -1,7 +1,7 @@
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::emitter::expressions;
-use vybe_compiler::emitter::ops;
+use vybe_compiler::compiler::expressions;
+use vybe_compiler::compiler::ops;
 
 #[test]
 fn ternary_emits_jumps() {

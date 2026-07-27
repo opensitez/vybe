@@ -13,8 +13,9 @@ license.workspace = true
 gui = ["vybe_widgets"]
 
 [dependencies]
+inventory = { workspace = true }
 vybe_bytecode = { workspace = true }
 vybe_widgets = { workspace = true, optional = true }
 
 [dev-dependencies]
-vybe_emitter = { workspace = true }
+vybe_compiler = { workspace = true }

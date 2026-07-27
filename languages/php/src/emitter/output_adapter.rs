@@ -57,7 +57,7 @@ fn write_stdout_slot(chunk: &mut Chunk, val_slot: u16, line: u32) {
     let write_idx = chunk.add_import("wasi:cli/stdout", "write-via-stream");
     let rd_slot = alloc_local(chunk);
     let wr_slot = alloc_local(chunk);
-    vybe_emitter::io::emit_write_stdout_with_imports(
+    vybe_compiler::compiler::io::emit_write_stdout_with_imports(
         chunk,
         write_idx,
         rd_slot,
@@ -83,12 +83,12 @@ fn direct_stdout_value_from_slot(chunks: &mut [Chunk], current: usize, val_slot:
 
 fn emit_php_stdout_write_string_slot(chunk: &mut Chunk, str_slot: u16, line: u32) {
     global_get(chunk, OB_ACTIVE, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     global_get(chunk, OB_BUFFER, line);
     chunk.emit_op_u16(Op::LOCAL_GET, str_slot, line);
-    vybe_emitter::strings::emit_concat(chunk, 2, line);
+    vybe_compiler::compiler::strings::emit_concat(chunk, 2, line);
     global_set(chunk, OB_BUFFER, line);
 
     chunk.emit_else(line);
@@ -133,7 +133,7 @@ pub fn emit_php_print_expr(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_ob_start(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     global_get(chunk, OB_ACTIVE, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     global_get(chunk, OB_BUFFER, line);
     global_set(chunk, OB_PREV_BUFFER, line);
@@ -157,7 +157,7 @@ pub fn emit_ob_get_clean(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     global_get(chunk, OB_BUFFER, line);
     chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
     global_get(chunk, OB_ACTIVE, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     emit_level_gt_one(chunk, line);
     chunk.emit_if(line);
@@ -192,7 +192,7 @@ pub fn emit_ob_get_contents(chunks: &mut [Chunk], current: usize, _argc: u8, lin
 pub fn emit_ob_end_clean(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     global_get(chunk, OB_ACTIVE, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     emit_level_gt_one(chunk, line);
     chunk.emit_if(line);
@@ -205,7 +205,7 @@ pub fn emit_ob_end_clean(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     global_set(chunk, OB_ACTIVE, line);
     chunk.emit_else(line);
     global_get(chunk, OB_BUFFER, line);
-    vybe_emitter::strings::emit_length(chunk, line);
+    vybe_compiler::compiler::strings::emit_length(chunk, line);
     chunk.emit_i32_const(1, line);
     chunk.emit_op(Op::I32_EQ, line);
     chunk.emit_if(line);
@@ -240,13 +240,13 @@ pub fn emit_ob_end_flush(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
         global_get(chunk, OB_BUFFER, line);
         chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
         global_get(chunk, OB_ACTIVE, line);
-        vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         emit_level_gt_one(chunk, line);
         chunk.emit_if(line);
         global_get(chunk, OB_PREV_BUFFER, line);
         chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
-        vybe_emitter::strings::emit_concat(chunk, 2, line);
+        vybe_compiler::compiler::strings::emit_concat(chunk, 2, line);
         global_set(chunk, OB_BUFFER, line);
         push_str(chunk, "", line);
         global_set(chunk, OB_PREV_BUFFER, line);
@@ -276,7 +276,7 @@ pub fn emit_ob_get_level(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     let chunk = &mut chunks[current];
     let level_slot = alloc_local(chunk);
     global_get(chunk, OB_ACTIVE, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     global_get(chunk, OB_LEVEL, line);
     chunk.emit_else(line);
@@ -285,7 +285,7 @@ pub fn emit_ob_get_level(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     chunk.emit_op_u16(Op::LOCAL_SET, level_slot, line);
 
     global_get(chunk, OB_ACTIVE, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     direct_stdout_value_from_slot(chunks, current, level_slot, line);
     let chunk = &mut chunks[current];
@@ -304,7 +304,7 @@ pub fn emit_ob_get_length(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     {
         let chunk = &mut chunks[current];
         global_get(chunk, OB_BUFFER, line);
-        vybe_emitter::strings::emit_length(chunk, line);
+        vybe_compiler::compiler::strings::emit_length(chunk, line);
     }
     let (len_slot, len_str_slot, out_slot) = {
         let chunk = &mut chunks[current];
@@ -321,7 +321,7 @@ pub fn emit_ob_get_length(chunks: &mut [Chunk], current: usize, _argc: u8, line:
         chunk.emit_op_u16(Op::LOCAL_SET, len_str_slot, line);
         global_get(chunk, OB_BUFFER, line);
         chunk.emit_op_u16(Op::LOCAL_GET, len_str_slot, line);
-        vybe_emitter::strings::emit_concat(chunk, 2, line);
+        vybe_compiler::compiler::strings::emit_concat(chunk, 2, line);
         chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
         write_stdout_slot(chunk, out_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
@@ -334,7 +334,7 @@ pub fn emit_ob_implicit_flush(chunks: &mut [Chunk], current: usize, _argc: u8, l
 
 pub fn emit_ob_list_handlers(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     push_str(&mut chunks[current], "default output handler", line);
-    vybe_emitter::collections::emit_array_new(chunks, current, 1, line);
+    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 1, line);
 }
 
 pub fn emit_ob_gzhandler(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {

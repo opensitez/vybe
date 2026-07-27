@@ -84,7 +84,11 @@ impl Compiler {
             return Some("Graphics".into());
         }
         let class_name = Self::expr_terminal_type_name(object)?;
-        common::dotnet::static_method_return_type(&class_name, field).map(str::to_string)
+        vybe_bytecode::namespaces::lookup_type_member_return(
+            &self.profile.namespaces.type_scopes,
+            &class_name,
+            field,
+        )
     }
 
     pub(super) fn infer_function_return_type(&self, callee: &Expression) -> Option<String> {
@@ -349,11 +353,11 @@ impl Compiler {
                                 .is_none()
                             {
                                 let class_name = Self::normalize_type_hint(&receiver_type);
-                                if let Some(return_type) = common::dotnet::surface()
-                                    .lookup_instance_method_return_type(
+                                if let Some(return_type) =
+                                    vybe_bytecode::namespaces::lookup_type_member_return(
+                                        &self.profile.namespaces.type_scopes,
                                         &class_name,
                                         field,
-                                        args.len() as u8,
                                     )
                                 {
                                     return Some(return_type);
@@ -841,7 +845,7 @@ impl Compiler {
         self.chunk().emit_else(line);
 
         let clone_slot = self.define_local("__value_type_clone");
-        common::classes::emit_new_typed_object(self.chunk(), clone_slot, type_name, line);
+        crate::compiler::classes::emit_new_typed_object(self.chunk(), clone_slot, type_name, line);
 
         for member_name in fields.iter().chain(instance_member_names.iter()) {
             let member_key = self.str_const(member_name);

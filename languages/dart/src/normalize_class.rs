@@ -194,6 +194,30 @@ pub fn normalize_class(
     }
 
     NormalClass {
+        // Dart `class X with M` — declared as DATA for the shared
+        // augmentation pass rather than folded here. Copy mode: members are
+        // duplicated in. `AfterOwn`: the class's own members win. `LastWins`:
+        // Dart linearization is left-to-right with later mixins overriding
+        // earlier. `NextInOrder`: `super` inside a mixin resolves to the next
+        // entry in the linearization, NOT the mixin's own parent. Mixins
+        // declare no constructors. See flexclassplan.md §4c.
+        augmentations: crate::walker::dart_class_mixins(name)
+            .iter()
+            .map(|m| Augmentation {
+                from: m.clone(),
+                via_field: None,
+                mode: AugmentationMode::Copy,
+                position: AugmentationPosition::AfterOwn,
+                conflict: AugmentationConflict::LastWins,
+                super_target: AugmentationSuper::NextInOrder,
+                adjustments: Vec::new(),
+                contributes: AugmentationContributes {
+                    constructors: false,
+                    ..Default::default()
+                },
+                depth: 0,
+            })
+            .collect(),
         span,
         name: name.to_string(),
         parent: parents.first().cloned(),
@@ -222,7 +246,7 @@ pub fn normalize_class(
         event_bindings: Vec::new(),
         raw_extra_members,
     }
-}
+    }
 
 #[cfg(test)]
 mod tests {

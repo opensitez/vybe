@@ -10,7 +10,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_emitter::instructions::{core_wasm, host};
+use vybe_compiler::compiler::instructions::{core_wasm, host};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -31,14 +31,14 @@ pub fn emit_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
     let if_block = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
     // NaN — throw FormatException-shaped object so `e.Message` works.
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("Input string was not in a correct format.", line);
-    vybe_emitter::errors::emit_exception_new_finalize(chunk, "FormatException", line);
-    vybe_emitter::errors::emit_throw(chunk, line);
+    vybe_compiler::compiler::errors::emit_exception_new_finalize(chunk, "FormatException", line);
+    vybe_compiler::compiler::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.patch_block(if_block);
 
@@ -63,8 +63,8 @@ pub fn emit_try_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
     // `r === r` is the canonical NaN test: NaN fails self-equality.
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
     chunk.emit_op(Op::F64_FLOOR, line);
@@ -85,10 +85,10 @@ pub fn emit_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
     let if_block = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_string_const("Input string was not in a correct format.", line);
-    vybe_emitter::errors::emit_throw(chunk, line);
+    vybe_compiler::compiler::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.patch_block(if_block);
 
@@ -117,8 +117,8 @@ pub fn emit_parse_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     let not_true = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, lc, line);
     chunk.emit_string_const("true", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
     core_wasm::bool_const(chunk, line, true);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
@@ -129,8 +129,8 @@ pub fn emit_parse_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     let not_false = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, lc, line);
     chunk.emit_string_const("false", line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
     core_wasm::bool_const(chunk, line, false);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
@@ -141,8 +141,8 @@ pub fn emit_parse_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("String was not recognized as a valid Boolean.", line);
-    vybe_emitter::errors::emit_exception_new_finalize(chunk, "FormatException", line);
-    vybe_emitter::errors::emit_throw(chunk, line);
+    vybe_compiler::compiler::errors::emit_exception_new_finalize(chunk, "FormatException", line);
+    vybe_compiler::compiler::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.patch_block(outer);
 
@@ -159,14 +159,14 @@ pub fn emit_parse_char(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, value, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     core_wasm::i32_const(chunk, line, 1);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
 
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("String must be exactly one character long.", line);
-    vybe_emitter::errors::emit_exception_new_finalize(chunk, "FormatException", line);
-    vybe_emitter::errors::emit_throw(chunk, line);
+    vybe_compiler::compiler::errors::emit_exception_new_finalize(chunk, "FormatException", line);
+    vybe_compiler::compiler::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.patch_block(ok_block);
 

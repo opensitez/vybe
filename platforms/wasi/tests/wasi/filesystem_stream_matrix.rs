@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use vybe_bytecode::value::{ObjectKind, Value};
 use vybe_bytecode::{Chunk, Op, VM};
 use vybe_bytecode::capabilities::Capabilities;
-use vybe_emitter::platforms::register_platforms;
+use vybe_compiler::compiler::platforms::register_platforms;
 
 fn scratch_dir(label: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);

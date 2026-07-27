@@ -26,7 +26,7 @@ pub fn run_pascal(src: &str) -> Vec<String> {
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let stdout_buffer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let out = output.clone();
-    vybe_emitter::platforms::init_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
     vm.register_host_fn(
         "wasi:logging/logging",
         "log",
@@ -69,7 +69,7 @@ pub fn run_pascal(src: &str) -> Vec<String> {
             Value::Null
         }),
     );
-    vybe_emitter::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("Pascal run failed");
     let residual = stdout_buffer.lock().unwrap().clone();
     if !residual.is_empty() {
@@ -127,7 +127,7 @@ pub fn run_pascal_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<Str
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
-    let gui = vybe_emitter::platforms::init_platforms_with_gui(&mut vm);
+    let gui = vybe_platform_vybe::init_platforms_with_gui(&mut vm);
     vm.register_host_fn(
         "wasi:logging/logging",
         "log",
@@ -137,7 +137,7 @@ pub fn run_pascal_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<Str
             Value::Null
         }),
     );
-    vybe_emitter::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("Pascal run failed");
     (vm, gui, output)
 }
@@ -155,7 +155,7 @@ pub fn run_pascal_gui_capture_msgbox(
 
     let mut vm = VM::new();
     let _output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let gui = vybe_emitter::platforms::init_platforms_with_gui(&mut vm);
+    let gui = vybe_platform_vybe::init_platforms_with_gui(&mut vm);
 
     // Capture msgbox calls. Must be registered AFTER
     // `register_all_with_gui` (which installs the production msgBox)
@@ -173,7 +173,7 @@ pub fn run_pascal_gui_capture_msgbox(
         }),
     );
 
-    vybe_emitter::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("Pascal run failed");
     (vm, gui, msgboxes)
 }

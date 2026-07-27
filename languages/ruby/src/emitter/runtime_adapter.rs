@@ -7,14 +7,14 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::collections;
-use vybe_emitter::dict;
-use vybe_emitter::errors;
-use vybe_emitter::generators;
-use vybe_emitter::instructions::core_wasm;
-use vybe_emitter::math;
-use vybe_emitter::ops;
-use vybe_emitter::strings;
+use vybe_compiler::compiler::collections;
+use vybe_compiler::compiler::dict;
+use vybe_compiler::compiler::errors;
+use vybe_compiler::compiler::generators;
+use vybe_compiler::compiler::instructions::core_wasm;
+use vybe_compiler::compiler::math;
+use vybe_compiler::compiler::ops;
+use vybe_compiler::compiler::strings;
 
 /// Emit `<module>.<name>(argc args)` — receiver/args already on the stack.
 fn call_import(
@@ -3370,7 +3370,7 @@ fn emit_ruby_random_seed(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 
 fn emit_ruby_random_new_seed(chunks: &mut [Chunk], current: usize, line: u32) {
     core_wasm::i32_const(&mut chunks[current], line, 2_147_483_647);
-    vybe_emitter::random::emit_rand_below(chunks, current, line);
+    vybe_compiler::compiler::random::emit_rand_below(chunks, current, line);
 }
 
 fn emit_ruby_dir_entries(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -12155,7 +12155,7 @@ fn emit_array_with_slot(chunks: &mut [Chunk], current: usize, value_s: u16, line
 }
 
 fn emit_char_code_at_slot(chunks: &mut [Chunk], current: usize, str_s: u16, idx_s: u16, line: u32) {
-    vybe_emitter::packing::emit_char_code_at_i32_slot(chunks, current, str_s, idx_s, line);
+    vybe_compiler::compiler::packing::emit_char_code_at_i32_slot(chunks, current, str_s, idx_s, line);
 }
 
 fn emit_ruby_unpack_codes(chunks: &mut [Chunk], current: usize, str_s: u16, line: u32) {
@@ -12198,7 +12198,7 @@ fn emit_ruby_unpack_single_code(
     line: u32,
 ) {
     let value_s = chunks[current].alloc_scratch(1);
-    vybe_emitter::packing::emit_char_code_at_i32_const(chunks, current, str_s, idx, line);
+    vybe_compiler::compiler::packing::emit_char_code_at_i32_const(chunks, current, str_s, idx, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_s, line);
     if signed {
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_s, line);
@@ -12318,11 +12318,11 @@ fn emit_ruby_unpack_string_piece(
 fn emit_ruby_unpack_u16(chunks: &mut [Chunk], current: usize, str_s: u16, little: bool, line: u32) {
     let value_s = chunks[current].alloc_scratch(1);
     let endian = if little {
-        vybe_emitter::packing::Endian::Little
+        vybe_compiler::compiler::packing::Endian::Little
     } else {
-        vybe_emitter::packing::Endian::Big
+        vybe_compiler::compiler::packing::Endian::Big
     };
-    vybe_emitter::packing::emit_unpack_u16_from_string_slot_i32(
+    vybe_compiler::compiler::packing::emit_unpack_u16_from_string_slot_i32(
         chunks, current, str_s, endian, line,
     );
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_s, line);
@@ -14710,7 +14710,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             chunks[current].emit_op_u16(Op::LOCAL_GET, r, line);
             chunks[current].emit_end(line);
         }
-        // `a.zip(b, …)` → array of tuples. Shared `vybe_emitter` op (variadic;
+        // `a.zip(b, …)` → array of tuples. Shared `vybe_compiler::emitter` op (variadic;
         // Ruby/PHP/Python can all route here). `argc` = total arrays on stack.
         "ruby.zip" => {
             emit_ruby_zip(chunks, current, argc, line);
@@ -14777,24 +14777,24 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             chunks[current].emit_op_u16(Op::LOCAL_GET, n_s, line);
             chunks[current].emit_op_u16(Op::GLOBAL_SET, seed_g, line); // seed = n
             chunks[current].emit_op_u16(Op::LOCAL_GET, n_s, line);
-            vybe_emitter::random::emit_seed(chunks, current, line); // set PRNG state, pops n
+            vybe_compiler::compiler::random::emit_seed(chunks, current, line); // set PRNG state, pops n
         }
         // `rand` → float [0,1); `rand(n)` → int [0,n). Rides the seedable PRNG.
         "ruby.rand" => {
             if argc >= 1 {
-                vybe_emitter::random::emit_rand_below(chunks, current, line);
+                vybe_compiler::compiler::random::emit_rand_below(chunks, current, line);
             } else {
-                vybe_emitter::random::emit_next_unit(chunks, current, line);
+                vybe_compiler::compiler::random::emit_next_unit(chunks, current, line);
             }
         }
         // `a.sample` → one uniformly-random element (null if empty). Shared
-        // `vybe_emitter::random` op (Ruby/Python).
+        // `vybe_compiler::compiler::random` op (Ruby/Python).
         "ruby.sample" => {
-            vybe_emitter::random::emit_sample(chunks, current, argc, line);
+            vybe_compiler::compiler::random::emit_sample(chunks, current, argc, line);
         }
         // `a.shuffle`/`shuffle!` → in-place Fisher-Yates. Shared op (Ruby/Python).
         "ruby.shuffle" => {
-            vybe_emitter::random::emit_shuffle(chunks, current, argc, line);
+            vybe_compiler::compiler::random::emit_shuffle(chunks, current, argc, line);
         }
         // `h.value?(v)` / `h.has_value?(v)` — `Object.values(h).includes(v)`,
         // direct `ecma:object` (no chunk). Stack: [hash, v] → [bool].

@@ -6,7 +6,7 @@
 
 use std::sync::Once;
 
-use vybe_emitter::namespaces::{self, NamespaceNode, Subtree};
+use vybe_bytecode::namespaces::{self, NamespaceNode, Subtree};
 
 /// Register the platform libc surface under the `libc` root. Idempotent;
 /// later C/profile registration merges with this tree.

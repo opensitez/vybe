@@ -12,8 +12,9 @@ pub mod types;
 
 pub use canonical::canonicalize_method;
 pub use types::{
-    Access, BaseCall, EventBinding, NormalClass, NormalConstructor, NormalField, NormalMethod,
-    NormalProperty, SpecialMethod, SpecialMethodKind,
+    Access, Augmentation, AugmentationAdjustment, AugmentationConflict, AugmentationContributes,
+    AugmentationMode, AugmentationPosition, AugmentationSuper, BaseCall, EventBinding, NormalClass,
+    NormalConstructor, NormalField, NormalMethod, NormalProperty, SpecialMethod, SpecialMethodKind,
 };
 
 use vybe_ast::{Modifiers, Param, Span, Statement, StmtKind, Visibility};

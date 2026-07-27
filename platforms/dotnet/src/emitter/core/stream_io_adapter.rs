@@ -26,7 +26,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_emitter::instructions::{core_wasm, host};
+use vybe_compiler::compiler::instructions::{core_wasm, host};
 
 const TYPE_KEY: &str = "__type";
 const CONTENT_KEY: &str = "__content";
@@ -165,8 +165,8 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     // if pos >= len: result stays null → exit
     chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
 
     // end = pos
@@ -178,15 +178,15 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     let (scan_loop, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line); // exit scan_block
 
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
     host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
     chunk.emit_i32_const(10, line); // '\n'
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(1, line); // newline → exit scan_block
 
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
@@ -279,8 +279,8 @@ pub fn emit_stream_reader_at_end(chunks: &mut [Chunk], current: usize, line: u32
     chunk.emit_op_u16(Op::STRUCT_GET, content_key, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     // pos < len → DYN_NOT → at-end
-    vybe_emitter::ops::emit_dyn_lt(chunk, line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
 }
 
 /// `new StreamWriter(path)` — initialise `__path` + empty `__buf`.
@@ -363,7 +363,7 @@ pub fn emit_stream_writer_write(chunks: &mut [Chunk], current: usize, line: u32)
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, buf_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op(Op::NULL, line);
@@ -380,9 +380,9 @@ pub fn emit_stream_writer_write_line(chunks: &mut [Chunk], current: usize, line:
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     push_const(chunk, Value::String(Arc::from("\n")), line);
-    vybe_emitter::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, buf_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op(Op::NULL, line);
@@ -497,10 +497,10 @@ pub fn emit_stream_close(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);
     push_const(chunk, Value::String(Arc::from(WRITER_TYPE)), line);
-    vybe_emitter::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
 
     let skip_flush = chunk.emit_block(line);
-    vybe_emitter::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);

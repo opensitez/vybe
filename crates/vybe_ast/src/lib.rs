@@ -15,6 +15,8 @@
 //!   threading  → async/await
 //!   dotnet     → namespace resolution (profile-driven)
 
+pub mod channels;
+
 // ════════════════════════════════════════════════════════════════════════════
 // Module (top-level compilation unit)
 // ════════════════════════════════════════════════════════════════════════════
@@ -749,7 +751,7 @@ pub enum ExprKind {
     /// C# named `ValueTuple` `(x: 1, y: 2)`). Lowered by the shared compiler to
     /// a tagged array plus field-name keys and hidden `__fields`/`__typename`,
     /// so a named tuple is one runtime value across languages.
-    /// See `vybe_emitter::tuples`.
+    /// See `vybe_compiler::compiler::tuples`.
     NamedTuple {
         fields: Vec<(Option<String>, Expression)>,
         type_name: Option<String>,

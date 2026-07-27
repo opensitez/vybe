@@ -1,6 +1,6 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_emitter::collections;
+use vybe_compiler::compiler::collections;
 
 const MULT: i64 = 0x5DEECE66D;
 const ADD: i64 = 0xB;
@@ -89,7 +89,7 @@ pub fn emit_next_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_next_bits(chunks, current, 1, line);
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op(Op::I32_NE, line);
-    vybe_emitter::ops::emit_i32_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 pub fn emit_next_float(chunks: &mut [Chunk], current: usize, line: u32) {

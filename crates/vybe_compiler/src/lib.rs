@@ -12,32 +12,33 @@
 //! * [`languages`] — per-language walkers + profiles.
 //! * [`platforms`] — reusable runtime/framework surfaces such as .NET.
 
+// Force-link every plugin crate in `[dependencies]` so its link-time
+// registration reaches the registry. Generated from Cargo.toml — see build.rs.
+include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
 pub use vybe_ast as ast;
 pub mod adapters;
 pub mod bundle;
 pub mod compiler;
 pub mod dynamic;
 pub mod host_imports;
-pub use compiler::Compiler; // avoid the `vybe_compiler::compiler::Compiler` stutter
-pub mod emitter;
+pub use compiler::Compiler; // avoid the `crate::compiler::Compiler` stutter
 pub mod languages;
 pub mod lsp;
 pub mod platforms {
-    //! Facade over the platform crates so `crate::platforms::…` paths
-    //! keep resolving; the packages live at `platforms/*` in the workspace.
-    pub use vybe_platform_dotnet as dotnet;
-    pub use vybe_platform_flutter as flutter;
-    pub use vybe_platform_libc as libc;
-    pub use vybe_platform_plib as plib;
+    //! Facade over the platform crates so `crate::platforms::…` paths keep
+    //! resolving.
+    //!
+    //! Platform REGISTRATION no longer happens here — a platform registers
+    //! itself from `Plugin::init`, driven by the language that needs it
+    //! (`vybe_language_dart::register()` -> `vybe_platform_flutter::register()`),
+    //! so the compiler never mounts a platform tree and a platform can become a
+    //! dylib.
+    //!
+    //! What remains are direct DATA references (dotnet `numeric_format`,
+    //! `winforms`, `component_descriptor`, `namespace_constant_mappings`; plib
+    //! `gcl`). Route those through the registry and these dependencies — and
+    //! this facade — go away entirely.
 
-    /// Register every statically linked platform namespace tree.
-    pub(crate) fn register_namespace_trees() {
-        vybe_emitter::xml::register_namespace_tree();
-        dotnet::emitter::tree_register::register_namespace_tree();
-        flutter::emitter::tree_register::register_namespace_tree();
-        libc::emitter::tree_register::register_namespace_tree();
-        plib::emitter::tree_register::register_namespace_tree();
-    }
 }
 pub use vybe_bytecode::profile;
 pub mod projects;

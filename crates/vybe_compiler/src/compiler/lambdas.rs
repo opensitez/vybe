@@ -138,7 +138,7 @@ impl Compiler {
                         let parent_env = self.closure_env_slot();
                         let parent_idx = self.closure_env_index(&name);
                         let tmp = self.define_local(&format!("__nested_cap_{}", name));
-                        crate::emitter::closures::emit_env_get(
+                        crate::compiler::closures::emit_env_get(
                             self.chunk(),
                             parent_env,
                             parent_idx,
@@ -150,7 +150,7 @@ impl Compiler {
                     env_slots.push(slot);
                 }
             }
-            crate::emitter::closures::emit_env_new(self.chunk(), &env_slots, line);
+            crate::compiler::closures::emit_env_new(self.chunk(), &env_slots, line);
             let env_slot = self.define_local(&format!("__closure_env_factory_{}", factory_idx));
             self.emit_u16(Op::LOCAL_SET, env_slot);
             common::functions::emit_ref_func(&mut self.chunks[self.current], factory_idx, 1, line);
@@ -343,7 +343,7 @@ impl Compiler {
                 for (idx, cap_name) in captured_names.iter().enumerate() {
                     if let Some(param_slot) = self.scope().resolve(cap_name) {
                         self.emit_u16(Op::LOCAL_GET, param_slot);
-                        crate::emitter::closures::emit_env_set(
+                        crate::compiler::closures::emit_env_set(
                             self.chunk(),
                             env_slot,
                             idx as u16,
@@ -354,13 +354,13 @@ impl Compiler {
                             parent_shared_env_names.iter().position(|n| n == cap_name)
                         {
                             let closure_env = self.closure_env_slot();
-                            crate::emitter::closures::emit_env_get(
+                            crate::compiler::closures::emit_env_get(
                                 self.chunk(),
                                 closure_env,
                                 parent_idx as u16,
                                 line,
                             );
-                            crate::emitter::closures::emit_env_set(
+                            crate::compiler::closures::emit_env_set(
                                 self.chunk(),
                                 env_slot,
                                 idx as u16,
@@ -515,7 +515,7 @@ impl Compiler {
                         let parent_env = self.closure_env_slot();
                         let parent_idx = self.closure_env_index(&name);
                         let tmp = self.define_local(&format!("__nested_cap_{}", name));
-                        crate::emitter::closures::emit_env_get(
+                        crate::compiler::closures::emit_env_get(
                             self.chunk(),
                             parent_env,
                             parent_idx,
@@ -528,7 +528,7 @@ impl Compiler {
                     env_slots.push(slot);
                 }
             }
-            crate::emitter::closures::emit_env_new(self.chunk(), &env_slots, line);
+            crate::compiler::closures::emit_env_new(self.chunk(), &env_slots, line);
             let env_slot = self.define_local(&format!("__closure_env_{}", ci));
             self.emit_u16(Op::LOCAL_SET, env_slot);
             common::functions::emit_ref_func(&mut self.chunks[self.current], ci, 1, line);
@@ -563,7 +563,7 @@ impl Compiler {
                     _ => (is_async, is_generator),
                 };
                 let line = self.line;
-                crate::emitter::prototypes::emit_stamp_function_kind_proto(
+                crate::compiler::prototypes::emit_stamp_function_kind_proto(
                     self.chunk(),
                     eff_async,
                     eff_generator,
@@ -585,7 +585,7 @@ impl Compiler {
             inst!(self, core_wasm::dup);
             {
                 let line = self.line;
-                crate::emitter::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
+                crate::compiler::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
             }
 
             // §10.2.11: arrows carry a marker — the host uses it for
@@ -615,7 +615,7 @@ impl Compiler {
         // the common resolver handles the mounted chain.
         match self.resolve_profile_namespace_chain(parts) {
             Some(super::resolver::Resolution::Tree(
-                crate::emitter::namespaces::ResolutionTarget::CommonEmit(emit),
+                crate::compiler::namespaces::ResolutionTarget::CommonEmit(emit),
             )) => {
                 for a in args {
                     self.compile_expr(a)?;
@@ -627,7 +627,7 @@ impl Compiler {
             Some(
                 super::resolver::Resolution::HostImport { module, func }
                 | super::resolver::Resolution::Tree(
-                    crate::emitter::namespaces::ResolutionTarget::HostCall { module, func, .. },
+                    crate::compiler::namespaces::ResolutionTarget::HostCall { module, func, .. },
                 ),
             ) => {
                 for a in args {

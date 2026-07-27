@@ -1,3 +1,7 @@
+// Force-link every plugin crate in `[dependencies]` so its link-time
+// registration reaches the registry. Generated from Cargo.toml — see build.rs.
+include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
+
 pub mod cli;
 pub mod dap;
 pub mod debug_repl;

@@ -29,7 +29,7 @@ use std::sync::Arc;
 use vybe_bytecode::value::{Object, Value};
 use vybe_bytecode::{Chunk, Op, VM};
 use vybe_bytecode::capabilities::Capabilities;
-use vybe_emitter::platforms::register_platforms;
+use vybe_compiler::compiler::platforms::register_platforms;
 
 fn call_ah(name: &str, args: Vec<Value>) -> Value {
     let mut chunk = Chunk::new("<node-async_hooks-test>");

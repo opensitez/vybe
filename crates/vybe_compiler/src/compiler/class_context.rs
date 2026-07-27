@@ -171,7 +171,7 @@ impl Compiler {
                 let env = self.closure_env_slot();
                 let idx = self.closure_env_index(&self_kw);
                 let l = self.line;
-                crate::emitter::closures::emit_env_get(self.chunk(), env, idx, l);
+                crate::compiler::closures::emit_env_get(self.chunk(), env, idx, l);
                 return true;
             }
         }
@@ -222,7 +222,7 @@ impl Compiler {
         if !self.is_python_profile() && !self.is_php_profile() {
             {
                 let line = self.line;
-                crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             };
             return;
         }
@@ -245,12 +245,12 @@ impl Compiler {
             self.emit_host_call(typeof_idx, 1);
             self.emit_const(Value::String(Arc::from("object")));
             fn_call!(self, "wasm:js-string", "equals", 2);
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if_value(line);
 
             self.emit_u16(Op::LOCAL_GET, value_slot);
             self.emit_host_call(array_len_idx, 1);
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if_value(line);
             inst!(self, core_wasm::i32_const, 1);
             self.chunk().emit_else(line);
@@ -266,13 +266,13 @@ impl Compiler {
             self.chunk().emit_else(line);
             self.emit_u16(Op::LOCAL_GET, keys_slot);
             fn_call!(self, "wasm:js-undefined", "test", 1);
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if_value(line);
             inst!(self, core_wasm::i32_const, 0);
             self.chunk().emit_else(line);
             self.emit_u16(Op::LOCAL_GET, keys_slot);
             self.emit(Op::ARRAY_LENGTH);
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_end(line);
             self.chunk().emit_end(line);
             self.chunk().emit_if_value(line);
@@ -290,12 +290,12 @@ impl Compiler {
             self.chunk().emit_else(line);
             self.emit_u16(Op::LOCAL_GET, tracker_slot);
             fn_call!(self, "wasm:js-undefined", "test", 1);
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if_value(line);
             inst!(self, core_wasm::i32_const, 0);
             self.chunk().emit_else(line);
             self.emit_u16(Op::LOCAL_GET, tracker_slot);
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_end(line);
             self.chunk().emit_end(line);
             self.chunk().emit_if_value(line);
@@ -305,14 +305,14 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, value_slot);
             self.emit_const(Value::String(Arc::from("__proto__")));
             self.emit_host_call(has_own_idx, 2);
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
 
             self.chunk().emit_end(line);
             self.chunk().emit_end(line);
             self.chunk().emit_end(line);
             self.chunk().emit_else(line);
             self.emit_u16(Op::LOCAL_GET, value_slot);
-            crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_end(line);
             return;
         }
@@ -340,13 +340,13 @@ impl Compiler {
         self.chunk().emit_if_value(line);
 
         self.emit_u16(Op::LOCAL_GET, value_slot);
-        crate::emitter::collections::emit_len(&mut self.chunks, self.current, line);
+        crate::compiler::collections::emit_len(&mut self.chunks, self.current, line);
         inst!(self, core_wasm::i32_const, 0);
         self.chunk().emit_op(Op::I32_NE, line);
 
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, value_slot);
-        crate::emitter::ops::emit_dyn_to_bool(self.chunk(), line);
+        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_end(line);
     }
 

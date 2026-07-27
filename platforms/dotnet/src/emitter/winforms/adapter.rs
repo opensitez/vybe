@@ -17,7 +17,7 @@ pub fn emit_application_run(chunks: &mut [Chunk], current: usize, argc: u8, line
     emit_gui_call(
         chunks,
         current,
-        vybe_emitter::gui::HOST_FN_RUN_APPLICATION,
+        vybe_compiler::compiler::gui::HOST_FN_RUN_APPLICATION,
         argc,
         line,
     );
@@ -27,7 +27,7 @@ pub fn emit_application_exit(chunks: &mut [Chunk], current: usize, argc: u8, lin
     emit_gui_call(
         chunks,
         current,
-        vybe_emitter::gui::HOST_FN_APP_EXIT,
+        vybe_compiler::compiler::gui::HOST_FN_APP_EXIT,
         argc,
         line,
     );
@@ -57,7 +57,7 @@ pub fn emit_controls_add(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     emit_gui_call(
         chunks,
         current,
-        vybe_emitter::gui::HOST_FN_ADD_CHILD,
+        vybe_compiler::compiler::gui::HOST_FN_ADD_CHILD,
         argc,
         line,
     );

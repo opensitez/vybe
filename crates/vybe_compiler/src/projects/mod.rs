@@ -8,15 +8,12 @@
 //! full form designer round-trip support.
 
 pub mod encoding;
-pub mod form_modules;
 mod managed_msbuild;
 mod single_file;
-pub mod vbforms;
 mod vbproj;
 mod vybe;
 
 pub use encoding::read_text_file;
-pub use vbforms::*;
 
 use crate::bundle::Bundle;
 use std::path::Path;

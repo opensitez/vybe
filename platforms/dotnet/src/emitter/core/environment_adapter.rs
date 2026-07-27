@@ -1,10 +1,10 @@
 use std::sync::Arc;
-use vybe_emitter::instructions::{core_wasm, host};
+use vybe_compiler::compiler::instructions::{core_wasm, host};
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
-use vybe_emitter::collections;
+use vybe_compiler::compiler::collections;
 
 const ENV_OVERRIDES_GLOBAL: &str = "__dotnet_environment_overrides";
 const ENV_EXIT_CODE_GLOBAL: &str = "__dotnet_environment_exit_code";
@@ -240,7 +240,7 @@ pub fn emit_environment_get_all(chunks: &mut [Chunk], current: usize, argc: u8, 
     host::emit(chunk, "ecma:object", "entries", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, entries_slot, line);
 
-    let state = vybe_emitter::loops::emit_for_in_start(chunks, current, entries_slot, idx_slot, line);
+    let state = vybe_compiler::compiler::loops::emit_for_in_start(chunks, current, entries_slot, idx_slot, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, pair_slot, line);
 
@@ -262,7 +262,7 @@ pub fn emit_environment_get_all(chunks: &mut [Chunk], current: usize, argc: u8, 
     host::emit(chunk, "ecma:map", "set", 3, line);
     chunk.emit_op(Op::DROP, line);
 
-    vybe_emitter::loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    vybe_compiler::compiler::loops::emit_for_in_end(chunks, current, idx_slot, state, line);
     let chunk = &mut chunks[current];
     chunk.emit_end(line);
     chunk.patch_block(done);
@@ -285,7 +285,7 @@ pub fn emit_environment_expand(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit(0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, env_slot, line);
 
-    let state = vybe_emitter::loops::emit_for_in_start(chunks, current, env_slot, idx_slot, line);
+    let state = vybe_compiler::compiler::loops::emit_for_in_start(chunks, current, env_slot, idx_slot, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, pair_slot, line);
 
@@ -314,7 +314,7 @@ pub fn emit_environment_expand(chunks: &mut [Chunk], current: usize, line: u32) 
     host::emit(chunk, "ecma:string", "replaceAll", 3, line);
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
 
-    vybe_emitter::loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    vybe_compiler::compiler::loops::emit_for_in_end(chunks, current, idx_slot, state, line);
     let chunk = &mut chunks[current];
     let global = chunk.add_constant(Value::String(Arc::from(ENV_OVERRIDES_GLOBAL)));
     let overrides_slot = reserve_slot(chunk);
@@ -331,7 +331,7 @@ pub fn emit_environment_expand(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_SET, override_entries_slot, line);
 
     let state =
-        vybe_emitter::loops::emit_for_in_start(chunks, current, override_entries_slot, idx_slot, line);
+        vybe_compiler::compiler::loops::emit_for_in_start(chunks, current, override_entries_slot, idx_slot, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, pair_slot, line);
 
@@ -360,7 +360,7 @@ pub fn emit_environment_expand(chunks: &mut [Chunk], current: usize, line: u32) 
     host::emit(chunk, "ecma:string", "replaceAll", 3, line);
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
 
-    vybe_emitter::loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    vybe_compiler::compiler::loops::emit_for_in_end(chunks, current, idx_slot, state, line);
     let chunk = &mut chunks[current];
     chunk.emit_end(line);
     chunk.patch_block(done);

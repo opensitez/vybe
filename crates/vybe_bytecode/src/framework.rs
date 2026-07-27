@@ -28,7 +28,7 @@ use crate::{HostContext, TypeDef, VM, Value};
 
 /// A capability provider. Its [`init`](Plugin::init) registers everything the
 /// plugin offers into the [`Framework`].
-pub trait Plugin {
+pub trait Plugin: Sync {
     /// Stable identifier (`"php"`, `"dotnet"`, `"compiler"`, `"host"`…).
     fn name(&self) -> &'static str;
 
@@ -192,6 +192,81 @@ impl<'a> Framework<'a> {
                  run this plugin via init_all_on_vm, not the global init_all"
             ),
         }
+    }
+}
+
+/// A plugin's link-time registration. Every plugin crate submits one of these;
+/// the registration loops iterate whatever the final binary linked.
+///
+/// This is THE registry. There is no plugin list in code — not for languages,
+/// not for platforms, not for host-function providers. A binary chooses its
+/// plugin set by depending on the crates it wants, and the loop below picks
+/// them up. Adding a plugin is a Cargo edit, never a code edit, and no crate
+/// has to know another crate's name to run it.
+pub struct PluginEntry(pub &'static (dyn Plugin + Sync));
+inventory::collect!(PluginEntry);
+
+/// Submit this crate's plugin to the registry. Call once per plugin crate at
+/// module scope: `vybe_bytecode::register_plugin!(Plugin);`
+#[macro_export]
+macro_rules! register_plugin {
+    ($ty:path) => {
+        $crate::inventory::submit! {
+            $crate::PluginEntry(&$ty)
+        }
+    };
+}
+
+/// Every plugin linked into this binary, in link order.
+pub fn plugins() -> impl Iterator<Item = &'static dyn Plugin> {
+    inventory::iter::<PluginEntry>
+        .into_iter()
+        .map(|e| e.0 as &'static dyn Plugin)
+}
+
+/// Run every REGISTERED plugin's `init` against a global (VM-less)
+/// [`Framework`] — the compile-time pass that populates language descriptors,
+/// hooks and namespace trees.
+pub fn init_registered() {
+    let mut fw = Framework::global();
+    for p in plugins() {
+        p.init(&mut fw);
+    }
+}
+
+/// Both phases for every REGISTERED plugin, scoped to `vm` and gated by
+/// `caps`. This is the one registration loop.
+pub fn init_all_registered(vm: &mut VM, caps: &Capabilities) {
+    init_registered_plugins(vm, caps);
+    finalize_registered_plugins(vm, caps);
+}
+
+/// Phase 1 for every REGISTERED plugin. Split out so a caller can override
+/// host functions between the phases (see [`init_plugins`]).
+pub fn init_registered_plugins(vm: &mut VM, caps: &Capabilities) {
+    for p in plugins() {
+        run_phase(vm, caps, p, false);
+    }
+}
+
+/// Phase 2 for every REGISTERED plugin.
+pub fn finalize_registered_plugins(vm: &mut VM, caps: &Capabilities) {
+    for p in plugins() {
+        run_phase(vm, caps, p, true);
+    }
+}
+
+fn run_phase(vm: &mut VM, caps: &Capabilities, p: &dyn Plugin, finalize: bool) {
+    if let Some(cap) = p.required_capability() {
+        if !caps.has(cap) {
+            return;
+        }
+    }
+    let mut fw = Framework::with_vm_and_caps(vm, caps);
+    if finalize {
+        p.finalize(&mut fw);
+    } else {
+        p.init(&mut fw);
     }
 }
 

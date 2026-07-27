@@ -1939,7 +1939,7 @@ fn infer_tuple_arity(expr: &Expression, scopes: &[HashMap<String, usize>]) -> Op
     }
 }
 
-use vybe_emitter::tuples::{named_tuple_arity, positional_read as named_tuple_positional_read};
+use vybe_compiler::compiler::tuples::{named_tuple_arity, positional_read as named_tuple_positional_read};
 
 /// A `var (a, b) = t;` where `t` is a tuple-valued expression lowers to a block
 /// ending in `t.Deconstruct(out a, out b)`. Tuples carry no `Deconstruct`, so
@@ -4785,8 +4785,8 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
                                         optional: false,
                                     }));
                                 }
-                                if vybe_emitter::events::is_known_gui_event_field(field)
-                                    && vybe_emitter::events::is_event_handler_expr(&right)
+                                if vybe_compiler::compiler::events::is_known_gui_event_field(field)
+                                    && vybe_compiler::compiler::events::is_event_handler_expr(&right)
                                 {
                                     let control = (**object).clone();
                                     let event = field.to_lowercase();
@@ -6510,7 +6510,7 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
 /// Lower C# 12 primary-constructor params onto the shared class shape: a
 /// captured backing field per param (as a record's positional params) plus a
 /// synthesized constructor that assigns them. The class then compiles through
-/// the same `common::classes` → `vybe_emitter::classes` path as any other
+/// the same `common::classes` → `vybe_compiler::compiler::classes` path as any other
 /// class; method / property bodies reference the params as bare instance
 /// fields.
 fn apply_primary_constructor(
@@ -8346,7 +8346,7 @@ fn build_named_tuple_object_expr(
             )
         })
         .collect();
-    Expression::with_span(vybe_emitter::tuples::build_named_tuple(fields), span)
+    Expression::with_span(vybe_compiler::compiler::tuples::build_named_tuple(fields), span)
 }
 
 fn parse_csharp_named_tuple_return_slots(raw_type: &str) -> Option<Vec<Option<String>>> {
@@ -8531,7 +8531,7 @@ fn lower_initialize_component_event_stmt(stmt: &Statement) -> Option<StmtKind> {
         stmt.span,
     );
 
-    vybe_emitter::events::lower_event_compound_assignment(&expr)
+    vybe_compiler::compiler::events::lower_event_compound_assignment(&expr)
 }
 
 fn is_this_rooted_member_target(expr: &Expression) -> bool {
@@ -11564,8 +11564,8 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             if has_names {
                 // Named tuples lower to the shared canonical shape so a C#
                 // named tuple is the same runtime value as one from any other
-                // language. See `vybe_emitter::tuples`.
-                Ok(vybe_emitter::tuples::build_named_tuple(parsed))
+                // language. See `vybe_compiler::compiler::tuples`.
+                Ok(vybe_compiler::compiler::tuples::build_named_tuple(parsed))
             } else {
                 let elems: Vec<Expression> = parsed.into_iter().map(|(_, e)| e).collect();
                 Ok(ExprKind::Tuple(elems))

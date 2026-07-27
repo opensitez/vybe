@@ -24,7 +24,7 @@ use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
-use vybe_emitter::{collections, tuples};
+use vybe_compiler::compiler::{collections, tuples};
 
 // ── local emit helpers (mirror pdo_adapter conventions) ──────────────────────
 
@@ -152,7 +152,7 @@ fn emit_row_factory_flag(chunks: &mut [Chunk], current: usize, cursor: u16, flag
     lget(&mut chunks[current], cursor, line);
     struct_get_key(&mut chunks[current], "__conn", line);
     struct_get_key(&mut chunks[current], "row_factory", line);
-    vybe_emitter::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     lset(&mut chunks[current], flag_slot, line);
 }
 

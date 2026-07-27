@@ -1,11 +1,17 @@
-use vybe_compiler::emitter::classes;
-use vybe_compiler::emitter::dict;
+// Classes were centralized into the compiler. The OBJECT-level primitives
+// (method/accessor binding, the cross-language alias table) stayed in
+// `vybe_compiler::compiler::object`, because crates BELOW the compiler — platforms/dotnet —
+// still call them. Class construction, registration and super wiring moved to
+// `vybe_compiler::compiler::classes`. This test spans both, so it names both.
+use vybe_compiler::compiler::classes;
+use vybe_compiler::compiler::object;
+use vybe_compiler::compiler::dict;
 
 // ── cross_language_aliases lookup table ─────────────────────
 
 #[test]
 fn alias_tostring_to_str() {
-    let aliases = classes::cross_language_aliases("toString");
+    let aliases = object::cross_language_aliases("toString");
     assert!(
         aliases.contains(&"__str__"),
         "JS toString should alias to Python __str__"
@@ -14,7 +20,7 @@ fn alias_tostring_to_str() {
 
 #[test]
 fn alias_tostring_lowercase() {
-    let aliases = classes::cross_language_aliases("tostring");
+    let aliases = object::cross_language_aliases("tostring");
     assert!(
         aliases.contains(&"__str__"),
         "VB tostring should alias to Python __str__"
@@ -27,7 +33,7 @@ fn alias_tostring_lowercase() {
 
 #[test]
 fn alias_len_length() {
-    let aliases = classes::cross_language_aliases("__len__");
+    let aliases = object::cross_language_aliases("__len__");
     assert!(
         aliases.contains(&"__get_length"),
         "Python __len__ should alias to JS length"
@@ -40,7 +46,7 @@ fn alias_len_length() {
 
 #[test]
 fn alias_length_to_len() {
-    let aliases = classes::cross_language_aliases("__get_length");
+    let aliases = object::cross_language_aliases("__get_length");
     assert!(
         aliases.contains(&"__len__"),
         "JS length should alias to Python __len__"
@@ -49,9 +55,9 @@ fn alias_length_to_len() {
 
 #[test]
 fn alias_contains_all_directions() {
-    let py = classes::cross_language_aliases("__contains__");
-    let js = classes::cross_language_aliases("includes");
-    let cs = classes::cross_language_aliases("contains");
+    let py = object::cross_language_aliases("__contains__");
+    let js = object::cross_language_aliases("includes");
+    let cs = object::cross_language_aliases("contains");
     // All should map to the same set
     assert!(
         py.contains(&"includes"),
@@ -73,7 +79,7 @@ fn alias_contains_all_directions() {
 
 #[test]
 fn alias_bool_valueof() {
-    let aliases = classes::cross_language_aliases("__bool__");
+    let aliases = object::cross_language_aliases("__bool__");
     assert!(
         aliases.contains(&"valueOf"),
         "Python __bool__ should alias to JS valueOf"
@@ -82,7 +88,7 @@ fn alias_bool_valueof() {
 
 #[test]
 fn alias_eq_equals() {
-    let aliases = classes::cross_language_aliases("__eq__");
+    let aliases = object::cross_language_aliases("__eq__");
     assert!(
         aliases.contains(&"equals"),
         "Python __eq__ should alias to C#/VB equals"
@@ -91,7 +97,7 @@ fn alias_eq_equals() {
 
 #[test]
 fn alias_regular_method_no_aliases() {
-    let aliases = classes::cross_language_aliases("doSomething");
+    let aliases = object::cross_language_aliases("doSomething");
     assert!(
         aliases.is_empty(),
         "Regular method names should have no aliases"
@@ -100,7 +106,7 @@ fn alias_regular_method_no_aliases() {
 
 #[test]
 fn alias_repr() {
-    let aliases = classes::cross_language_aliases("__repr__");
+    let aliases = object::cross_language_aliases("__repr__");
     assert!(
         aliases.contains(&"toDebugString"),
         "__repr__ → toDebugString"
@@ -134,7 +140,7 @@ fn emit_new_typed_object_stamps_type() {
 #[test]
 fn emit_bind_method_sets_property() {
     let mut chunk = Chunk::new("test");
-    classes::emit_bind_method(&mut chunk, 1, "greet", 5, 0);
+    object::emit_bind_method(&mut chunk, 1, "greet", 5, 0);
     // Should emit local_get, ref_func, struct_set, drop
     assert!(
         chunk.code.len() > 5,
@@ -222,7 +228,7 @@ fn emit_attach_static_method_sets_on_constructor() {
 #[test]
 fn emit_bind_getter_uses_get_prefix() {
     let mut chunk = Chunk::new("test");
-    classes::emit_bind_getter(&mut chunk, 1, "name", 3, 0);
+    object::emit_bind_getter(&mut chunk, 1, "name", 3, 0);
     let has_get = chunk
         .constants
         .iter()
@@ -233,7 +239,7 @@ fn emit_bind_getter_uses_get_prefix() {
 #[test]
 fn emit_bind_setter_uses_set_prefix() {
     let mut chunk = Chunk::new("test");
-    classes::emit_bind_setter(&mut chunk, 1, "name", 4, 0);
+    object::emit_bind_setter(&mut chunk, 1, "name", 4, 0);
     let has_set = chunk
         .constants
         .iter()
