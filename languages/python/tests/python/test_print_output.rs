@@ -28,7 +28,11 @@ crate::runtime_case!(
     "print('line', end='')\nprint()\n",
     "line"
 );
-crate::runtime_case!(print_first_of_sequence, "print(1)\nprint(2)\n", "1");
+// `run_python_one` joins ALL output lines with "\n" (see helpers.rs), so two
+// `print` calls yield "1\n2" — the previous expectation of just "1" could not
+// hold. Every other case in this file is single-line, which is why it was the
+// only one affected.
+crate::runtime_case!(print_first_of_sequence, "print(1)\nprint(2)\n", "1\n2");
 crate::runtime_case!(
     print_chained_end_sep,
     "print(1, 2, sep='|', end='!')\nprint(3)\n",

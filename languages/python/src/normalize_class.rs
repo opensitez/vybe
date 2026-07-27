@@ -23,6 +23,7 @@
 
 use vybe_ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind};
 use vybe_bytecode::class_normalize::{
+    NormalMembers,
     build_normal_method,
     canonical::{ClassLang, canonicalize_method},
     from_method_stmt,
@@ -50,15 +51,7 @@ pub fn normalize_class(
     members: &[ClassMember],
     modifiers: &ClassModifiers,
 ) -> NormalClass {
-    let mut raw_extra_members: Vec<ClassMember> = Vec::new();
-    let mut instance_fields: Vec<NormalField> = Vec::new();
-    let mut static_fields: Vec<NormalField> = Vec::new();
-    let mut instance_methods: Vec<NormalMethod> = Vec::new();
-    let mut static_methods: Vec<NormalMethod> = Vec::new();
-    let mut properties: Vec<NormalProperty> = Vec::new();
-    let mut constructor: Option<NormalConstructor> = None;
-    let mut destructor: Option<NormalMethod> = None;
-    let mut special_methods: Vec<SpecialMethod> = Vec::new();
+    let mut out = NormalMembers::default();
 
     for member in members {
         match member {
@@ -79,24 +72,19 @@ pub fn normalize_class(
                     access: Access::Public, // Python is convention-based
                     readonly: false,
                 };
+                // A Python class attribute is readable through instances
+                // (`a.kind` falls back to `type(a).kind`), so the class body's
+                // `kind = ...` is BOTH a static field and an instance one. The
+                // shared router owns the doubling; Python supplies only what is
+                // Python-specific — how to name the class attribute to read
+                // from.
                 if m.is_static {
-                    // Python class attributes are readable through instances
-                    // (`a.kind` falls back to `type(a).kind`), so the class
-                    // body's `kind = ...` needs BOTH a static field (for
-                    // `A.kind`) and an instance field (for `a.kind`).
-                    //
-                    // The instance copy initialises from the class attribute
-                    // rather than re-evaluating the initialiser, so a mutable
-                    // class attribute stays one shared object across
-                    // instances (`A.items` is the classic Python gotcha) and
-                    // `a.kind = x` shadows without touching `A.kind`.
-                    instance_fields.push(NormalField {
-                        init: Some(class_attr_read(name, fname)),
-                        ..field.clone()
-                    });
-                    static_fields.push(field);
+                    out.push_static_field_readable_on_instances(
+                        field,
+                        class_attr_read(name, fname),
+                    );
                 } else {
-                    instance_fields.push(field);
+                    out.push_field(false, field);
                 }
             }
             ClassMember::Method(stmt) => {
@@ -109,34 +97,29 @@ pub fn normalize_class(
                     continue;
                 };
 
-                // Python `__del__` is the finaliser — route to destructor.
-                if src_name == "__del__" {
-                    if let Some(d) = from_method_stmt(span.clone(), stmt, src_name, Access::Public)
-                    {
-                        destructor = Some(d);
-                    }
-                    continue;
-                }
-
                 let (canonical, special_kind) = canonicalize_method(ClassLang::Python, src_name);
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, Access::Public)
                 else {
                     continue;
                 };
 
+                // `__del__` is the finaliser — a lifecycle member, not a
+                // method. Routed by KIND; the spelling is declared once in the
+                // shared canonical table.
+                if special_kind == Some(SpecialMethodKind::Destructor) {
+                    out.destructor = Some(method);
+                    continue;
+                }
+
                 if let Some(kind) = special_kind {
-                    special_methods.push(SpecialMethod {
+                    out.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical.clone(),
                         source_name: src_name.clone(),
                     });
                 }
 
-                if m.is_static {
-                    static_methods.push(method);
-                } else {
-                    instance_methods.push(method);
-                }
+                out.push_method(m.is_static, method);
             }
             ClassMember::Constructor {
                 params,
@@ -144,7 +127,7 @@ pub fn normalize_class(
                 base_args,
                 ..
             } => {
-                constructor = Some(NormalConstructor {
+                out.push_constructor(NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
                     body: body.clone(),
@@ -208,7 +191,7 @@ pub fn normalize_class(
                         Modifiers::default(),
                     )
                 });
-                properties.push(NormalProperty {
+                out.properties.push(NormalProperty {
                     span: span.clone(),
                     canonical_name: canonical,
                     source_name: pname.clone(),
@@ -218,50 +201,37 @@ pub fn normalize_class(
                     auto_field: if *is_auto { Some(pname.clone()) } else { None },
                 });
             }
+            // Python has no separate augmentation syntax — a "mixin" is just
+            // another base class, so it arrives through `parents` and is
+            // resolved by the C3 MRO, not by this pass.
+            ClassMember::Augment(_) => {}
             other @ (ClassMember::Event { .. }
             | ClassMember::Const { .. }
             | ClassMember::NestedType(_)) => {
-                raw_extra_members.push(other.clone());
+                out.raw_extra_members.push(other.clone());
             }
         }
     }
 
     NormalClass {
-        augmentations: Vec::new(),
-        span,
-        name: name.to_string(),
-        parent: parents.first().cloned(),
-        bases: Vec::new(),
         // Python multiple inheritance — walker currently puts all parents
         // in `parents`. The first becomes the principal superclass; any
         // remaining go into `interfaces` so `isinstance` can still check
         // them. C3 linearisation of methods is NOT done here yet — future
         // work when emit_class is direct and can flatten mixed-in methods.
+        // Python multiple inheritance: bases beyond the first join the
+        // interface list so `isinstance` answers for all of them. An ADDITION
+        // to the declared interfaces, which are filled centrally.
         interfaces: if parents.len() > 1 {
             parents[1..].to_vec()
         } else {
             Vec::new()
         },
-        is_abstract: modifiers.is_abstract,
-        is_sealed: modifiers.is_sealed,
-        is_partial: false,
-        is_value_type: false,
         explicit_self_param: true,
-        implicit_self_fields: false,
-        instance_fields,
-        static_fields,
-        instance_methods,
-        static_methods,
-        properties,
-        constructors: Vec::new(),
-        constructor,
-        destructor,
-        auto_init_methods: Vec::new(),
-        special_methods,
-        event_bindings: Vec::new(),
-        raw_extra_members,
+        ..Default::default()
     }
-    }
+    .with_members(out)
+}
 
 #[cfg(test)]
 mod tests {

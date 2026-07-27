@@ -750,6 +750,30 @@ pub fn emit_index(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, needle, line);
     collections::emit_index_of(chunks, current, line);
     chunks[current].emit_end(line);
+
+    // `-1` is the JS `indexOf` convention; Python's `list.index`/`str.index`
+    // RAISE `ValueError` when the value is absent. Keep the raise here so both
+    // `x.index(v)` and `operator.indexOf(x, v)` (which lowers to it) agree.
+    let found = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, found, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, found, line);
+    chunks[current].emit_f64_const(-1.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if(line);
+    // `emit_exception_new_finalize` wants `[obj, obj, msg]` — STRUCT_NEW + dup
+    // + message. Without the object it stamps the message string instead, which
+    // yields an unmatchable exception with an empty message.
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("value not in sequence", line);
+    vybe_compiler::compiler::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        "ValueError",
+        line,
+    );
+    vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, found, line);
 }
 
 pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {

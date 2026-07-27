@@ -102,7 +102,12 @@ fn precedence_attr_over_call_not_applicable() {
 
 #[test]
 fn precedence_subscript_over_power() {
-    assert_eq!(run_print("['a', 'b'][1] ** 2"), "1");
+    // Subscript binds tighter than `**`: `(x[1]) ** 2`, not `x[1 ** 2]`.
+    // Numeric elements are required — the previous `['a','b'][1] ** 2` is a
+    // TypeError in CPython ("unsupported operand type(s) for ** or pow():
+    // 'str' and 'int'"), so its expected "1" was unreachable. With `[2, 3]`
+    // the two parses are distinguishable: 3**2 = 9 vs [2,3][1] = 3.
+    assert_eq!(run_print("[2, 3][1] ** 2"), "9");
 }
 
 #[test]

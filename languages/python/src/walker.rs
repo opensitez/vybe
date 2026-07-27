@@ -1843,6 +1843,198 @@ fn operator_fn_lambda(name: &str) -> Option<Expression> {
     })
 }
 
+fn py_member(object: Expression, field: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(object),
+        field: field.into(),
+        null_safe: false,
+    })
+}
+
+fn py_index(object: Expression, index: Expression) -> Expression {
+    Expression::new(ExprKind::Index {
+        object: Box::new(object),
+        index: Box::new(index),
+        null_safe: false,
+    })
+}
+
+fn py_call(callee: Expression, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(callee),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
+/// `lambda <param>: <body>` — the shape every `operator` callable-factory
+/// lowers to.
+fn py_lambda1(param: &str, body: Expression) -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params: vec![lambda_param(param)],
+        body: LambdaBody::Expr(Box::new(body)),
+        is_async: false,
+        captures: vec![],
+    })
+}
+
+/// `operator.<name>(args)` — the DOTTED call form (`import operator;
+/// operator.itemgetter(1)`), lowered in the walker rather than through the
+/// profile. Two reasons a profile emit cannot express these:
+///
+///   * `truth`/`not_` need PYTHON truthiness (empty list/dict/str are falsy).
+///     Only the conditional-condition path applies it — which is why `bool(x)`
+///     lowers to a Ternary too. The profile route lands on `emit_dyn_to_bool`,
+///     i.e. JS truthiness, where `[]` is true.
+///   * `itemgetter`/`attrgetter`/`methodcaller` RETURN a callable. A profile
+///     emit consumes its arguments and leaves a value; it cannot build one.
+///
+/// `None` means "not ours" — the existing profile entries (`add`, `sub`, `eq`,
+/// …) keep handling those, and they are already correct.
+fn operator_call_lowering(name: &str, args: &[Argument]) -> Option<Expression> {
+    let obj = || Expression::ident("__o");
+    let arg0 = || args.first().map(|a| a.value.clone());
+    // Every positional argument, in order.
+    let positionals = || -> Vec<Expression> { args.iter().map(|a| a.value.clone()).collect() };
+    // `x ? <t> : <!t>` — Python truthiness via the conditional path.
+    let truthy = |cond: Expression, t: bool| {
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(cond),
+            then: Box::new(Expression::bool(t)),
+            else_: Box::new(Expression::bool(!t)),
+        })
+    };
+    // String-literal arguments only — `attrgetter`/`methodcaller` names are
+    // resolved at compile time, exactly as CPython resolves them at call time.
+    let str_args = || -> Option<Vec<String>> {
+        args.iter()
+            .map(|a| match &a.value.kind {
+                ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+
+    Some(match name {
+        "truth" => truthy(arg0()?, true),
+        "not_" => truthy(arg0()?, false),
+
+        // ── Callable factories ───────────────────────────────────────────
+        "itemgetter" => {
+            let keys = positionals();
+            let first = keys.first()?.clone();
+            if keys.len() == 1 {
+                py_lambda1("__o", py_index(obj(), first))
+            } else {
+                // Several keys yield a TUPLE — `(10, 30)`, not `[10, 30]`.
+                py_lambda1(
+                    "__o",
+                    Expression::new(ExprKind::Tuple(
+                        keys.into_iter().map(|k| py_index(obj(), k)).collect(),
+                    )),
+                )
+            }
+        }
+        "attrgetter" => {
+            let paths = str_args()?;
+            // `"child.child.val"` walks a chain of member reads.
+            let walk = |path: &String| path.split('.').fold(obj(), py_member);
+            let first = paths.first()?;
+            if paths.len() == 1 {
+                py_lambda1("__o", walk(first))
+            } else {
+                py_lambda1(
+                    "__o",
+                    Expression::new(ExprKind::Tuple(paths.iter().map(walk).collect())),
+                )
+            }
+        }
+        "methodcaller" => {
+            let ExprKind::Lit(Literal::Str(method)) = &args.first()?.value.kind else {
+                return None;
+            };
+            // Trailing arguments are the call's own arguments, verbatim — this
+            // keeps keyword args (`methodcaller("f", key=1)`) intact.
+            Expression::new(ExprKind::Lambda {
+                params: vec![lambda_param("__o")],
+                body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+                    callee: Box::new(py_member(obj(), method)),
+                    args: args[1..].to_vec(),
+                    optional: false,
+                }))),
+                is_async: false,
+                captures: vec![],
+            })
+        }
+
+        // ── Sequence queries ─────────────────────────────────────────────
+        // `countOf(a, v)` IS `a.count(v)` — reuse the receiver's own count so
+        // the list (`filter().length`) vs string (`str_count`) split stays in
+        // one place.
+        "countOf" => {
+            let seq = args.first()?.value.clone();
+            let needle = args.get(1)?.value.clone();
+            py_call(py_member(seq, "count"), vec![needle])
+        }
+        // `indexOf(a, v)` IS `a.index(v)` — including its ValueError on a miss,
+        // so the raising behaviour stays in one place.
+        "indexOf" => {
+            let seq = args.first()?.value.clone();
+            let needle = args.get(1)?.value.clone();
+            py_call(py_member(seq, "index"), vec![needle])
+        }
+        // `delitem(o, k)` IS `o.pop(k)` for both shapes Python allows:
+        // `list.pop(i)` drops the element at `i`, `dict.pop(k)` drops the key.
+        "delitem" => {
+            let target = args.first()?.value.clone();
+            let key = args.get(1)?.value.clone();
+            py_call(py_member(target, "pop"), vec![key])
+        }
+        // `index(x)` IS `x.__index__()` (PEP 357).
+        "index" => py_call(py_member(arg0()?, "__index__"), vec![]),
+
+        // ── In-place forms ───────────────────────────────────────────────
+        // `iadd(a, b)` is `a += b`. Python returns the result and callers
+        // rebind it (`lst = operator.iadd(lst, [3, 4])`), so lowering to the
+        // same helpers the binary operators use is both correct and keeps the
+        // list-concat / str-repeat / dunder dispatch in ONE place.
+        "iadd" | "iconcat" | "isub" | "imul" | "itruediv" | "ifloordiv" | "imod" | "ipow"
+        | "iand" | "ior" | "ixor" | "ilshift" | "irshift" => {
+            let a = args.first()?.value.clone();
+            let b = args.get(1)?.value.clone();
+            let binary = |op: BinOp| {
+                Expression::new(ExprKind::Binary {
+                    op,
+                    left: Box::new(a.clone()),
+                    right: Box::new(b.clone()),
+                })
+            };
+            match name {
+                "iadd" | "iconcat" => py_call(Expression::ident("__pyadd__"), vec![a, b]),
+                "imul" => py_call(Expression::ident("__pymul__"), vec![a, b]),
+                "isub" => binary(BinOp::Sub),
+                "itruediv" => binary(BinOp::Div),
+                "ifloordiv" => binary(BinOp::FloorDiv),
+                "imod" => binary(BinOp::Mod),
+                "ipow" => binary(BinOp::Pow),
+                "iand" => binary(BinOp::BitAnd),
+                "ior" => binary(BinOp::BitOr),
+                "ixor" => binary(BinOp::BitXor),
+                "ilshift" => binary(BinOp::Shl),
+                _ => binary(BinOp::Shr),
+            }
+        }
+
+        // `length_hint(o[, default])` — the exact length when `o` is sized.
+        // NOTE: for a true iterator CPython consults `__length_hint__`, which
+        // needs the iterator to carry its remaining count; ours does not, so
+        // that case is not covered here.
+        "length_hint" => py_call(Expression::ident("len"), vec![arg0()?]),
+
+        _ => return None,
+    })
+}
+
 fn lambda_param(name: &str) -> Param {
     Param {
         name: name.into(),
@@ -3564,7 +3756,70 @@ fn walk_del(pair: Pair<Rule>) -> Result<StmtKind, String> {
             }
         }
     }
+    // `del x` on a bare name runs the finaliser first.
+    //
+    // Deliberately only bare names: `del obj.attr` and `del obj[k]` remove a
+    // MEMBER, they do not drop the object, so no finaliser runs.
+    if let [target] = exprs.as_slice() {
+        if matches!(target.kind, ExprKind::Ident(_)) {
+            return Ok(StmtKind::Block(vec![
+                python_finalise_stmt(target),
+                Statement::new(StmtKind::Delete(exprs)),
+            ]));
+        }
+    }
+
     Ok(StmtKind::Delete(exprs))
+}
+
+/// `if typeof x.__del__ == "function": x.__del__()` — run `x`'s finaliser if it
+/// has one, immediately before the name stops referring to the object.
+///
+/// The test is a RUNTIME one, not a static "what class does `x` hold?" lookup,
+/// because Python is duck-typed: the name may have been rebound, and `__del__`
+/// may be inherited or attached at runtime. It also means this needs no
+/// variable→class tracking in the walker.
+///
+/// **Known imprecision, stated rather than hidden.** CPython finalises when the
+/// last REFERENCE goes away; this finalises when the NAME does. With an alias
+/// live (`y = x; del x`) CPython runs nothing and this runs `__del__` early.
+/// Getting that exact needs refcounting in the VM. The same trade was already
+/// made for PHP's `unset`, and running the finaliser in the common single-
+/// reference case is closer to Python than never running it at all.
+fn python_finalise_stmt(target: &Expression) -> Statement {
+    let type_of = |expr: Expression| Expression::new(ExprKind::TypeOf(Box::new(expr)));
+    let is = |expr: Expression, op: BinOp, s: &str| {
+        Expression::new(ExprKind::Binary {
+            op,
+            left: Box::new(expr),
+            right: Box::new(Expression::string(s)),
+        })
+    };
+    let del_member = Expression::new(ExprKind::Member {
+        object: Box::new(target.clone()),
+        field: "__del__".into(),
+        null_safe: false,
+    });
+    // `typeof x != "undefined"` FIRST, and `and` short-circuits, so the member
+    // read never happens for a name that does not exist yet. `TypeOf` is the
+    // only expression that tolerates an unbound name — reading one any other
+    // way faults, which is exactly what `x = None` as an INITIALISER does.
+    let cond = Expression::new(ExprKind::Binary {
+        op: BinOp::And,
+        left: Box::new(is(type_of(target.clone()), BinOp::NotEq, "undefined")),
+        right: Box::new(is(type_of(del_member.clone()), BinOp::Eq, "function")),
+    });
+    let call_finaliser = Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
+        callee: Box::new(del_member),
+        args: Vec::new(),
+        optional: false,
+    })));
+    Statement::new(StmtKind::If {
+        cond,
+        then_body: vec![call_finaliser],
+        elifs: Vec::new(),
+        else_body: None,
+    })
 }
 
 fn walk_assert(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -3794,7 +4049,7 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
             note_sql_var_if_producer(t, &value);
         }
         // Convert Tuple targets to Destructure for tuple unpacking (x, y = ...)
-        let targets = all_exprs
+        let targets: Vec<Expression> = all_exprs
             .into_iter()
             .map(|t| {
                 if let ExprKind::Tuple(elems) = &t.kind {
@@ -3805,6 +4060,27 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
             })
             .collect();
+        // `x = None` is Python's other idiom for dropping a reference. Run the
+        // finaliser on what `x` held, then rebind.
+        //
+        // Scoped to the `None` literal ON PURPOSE. Finalising on every rebind
+        // would fire on ordinary reassignment in loops and accumulators, where
+        // the old value is usually still referenced elsewhere — more often
+        // wrong than right, and a guarded read on every assignment besides.
+        //
+        // Safe when `x` does not exist yet (the overwhelmingly common
+        // `x = None` INITIALISER) because the guard leads with
+        // `typeof x != "undefined"` and `and` short-circuits.
+        if targets.len() == 1
+            && matches!(targets[0].kind, ExprKind::Ident(_))
+            && matches!(value.kind, ExprKind::Lit(Literal::Null))
+        {
+            let finalise = python_finalise_stmt(&targets[0]);
+            return Ok(StmtKind::Block(vec![
+                finalise,
+                Statement::new(StmtKind::Assign { targets, value }),
+            ]));
+        }
         Ok(StmtKind::Assign { targets, value })
     } else if all_exprs.len() == 1 {
         Ok(StmtKind::Expr(all_exprs.remove(0)))
@@ -7225,6 +7501,26 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     if let Some(rewritten) = rewrite_re_match_method(object, field, &args) {
                         return rewritten;
                     }
+                }
+            }
+            // `operator.<fn>(...)` — see [operator_call_lowering] for why these
+            // specific names cannot go through the profile. Arguments are
+            // desugared first so member reads inside them (`operator.truth(o.x)`)
+            // resolve the same as anywhere else.
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && matches!(&object.kind, ExprKind::Ident(n) if n == "operator")
+                && is_imported_module("operator")
+            {
+                let desugared: Vec<Argument> = args
+                    .iter()
+                    .cloned()
+                    .map(|mut a| {
+                        a.value = desugar_member_reads(a.value);
+                        a
+                    })
+                    .collect();
+                if let Some(lowered) = operator_call_lowering(field, &desugared) {
+                    return lowered;
                 }
             }
             // `string.Template(...)` / `string.Formatter()` / `string.capwords(...)`
