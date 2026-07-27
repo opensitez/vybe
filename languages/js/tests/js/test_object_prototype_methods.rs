@@ -412,4 +412,9 @@ crate::js_cases! {
         ["2"]
     };
 
+    prototype_of_object_create_null => {
+        r#"const o = Object.create(null); console.log(Object.getPrototypeOf(o) === null);"#,
+        ["true"]
+    };
+
 }

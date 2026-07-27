@@ -324,3 +324,120 @@ console.log(c.value);
         vec!["own"]
     );
 }
+
+#[test]
+fn derived_constructor_runs_field_initializers_before_body() {
+    assert_eq!(
+        run_js(
+            r#"
+const order = [];
+class Base {
+    constructor() { order.push("base"); }
+}
+class Derived extends Base {
+    initialized = (order.push("field"), 1);
+    constructor() {
+        super();
+        order.push("constructor");
+    }
+}
+new Derived();
+console.log(order.join("|"));
+"#
+        ),
+        vec!["base|field|constructor"]
+    );
+}
+
+#[test]
+fn static_super_chain_calls_base_methods() {
+    assert_eq!(
+        run_js(
+            r#"
+class Animal {
+    static who() { return "Animal"; }
+}
+class Mammal extends Animal {
+    static who() { return super.who() + ":Mammal"; }
+}
+class Dog extends Mammal {
+    static who() { return super.who() + ":Dog"; }
+}
+console.log(Dog.who());
+"#
+        ),
+        vec!["Animal:Mammal:Dog"]
+    );
+}
+
+#[test]
+fn static_super_reads_base_static_property() {
+    assert_eq!(
+        run_js(
+            r#"
+class Base {
+    static marker = "base";
+}
+class Child extends Base {
+    static marker = "child";
+    static getBaseMarker() {
+        return super.marker;
+    }
+}
+console.log(Child.marker);
+console.log(Child.getBaseMarker());
+console.log(Base.marker);
+"#
+        ),
+        vec!["child", "base", "base"]
+    );
+}
+
+#[test]
+fn derived_constructor_without_super_throws_reference_error() {
+    assert_eq!(
+        run_js(
+            r#"
+class Base {}
+class Broken extends Base {
+    constructor() {
+        this.x = 1;
+    }
+}
+
+let threw = false;
+try {
+    new Broken();
+} catch (e) {
+    threw = e instanceof ReferenceError;
+}
+console.log(threw);
+"#
+        ),
+        vec!["true"]
+    );
+}
+
+#[test]
+fn derived_instance_field_shadows_base_getter_property() {
+    assert_eq!(
+        run_js(
+            r#"
+class Base {
+    constructor() {
+        this.mode = "base-mode";
+    }
+}
+class Child extends Base {
+    constructor() {
+        super();
+        this.mode = "field-mode";
+    }
+}
+const child = new Child();
+console.log(`${child.mode}|${Object.hasOwn(child, "mode")}|${child.mode === "field-mode"}`);
+"#
+        ),
+        vec!["field-mode|true|true"]
+    );
+}

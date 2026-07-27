@@ -134,6 +134,35 @@ console.log(res.join(","));
 }
 
 #[test]
+fn test_js_labeled_while_loop_continue_executes_finally_before_iteration() {
+    let src = r#"
+let i = 0;
+const log = [];
+
+outer: while (i < 4) {
+    try {
+        log.push("body-" + i);
+        if (i === 1) {
+            i += 1;
+            continue outer;
+        }
+        log.push("work-" + i);
+        i++;
+    } finally {
+        log.push("finally-" + i);
+    }
+}
+
+console.log(log.join("|"));
+"#;
+
+    assert_eq!(
+        run_js(src),
+        vec!["body-0|work-0|finally-0|body-1|finally-2|work-2|finally-3|work-3|finally-4"]
+    );
+}
+
+#[test]
 fn test_js_labeled_for_in_loop() {
     let src = r#"
 const obj = { a: 1, b: 2, c: 3 };

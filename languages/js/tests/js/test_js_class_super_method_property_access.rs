@@ -92,6 +92,50 @@ console.log(CustomLogger.log("Hello"));
 }
 
 #[test]
+fn test_js_class_super_static_property_chain() {
+    let src = r#"
+class Base {
+    static get nameTag() { return "Base"; }
+}
+class Sub extends Base {
+    static get nameTag() { return super.nameTag + "->Sub"; }
+}
+console.log(Sub.nameTag);
+"#;
+    assert_eq!(run_js(src), vec!["Base->Sub"]);
+}
+
+#[test]
+fn test_js_class_super_static_setter_assignment() {
+    assert_eq!(
+        run_js(
+            r#"
+class Base {
+    static set marker(v) {
+        this._marker = `base:${v}`;
+    }
+    static get marker() {
+        return this._marker;
+    }
+}
+class Derived extends Base {
+    static applyMarker(v) {
+        super.marker = v;
+    }
+}
+
+Derived.applyMarker("X");
+console.log(Derived.marker);
+console.log(Base.marker);
+console.log(Object.hasOwn(Derived, "_marker"));
+console.log(Object.hasOwn(Base, "_marker"));
+"#,
+        ),
+        vec!["base:X", "undefined", "true", "false"]
+    );
+}
+
+#[test]
 fn test_js_class_super_method_call_in_object_literal_concise_method() {
     let src = r#"
 const parent = {

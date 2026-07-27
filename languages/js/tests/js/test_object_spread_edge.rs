@@ -158,6 +158,22 @@ console.log(chars[2]);
 }
 
 #[test]
+fn spread_string_adds_indexed_properties() {
+    assert_eq!(
+        run_js(
+        r#"
+const chars = { ..."hello" };
+console.log(chars[0]);
+console.log(chars[1]);
+console.log(chars[4]);
+console.log(Object.hasOwn(chars, "length"));
+            "#
+        ),
+        vec!["h", "e", "o", "false"]
+    );
+}
+
+#[test]
 fn nested_spread_pattern() {
     assert_eq!(
         run_js(

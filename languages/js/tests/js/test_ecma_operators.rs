@@ -32,9 +32,36 @@ fn modulo() {
 }
 
 #[test]
+fn arithmetic_nan_and_infinity() {
+    let out = run_js(
+        r#"
+console.log(1 / 0);
+console.log(-1 / 0);
+console.log(0 / 0);
+console.log(10 + NaN);
+console.log(Infinity - Infinity);
+"#,
+    );
+    assert_eq!(out, vec!["Infinity", "-Infinity", "NaN", "NaN", "NaN"]);
+}
+
+#[test]
 fn unary_plus() {
     let out = run_js(r#"console.log(+"42");"#);
     assert_eq!(out, vec!["42"]);
+}
+
+#[test]
+fn subtraction_with_boolean_and_string_operands() {
+    let out = run_js(
+        r#"
+console.log("10" - true);
+console.log(10 - false);
+console.log("3" - "1");
+console.log(true - false);
+"#,
+    );
+    assert_eq!(out, vec!["9", "10", "2", "1"]);
 }
 
 #[test]
@@ -365,6 +392,18 @@ console.log(x);
     assert_eq!(out, vec!["16", "4"]);
 }
 
+#[test]
+fn bitwise_shift_count_is_masked_to_low_five_bits() {
+    let out = run_js(
+        r#"
+console.log(-1 >> 33);
+console.log(-16 >>> 33);
+console.log(-16 >> 129);
+"#,
+    );
+    assert_eq!(out, vec!["-1", "2147483640", "-8"]);
+}
+
 // ── Ternary ────────────────────────────────────────────────
 
 #[test]
@@ -444,6 +483,35 @@ console.log("c" in obj);
     assert_eq!(out, vec!["true", "false"]);
 }
 
+#[test]
+fn in_operator_with_symbols() {
+    let out = run_js(
+        r#"
+const key = Symbol("key");
+const hidden = Symbol("hidden");
+const obj = { [key]: "present" };
+
+console.log(key in obj);
+console.log(hidden in obj);
+"#,
+    );
+    assert_eq!(out, vec!["true", "false"]);
+}
+
+#[test]
+fn in_operator_with_symbol_in_prototype_chain() {
+    let out = run_js(
+        r#"
+const key = Symbol("token");
+const proto = { [key]: "proto" };
+const obj = Object.create(proto);
+console.log(key in obj);
+console.log(Object.getOwnPropertySymbols(obj).length);
+"#,
+    );
+    assert_eq!(out, vec!["true", "0"]);
+}
+
 // ── delete ─────────────────────────────────────────────────
 
 #[test]
@@ -457,6 +525,25 @@ console.log(obj.b);
 "#,
     );
     assert_eq!(out, vec!["false", "2"]);
+}
+
+#[test]
+fn delete_non_configurable_property_returns_false() {
+    let out = run_js(
+        r#"
+const obj = {};
+Object.defineProperty(obj, "x", {
+    value: 42,
+    writable: false,
+    configurable: false,
+    enumerable: true,
+});
+
+console.log(delete obj.x);
+console.log(obj.x);
+"#,
+    );
+    assert_eq!(out, vec!["false", "42"]);
 }
 
 // ── void ───────────────────────────────────────────────────
@@ -498,6 +585,22 @@ console.log(obj?.["missing"]?.value);
 }
 
 #[test]
+fn bigints_mixed_with_numbers_throw_for_arithmetic() {
+    let out = run_js(
+        r#"
+try {
+    console.log(1n + 1);
+} catch (e) {
+    console.log(e.name);
+}
+console.log(String(8n / 3n));
+console.log(String((-5n) % 3n));
+"#,
+    );
+    assert_eq!(out, vec!["TypeError", "2", "-2"]);
+}
+
+#[test]
 fn optional_chaining_computed_index() {
     let out = run_js(
         r#"
@@ -507,6 +610,83 @@ console.log(list?.[5]?.name);
 "#,
     );
     assert_eq!(out, vec!["b", "undefined"]);
+}
+
+#[test]
+fn optional_chaining_call_skips_nonexistent_chain() {
+    let out = run_js(
+        r#"
+let calls = 0;
+const obj = {
+    greet() {
+        calls += 1;
+        return "hello";
+    }
+};
+console.log(obj?.greet?.());
+console.log((null?.toString)?.());
+console.log(calls);
+"#,
+    );
+    assert_eq!(out, vec!["hello", "undefined", "1"]);
+}
+
+#[test]
+fn optional_chaining_call_eager_property_lookup_only() {
+    let out = run_js(
+        r#"
+let calls = 0;
+const target = {
+    get printer() {
+        calls += 1;
+        return () => {
+            calls += 10;
+            return calls;
+        };
+    }
+};
+
+console.log(target?.printer?.());
+console.log((null?.printer)?.());
+console.log(calls);
+"#,
+    );
+    assert_eq!(out, vec!["11", "undefined", "11"]);
+}
+
+#[test]
+fn typeof_undeclared_is_undefined() {
+    let out = run_js(
+        r#"
+console.log(typeof definitelyMissing);
+"#,
+    );
+    assert_eq!(out, vec!["undefined"]);
+}
+
+#[test]
+fn comma_operator_evaluates_all_operands_left_to_right() {
+    let out = run_js(
+        r#"
+const seen = [];
+const value = (seen.push("a"), seen.push("b"), 5);
+console.log(value);
+console.log(seen.join(","));
+"#,
+    );
+    assert_eq!(out, vec!["5", "a,b"]);
+}
+
+#[test]
+fn modulo_sign_preserves_dividend_sign() {
+    let out = run_js(
+        r#"
+console.log(10 % -3);
+console.log(-10 % 3);
+console.log(-10 % -3);
+"#,
+    );
+    assert_eq!(out, vec!["1", "-1", "-1"]);
 }
 
 #[test]
@@ -625,4 +805,51 @@ console.log("apple" < "banana");
 "#,
     );
     assert_eq!(out, vec!["true", "true"]);
+}
+
+#[test]
+fn exponentiation_is_right_associative() {
+    let out = run_js(
+        r#"
+console.log(2 ** 3 * 2);
+console.log(2 ** (3 + 1));
+console.log(-(2 ** 3));
+"#,
+    );
+    assert_eq!(out, vec!["16", "16", "-8"]);
+}
+
+#[test]
+fn accessor_property_arithmetic_assignment_uses_getter_setter() {
+    let out = run_js(
+        r#"
+const obj = {
+    _x: 1,
+    get x() {
+        return this._x;
+    },
+    set x(v) {
+        this._x = v;
+    }
+};
+
+obj.x += 4;
+console.log(obj.x);
+console.log(obj._x);
+"#,
+    );
+    assert_eq!(out, vec!["5", "5"]);
+}
+
+#[test]
+fn delete_literal_expression_is_true() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(delete 123);
+console.log(delete "x");
+"#
+        ),
+        vec!["true", "true"]
+    );
 }

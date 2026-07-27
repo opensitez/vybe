@@ -88,6 +88,60 @@ try {
 }
 
 #[test]
+fn test_js_instanceof_symbol_hasinstance_truthy_falsy_returns_boolean() {
+    assert_eq!(
+        run_js(
+            r#"
+class TruthyInstance {
+    static [Symbol.hasInstance]() { return "truthy"; }
+}
+class FalsyInstance {
+    static [Symbol.hasInstance]() { return ""; }
+}
+console.log({} instanceof TruthyInstance);
+console.log({} instanceof FalsyInstance);
+"#
+        ),
+        vec!["true", "false"]
+    );
+}
+
+#[test]
+fn test_js_instanceof_symbol_hasinstance_observes_argument() {
+    assert_eq!(
+        run_js(
+            r#"
+const log = [];
+class Tracker {
+    static [Symbol.hasInstance](value) {
+        log.push(typeof value);
+        return value && value.token === "ok";
+    }
+}
+console.log({ token: "ok" } instanceof Tracker);
+console.log({ token: "bad" } instanceof Tracker);
+console.log(log.join("|"));
+"#
+        ),
+        vec!["true", "false", "object|object"]
+    );
+}
+
+#[test]
+fn test_js_in_operator_works_with_string_object_wrappers() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log("0" in new String("abc"));
+console.log(0 in new String("abc"));
+console.log("length" in new String(""));
+"#
+        ),
+        vec!["true", "true", "true"]
+    );
+}
+
+#[test]
 fn test_js_relational_numeric_comparisons() {
     let src = r#"
 console.log(`${5 < 10}:${5 > 10}:${5 <= 5}:${5 >= 6}`);
@@ -190,6 +244,28 @@ console.log(Account.isAccount(acc) + "|" + Account.isAccount({}));
 }
 
 #[test]
+fn test_js_instanceof_rhs_null_or_undefined_returns_false() {
+    assert_eq!(
+        run_js(
+            r#"
+const obj = {};
+try {
+    console.log(obj instanceof null);
+} catch (e) {
+    console.log("null");
+}
+try {
+    console.log(obj instanceof undefined);
+} catch (e) {
+    console.log("undefined");
+}
+"#
+        ),
+        vec!["false", "false"]
+    );
+}
+
+#[test]
 fn test_js_relational_symbol_operand_throws_typeerror() {
     let src = r#"
 try {
@@ -199,4 +275,73 @@ try {
 }
 "#;
     assert_eq!(run_js(src), vec!["Relational Symbol TypeError"]);
+}
+
+#[test]
+fn test_js_instanceof_uses_current_prototype_property_of_rhs() {
+    let src = r#"
+function C() {}
+const before = new C();
+console.log(before instanceof C);
+
+C.prototype = {};
+const after = new C();
+console.log(after instanceof C);
+console.log(before instanceof C);
+"#;
+    assert_eq!(run_js(src), vec!["true", "true", "false"]);
+}
+
+#[test]
+fn test_js_instanceof_with_symbol_instanceof_primitive_wrapper() {
+    let src = r#"
+console.log(`foo` instanceof String);
+console.log(new String("foo") instanceof String);
+"#;
+    assert_eq!(run_js(src), vec!["false", "true"]);
+}
+
+#[test]
+fn test_js_in_operator_numeric_left_operand_coerces_to_property_key() {
+    let src = r#"
+const arr = ["a", "b", "c"];
+console.log(`${1 in arr}:${"1" in arr}`);
+console.log(`${99 in arr}:${99n in arr}`);
+"#;
+    assert_eq!(run_js(src), vec!["true:true", "false:true"]);
+}
+
+#[test]
+fn test_js_instanceof_function_with_non_object_prototype_throws() {
+    let src = r#"
+function Weird() {}
+Weird.prototype = 123;
+console.log(({}) instanceof Weird);
+"#;
+    assert_eq!(run_js(src), vec!["false"]);
+}
+
+#[test]
+fn test_js_relational_boolean_and_number_coercion() {
+    let src = r#"
+console.log(`${false < true}:${false <= 0}:${true > false}:${true >= 1}`);
+"#;
+    assert_eq!(run_js(src), vec!["true:true:true:true"]);
+}
+
+#[test]
+fn test_js_in_operator_integer_property_key_coercion() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(`${0 in { 0: "zero", 1: "one" }}:${2 in { 0: "zero", 1: "one" }}`);
+"#
+        ),
+        vec!["true:false"]
+    );
+}
+
+#[test]
+fn test_js_instanceof_boolean_rhs_returns_false() {
+    assert_eq!(run_js("console.log(({}) instanceof true);"), vec!["false"]);
 }

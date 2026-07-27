@@ -101,7 +101,7 @@ console.log(matches[2][0]);
 }
 
 #[test]
-fn string_starts_ends_with_position() {
+fn string_starts_ends_with_position_from_index() {
     assert_eq!(
         run_js(
             r#"
@@ -111,6 +111,20 @@ console.log(s.endsWith("hello", 5));
 "#
         ),
         vec!["true", "true"]
+    );
+}
+
+#[test]
+fn string_replace_all_and_includes_positioning() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log("foo bar foo".replaceAll("foo", "baz"));
+console.log("hello world".includes("wor"));
+console.log("hello world".includes("world", 10));
+"#
+        ),
+        vec!["baz bar baz", "true", "false"]
     );
 }
 
@@ -185,16 +199,115 @@ console.log(chars.join("-"));
 }
 
 #[test]
+fn string_methods_more_split_with_limit() {
+    assert_eq!(
+        run_js(
+            r#"
+const parts = "a,b,c".split(",", 2);
+console.log(parts.length);
+console.log(parts.join("|"));
+"#
+        ),
+        vec!["2", "a|b"]
+    );
+}
+
+#[test]
+fn string_includes_with_from_index() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log("javascript".includes("script", 4));
+console.log("javascript".includes("script", 5));
+"#
+        ),
+        vec!["true", "false"]
+    );
+}
+
+#[test]
+fn string_starts_ends_with_position() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log("hello world".startsWith("world", 6));
+console.log("hello world".endsWith("world", 11));
+console.log("hello world".endsWith("hello", 5));
+"#
+        ),
+        vec!["true", "true", "true"]
+    );
+}
+
+#[test]
+fn string_repeat_with_zero_and_fraction() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log("ab".repeat(0));
+console.log("ab".repeat(2.8));
+"#
+        ),
+        vec!["", "abab"]
+    );
+}
+
+#[test]
 fn string_repeat_throws_on_negative() {
     assert_eq!(
         run_js(
             r#"
-// normalize("NFC") throws RangeError for an unrecognized form
 let threw = false;
 try { "hello".normalize("INVALID"); } catch (e) { threw = e instanceof RangeError; }
 console.log(threw);
 "#
         ),
         vec!["true"]
+    );
+}
+
+#[test]
+fn string_normalize_nfc_canonicalizes_accents() {
+    assert_eq!(
+        run_js(
+            r#"
+const decomposed = "e\u0301";
+const normalized = decomposed.normalize("NFC");
+console.log(decomposed.length);
+console.log(normalized.length);
+console.log(normalized === "\u00e9");
+"#
+        ),
+        vec!["2", "1", "true"]
+    );
+}
+
+#[test]
+fn string_code_point_round_trip() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log("ABC".codePointAt(0));
+console.log("ABC".codePointAt(1));
+console.log("😀".length);
+console.log("😀".codePointAt(0));
+console.log(String.fromCodePoint(0x41, 0x42));
+"#
+        ),
+        vec!["65", "66", "2", "128512", "AB"]
+    );
+}
+
+#[test]
+fn string_split_with_regex_separator() {
+    assert_eq!(
+        run_js(
+            r#"
+const parts = "a, b, c".split(/,\s*/);
+console.log(parts.length);
+console.log(parts.join("|"));
+"#
+        ),
+        vec!["3", "a|b|c"]
     );
 }

@@ -108,6 +108,34 @@ console.log(obj.val + "|Setters=" + setterCount);
 }
 
 #[test]
+fn test_js_logical_assignment_and_assignment_short_circuited_by_falsy_property() {
+    let src = r#"
+let setterCalls = 0;
+let rhsExecuted = false;
+
+const obj = {
+    _x: 0,
+    get x() {
+        return this._x;
+    },
+    set x(v) {
+        setterCalls++;
+        this._x = v;
+    },
+};
+
+    obj.x &&= (rhsExecuted = true, 99);
+console.log(`${obj.x}|${setterCalls}|${rhsExecuted}`);
+
+obj._x = 1;
+rhsExecuted = false;
+obj.x &&= (rhsExecuted = true, 33);
+console.log(`${obj.x}|${setterCalls}|${rhsExecuted}`);
+"#;
+    assert_eq!(run_js(src), vec!["0|1|false", "33|2|true"]);
+}
+
+#[test]
 fn test_js_logical_assignment_setter_called_when_evaluated() {
     let src = r#"
 let setterCount = 0;
@@ -244,4 +272,57 @@ sym ||= targetSym;
 console.log(sym === targetSym);
 "#;
     assert_eq!(run_js(src), vec!["true"]);
+}
+
+#[test]
+fn test_js_logical_assignment_accessor_setter_getter_calls() {
+    let src = r#"
+let getCount = 0;
+let setCount = 0;
+const obj = {
+    _value: null,
+    get value() {
+        getCount++;
+        return this._value;
+    },
+    set value(v) {
+        setCount++;
+        this._value = v;
+    }
+};
+
+obj.value ||= "fallback";
+obj.value ||= "ignored";
+obj.value &&= "updated";
+
+console.log(`${obj.value}|${getCount}|${setCount}`);
+"#;
+assert_eq!(run_js(src), vec!["updated|4|3"]);
+}
+
+#[test]
+fn test_js_logical_assignment_computed_property_uses_rhs_short_circuit_per_operator() {
+    let src = r#"
+let keyEval = 0;
+const key = () => {
+    keyEval++;
+    return "value";
+};
+
+const obj = {
+    value: null,
+};
+
+obj[key()] ||= "filled"; // assigns
+obj[key()] ||= "ignored"; // short-circuit, no assign
+obj[key()] &&= "final";  // assigns
+
+console.log(obj.value);
+console.log(keyEval);
+"#;
+
+    assert_eq!(
+        run_js(src),
+        vec!["final", "6"]
+    );
 }

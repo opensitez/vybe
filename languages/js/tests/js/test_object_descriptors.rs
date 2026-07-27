@@ -59,6 +59,27 @@ console.log(threw);
 }
 
 #[test]
+fn define_property_on_non_extensible_object_throws_in_strict_mode() {
+    assert_eq!(
+        run_js(
+            r#"
+"use strict";
+const obj = Object.preventExtensions({ a: 1 });
+let threw = false;
+try {
+    Object.defineProperty(obj, "b", { value: 2 });
+} catch {
+    threw = true;
+}
+console.log(threw);
+console.log(obj.b);
+"#
+        ),
+        vec!["true", "undefined"]
+    );
+}
+
+#[test]
 fn define_property_accessor_get_set() {
     assert_eq!(
         run_js(
@@ -95,6 +116,29 @@ console.log(obj[sym]);
 }
 
 // ── Object.getOwnPropertyDescriptor ─────────────────────────────────────────
+
+#[test]
+fn get_own_property_descriptor_accessor_shape() {
+    assert_eq!(
+        run_js(
+            r#"
+const obj = {};
+Object.defineProperty(obj, "n", {
+    get() { return 7; },
+    set(v) { this._n = v; },
+    enumerable: false,
+    configurable: true
+});
+const d = Object.getOwnPropertyDescriptor(obj, "n");
+console.log(typeof d.get);
+console.log(typeof d.set);
+console.log(d.enumerable);
+console.log(d.configurable);
+"#
+        ),
+        vec!["function", "function", "false", "true"]
+    );
+}
 
 #[test]
 fn get_own_property_descriptor_data_descriptor() {
@@ -142,6 +186,29 @@ console.log(Object.getOwnPropertyDescriptor(obj, "missing"));
 }
 
 // ── Object.defineProperties ───────────────────────────────────────────────────
+
+#[test]
+fn define_properties_throws_nonextensible_in_strict_mode() {
+    assert_eq!(
+        run_js(
+            r#"
+"use strict";
+const obj = Object.preventExtensions({});
+let threw = false;
+try {
+    Object.defineProperties(obj, {
+        a: { value: 1 },
+    });
+} catch {
+    threw = true;
+}
+console.log(threw);
+console.log(obj.a);
+"#
+        ),
+        vec!["false", "1"]
+    );
+}
 
 #[test]
 fn define_properties_adds_multiple_at_once() {
@@ -323,6 +390,25 @@ console.log(result.x);
 "#
         ),
         vec!["3"]
+    );
+}
+
+#[test]
+fn object_assign_symbol_properties_are_copied() {
+    assert_eq!(
+        run_js(
+            r#"
+const s = Symbol("s");
+const source = { a: 1 };
+source[s] = 2;
+const result = Object.assign({}, source, { b: 3 });
+console.log(result.a);
+console.log(result.b);
+console.log(result[s]);
+console.log(Object.getOwnPropertySymbols(result).length);
+"#
+        ),
+        vec!["1", "3", "2", "1"]
     );
 }
 

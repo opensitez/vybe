@@ -167,3 +167,53 @@ console.log(+[1,2]);
         vec!["0", "NaN", "1", "0", "0", "1", "NaN"]
     );
 }
+
+#[test]
+fn valueof_tostring_are_tied_to_primitive_hints() {
+    assert_eq!(
+        run_js(
+            r#"
+const trace = [];
+const obj = {
+    valueOf() {
+        trace.push("valueOf");
+        return 4;
+    },
+    toString() {
+        trace.push("toString");
+        return "9";
+    }
+};
+console.log(+obj);
+console.log(`${obj}`);
+console.log(trace.join(","));
+"#
+        ),
+        vec!["4", "9", "valueOf,toString"]
+    );
+}
+
+#[test]
+fn object_to_primitive_must_return_primitive() {
+    assert_eq!(
+        run_js(
+            r#"
+const bad = {
+    valueOf() {
+        throw new Error("valueOf boom");
+    },
+    toString() {
+        return "ok";
+    }
+};
+try {
+    console.log(+bad);
+} catch (e) {
+    console.log(e.message);
+}
+console.log(String(bad));
+"#
+        ),
+        vec!["valueOf boom", "ok"]
+    );
+}

@@ -44,6 +44,27 @@ console.log(result.join("|"));
 }
 
 #[test]
+fn labeled_continue_in_for_loop_still_executes_finally() {
+    let out = run_js(
+        r#"
+let log = [];
+outer: for (let i = 0; i < 3; i++) {
+    try {
+        if (i === 1) {
+            continue outer;
+        }
+        log.push("body-" + i);
+    } finally {
+        log.push("finally-" + i);
+    }
+}
+console.log(log.join("|"));
+"#
+    );
+    assert_eq!(out, vec!["body-0|finally-0|finally-1|body-2|finally-2"]);
+}
+
+#[test]
 fn labeled_block_break() {
     assert_eq!(
         run_js(
@@ -58,6 +79,27 @@ console.log(x);
 "#
         ),
         vec!["1"]
+    );
+}
+
+#[test]
+fn labeled_block_with_finally_runs_on_break() {
+    assert_eq!(
+        run_js(
+            r#"
+let steps = [];
+outer: {
+    try {
+        steps.push("before");
+        break outer;
+    } finally {
+        steps.push("finally");
+    }
+}
+console.log(steps.join("|"));
+"#
+        ),
+        vec!["before|finally"]
     );
 }
 
@@ -95,6 +137,75 @@ console.log(i);
 "#
         ),
         vec!["3"]
+    );
+}
+
+#[test]
+fn for_loop_finally_runs_before_break() {
+    assert_eq!(
+        run_js(
+            r#"
+let events = [];
+for (let i = 0; i < 3; i++) {
+    try {
+        events.push("loop-" + i);
+        if (i === 1) {
+            break;
+        }
+    } finally {
+        events.push("finally-" + i);
+    }
+}
+console.log(events.join(","));
+"#
+        ),
+        vec!["loop-0,finally-0,loop-1,finally-1"]
+    );
+}
+
+#[test]
+fn for_loop_continue_runs_finally_and_resumes() {
+    assert_eq!(
+        run_js(
+            r#"
+let events = [];
+for (let i = 0; i < 3; i++) {
+    try {
+        if (i === 1) {
+            continue;
+        }
+        events.push("work-" + i);
+    } finally {
+        events.push("finally-" + i);
+    }
+}
+console.log(events.join(","));
+"#
+        ),
+        vec!["work-0,finally-0,finally-1,work-2,finally-2"]
+    );
+}
+
+#[test]
+fn for_loop_continue_runs_finally_before_next_iteration() {
+    assert_eq!(
+        run_js(
+            r#"
+let log = [];
+for (let i = 0; i < 3; i++) {
+    try {
+        if (i === 1) {
+            continue;
+        }
+        log.push("body-" + i);
+    } finally {
+        log.push("finally-" + i);
+    }
+}
+console.log(log.join(","));
+"#
+        ),
+        vec!["body-0,finally-0,finally-1,body-2,finally-2"]
     );
 }
 
@@ -251,11 +362,34 @@ fn for_in_on_array_yields_indices_as_strings() {
             r#"
 const arr = ["x", "y", "z"];
 const indices = [];
-for (const i in arr) indices.push(typeof i + ":" + i);
+for (const i in arr) {
+    if (Object.prototype.hasOwnProperty.call(arr, i)) {
+        indices.push(typeof i + ":" + i);
+    }
+}
 console.log(indices.join("|"));
-"#
+"# 
         ),
         vec!["string:0|string:1|string:2"]
+    );
+}
+
+#[test]
+fn for_in_ignores_symbol_keys() {
+    assert_eq!(
+        run_js(
+            r#"
+const key = Symbol("secret");
+const obj = { a: 1 };
+obj[key] = 2;
+const keys = [];
+for (const k in obj) keys.push(k);
+console.log(keys.includes("a"));
+console.log(keys.includes("secret"));
+console.log(keys.includes(key));
+"#
+        ),
+        vec!["true", "false", "false"]
     );
 }
 
@@ -317,6 +451,31 @@ console.log(log.join(","));
 "#
         ),
         vec!["try,finally"]
+    );
+}
+
+#[test]
+fn finally_executes_before_function_return_from_loop() {
+    assert_eq!(
+        run_js(
+            r#"
+function scan() {
+    const events = [];
+    for (let i = 0; i < 3; i++) {
+        try {
+            events.push("try-" + i);
+            if (i === 1) return events.join("|");
+        } finally {
+            events.push("finally-" + i);
+        }
+    }
+    return "after";
+}
+console.log(scan());
+console.log("outer-start");
+"#
+        ),
+        vec!["try-0|finally-0|try-1", "outer-start"]
     );
 }
 
@@ -564,6 +723,67 @@ console.log(result.join(","));
     );
 }
 
+#[test]
+fn for_of_continue_still_runs_finally() {
+    assert_eq!(
+        run_js(
+            r#"
+const log = [];
+for (const x of [1, 2, 3]) {
+    try {
+        if (x === 2) continue;
+        log.push("body-" + x);
+    } finally {
+        log.push("finally-" + x);
+    }
+}
+console.log(log.join("|"));
+"#
+        ),
+        vec!["body-1|finally-1|finally-2|body-3|finally-3"]
+    );
+}
+
+#[test]
+fn for_of_iterable_iterator_return_called_on_throw() {
+    assert_eq!(
+        run_js(
+            r#"
+let nextCount = 0;
+let returnCount = 0;
+const iterable = {
+    [Symbol.iterator]() {
+        return {
+            next() {
+                nextCount++;
+                return nextCount === 1
+                    ? { value: nextCount, done: false }
+                    : { done: true };
+            },
+            return() {
+                returnCount++;
+                return { done: true };
+            }
+        };
+    }
+};
+
+try {
+    for (const value of iterable) {
+        if (value === 1) {
+            throw new Error("loop failure");
+        }
+    }
+} catch (e) {
+    console.log(e.message);
+}
+console.log(`${nextCount}:${returnCount}`);
+"#
+        ),
+        vec!["loop failure", "1:1"]
+    );
+}
+
 // ── in operator ───────────────────────────────────────────────────────────────
 
 #[test]
@@ -660,6 +880,35 @@ console.log(sum);
     );
 }
 
+#[test]
+fn while_loop_continue_executes_finally_each_iteration() {
+    assert_eq!(
+        run_js(
+            r#"
+let log = [];
+let i = 0;
+
+while (i < 3) {
+    try {
+        const next = i;
+        if (i === 1) {
+            log.push("continue-" + next);
+            i += 1;
+            continue;
+        }
+        log.push("body-" + next);
+        i += 1;
+    } finally {
+        log.push("finally-" + i);
+    }
+}
+console.log(log.join("|"));
+"#
+        ),
+        vec!["body-0|finally-1|continue-1|finally-2|body-2|finally-3"]
+    );
+}
+
 // ── throw in finally ─────────────────────────────────────────────────────────
 
 #[test]
@@ -699,5 +948,145 @@ console.log(result.join(","));
 "#
         ),
         vec!["0,1,3"]
+    );
+}
+
+#[test]
+fn if_else_if_chain_picks_first_match() {
+    assert_eq!(
+        run_js(
+            r#"
+let score = 72;
+let grade;
+if (score >= 90) {
+    grade = "A";
+} else if (score >= 80) {
+    grade = "B";
+} else if (score >= 70) {
+    grade = "C";
+} else {
+    grade = "F";
+}
+console.log(grade);
+"#
+        ),
+        vec!["C"]
+    );
+}
+
+#[test]
+fn if_condition_truthiness_short_circuiting() {
+    assert_eq!(
+        run_js(
+            r#"
+let hit = 0;
+if ("") {
+    hit += 1;
+} else if (0 || false) {
+    hit += 10;
+} else {
+    hit += 100;
+}
+console.log(hit);
+"#
+        ),
+        vec!["100"]
+    );
+}
+
+#[test]
+fn if_statement_block_scope_isolated_between_branches() {
+    assert_eq!(
+        run_js(
+            r#"
+const out = [];
+if (false) {
+    const branch = "if";
+    out.push(branch);
+} else {
+    const branch = "else";
+    out.push(branch);
+}
+let leaked = false;
+try {
+    branch;
+} catch (e) {
+    leaked = e instanceof ReferenceError;
+}
+out.push(String(leaked));
+console.log(out.join("|"));
+        "#
+        ),
+        vec!["else|true"]
+    );
+}
+
+#[test]
+fn while_loop_continue_and_break_control_flow() {
+    assert_eq!(
+        run_js(
+            r#"
+let i = 0;
+const values = [];
+while (i < 6) {
+    i++;
+    if (i === 2) continue;
+    if (i === 5) break;
+    values.push(i);
+}
+console.log(values.join(","));
+"#
+        ),
+        vec!["1,3,4"]
+    );
+}
+
+#[test]
+fn while_loop_break_runs_finally_and_stops() {
+    assert_eq!(
+        run_js(
+            r#"
+let log = [];
+let i = 0;
+
+while (i < 3) {
+    try {
+        if (i === 1) {
+            break;
+        }
+        log.push("body-" + i);
+        i++;
+    } finally {
+        log.push("finally-" + i);
+    }
+}
+console.log(log.join("|"));
+console.log(i);
+"#
+        ),
+        vec!["body-0|finally-1|finally-1", "1"]
+    );
+}
+
+#[test]
+fn for_of_continue_and_finally_in_loop() {
+    assert_eq!(
+        run_js(
+            r#"
+const out = [];
+for (const item of [1, 2, 3]) {
+    try {
+        if (item === 2) {
+            continue;
+        }
+        out.push("body-" + item);
+    } finally {
+        out.push("finally-" + item);
+    }
+}
+console.log(out.join("|"));
+"#
+        ),
+        vec!["body-1|finally-1|finally-2|body-3|finally-3"]
     );
 }

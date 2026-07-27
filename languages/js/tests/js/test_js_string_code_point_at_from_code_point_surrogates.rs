@@ -64,6 +64,15 @@ try {
 }
 
 #[test]
+fn test_js_string_from_code_point_minus_zero_is_zero() {
+    let src = r#"
+const c = String.fromCodePoint(-0);
+console.log(`${c.length}:${c.charCodeAt(0)}`);
+"#;
+    assert_eq!(run_js(src), vec!["1:0"]);
+}
+
+#[test]
 fn test_js_string_code_point_at_index_out_of_bounds() {
     let src = r#"
 const str = "A";

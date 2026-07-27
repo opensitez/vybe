@@ -98,6 +98,11 @@ crate::js_cases! {
         ["-1"]
     };
 
+    array_findindex_skips_missing_elements => {
+        r#"console.log([, undefined, 1].findIndex(x => x === undefined));"#,
+        ["1"]
+    };
+
     array_findlast_es2023 => {
         r#"console.log([1,4,3,4].findLast(x=>x>2));"#,
         ["4"]
@@ -209,6 +214,11 @@ crate::js_cases! {
         ["false"]
     };
 
+    array_includes_with_negative_from_index => {
+        r#"console.log([1,2,3].includes(3,-2));"#,
+        ["true"]
+    };
+
     array_splice_delete_count_zero_inserts => {
         r#"const a=[1,2]; a.splice(1,0,9); console.log(a.join(","));"#,
         ["1,9,2"]
@@ -217,6 +227,11 @@ crate::js_cases! {
     array_slice_on_sparse_preserves_holes => {
         r#"const a=[1,,3]; console.log(a.slice().length);"#,
         ["3"]
+    };
+
+    array_slice_neg_start_below_zero => {
+        r#"console.log([1,2,3,4].slice(-10,2).join(","));"#,
+        ["1,2"]
     };
 
     // Node-verified: concat spreads only ARRAYS (§23.1.3.1

@@ -171,6 +171,32 @@ console.log(obj + 10);
 }
 
 #[test]
+fn test_js_plus_operator_symbol_toprimitive_typeerror() {
+    let src = r#"
+const obj = {
+    [Symbol.toPrimitive]() {
+        return Symbol("bad");
+    }
+};
+try {
+    console.log(obj + "x");
+} catch (e) {
+    console.log("Symbol ToPrimitive TypeError");
+}
+"#;
+    assert_eq!(run_js(src), vec!["Symbol ToPrimitive TypeError"]);
+}
+
+#[test]
+fn test_js_plus_operator_object_default_hint_vs_numeric_hint_difference() {
+    let src = r#"
+const obj = { valueOf: () => "10" };
+console.log(`${obj + 1}:${obj - 1}`);
+"#;
+    assert_eq!(run_js(src), vec!["101:9"]);
+}
+
+#[test]
 fn test_js_subtraction_operator_object_toprimitive_number_hint() {
     let src = r#"
 const obj = {
@@ -224,4 +250,20 @@ fn test_js_implicit_coercion_bitwise_operators() {
 console.log(`${"5" | "3"}:${true << 2}:${false | 1}`);
 "#;
     assert_eq!(run_js(src), vec!["7:4:1"]);
+}
+
+#[test]
+fn test_js_plus_operator_arrays_in_arithmetic_context() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log([""] + 1);
+console.log([] + 1);
+console.log([1] - 2);
+console.log([1] - [2]);
+console.log([1, 2] - 1);
+"#
+        ),
+        vec!["1", "1", "-1", "-1", "NaN"]
+    );
 }

@@ -199,3 +199,87 @@ console.log(b);
         vec!["found", "found"]
     );
 }
+
+#[test]
+fn accessor_rhs_short_circuits_or_and_and() {
+    assert_eq!(
+        run_js(
+            r#"
+let calls = 0;
+const obj = {
+    _x: null,
+    get x() {
+        calls += 1;
+        return this._x;
+    },
+    set x(v) {
+        calls += 1;
+        this._x = v;
+    },
+};
+
+obj.x ||= 10;
+obj.x ||= 20;
+obj.x &&= 30;
+
+console.log(obj._x);
+console.log(calls);
+"#
+        ),
+        vec!["30", "6"],
+    );
+}
+
+#[test]
+fn and_assign_preserves_falsy_without_setter() {
+    assert_eq!(
+        run_js(
+            r#"
+let calls = 0;
+const obj = {
+    _x: "",
+    get x() {
+        calls += 1;
+        return this._x;
+    },
+    set x(v) {
+        calls += 1;
+        this._x = v;
+    },
+};
+
+obj.x &&= 99;
+obj._x = "value";
+obj.x &&= 77;
+
+console.log(obj._x);
+console.log(calls);
+"#
+        ),
+        vec!["77", "4"],
+    );
+}
+
+#[test]
+fn computed_property_evaluated_once_per_logical_assignment() {
+    assert_eq!(
+        run_js(
+            r#"
+let compute_count = 0;
+const key = () => {
+    compute_count++;
+    return "flag";
+};
+const obj = { flag: 0 };
+
+obj[key()] ||= 1;
+obj[key()] ||= 2;
+obj[key()] &&= 3;
+
+console.log(obj.flag);
+console.log(compute_count);
+"#,
+        ),
+        vec!["3", "6"],
+    );
+}

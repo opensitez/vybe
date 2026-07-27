@@ -36,7 +36,7 @@ console.log(Object.keys(obj).join(","));
 console.log(Object.getOwnPropertySymbols(obj).length);
 "#
         ),
-        vec!["a,b", "1"]
+        vec!["a,b,Symbol(x)", "1"]
     );
 }
 
@@ -73,6 +73,28 @@ console.log(keys.includes("toString"));
 "#
         ),
         vec!["false"]
+    );
+}
+
+#[test]
+fn for_in_skips_symbol_keys() {
+    assert_eq!(
+        run_js(
+            r#"
+const sym = Symbol("s");
+const obj = { a: 1 };
+obj[sym] = 2;
+const keys = [];
+for (const key in obj) {
+    keys.push(key);
+}
+console.log(keys.includes("a"));
+console.log(keys.includes("s"));
+console.log(keys.includes(sym));
+console.log(Object.keys(obj).includes("a"));
+"#
+        ),
+        vec!["true", "false", "false", "true"]
     );
 }
 
@@ -114,6 +136,26 @@ console.log(Object.getOwnPropertySymbols(obj).length > 0);
 "#
         ),
         vec!["true", "true", "true"]
+    );
+}
+
+#[test]
+fn reflect_ownkeys_order_with_integers_and_symbols() {
+    assert_eq!(
+        run_js(
+            r#"
+const s1 = Symbol("first");
+const s2 = Symbol("second");
+const obj = { "10": "ten", "a": "ay", "2": "two", [s1]: "one", [s2]: "two" };
+const keys = Reflect.ownKeys(obj);
+console.log(keys.length);
+console.log(keys[0]);
+console.log(keys[1]);
+console.log(keys[2]);
+console.log(typeof keys[3]);
+"#
+        ),
+        vec!["5", "2", "10", "a", "symbol"]
     );
 }
 

@@ -178,3 +178,70 @@ fn test_class_with_array() {
     "#;
     assert_eq!(run_js_one(code), "3 3");
 }
+
+#[test]
+fn test_class_getter_setter() {
+    let code = r#"
+        class Temperature {
+            constructor(celsius) {
+                this.celsius = celsius;
+            }
+            get fahrenheit() {
+                return this.celsius * 9 / 5 + 32;
+            }
+            set fahrenheit(value) {
+                this.celsius = (value - 32) * 5 / 9;
+            }
+        }
+        const t = new Temperature(0);
+        const f = t.fahrenheit;
+        t.fahrenheit = 212;
+        console.log(f, t.celsius);
+    "#;
+    assert_eq!(run_js_one(code), "32 100");
+}
+
+#[test]
+fn test_class_static_methods() {
+    let code = r#"
+        class MathTools {
+            static add(a, b) {
+                return a + b;
+            }
+            static triple(v) {
+                return MathTools.add(v, v + v);
+            }
+        }
+        const total = MathTools.add(4, 5);
+        const triple = MathTools.triple(7);
+        console.log(total, triple);
+    "#;
+    assert_eq!(run_js_one(code), "9 21");
+}
+
+#[test]
+fn test_class_inheritance_super_call() {
+    let code = r#"
+        class Base {
+            constructor(name) {
+                this.kind = "base";
+                this.name = name;
+            }
+            describe() {
+                return this.kind + ":" + this.name;
+            }
+        }
+        class Derived extends Base {
+            constructor(name, role) {
+                super(name);
+                this.role = role;
+            }
+            describe() {
+                return super.describe() + ":" + this.role;
+            }
+        }
+        const d = new Derived("alpha", "admin");
+        console.log(d.describe());
+    "#;
+    assert_eq!(run_js_one(code), "base:alpha:admin");
+}

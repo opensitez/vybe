@@ -148,4 +148,31 @@ console.log((12).toExponential());
 "#,
         ["1.2e+1"]
     };
+
+    number_is_integer_and_safe_integer_checks => {
+        r#"
+console.log(Number.isInteger(10));
+console.log(Number.isInteger(10.1));
+console.log(Number.isSafeInteger(9007199254740991));
+console.log(Number.isSafeInteger(9007199254740992));
+"#,
+        ["true", "false", "true", "false"]
+    };
+
+    number_min_max_safe_integer_are_numbers => {
+        r#"
+console.log(Number.MIN_SAFE_INTEGER);
+console.log(Number.MAX_SAFE_INTEGER);
+console.log(Number.MIN_SAFE_INTEGER + 2);
+"#,
+        ["-9007199254740991", "9007199254740991", "-9007199254740989"]
+    };
+
+    number_parse_float_handles_unicode_spaces => {
+        r#"
+console.log(parseFloat("\t  42.5\n"));
+console.log(parseFloat("-10.5foo"));
+"#,
+        ["42.5", "-10.5"]
+    };
 }

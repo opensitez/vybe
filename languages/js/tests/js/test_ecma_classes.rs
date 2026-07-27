@@ -229,6 +229,60 @@ console.log(v.check(""));
 }
 
 #[test]
+fn class_constructor_return_overrides_instance() {
+    let out = run_js(
+        r#"
+class Box {
+    constructor() {
+        return { marker: "boxed" };
+    }
+}
+const x = new Box();
+console.log(x instanceof Box);
+console.log(x.marker);
+"#,
+    );
+    assert_eq!(out, vec!["false", "boxed"]);
+}
+
+#[test]
+fn class_field_initializers_use_previous_field_value() {
+    let out = run_js(
+        r#"
+class Counter {
+    value = 1;
+    doubled = this.value * 2;
+}
+const x = new Counter();
+console.log(x.value);
+console.log(x.doubled);
+"#,
+    );
+    assert_eq!(out, vec!["1", "2"]);
+}
+
+#[test]
+fn class_super_accessor_access() {
+    let out = run_js(
+        r#"
+class Base {
+    get score() { return this._score; }
+    set score(v) { this._score = v; }
+}
+class Derived extends Base {
+    set score(v) { super.score = v + 1; }
+    get score() { return super.score * 2; }
+}
+const d = new Derived();
+d.score = 3;
+console.log(d.score);
+console.log(d._score);
+"#,
+    );
+    assert_eq!(out, vec!["8", "4"]);
+}
+
+#[test]
 fn class_multi_level_inheritance() {
     let out = run_js(
         r#"
@@ -330,4 +384,78 @@ console.log(p.toString());
 "#,
     );
     assert_eq!(out, vec!["(3, 4)"]);
+}
+
+#[test]
+fn class_static_field_and_static_method() {
+    let out = run_js(
+        r#"
+class Config {
+    static label = "base";
+    static next() {
+        return Config.label + "-next";
+    }
+}
+console.log(Config.label);
+console.log(Config.next());
+Config.label = "override";
+console.log(Config.next());
+"#
+    );
+    assert_eq!(out, vec!["base", "base-next", "override-next"]);
+}
+
+#[test]
+fn class_has_private_field_with_getter_and_setter() {
+    let out = run_js(
+        r#"
+class Box {
+    #value = 1;
+    get value() { return this.#value; }
+    set value(v) { this.#value = v; }
+}
+const b = new Box();
+b.value = 5;
+console.log(b.value);
+"#
+    );
+    assert_eq!(out, vec!["5"]);
+}
+
+#[test]
+fn class_method_properties_are_non_enumerable() {
+    let out = run_js(
+        r#"
+class Counter {
+    value = 1;
+    get valuePlus() {
+        return this.value + 1;
+    }
+}
+const c = new Counter();
+const methodDesc = Object.getOwnPropertyDescriptor(Counter.prototype, "valuePlus");
+console.log(Object.prototype.hasOwnProperty.call(c, "value"));
+console.log(typeof methodDesc.get);
+console.log(methodDesc.enumerable);
+console.log(methodDesc.configurable);
+"#,
+    );
+    assert_eq!(out, vec!["true", "function", "true", "true"]);
+}
+
+#[test]
+fn class_static_super_lookup_is_used() {
+    let out = run_js(
+        r#"
+class Base {
+    static label() { return "base"; }
+}
+class Derived extends Base {
+    static label() { return super.label() + "/derived"; }
+}
+console.log(Derived.label());
+console.log(Object.getPrototypeOf(Derived) === Base);
+"#,
+    );
+    assert_eq!(out, vec!["base/derived", "true"]);
 }

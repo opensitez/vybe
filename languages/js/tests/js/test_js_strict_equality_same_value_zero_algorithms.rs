@@ -113,6 +113,15 @@ console.log(`${Object.is("a", "a")}:${Object.is(true, true)}:${Object.is(null, n
 }
 
 #[test]
+fn test_js_strict_equality_boxed_primitives() {
+    let src = r#"
+console.log(`${new Number(7) === 7}:${new Number(7) === new Number(7)}:${Object.is(new Number(7), new Number(7))}`);
+console.log(`${new Boolean(true) === true}:${new String("x") === "x"}`);
+"#;
+    assert_eq!(run_js(src), vec!["false:false:false", "false:false"]);
+}
+
+#[test]
 fn test_js_object_is_object_references() {
     let src = r#"
 const obj = {};
@@ -142,6 +151,23 @@ map.set(NaN, "not_a_number");
 console.log(`${map.get(-0)}:${map.get(NaN)}`);
 "#;
     assert_eq!(run_js(src), vec!["zero:not_a_number"]);
+}
+
+#[test]
+fn test_js_map_key_is_set_once_for_same_value_zero_pairs() {
+    assert_eq!(
+        run_js(
+            r#"
+const map = new Map();
+map.set(+0, "plus");
+map.set(-0, "minus");
+map.set(NaN, "first");
+map.set(NaN, "second");
+console.log(`${map.size}:${map.get(0)}:${map.get(-0)}:${map.get(NaN)}`);
+"#
+        ),
+        vec!["2:minus:minus:second"]
+    );
 }
 
 #[test]
@@ -175,6 +201,24 @@ console.log(`${numPrim === 42}:${numPrim === numObj}`);
 }
 
 #[test]
+fn test_js_object_is_number_object_identity() {
+    let src = r#"
+const n1 = new Number(7);
+const n2 = new Number(7);
+console.log(`${n1 === n2}:${Object.is(n1, n2)}`);
+"#;
+    assert_eq!(run_js(src), vec!["false:false"]);
+}
+
+#[test]
+fn test_js_strict_equality_signed_zero_with_object_is_false() {
+    let src = r#"
+console.log(`${Object.is(+0, -0)}:${+0 === -0}:${Object.is(-0, -0)}:${Object.is(+0, +0)}`);
+"#;
+    assert_eq!(run_js(src), vec!["false:true:true:true"]);
+}
+
+#[test]
 fn test_js_object_is_symbol_for_global_registry() {
     let src = r#"
 const s1 = Symbol.for("reg");
@@ -191,4 +235,76 @@ const arr = [NaN];
 console.log(`${arr.indexOf(NaN)}:${arr.includes(NaN)}`); // indexOf uses === (returns -1), includes uses SameValueZero (returns true)!
 "#;
     assert_eq!(run_js(src), vec!["-1:true"]);
+}
+
+#[test]
+fn test_js_object_is_wrapper_object_reference_vs_primitive() {
+    let src = r#"
+const sym = Symbol("eq");
+const symObj = Object(sym);
+console.log(`${Object.is(sym, sym)}:${Object.is(sym, Symbol("eq"))}:${Object.is(sym, symObj)}`);
+"#;
+    assert_eq!(run_js(src), vec!["true:false:false"]);
+}
+
+#[test]
+fn test_js_object_is_object_wrapper_distinct_instances() {
+    let src = r#"
+const n1 = new Number(5);
+const n2 = new Number(5);
+const b1 = new Boolean(false);
+const b2 = new Boolean(false);
+console.log(`${Object.is(n1, n2)}:${Object.is(b1, b2)}:${Object.is(n1, n1)}`);
+"#;
+    assert_eq!(run_js(src), vec!["false:false:true"]);
+}
+
+#[test]
+fn test_js_object_identity_distinguishes_boxed_wrappers() {
+    assert_eq!(
+        run_js(
+            r#"
+const set = new Set();
+const a = new Number(7);
+const b = new Number(7);
+set.add(a);
+set.add(b);
+
+const map = new Map();
+const o1 = { x: 1 };
+const o2 = { x: 1 };
+map.set(o1, "first");
+map.set(o2, "second");
+
+console.log(`${set.size}:${map.size}`);
+"#,
+        ),
+        vec!["2:2"]
+    );
+}
+
+#[test]
+fn test_js_strict_equality_bound_function_is_distinct_reference() {
+    let src = r#"
+function base() {}
+const bound = base.bind(null);
+console.log(`${base === bound}:${Object.is(base, bound)}:${bound === bound}`);
+"#;
+    assert_eq!(run_js(src), vec!["false:false:true"]);
+}
+
+#[test]
+fn test_js_strict_equality_distinguishes_string_wrappers() {
+    let src = r#"
+console.log(`${new String("x") === new String("x")}:${Object.is(new String("x"), new String("x"))}:${Object.is("x", "x")}`);
+"#;
+    assert_eq!(run_js(src), vec!["false:false:true"]);
+}
+
+#[test]
+fn test_js_object_is_distinguishes_wrapped_and_primitive_values() {
+    let src = r#"
+console.log(`${Object.is(new Number(7), 7)}:${Object.is(new String("x"), "x")}:${Object.is(new Boolean(false), false)}`);
+"#;
+    assert_eq!(run_js(src), vec!["false:false:false"]);
 }

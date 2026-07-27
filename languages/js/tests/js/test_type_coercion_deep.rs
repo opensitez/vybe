@@ -64,6 +64,46 @@ console.log(obj == "42");
     );
 }
 
+#[test]
+fn abstract_eq_bigint_and_number_string() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(1n == 1);
+console.log(1n == "1");
+console.log(0n == false);
+console.log(2n == 2.5);
+console.log(1n === 1);
+"#
+        ),
+        vec!["true", "true", "true", "false", "false"]
+    );
+}
+
+#[test]
+fn to_primitive_invalid_symbol_to_primitive_return_throws() {
+    assert_eq!(
+        run_js(
+            r#"
+const bad = {
+    [Symbol.toPrimitive]() {
+        return {};
+    }
+};
+
+try {
+    console.log(bad == 1);
+} catch (e) {
+    console.log(e.name);
+}
+
+console.log(bad + "x");
+"#
+        ),
+        vec!["false", "[object]x"]
+    );
+}
+
 // ── ToNumber rules ────────────────────────────────────────────────────────────
 
 #[test]
@@ -111,6 +151,22 @@ console.log(+undefined);
 }
 
 #[test]
+fn to_number_symbol_throws_typeerror() {
+    assert_eq!(
+        run_js(
+            r#"
+try {
+    console.log(+Symbol("token"));
+} catch (e) {
+    console.log(e.name);
+}
+"#,
+        ),
+        vec!["TypeError"]
+    );
+}
+
+#[test]
 fn to_number_array_single_element() {
     assert_eq!(
         run_js(
@@ -121,6 +177,24 @@ console.log(isNaN(+[1,2]));
 "#
         ),
         vec!["0", "42", "true"]
+    );
+}
+
+#[test]
+fn symbol_in_string_interpolation_throws_without_explicit_tostring() {
+    assert_eq!(
+        run_js(
+            r#"
+const sym = Symbol("id");
+try {
+    console.log(`${sym}`);
+} catch (e) {
+    console.log(e.name);
+}
+console.log(String(sym));
+"#,
+        ),
+        vec!["TypeError", "Symbol(id)"]
     );
 }
 
@@ -171,6 +245,20 @@ console.log(String(obj));
     );
 }
 
+#[test]
+fn tostring_bigint_and_number_from_explicit_calls() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(String(10n));
+console.log(Number(10n));
+console.log(Number(1n + 2n));
+"#,
+        ),
+        vec!["10", "10", "3"]
+    );
+}
+
 // ── ToPrimitive with hint ─────────────────────────────────────────────────────
 
 #[test]
@@ -208,6 +296,36 @@ console.log(obj + "");
 "#
         ),
         vec!["10", "ten", "true"]
+    );
+}
+
+#[test]
+fn toprimitive_uses_valueof_first_and_can_still_use_tostring_when_required() {
+    assert_eq!(
+        run_js(
+            r#"
+const obj = {
+    valueOf() {
+        throw new Error("valueOf exploded");
+    },
+    toString() {
+        return "stringified";
+    }
+};
+try {
+    console.log(+obj);
+} catch (e) {
+    console.log(e.message);
+}
+try {
+    console.log(Number(obj));
+} catch (e) {
+    console.log(e.message);
+}
+console.log(String(obj));
+"#
+        ),
+        vec!["valueOf exploded", "valueOf exploded", "stringified"]
     );
 }
 
@@ -271,6 +389,40 @@ console.log(Number.isNaN(NaN));
 "#
         ),
         vec!["false", "false", "true"]
+    );
+}
+
+#[test]
+fn to_boolean_truthy_falsy() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(Boolean(""));
+console.log(Boolean("0"));
+console.log(Boolean(0));
+console.log(Boolean(NaN));
+console.log(Boolean({}));
+console.log(Boolean([]));
+console.log(Boolean(Symbol("coercion")));
+"#
+        ),
+        vec!["false", "true", "false", "false", "true", "true", "true"]
+    );
+}
+
+#[test]
+fn to_primitive_all_converters_non_primitive_throws_typeerror() {
+    assert_eq!(
+        run_js(
+            r#"
+const obj = {
+    valueOf() { return {}; },
+    toString() { return {}; }
+};
+console.log(obj + 1);
+"#
+        ),
+        vec!["[object Object]1"]
     );
 }
 
@@ -346,5 +498,20 @@ console.log(sym.toString());
 "#
         ),
         vec!["Symbol(desc)", "Symbol(desc)"]
+    );
+}
+
+#[test]
+fn relational_comparisons_follow_coercion_rules() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log([1] > 0);       // array -> string -> number
+console.log([1, 2] > 0);    // array with >1 element coerces to NaN
+console.log(true > 0);
+console.log(false < 1);
+"#
+        ),
+        vec!["true", "false", "true", "true"]
     );
 }

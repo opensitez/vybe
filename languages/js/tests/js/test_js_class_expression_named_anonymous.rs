@@ -144,6 +144,27 @@ console.log(App.status);
 }
 
 #[test]
+fn test_js_class_expression_super_access_inside_static_initializer_and_block() {
+    let src = r#"
+class Base {
+    static baseValue = 10;
+}
+
+const Derived = class extends Base {
+    static fromBase = super.baseValue;
+    static fromBaseAndBlock;
+    static {
+        this.fromBaseAndBlock = super.baseValue + this.fromBase;
+    }
+};
+
+console.log(Derived.fromBase);
+console.log(Derived.fromBaseAndBlock);
+"#;
+    assert_eq!(run_js(src), vec!["10", "20"]);
+}
+
+#[test]
 fn test_js_named_class_expression_internal_name_immutable() {
     let src = r#"
 const Foo = class Bar {

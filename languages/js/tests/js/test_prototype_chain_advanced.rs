@@ -97,6 +97,40 @@ console.log(obj.hello());
     );
 }
 
+#[test]
+fn set_prototype_of_to_null_removes_inherited_lookups() {
+    let out = run_js(
+        r#"
+const proto = { shared: 99 };
+const obj = Object.create(proto);
+console.log(obj.shared);
+Object.setPrototypeOf(obj, null);
+console.log(obj.shared);
+console.log(Object.getPrototypeOf(obj) === null);
+"#,
+    );
+    assert_eq!(out, vec!["99", "undefined", "true"]);
+}
+
+#[test]
+fn set_prototype_of_on_non_extensible_is_rejected() {
+    assert_eq!(
+        run_js(
+            r#"
+const obj = {};
+Object.preventExtensions(obj);
+try {
+    Object.setPrototypeOf(obj, { tag: "next" });
+    console.log("changed");
+} catch (e) {
+    console.log(e.name);
+}
+"#
+        ),
+        vec!["TypeError"]
+    );
+}
+
 // ── null prototype ────────────────────────────────────────────────────────────
 
 #[test]
@@ -243,6 +277,24 @@ console.log(c1.increment === c2.increment);
     );
 }
 
+#[test]
+fn is_prototype_of_walks_chain() {
+    assert_eq!(
+        run_js(
+            r#"
+const root = { marker: "root" };
+const mid = Object.create(root);
+const leaf = Object.create(mid);
+console.log(root.isPrototypeOf(leaf));
+console.log(mid.isPrototypeOf(leaf));
+console.log(leaf.isPrototypeOf(root));
+console.log(Object.prototype.isPrototypeOf(leaf));
+"#
+        ),
+        vec!["true", "true", "false", "true"]
+    );
+}
+
 // ── Object.create as delegation ───────────────────────────────────────────────
 
 #[test]
@@ -263,5 +315,89 @@ console.log(app.error("crash"));
 "#
         ),
         vec!["[LOG] Running MyApp", "[ERROR] crash"]
+    );
+}
+
+#[test]
+fn symbol_property_in_prototype_chain_can_be_shadowed_by_own_symbol_property() {
+    assert_eq!(
+        run_js(
+            r#"
+const token = Symbol("token");
+const proto = {
+    [token]: "proto",
+    toString() { return "from proto"; }
+};
+const obj = Object.create(proto);
+obj[token] = "own";
+console.log(Object.hasOwn(obj, token));
+console.log(obj[token]);
+"#
+        ),
+        vec!["true", "own"]
+    );
+}
+
+#[test]
+fn object_prototype_checks_for_objects_and_primitive_input() {
+    assert_eq!(
+        run_js(
+            r#"
+const proto = {};
+const obj = Object.create(proto);
+console.log(Object.getPrototypeOf(proto) === Object.prototype);
+console.log(Object.prototype.isPrototypeOf(obj));
+try {
+    console.log(Object.prototype.isPrototypeOf(1));
+} catch (e) {
+    console.log("PrimitiveTypeError");
+}
+"#
+        ),
+        vec!["true", "true", "false"]
+    );
+}
+
+#[test]
+fn prototype_chain_set_prototype_preserves_value_resolution() {
+    assert_eq!(
+        run_js(
+            r#"
+const base = { label() { return "base"; } };
+const replacement = { label() { return "replacement"; } };
+const obj = Object.create(base);
+console.log(obj.label());
+Object.setPrototypeOf(obj, replacement);
+console.log(obj.label());
+console.log(Object.getPrototypeOf(obj) === replacement);
+"#
+        ),
+        vec!["base", "replacement", "true"]
+    );
+}
+
+#[test]
+fn for_in_ignores_inherited_non_enumerable_property() {
+    assert_eq!(
+        run_js(
+            r#"
+const proto = {};
+Object.defineProperty(proto, "hidden", {
+    value: 99,
+    enumerable: false
+});
+const obj = Object.create(proto);
+obj.visible = true;
+
+const keys = [];
+for (const key in obj) {
+    keys.push(key);
+}
+
+console.log(keys.join(","));
+console.log("hidden" in obj);
+"#
+        ),
+        vec!["visible", "true"]
     );
 }

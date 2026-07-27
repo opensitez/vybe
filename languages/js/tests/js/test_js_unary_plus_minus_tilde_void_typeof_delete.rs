@@ -173,6 +173,18 @@ console.log(+d);
 }
 
 #[test]
+fn test_js_unary_plus_symbol_throws_typeerror() {
+    let src = r#"
+try {
+    console.log(+Symbol("x"));
+} catch (e) {
+    console.log("Unary Plus Symbol TypeError");
+}
+"#;
+    assert_eq!(run_js(src), vec!["Unary Plus Symbol TypeError"]);
+}
+
+#[test]
 fn test_js_delete_unqualified_variable_in_non_strict() {
     let src = r#"
 gVar = 100; // Implicit global variable
@@ -196,6 +208,40 @@ console.log(res + "|declaredVar=" + declaredVar);
 fn test_js_unary_operator_precedence_grouping() {
     let src = r#"
 console.log((!+[] ) + "|" + (typeof typeof 123)); // typeof (typeof 123) = typeof "number" = "string"
-"#;
+    "#;
     assert_eq!(run_js(src), vec!["true|string"]);
+}
+
+#[test]
+fn test_js_delete_nonconfigurable_property_throws_in_strict_mode() {
+    let src = r#"
+"use strict";
+const obj = {};
+Object.defineProperty(obj, "fixed", { value: 1, configurable: false });
+try {
+    delete obj.fixed;
+} catch (e) {
+    console.log("Delete NonConfigurable Strict TypeError");
+}
+"#;
+    assert_eq!(run_js(src), vec!["Delete NonConfigurable Strict TypeError"]);
+}
+
+#[test]
+fn test_js_void_operator_precedence_with_comma() {
+    let src = r#"
+let x = 0;
+const res = void (x += 1, x += 10);
+console.log(`${res === undefined}|${x}`);
+"#;
+    assert_eq!(run_js(src), vec!["true|11"]);
+}
+
+#[test]
+fn test_js_delete_undeclared_property_in_strict_mode() {
+    let src = r#"
+"use strict";
+console.log(delete globalThis.noSuchProperty);
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
 }

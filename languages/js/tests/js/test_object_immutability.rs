@@ -100,6 +100,23 @@ console.log(obj.y);
 }
 
 #[test]
+fn seal_keeps_object_sealed_and_blocks_extension() {
+    assert_eq!(
+        run_js(
+            r#"
+const obj = Object.seal({ x: 1 });
+obj.x = 99;
+obj.y = 2;
+console.log(obj.x);
+console.log(Object.prototype.hasOwnProperty.call(obj, "y"));
+console.log(Object.isSealed(obj));
+"#
+        ),
+        vec!["99", "false", "true"]
+    );
+}
+
+#[test]
 fn is_frozen_empty_non_extensible_is_frozen() {
     assert_eq!(
         run_js(
@@ -141,5 +158,64 @@ console.log(obj.y);
 "#
         ),
         vec!["99", "undefined"]
+    );
+}
+
+#[test]
+fn prevent_extensions_freeze_status_checks() {
+    assert_eq!(
+        run_js(
+            r#"
+const obj = { a: 1, b: 2 };
+Object.preventExtensions(obj);
+console.log(Object.isExtensible(obj));
+console.log(Object.isSealed(obj));
+console.log(Object.isFrozen(obj));
+Object.freeze(obj);
+console.log(Object.isExtensible(obj));
+console.log(Object.isSealed(obj));
+console.log(Object.isFrozen(obj));
+"#
+        ),
+        vec!["false", "false", "false", "false", "true", "true"]
+    );
+}
+
+#[test]
+fn seal_makes_existing_properties_non_configurable() {
+    assert_eq!(
+        run_js(
+            r#"
+const obj = Object.seal({ a: 1, b: 2 });
+const d = Object.getOwnPropertyDescriptor(obj, "a");
+console.log(d.configurable);
+console.log(d.writable);
+"#
+        ),
+        vec!["false", "true"]
+    );
+}
+
+#[test]
+fn prevent_extensions_on_array_rejects_length_growth() {
+    assert_eq!(
+        run_js(
+            r#"
+const arr = [1, 2, 3];
+Object.preventExtensions(arr);
+let threw = false;
+try {
+    arr.push(4);
+} catch {
+    threw = true;
+}
+arr[4] = 5;
+console.log(threw);
+console.log(arr.length);
+console.log(arr[3]);
+console.log(arr[4]);
+"#
+        ),
+        vec!["true", "3", "undefined", "undefined"]
     );
 }

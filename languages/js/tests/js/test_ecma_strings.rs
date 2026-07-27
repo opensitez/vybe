@@ -212,6 +212,119 @@ console.log("abc" === "abc");
     assert_eq!(out, vec!["true", "true", "true"]);
 }
 
+#[test]
+fn string_slice_negative_index() {
+    let out = run_js(
+        r#"
+console.log("abcdef".slice(-2));
+console.log("abcdef".slice(-3, -1));
+"#,
+    );
+    assert_eq!(out, vec!["ef", "de"]);
+}
+
+#[test]
+fn string_trim_start_end() {
+    let out = run_js(
+        r#"
+const s = "\t hello \n";
+console.log(s.trimStart() === "hello \n");
+console.log(s.trimEnd() === "\t hello");
+console.log(s.trim());
+"#,
+    );
+    assert_eq!(out, vec!["true", "true", "hello"]);
+}
+
+#[test]
+fn string_at_and_index_access() {
+    let out = run_js(
+        r#"
+console.log("abc".at(1));
+console.log("abc".at(-1));
+console.log("".at(0));
+console.log("abc"[2]);
+"#,
+    );
+    assert_eq!(out, vec!["b", "c", "undefined", "c"]);
+}
+
+#[test]
+fn string_iterable_iteration() {
+    let out = run_js(
+        r#"
+console.log(Array.from("ab\u0301").join("|"));
+console.log([...new Set("abb")].join("|"));
+"#,
+    );
+    assert_eq!(out, vec!["a|b|́", "a|b"]);
+}
+
+#[test]
+fn string_repeat_zero_and_empty() {
+    let out = run_js(
+        r#"
+console.log("x".repeat(0) === "");
+console.log("".repeat(3));
+try {
+  console.log("x".repeat(-1));
+} catch (e) {
+  console.log("RangeError");
+}
+"#,
+    );
+    assert_eq!(out, vec!["true", "", "RangeError"]);
+}
+
+#[test]
+fn string_code_points() {
+    let out = run_js(
+        r#"
+console.log("hello".charCodeAt(1));
+console.log("hello".charAt(-1));
+console.log(String.fromCharCode(72, 105, 33));
+"#,
+    );
+    assert_eq!(out, vec!["101", "", "Hi!"]);
+}
+
+#[test]
+fn string_search_methods_with_positions() {
+    let out = run_js(
+        r#"
+console.log("hello world".indexOf("o", 5));
+console.log("hello world".search(/world/));
+console.log("hello world".match(/o/g).length);
+"#,
+    );
+    assert_eq!(out, vec!["7", "6", "2"]);
+}
+
+#[test]
+fn string_search_with_offset_positions() {
+    let out = run_js(
+        r#"
+console.log("banana".startsWith("ana", 1));
+console.log("banana".startsWith("ana", 2));
+console.log("banana".endsWith("na", 4));
+console.log("banana".endsWith("na", 5));
+"#,
+    );
+    assert_eq!(out, vec!["true", "false", "true", "false"]);
+}
+
+#[test]
+fn raw_template_string_keeps_backslashes() {
+    let out = run_js(
+        r#"
+const s = String.raw`line1\nline2`;
+console.log(s === "line1\\nline2");
+console.log(s.includes("\\n"));
+"#,
+    );
+    assert_eq!(out, vec!["true", "true"]);
+}
+
 // ── Numeric literals ───────────────────────────────────────
 
 #[test]

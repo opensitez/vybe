@@ -29,6 +29,22 @@ console.log(max);
 }
 
 #[test]
+fn reduce_empty_array_without_initial_throws_type_error() {
+    assert_eq!(
+        run_js(
+            r#"
+try {
+    [].reduce((a, b) => a + b);
+} catch (e) {
+    console.log(e.name);
+}
+"#
+        ),
+        vec!["TypeError"]
+    );
+}
+
+#[test]
 fn reduceright_processes_right_to_left() {
     assert_eq!(
         run_js(
@@ -38,6 +54,18 @@ console.log(result.join(","));
 "#
         ),
         vec!["5,6,3,4,1,2"]
+    );
+}
+
+#[test]
+fn reduce_right_with_initial_on_empty_array() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log([].reduceRight((a, b) => a + b, 10));
+"#
+        ),
+        vec!["10"]
     );
 }
 
@@ -101,6 +129,25 @@ console.log([1, 2, 3].find(n => n > 10));
 "#
         ),
         vec!["undefined"]
+    );
+}
+
+#[test]
+fn find_skips_empty_slots() {
+    assert_eq!(
+        run_js(
+            r#"
+const arr = [, 1, , 3];
+let seen = [];
+const value = arr.find((value, index) => {
+    seen.push(index);
+    return value === 3;
+});
+console.log(value);
+console.log(seen.join(","));
+"#
+    ),
+        vec!["3", "0,1,2,3"]
     );
 }
 

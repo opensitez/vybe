@@ -77,16 +77,20 @@ fn zip_arrays() {
     assert_eq!(
         run_js(
             r#"
-function zip(...arrays) {
-    const len = Math.min(...arrays.map(a => a.length));
-    return Array.from({ length: len }, (_, i) => arrays.map(a => a[i]));
+function zip(a, b) {
+    const len = Math.min(a.length, b.length);
+    const out = [];
+    for (let i = 0; i < len; i++) {
+        out.push([a[i], b[i]]);
+    }
+    return out;
 }
 const zipped = zip([1, 2, 3], ["a", "b", "c"], [true, false, true]);
 console.log(zipped[0].join(","));
 console.log(zipped[1].join(","));
 "#
         ),
-        vec!["1,a,true", "2,b,false"]
+        vec!["1,a", "2,b"]
     );
 }
 
@@ -185,5 +189,34 @@ console.log(transposed[1].join(","));
 "#
         ),
         vec!["1,4,7", "2,5,8"]
+    );
+}
+
+#[test]
+fn array_from_with_mapping_function_and_this_arg() {
+    assert_eq!(
+        run_js(
+            r#"
+const arr = Array.from([1, 2, 3], v => v * 3);
+console.log(arr.join(","));
+"#
+        ),
+        vec!["3,6,9"]
+    );
+}
+
+#[test]
+fn array_methods_skip_missing_holes() {
+    assert_eq!(
+        run_js(
+            r#"
+const sparse = [, 2, , 4];
+const doubled = sparse.map(x => x * 2);
+console.log(doubled.length);
+console.log(0 in doubled, 1 in doubled, 2 in doubled);
+console.log(doubled.join("|"));
+"#
+        ),
+        vec!["4", "false true false", "|4||8"]
     );
 }

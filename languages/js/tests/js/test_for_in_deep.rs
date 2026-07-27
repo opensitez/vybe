@@ -84,6 +84,23 @@ console.log(keys.join(","));
 }
 
 #[test]
+fn for_in_sparse_array_skips_empty_slots() {
+    assert_eq!(
+        run_js(
+            r#"
+const arr = [10, , 30, , 50];
+const keys = [];
+for (const k in arr) {
+    if (Object.hasOwn(arr, k)) keys.push(k);
+}
+console.log(keys.join(","));
+"#
+        ),
+        vec!["0,2,4"]
+    );
+}
+
+#[test]
 fn for_in_null_prototype_no_inherited() {
     assert_eq!(
         run_js(
@@ -97,6 +114,23 @@ console.log(keys.join(","));
 "#
         ),
         vec!["a,b"]
+    );
+}
+
+#[test]
+fn for_in_string_indices() {
+    assert_eq!(
+        run_js(
+            r#"
+const keys = [];
+const obj = new String("abc");
+for (const k in obj) {
+    if (/^\d+$/.test(k)) keys.push(k);
+}
+console.log(keys.join(","));
+"#
+        ),
+        vec!["0,1,2"]
     );
 }
 

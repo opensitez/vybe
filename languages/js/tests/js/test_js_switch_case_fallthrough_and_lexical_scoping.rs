@@ -272,3 +272,65 @@ console.log(sideEffects);
 "#;
     assert_eq!(run_js(src), vec!["2"]);
 }
+
+#[test]
+fn test_js_switch_duplicate_case_values_match_first_clause() {
+    let src = r#"
+const out = [];
+switch (3) {
+    case 1: out.push("first");
+    case 3: out.push("firstMatch"); break;
+    case 3: out.push("secondMatch"); break;
+    default: out.push("default");
+}
+console.log(out.join("|"));
+"#;
+    assert_eq!(run_js(src), vec!["firstMatch"]);
+}
+
+#[test]
+fn test_js_switch_case_block_scoped_binding_visibility() {
+    let src = r#"
+const events = [];
+switch (1) {
+    case 1: {
+        const local = "inside";
+        events.push(local);
+        break;
+    }
+    default:
+        events.push("default");
+}
+
+let leaked = false;
+try {
+    local;
+} catch (e) {
+    leaked = e instanceof ReferenceError;
+}
+
+events.push(String(leaked));
+console.log(events.join("|"));
+"#;
+    assert_eq!(run_js(src), vec!["inside|true"]);
+}
+
+#[test]
+fn test_js_switch_fallthrough_with_block_scoped_bindings() {
+    let src = r#"
+const out = [];
+switch("x") {
+    case "x": {
+        const marker = "A";
+        out.push(marker);
+    }
+    case "y": {
+        const marker = "B";
+        out.push(marker);
+        break;
+    }
+}
+console.log(out.join("|"));
+"#;
+    assert_eq!(run_js(src), vec!["A|B"]);
+}

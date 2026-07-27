@@ -40,6 +40,31 @@ console.log(result.join("|"));
 }
 
 #[test]
+fn labeled_continue_from_inner_try_catch() {
+    assert_eq!(
+        run_js(
+            r#"
+let log = [];
+outer: for (let i = 0; i < 3; i++) {
+    try {
+        if (i === 1) {
+            throw "skip";
+        }
+        log.push("ok" + i);
+    } catch {
+        log.push("catch" + i);
+        continue outer;
+    }
+    log.push("done" + i);
+}
+console.log(log.join("|"));
+"#
+        ),
+        vec!["ok0|done0|catch1|ok2|done2"]
+    );
+}
+
+#[test]
 fn unlabeled_break_exits_inner_only() {
     assert_eq!(
         run_js(

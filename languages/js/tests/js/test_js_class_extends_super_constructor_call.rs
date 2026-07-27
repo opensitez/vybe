@@ -223,6 +223,20 @@ console.log(s.custom + "|" + (s instanceof Sub));
 }
 
 #[test]
+fn test_js_class_extends_new_target_is_derived() {
+    let src = r#"
+class Base {
+    constructor() {
+        this.createdBy = new.target.name;
+    }
+}
+class Child extends Base {}
+console.log(new Child().createdBy);
+"#;
+    assert_eq!(run_js(src), vec!["Child"]);
+}
+
+#[test]
 fn test_js_class_prototype_property_descriptor_non_enumerable() {
     let src = r#"
 class Foo {}

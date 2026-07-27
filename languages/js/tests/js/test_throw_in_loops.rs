@@ -110,4 +110,37 @@ crate::js_cases! {
         r#"let o=[];for(const x of [1,2,3]){try{if(x===2)break;o.push(x);}catch{o.push("e");}}console.log(o.join(","));"#,
         ["1"]
     };
+
+    for_of_iterator_return_value_typeerror => {
+        r#"let o=[];try{const bad={
+            [Symbol.iterator]() {
+                return {
+                    next() {
+                        if (this._n === undefined) this._n = 0;
+                        this._n++;
+                        return this._n === 1 ? { value: 1, done: false } : 0;
+                    }
+                };
+            }
+        };for (const x of bad) o.push(x);}
+        catch (e) { o.push(e instanceof TypeError ? "TypeError" : "Other"); }
+        console.log(o.join(","));"#,
+        ["1,TypeError"]
+    };
+
+    for_of_continue_still_executes_finally => {
+        r#"let o=[];for(const x of [1,2,3]){try{o.push(x);if(x===2)continue;o.push("n");}finally{o.push("f");}}console.log(o.join(","));"#,
+        ["1,n,f,2,f,3,n,f"]
+    };
+
+    for_loop_continue_executes_finally => {
+        r#"let o=[];for(let i=0;i<3;i++){try{if(i===1)continue;o.push(i);}finally{o.push("f"+i);}o.push("post");}console.log(o.join(","));"#,
+        ["0,f0,post,f1,2,f2,post"]
+    };
+
+    for_loop_break_executes_finally_and_stops => {
+        r#"let o=[];for(let i=0;i<4;i++){try{if(i===2)break;o.push(i);}finally{o.push("f"+i);}o.push("post");}console.log(o.join(","));"#,
+        ["0,f0,post,1,f1,post,f2"]
+    };
+
 }

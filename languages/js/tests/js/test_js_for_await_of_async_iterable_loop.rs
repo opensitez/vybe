@@ -348,3 +348,58 @@ findFirstEven([1, 3, 6, 7]).then(res => console.log(res));
 "#;
     assert_eq!(run_js(src), vec!["6"]);
 }
+
+#[test]
+fn test_js_for_await_of_non_object_next_throws_typeerror() {
+    let src = r#"
+(async () => {
+    const invalid = {
+        [Symbol.asyncIterator]() {
+            return {
+                next() {
+                    return 123; // invalid: next must return an object
+                }
+            };
+        }
+    };
+    try {
+        for await (const _ of invalid) {}
+    } catch (e) {
+        console.log(e instanceof TypeError ? "TypeError" : e.constructor.name);
+    }
+})();
+"#;
+    assert_eq!(run_js(src), vec!["TypeError"]);
+}
+
+#[test]
+fn test_js_for_await_of_continue_does_not_call_return() {
+    let src = r#"
+(async () => {
+    let returnCalls = 0;
+    const iterable = {
+        [Symbol.asyncIterator]() {
+            let i = 0;
+            return {
+                async next() {
+                    return i < 4 ? { value: ++i, done: false } : { done: true };
+                },
+                async return() {
+                    returnCalls++;
+                    return { done: true };
+                }
+            };
+        }
+    };
+
+    const seen = [];
+    for await (const n of iterable) {
+        if (n % 2 === 0) continue;
+        seen.push(n);
+    }
+    console.log(seen.join(","));
+    console.log(returnCalls);
+})();
+"#;
+    assert_eq!(run_js(src), vec!["1,3", "0"]);
+}

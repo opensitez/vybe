@@ -121,6 +121,45 @@ console.log(typeof x);  // still exists
 }
 
 #[test]
+fn delete_non_configurable_property_throws_typeerror_in_strict_mode() {
+    assert_eq!(
+        run_js(
+            r#"
+'use strict';
+const obj = {};
+Object.defineProperty(obj, 'locked', {
+    value: 1,
+    configurable: false,
+});
+try {
+    delete obj.locked;
+} catch (e) {
+    console.log(e.name);
+}
+"#,
+        ),
+        vec!["TypeError"]
+    );
+}
+
+#[test]
+fn delete_property_descriptor_rejects_undeletable_property_in_strict_eval() {
+    assert_eq!(
+        run_js(
+            r#"
+try {
+    eval('"use strict"; const o = Object.create(null); Object.defineProperty(o, "locked", { value: 1, configurable: false}); delete o.locked;');
+    console.log("no-error");
+} catch (e) {
+    console.log(e.name);
+}
+"#,
+        ),
+        vec!["TypeError"]
+    );
+}
+
+#[test]
 fn delete_function_param_does_not_work() {
     assert_eq!(
         run_js(

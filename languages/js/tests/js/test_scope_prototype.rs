@@ -482,6 +482,69 @@ console.log(d instanceof Animal);
     );
 }
 
+#[test]
+fn prototype_chain_reflects_and_updates_with_setprototypeof() {
+    assert_eq!(
+        run_js(
+            r#"
+const baseA = { mode: "A" };
+const baseB = { mode: "B" };
+const obj = Object.create(baseA);
+
+console.log(Object.getPrototypeOf(obj) === baseA);
+console.log(obj.mode);
+
+Object.setPrototypeOf(obj, baseB);
+console.log(Object.getPrototypeOf(obj) === baseB);
+console.log(obj.mode);
+
+Object.setPrototypeOf(obj, null);
+console.log(Object.getPrototypeOf(obj) === null);
+console.log("mode" in obj);
+"#
+        ),
+        &[
+            "true",
+            "A",
+            "true",
+            "B",
+            "true",
+            "false",
+        ]
+    );
+}
+
+#[test]
+fn prototype_setter_uses_receiver_instance() {
+    assert_eq!(
+        run_js(
+            r#"
+const base = {
+    set value(v) {
+        this._baseValue = v;
+    },
+    get value() {
+        return this._baseValue;
+    }
+};
+const obj = Object.create(base);
+
+obj.value = 9;
+console.log(obj.value);
+console.log(base.value);
+console.log(base._baseValue);
+console.log(obj.hasOwnProperty("value"));
+"#
+        ),
+        &[
+            "9",
+            "undefined",
+            "undefined",
+            "false",
+        ]
+    );
+}
+
 // ===================================================================
 // MISC PATTERNS
 // ===================================================================

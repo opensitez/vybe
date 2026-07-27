@@ -315,3 +315,43 @@ console.log(typeof Symbol.iterator === "symbol" && typeof Symbol.asyncIterator =
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
+
+#[test]
+fn test_js_symbol_async_iterator_property_not_function_throws() {
+    let src = r#"
+const invalid = {
+    [Symbol.asyncIterator]: 123
+};
+(async () => {
+    try {
+        for await (const _ of invalid) {}
+    } catch (e) {
+        console.log("Symbol.asyncIterator Not Callable TypeError");
+    }
+})();
+"#;
+    assert_eq!(run_js(src), vec!["Symbol.asyncIterator Not Callable TypeError"]);
+}
+
+#[test]
+fn test_js_async_iterator_next_promise_non_object_throws() {
+    let src = r#"
+const bad = {
+    [Symbol.asyncIterator]() {
+        return {
+            next() {
+                return Promise.resolve(42);
+            }
+        };
+    }
+};
+(async () => {
+    try {
+        for await (const _ of bad) {}
+    } catch (e) {
+        console.log("AsyncNext Non-Object TypeError");
+    }
+})();
+"#;
+    assert_eq!(run_js(src), vec!["AsyncNext Non-Object TypeError"]);
+}

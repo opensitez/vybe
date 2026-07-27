@@ -143,6 +143,26 @@ console.log((31).toString(8));
 }
 
 #[test]
+fn number_from_object_uses_valueof_before_tostring() {
+    let src = r#"
+const obj = {
+    order: [],
+    valueOf() {
+        this.order.push("valueOf");
+        return 7;
+    },
+    toString() {
+        this.order.push("toString");
+        return "42";
+    }
+};
+
+console.log(`${Number(obj)}|${obj.order.join(",")}`);
+"#;
+    assert_eq!(run_js(src), vec!["7|valueOf"]);
+}
+
+#[test]
 fn unary_plus_coerces() {
     assert_eq!(
         run_js(

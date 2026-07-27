@@ -291,3 +291,109 @@ console.log(typeof arrowMethod());
         vec!["handler", "string"]
     );
 }
+
+#[test]
+fn field_initializers_run_in_order_and_access_this() {
+    assert_eq!(
+        run_js(
+            r#"
+class Sequence {
+    first = 1;
+    second = this.first + 1;
+}
+const s = new Sequence();
+console.log(s.first);
+console.log(s.second);
+"#
+        ),
+        vec!["1", "2"]
+    );
+}
+
+#[test]
+fn class_public_field_is_own_enumerable_data_property() {
+    assert_eq!(
+        run_js(
+            r#"
+class Config {
+    enabled = true;
+}
+const c = new Config();
+const desc = Object.getOwnPropertyDescriptor(c, "enabled");
+console.log(desc !== undefined);
+console.log(desc.enumerable);
+console.log(desc.writable);
+"#
+        ),
+        vec!["true", "true", "true"]
+    );
+}
+
+#[test]
+fn derived_instance_field_overrides_base_field() {
+    assert_eq!(
+        run_js(
+            r#"
+class Base {
+    x = 1;
+}
+
+class Derived extends Base {
+    x = 2;
+}
+
+const d = new Derived();
+console.log(d.x);
+"#
+        ),
+        vec!["2"]
+    );
+}
+
+#[test]
+fn inherited_instance_field_and_subclass_field_combine() {
+    assert_eq!(
+        run_js(
+            r#"
+class Base {
+    base = "base";
+}
+
+class Child extends Base {
+    child = "child";
+}
+
+const c = new Child();
+console.log(c.base);
+console.log(c.child);
+"#
+        ),
+        vec!["base", "child"]
+    );
+}
+
+#[test]
+fn class_static_fields_do_not_inherit_instance_shape() {
+    assert_eq!(
+        run_js(
+            r#"
+class Parent {
+    static role = "parent";
+    instanceRole = "instance-parent";
+}
+
+class Child extends Parent {
+    static role = "child";
+}
+
+const p = new Parent();
+const c = new Child();
+console.log(p.instanceRole);
+console.log(Parent.role);
+console.log(Child.role);
+console.log(c.instanceRole);
+"#
+        ),
+        vec!["instance-parent", "parent", "child", "instance-parent"]
+    );
+}

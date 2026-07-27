@@ -113,6 +113,40 @@ console.log(pet.speak());
     );
 }
 
+#[test]
+fn set_prototype_to_null_removes_object_prototype_methods() {
+    assert_eq!(
+        run_js(
+            r#"
+const obj = { value: 1 };
+Object.setPrototypeOf(obj, null);
+console.log(Object.getPrototypeOf(obj) === null);
+console.log(typeof obj.toString);
+"#
+        ),
+        vec!["true", "undefined"]
+    );
+}
+
+#[test]
+fn set_prototype_of_non_extensible_object_throws() {
+    assert_eq!(
+        run_js(
+            r#"
+const fixed = Object.preventExtensions({});
+let threw = false;
+try {
+    Object.setPrototypeOf(fixed, {});
+} catch (e) {
+    threw = e instanceof TypeError;
+}
+console.log(threw);
+"#
+        ),
+        vec!["true"]
+    );
+}
+
 // ── isPrototypeOf ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -548,5 +582,60 @@ console.log(Object.getOwnPropertySymbols(obj).some(k => typeof k === "symbol"));
 "#
         ),
         vec!["true", "true"]
+    );
+}
+
+#[test]
+fn is_prototype_of_follows_chain() {
+    assert_eq!(
+        run_js(
+            r#"
+const grandparent = { level: "grandparent" };
+const parent = Object.create(grandparent);
+const child = Object.create(parent);
+
+console.log(grandparent.isPrototypeOf(child));
+console.log(parent.isPrototypeOf(child));
+console.log(Object.prototype.isPrototypeOf(child));
+console.log(grandparent.isPrototypeOf(parent));
+"#
+        ),
+        vec!["true", "true", "true", "true"]
+    );
+}
+
+#[test]
+fn set_prototype_of_returns_target_and_rejects_cycles() {
+    assert_eq!(
+        run_js(
+            r#"
+const root = {};
+const mid = Object.create(root);
+const unchanged = Object.setPrototypeOf(root, Object.getPrototypeOf(root)) === root;
+let cycleError = false;
+try {
+    Object.setPrototypeOf(root, mid);
+} catch (e) {
+    cycleError = e instanceof TypeError;
+}
+console.log(unchanged);
+console.log(cycleError);
+"#
+        ),
+        vec!["true", "true"]
+    );
+}
+
+#[test]
+fn get_prototype_of_with_null_prototype_object() {
+    assert_eq!(
+        run_js(
+            r#"
+const obj = Object.create(null);
+console.log(Object.getPrototypeOf(obj) === null);
+console.log(Object.hasOwn(obj, "toString"));
+"#
+        ),
+        vec!["true", "false"]
     );
 }

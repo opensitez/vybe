@@ -248,6 +248,23 @@ console.log(unreachedVar); // var declaration is hoisted even inside unreached i
 }
 
 #[test]
+fn test_js_let_tdz_in_same_scope_before_initialization_throws() {
+    let src = r#"
+let hit = "no";
+try {
+    {
+        console.log(x);
+        let x = "too late";
+    }
+} catch (e) {
+    hit = "error";
+}
+console.log(hit);
+"#;
+    assert_eq!(run_js(src), vec!["error"]);
+}
+
+#[test]
 fn test_js_global_let_does_not_create_window_globalthis_property() {
     let src = r#"
 let globalLetVar = "myLet";

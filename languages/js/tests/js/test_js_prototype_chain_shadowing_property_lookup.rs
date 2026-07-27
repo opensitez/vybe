@@ -278,3 +278,34 @@ try {
 "#;
     assert_eq!(run_js(src), vec!["Prototype Cycle TypeError"]);
 }
+
+#[test]
+fn test_js_prototype_chain_set_prototype_to_null_breaks_instanceof_object() {
+    let src = r#"
+const proto = {};
+const obj = Object.create(proto);
+console.log((obj instanceof Object) + "|" + ("x" in obj));
+Object.setPrototypeOf(proto, null);
+    console.log((obj instanceof Object) + "|" + (Object.getPrototypeOf(obj) === proto));
+"#;
+    assert_eq!(run_js(src), vec!["false|false", "false|true"]);
+}
+
+#[test]
+fn test_js_prototype_chain_symbol_property_shadowing_and_reflection() {
+    let src = r#"
+const token = Symbol("token");
+const proto = { [token]: "proto" };
+const obj = Object.create(proto);
+
+obj[token] = "own";
+console.log(Object.getOwnPropertySymbols(obj).length);
+console.log(Object.getOwnPropertySymbols(obj)[0] === token);
+console.log(token in obj);
+console.log(obj[token]);
+"#;
+    assert_eq!(
+        run_js(src),
+        vec!["1", "true", "true", "own"]
+    );
+}

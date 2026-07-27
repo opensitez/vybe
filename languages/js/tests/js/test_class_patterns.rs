@@ -673,3 +673,80 @@ console.log((5).toFixed(2));
         vec!["5.00"]
     );
 }
+
+#[test]
+fn class_extends_expression_is_evaluated_once() {
+    assert_eq!(
+        run_js(
+            r#"
+let buildCount = 0;
+function makeBase() {
+    buildCount++;
+    return class {
+        greet() {
+            return "from base";
+        }
+    };
+}
+
+class Child extends makeBase() {}
+console.log(buildCount);
+console.log(new Child().greet());
+"#
+        ),
+        vec!["1", "from base"]
+    );
+}
+
+#[test]
+fn derived_instance_field_initializers_run_after_super() {
+    assert_eq!(
+        run_js(
+            r#"
+class Base {
+    constructor(seed) { this.seed = seed; }
+}
+
+class Derived extends Base {
+    doubled = this.seed * 2;
+    constructor(seed) {
+        super(seed);
+        this.seed = seed;
+    }
+}
+
+const d = new Derived(7);
+console.log(d.seed);
+console.log(d.doubled);
+"#
+        ),
+        vec!["7", "14"]
+    );
+}
+
+#[test]
+fn static_fields_can_read_super_static_from_derived_initializer() {
+    assert_eq!(
+        run_js(
+            r#"
+class Base {
+    static count = 1;
+    static {
+        this.count += 1;
+    }
+}
+
+class Child extends Base {
+    static childCount = super.count + 1;
+    static {
+        this.childCount += Base.count;
+    }
+}
+
+console.log(Base.count);
+console.log(Child.childCount);
+"#
+        ),
+        vec!["2", "5"]
+    );
+}

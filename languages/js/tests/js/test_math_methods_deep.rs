@@ -174,3 +174,17 @@ console.log(Math.imul(0xffffffff, 5)); // int32 overflow
         vec!["12", "-5"]
     );
 }
+
+#[test]
+fn math_remainder_with_negative_numbers() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(17 % 5);
+console.log(-17 % 5);
+console.log(17 % -5);
+"#
+        ),
+        vec!["2", "-2", "2"]
+    );
+}

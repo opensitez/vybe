@@ -378,3 +378,85 @@ console.log(parts.join(","));
         vec!["one,two,three"]
     );
 }
+
+#[test]
+fn match_without_global_flag() {
+    assert_eq!(
+        run_js(
+            r#"
+const match = "abc123def456".match(/\d+/);
+console.log(match[0]);
+console.log(match.index);
+"#
+        ),
+        vec!["123", "3"]
+    );
+}
+
+#[test]
+fn match_all_digits_with_global_flag() {
+    assert_eq!(
+        run_js(
+            r#"
+const matches = "a1 b2 c3".match(/\d/g);
+console.log(matches.join("|"));
+"#
+        ),
+        vec!["1|2|3"]
+    );
+}
+
+#[test]
+fn search_index_or_minus_one() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log("foobar".search(/bar/));
+console.log("foobar".search(/xyz/));
+"#
+        ),
+        vec!["3", "-1"]
+    );
+}
+
+#[test]
+fn replace_replaces_first_match_only() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log("a-b-b".replace("-", "_"));
+console.log("a-b-b".replace(/-/g, "_"));
+"#
+        ),
+        vec!["a_b-b", "a_b_b"]
+    );
+}
+
+#[test]
+fn substr_and_substring_legacy_compat() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log("abcdef".substr(2, 2));
+console.log("abcdef".substr(-3));
+"#
+        ),
+        vec!["cd", "def"]
+    );
+}
+
+#[test]
+fn code_point_at_and_from_code_point_boundaries() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log("A".codePointAt(0));
+const ascii = "ab";
+console.log(ascii.codePointAt(0));
+console.log(ascii.codePointAt(1));
+console.log(String.fromCodePoint(0x10FFFF).length);
+"#
+        ),
+        vec!["65", "97", "98", "2"]
+    );
+}

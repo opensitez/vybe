@@ -59,6 +59,15 @@ console.log(str.includes("hello", 1));
 }
 
 #[test]
+fn test_js_string_includes_negative_position_is_zero() {
+    let src = r#"
+console.log("abc".includes("a", -1));
+console.log("abc".includes("b", -1));
+"#;
+    assert_eq!(run_js(src), vec!["true", "true"]);
+}
+
+#[test]
 fn test_js_string_starts_with_regex_argument_throws_typeerror() {
     let src = r#"
 try {
@@ -101,6 +110,14 @@ const str = "hello 123 world";
 console.log(str.search(/\d+/));
 "#;
     assert_eq!(run_js(src), vec!["6"]);
+}
+
+#[test]
+fn test_js_string_search_number_argument_is_coerced_to_string() {
+    let src = r#"
+console.log("abc123".search(123));
+"#;
+    assert_eq!(run_js(src), vec!["3"]);
 }
 
 #[test]
@@ -199,4 +216,12 @@ try {
 }
 "#;
     assert_eq!(run_js(src), vec!["includes Null This TypeError"]);
+}
+
+#[test]
+fn test_js_string_boundary_positions_and_empty_search_behavior() {
+    let src = r#"
+console.log(`${"abc".startsWith("a", 10)}:${"abc".endsWith("a", 1)}:${"abc".includes("z", 10)}:${"".includes("")}:${"abc".includes("")}`);
+"#;
+    assert_eq!(run_js(src), vec!["false:true:false:true:true"]);
 }

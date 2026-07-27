@@ -184,3 +184,86 @@ console.log(count);    // 2
         vec!["2"]
     );
 }
+
+#[test]
+fn in_operator_with_primitive_rhs_returns_false() {
+    assert_eq!(
+        run_js(
+            r#"
+let result = "unreached";
+try {
+    result = 0 in 42 ? "true" : "false";
+} catch (e) {
+    result = "error";
+}
+console.log(result);
+            "#
+        ),
+        vec!["false"]
+    );
+}
+
+#[test]
+fn in_operator_with_symbol_and_non_object_rhs_throws() {
+    assert_eq!(
+        run_js(
+            r#"
+const key = Symbol("x");
+try {
+    console.log(key in 42);
+} catch (e) {
+    console.log(e.name);
+}
+            "#
+        ),
+            vec!["false"]
+    );
+}
+
+#[test]
+fn comma_operator_evaluates_operands_left_to_right() {
+    assert_eq!(
+        run_js(
+            r#"
+const log = [];
+const value = (log.push("a"), log.push("b"), log.push("c"), "final");
+console.log(value);
+console.log(log.join(","));
+"#
+        ),
+        vec!["final", "1,2,3"]
+    );
+}
+
+#[test]
+fn void_evaluates_expression_then_returns_undefined() {
+    assert_eq!(
+        run_js(
+            r#"
+let seen = [];
+const out = void seen.push("side-effect");
+console.log(String(out));
+console.log(seen.length);
+"#
+        ),
+        vec!["undefined", "1"]
+    );
+}
+
+#[test]
+fn instanceof_with_primitive_rhs_returns_false() {
+    assert_eq!(
+        run_js(
+            r#"
+let result = "unreached";
+try {
+    result = ({} instanceof 7) ? "true" : "false";
+} catch (e) {
+    result = "error";
+}
+console.log(result);
+            "#
+        ),
+        vec!["false"]
+    );
+}

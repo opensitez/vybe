@@ -86,6 +86,39 @@ console.log(Derived.env);
 }
 
 #[test]
+fn test_js_class_static_setter_override_forwards_to_base() {
+    let src = r#"
+class Base {
+    static _value = 0;
+    static get value() { return this._value; }
+    static set value(v) { this._value = v; }
+}
+class Derived extends Base {
+    static set value(v) { super.value = v + 7; }
+}
+    Derived.value = 10;
+    console.log(`${Derived.value}`);
+"#;
+    assert_eq!(run_js(src), vec!["17"]);
+}
+
+#[test]
+fn test_js_class_static_setter_uses_derived_as_this() {
+    let src = r#"
+class Base {
+    static set level(v) { this._setBy = this.name; this._level = v; }
+    static get level() { return `${this._setBy}|${this._level}`; }
+}
+class Derived extends Base {
+    static set level(v) { super.level = v; }
+}
+Derived.level = 42;
+console.log(Derived.level);
+"#;
+    assert_eq!(run_js(src), vec!["Derived|42"]);
+}
+
+#[test]
 fn test_js_class_getter_override_without_super_hides_parent_getter() {
     let src = r#"
 class Parent {

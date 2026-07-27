@@ -282,3 +282,173 @@ console.log(s.slice(start, end));
         vec!["content"]
     );
 }
+
+#[test]
+fn template_literal_with_ternary_and_expression() {
+    assert_eq!(
+        run_js(
+            r#"
+const user = { first: "Ada", last: "Lovelace", active: true };
+console.log(`${user.first} ${user.last} is ${user.active ? "active" : "inactive"}`);
+const total = 3 + 4;
+console.log(`total=${total}`);
+"#
+        ),
+        vec!["Ada Lovelace is active", "total=7"]
+    );
+}
+
+#[test]
+fn template_literal_preserves_newlines() {
+    assert_eq!(
+        run_js(
+            r#"
+const block = `line1
+line2`;
+console.log(block.includes("line1"));
+console.log(block.includes("line2"));
+"#
+        ),
+        vec!["true", "true"]
+    );
+}
+
+#[test]
+fn string_search_methods_positions() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log("javascript".startsWith("java"));
+console.log("javascript".startsWith("ava", 1));
+console.log("javascript".endsWith("ipt"));
+console.log("javascript".endsWith("java", 4));
+console.log("javascript".includes("script"));
+console.log("javascript".includes("java", 1));
+"#
+        ),
+        vec!["true", "true", "true", "true", "true", "false"]
+    );
+}
+
+#[test]
+fn trim_start_end() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log("  spaced  ".trimStart());
+console.log("  spaced  ".trimEnd());
+const noTrim = "abc".trimStart().trimEnd();
+console.log(noTrim);
+"#
+        ),
+        vec!["spaced  ", "  spaced", "abc"]
+    );
+}
+
+#[test]
+fn repeat_negative_throws() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log("ha".repeat(3));
+try {
+    console.log("x".repeat(-1));
+} catch (e) {
+    console.log(e.name);
+}
+"#
+        ),
+        vec!["hahaha", "RangeError"]
+    );
+}
+
+#[test]
+fn string_pad_start_and_pad_end() {
+    let src = r#"
+console.log("x".padStart(4, "0"));
+console.log("x".padEnd(4, "0"));
+console.log("x".padStart(2, "ab"));
+"#;
+    assert_eq!(run_js(src), vec!["000x", "x000", "ax"]);
+}
+
+#[test]
+fn slice_with_negative_and_bounds() {
+    assert_eq!(
+        run_js(
+            r#"
+const s = "abcdef";
+console.log(s.slice(-2));
+console.log(s.slice(2, 4));
+console.log(s.slice(-10, 2));
+"#
+        ),
+        vec!["ef", "cd", "ab"]
+    );
+}
+
+#[test]
+fn string_replace_regex_and_capture_groups() {
+    let src = r#"
+const input = "a1b2c3";
+const replaced = input.replace(/(\d)/g, "[$1]");
+console.log(replaced);
+console.log("abc123".replace(/(ab)(c)/, "$2-$1"));
+"#;
+    assert_eq!(run_js(src), vec!["a[1]b[2]c[3]", "c-ab123"]);
+}
+
+#[test]
+fn string_split_with_limit_and_empty_pattern() {
+    let src = r#"
+console.log("a,b,c".split(",", 2).join("|"));
+console.log("abc".split("").join("-"));
+"#;
+    assert_eq!(run_js(src), vec!["a|b", "a-b-c"]);
+}
+
+#[test]
+fn template_raw_keeps_escape_sequences_literal() {
+    assert_eq!(
+        run_js(
+            r#"
+const raw = String.raw`line1\nline2`;
+console.log(raw.includes("\\n"));
+console.log(raw.split("\\n")[0]);
+console.log(raw.split("\\n")[1]);
+"#
+        ),
+        vec!["true", "line1", "line2"]
+    );
+}
+
+#[test]
+fn string_index_assignment_is_ignored() {
+    assert_eq!(
+        run_js(
+            r#"
+const name = "abc";
+console.log(name[0]);
+name[0] = "z";
+console.log(name);
+console.log(name.at(0));
+"#
+        ),
+        vec!["a", "abc", "a"]
+    );
+}
+
+#[test]
+fn code_point_and_from_code_point_behaviors() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(String.fromCodePoint(0x1F600).length);
+console.log(String.fromCodePoint(0x1F600).charCodeAt(0));
+console.log(String.fromCodePoint(0x1F600).charCodeAt(1));
+console.log(String.fromCharCode(0x41).length);
+"#,
+        ),
+        vec!["2", "55357", "56832", "1"]
+    );
+}

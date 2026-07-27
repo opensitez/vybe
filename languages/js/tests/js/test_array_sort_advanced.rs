@@ -103,6 +103,22 @@ console.log(arr.join(","));
     );
 }
 
+#[test]
+fn sort_with_non_callable_compare_fn_throws_type_error() {
+    assert_eq!(
+        run_js(
+            r#"
+try {
+    [3, 1].sort("not a function");
+} catch (e) {
+    console.log(e.name);
+}
+        "#
+        ),
+        vec!["TypeError"]
+    );
+}
+
 // ── sort strings ──────────────────────────────────────────────────────────────
 
 #[test]
@@ -186,6 +202,24 @@ console.log(arr.length);
 "#
         ),
         vec!["0"]
+    );
+}
+
+#[test]
+fn sort_sparse_array_preserves_length_and_moves_hole_to_end() {
+    assert_eq!(
+        run_js(
+            r#"
+const arr = ["b", "a", , undefined];
+arr.sort();
+console.log(arr.length);
+console.log(0 in arr);
+console.log(2 in arr);
+console.log(3 in arr);
+console.log(arr.join(","));
+"#
+        ),
+        vec!["4", "true", "true", "true", "a,b,,"]
     );
 }
 

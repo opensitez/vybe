@@ -449,3 +449,51 @@ console.log(obj.kind);
         &["true", "base"]
     );
 }
+
+#[test]
+fn object_from_entries() {
+    assert_eq!(
+        run_js(
+            r#"
+const pairs = [["a", 1], ["b", 2], ["c", 3]];
+const obj = Object.fromEntries(pairs);
+console.log(obj.a);
+console.log(obj.b);
+console.log(obj.c);
+"#
+        ),
+        &["1", "2", "3"]
+    );
+}
+
+#[test]
+fn object_entries_and_values() {
+    assert_eq!(
+        run_js(
+            r#"
+const obj = { a: 1, b: 2 };
+console.log(Object.entries(obj).length);
+console.log(Object.keys(obj).length);
+console.log(Object.values(obj).join(","));
+"#
+        ),
+        &["2", "2", "1,2"]
+    );
+}
+
+#[test]
+fn object_ownpropertysymbols_with_symbol_key() {
+    assert_eq!(
+        run_js(
+            r#"
+const sym = Symbol("k");
+let obj = { a: 1 };
+obj[sym] = "secret";
+console.log(obj[sym]);
+console.log(Object.getOwnPropertyNames(obj).includes("Symbol(k)"));
+console.log(Object.getOwnPropertySymbols(obj).length);
+"#
+        ),
+        &["secret", "false", "1"]
+    );
+}

@@ -316,3 +316,413 @@ console.log(grade(55));
         vec!["A", "B", "F"]
     );
 }
+
+#[test]
+fn exponentiation_precedence_and_syntax_boundary() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log((2 ** 3) ** 2); // explicit grouping
+console.log(2 ** 3 ** 2);    // right-associative exponentiation
+console.log("end");
+"#
+        ),
+        vec!["64", "64", "end"]
+    );
+}
+
+#[test]
+fn typeof_undeclared_is_safe_and_tdz_throws() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(typeof doesNotExist);
+try {
+    eval("{ console.log(typeof tdzVar); let tdzVar = 123; }");
+} catch (e) {
+    console.log("TDZ");
+}
+"#
+        ),
+        vec!["undefined", "TDZ"]
+    );
+}
+
+#[test]
+fn in_operator_considers_prototype_chain() {
+    assert_eq!(
+        run_js(
+            r#"
+const proto = { inherited: 1 };
+const child = Object.create(proto);
+console.log("inherited" in child);
+console.log(child.hasOwnProperty("inherited"));
+"#
+        ),
+        vec!["true", "false"]
+    );
+}
+
+#[test]
+fn instanceof_checks_inheritance_chain() {
+    assert_eq!(
+        run_js(
+            r#"
+class Base {}
+class Derived extends Base {}
+const value = new Derived();
+console.log(value instanceof Derived);
+console.log(value instanceof Base);
+console.log(42 instanceof Base);
+"#
+        ),
+        vec!["true", "true", "false"]
+    );
+}
+
+#[test]
+fn compound_assignment_and_operator_precedence() {
+    assert_eq!(
+        run_js(
+            r#"
+let x = 20;
+x += 10; // 30
+x -= 5;  // 25
+x *= 2;  // 50
+x /= 5;  // 10
+x %= 7;  // 3
+x **= 2; // 9
+console.log(x);
+"#
+        ),
+        vec!["9"]
+    );
+}
+
+#[test]
+fn precedence_addition_before_shift() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(1 + 2 << 2); // (1 + 2) << 2 = 12
+console.log(1 + (2 << 2)); // 9
+"#
+        ),
+        vec!["12", "9"]
+    );
+}
+
+#[test]
+fn chained_comparisons_and_associativity() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(1 + 2 * 3 - 4 / 2);
+console.log(1 < 2 < 3); // left-to-right: (1 < 2) -> true -> 1 -> 1 < 3
+console.log(3 < 2 < 1); // left-to-right: (3 < 2) -> false -> 0 -> 0 < 1
+"#
+        ),
+        vec!["5", "true", "true"]
+    );
+}
+
+#[test]
+fn division_and_remainder_edge_cases() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(5 / 0);
+console.log(-5 / 0);
+console.log(0 / 0);
+console.log(5 % 0);
+"#
+        ),
+        vec!["Infinity", "-Infinity", "NaN", "NaN"]
+    );
+}
+
+#[test]
+fn division_and_remainder_negative_values() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(5 / -2);
+console.log(-5 / 2);
+console.log(-5 % 2);
+console.log(5 % -2);
+console.log((-5 % -2));
+"#
+        ),
+        vec!["-2.5", "-2.5", "-1", "1", "-1"]
+    );
+}
+
+#[test]
+fn remainder_with_mixed_sign_and_float_values() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(10 % 4);
+console.log(10 % -4);
+console.log(-10 % 4);
+console.log(10.5 % 2);
+"#
+        ),
+        vec!["2", "2", "-2", "0.5"]
+    );
+}
+
+#[test]
+fn logical_assignment_short_circuits_rhs() {
+    assert_eq!(
+        run_js(
+            r#"
+let value = 5;
+let calls = 0;
+value ||= (() => {
+    calls++;
+    return 9;
+})();
+let ready = 0;
+ready ||= (() => {
+    calls++;
+    return 11;
+})();
+console.log(value);
+console.log(ready);
+console.log(calls);
+"#
+        ),
+        vec!["5", "11", "1"]
+    );
+}
+
+#[test]
+fn nullish_assignment_sets_only_when_nullish() {
+    assert_eq!(
+        run_js(
+            r#"
+let a;
+let b = 0;
+a ??= 5;
+b ??= 7;
+console.log(a);
+console.log(b);
+"#
+        ),
+        vec!["5", "0"]
+    );
+}
+
+#[test]
+fn in_operator_requires_rhs_object() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log("x" in { x: 1, y: 2 });
+console.log("x" in 1);
+console.log("x" in Object(1));
+"#
+        ),
+        vec!["true", "false", "false"]
+    );
+}
+
+#[test]
+fn in_operator_rhs_null_or_undefined_does_not_throw_typeerror_in_vm() {
+    assert_eq!(
+        run_js(
+            r#"
+let nullCheck = false;
+let undefinedCheck = false;
+try {
+    "x" in null;
+} catch (e) {
+    nullCheck = e instanceof TypeError;
+}
+try {
+    "x" in undefined;
+} catch (e) {
+    undefinedCheck = e instanceof TypeError;
+}
+console.log(`${nullCheck}:${undefinedCheck}`);
+            "#
+        ),
+        vec!["false:false"]
+    );
+}
+
+#[test]
+fn instanceof_rhs_coercion_with_non_function_is_false() {
+    assert_eq!(
+    run_js(
+        r#"
+console.log(3 instanceof Number);
+console.log(3 instanceof 123);
+console.log({} instanceof Number);
+console.log({} instanceof Object);
+"#
+        ),
+        vec!["false", "false", "false", "false"]
+    );
+}
+
+#[test]
+fn delete_non_configurable_property_returns_false() {
+    assert_eq!(
+        run_js(
+            r#"
+const obj = Object.defineProperty({}, "x", { value: 1, configurable: false });
+console.log(delete obj.x);
+console.log(obj.x);
+"#
+        ),
+        vec!["false", "1"]
+    );
+}
+
+#[test]
+fn delete_non_existent_property_returns_true() {
+    assert_eq!(
+        run_js(
+            r#"
+const obj = { a: 1 };
+console.log(delete obj.missing);
+console.log(obj.a);
+"#
+        ),
+        vec!["true", "1"]
+    );
+}
+
+#[test]
+fn instanceof_symbol_hasinstance_truthiness() {
+    assert_eq!(
+        run_js(
+            r#"
+class FalseInstanceof {
+    static [Symbol.hasInstance]() { return ""; }
+}
+class TruthyInstanceof {
+    static [Symbol.hasInstance]() { return 42; }
+}
+console.log({} instanceof FalseInstanceof);
+console.log({} instanceof TruthyInstanceof);
+"#
+        ),
+        vec!["false", "true"]
+    );
+}
+
+#[test]
+fn in_operator_with_symbol_property_key() {
+    assert_eq!(
+        run_js(
+            r#"
+const token = Symbol("token");
+const obj = { [token]: 123 };
+console.log(token in obj);
+console.log(Object.hasOwn(obj, token));
+"#
+        ),
+        vec!["true", "true"]
+    );
+}
+
+#[test]
+fn bigint_binary_operators_accept_same_type_only() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log((1n + 2n).toString());
+console.log((1n << 2n).toString());
+let addMixed = false;
+let shiftMixed = false;
+try {
+    const _ = 1n + 2;
+} catch (e) {
+    addMixed = true;
+}
+try {
+    const _ = 1n << 2;
+} catch (e) {
+    shiftMixed = true;
+}
+console.log(`${addMixed}:${shiftMixed}`);
+"#
+        ),
+        vec!["3", "4", "true:true"]
+    );
+}
+
+#[test]
+fn nullish_coalescing_on_boolean_and_zero() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log((false ?? "fallback"));
+console.log((0 ?? "fallback"));
+console.log((null ?? "fallback"));
+"#
+        ),
+        vec!["false", "0", "fallback"]
+    );
+}
+
+#[test]
+fn bitwise_shift_counts_are_masked_to_32_bits() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(1 << 32);
+console.log(1 << 33);
+console.log(1 << 40);
+console.log(-1 << 1);
+"#
+        ),
+        vec!["1", "2", "256", "-2"]
+    );
+}
+
+#[test]
+fn bitwise_shift_counts_can_be_negative() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(1 << -1);   // -1 -> 31
+console.log(-1 << -1);  // -1 -> 31
+console.log(1 >> -1);   // same as >>31
+console.log(-1 >> -1);
+"#
+        ),
+        vec!["-2147483648", "-2147483648", "0", "-1"]
+    );
+}
+
+#[test]
+fn arithmetic_addition_string_vs_numeric_coercion() {
+    let src = r#"
+console.log("1" + 2 + 3);
+console.log(1 + "2" + 3);
+console.log("1" + (2 + 3));
+console.log(1 + 2 + "3");
+console.log("1" - 2);
+console.log("1" * "2");
+"#;
+    assert_eq!(
+        run_js(src),
+        vec!["123", "123", "15", "33", "-1", "2"]
+    );
+}
+
+#[test]
+fn arithmetic_unary_conversion_operations() {
+    let src = r#"
+console.log(+true);
+console.log(+false);
+console.log(-"42");
+console.log(+null);
+console.log(-false);
+"#;
+    assert_eq!(run_js(src), vec!["1", "0", "-42", "0", "0"]);
+}

@@ -431,4 +431,14 @@ crate::js_cases! {
         ["true", "1"]
     };
 
+    fill_then_splice_replaces_elements => {
+        r#"const a=[1,2,3]; a.fill(0); a.splice(1, 1, 9); console.log(a.join(","));"#,
+        ["0,9,0"]
+    };
+
+    unshift_undefined_in_array => {
+        r#"const a=[1,2]; a.unshift(undefined); console.log(a.length); console.log(0 in a);"#,
+        ["3", "true"]
+    };
+
 }

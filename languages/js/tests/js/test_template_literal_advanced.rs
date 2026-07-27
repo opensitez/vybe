@@ -254,6 +254,20 @@ console.log(`${0}`);
     );
 }
 
+#[test]
+fn template_literals_escape_dollar_brace() {
+    assert_eq!(
+        run_js(
+            r#"
+const marker = "${";
+console.log(`literal ${marker}value`);
+console.log(`line break escapes: \\n`);
+"#
+        ),
+        vec!["literal ${value", "line break escapes: \\n"]
+    );
+}
+
 // ── recursive/function template ───────────────────────────────────────────────
 
 #[test]
@@ -286,5 +300,41 @@ console.log(result[0]);     // backslash
 "#
         ),
         vec!["4", "\\"]
+    );
+}
+
+#[test]
+fn template_substitutions_evaluate_left_to_right() {
+    assert_eq!(
+        run_js(
+            r#"
+const events = [];
+function mark(label) {
+    events.push(label);
+    return label;
+}
+console.log(`${mark("first")}-${mark("second")}-${mark("third")}`);
+console.log(events.join(","));
+"#
+        ),
+        vec!["first-second-third", "first,second,third"]
+    );
+}
+
+#[test]
+fn tagged_template_tag_receives_raw_and_cooked_parts() {
+    assert_eq!(
+        run_js(
+            r#"
+function inspect(strings, value) {
+    console.log(strings.length);
+    console.log(strings[0].length);
+    console.log(strings.raw[0].length);
+    console.log(value);
+}
+inspect`a\n${"B"}\t`;
+"#
+    ),
+        vec!["2", "2", "3", "B"]
     );
 }

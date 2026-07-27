@@ -101,6 +101,14 @@ console.log(Math.fround(1e-50));
 }
 
 #[test]
+fn test_js_math_fround_overflow_to_infinity() {
+    let src = r#"
+console.log(`${Math.fround(1e40)}`);
+"#;
+    assert_eq!(run_js(src), vec!["Infinity"]);
+}
+
+#[test]
 fn test_js_math_trunc_vs_floor_negative_numbers() {
     let src = r#"
 console.log(`${Math.trunc(-3.7)}:${Math.floor(-3.7)}`);
@@ -170,4 +178,18 @@ try {
 }
 "#;
     assert_eq!(run_js(src), vec!["imul Symbol TypeError"]);
+}
+
+#[test]
+fn test_js_math_clz32_symbol_operand_throws_typeerror() {
+    let src = r#"
+const errors = [];
+try {
+    Math.clz32(Symbol("val"));
+} catch (e) {
+    errors.push("clz32");
+}
+console.log(errors.join("|"));
+"#;
+    assert_eq!(run_js(src), vec!["clz32"]);
 }

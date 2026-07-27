@@ -28,6 +28,28 @@ console.log(binarySearch(arr, 4));
 }
 
 #[test]
+fn binary_search_empty_array_returns_minus_one() {
+    assert_eq!(
+        run_js(
+            r#"
+function binarySearch(arr, target) {
+    let lo = 0, hi = arr.length - 1;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (arr[mid] === target) return mid;
+        else if (arr[mid] < target) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    return -1;
+}
+console.log(binarySearch([], 10));
+"#
+        ),
+        vec!["-1"]
+    );
+}
+
+#[test]
 fn quicksort() {
     assert_eq!(
         run_js(
@@ -177,6 +199,23 @@ console.log(rotateLeft([1, 2, 3, 4], 4).join(","));
 "#
         ),
         vec!["3,4,5,1,2", "1,2,3", "1,2,3,4"]
+    );
+}
+
+#[test]
+fn rotate_array_with_negative_shift_uses_slice_math() {
+    assert_eq!(
+        run_js(
+            r#"
+function rotateLeft(arr, k) {
+    const n = arr.length;
+    k = k % n;
+    return [...arr.slice(k), ...arr.slice(0, k)];
+}
+console.log(rotateLeft([1, 2, 3], -1).join(","));
+"#
+        ),
+        vec!["3,1,2"]
     );
 }
 

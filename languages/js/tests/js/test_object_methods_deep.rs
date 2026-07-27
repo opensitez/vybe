@@ -53,6 +53,44 @@ console.log(obj.y);
     );
 }
 
+#[test]
+fn set_prototype_of_changes_prototype() {
+    assert_eq!(
+        run_js(
+            r#"
+const base = { base: true };
+const obj = {};
+const result = Object.setPrototypeOf(obj, base);
+console.log(result === obj);
+console.log(Object.getPrototypeOf(obj) === base);
+console.log(obj.base);
+"#
+        ),
+        vec!["true", "true", "true"]
+    );
+}
+
+#[test]
+fn set_prototype_of_rejects_primitive_target() {
+    assert_eq!(
+        run_js(
+            r#"
+let threw = false;
+let result;
+try {
+    result = Object.setPrototypeOf(5, {});
+} catch {
+    threw = true;
+}
+console.log(threw);
+console.log(typeof result);
+console.log(result);
+"#
+        ),
+        vec!["false", "boolean", "false"]
+    );
+}
+
 // ── Object.assign ─────────────────────────────────────────────────────────────
 
 #[test]

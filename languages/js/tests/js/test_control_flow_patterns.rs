@@ -195,3 +195,157 @@ console.log(x);
         vec!["10", "20"]
     );
 }
+
+#[test]
+fn if_else_with_switch_value() {
+    assert_eq!(
+        run_js(
+            r#"
+const n = 1;
+let out;
+if (n === 0) {
+    out = "zero";
+} else if (n === 1) {
+    out = "one";
+} else {
+    out = "other";
+}
+console.log(out);
+            "#
+        ),
+        vec!["one"]
+    );
+}
+
+#[test]
+fn conditional_expression_chain() {
+    let src = r#"
+const score = 88;
+const grade = score >= 90 ? "A" : score >= 80 ? "B" : "C";
+console.log(`${grade}:${score > 100}`);
+"#;
+    assert_eq!(run_js(src), vec!["B:false"]);
+}
+
+#[test]
+fn while_loop_continue_and_break_together() {
+    let src = r#"
+let n = 0;
+const values = [];
+while (n < 6) {
+    n++;
+    if (n % 2 === 0) continue;
+    if (n > 4) break;
+    values.push(n);
+}
+console.log(values.join(","));
+"#;
+    assert_eq!(run_js(src), vec!["1,3"]);
+}
+
+#[test]
+fn for_in_uses_object_enumeration_order() {
+    let src = r#"
+const obj = { a: 1, c: 2, b: 3 };
+const keys = [];
+for (const k in obj) keys.push(k);
+console.log(keys.join(","));
+"#;
+    assert_eq!(run_js(src), vec!["a,c,b"]);
+}
+
+#[test]
+fn condition_evaluates_logical_operators_for_truthiness() {
+    let src = r#"
+const calls = [];
+const side_effect = () => {
+    calls.push("side");
+    return true;
+};
+
+if (0 && side_effect()) {
+    calls.push("if-true");
+} else {
+    calls.push("if-false");
+}
+
+if (1 || side_effect()) {
+    calls.push("or-true");
+}
+
+console.log(calls.join(","));
+"#;
+    assert_eq!(run_js(src), vec!["if-false,or-true"]);
+}
+
+#[test]
+fn if_condition_uses_assigned_value_for_truthiness() {
+    let src = r#"
+let x = 0;
+const out = [];
+
+if ((x = 7)) {
+    out.push("if");
+}
+if ((x = 0)) {
+    out.push("should-not-run");
+} else {
+    out.push("else");
+}
+
+console.log(out.join("|"));
+console.log(x);
+"#;
+    assert_eq!(run_js(src), vec!["if|else", "0"]);
+}
+
+#[test]
+fn if_condition_uses_comma_expression_evaluation_order() {
+    let src = r#"
+const trace = [];
+const mark = (name, value) => {
+    trace.push(name);
+    return value;
+};
+
+let x = 0;
+if (mark("lhs", x = 5), mark("rhs", x > 2)) {
+    trace.push("then");
+}
+
+console.log(trace.join(","));
+console.log(x);
+"#;
+    assert_eq!(run_js(src), vec!["lhs,rhs,then", "5"]);
+}
+
+#[test]
+fn while_loop_condition_increments_and_stops() {
+    let src = r#"
+let n = 0;
+let iterations = 0;
+while ((n += 1) < 4) {
+    iterations++;
+}
+console.log(iterations);
+console.log(n);
+"#;
+    assert_eq!(run_js(src), vec!["3", "4"]);
+}
+
+#[test]
+fn for_of_skips_values_with_continue() {
+    assert_eq!(
+        run_js(
+            r#"
+const seen = [];
+for (const n of [1, 2, 3, 4]) {
+    if (n % 2 === 0) continue;
+    seen.push(n);
+}
+console.log(seen.join(","));
+"#
+        ),
+        vec!["1,3"]
+    );
+}

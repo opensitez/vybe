@@ -161,6 +161,35 @@ console.log(parts.join(","));
     );
 }
 
+#[test]
+fn split_with_limit() {
+    assert_eq!(
+        run_js(
+            r#"
+const parts = "a1b2c3".split(/\d/, 2);
+console.log(parts.join("|"));
+"#
+        ),
+        vec!["a|b"]
+    );
+}
+
+#[test]
+fn match_all_requires_global_regex() {
+    assert_eq!(
+        run_js(
+            r#"
+try {
+    [..."abc".matchAll(/a/)];
+} catch (e) {
+    console.log(e instanceof TypeError);
+}
+"#
+        ),
+        vec!["true"]
+    );
+}
+
 // ── RegExp.exec ───────────────────────────────────────────────────────────────
 
 #[test]
