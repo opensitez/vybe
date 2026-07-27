@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     pdo_fetch_group_by_first_column => {
         r#"<?php

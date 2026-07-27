@@ -143,7 +143,7 @@ $user = new User();
 echo ($user?->profile?->avatar ?? 'default.png') . '|';
 $user->profile = new Profile();
 echo ($user?->profile?->avatar ?? 'default.png');
-"#
+"#,
     );
     assert_eq!(out, vec!["default.png|avatar.png"]);
 }
@@ -156,7 +156,7 @@ $input = 1;
 $status = $input ?: 'falsy' ? 'A' : 'B';
 $status2 = ($input ?: 'falsy') ? 'A' : 'B';
 echo $status . '|' . $status2;
-"#
+"#,
     );
     assert_eq!(out, vec!["1|A"]);
 }
@@ -170,7 +170,7 @@ echo 0 ? 'x' : $x ? 'y' : 'z';
 $x = 0;
 echo '|';
 echo (0 ? 'x' : $x ? 'y' : 'z');
-"#
+"#,
     );
     assert_eq!(out, vec!["y|z"]);
 }
@@ -183,7 +183,7 @@ $a = 0;
 echo ($a ? 'yes' : ($a ? 'inner-yes' : 'inner-no'));
 echo '|';
 echo ($a ? 'yes' : $a ? 'first' : 'second');
-"#
+"#,
     );
     assert_eq!(out, vec!["inner-no|second"]);
 }
@@ -199,7 +199,7 @@ echo '|';
 $s = "";
 $s ??= "fallback";
 echo $s === "" ? 'empty' : 'filled';
-"#
+"#,
     );
     assert_eq!(out, vec!["0|empty"]);
 }
@@ -220,7 +220,7 @@ echo match (($left - $right) === 2) {
     true => "two",
     false => "not-two",
 };
-"#
+"#,
     );
     assert_eq!(out, vec!["gt|two"]);
 }
@@ -238,7 +238,7 @@ echo '|';
 echo (false ?: 'fallback');
 echo '|';
 echo (' ' ?: 'fallback');
-"#
+"#,
     );
     assert_eq!(out, vec!["fallback|fallback|fallback|fallback| "]);
 }
@@ -262,7 +262,7 @@ echo match ($root->next?->next?->name) {
     null => 'no-child',
     default => 'has-child',
 };
-"#
+"#,
     );
     assert_eq!(out, vec!["leaf|no-child"]);
 }
@@ -276,7 +276,7 @@ $value = ($base ?? 'fallback') ?: 'second';
 echo $value . '|';
 $value2 = $base ?? ('fallback' ?: 'second');
 echo $value2;
-"#
+"#,
     );
     assert_eq!(out, vec!["fallback|fallback"]);
 }
@@ -293,7 +293,7 @@ $right = function() use (&$log) {
 $left = 'present';
 echo ($left ?? $right()) . '|';
 echo implode(',', $log);
-"#
+"#,
     );
     assert_eq!(out, vec!["present|"]);
 }
@@ -310,7 +310,7 @@ $status = match (true) {
 };
 $label = $status === 'pass' ? 'ok' : 'bad';
 echo $label;
-"#
+"#,
     );
     assert_eq!(out, vec!["ok"]);
 }
@@ -323,7 +323,7 @@ $data = ['x' => null];
 $x = ($data['x'] ?? 'fallback') ?: 'alt';
 $y = $data['y'] ?? 'fallback';
 echo $x . '|' . $y;
-"#
+"#,
     );
     assert_eq!(out, vec!["alt|fallback"]);
 }
@@ -339,7 +339,7 @@ $expr = $next() > 5 ? match (10) {
     default => 'other',
 } : 'low';
 echo $expr . '|' . $calls;
-"#
+"#,
     );
     assert_eq!(out, vec!["ten|1"]);
 }
@@ -354,7 +354,7 @@ echo match (true) {
     ($value === 0 && $value >= 0) => 'zero',
     default => 'other',
 };
-"#
+"#,
     );
     assert_eq!(out, vec!["zero"]);
 }

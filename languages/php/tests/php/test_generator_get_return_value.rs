@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     generator_get_return_value => {
         r#"<?php

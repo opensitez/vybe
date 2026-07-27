@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     generator_current_key_sync => {
         r#"<?php

@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     fscanf_basic_read => {
         r#"<?php

@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     stream_wrapper_dir_opendir_readdir => {
         r#"<?php

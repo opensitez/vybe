@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     debug_backtrace_provide_object => {
         r#"<?php

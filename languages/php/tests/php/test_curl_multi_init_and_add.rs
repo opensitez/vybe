@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     curl_multi_init_and_add_handle => {
         r#"<?php

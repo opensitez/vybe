@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     realpath_cache_get_type => {
         r#"<?php

@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     pdo_fetch_into_existing_object => {
         r#"<?php

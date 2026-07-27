@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     mb_convert_variables_basic => {
         r#"<?php

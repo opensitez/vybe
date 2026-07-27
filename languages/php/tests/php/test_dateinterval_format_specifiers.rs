@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     dateinterval_format_specifiers => {
         r#"<?php

@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     mb_stristr_basic => {
         r#"<?php

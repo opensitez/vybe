@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     filter_has_var_basic => {
         r#"<?php

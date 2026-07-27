@@ -1,7 +1,10 @@
 use super::helpers::run_prints;
 
 fn assert_output(expr: &str, expected: &str) {
-    assert_eq!(run_prints(&format!("<?php echo {}; ", expr)), vec![expected.to_string()]);
+    assert_eq!(
+        run_prints(&format!("<?php echo {}; ", expr)),
+        vec![expected.to_string()]
+    );
 }
 
 fn assert_int(expr: &str, expected: i64) {
@@ -26,15 +29,18 @@ fn php_string_manipulation() {
             .join(",");
 
         let arr = format!("[{}]", values);
-        let joined = (1..=len).map(|value| value.to_string()).collect::<Vec<_>>().join("-");
-        let joined_comma = (1..=len).map(|value| value.to_string()).collect::<Vec<_>>().join(",");
+        let joined = (1..=len)
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join("-");
+        let joined_comma = (1..=len)
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
         let exploded_count = len;
         let dash_len = joined.len() as i64;
 
-        assert_output(
-            &format!("implode(',', {arr})"),
-            &joined_comma,
-        );
+        assert_output(&format!("implode(',', {arr})"), &joined_comma);
         assert_int(
             &format!("count(explode('-', {}))", quote_php(&joined)),
             exploded_count,
@@ -45,7 +51,10 @@ fn php_string_manipulation() {
             &joined_comma,
         );
         assert_int(
-            &format!("strlen(str_replace(' ', '-', trim({})))", quote_php(&format!("  {joined}  "))),
+            &format!(
+                "strlen(str_replace(' ', '-', trim({})))",
+                quote_php(&format!("  {joined}  "))
+            ),
             dash_len,
         );
         assert_output(
@@ -73,9 +82,7 @@ fn php_string_explode_limit_keeps_remainder() {
 
 #[test]
 fn php_string_implode_without_glue() {
-    let out = run_prints(
-        "<?php\n$a = ['php', '7', 'test'];\necho implode($a);\n",
-    );
+    let out = run_prints("<?php\n$a = ['php', '7', 'test'];\necho implode($a);\n");
     assert_eq!(out, vec!["php7test"]);
 }
 

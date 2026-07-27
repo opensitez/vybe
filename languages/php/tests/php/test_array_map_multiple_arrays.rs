@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     array_map_multiple_arrays => {
         r#"<?php

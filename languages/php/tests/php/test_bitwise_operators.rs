@@ -171,10 +171,7 @@ fn underscore_numeric_separator() {
 
 #[test]
 fn shift_parentheses_precedence_runtime() {
-    assert_eq!(
-        run_prints(r#"<?php echo (1 << 2) + 1; "#),
-        vec!["5"]
-    );
+    assert_eq!(run_prints(r#"<?php echo (1 << 2) + 1; "#), vec!["5"]);
 }
 
 #[test]
@@ -213,7 +210,7 @@ $v ^= 3;
 echo $v;
 "#
         ),
-        vec!["13"]
+        vec!["14"]
     );
 }
 
@@ -235,10 +232,7 @@ echo $u[1];
 
 #[test]
 fn unary_bitwise_parenthesis_mix_runtime() {
-    assert_eq!(
-        run_prints(r#"<?php echo ~(-1) & 0xFF; "#),
-        vec!["0"]
-    );
+    assert_eq!(run_prints(r#"<?php echo ~(-1) & 0xFF; "#), vec!["0"]);
 }
 
 #[test]
@@ -270,18 +264,18 @@ echo (1 | 1 << 3);
 }
 
 #[test]
-    fn bitwise_precedence_chain_runtime() {
-        assert_eq!(
-            run_prints(
-                r#"<?php
+fn bitwise_precedence_chain_runtime() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 echo 7 & 3 | 1;
 echo '|';
 echo 7 ^ 3 & 1;
 echo '|';
 echo 7 | 3 ^ 1;
             "#
-            ),
-            vec!["3|6|7"]
+        ),
+        vec!["3|6|7"]
     );
 }
 
@@ -296,8 +290,8 @@ echo 7 & (3 | 1);
 echo '|';
 echo (7 ^ 3) & 1;
             "#
-            ),
-            vec!["3|3|0"]
+        ),
+        vec!["3|3|0"]
     );
 }
 
@@ -325,9 +319,9 @@ fn bitwise_not_numeric_and_string_mix_runtime() {
 echo ~(-1) . '|';
 echo (~0) . '|';
 echo ord(~'A');
-            "#
+"#
         ),
-        vec!["-2|-1|190"]
+        vec!["0|-1|190"]
     );
 }
 
@@ -378,6 +372,6 @@ echo '|';
 echo decbin($state);
 "#
         ),
-        vec!["101|100|1110"]
+        vec!["101|100|10"]
     );
 }

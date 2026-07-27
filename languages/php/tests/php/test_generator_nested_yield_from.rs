@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     generator_nested_yield_from => {
         r#"<?php

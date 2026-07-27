@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     mb_substitute_character_set_get => {
         r#"<?php

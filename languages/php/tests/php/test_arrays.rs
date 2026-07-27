@@ -234,7 +234,13 @@ fn array_merge_and_replace_runtime() {
     let out = run_prints(
         "<?php\n$a = [1, 2, 3];\n$b = [2 => 'x', 5 => 'y'];\n$m = array_merge($a, $b);\n$r = array_replace($a, $b);\necho json_encode($m), \"\\n\";\necho json_encode($r);\n",
     );
-    assert_eq!(out, vec!["[1,2,3,\"x\",\"y\"]", "{\"0\":1,\"1\":2,\"2\":\"x\",\"5\":\"y\"}"]);
+    assert_eq!(
+        out,
+        vec![
+            "[1,2,3,\"x\",\"y\"]",
+            "{\"0\":1,\"1\":2,\"2\":\"x\",\"5\":\"y\"}"
+        ]
+    );
 }
 
 #[test]
@@ -335,9 +341,7 @@ fn array_walk_by_value_modifies_external_sum() {
 
 #[test]
 fn array_list_semantics() {
-    let out = run_prints(
-        "<?php\n$a = [10, 20, 30];\necho array_is_list($a) ? 'list' : 'map';\n",
-    );
+    let out = run_prints("<?php\n$a = [10, 20, 30];\necho array_is_list($a) ? 'list' : 'map';\n");
     assert_eq!(out, vec!["list"]);
 }
 
@@ -487,9 +491,7 @@ fn array_key_cast_preserves_string_numeric_keys() {
 
 #[test]
 fn array_offset_set_on_string_numeric_index() {
-    let out = run_prints(
-        "<?php\n$a = ['01' => 'a'];\n$a[1] = 'b';\necho json_encode($a);\n",
-    );
+    let out = run_prints("<?php\n$a = ['01' => 'a'];\n$a[1] = 'b';\necho json_encode($a);\n");
     assert_eq!(out, vec!["{\"01\":\"a\",\"1\":\"b\"}"]);
 }
 
@@ -711,17 +713,15 @@ fn array_plus_keeps_left_numeric_keys() {
 
 #[test]
 fn array_pop_empty_returns_null() {
-    let out = run_prints(
-        "<?php\n$a = [];\n$v = array_pop($a);\necho is_null($v) ? 'null' : 'not';\n",
-    );
+    let out =
+        run_prints("<?php\n$a = [];\n$v = array_pop($a);\necho is_null($v) ? 'null' : 'not';\n");
     assert_eq!(out, vec!["null"]);
 }
 
 #[test]
 fn array_shift_empty_returns_null() {
-    let out = run_prints(
-        "<?php\n$a = [];\n$v = array_shift($a);\necho is_null($v) ? 'null' : 'not';\n",
-    );
+    let out =
+        run_prints("<?php\n$a = [];\n$v = array_shift($a);\necho is_null($v) ? 'null' : 'not';\n");
     assert_eq!(out, vec!["null"]);
 }
 

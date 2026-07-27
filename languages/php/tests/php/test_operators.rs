@@ -311,7 +311,7 @@ echo 8 >> 1 + 1;
 echo (8 >> 1) + 1;
 echo 3 + 4 * 2 < 20 && 3 < 4;
 "#,
-        &["9", "5", "512", "64", "7", "12", "12", "4", "5", "1"],
+        &["955126471212251"],
     );
 }
 
@@ -330,7 +330,7 @@ echo $flags['a'] ?? $flags['b'];
 echo $flags['a'] ?? $flags['c'];
 echo $flags['a'] ?? 'end';
 "#,
-        &["fallback|99|", "set", "ignored", "end"],
+        &["fallback|99|setignoredend"],
     );
 }
 
@@ -411,7 +411,7 @@ echo ('3' . 2) + 1;
 echo '3' . (2 + 1);
 echo 'x' . (2 + 3);
 "#,
-        &["abc331x5"],
+        &["abc3333x5"],
     );
 }
 
@@ -703,7 +703,7 @@ echo ord(('a' | 'b')[0]) . '|';
 echo ord(('foo' & 'bar')[0]) . ord(('foo' & 'bar')[1]) . ord(('foo' & 'bar')[2]) . '|';
 echo ord(('abc' ^ 'bcd')[0]) . ord(('abc' ^ 'bcd')[1]) . ord(('abc' ^ 'bcd')[2]);
 "#,
-        &["99|979801|39107"],
+        &["99|989798|317"],
     );
 }
 
@@ -719,7 +719,7 @@ echo (8 >> 1) + (2 << 1);
 echo '|';
 echo (8 >> 1) + 1 + 0;
 "#,
-        &["12|12|4|5"],
+        &["28|9|8|5"],
     );
 }
 
@@ -918,7 +918,7 @@ echo ((5 ^ 1) & 6);
 echo '|';
 echo ((1 << 3) >> 1);
 "#,
-        &["35|6|4|4"],
+        &["17|3|4|4"],
     );
 }
 
@@ -950,7 +950,7 @@ echo ('2' < 10) ? 'lt2' : 'ge2';
 echo '|';
 echo (2 <=> '10');
 "#,
-        &["ge|gt|lt2|1"],
+        &["ge|gt|lt2|-1"],
     );
 }
 
@@ -1043,7 +1043,7 @@ echo match ($code) {
     default => 'other',
 };
 "#,
-        &["C|ex"],
+        &["F|ex"],
     );
 }
 
@@ -1157,7 +1157,7 @@ echo (bool) 'php';
 echo '|';
 echo (string) 12;
 "#,
-        &["12|12|0|1|12"],
+        &["12|12||1|12"],
     );
 }
 
@@ -1197,7 +1197,7 @@ echo (((bool) ['']) === true) ? 'T' : 'F';
 echo '|';
 echo (empty([1, 2]) ? 'T' : 'F');
 "#,
-        &["F|F|T|F|T|T|F|T|F|F|T|T|F|T|T|T"],
+        &["F|F|T|F|T|T|F|T|F|F|T|T|F|T|T|F"],
     );
 }
 
@@ -1224,9 +1224,7 @@ echo ('a' <> 'a') ? '1' : '0';
 echo (new stdClass() == new stdClass()) ? '1' : '0';
 echo (new stdClass() === new stdClass()) ? '1' : '0';
 "#,
-        &[
-            "1|0|1|0|1|0|1|0|1|0|1|1|1|0|1|0|1|0",
-        ],
+        &["101010101011101010"],
     );
 }
 
@@ -1311,9 +1309,7 @@ echo ((1 === '1') ? 'T' : 'F') . '|';
 echo ((1 <=> '1') <=> 0) . '|';
 echo (false or true xor true && false ? 'T' : 'F');
 "#,
-        &[
-            "5|9|7|-8|-8|512|64|6|5|28|19|3|6|7|a3|a3|T|T|F|T|T|F0|T1|5|1|2|7|x|x|T|F|T|F|0|T"
-        ],
+        &["5|9|7|-8|-8|512|64|6|5|28|19|3|6|7|a3|a3|T|T||T|1|F0|T1|5|1|2|7|x|x|T|F|T|F|0|1"],
     );
 }
 
@@ -1384,7 +1380,7 @@ echo ($right() && true) ? 'bad' : 'ok';
 echo '|';
 echo count($log);
 "#,
-        &["no-right|no-right|ok|1"],
+        &["no-right|skipno-right|ok|1"],
     );
 }
 
@@ -1429,7 +1425,7 @@ echo ($first == $third) ? 'eq2' : 'ne2';
 echo '|';
 echo ($first === $third) ? 'id2' : 'ni2';
 "#,
-        &["eq1|id1|ne2|ni2"],
+        &["eq1|id1|eq2|ni2"],
     );
 }
 
@@ -1509,7 +1505,7 @@ echo (3 + 5 <=> 4 + 1) . '|';
 echo (false <=> true) . '|';
 echo ((5 < 3) <=> (2 < 4));
 "#,
-        &["-1|1|0|-1|-1|0"],
+        &["-1|1|0|1|-1|-1"],
     );
 }
 
@@ -1525,7 +1521,7 @@ echo (2 + 3) ** (2 + 1);
 echo '|';
 echo ((2 + 3) ** 2) * 2;
 "#,
-        &["21|15|125|50"]
+        &["21|15|125|50"],
     );
 }
 
@@ -1540,7 +1536,7 @@ echo '|';
 $y = -2;
 echo ++$y;
 "#,
-        &["-3|-1"]
+        &["-3|-1"],
     );
 }
 
@@ -1565,7 +1561,7 @@ echo count($hits);
 echo '|';
 echo implode(',', $hits);
 "#,
-        &["|1|2|left,right"]
+        &["|1|1|right"],
     );
 }
 
@@ -1578,7 +1574,7 @@ echo ((1 + 1) === 3 ? 'eq' : 'ne') . '|';
 echo ((true ? 1 : 0) ? 't' : 'f') . '|';
 echo ((false ? 1 : 2) ? 't' : 'f');
 "#,
-        &["eq|ne|t|f"]
+        &["eq|ne|t|t"],
     );
 }
 
@@ -1595,7 +1591,7 @@ echo (null ?? $cfg['fallback']);
 echo '|';
 echo (0 ?? $cfg['fallback']);
 "#,
-        &["ok|ok|ok|0"]
+        &["ok|ok|ok|0"],
     );
 }
 
@@ -1637,7 +1633,7 @@ echo (3 & (6 | 9)) . '|';
 echo (1 << 2 | 3) . '|';
 echo (1 | 2 << 3);
 "#,
-        &["9|9|3|7|17"],
+        &["11|11|3|7|17"],
     );
 }
 
@@ -1659,7 +1655,7 @@ echo ((true or false) and false) . '|';
 echo ($value && false or true) . '|';
 echo ($value and false || true);
 "#,
-        &["word-and-or-1|word-and-or-2|1|0|1|1"],
+        &["word-and-or-1|word-and-or-2|1||1|1"],
     );
 }
 
@@ -1679,7 +1675,7 @@ echo ((null ?? 'fallback') ?: 'end') . '|';
 $value = false;
 echo (($value ?? true) ?: true);
 "#,
-        &["fallback|0|fallback||f|fallback|fallback|1"],
+        &["fallback|0|fallback||fallback|fallback|1"],
     );
 }
 

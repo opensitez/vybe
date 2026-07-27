@@ -252,4 +252,3 @@ echo $d->message . '|' . $d->since . '|' . ($rm->isDeprecated() ? 'yes' : 'no');
         ["1|Deprecated|Use newMethod instead|2.0|yes"]
     };
 }
-

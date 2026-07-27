@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     datetime_diff_absolute_true => {
         r#"<?php

@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     trigger_error_levels => {
         r#"<?php

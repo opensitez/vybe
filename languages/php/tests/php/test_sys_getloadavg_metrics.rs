@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     sys_getloadavg_basic => {
         r#"<?php

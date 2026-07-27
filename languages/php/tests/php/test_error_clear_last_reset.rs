@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     error_clear_last_basic => {
         r#"<?php

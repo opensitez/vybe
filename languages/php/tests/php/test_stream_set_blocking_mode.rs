@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     stream_set_blocking_mode => {
         r#"<?php

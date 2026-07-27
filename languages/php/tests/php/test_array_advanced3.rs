@@ -424,7 +424,7 @@ echo count($items);
 fn array_reverse_reindex_variants() {
     assert_eq!(
         run_prints(
-        r#"<?php
+            r#"<?php
 $source = ['a' => 1, 2, 'x' => 3];
 $a = array_reverse($source);
 $b = array_reverse($source, true);

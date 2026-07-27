@@ -1,7 +1,10 @@
 use super::helpers::run_prints;
 
 fn assert_int(expr: &str, expected: i64) {
-    assert_eq!(run_prints(&format!("<?php echo {}; ", expr)), vec![expected.to_string()]);
+    assert_eq!(
+        run_prints(&format!("<?php echo {}; ", expr)),
+        vec![expected.to_string()]
+    );
 }
 
 #[test]

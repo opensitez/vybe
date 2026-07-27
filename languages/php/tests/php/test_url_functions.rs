@@ -162,4 +162,3 @@ echo $res === false || is_string($res) ? 'strict_decode_ok' : 'err';
         ["strict_decode_ok"]
     };
 }
-

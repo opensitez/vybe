@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     token_get_all_tracks_line_numbers => {
         r#"<?php

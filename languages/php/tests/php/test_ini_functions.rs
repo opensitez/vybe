@@ -148,4 +148,3 @@ echo get_include_path() === '/tmp/custom_include' ? 'include_path_set' : 'err';
         ["include_path_set"]
     };
 }
-

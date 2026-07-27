@@ -1,7 +1,10 @@
 use super::helpers::run_prints;
 
 fn assert_int(expr: &str, expected: i64) {
-    assert_eq!(run_prints(&format!("<?php echo {}; ", expr)), vec![expected.to_string()]);
+    assert_eq!(
+        run_prints(&format!("<?php echo {}; ", expr)),
+        vec![expected.to_string()]
+    );
 }
 
 #[test]
@@ -25,7 +28,9 @@ fn php_control_flow_constructs() {
             do_expected,
         );
         assert_int(
-            &format!("$sum = 0; foreach (array_fill(0, {n}, 1) as $value) {{ $sum += $value; }} echo $sum;"),
+            &format!(
+                "$sum = 0; foreach (array_fill(0, {n}, 1) as $value) {{ $sum += $value; }} echo $sum;"
+            ),
             foreach_expected,
         );
 
@@ -209,7 +214,7 @@ echo $matched;
 fn control_flow_while_continue_then_break_breaks_after_sum_runtime() {
     assert_eq!(
         run_prints(
-        r#"<?php
+            r#"<?php
 $sum = 0;
 $i = 0;
 while ($i < 5) {

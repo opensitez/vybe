@@ -85,11 +85,13 @@ fn float_modulus_and_rounding_sign() {
 #[test]
 fn power_precedence_and_associativity() {
     assert_eq!(
-        run_prints(r#"<?php
+        run_prints(
+            r#"<?php
 echo 2 ** 3 ** 2;
 echo '|';
 echo (2 ** 3) ** 2;
-"#),
+"#
+        ),
         vec!["512|64"]
     );
 }
@@ -97,13 +99,15 @@ echo (2 ** 3) ** 2;
 #[test]
 fn unary_minus_vs_power_precedence() {
     assert_eq!(
-        run_prints(r#"<?php
+        run_prints(
+            r#"<?php
 echo -2 ** 3;
 echo '|';
 echo (-2) ** 3;
 echo '|';
 echo -(2 ** 3);
-"#),
+"#
+        ),
         vec!["-8|-8|-8"]
     );
 }
@@ -111,28 +115,32 @@ echo -(2 ** 3);
 #[test]
 fn modulo_precedence_vs_addition_and_subtraction() {
     assert_eq!(
-        run_prints(r#"<?php
+        run_prints(
+            r#"<?php
 echo 10 + 9 % 3;
 echo '|';
 echo 10 - 9 % 3;
 echo '|';
 echo (10 + 9) % 3;
-"#),
+"#
+        ),
         vec!["10|10|1"]
     );
 }
 
 #[test]
-    fn number_truthiness_runtime_checks() {
-        assert_eq!(
-            run_prints(r#"<?php
+fn number_truthiness_runtime_checks() {
+    assert_eq!(
+        run_prints(
+            r#"<?php
 echo (0 == false) ? 'T' : 'F';
 echo (0 === false) ? 'T' : 'F';
 echo (0.0 == false) ? 'T' : 'F';
 echo ('' == false) ? 'T' : 'F';
 echo ('0' == false) ? 'T' : 'F';
-"#),
-            vec!["TFTTT"]
+"#
+        ),
+        vec!["TFTTT"]
     );
 }
 
@@ -163,7 +171,8 @@ fn round_various_precisions() {
 fn number_format_custom_decimals() {
     assert_eq!(
         run_prints(
-            r#"<?php echo number_format(1234.56789, 2, ',', ' '); echo '|'; echo number_format(12, 0, '.', ','); "#),
+            r#"<?php echo number_format(1234.56789, 2, ',', ' '); echo '|'; echo number_format(12, 0, '.', ','); "#
+        ),
         vec!["1234,57|12"]
     );
 }

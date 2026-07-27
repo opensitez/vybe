@@ -1,7 +1,10 @@
 use super::helpers::run_prints;
 
 fn assert_int(expr: &str, expected: i64) {
-    assert_eq!(run_prints(&format!("<?php echo {}; ", expr)), vec![expected.to_string()]);
+    assert_eq!(
+        run_prints(&format!("<?php echo {}; ", expr)),
+        vec![expected.to_string()]
+    );
 }
 
 #[test]
@@ -23,9 +26,7 @@ fn php_dynamic_calling() {
             doubled,
         );
         assert_int(
-            &format!(
-                "strlen(call_user_func('trim', '  x{n}  ', ' '));"
-            ),
+            &format!("strlen(call_user_func('trim', '  x{n}  ', ' '));"),
             2 + 1 + n,
         );
         assert_int(

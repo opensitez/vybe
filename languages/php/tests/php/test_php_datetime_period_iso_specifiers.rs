@@ -36,7 +36,7 @@ echo $period->getRecurrences(), "\n";
 fn test_date_period_iso_exclude_start() {
     assert_eq!(
         run_prints(
-        r#"<?php
+            r#"<?php
 $period = new DatePeriod('R3/2024-01-01T00:00:00Z/P1D');
 $dates = [];
 foreach ($period as $dt) {
@@ -53,7 +53,7 @@ echo implode('|', $dates), "\n";
 fn test_date_period_iso_get_start_end_dates() {
     assert_eq!(
         run_prints(
-        r#"<?php
+            r#"<?php
 $period = new DatePeriod('R2/2024-12-30T00:00:00Z/P1D');
 $end = $period->getEndDate();
 echo $period->getStartDate()->format('Y-m-d');

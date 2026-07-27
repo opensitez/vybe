@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     sscanf_basic_return_array => {
         r#"<?php

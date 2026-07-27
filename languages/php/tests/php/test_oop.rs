@@ -1286,7 +1286,7 @@ echo Widget::bump();
 echo Widget::bump();
 echo Widget::$n;
 "#,
-            ),
+        ),
         &["12|2"]
     );
 }
@@ -1902,9 +1902,9 @@ echo Base::readName();
 echo '|';
 echo Child::readName();
 "#,
-            ),
-            &["base|child"]
-        );
+        ),
+        &["base|child"]
+    );
 }
 
 #[test]
@@ -1930,9 +1930,9 @@ echo (new Service())->value();
 echo '|';
 echo (new ServiceWithPrefix())->value();
 "#,
-            ),
-            &["base|pref:base"]
-        );
+        ),
+        &["base|pref:base"]
+    );
 }
 
 #[test]
@@ -1951,9 +1951,9 @@ echo $e->id;
 echo '|';
 echo $e->label;
 "#,
-            ),
-            &["1|ok"]
-        );
+        ),
+        &["1|ok"]
+    );
 }
 
 #[test]
@@ -1972,9 +1972,9 @@ echo (new Leaf('leaf'))->kind;
 echo '|';
 echo Leaf::make('mk')->kind;
 "#,
-            ),
-            &["leaf|mk"]
-        );
+        ),
+        &["leaf|mk"]
+    );
 }
 
 #[test]
@@ -1988,9 +1988,9 @@ class Base {
 }
 echo (new Base())->reveal();
 "#,
-            ),
-            &["secret"]
-        );
+        ),
+        &["secret"]
+    );
 }
 
 #[test]
@@ -2016,15 +2016,15 @@ echo class_exists('App\Module\Service') ? 'yes' : 'no';
 #[test]
 fn oop_dynamic_class_and_static_invocation_runtime() {
     assert_eq!(
-    run_prints(
-        r#"<?php
+        run_prints(
+            r#"<?php
 class Factory {
     public static function build(string $name): string { return 'factory:' . $name; }
 }
 $factory = Factory::class;
 echo $factory::build('widget');
 "#,
-    ),
+        ),
         &["factory:widget"]
     );
 }

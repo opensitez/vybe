@@ -245,7 +245,9 @@ fn str_ireplace_case_insensitive() {
 #[test]
 fn preg_quote_escapes_delimiter_and_meta() {
     assert_eq!(
-        run_prints(r#"<?php $pat = '/'.preg_quote('/foo.bar', '/').'/'; echo preg_match($pat, 'a/foo.bar/'); "#),
+        run_prints(
+            r#"<?php $pat = '/'.preg_quote('/foo.bar', '/').'/'; echo preg_match($pat, 'a/foo.bar/'); "#
+        ),
         vec!["1"]
     );
 }
@@ -269,7 +271,9 @@ echo isset($m2[2]) ? $m2[2] : 'none';
 #[test]
 fn preg_match_all_with_no_match() {
     assert_eq!(
-        run_prints(r#"<?php echo preg_match_all('/\d{4}/', 'no-digits-here', $m); echo '|'; echo count($m[0]); "#),
+        run_prints(
+            r#"<?php echo preg_match_all('/\d{4}/', 'no-digits-here', $m); echo '|'; echo count($m[0]); "#
+        ),
         vec!["0|0"]
     );
 }
@@ -291,7 +295,6 @@ echo $matches[0][1];
         vec!["1|a|3"]
     );
 }
-
 
 #[test]
 fn regex_replace_backreference_reordering() {

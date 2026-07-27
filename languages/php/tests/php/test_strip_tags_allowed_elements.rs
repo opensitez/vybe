@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     strip_tags_basic => {
         r#"<?php

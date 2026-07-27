@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     generator_send_resume => {
         r#"<?php

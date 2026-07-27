@@ -142,9 +142,8 @@ fn match_runtime_with_array_key() {
 
 #[test]
 fn if_coalesce_and_elvis() {
-    let out = run_prints(
-        "<?php\n$a = null;\n$b = '';\necho $a ?? 'a';\necho '|';\necho $b ?: 'b';\n",
-    );
+    let out =
+        run_prints("<?php\n$a = null;\n$b = '';\necho $a ?? 'a';\necho '|';\necho $b ?: 'b';\n");
     assert_eq!(out, vec!["a|b"]);
 }
 
@@ -174,9 +173,7 @@ fn while_loop_continue_and_break_runtime() {
 
 #[test]
 fn do_while_executes_once_with_zero_condition_runtime() {
-    let out = run_prints(
-        "<?php\n$i = 0;\ndo {\n    echo $i;\n    $i++;\n} while (false);\n",
-    );
+    let out = run_prints("<?php\n$i = 0;\ndo {\n    echo $i;\n    $i++;\n} while (false);\n");
     assert_eq!(out, vec!["0"]);
 }
 
@@ -238,9 +235,7 @@ fn if_condition_with_nested_logical_groups_runtime() {
 
 #[test]
 fn if_uses_assignment_in_nested_condition_runtime() {
-    let out = run_prints(
-        "<?php\n$a = 0;\nif (($a = 2) > 1 && $a < 4) {\n    echo $a;\n}\n",
-    );
+    let out = run_prints("<?php\n$a = 0;\nif (($a = 2) > 1 && $a < 4) {\n    echo $a;\n}\n");
     assert_eq!(out, vec!["2"]);
 }
 

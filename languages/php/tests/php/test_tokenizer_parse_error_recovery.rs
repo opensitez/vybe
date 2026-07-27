@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     token_get_all_parse_error => {
         r#"<?php

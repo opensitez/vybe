@@ -443,8 +443,8 @@ class Audit implements Logger, Timestamped {
 }
 echo (new Audit)->emit('x');
 "#,
-            ),
-            vec!["log:x"]
+        ),
+        vec!["log:x"]
     );
 }
 
@@ -464,8 +464,8 @@ class StringBag implements Provider {
 $p = new StringBag();
 echo json_encode($p->payload());
 "#,
-            ),
-            vec!["[\"a\",\"b\"]"]
+        ),
+        vec!["[\"a\",\"b\"]"]
     );
 }
 
@@ -503,8 +503,8 @@ echo interface_exists('ExistsDemo') ? 'yes' : 'no';
 echo '|';
 echo interface_exists('DoesNotExist') ? 'yes' : 'no';
 "#,
-            ),
-            vec!["yes|no"]
+        ),
+        vec!["yes|no"]
     );
 }
 
@@ -529,8 +529,8 @@ $logger = new Logger();
 $impl = class_implements($logger);
 echo (isset($impl[Reader::class]) ? 'R' : '?') . (isset($impl[Writer::class]) ? 'W' : '?');
 "#,
-            ),
-            vec!["RW"]
+        ),
+        vec!["RW"]
     );
 }
 
@@ -553,8 +553,8 @@ echo $o->a() . $o->b() . $o->p();
 echo '|';
 echo ($o instanceof B) ? 'ok' : 'bad';
 "#,
-            ),
-            vec!["abp|ok"]
+        ),
+        vec!["abp|ok"]
     );
 }
 
@@ -574,8 +574,8 @@ echo '|';
 $ifaces = class_implements(Widget::class);
 echo isset($ifaces[Identifiable::class]) ? 'seen' : 'missing';
 "#,
-            ),
-            vec!["widget|seen"]
+        ),
+        vec!["widget|seen"]
     );
 }
 
@@ -601,8 +601,8 @@ function run_all(array $items): int {
 $items = [new Add(), new Mul()];
 echo run_all($items);
 "#,
-            ),
-            vec!["19"]
+        ),
+        vec!["19"]
     );
 }
 
@@ -629,7 +629,7 @@ function render(Escaper $e, string $v): string {
 }
 echo render(new HtmlSafe, "<x>") . '|' . render(new NoEscape, "<x>");
 "#,
-            ),
-            vec!["&lt;x>|<x>"]
+        ),
+        vec!["&lt;x>|<x>"]
     );
 }

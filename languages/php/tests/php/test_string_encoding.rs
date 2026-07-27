@@ -278,10 +278,7 @@ fn hash_hmac() {
 
 #[test]
 fn urlencode_preserves_tilde_literal() {
-    assert_eq!(
-        run_prints(r#"<?php echo urlencode('~'); "#),
-        vec!["~"]
-    );
+    assert_eq!(run_prints(r#"<?php echo urlencode('~'); "#), vec!["~"]);
 }
 
 #[test]
@@ -348,10 +345,7 @@ fn ctype_alnum_underscore_is_false_runtime() {
 
 #[test]
 fn base64_encode_empty_runtime() {
-    assert_eq!(
-        run_prints(r#"<?php echo base64_encode(''); "#),
-        vec![""]
-    );
+    assert_eq!(run_prints(r#"<?php echo base64_encode(''); "#), vec![""]);
 }
 
 #[test]

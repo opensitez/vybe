@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     stream_filter_register_and_append => {
         r#"<?php

@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     array_udiff_uassoc_basic => {
         r#"<?php

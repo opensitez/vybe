@@ -275,7 +275,9 @@ fn mb_str_split_with_length() {
 #[test]
 fn mb_str_split_longer_length_returns_single_chunk() {
     assert_eq!(
-        run_prints(r#"<?php echo count(mb_str_split('hey', 10)); echo '|'; echo mb_str_split('hey', 10)[0]; "#),
+        run_prints(
+            r#"<?php echo count(mb_str_split('hey', 10)); echo '|'; echo mb_str_split('hey', 10)[0]; "#
+        ),
         vec!["1|hey"]
     );
 }

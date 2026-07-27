@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     mb_encode_numericentity_basic => {
         r#"<?php

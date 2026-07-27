@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     str_word_count_return_formats => {
         r#"<?php

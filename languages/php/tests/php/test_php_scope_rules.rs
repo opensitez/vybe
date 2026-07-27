@@ -1,7 +1,10 @@
 use super::helpers::run_prints;
 
 fn assert_int(expr: &str, expected: i64) {
-    assert_eq!(run_prints(&format!("<?php echo {}; ", expr)), vec![expected.to_string()]);
+    assert_eq!(
+        run_prints(&format!("<?php echo {}; ", expr)),
+        vec![expected.to_string()]
+    );
 }
 
 #[test]
@@ -11,9 +14,7 @@ fn php_scope_rules() {
         let n2 = n + 10;
 
         assert_int(
-            &format!(
-                "$seed = {n1};\n$fn = fn() => $seed;\n$seed = 0;\necho $fn();"
-            ),
+            &format!("$seed = {n1};\n$fn = fn() => $seed;\n$seed = 0;\necho $fn();"),
             n1,
         );
 

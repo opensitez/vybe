@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     stream_copy_to_stream_offset => {
         r#"<?php

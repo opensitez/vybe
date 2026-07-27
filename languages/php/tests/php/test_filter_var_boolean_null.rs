@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     filter_var_boolean_true_values => {
         r#"<?php

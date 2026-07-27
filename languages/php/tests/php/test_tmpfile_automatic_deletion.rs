@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     tmpfile_creation => {
         r#"<?php

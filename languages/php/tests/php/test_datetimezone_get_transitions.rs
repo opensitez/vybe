@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     datetimezone_get_transitions => {
         r#"<?php

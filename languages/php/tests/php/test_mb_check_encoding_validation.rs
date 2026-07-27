@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     mb_check_encoding_valid => {
         r#"<?php

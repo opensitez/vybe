@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     vfprintf_basic => {
         r#"<?php

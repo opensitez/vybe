@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     getrusage_basic => {
         r#"<?php

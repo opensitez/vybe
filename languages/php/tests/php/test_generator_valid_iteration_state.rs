@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     generator_valid_iteration => {
         r#"<?php

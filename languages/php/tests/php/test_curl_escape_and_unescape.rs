@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     curl_escape_and_unescape_strings => {
         r#"<?php

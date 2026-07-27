@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     curl_multi_exec_loop_execution => {
         r#"<?php

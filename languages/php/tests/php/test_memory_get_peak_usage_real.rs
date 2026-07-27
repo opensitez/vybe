@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     memory_get_peak_usage_basic => {
         r#"<?php

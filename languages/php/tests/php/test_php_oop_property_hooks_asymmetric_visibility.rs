@@ -65,7 +65,7 @@ echo "Balance: {$account->balance}";
 fn test_php84_property_hooks_interface_requirement() {
     assert_eq!(
         run_prints(
-        r#"<?php
+            r#"<?php
 interface Named {
     public string $name { get; }
 }
@@ -86,7 +86,7 @@ echo $c->name;
 fn test_php84_asymmetric_visibility_protected_set() {
     assert_eq!(
         run_prints(
-        r#"<?php
+            r#"<?php
 class BaseDocument {
     public protected(set) string $title = "Untitled";
 }
@@ -110,7 +110,7 @@ echo $art->title;
 fn test_php84_property_hooks_get_set_block_body() {
     assert_eq!(
         run_prints(
-        r#"<?php
+            r#"<?php
 class Counter {
     private int $count = 0;
 

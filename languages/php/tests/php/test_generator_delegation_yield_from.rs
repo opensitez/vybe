@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     generator_yield_from_array => {
         r#"<?php

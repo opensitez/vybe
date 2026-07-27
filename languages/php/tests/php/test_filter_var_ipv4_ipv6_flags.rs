@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     filter_var_ipv4 => {
         r#"<?php

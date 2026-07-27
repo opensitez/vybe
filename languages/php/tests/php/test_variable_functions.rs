@@ -1,7 +1,13 @@
 use super::helpers::{compile_ok, run_prints};
 
 fn assert_output(src: &str, expected: &[&str]) {
-    assert_eq!(run_prints(src), expected.iter().map(|s| (*s).to_string()).collect::<Vec<_>>());
+    assert_eq!(
+        run_prints(src),
+        expected
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect::<Vec<_>>()
+    );
 }
 
 // ── isset on chained array key access ────────────────────────────

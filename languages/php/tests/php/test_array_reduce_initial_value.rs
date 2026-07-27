@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     array_reduce_with_initial_value => {
         r#"<?php

@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     array_walk_recursive_by_reference => {
         r#"<?php

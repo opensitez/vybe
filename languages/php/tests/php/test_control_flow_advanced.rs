@@ -324,7 +324,7 @@ switch ($index + 1) {
         $total = 'other';
 }
 echo $total;
-"#
+"#,
     );
     assert_eq!(out, vec!["two"]);
 }
@@ -348,7 +348,7 @@ switch ($x) {
         break;
 }
 echo implode('-', $out);
-"#
+"#,
     );
     assert_eq!(out, vec!["default-two"]);
 }
@@ -371,7 +371,7 @@ switch ($state) {
         break;
 }
 echo implode('|', $out);
-"#
+"#,
     );
     assert_eq!(out, vec!["d"]);
 }
@@ -388,7 +388,7 @@ try {
 } catch (UnhandledMatchError $e) {
     echo 'fatal';
 }
-"#
+"#,
     );
     assert_eq!(out, vec!["fatal"]);
 }
@@ -407,7 +407,7 @@ for ($i = 0; $i < 3; $i++) {
     }
 }
 echo implode(',', $out);
-"#
+"#,
     );
     assert_eq!(out, vec!["0-1"]);
 }
@@ -427,7 +427,7 @@ while ($k < 3) {
     }
 }
 echo $k;
-"#
+"#,
     );
     assert_eq!(out, vec!["3"]);
 }

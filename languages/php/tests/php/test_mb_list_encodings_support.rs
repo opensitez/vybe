@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     mb_list_encodings_basic => {
         r#"<?php

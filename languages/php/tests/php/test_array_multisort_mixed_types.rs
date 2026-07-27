@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     array_multisort_mixed_types => {
         r#"<?php

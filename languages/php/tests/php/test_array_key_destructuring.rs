@@ -499,7 +499,7 @@ echo "$x,$y|" . ($second[0] + $second[1]);
 fn destructuring_generator_to_list() {
     assert_eq!(
         run_prints(
-r#"<?php
+            r#"<?php
 function gen() {
     yield 10;
     yield 20;
@@ -516,7 +516,7 @@ echo "$a|$b";
 fn list_with_reference_target_without_ampersand_is_copy() {
     assert_eq!(
         run_prints(
-r#"<?php
+            r#"<?php
 $src = [1, 2];
 [$a, $b] = $src;
 $a = 9;
@@ -531,7 +531,7 @@ echo $src[0] . '|' . $a;
 fn list_with_reference_target_mutates_source() {
     assert_eq!(
         run_prints(
-r#"<?php
+            r#"<?php
 $src = [1, 2];
 [$a, &$b] = $src;
 $b = 9;
@@ -546,7 +546,7 @@ echo $src[1] . '|' . $b;
 fn list_with_more_targets_than_values_stays_missing_with_coalesce() {
     assert_eq!(
         run_prints(
-r#"<?php
+            r#"<?php
 [$first, $second, $third] = [5];
 echo $first . '|' . ($second ?? 'nil') . '|' . ($third ?? 'nil');
 "#,

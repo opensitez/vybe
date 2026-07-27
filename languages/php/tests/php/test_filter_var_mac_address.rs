@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     filter_var_mac_address_valid => {
         r#"<?php

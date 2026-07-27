@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     reflection_class_get_attributes_empty => {
         r#"<?php

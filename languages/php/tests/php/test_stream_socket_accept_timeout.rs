@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     stream_socket_accept_timeout => {
         r#"<?php

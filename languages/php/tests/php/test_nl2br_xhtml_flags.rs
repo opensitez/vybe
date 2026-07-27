@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     nl2br_xhtml_true => {
         r#"<?php

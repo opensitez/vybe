@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     pdo_fetch_key_pair_assoc => {
         r#"<?php

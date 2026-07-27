@@ -220,7 +220,9 @@ fn math_abs_and_sign() {
 #[test]
 fn math_round_and_floor_ceil() {
     assert_eq!(
-        run_prints(r#"<?php echo round(3.6); echo '|'; echo floor(3.6); echo '|'; echo ceil(3.1); "#),
+        run_prints(
+            r#"<?php echo round(3.6); echo '|'; echo floor(3.6); echo '|'; echo ceil(3.1); "#
+        ),
         vec!["4|3|4"]
     );
 }
@@ -251,10 +253,7 @@ fn math_intdiv_rounding_toward_zero() {
 
 #[test]
 fn math_trig_hypotenuse() {
-    assert_eq!(
-        run_prints(r#"<?php echo hypot(5, 12); "#),
-        vec!["13"]
-    );
+    assert_eq!(run_prints(r#"<?php echo hypot(5, 12); "#), vec!["13"]);
 }
 
 #[test]
@@ -268,15 +267,14 @@ fn math_logarithms_consistent() {
 #[test]
 fn math_base_conversion_roundtrip() {
     assert_eq!(
-        run_prints(r#"<?php echo base_convert('1010', 2, 10); echo '|'; echo base_convert('1e', 36, 10); "#),
+        run_prints(
+            r#"<?php echo base_convert('1010', 2, 10); echo '|'; echo base_convert('1e', 36, 10); "#
+        ),
         vec!["10|50"]
     );
 }
 
 #[test]
 fn math_bitwise_not_for_int() {
-    assert_eq!(
-        run_prints(r#"<?php $x = 0b1111; echo ~$x; "#),
-        vec!["-16"]
-    );
+    assert_eq!(run_prints(r#"<?php $x = 0b1111; echo ~$x; "#), vec!["-16"]);
 }

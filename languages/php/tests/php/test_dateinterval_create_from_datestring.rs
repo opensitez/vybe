@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     dateinterval_create_from_datestring => {
         r#"<?php

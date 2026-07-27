@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     set_error_handler_returns_false_bypasses => {
         r#"<?php

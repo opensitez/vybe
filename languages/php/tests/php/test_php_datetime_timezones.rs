@@ -1,7 +1,10 @@
 use super::helpers::run_prints;
 
 fn assert_output(expr: &str, expected: &str) {
-    assert_eq!(run_prints(&format!("<?php echo {}; ", expr)), vec![expected.to_string()]);
+    assert_eq!(
+        run_prints(&format!("<?php echo {}; ", expr)),
+        vec![expected.to_string()]
+    );
 }
 
 fn assert_int(expr: &str, expected: i64) {
@@ -26,7 +29,10 @@ fn php_datetime_and_timezones() {
     let base = 1_700_000_000_i64;
     for idx in 0..10_i64 {
         let ts = base + (idx * 86_400);
-        assert_int(&format!("(new DateTimeImmutable('@{ts}'))->format('U')"), ts);
+        assert_int(
+            &format!("(new DateTimeImmutable('@{ts}'))->format('U')"),
+            ts,
+        );
     }
 
     for idx in 0..10_i64 {

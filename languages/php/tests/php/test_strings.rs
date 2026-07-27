@@ -191,7 +191,9 @@ fn string_regex_replace_runtime() {
 #[test]
 fn string_split_limit_runtime() {
     assert_eq!(
-        run_prints("<?php echo substr_count('aaa', 'a'); echo \"\\n\"; echo str_word_count('one two  three');"),
+        run_prints(
+            "<?php echo substr_count('aaa', 'a'); echo \"\\n\"; echo str_word_count('one two  three');"
+        ),
         vec!["3".to_string(), "3".to_string()]
     );
 }
@@ -199,7 +201,9 @@ fn string_split_limit_runtime() {
 #[test]
 fn string_escaping_quotes_runtime() {
     assert_eq!(
-        run_prints("<?php $s = \"a\\t b\\n c\"; echo json_encode($s); echo \"\\n\"; echo addcslashes('a b', ' a');"),
+        run_prints(
+            "<?php $s = \"a\\t b\\n c\"; echo json_encode($s); echo \"\\n\"; echo addcslashes('a b', ' a');"
+        ),
         vec!["\"a\\t b\\n c\"".to_string(), "a\\ b".to_string()]
     );
 }
@@ -207,7 +211,9 @@ fn string_escaping_quotes_runtime() {
 #[test]
 fn string_pointer_runtime() {
     assert_eq!(
-        run_prints("<?php $s = 'hello'; echo strlen($s); echo \"\\n\"; $c = strlen($s) + 0; echo $c;"),
+        run_prints(
+            "<?php $s = 'hello'; echo strlen($s); echo \"\\n\"; $c = strlen($s) + 0; echo $c;"
+        ),
         vec!["5".to_string(), "5".to_string()]
     );
 }
@@ -215,7 +221,9 @@ fn string_pointer_runtime() {
 #[test]
 fn string_replace_callback_runtime() {
     assert_eq!(
-        run_prints("<?php echo preg_replace_callback('/(\\d+)/', fn($m) => strval((int)$m[1] + 1), 'x1y2');"),
+        run_prints(
+            "<?php echo preg_replace_callback('/(\\d+)/', fn($m) => strval((int)$m[1] + 1), 'x1y2');"
+        ),
         vec!["x2y3".to_string()]
     );
 }

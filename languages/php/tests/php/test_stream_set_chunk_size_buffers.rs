@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     stream_set_chunk_size => {
         r#"<?php

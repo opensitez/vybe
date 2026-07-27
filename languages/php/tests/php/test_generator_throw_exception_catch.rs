@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     generator_throw_exception_caught => {
         r#"<?php

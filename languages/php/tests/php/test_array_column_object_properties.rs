@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     array_column_objects_public_props => {
         r#"<?php

@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     reflection_attribute_is_instanceof => {
         r#"<?php

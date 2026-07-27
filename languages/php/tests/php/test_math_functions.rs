@@ -215,7 +215,7 @@ echo $frac;
 echo '|';
 echo $int;
 "#,
-            ),
+        ),
         vec!["0.75|3"]
     );
 }

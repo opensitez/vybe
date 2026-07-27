@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     get_included_files_basic => {
         r#"<?php

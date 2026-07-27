@@ -545,7 +545,7 @@ echo date_format($d, 'Y-m-d');
 fn test_date_parse_strict_and_error_state() {
     assert_eq!(
         run_prints(
-        r#"<?php
+            r#"<?php
 $d = date_parse('2024-12-01 12:00:00');
 echo is_array($d) ? 'ok' : 'bad';
 echo $d['error_count'];
@@ -624,14 +624,14 @@ echo $b->format('Y-m-d');
 fn datetime_utc_and_non_utc_parse_behavior() {
     assert_eq!(
         run_prints(
-        r#"<?php
+            r#"<?php
 $a = new DateTime('2024-01-01 00:00:00+00:00');
 $b = new DateTime('2024-01-01 00:00:00-05:00');
 echo $a == $b ? 'equal' : 'diff';
 echo $a < $b ? '|before' : '|notbefore';
 "#
         ),
-        &["diff|before"] 
+        &["diff|before"]
     );
 }
 

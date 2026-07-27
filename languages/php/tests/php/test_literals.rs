@@ -4,7 +4,10 @@ fn assert_code(src: &str, expected: Vec<&str>) {
     let result = run_prints(src);
     assert_eq!(
         result,
-        expected.into_iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        expected
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
     );
 }
 

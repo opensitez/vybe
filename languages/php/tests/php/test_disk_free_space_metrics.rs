@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     disk_free_space_basic => {
         r#"<?php

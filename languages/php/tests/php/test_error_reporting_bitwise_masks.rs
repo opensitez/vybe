@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     error_reporting_bitwise => {
         r#"<?php

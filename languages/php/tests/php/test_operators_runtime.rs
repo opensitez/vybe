@@ -144,7 +144,7 @@ $fallback = 'default';
 echo $user ?? 'fallback';
 echo $user ?: $fallback;
 "#,
-        ["defaultdefault"]
+        ["fallbackdefault"]
     };
 
     identity_of_nested_arrays => {
@@ -156,7 +156,7 @@ echo ($a == $b) ? 'eq' : 'neq';
 echo ($a === $c) ? 'id' : 'nid';
 echo ($a === $b) ? 'same' : 'diff';
 "#,
-        ["eqiddiff"]
+        ["eqidsame"]
     };
 
     spaceship_chain => {
@@ -165,7 +165,7 @@ echo (1 <=> 1);
 echo (2 <=> 1);
 echo (1 <=> 2);
 "#,
-        ["012"]
+        ["01-1"]
     };
 
     boolean_precedence_and_short_circuit => {
@@ -175,7 +175,7 @@ if (false && ++$hits) { }
 if (true && false || $hits === 1) { echo 'ok'; }
 echo $hits;
 "#,
-        ["ok0"]
+        ["0"]
     };
 
     increment_by_reference_noting => {
@@ -230,7 +230,7 @@ echo 3 <=> 4;
 echo 5 <=> 5;
 echo 'b' <=> 'a';
 "#,
-        ["-10"]
+        ["-101"]
     };
 
     ternary_nested_right_assoc => {
@@ -272,7 +272,7 @@ echo ~0 & 7;
 echo 2 * 2 ** 3;
 echo (2 * 2) ** 3;
 "#,
-        ["16", "64"]
+        ["1664"]
     };
 
     increment_prefix_postfix_diff => {
@@ -314,7 +314,7 @@ echo ($a && 1) . ',';
 echo (1 or 0) . ',';
 echo (1 || 0);
 "#,
-        ["0,0,1,1"]
+        [",,1,1"]
     };
 
     string_concatenation_precedence_with_plus_not_supported => {
@@ -334,7 +334,7 @@ echo 0 xor 1;
 echo 1 xor 0;
 echo 1 xor 1;
 "#,
-        ["0101"]
+        ["11"]
     };
 
     and_or_precedence_demo => {
@@ -344,7 +344,7 @@ echo 0 and 1;
 echo (0 || 1) . ',';
 echo 0 or 1;
 "#,
-        ["0,0,1,0"]
+        [",1,1"]
     };
 
     and_vs_andand_assignment_precedence => {
@@ -457,7 +457,7 @@ echo (null != '') ? 'N' : 'S';
 echo '|';
 echo (null !== '');
 "#,
-        ["S|N|N|1"]
+        ["S|N|S|1"]
     };
 
     null_coalesce_and_ternary_grouping_runtime => {
@@ -602,7 +602,7 @@ echo 4 + (null ?? 1) . '';
 echo '|';
 echo (null ?? 1) + 4;
 "#,
-        ["6|7|8|5"]
+        ["6|7|5|5"]
     };
 
     assignment_and_ternary_precedence_runtime => {
@@ -686,7 +686,7 @@ $count = 1;
 echo ($count && ($count = 9)) . '|';
 echo $count;
 "#,
-        ["1|0|0|1|9"]
+        ["1||0|1|9"]
     };
 
     logical_operator_chain_without_parentheses_runtime => {
@@ -712,7 +712,7 @@ echo 0 + 5 ? 1 : 2;
 echo '|';
 echo 0 + (5 ? 1 : 2);
 "#,
-        ["10|11|2|1"]
+        ["10|11|1|1"]
     };
 
     null_coalesce_nested_parentheses_runtime => {
@@ -722,6 +722,6 @@ $payload = ['a' => null, 'b' => 'y'];
 echo ($payload['a'] ?? $payload['b']) . '|';
 echo ((null ?? $payload['a']) ?? $payload['b']);
 "#,
-        ["x| |y|y"]
+        ["x||y|y"]
     };
 }

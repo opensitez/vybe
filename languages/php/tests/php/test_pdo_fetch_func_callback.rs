@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     pdo_fetch_func_callback => {
         r#"<?php

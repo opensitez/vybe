@@ -403,4 +403,3 @@ echo $rf->isClosure() ? 'closure' : 'function';
 "#,
     );
 }
-

@@ -217,7 +217,9 @@ fn substr_replace_negative_offset() {
 #[test]
 fn explode_basic() {
     assert_eq!(
-        run_prints(r#"<?php $parts = explode(',', 'a,b,c'); echo $parts[0] . $parts[1] . $parts[2]; "#),
+        run_prints(
+            r#"<?php $parts = explode(',', 'a,b,c'); echo $parts[0] . $parts[1] . $parts[2]; "#
+        ),
         vec!["abc"]
     );
 }
@@ -225,7 +227,9 @@ fn explode_basic() {
 #[test]
 fn explode_with_limit() {
     assert_eq!(
-        run_prints(r#"<?php $parts = explode(',', 'a,b,c,d', 3); echo $parts[0]; echo ':'; echo $parts[1]; echo ':'; echo $parts[2]; "#),
+        run_prints(
+            r#"<?php $parts = explode(',', 'a,b,c,d', 3); echo $parts[0]; echo ':'; echo $parts[1]; echo ':'; echo $parts[2]; "#
+        ),
         vec!["a:b:c,d"]
     );
 }
@@ -233,7 +237,9 @@ fn explode_with_limit() {
 #[test]
 fn explode_not_found_returns_single_segment() {
     assert_eq!(
-        run_prints(r#"<?php $parts = explode('|', 'abc'); echo count($parts); echo '|'; echo $parts[0]; "#),
+        run_prints(
+            r#"<?php $parts = explode('|', 'abc'); echo count($parts); echo '|'; echo $parts[0]; "#
+        ),
         vec!["1|abc"]
     );
 }
@@ -249,7 +255,9 @@ fn explode_limit_zero_returns_empty_array() {
 #[test]
 fn explode_pads_consecutive_delimiters_with_empty_strings() {
     assert_eq!(
-        run_prints(r#"<?php $parts = explode('-', 'a--b-'); echo count($parts); echo '|'; echo $parts[1] === '' ? 'empty' : 'value'; echo '|'; echo $parts[3] === '' ? 'tail' : 'not'; "#),
+        run_prints(
+            r#"<?php $parts = explode('-', 'a--b-'); echo count($parts); echo '|'; echo $parts[1] === '' ? 'empty' : 'value'; echo '|'; echo $parts[3] === '' ? 'tail' : 'not'; "#
+        ),
         vec!["4|empty|tail"]
     );
 }
@@ -274,7 +282,7 @@ fn implode_skips_array_values_with_numeric_keys() {
 fn implode_stringifies_booleans_and_nulls() {
     assert_eq!(
         run_prints(r#"<?php echo implode(',', [true, false, null]); "#),
-        vec!["1,,"] 
+        vec!["1,,"]
     );
 }
 
@@ -305,7 +313,9 @@ fn explode_then_implode_roundtrip() {
 #[test]
 fn string_split_by_whitespace() {
     assert_eq!(
-        run_prints(r#"<?php $parts = explode(' ', 'one  two  three'); echo count($parts); echo $parts[0] === 'one' ? 1 : 0; "#),
+        run_prints(
+            r#"<?php $parts = explode(' ', 'one  two  three'); echo count($parts); echo $parts[0] === 'one' ? 1 : 0; "#
+        ),
         vec!["5 1"]
     );
 }
@@ -407,7 +417,9 @@ fn case_transformations() {
 #[test]
 fn ucfirst_lcfirst_ucwords() {
     assert_eq!(
-        run_prints(r#"<?php echo ucfirst('hello'); echo '|'; echo lcfirst('HELLO'); echo '|'; echo ucwords('lorem ipsum'); "#),
+        run_prints(
+            r#"<?php echo ucfirst('hello'); echo '|'; echo lcfirst('HELLO'); echo '|'; echo ucwords('lorem ipsum'); "#
+        ),
         vec!["Hello|hELLO|Lorem Ipsum"]
     );
 }
@@ -415,7 +427,9 @@ fn ucfirst_lcfirst_ucwords() {
 #[test]
 fn trim_rtrim_ltrim() {
     assert_eq!(
-        run_prints(r#"<?php echo trim("  x "); echo '|'; echo ltrim('  x'); echo '|'; echo rtrim('x  '); "#),
+        run_prints(
+            r#"<?php echo trim("  x "); echo '|'; echo ltrim('  x'); echo '|'; echo rtrim('x  '); "#
+        ),
         vec!["x|x|x"]
     );
 }
@@ -451,7 +465,9 @@ fn strrev_and_chunking() {
 #[test]
 fn str_starts_ends_with_false_path() {
     assert_eq!(
-        run_prints(r#"<?php echo str_starts_with('abcdef', 'def') ? 'yes' : 'no'; echo '|'; echo str_ends_with('abcdef', 'abc') ? 'yes' : 'no'; "#),
+        run_prints(
+            r#"<?php echo str_starts_with('abcdef', 'def') ? 'yes' : 'no'; echo '|'; echo str_ends_with('abcdef', 'abc') ? 'yes' : 'no'; "#
+        ),
         vec!["no|no"]
     );
 }
@@ -459,7 +475,9 @@ fn str_starts_ends_with_false_path() {
 #[test]
 fn str_getcsv_like_split() {
     assert_eq!(
-        run_prints(r#"<?php $parts = str_getcsv('a,b,,c'); echo count($parts); echo '|'; echo $parts[2] === '' ? 'empty' : 'value'; "#),
+        run_prints(
+            r#"<?php $parts = str_getcsv('a,b,,c'); echo count($parts); echo '|'; echo $parts[2] === '' ? 'empty' : 'value'; "#
+        ),
         vec!["4|empty"]
     );
 }
@@ -553,7 +571,9 @@ echo html_entity_decode('&amp;amp;lt;');
 #[test]
 fn str_split_unicode_and_negative_length() {
     assert_eq!(
-        run_prints(r#"<?php $parts = str_split('abcdef', 2); echo count($parts); echo '|'; echo $parts[0] . $parts[1]; "#),
+        run_prints(
+            r#"<?php $parts = str_split('abcdef', 2); echo count($parts); echo '|'; echo $parts[0] . $parts[1]; "#
+        ),
         vec!["3|ab"]
     );
 }
@@ -577,7 +597,9 @@ fn stripos_with_offset_zero_and_not_found() {
 #[test]
 fn preg_match_with_capture_groups() {
     assert_eq!(
-        run_prints(r#"<?php preg_match('/(\\w+)-(\\d+)/', 'item-12', $m); echo $m[1]; echo '|'; echo $m[2]; "#),
+        run_prints(
+            r#"<?php preg_match('/(\\w+)-(\\d+)/', 'item-12', $m); echo $m[1]; echo '|'; echo $m[2]; "#
+        ),
         vec!["item|12"]
     );
 }
@@ -585,7 +607,9 @@ fn preg_match_with_capture_groups() {
 #[test]
 fn preg_split_limit_parts() {
     assert_eq!(
-        run_prints(r#"<?php $parts = preg_split('/\\s+/', 'a  b   c', 0, PREG_SPLIT_NO_EMPTY); echo count($parts); echo '|'; echo $parts[1]; "#),
+        run_prints(
+            r#"<?php $parts = preg_split('/\\s+/', 'a  b   c', 0, PREG_SPLIT_NO_EMPTY); echo count($parts); echo '|'; echo $parts[1]; "#
+        ),
         vec!["3|b"]
     );
 }
@@ -593,7 +617,9 @@ fn preg_split_limit_parts() {
 #[test]
 fn preg_replace_with_callback_transform() {
     assert_eq!(
-        run_prints(r#"<?php echo preg_replace_callback('/(ab)(\d)/', fn($m) => $m[1] . '-' . $m[2], 'ab3'); "#),
+        run_prints(
+            r#"<?php echo preg_replace_callback('/(ab)(\d)/', fn($m) => $m[1] . '-' . $m[2], 'ab3'); "#
+        ),
         vec!["ab-3"]
     );
 }
@@ -601,7 +627,9 @@ fn preg_replace_with_callback_transform() {
 #[test]
 fn str_repeat_zero_or_negative_guard() {
     assert_eq!(
-        run_prints(r#"<?php echo str_repeat('x', 0); echo '|'; echo strlen(str_repeat('x', -1)); "#),
+        run_prints(
+            r#"<?php echo str_repeat('x', 0); echo '|'; echo strlen(str_repeat('x', -1)); "#
+        ),
         vec!["|0"]
     );
 }
@@ -683,10 +711,7 @@ fn strtr_multi_char_map_priority_runtime() {
 
 #[test]
 fn strpos_empty_needle_returns_zero() {
-    assert_eq!(
-        run_prints(r#"<?php echo strpos('hello', ''); "#),
-        vec!["0"]
-    );
+    assert_eq!(run_prints(r#"<?php echo strpos('hello', ''); "#), vec!["0"]);
 }
 
 #[test]

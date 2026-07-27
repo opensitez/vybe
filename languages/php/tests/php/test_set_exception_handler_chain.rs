@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     set_exception_handler_returns_previous => {
         r#"<?php

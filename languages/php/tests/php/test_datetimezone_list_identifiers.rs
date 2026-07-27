@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     datetimezone_list_identifiers => {
         r#"<?php

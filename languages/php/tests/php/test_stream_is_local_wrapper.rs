@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     stream_is_local_file => {
         r#"<?php

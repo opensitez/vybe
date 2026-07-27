@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     curl_share_init_and_setopt => {
         r#"<?php

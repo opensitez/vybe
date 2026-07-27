@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     datetime_create_from_format_basic => {
         r#"<?php

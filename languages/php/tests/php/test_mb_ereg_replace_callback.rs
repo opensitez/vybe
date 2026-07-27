@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     mb_ereg_replace_callback_basic => {
         r#"<?php

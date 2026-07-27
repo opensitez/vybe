@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     stream_wrapper_file_read => {
         r#"<?php

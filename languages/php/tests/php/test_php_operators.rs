@@ -1,7 +1,15 @@
 use super::helpers::run_prints;
 
 fn assert_output(expr: &str, expected: &str) {
-    assert_eq!(run_prints(&format!("<?php echo {}; ", expr)), vec![expected.to_string()]);
+    let expected_output = if expected.is_empty() {
+        Vec::new()
+    } else {
+        vec![expected.to_string()]
+    };
+    assert_eq!(
+        run_prints(&format!("<?php echo {}; ", expr)),
+        expected_output
+    );
 }
 
 fn assert_int(expr: &str, expected: i64) {
@@ -9,7 +17,10 @@ fn assert_int(expr: &str, expected: i64) {
 }
 
 fn assert_bool(expr: &str, expected: bool) {
-    assert_output(expr, if expected { "1" } else { "0" });
+    assert_output(
+        &format!("({expr}) ? 1 : 0"),
+        if expected { "1" } else { "0" },
+    );
 }
 
 #[test]
@@ -42,9 +53,18 @@ fn php_operator_integer_arithmetic() {
         for left_shift in [0_i64, 1, 5] {
             assert_int(&format!("({base} << {left_shift})"), base << left_shift);
             assert_int(&format!("({base} >> {left_shift})"), base >> left_shift);
-            assert_int(&format!("({base} & (1 << {left_shift}))"), base & (1_i64 << left_shift));
-            assert_int(&format!("({base} | (1 << {left_shift}))"), base | (1_i64 << left_shift));
-            assert_int(&format!("({base} ^ (1 << {left_shift}))"), base ^ (1_i64 << left_shift));
+            assert_int(
+                &format!("({base} & (1 << {left_shift}))"),
+                base & (1_i64 << left_shift),
+            );
+            assert_int(
+                &format!("({base} | (1 << {left_shift}))"),
+                base | (1_i64 << left_shift),
+            );
+            assert_int(
+                &format!("({base} ^ (1 << {left_shift}))"),
+                base ^ (1_i64 << left_shift),
+            );
         }
     }
 }
@@ -61,7 +81,10 @@ fn php_operator_comparison() {
             assert_bool(&format!("({a} > {b})"), a > b);
             assert_bool(&format!("({a} <= {b})"), a <= b);
             assert_bool(&format!("({a} >= {b})"), a >= b);
-            assert_int(&format!("({a} <=> {b})"), (a > b) as i8 as i64 - (a < b) as i8 as i64);
+            assert_int(
+                &format!("({a} <=> {b})"),
+                (a > b) as i8 as i64 - (a < b) as i8 as i64,
+            );
         }
     }
 
@@ -82,10 +105,7 @@ fn php_operator_comparison() {
 fn php_operator_ternary_truthiness_and_string_ops() {
     for value in 0_i64..8_i64 {
         let expected = if value % 2 == 0 { "even" } else { "odd" };
-        assert_output(
-            &format!("(({value} % 2) == 0 ? 'even' : 'odd')"),
-            expected,
-        );
+        assert_output(&format!("(({value} % 2) == 0 ? 'even' : 'odd')"), expected);
     }
 
     let left_values = ["true", "false", "true", "false"];
@@ -99,16 +119,13 @@ fn php_operator_ternary_truthiness_and_string_ops() {
         assert_bool(&format!("({a} xor {b})"), (a == "true") ^ (b == "true"));
     }
 
-    let prefixes = ["App", "Kernel", "Http", "Service", "Domain"]; 
-    let suffixes = ["Model", "Repository", "Controller", "Request", "Response"]; 
+    let prefixes = ["App", "Kernel", "Http", "Service", "Domain"];
+    let suffixes = ["Model", "Repository", "Controller", "Request", "Response"];
 
     for prefix in prefixes {
         for suffix in suffixes {
             let expected = format!("{prefix}{suffix}");
-            assert_output(
-                &format!("'{prefix}' . '{suffix}'"),
-                &expected,
-            );
+            assert_output(&format!("'{prefix}' . '{suffix}'"), &expected);
         }
     }
 }
@@ -121,7 +138,7 @@ fn php_operator_identity_and_coercion_edges() {
     assert_bool("(1 !== '1')", true);
     assert_bool("('' == false)", true);
     assert_bool("('' === false)", false);
-    assert_bool("('' == 0)", true);
+    assert_bool("('' == 0)", false);
     assert_bool("('' === 0)", false);
     assert_bool("('0' == 0)", true);
     assert_bool("('0' == false)", true);
@@ -151,7 +168,7 @@ fn php_operator_truthiness_explicit_casts() {
 
 #[test]
 fn php_operator_precedence_arithmetic_logical() {
-    assert_int("(2 + 3 << 1)", (2 + (3 << 1)) as i64);
+    assert_int("(2 + 3 << 1)", 10);
     assert_int("((2 + 3) << 1)", 10);
     assert_int("(2 << 1 + 1)", 8);
     assert_int("(2 << (1 + 1))", 8);
@@ -251,7 +268,7 @@ fn php_operator_precedence_and_parentheses() {
     assert_int("(10 / 2 + 3 * 4)", 17);
     assert_int("(10 / (2 + 3) * 4)", 8);
     assert_int("(1 + 2 - 3 + 4 * 5)", 20);
-    assert_int("((1 + 2 - 3) + 4 * 5)", 18);
+    assert_int("((1 + 2 - 3) + 4 * 5)", 20);
     assert_int("((2 ** 3) ** 2)", 64);
     assert_int("(2 ** 3 ** 2)", 512);
     assert_int("(-2) ** 2", 4);
@@ -260,21 +277,15 @@ fn php_operator_precedence_and_parentheses() {
 
 #[test]
 fn php_operator_boolean_keyword_precedence() {
-    assert_bool(
-        "(1 || 0 && 0)",
-        true,
-    );
-    assert_bool(
-        "((1 || 0) && 0)",
-        false,
-    );
+    assert_bool("(1 || 0 && 0)", true);
+    assert_bool("((1 || 0) && 0)", false);
     assert_output(
         "(function() { $a = true; $a = $a or false; return $a ? 1 : 0; })()",
         "1",
     );
     assert_output(
         "(function() { $a = true; $a = $a || false; return $a ? 1 : 0; })()",
-        "0",
+        "1",
     );
     assert_output(
         "(function() { $a = false; $a = $a and true; return $a ? 1 : 0; })()",
@@ -306,7 +317,7 @@ fn php_operator_compound_assignment() {
     );
     assert_int(
         "(function() { $value = 1; $value |= 2; $value &= 3; return $value; })()",
-        2,
+        3,
     );
     assert_int(
         "(function() { $value = 15; $value ^= 10; return $value; })()",
@@ -320,7 +331,7 @@ fn php_operator_coercion_edges() {
     assert_bool("('10' === 10)", false);
     assert_int("('01' == 1)", 1);
     assert_bool("('01' === 1)", false);
-    assert_int("('' == 0)", 1);
+    assert_bool("('' == 0)", false);
     assert_bool("('' === 0)", false);
     assert_int("('0' == false)", 1);
     assert_bool("('0' === false)", false);
@@ -336,8 +347,14 @@ fn php_operator_string_and_numeric_mix() {
     assert_output("('3' + '4')", "7");
     assert_output("('2' . ('1' + 2))", "23");
     assert_output("('value=' . (1 ? 2 : 3))", "value=2");
-    assert_output("(function() { $left = 'left'; $right = null; return $left . ($right ?? 'fallback'); })()", "leftfallback");
-    assert_output("(function() { $left = 'left'; $right = 'right'; return $left . ($right ?? 'fallback'); })()", "leftright");
+    assert_output(
+        "(function() { $left = 'left'; $right = null; return $left . ($right ?? 'fallback'); })()",
+        "leftfallback",
+    );
+    assert_output(
+        "(function() { $left = 'left'; $right = 'right'; return $left . ($right ?? 'fallback'); })()",
+        "leftright",
+    );
 }
 
 #[test]

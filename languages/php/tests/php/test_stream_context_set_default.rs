@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     stream_context_set_default_opts => {
         r#"<?php

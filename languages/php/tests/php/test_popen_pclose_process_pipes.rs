@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     popen_pclose_basic => {
         r#"<?php

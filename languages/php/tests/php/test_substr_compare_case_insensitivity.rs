@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     substr_compare_basic => {
         r#"<?php

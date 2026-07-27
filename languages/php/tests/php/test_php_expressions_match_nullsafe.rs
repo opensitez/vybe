@@ -269,7 +269,7 @@ $level2 = match ($u->profile?->tier()) {
     default => 'other',
 };
 echo $level2;
-"#
+"#,
     );
     assert_eq!(out, vec!["none|pro-user"]);
 }
@@ -299,7 +299,7 @@ echo match ($value2 ?? 'fallback') {
     'fallback' => 'miss2',
     default => 'other2',
 };
-"#
+"#,
     );
     assert_eq!(out, vec!["miss|got2"]);
 }
@@ -316,7 +316,7 @@ $mode = match (true) {
 $tag = $env ?: 'dev';
 $label = $mode . '/' . $tag;
 echo $label;
-"#
+"#,
     );
     assert_eq!(out, vec!["defaulted/dev"]);
 }
@@ -335,7 +335,7 @@ echo match (($value > 0) ? $value : -$value) {
     2 => 'two',
     default => 'other',
 };
-"#
+"#,
     );
     assert_eq!(out, vec!["positive|two"]);
 }

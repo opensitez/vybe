@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     generator_memory_cleanup => {
         r#"<?php

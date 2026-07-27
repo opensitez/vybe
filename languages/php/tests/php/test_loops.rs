@@ -328,7 +328,7 @@ $sum = 0;
 for ($i = 0, $j = 1; $i < 4; $i++, $j += 2) { $sum += $i + $j; }
 echo $sum;
 "#,
-        ["16"]
+        ["22"]
     };
 
     for_loop_step_with_alternative_increment => {
@@ -481,7 +481,7 @@ for ($i = 0; $i < 5; $i++) {
 }
 echo $sum;
 "#,
-        ["6"]
+        ["4"]
     };
 
     while_loop_condition_reads_updated_value => {
@@ -607,7 +607,7 @@ while ($x < 5) {
 }
 echo $sum;
 "#,
-        ["7"]
+        ["12"]
     };
 
     foreach_associative_key_value_traversal => {
@@ -691,7 +691,7 @@ for ($i = 0, $j = 3; $i < 3 && $j >= 0; $i++, $j--) {
 echo $left;
 echo $right;
 "#,
-        ["3|6"]
+        ["36"]
     };
 
     for_loop_break_three_levels => {
@@ -710,7 +710,7 @@ for ($i = 0; $i < 2; $i++) {
 }
 echo $out;
 "#,
-        ["000101"]
+        ["000001010011100101"]
     };
 
     nested_continue_2_skips_mid_loop_level => {
@@ -1152,7 +1152,7 @@ while ($limit > 0) {
 }
 echo $sum;
 "#,
-        ["3"]
+        ["1"]
     };
 
     while_loop_with_even_only_sum => {
@@ -1236,7 +1236,7 @@ for ($i = 0; $i < $limit; $i++) {
 }
 echo implode('', $ok);
 "#,
-        ["0"]
+        ["01"]
     };
 
     for_loop_with_do_while_like_mutation => {
@@ -1250,7 +1250,7 @@ for ($i = 0; $i < 5; $i++) {
 }
 echo $sum;
 "#,
-        ["6"]
+        ["3"]
     };
 
     while_loop_uses_modified_counter_in_condition => {
@@ -1379,7 +1379,7 @@ foreach ($items as $pair) {
 }
 echo $sum;
 "#,
-        ["12"]
+        ["7"]
     };
 
     foreach_continue_two_skips_inner_body => {

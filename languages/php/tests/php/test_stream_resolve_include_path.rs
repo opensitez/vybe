@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     stream_resolve_include_path_exists => {
         r#"<?php

@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     generator_closed_state_error => {
         r#"<?php

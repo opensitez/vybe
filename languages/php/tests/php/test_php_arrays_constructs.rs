@@ -1,7 +1,10 @@
 use super::helpers::run_prints;
 
 fn assert_int(expr: &str, expected: i64) {
-    assert_eq!(run_prints(&format!("<?php echo {}; ", expr)), vec![expected.to_string()]);
+    assert_eq!(
+        run_prints(&format!("<?php echo {}; ", expr)),
+        vec![expected.to_string()]
+    );
 }
 
 fn int_array(len: i64) -> String {
@@ -18,8 +21,14 @@ fn php_array_surface_features() {
         let even_count = len / 2;
         assert_int(&format!("count({arr})"), len);
         assert_int(&format!("array_sum({arr})"), sum);
-        assert_int(&format!("count(array_filter({arr}, fn($v) => $v % 2 === 0))"), even_count);
-        assert_int(&format!("count(array_filter({arr}, fn($v) => $v % 2 === 1))"), odd_count);
+        assert_int(
+            &format!("count(array_filter({arr}, fn($v) => $v % 2 === 0))"),
+            even_count,
+        );
+        assert_int(
+            &format!("count(array_filter({arr}, fn($v) => $v % 2 === 1))"),
+            odd_count,
+        );
         assert_int(&format!("array_key_first({arr})"), 0);
         assert_int(&format!("array_key_last({arr})"), len - 1);
         assert_int(

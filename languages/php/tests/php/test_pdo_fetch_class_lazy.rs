@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     pdo_fetch_class_instantiation => {
         r#"<?php

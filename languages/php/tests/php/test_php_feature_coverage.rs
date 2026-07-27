@@ -3,7 +3,10 @@ use super::helpers::run_prints;
 const PHP_FEATURE_VALUES: [i64; 8] = [1, 2, 3, 7, 16, 42, 60, 120];
 
 fn assert_output(expr: &str, expected: &str) {
-    assert_eq!(run_prints(&format!("<?php echo {}; ", expr)), vec![expected.to_string()]);
+    assert_eq!(
+        run_prints(&format!("<?php echo {}; ", expr)),
+        vec![expected.to_string()]
+    );
 }
 
 fn assert_int(expr: &str, expected: i64) {
@@ -43,7 +46,10 @@ fn php_bitwise_operators() {
     for n in PHP_FEATURE_VALUES {
         assert_int(&format!("({n} ^ 3) & 7"), (n ^ 3) & 7);
         assert_int(&format!("({n} << 1) >> 1"), (n << 1) >> 1);
-        assert_int(&format!("({n} | 1) - ({n} & 1)"), if n % 2 == 0 { n } else { n } + 1 - 1);
+        assert_int(
+            &format!("({n} | 1) - ({n} & 1)"),
+            if n % 2 == 0 { n } else { n } + 1 - 1,
+        );
         assert_int(&format!("(~{n}) & 31"), (!n) & 31);
     }
 }
@@ -84,7 +90,14 @@ fn php_arrays_data_structures() {
             &format!(
                 "$arr = [0, 2, 4]; $arr[{index}] = $arr[{index}] + {n} + 1; echo $arr[{index}];"
             ),
-            n + 1 + if index == 0 { 0 } else if index == 1 { 2 } else { 4 },
+            n + 1
+                + if index == 0 {
+                    0
+                } else if index == 1 {
+                    2
+                } else {
+                    4
+                },
         );
     }
 }
@@ -93,9 +106,15 @@ fn php_arrays_data_structures() {
 fn php_string_features() {
     for n in PHP_FEATURE_VALUES {
         assert_int(&format!("strlen('x{n}')"), decimal_len(n) + 1);
-        assert_int(&format!("strlen(str_replace('x', '', 'x{n}x'))"), decimal_len(n));
+        assert_int(
+            &format!("strlen(str_replace('x', '', 'x{n}x'))"),
+            decimal_len(n),
+        );
         assert_str(&format!("strtoupper(substr('ab{n}', 0, 2))"), "AB");
-        assert_int(&format!("strlen(implode('-', ['a', '{n}', 'c']))"), 1 + decimal_len(n) + 1 + 1 + 1);
+        assert_int(
+            &format!("strlen(implode('-', ['a', '{n}', 'c']))"),
+            1 + decimal_len(n) + 1 + 1 + 1,
+        );
         assert_int(&format!("count(explode(',', 'a,{n},c'))"), 3);
         assert_str(&format!("substr('prefix-{n}-suffix', 0, 6)"), "prefix");
         assert_str(&format!("str_repeat('*', 2)"), "**");
@@ -106,9 +125,12 @@ fn php_string_features() {
 fn php_for_loop_constructs() {
     for n in PHP_FEATURE_VALUES {
         let expected = n * (n - 1) / 2;
-        assert_int(&format!(
-            " $total = 0; for($i = 0; $i < {n}; $i++) : $total += $i; endfor; echo $total;"
-        ), expected);
+        assert_int(
+            &format!(
+                " $total = 0; for($i = 0; $i < {n}; $i++) : $total += $i; endfor; echo $total;"
+            ),
+            expected,
+        );
     }
 }
 
@@ -159,7 +181,9 @@ fn php_oop_classes() {
 fn php_namespaces() {
     for n in PHP_FEATURE_VALUES {
         assert_str(
-            &format!("namespace N{n}; echo (int)\\DateTime::createFromFormat('U', '0')->format('Y');"),
+            &format!(
+                "namespace N{n}; echo (int)\\DateTime::createFromFormat('U', '0')->format('Y');"
+            ),
             "1970",
         );
     }
@@ -173,11 +197,15 @@ fn php_dynamic_calling() {
             decimal_len(n) + 1,
         );
         assert_int(
-            &format!("$obj = new DateTime('@'.({n} + 2000)); $method = 'getTimestamp'; echo $obj->$method() - 2000;"),
+            &format!(
+                "$obj = new DateTime('@'.({n} + 2000)); $method = 'getTimestamp'; echo $obj->$method() - 2000;"
+            ),
             n,
         );
         assert_str(
-            &format!("call_user_func(['DateTime', 'createFromFormat'], 'U', '{n}') !== null ? 'ok' : 'no';"),
+            &format!(
+                "call_user_func(['DateTime', 'createFromFormat'], 'U', '{n}') !== null ? 'ok' : 'no';"
+            ),
             "ok",
         );
     }
@@ -208,10 +236,30 @@ fn php_method_chaining() {
 #[test]
 fn php_spl_data_structures() {
     for n in PHP_FEATURE_VALUES {
-        assert_int(&format!("$q = new SplQueue(); $q->setIteratorMode(SplDoublyLinkedList::IT_MODE_FIFO | SplDoublyLinkedList::IT_MODE_KEEP); $q->enqueue({n}); echo $q->count();"), 1);
-        assert_int(&format!("$stack = new SplStack(); $stack->push({n}); $stack->push({n} + 1); echo $stack->pop();"), n + 1);
-        assert_int(&format!("$heap = new SplPriorityQueue(); $heap->setExtractFlags(SplPriorityQueue::EXTR_BOTH); $heap->insert({n}, -{n}); $top = $heap->extract(); echo $top['data'];"), n);
-        assert_int(&format!("$obj = new SplObjectStorage(); $a = new DateTime('@{n}'); $obj[$a] = 'ok'; echo $obj->count();"), 1);
+        assert_int(
+            &format!(
+                "$q = new SplQueue(); $q->setIteratorMode(SplDoublyLinkedList::IT_MODE_FIFO | SplDoublyLinkedList::IT_MODE_KEEP); $q->enqueue({n}); echo $q->count();"
+            ),
+            1,
+        );
+        assert_int(
+            &format!(
+                "$stack = new SplStack(); $stack->push({n}); $stack->push({n} + 1); echo $stack->pop();"
+            ),
+            n + 1,
+        );
+        assert_int(
+            &format!(
+                "$heap = new SplPriorityQueue(); $heap->setExtractFlags(SplPriorityQueue::EXTR_BOTH); $heap->insert({n}, -{n}); $top = $heap->extract(); echo $top['data'];"
+            ),
+            n,
+        );
+        assert_int(
+            &format!(
+                "$obj = new SplObjectStorage(); $a = new DateTime('@{n}'); $obj[$a] = 'ok'; echo $obj->count();"
+            ),
+            1,
+        );
     }
 }
 
@@ -241,7 +289,9 @@ fn php_math_builtins() {
 fn php_datetime_features() {
     for n in PHP_FEATURE_VALUES {
         assert_int(
-            &format!("$ts = 1_700_000_000 + {n}; $dt = new DateTime('@' . $ts); echo $dt->getTimestamp() - 1_700_000_000;"),
+            &format!(
+                "$ts = 1_700_000_000 + {n}; $dt = new DateTime('@' . $ts); echo $dt->getTimestamp() - 1_700_000_000;"
+            ),
             n,
         );
         assert_str(
@@ -250,7 +300,9 @@ fn php_datetime_features() {
         );
         let idx = n % 3;
         assert_int(
-            &format!("$zones = ['UTC', 'Europe/London', 'Asia/Tokyo']; echo strlen($zones[{idx}]);"),
+            &format!(
+                "$zones = ['UTC', 'Europe/London', 'Asia/Tokyo']; echo strlen($zones[{idx}]);"
+            ),
             match idx {
                 0 => 3,
                 1 => 12,
@@ -258,7 +310,9 @@ fn php_datetime_features() {
             },
         );
         assert_int(
-            &format!("$dt = new DateTime('1970-01-01 00:00:00', new DateTimeZone('UTC')); echo (int)$dt->format('U');"),
+            &format!(
+                "$dt = new DateTime('1970-01-01 00:00:00', new DateTimeZone('UTC')); echo (int)$dt->format('U');"
+            ),
             0,
         );
     }
@@ -283,7 +337,9 @@ fn php_timezone_features() {
     for n in PHP_FEATURE_VALUES {
         assert_int(&format!("echo {n};"), n);
         assert_str(
-            &format!("$tz = new DateTimeZone('America/New_York'); echo substr($tz->getName(), 0, 3);"),
+            &format!(
+                "$tz = new DateTimeZone('America/New_York'); echo substr($tz->getName(), 0, 3);"
+            ),
             "Ame",
         );
         assert_int(
@@ -293,7 +349,9 @@ fn php_timezone_features() {
             2024,
         );
         assert_int(
-            &format!("$tz = new DateTimeZone('UTC'); echo (int)$tz->getOffset(new DateTime('1970-01-01 00:00:00', $tz));"),
+            &format!(
+                "$tz = new DateTimeZone('UTC'); echo (int)$tz->getOffset(new DateTime('1970-01-01 00:00:00', $tz));"
+            ),
             0,
         );
     }

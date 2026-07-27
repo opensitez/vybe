@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     stream_wrapper_unregister_success => {
         r#"<?php

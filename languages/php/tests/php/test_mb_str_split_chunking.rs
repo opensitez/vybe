@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     mb_str_split_basic => {
         r#"<?php

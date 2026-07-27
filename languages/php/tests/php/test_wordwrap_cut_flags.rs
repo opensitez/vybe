@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     wordwrap_basic => {
         r#"<?php

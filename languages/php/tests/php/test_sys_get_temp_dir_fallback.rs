@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     sys_get_temp_dir_basic => {
         r#"<?php

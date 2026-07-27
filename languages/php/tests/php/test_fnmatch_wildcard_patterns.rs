@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     fnmatch_basic => {
         r#"<?php

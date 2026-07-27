@@ -11,17 +11,8 @@ fn assert_str(source: &str, expected: &str) {
 #[test]
 fn php_namespace_runtime() {
     let top_levels = [
-        "App",
-        "Domain",
-        "Platform",
-        "Modules",
-        "Service",
-        "Core",
-        "Shared",
-        "Http",
-        "Cli",
-        "Storage",
-        "Worker",
+        "App", "Domain", "Platform", "Modules", "Service", "Core", "Shared", "Http", "Cli",
+        "Storage", "Worker",
     ];
     let feature_groups = [
         "Auth",

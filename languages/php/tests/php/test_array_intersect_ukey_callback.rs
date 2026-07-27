@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     array_intersect_ukey_basic => {
         r#"<?php

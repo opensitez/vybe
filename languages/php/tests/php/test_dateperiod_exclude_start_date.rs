@@ -1,4 +1,3 @@
-
 crate::php_cases! {
     dateperiod_exclude_start_date => {
         r#"<?php
