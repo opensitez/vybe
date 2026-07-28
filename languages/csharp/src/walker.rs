@@ -7830,6 +7830,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     let mp = member_pair.ok_or("Empty class member")?;
     match mp.as_rule() {
         Rule::constructor_declaration => walk_constructor(mp, mods).map(|m| vec![m]),
+        Rule::destructor_declaration => walk_destructor(mp, mods).map(|m| vec![m]),
         Rule::explicit_interface_property_declaration | Rule::property_declaration => {
             walk_property(mp, mods)
         }
@@ -7865,6 +7866,50 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
         }
         other => Err(format!("Unexpected class member: {:?}", other)),
     }
+}
+
+/// `~ClassName() { ... }` — the C# finalizer (ECMA-334 §15.13).
+///
+/// Emitted as an ordinary method whose SOURCE name keeps the `~` sigil, which
+/// is what the shared canonical table matches on to resolve
+/// `SpecialMethodKind::Destructor`; `is_destructor` carries the same fact on
+/// the AST so nothing downstream has to re-read the name. Takes no parameters
+/// and returns nothing, so there is no signature to walk.
+fn walk_destructor(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember, String> {
+    let mut name = String::new();
+    let mut body = Vec::new();
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::ident_name if name.is_empty() => name = format!("~{}", p.as_str()),
+            Rule::block_statement => body = walk_body(p)?,
+            Rule::expression_body => {
+                // `~Foo() => Cleanup();` — a finalizer returns nothing, so the
+                // expression is a stand-alone statement, not a `Return`.
+                if let Some(inner) = p.into_inner().next() {
+                    let span = to_span(&inner);
+                    let expr = walk_expression(inner)?;
+                    body = vec![Statement::with_span(StmtKind::Expr(expr), span)];
+                }
+            }
+            _ => {}
+        }
+    }
+
+    mods.is_destructor = true;
+    Ok(ClassMember::Method(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name,
+            params: Vec::new(),
+            return_type: None,
+            body,
+            modifiers: mods,
+            handles: Vec::new(),
+            is_async: false,
+            is_generator: false,
+            is_sub: true,
+        },
+    ))))
 }
 
 fn walk_constructor(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String> {

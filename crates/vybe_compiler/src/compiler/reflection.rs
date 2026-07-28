@@ -395,6 +395,22 @@ impl Compiler {
             return self.compile_expr(attr);
         };
 
+        if let Some(type_name) = self.reflection_attribute_type_name(attr) {
+            if type_name.starts_with("System.") {
+                let short_name = type_name.rsplit('.').next().unwrap_or(&type_name);
+                return self.compile_expr(&Expression::new(ExprKind::Object(vec![
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("__typename"),
+                        value: Expression::string(&type_name),
+                    },
+                    ObjectProperty::KeyValue {
+                        key: Expression::string("Name"),
+                        value: Expression::string(short_name),
+                    },
+                ])));
+            }
+        }
+
         let positional_args: Vec<Argument> = args
             .iter()
             .filter(|arg| arg.name.is_none())
@@ -736,14 +752,25 @@ impl Compiler {
                 }
                 Ok(true)
             }
-            "GetCustomAttributes" if args.len() >= 2 => {
-                let Some(attribute_type) = self.resolve_reflection_type_arg(&args[0].value) else {
-                    return Ok(false);
+            "GetCustomAttributes" if !args.is_empty() => {
+                let (attribute_type, inherit) = if args.len() >= 2 {
+                    let Some(attribute_type) = self.resolve_reflection_type_arg(&args[0].value)
+                    else {
+                        return Ok(false);
+                    };
+                    (
+                        Some(attribute_type),
+                        matches!(args[1].value.kind, ExprKind::Lit(Literal::Bool(true))),
+                    )
+                } else {
+                    (
+                        None,
+                        matches!(args[0].value.kind, ExprKind::Lit(Literal::Bool(true))),
+                    )
                 };
-                let inherit = matches!(args[1].value.kind, ExprKind::Lit(Literal::Bool(true)));
                 let attrs = self.reflection_attributes_for_binding(
                     &provider,
-                    Some(&attribute_type),
+                    attribute_type.as_deref(),
                     inherit,
                 );
                 self.compile_reflection_attribute_array(&attrs)?;
@@ -1814,4 +1841,3 @@ pub fn emit_instanceof_chain(
     chunks[current].emit_op_u16(Op::STRUCT_SET, types_key, line); // [array]
     chunks[current].emit_op(Op::DROP, line); // []
 }
-

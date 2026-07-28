@@ -589,6 +589,9 @@ fn java_class_member_references_any_name(member: &ClassMember, names: &HashSet<S
         ClassMember::Event { type_hint, .. } => type_hint
             .as_deref()
             .is_some_and(|type_name| names.contains(type_name)),
+        // An augmentation names the type it draws from — that IS a reference to
+        // it, and treating it as none would let a type look unused.
+        ClassMember::Augment(decl) => names.contains(&decl.from),
     }
 }
 
@@ -3739,7 +3742,7 @@ fn java_pattern_type_match_expr(value_name: &str, type_name: &str) -> Expression
         return enum_match;
     }
     if matches!(simple, "Integer" | "Long" | "Short" | "Byte") {
-        let builtin_match = java_builtin_class_match_expr(value_name, simple);
+        let builtin_match = java_type_test_expr(&Expression::ident(value_name), simple);
         let integral_match = java_binary(
             BinOp::Eq,
             Expression::ident(value_name),
@@ -3751,15 +3754,7 @@ fn java_pattern_type_match_expr(value_name: &str, type_name: &str) -> Expression
         );
         return java_binary(BinOp::And, builtin_match, integral_match);
     }
-    if java_builtin_class_is_instance_type(type_name) || java_builtin_class_is_instance_type(simple)
-    {
-        java_builtin_class_match_expr(value_name, simple)
-    } else {
-        Expression::new(ExprKind::IsType {
-            expr: Box::new(Expression::ident(value_name)),
-            type_name: type_name.to_string(),
-        })
-    }
+    java_type_test_expr(&Expression::ident(value_name), type_name)
 }
 
 fn java_enum_pattern_match_expr(value_name: &str, enum_name: &str) -> Option<Expression> {
@@ -3801,16 +3796,71 @@ fn java_enum_pattern_match_expr(value_name: &str, enum_name: &str) -> Option<Exp
     })
 }
 
-fn java_builtin_class_match_expr(value_name: &str, simple_type_name: &str) -> Expression {
-    Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("__java_class_is_instance")),
-        args: vec![
-            Argument::positional(Expression::string(simple_type_name)),
-            Argument::positional(Expression::ident(value_name)),
-        ],
-        optional: false,
-    })
+/// `X.class.isInstance(v)` / `v instanceof X`, as the SHARED type test.
+///
+/// Java's intrinsic-backed types (`String`, `Integer`, `Boolean`, …) have no
+/// object to carry a `__type` stamp, so identity for them is a question about
+/// the value's runtime KIND. Which kinds could answer for a given query is
+/// data — `JAVA_TYPES` in `tree_register.rs`, the same table that registers
+/// those types in the namespace tree — and the test each kind name selects is
+/// the shared one in `ExprKind::IsType`. Nothing Java-specific is emitted.
+///
+/// The stamped-ancestry arm is always present: `Comparable.class.isInstance(x)`
+/// must answer for a user class that implements `Comparable` as well as for a
+/// `String`.
+/// `stamped_name` is what the ancestry arm looks for — the name as written, so
+/// a nested user type keeps whatever the stamp records — while the intrinsic
+/// lookup always uses the simple name, since a package never changes what a
+/// value IS at runtime.
+fn java_type_test_expr(subject: &Expression, stamped_name: &str) -> Expression {
+    let is_type = |name: &str| {
+        Expression::new(ExprKind::IsType {
+            expr: Box::new(subject.clone()),
+            type_name: name.to_string(),
+        })
+    };
+    if stamped_name.trim_end().ends_with("[]") {
+        // An array is a JS array, and its element type lives nowhere on the
+        // value — so `is an array` is the whole answer, refined by probing the
+        // first element when the element type is one the runtime distinguishes.
+        // An empty array carries no evidence against the claim, so it passes.
+        let is_array = is_type("list");
+        let Some(element) = crate::tree_register::array_element_intrinsic(stamped_name.trim_end())
+        else {
+            return is_array;
+        };
+        let first = Expression::new(ExprKind::Index {
+            object: Box::new(subject.clone()),
+            index: Box::new(Expression::int(0)),
+            null_safe: false,
+        });
+        let empty = java_binary(
+            BinOp::Eq,
+            Expression::new(ExprKind::Member {
+                object: Box::new(subject.clone()),
+                field: "length".to_string(),
+                null_safe: false,
+            }),
+            Expression::int(0),
+        );
+        let element_matches = Expression::new(ExprKind::IsType {
+            expr: Box::new(first),
+            type_name: element.to_string(),
+        });
+        return java_binary(
+            BinOp::And,
+            is_array,
+            java_binary(BinOp::Or, empty, element_matches),
+        );
+    }
+    crate::tree_register::intrinsics_answering(java_type_simple_name(stamped_name))
+        .into_iter()
+        .map(is_type)
+        .fold(is_type(stamped_name), |acc, test| {
+            java_binary(BinOp::Or, acc, test)
+        })
 }
+
 
 fn rewrite_java_record_accessors_stmt(stmt: &mut Statement, binding: &str, type_name: &str) {
     match &mut stmt.kind {
@@ -4697,31 +4747,14 @@ fn walk_instanceof(pair: Pair<Rule>) -> Result<Expression, String> {
     Ok(base)
 }
 
-/// The type-test expression for `subject instanceof Type`. Builtin classes
-/// (String, Integer, …) and enums route through the same `__java_class_is_instance`
-/// / enum-membership helpers the switch-pattern path uses; user types stay
-/// as `ExprKind::IsType` (TypeRegistry subtype test).
+/// The type-test expression for `subject instanceof Type`. Identical to the
+/// switch-pattern path when the subject is a plain name, so enum membership is
+/// answered the same way in both; otherwise the shared type test.
 fn java_instanceof_match_expr(subject: &Expression, type_name: &str) -> Expression {
     if let ExprKind::Ident(name) = &subject.kind {
         return java_pattern_type_match_expr(name, type_name);
     }
-    let simple = java_type_simple_name(type_name);
-    if java_builtin_class_is_instance_type(type_name) || java_builtin_class_is_instance_type(simple)
-    {
-        Expression::new(ExprKind::Call {
-            callee: Box::new(Expression::ident("__java_class_is_instance")),
-            args: vec![
-                Argument::positional(Expression::string(simple)),
-                Argument::positional(subject.clone()),
-            ],
-            optional: false,
-        })
-    } else {
-        Expression::new(ExprKind::IsType {
-            expr: Box::new(subject.clone()),
-            type_name: type_name.to_string(),
-        })
-    }
+    java_type_test_expr(subject, type_name)
 }
 
 fn walk_unary(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -5182,20 +5215,13 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
 
     if method == "isInstance" && args.len() == 1 {
         if let ExprKind::Lit(Literal::Str(type_name)) = &receiver.kind {
-            if java_builtin_class_is_instance_type(type_name) {
-                return Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident("__java_class_is_instance")),
-                    args: vec![
-                        Argument::positional(Expression::string(java_type_simple_name(type_name))),
-                        args[0].clone(),
-                    ],
-                    optional: false,
-                });
-            }
-            return Expression::new(ExprKind::IsType {
-                expr: Box::new(args[0].value.clone()),
-                type_name: type_name.clone(),
-            });
+            // Every type — user-declared or stdlib — answers through the SHARED
+            // type test (`ExprKind::IsType`). This used to fork on a hardcoded
+            // ~30-name list into `__java_class_is_instance`, an entire
+            // hand-written bytecode ladder living in the Java emitter.
+            // `X.class` is a string literal naming the type, so the simple
+            // name is all there is to match on.
+            return java_type_test_expr(&args[0].value, java_type_simple_name(type_name));
         }
     }
 
@@ -14945,40 +14971,6 @@ fn java_type_is_duration(type_name: Option<&str>) -> bool {
     base == "Duration"
 }
 
-fn java_builtin_class_is_instance_type(type_name: &str) -> bool {
-    let base = java_type_simple_name(type_name);
-    matches!(
-        base,
-        "String"
-            | "Integer"
-            | "Long"
-            | "Double"
-            | "Float"
-            | "Short"
-            | "Byte"
-            | "Number"
-            | "Boolean"
-            | "Character"
-            | "Object"
-            | "Class"
-            | "StringBuilder"
-            | "Comparable"
-            | "Serializable"
-            | "Cloneable"
-            | "List"
-            | "ArrayList"
-            | "Collection"
-            | "Vector"
-            | "Set"
-            | "HashSet"
-            | "Map"
-            | "HashMap"
-            | "Throwable"
-            | "int[]"
-            | "byte[]"
-            | "String[]"
-    )
-}
 
 fn java_type_is_zone_id(type_name: Option<&str>) -> bool {
     let Some(type_name) = type_name else {

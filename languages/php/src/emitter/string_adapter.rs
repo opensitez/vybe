@@ -7121,8 +7121,13 @@ fn emit_strtr_map(chunks: &mut [Chunk], current: usize, line: u32) {
     lset(chunk, entries_slot, line);
 
     let _ = chunk;
-    let state =
-        vybe_compiler::compiler::loops::emit_for_in_start(chunks, current, entries_slot, idx_slot, line);
+    let state = vybe_compiler::compiler::loops::emit_for_in_start(
+        chunks,
+        current,
+        entries_slot,
+        idx_slot,
+        line,
+    );
     // for_in_start leaves the current entry on the stack — drop it; we
     // re-fetch [k, v] by index below.
     chunks[current].emit_op(Op::DROP, line);

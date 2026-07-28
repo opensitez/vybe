@@ -859,6 +859,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, line,
             )
         }
+        "dotnet.vb_collection_to_array" => {
+            crate::emitter::core::collections_adapter::emit_vb_collection_to_array(
+                chunks, current, line,
+            )
+        }
         "dotnet.vb_collection_contains" => {
             crate::emitter::core::collections_adapter::emit_vb_collection_contains(
                 chunks, current, line,

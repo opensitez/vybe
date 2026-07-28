@@ -659,7 +659,6 @@ __new_array = { emit = "common:java.new_array", min_args = 1, max_args = 1 }
 __new_int_array = { emit = "common:java.new_int_array", min_args = 1, max_args = 1 }
 __new_bool_array = { emit = "common:java.new_bool_array", min_args = 1, max_args = 1 }
 __new_int_2d_array = { emit = "common:java.new_int_2d_array", min_args = 2, max_args = 2 }
-__java_class_is_instance = { emit = "common:java.class_is_instance", min_args = 2, max_args = 2 }
 __java_class_name = { emit = "common:java.class_name", min_args = 1, max_args = 1 }
 __java_class_simple_name = { emit = "common:java.class_simple_name", min_args = 1, max_args = 1 }
 __java_object_get_class = { emit = "common:java.object_get_class", min_args = 1, max_args = 1 }
@@ -1098,6 +1097,8 @@ ConcurrentHashMap = ["common", "java.concurrent_hash_map_new"]
 Semaphore     = ["common", "java.semaphore_new"]
 IdentityHashMap = ["common", "java.identity_hash_map_new"]
 "java.util.TreeSet"       = ["common", "java.sorted_set_new"]
+"java.util.ArrayList"     = ["common", "java.mutable_list_of"]
+"java.util.LinkedList"    = ["common", "java.mutable_list_of"]
 "java.util.ArrayDeque"    = ["common", "java.mutable_list_of"]
 "java.util.concurrent.CopyOnWriteArrayList" = ["common", "java.copy_on_write_list_new"]
 "java.util.concurrent.LinkedBlockingQueue" = ["common", "java.linked_blocking_queue_new"]
@@ -1149,5 +1150,12 @@ path = "java"
 
 [namespaces]
 use_dotnet = false
+
+# Namespace-tree roots this language resolves platform types against, and mounts
+# ambiently so an unqualified type name resolves to its `Type` node. Java's own
+# stdlib surface registers under `java` (see `tree_register.rs`), so a type used
+# as a VALUE (`ArrayList.class`) reaches the shared `Ctor`/`ancestry` machinery
+# instead of resolving to nothing.
+type_scopes = ["java"]
 roots = []
 extra_imports = []

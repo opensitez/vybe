@@ -205,7 +205,11 @@ pub fn emit_php_intdiv(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_dup(line);
     push_str(chunk, "Division by zero", line);
-    vybe_compiler::compiler::errors::emit_exception_new_finalize(chunk, "DivisionByZeroError", line);
+    vybe_compiler::compiler::errors::emit_exception_new_finalize(
+        chunk,
+        "DivisionByZeroError",
+        line,
+    );
     vybe_compiler::compiler::errors::emit_throw(chunk, line);
     chunk.emit_else(line);
     lget(chunk, a_slot, line);

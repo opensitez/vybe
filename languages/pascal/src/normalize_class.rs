@@ -19,8 +19,8 @@ use vybe_ast::{
     PropertySetter, Span, Statement, StmtKind,
 };
 use vybe_bytecode::class_normalize::{
+    NormalMembers,
     build_normal_method,
-    canonical::{ClassLang, canonicalize_method},
     from_method_stmt,
     types::*,
 };
@@ -1471,15 +1471,7 @@ pub fn normalize_class(
     members: &[ClassMember],
     modifiers: &ClassModifiers,
 ) -> NormalClass {
-    let mut raw_extra_members: Vec<ClassMember> = Vec::new();
-    let mut instance_fields: Vec<NormalField> = Vec::new();
-    let mut static_fields: Vec<NormalField> = Vec::new();
-    let mut instance_methods: Vec<NormalMethod> = Vec::new();
-    let mut static_methods: Vec<NormalMethod> = Vec::new();
-    let mut properties: Vec<NormalProperty> = Vec::new();
-    let mut constructors: Vec<NormalConstructor> = Vec::new();
-    let mut destructor: Option<NormalMethod> = None;
-    let mut special_methods: Vec<SpecialMethod> = Vec::new();
+    let mut out = NormalMembers::default();
     let instance_field_names: HashSet<String> = members
         .iter()
         .filter_map(|member| match member {
@@ -1529,11 +1521,7 @@ pub fn normalize_class(
                     access: Access::Public,
                     readonly: m.is_readonly,
                 };
-                if m.is_static {
-                    static_fields.push(field);
-                } else {
-                    instance_fields.push(field);
-                }
+                out.push_field(m.is_static, field);
             }
             ClassMember::Method(stmt) => {
                 let StmtKind::FunctionDecl {
@@ -1546,37 +1534,43 @@ pub fn normalize_class(
                 };
 
                 // Pascal destructor: `destructor Destroy;`. Case-insensitive.
-                if src_name.eq_ignore_ascii_case("Destroy") {
+                let (canonical, special_kind) = crate::protocol::canonical_method(src_name);
+                // `destructor Destroy` — a lifecycle member, not a method. The
+                // spelling is declared in the shared canonical table; the
+                // `inherited` rewrite below is genuine Pascal semantics and
+                // stays, which is why this arm builds its own statement rather
+                // than routing on the kind after the fact.
+                if special_kind == Some(SpecialMethodKind::Destructor) {
                     let mut stmt = (**stmt).clone();
                     if let StmtKind::FunctionDecl { body, .. } = &mut stmt.kind {
                         normalize_destructor_inherited_calls(body, !parents.is_empty());
                     }
                     if let Some(d) =
-                        from_method_stmt(span.clone(), &stmt, "destroy", Access::Public)
+                        from_method_stmt(span.clone(), &stmt, &canonical, Access::Public)
                     {
-                        destructor = Some(d);
+                        out.destructor = Some(d);
                     }
                     continue;
                 }
 
-                let (canonical, special_kind) = canonicalize_method(ClassLang::Pascal, src_name);
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, Access::Public)
                 else {
                     continue;
                 };
                 if let Some(kind) = special_kind {
-                    special_methods.push(SpecialMethod {
+                    out.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical,
                         source_name: src_name.clone(),
                     });
                 }
-                if m.is_static {
-                    static_methods.push(method);
-                } else {
+                // An instance method's name is what a bare identifier inside
+                // another method can resolve to as `Self.<name>` — a Pascal
+                // rule, so it is stated here rather than in the router.
+                if !m.is_static {
                     implicit_self_member_names.insert(src_name.to_ascii_lowercase());
-                    instance_methods.push(method);
                 }
+                out.push_method(m.is_static, method);
             }
             ClassMember::Constructor {
                 params,
@@ -1589,7 +1583,7 @@ pub fn normalize_class(
                 if suppress_base_call {
                     body.remove(0);
                 }
-                constructors.push(NormalConstructor {
+                out.push_constructor(NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
                     body,
@@ -1623,13 +1617,12 @@ pub fn normalize_class(
                 ..
             } => {
                 implicit_self_member_names.insert(pname.to_ascii_lowercase());
-                let (canonical, _) = canonicalize_method(ClassLang::Pascal, pname);
+                let (canonical, _) = crate::protocol::canonical_method(pname);
                 let getter_method = getter.as_ref().map(|body| {
                     build_normal_method(
                         span.clone(),
                         &canonical,
                         pname,
-                        Vec::new(),
                         vec![],
                         None,
                         rewrite_property_getter_body(body, &instance_field_names),
@@ -1645,7 +1638,6 @@ pub fn normalize_class(
                         span.clone(),
                         &canonical,
                         pname,
-                        Vec::new(),
                         vec![s.param.clone()],
                         None,
                         rewrite_property_setter_body(&s.body, &instance_field_names),
@@ -1656,7 +1648,7 @@ pub fn normalize_class(
                         Modifiers::default(),
                     )
                 });
-                properties.push(NormalProperty {
+                out.properties.push(NormalProperty {
                     span: span.clone(),
                     canonical_name: canonical,
                     source_name: pname.clone(),
@@ -1666,10 +1658,14 @@ pub fn normalize_class(
                     auto_field: if *is_auto { Some(pname.clone()) } else { None },
                 });
             }
+            // Object Pascal has single inheritance plus interfaces; class
+            // helpers extend a type from outside and are the prototype-fallback
+            // mechanism (§4d), not an augmentation of the declaration.
+            ClassMember::Augment(_) => {}
             other @ (ClassMember::Event { .. }
             | ClassMember::Const { .. }
             | ClassMember::NestedType(_)) => {
-                raw_extra_members.push(other.clone());
+                out.raw_extra_members.push(other.clone());
             }
         }
     }
@@ -1677,21 +1673,21 @@ pub fn normalize_class(
     extend_gcl_member_names(&mut implicit_self_member_names, parents);
     if !static_value_member_names.is_empty() {
         rewrite_static_value_members_in_methods(
-            &mut instance_methods,
+            &mut out.instance_methods,
             name,
             &static_value_member_names,
         );
         rewrite_static_value_members_in_methods(
-            &mut static_methods,
+            &mut out.static_methods,
             name,
             &static_value_member_names,
         );
         rewrite_static_value_members_in_constructors(
-            &mut constructors,
+            &mut out.constructors,
             name,
             &static_value_member_names,
         );
-        if let Some(destructor) = destructor.as_mut() {
+        if let Some(destructor) = out.destructor.as_mut() {
             rewrite_static_value_members_in_methods(
                 std::slice::from_mut(destructor),
                 name,
@@ -1699,38 +1695,37 @@ pub fn normalize_class(
             );
         }
     }
-    rewrite_implicit_self_members_in_methods(&mut instance_methods, &implicit_self_member_names);
-    rewrite_implicit_self_members_in_constructors(&mut constructors, &implicit_self_member_names);
+    rewrite_implicit_self_members_in_methods(&mut out.instance_methods, &implicit_self_member_names);
+    rewrite_implicit_self_members_in_constructors(&mut out.constructors, &implicit_self_member_names);
     let gcl_accessor_property_names = gcl_accessor_property_names(parents);
     if !gcl_accessor_property_names.is_empty() {
         rewrite_gcl_property_accessors_in_methods(
-            &mut instance_methods,
+            &mut out.instance_methods,
             &gcl_accessor_property_names,
         );
         rewrite_gcl_property_accessors_in_constructors(
-            &mut constructors,
+            &mut out.constructors,
             &gcl_accessor_property_names,
         );
     }
 
-    instance_methods = lower_pascal_method_overloads(instance_methods, &span);
-    static_methods = lower_pascal_method_overloads(static_methods, &span);
-    let constructor_calls_form_create = constructors.iter().any(|ctor| {
+    out.instance_methods = lower_pascal_method_overloads(out.instance_methods, &span);
+    out.static_methods = lower_pascal_method_overloads(out.static_methods, &span);
+    let constructor_calls_form_create = out.constructors.iter().any(|ctor| {
         ctor.body
             .iter()
             .any(|stmt| stmt_calls_method(stmt, "FormCreate"))
     });
-    let (constructor_variants, constructor) = if constructors.len() <= 1 {
-        (Vec::new(), constructors.into_iter().next())
-    } else {
-        (constructors, None)
-    };
-    let mut auto_init_methods = Vec::new();
+    // The rewrites above (static-value members, implicit `Self.`, GCL
+    // accessors) mutate `out.constructors` IN PLACE, so the view `push_
+    // constructor` cloned at the walk site is the un-rewritten original.
+    // Re-derive it under the same primary rule now that the list is final.
+    out.resync_constructor_view();
 
     let is_gcl_form = parents
         .iter()
         .any(|parent| parent.eq_ignore_ascii_case("TForm"));
-    let has_form_create = instance_methods.iter().any(|method| {
+    let has_form_create = out.instance_methods.iter().any(|method| {
         method.source_name.eq_ignore_ascii_case("FormCreate")
             || method.canonical_name.eq_ignore_ascii_case("formcreate")
     });
@@ -1739,7 +1734,6 @@ pub fn normalize_class(
             span.clone(),
             GCL_FORM_CREATE_AUTOINIT,
             GCL_FORM_CREATE_AUTOINIT,
-            Vec::new(),
             Vec::new(),
             None,
             call_self_form_create_body(),
@@ -1754,13 +1748,17 @@ pub fn normalize_class(
             &implicit_self_member_names,
             &mut HashSet::new(),
         );
-        instance_methods.push(auto_init);
-        auto_init_methods.push(GCL_FORM_CREATE_AUTOINIT.to_string());
+        out.instance_methods.push(auto_init);
+        out.auto_init_methods.push(GCL_FORM_CREATE_AUTOINIT.to_string());
     }
 
-    let mut normalized_interfaces = interfaces.to_vec();
+    // Pascal's implicit root: every class descends from TObject, so `is
+    // TObject` must answer true. This is an ADDITION to the declared list —
+    // the declared interfaces are filled centrally (see
+    // `normalize_class_from_ast`), so this only states the Pascal rule.
+    let mut normalized_interfaces = Vec::new();
     if !name.eq_ignore_ascii_case("TObject")
-        && !normalized_interfaces
+        && !interfaces
             .iter()
             .any(|iface| iface.eq_ignore_ascii_case("TObject"))
     {
@@ -1768,32 +1766,13 @@ pub fn normalize_class(
     }
 
     NormalClass {
-        augmentations: Vec::new(),
-        span,
-        name: name.to_string(),
-        parent: parents.first().cloned(),
-        bases: Vec::new(),
         interfaces: normalized_interfaces,
-        is_abstract: modifiers.is_abstract,
-        is_sealed: modifiers.is_sealed,
-        is_partial: false,
-        is_value_type: false,
         explicit_self_param: false, // Pascal: Self is implicit
         implicit_self_fields: true, // Pascal: bare field names resolve to Self.field inside methods
-        instance_fields,
-        static_fields,
-        instance_methods,
-        static_methods,
-        properties,
-        constructors: constructor_variants,
-        constructor,
-        destructor,
-        auto_init_methods,
-        special_methods,
-        event_bindings: Vec::new(),
-        raw_extra_members,
+        ..Default::default()
     }
-    }
+    .with_members(out)
+}
 
 #[derive(Clone)]
 struct PascalOverloadCase {
@@ -1845,7 +1824,6 @@ fn lower_pascal_method_overloads(methods: Vec<NormalMethod>, span: &Span) -> Vec
                 method.span.clone(),
                 &hidden_name,
                 &hidden_name,
-                Vec::new(),
                 method.params.clone(),
                 method.return_type.clone(),
                 method.body.clone(),
@@ -1862,7 +1840,6 @@ fn lower_pascal_method_overloads(methods: Vec<NormalMethod>, span: &Span) -> Vec
             span.clone(),
             &wrapper_template.canonical_name,
             &wrapper_template.source_name,
-            wrapper_template.aliases.clone(),
             wrapper_template.params.clone(),
             wrapper_template.return_type.clone(),
             build_pascal_overload_dispatch(

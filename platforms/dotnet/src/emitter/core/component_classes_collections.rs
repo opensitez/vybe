@@ -933,6 +933,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.vb_collection_count".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "ToArray",
+                    0,
+                    MethodBody::Common("dotnet.vb_collection_to_array".into()),
+                ))
+                .with_method(MethodDef::new(
                     "Contains",
                     1,
                     MethodBody::Common("dotnet.vb_collection_contains".into()),

@@ -223,10 +223,9 @@ pub fn emit_to_string_or(chunk: &mut Chunk, line: u32) {
 // model. Binding a function onto an object is object mutation, not class
 // policy — this is their home.
 //
-// `cross_language_aliases` is the spelling-guess table (flexclassplan.md §1b,
-// source #6). It is scheduled for DELETION once protocol slots land; at that
-// point the `_with_aliases` variants collapse into plain binds and this whole
-// section becomes trivial. Do not extend it.
+// The spelling-guess table that used to live here (flexclassplan.md §1b,
+// source #6) is GONE. Cross-language reach is a PROTOCOL SLOT — one numeric
+// key per role — not a list of every language's name for the same idea.
 
 /// Bind an instance method on the object: this.<method_name> = ref_func(chunk_idx).
 /// Emits: local_get this → ref_func ci → struct_set key → drop
@@ -293,171 +292,41 @@ pub fn emit_stamp_rest_metadata(chunk: &mut Chunk, fixed_count: u8, line: u32) {
     chunk.emit_op(Op::DROP, line);
 }
 
-/// Return the cross-language alias list for a method name.
-/// This is the single source of truth for cross-language method resolution.
-/// Returns all equivalent names (including the input name itself).
-/// Compilers can filter this list (e.g. skip `__get_`/`__set_` prefixed aliases
-/// if the language treats the method as a callable, not a property).
-pub fn cross_language_aliases(method_name: &str) -> &'static [&'static str] {
-    match method_name {
-        // String representation: Python __str__ ↔ JS toString() ↔ VB/C# ToString() ↔ Ruby to_s.
-        // Note: __get_tostring removed — ToString is a method, not a property.
-        // C#/VB walkers preserve source-case `ToString` as the bound name; include
-        // the PascalCase + Ruby spellings so cross-language invocation finds it.
-        "__str__" | "tostring" | "toString" | "ToString" | "to_s" | "__toString" => &[
-            "__str__",
-            "toString",
-            "tostring",
-            "ToString",
-            "to_s",
-            "__toString",
-        ],
-
-        // Debug representation: Python __repr__
-        "__repr__" | "todebugstring" | "toDebugString" => {
-            &["__repr__", "toDebugString", "todebugstring"]
-        }
-
-        // Length/Count: Python __len__ ↔ JS .length ↔ VB/C# .Count
-        "__len__" | "__get_length" | "__get_count" => &["__len__", "__get_length", "__get_count"],
-
-        // Truthiness: Python __bool__ ↔ JS valueOf
-        "__bool__" | "valueof" | "valueOf" => &["__bool__", "valueOf", "valueof"],
-
-        // Membership test: Python __contains__ ↔ JS includes() ↔ VB/C# Contains()
-        "__contains__" | "contains" | "includes" => &["__contains__", "contains", "includes"],
-
-        // Indexing: Python __getitem__/__setitem__ ↔ Dart operator[]/operator[]=
-        "__getitem__" | "operator[]" => &["__getitem__", "operator[]"],
-        "__setitem__" | "operator[]=" => &["__setitem__", "operator[]="],
-
-        // Iteration: Python __iter__/__next__ ↔ Dart iterator/moveNext ↔ JS Symbol.iterator
-        "__iter__" | "iterator" | "getIterator" => &["__iter__", "iterator", "getIterator"],
-        "__next__" | "moveNext" => &["__next__", "moveNext"],
-
-        // Equality: Python __eq__ ↔ Dart operator== ↔ VB/C# Equals()
-        "__eq__" | "equals" | "operator==" => &["__eq__", "equals", "operator=="],
-
-        // Hashing: Python __hash__ ↔ VB/C# GetHashCode() ↔ Dart hashCode
-        "__hash__" | "gethashcode" | "__get_hashcode" => {
-            &["__hash__", "gethashcode", "__get_hashcode"]
-        }
-
-        // Comparison: Python __lt__/__gt__/etc ↔ Dart operator</>/ ↔ C# CompareTo
-        "__lt__" | "operator<" => &["__lt__", "operator<"],
-        "__le__" | "operator<=" => &["__le__", "operator<="],
-        "__gt__" | "operator>" => &["__gt__", "operator>"],
-        "__ge__" | "operator>=" => &["__ge__", "operator>="],
-
-        // Arithmetic: Python __add__/etc ↔ Dart operator+/etc
-        "__add__" | "operator+" => &["__add__", "operator+"],
-        "__sub__" | "operator-" => &["__sub__", "operator-"],
-        "__mul__" | "operator*" => &["__mul__", "operator*"],
-        "__truediv__" | "operator/" => &["__truediv__", "operator/"],
-        "__mod__" | "operator%" => &["__mod__", "operator%"],
-
-        // Context manager — Python only, no aliases needed
-        "__enter__" | "__exit__" => &[],
-
-        // No aliases for regular method names
-        _ => &[],
-    }
-}
-
-/// Emit cross-language aliases for a method name.
-/// Maps between Python dunders, JS camelCase, and VB/C# PascalCase.
+/// Bind a method under its own name AND under the numeric key of the PROTOCOL
+/// SLOT it fills, so a caller in any language reaches it through the role
+/// rather than by guessing a spelling.
 ///
-/// The alias table is the single source of truth for cross-language method resolution.
-/// All compilers MUST use this when binding methods so that objects are interoperable.
-/// Stack: unchanged
-pub fn emit_cross_language_aliases(
-    chunk: &mut Chunk,
-    this_slot: u16,
-    method_name: &str,
-    method_chunk_idx: usize,
-    rest_fixed_count: Option<u8>,
-    line: u32,
-) {
-    for alias in cross_language_aliases(method_name) {
-        if *alias != method_name {
-            emit_bind_method(chunk, this_slot, alias, method_chunk_idx, line);
-            if let Some(fixed_count) = rest_fixed_count {
-                chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-                let key = chunk.add_constant(Value::String(Arc::from(*alias)));
-                chunk.emit_op_u16(Op::STRUCT_GET, key, line);
-                emit_stamp_rest_metadata(chunk, fixed_count, line);
-                chunk.emit_op(Op::DROP, line);
-            }
-        }
-    }
-}
-
-/// Bind a method AND all its cross-language aliases.
-/// This is the primary entry point — ensures a method defined in any language
-/// is callable from every other language.
+/// This replaces a synonym table that bound every cross-language spelling of a
+/// special method as its own property — a Python `__str__` also published
+/// `toString`, `tostring`, `ToString`, `to_s` and `__toString`. Five extra
+/// names in the namespace user members live in is what let a synonym set
+/// capture an unrelated user method. A slot key is derived from a NUMBER, so
+/// nothing a user can type collides with it.
 ///
-/// Example: Python defines `__str__`, this also binds `toString` and `tostring`
-/// so JS/VB/C# code can call it transparently.
+/// `slot` is `None` for ordinary members, which then bind under one name only.
 /// Stack: unchanged
-pub fn emit_bind_method_with_aliases(
+pub fn emit_bind_method_with_slot(
     chunk: &mut Chunk,
     this_slot: u16,
     method_name: &str,
+    slot: Option<vybe_ast::ProtocolSlot>,
     method_chunk_idx: usize,
     rest_fixed_count: Option<u8>,
     line: u32,
 ) {
-    // Bind under the original name
-    emit_bind_method(chunk, this_slot, method_name, method_chunk_idx, line);
-    if let Some(fixed_count) = rest_fixed_count {
-        chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        let key = chunk.add_constant(Value::String(Arc::from(method_name)));
-        chunk.emit_op_u16(Op::STRUCT_GET, key, line);
-        emit_stamp_rest_metadata(chunk, fixed_count, line);
-        chunk.emit_op(Op::DROP, line);
-    }
-    // Bind under all cross-language aliases
-    emit_cross_language_aliases(
-        chunk,
-        this_slot,
-        method_name,
-        method_chunk_idx,
-        rest_fixed_count,
-        line,
-    );
-}
-
-pub fn emit_bind_bound_method_with_aliases(
-    chunk: &mut Chunk,
-    this_slot: u16,
-    method_name: &str,
-    method_chunk_idx: usize,
-    rest_fixed_count: Option<u8>,
-    distinct_per_instance: bool,
-    line: u32,
-) {
-    emit_bind_bound_method(
-        chunk,
-        this_slot,
-        method_name,
-        method_chunk_idx,
-        rest_fixed_count,
-        distinct_per_instance,
-        line,
-    );
-    for &alias in cross_language_aliases(method_name) {
-        if alias == method_name {
-            continue;
+    let mut bind = |name: &str| {
+        emit_bind_method(chunk, this_slot, name, method_chunk_idx, line);
+        if let Some(fixed_count) = rest_fixed_count {
+            chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+            let key = chunk.add_constant(Value::String(Arc::from(name)));
+            chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+            emit_stamp_rest_metadata(chunk, fixed_count, line);
+            chunk.emit_op(Op::DROP, line);
         }
-        emit_bind_bound_method(
-            chunk,
-            this_slot,
-            alias,
-            method_chunk_idx,
-            rest_fixed_count,
-            distinct_per_instance,
-            line,
-        );
+    };
+    bind(method_name);
+    if let Some(slot) = slot {
+        bind(&vybe_ast::protocol_slot_key(slot));
     }
 }
 

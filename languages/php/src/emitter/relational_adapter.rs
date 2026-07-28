@@ -169,6 +169,8 @@ pub fn emit_php_loose_eq(chunks: &mut [Chunk], current: usize, _argc: u8, negate
 pub fn emit_relational_compare(chunk: &mut Chunk, cmp_fn: fn(&mut Chunk, u32), line: u32) {
     let t_b = alloc_local(chunk);
     let t_a = alloc_local(chunk);
+    let a_num = alloc_local(chunk);
+    let b_num = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, t_b, line);
     chunk.emit_op_u16(Op::LOCAL_SET, t_a, line);
 
@@ -185,7 +187,29 @@ pub fn emit_relational_compare(chunk: &mut Chunk, cmp_fn: fn(&mut Chunk, u32), l
     chunk.emit_call(test_str_tb, 1, line);
     chunk.emit_if_value(line);
 
-    // Both strings → lexicographic compare.
+    // Both strings: PHP compares numerically when both are numeric strings,
+    // otherwise lexicographically.
+    let parse_float = chunk.add_import("ecma:number", "parseFloat");
+    chunk.emit_op_u16(Op::LOCAL_GET, t_a, line);
+    chunk.emit_call(parse_float, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, a_num, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, t_b, line);
+    chunk.emit_call(parse_float, 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, b_num, line);
+
+    // NaN is the only f64 not equal to itself.
+    chunk.emit_op_u16(Op::LOCAL_GET, a_num, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_num, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_num, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_num, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, a_num, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, b_num, line);
+    cmp_fn(chunk, line);
+    chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, t_a, line);
     chunk.emit_op_u16(Op::LOCAL_GET, t_b, line);
     {
@@ -194,6 +218,7 @@ pub fn emit_relational_compare(chunk: &mut Chunk, cmp_fn: fn(&mut Chunk, u32), l
     }
     push_const(chunk, Value::I32(0), line);
     cmp_fn(chunk, line);
+    chunk.emit_end(line);
 
     chunk.emit_else(line);
     emit_numeric_fallback(chunk, t_a, t_b, cmp_fn, line);

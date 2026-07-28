@@ -332,7 +332,7 @@ fn validate_private_class_members(members: &[ClassMember]) -> Result<(), String>
                 validate_private_stmt(stmt)?;
                 continue;
             }
-            ClassMember::Event { .. } => continue,
+            ClassMember::Event { .. } | ClassMember::Augment(_) => continue,
         };
         if name.starts_with('#') {
             let seen: &mut HashMap<String, u8> = if is_static {
@@ -673,7 +673,7 @@ fn class_member_contains_await(member: &ClassMember) -> bool {
                     .is_some_and(|setter| setter.body.iter().any(stmt_contains_await))
         }
         ClassMember::Const { value, .. } => expr_contains_await(value),
-        ClassMember::Event { .. } => false,
+        ClassMember::Event { .. } | ClassMember::Augment(_) => false,
     }
 }
 
@@ -1549,7 +1549,7 @@ fn rewrite_class_members(
             }
             ClassMember::Const { value, .. } => rewrite_expression_keys(value, consts),
             ClassMember::NestedType(stmt) => rewrite_class_method_names(stmt, consts),
-            ClassMember::Event { .. } => {}
+            ClassMember::Event { .. } | ClassMember::Augment(_) => {}
         }
     }
 }

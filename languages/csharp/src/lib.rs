@@ -3,6 +3,7 @@
 include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
 pub mod forms;
 pub mod normalize_class;
+pub mod protocol;
 pub mod walker;
 
 use pest_derive::Parser;

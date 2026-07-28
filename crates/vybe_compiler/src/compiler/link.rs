@@ -137,6 +137,49 @@ impl Compiler {
                     self.defined_classes.insert(member.clone());
                     if let StmtKind::StructDecl { members, .. } = &stmt.kind {
                         self.predeclare_struct_surface(&member, members);
+                        // Normalize structs in the DECLARATION pass too, not
+                        // only classes. Without this a struct never enters
+                        // `normalized_classes`, so it is invisible to the
+                        // augmentation fold (its source type resolves to
+                        // nothing) and to any use site that compiles before its
+                        // declaration — a Go method body calling a method on a
+                        // type declared further down resolved to `undefined`.
+                        //
+                        // MERGED, not inserted: a type's members can arrive in
+                        // several declarations. Go writes methods outside the
+                        // type, so its walker emits one `StructDecl` per
+                        // method; overwriting would leave the type holding only
+                        // its last one.
+                        if let Ok(nc) =
+                            crate::compiler::class_normalize::emit::normalize_class_from_ast(
+                                self,
+                                stmt.span.clone(),
+                                &member,
+                                &[],
+                                &[],
+                                members,
+                                &vybe_ast::ClassModifiers::default(),
+                                true,
+                            )
+                        {
+                            for special in &nc.special_methods {
+                                match special.kind {
+                                    vybe_ast::ProtocolSlot::GetItem => {
+                                        self.classes_with_indexer.insert(member.clone());
+                                    }
+                                    vybe_ast::ProtocolSlot::SetItem => {
+                                        self.classes_with_index_setter.insert(member.clone());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            match self.normalized_classes.get_mut(&member) {
+                                Some(existing) => existing.merge_partial(nc),
+                                None => {
+                                    self.normalized_classes.insert(member.clone(), nc);
+                                }
+                            }
+                        }
                     }
                     // An index operator has to be known before ANY use site
                     // compiles, not when the class body does — a caller can be
@@ -166,6 +209,23 @@ impl Compiler {
                             modifiers,
                             false,
                         ) {
+                            // Index operators are read off the normalized
+                            // class's ROLES, not off member spellings: Ruby
+                            // `[]`, Dart `operator[]`, PHP `offsetGet` and
+                            // Python `__getitem__` are one role under four
+                            // names, and only normalization knows which
+                            // language's names these are.
+                            for special in &nc.special_methods {
+                                match special.kind {
+                                    vybe_ast::ProtocolSlot::GetItem => {
+                                        self.classes_with_indexer.insert(member.clone());
+                                    }
+                                    vybe_ast::ProtocolSlot::SetItem => {
+                                        self.classes_with_index_setter.insert(member.clone());
+                                    }
+                                    _ => {}
+                                }
+                            }
                             self.normalized_classes.insert(member.clone(), nc);
                         }
                         // NOTE: the member surface is registered later, by
@@ -176,12 +236,6 @@ impl Compiler {
                         // by another route. See flexclassplan.md §4c.
                     }
                     if let StmtKind::ClassDecl { members, .. } = &stmt.kind {
-                        if class_declares_op(members, "__getitem__") {
-                            self.classes_with_indexer.insert(member.clone());
-                        }
-                        if class_declares_op(members, "__setitem__") {
-                            self.classes_with_index_setter.insert(member.clone());
-                        }
                         // A class's own method shadows a same-named builtin
                         // value method (`obj.add(x)` is the class's `add`, not
                         // a list's). The call site can compile before the class
@@ -286,6 +340,44 @@ impl Compiler {
     /// declared after its user — and before any member surface is registered.
     /// A language that declares no augmentations is untouched, so languages
     /// migrate one at a time with no flag day.
+    /// Classify every normalized class's parent: a user class (compiled here)
+    /// or a registered PLATFORM type (data in the namespace tree). Only this
+    /// pass can tell them apart — the syntax is identical, and the tree is the
+    /// only thing that knows `TForm`/`StatelessWidget`/`Form` are declared
+    /// specs rather than compiled classes.
+    ///
+    /// Recording the spec here is what stops the emitter reaching for a
+    /// constructor global that never existed. See flexclassplan.md §4c.
+    pub(super) fn record_platform_bases(&mut self) {
+        let scope = self.profile.namespaces.type_scopes.clone();
+        if scope.is_empty() {
+            return;
+        }
+        let names: Vec<String> = self.normalized_classes.keys().cloned().collect();
+        for name in names {
+            let Some(parent) = self
+                .normalized_classes
+                .get(&name)
+                .and_then(|nc| nc.parent.clone())
+            else {
+                continue;
+            };
+            // A user class wins: a program may legitimately declare a class
+            // whose name collides with a platform type, and its own definition
+            // is the one in scope.
+            if self.normalized_classes.contains_key(&self.canon(&parent))
+                || self.defined_classes.contains(&self.canon(&parent))
+            {
+                continue;
+            }
+            if let Some(spec) = vybe_bytecode::namespaces::lookup_type_ctor_spec(&scope, &parent) {
+                if let Some(nc) = self.normalized_classes.get_mut(&name) {
+                    nc.platform_base = Some(spec);
+                }
+            }
+        }
+    }
+
     pub(super) fn apply_class_augmentations(&mut self) -> Result<(), String> {
         if self
             .normalized_classes
@@ -310,6 +402,16 @@ impl Compiler {
             let Some(mut nc) = self.normalized_classes.get(&name).cloned() else {
                 continue;
             };
+            // Bind each augmentation to the class it actually names BEFORE
+            // folding. `available` is keyed by `canon(name)` — lowercased for a
+            // case-insensitive language, fully qualified for a namespaced one —
+            // while `aug.from` carries the source spelling, so an exact lookup
+            // inside the fold misses every PHP trait.
+            for aug in &mut nc.augmentations {
+                if let Some(resolved) = self.resolve_augmentation_source(&aug.from) {
+                    aug.from = resolved;
+                }
+            }
             let errors = super::class_augmentation::apply_augmentations(&mut nc, &available);
             if let Some(first) = errors.first() {
                 // Go equal-depth promotion and Java default-method diamonds are
@@ -322,6 +424,31 @@ impl Compiler {
             self.normalized_classes.insert(name, nc);
         }
         Ok(())
+    }
+
+    /// The `normalized_classes` key an augmentation's source name refers to.
+    ///
+    /// A source names its augmenting type however the language spells it —
+    /// `use Timestamped;` — while the class map is keyed canonically, and for a
+    /// namespaced language fully qualified (`app.traits.timestamped`). Resolve
+    /// exactly first, then by an UNAMBIGUOUS `.suffix` match, which covers both
+    /// same-namespace use and an imported `use App\Traits\X;` without a second
+    /// alias table. Two candidates means the reference is ambiguous, and
+    /// guessing one would silently pick a type the program never named.
+    fn resolve_augmentation_source(&self, from: &str) -> Option<String> {
+        let canon = self.canon(from);
+        if self.normalized_classes.contains_key(&canon) {
+            return Some(canon);
+        }
+        let dotted = format!(".{canon}");
+        let mut matches = self
+            .normalized_classes
+            .keys()
+            .filter(|key| key.ends_with(&dotted));
+        match (matches.next(), matches.next()) {
+            (Some(key), None) => Some(key.clone()),
+            _ => None,
+        }
     }
 
     /// Classes ordered so that every augmenting type is folded before the
@@ -340,7 +467,18 @@ impl Compiler {
                     continue;
                 }
                 let ready = nc.augmentations.iter().all(|aug| {
-                    !self.normalized_classes.contains_key(&aug.from) || placed.contains(&aug.from)
+                    // Resolved the same way the fold will resolve it. Testing
+                    // the RAW name here reports "ready" for every augmentation
+                    // whose spelling differs from its key — which is all of
+                    // them in a case-insensitive or namespaced language — so
+                    // every class places on the first sweep, in hash order, and
+                    // a trait that uses a trait folds a pre-augmentation
+                    // snapshot. That is the exact bug this ordering exists to
+                    // prevent.
+                    match self.resolve_augmentation_source(&aug.from) {
+                        Some(key) => placed.contains(&key),
+                        None => true,
+                    }
                 });
                 if ready {
                     ordered.push(name.clone());
@@ -847,17 +985,3 @@ impl Compiler {
     }
 }
 
-/// A class declares `op` when one of its methods carries any spelling of it —
-/// Dart's `operator []`, Python's `__getitem__`, and so on. Keyed off the
-/// shared cross-language alias table, so it stays language-agnostic.
-fn class_declares_op(members: &[ClassMember], op: &'static str) -> bool {
-    members.iter().any(|m| {
-        let ClassMember::Method(stmt) = m else {
-            return false;
-        };
-        let StmtKind::FunctionDecl { name, .. } = &stmt.kind else {
-            return false;
-        };
-        crate::compiler::object::cross_language_aliases(name).contains(&op)
-    })
-}

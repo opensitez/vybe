@@ -35,8 +35,8 @@
 use std::collections::HashMap;
 
 use vybe_bytecode::class_normalize::{
-    Augmentation, AugmentationConflict, AugmentationMode, AugmentationPosition, NormalClass,
-    NormalMethod,
+    Augmentation, AugmentationAdjustment, AugmentationConflict, AugmentationMode,
+    AugmentationPosition, NormalClass, NormalMethod,
 };
 
 /// A conflict the augmentation pass could not resolve on its own.
@@ -79,18 +79,34 @@ pub fn apply_augmentations(
     }
 
     let mut errors = Vec::new();
-    // Members the class declares itself. These are never overwritten by an
+    // Members the class IMPLEMENTS itself. These are never overwritten by an
     // `AfterOwn` augmentation — every language agrees the class body wins.
-    let own: Vec<String> = class
+    //
+    // An ABSTRACT declaration is not an implementation, it is a REQUIREMENT
+    // ("someone must supply this"), and a contributed concrete member satisfies
+    // it rather than losing to it. Counting it as own leaves the class with a
+    // bodiless method and silently drops the implementation. Every language
+    // with both features agrees: a PHP trait method satisfies an `abstract
+    // function`, a Java interface `default` satisfies an abstract method, a
+    // Dart mixin member satisfies an abstract one.
+    // Instance and static are separate surfaces: a class may declare a static
+    // `make` and receive an instance `make`, and neither shadows the other.
+    let own: Vec<(bool, String)> = class
         .instance_methods
         .iter()
-        .map(|m| m.canonical_name.clone())
+        .map(|m| (false, m))
+        .chain(class.static_methods.iter().map(|m| (true, m)))
+        .filter(|(_, m)| !m.is_abstract)
+        .map(|(is_static, m)| (is_static, m.canonical_name.clone()))
         .collect();
 
     // Which augmentation supplied each contributed name, for conflict reporting.
-    let mut supplied_by: HashMap<String, Vec<String>> = HashMap::new();
+    let mut supplied_by: HashMap<(bool, String), Vec<String>> = HashMap::new();
     let mut depth_of: HashMap<String, u8> = HashMap::new();
 
+    // The class's own name, taken before the member loops borrow `class`
+    // mutably — a promoted forwarder needs it for the receiver's type.
+    let class_name = class.name.clone();
     let augmentations = class.augmentations.clone();
     for aug in &augmentations {
         let Some(source) = available.get(&aug.from) else {
@@ -100,97 +116,156 @@ pub fn apply_augmentations(
             continue;
         };
 
-        for method in &source.instance_methods {
-            let Some(name) = adjusted_name(aug, &method.canonical_name) else {
-                continue; // excluded by `insteadof`
+        // Both method surfaces, under the SAME rules. A rename, an exclusion or
+        // a visibility change applies to whatever the trait declared — PHP's
+        // `use A { helper as protected make; }` is legal whether `helper` is
+        // static or not, and handling only instance methods silently ignored
+        // every adaptation on a static one.
+        let sources: [(bool, &Vec<NormalMethod>); 2] = [
+            (false, &source.instance_methods),
+            (true, &source.static_methods),
+        ];
+        for (is_static, source_methods) in sources {
+            let permitted = if is_static {
+                aug.contributes.statics
+            } else {
+                aug.contributes.methods
             };
-
-            if !aug.contributes.methods {
+            if !permitted {
                 continue;
             }
+            for method in source_methods {
+                // A source member may bind under SEVERAL names. PHP's `as` is
+                // additive — `use A { hello as hi; }` gives the class BOTH `hello`
+                // and `hi` — and it composes with `insteadof`, which is the whole
+                // point of `B::hello insteadof A; A::hello as helloFromA;`: hide the
+                // conflicting name, keep the implementation reachable under another.
+                // A rename that REPLACED the original could express neither.
+                for (name, adjustment) in bound_names(aug, &method.canonical_name) {
+                    let bound = (is_static, name.clone());
+                    // The class's own declaration wins unless the augmentation is
+                    // positioned before it (Ruby `prepend`).
+                    if own.contains(&bound) && aug.position == AugmentationPosition::AfterOwn {
+                        continue;
+                    }
 
-            // The class's own declaration wins unless the augmentation is
-            // positioned before it (Ruby `prepend`).
-            if own.contains(&name) && aug.position == AugmentationPosition::AfterOwn {
-                continue;
-            }
-
-            // `Chain` is NOT a copy (§4c). Ruby `prepend` inserts the module
-            // AHEAD of the class in the lookup order, and `super` inside the
-            // prepended method reaches the class's own — shadowed, not
-            // replaced. Copying over the class's member would delete the very
-            // thing `super` must find, so refuse rather than silently
-            // mis-compile. Ruby exercises `super` through a module in 23 files;
-            // this would be caught immediately, but a loud refusal is the
-            // contract (§2f).
-            if aug.mode == AugmentationMode::Chain && own.contains(&name) {
-                errors.push(AugmentationError {
-                    class: class.name.clone(),
-                    member: name.clone(),
-                    sources: vec![aug.from.clone()],
-                    reason: "chain-order insertion over an existing member is not implemented \
+                    // `Chain` is NOT a copy (§4c). Ruby `prepend` inserts the module
+                    // AHEAD of the class in the lookup order, and `super` inside the
+                    // prepended method reaches the class's own — shadowed, not
+                    // replaced. Copying over the class's member would delete the very
+                    // thing `super` must find, so refuse rather than silently
+                    // mis-compile. Ruby exercises `super` through a module in 23 files;
+                    // this would be caught immediately, but a loud refusal is the
+                    // contract (§2f).
+                    if aug.mode == AugmentationMode::Chain && own.contains(&bound) {
+                        errors.push(AugmentationError {
+                        class: class.name.clone(),
+                        member: name.clone(),
+                        sources: vec![aug.from.clone()],
+                        reason: "chain-order insertion over an existing member is not implemented \
                              (a copy would delete the member `super` must reach)",
-                });
-                continue;
-            }
+                    });
+                        continue;
+                    }
 
-            let previous = supplied_by.entry(name.clone()).or_default();
-            if !previous.is_empty() {
-                match aug.conflict {
-                    AugmentationConflict::FirstWins => {
-                        previous.push(aug.from.clone());
-                        continue;
+                    let previous = supplied_by.entry(bound.clone()).or_default();
+                    if !previous.is_empty() {
+                        match aug.conflict {
+                            AugmentationConflict::FirstWins => {
+                                previous.push(aug.from.clone());
+                                continue;
+                            }
+                            AugmentationConflict::Error => {
+                                previous.push(aug.from.clone());
+                                errors.push(AugmentationError {
+                                    class: class.name.clone(),
+                                    member: name.clone(),
+                                    sources: previous.clone(),
+                                    reason: "supplied by more than one augmentation",
+                                });
+                                continue;
+                            }
+                            AugmentationConflict::RequireExplicit => {
+                                previous.push(aug.from.clone());
+                                errors.push(AugmentationError {
+                                    class: class.name.clone(),
+                                    member: name.clone(),
+                                    sources: previous.clone(),
+                                    reason: "ambiguous; the class must resolve it explicitly",
+                                });
+                                continue;
+                            }
+                            AugmentationConflict::LastWins => {}
+                        }
                     }
-                    AugmentationConflict::Error => {
-                        previous.push(aug.from.clone());
-                        errors.push(AugmentationError {
-                            class: class.name.clone(),
-                            member: name.clone(),
-                            sources: previous.clone(),
-                            reason: "supplied by more than one augmentation",
-                        });
-                        continue;
+
+                    // Go promotion: shallower depth wins outright; EQUAL depth with the
+                    // same name is ambiguous, which is an error in Go rather than a
+                    // silent pick.
+                    if aug.mode == AugmentationMode::Promote {
+                        match depth_of.get(&name).copied() {
+                            Some(seen) if seen < aug.depth => continue,
+                            Some(seen) if seen == aug.depth => {
+                                previous.push(aug.from.clone());
+                                errors.push(AugmentationError {
+                                    class: class.name.clone(),
+                                    member: name.clone(),
+                                    sources: previous.clone(),
+                                    reason: "promoted at equal depth from more than one field",
+                                });
+                                continue;
+                            }
+                            _ => {}
+                        }
+                        depth_of.insert(name.clone(), aug.depth);
                     }
-                    AugmentationConflict::RequireExplicit => {
-                        previous.push(aug.from.clone());
-                        errors.push(AugmentationError {
-                            class: class.name.clone(),
-                            member: name.clone(),
-                            sources: previous.clone(),
-                            reason: "ambiguous; the class must resolve it explicitly",
-                        });
-                        continue;
+
+                    previous.push(aug.from.clone());
+                    // The member's ROLE travels with it. A trait supplying
+                    // `__toString` gives the using class a ToString, and a
+                    // mixin supplying `operator +` gives it a Plus — dropping
+                    // the role here would contribute the body but leave the
+                    // class with no slot, so a cross-language call would miss a
+                    // method the class demonstrably has. Only under the
+                    // member's OWN name: an alias is a second entry point, not
+                    // a second implementation of the role.
+                    if name == method.canonical_name {
+                        if let Some(role) = source
+                            .special_methods
+                            .iter()
+                            .find(|s| s.canonical_name == method.canonical_name)
+                        {
+                            if !class
+                                .special_methods
+                                .iter()
+                                .any(|s| s.canonical_name == name)
+                            {
+                                class.special_methods.push(role.clone());
+                            }
+                        }
                     }
-                    AugmentationConflict::LastWins => {}
+                    let member = match (&aug.mode, aug.via_field.as_deref()) {
+                        // `Promote` is NOT a copy. Go's promoted method runs on
+                        // the INNER value — `outer.M()` is `outer.f.M()` — so
+                        // copying the body would leave it operating on the
+                        // outer receiver, which is a different struct with
+                        // different fields. What the class gains is a
+                        // FORWARDER; the rebinding is the whole point of the
+                        // mode.
+                        (AugmentationMode::Promote, Some(field)) => {
+                            promoted(method, &name, field, &class_name, adjustment.as_ref())
+                        }
+                        _ => contributed(method, &name, adjustment.as_ref()),
+                    };
+                    let target = if is_static {
+                        &mut class.static_methods
+                    } else {
+                        &mut class.instance_methods
+                    };
+                    target.retain(|existing| existing.canonical_name != name);
+                    target.push(member);
                 }
             }
-
-            // Go promotion: shallower depth wins outright; EQUAL depth with the
-            // same name is ambiguous, which is an error in Go rather than a
-            // silent pick.
-            if aug.mode == AugmentationMode::Promote {
-                match depth_of.get(&name).copied() {
-                    Some(seen) if seen < aug.depth => continue,
-                    Some(seen) if seen == aug.depth => {
-                        previous.push(aug.from.clone());
-                        errors.push(AugmentationError {
-                            class: class.name.clone(),
-                            member: name.clone(),
-                            sources: previous.clone(),
-                            reason: "promoted at equal depth from more than one field",
-                        });
-                        continue;
-                    }
-                    _ => {}
-                }
-                depth_of.insert(name.clone(), aug.depth);
-            }
-
-            previous.push(aug.from.clone());
-            class
-                .instance_methods
-                .retain(|existing| existing.canonical_name != name);
-            class.instance_methods.push(contributed(aug, method, &name));
         }
 
         // Fields. A class's own field of the same name always wins; there is
@@ -221,24 +296,16 @@ pub fn apply_augmentations(
             }
         }
 
-        // Statics. PHP quirk: a trait's static property gives each using class
-        // its OWN copy, so this is a copy, never a shared reference.
+        // Static FIELDS. PHP quirk: a trait's static property gives each using
+        // class its OWN copy, so this is a copy, never a shared reference.
+        // Static METHODS are contributed by the method loop above, under the
+        // same adjustments as instance ones.
         if aug.contributes.statics {
             for field in &source.static_fields {
                 if class.static_fields.iter().any(|f| f.name == field.name) {
                     continue;
                 }
                 class.static_fields.push(field.clone());
-            }
-            for method in &source.static_methods {
-                if class
-                    .static_methods
-                    .iter()
-                    .any(|m| m.canonical_name == method.canonical_name)
-                {
-                    continue;
-                }
-                class.static_methods.push(method.clone());
             }
         }
 
@@ -252,34 +319,115 @@ pub fn apply_augmentations(
     errors
 }
 
-/// The name a member is bound under after this augmentation's adjustments,
-/// or `None` when it is excluded (PHP `insteadof`).
-fn adjusted_name(aug: &Augmentation, member: &str) -> Option<String> {
+/// Every name this member binds under through this augmentation, each paired
+/// with the adjustment that produced it (`None` for the member's own name).
+///
+/// The default name is present unless an `exclude` adjustment covers it (PHP
+/// `insteadof`), PLUS one entry per `rename_to` (PHP `as`). Both may apply at
+/// once — an excluded member stays reachable under its alias, which is the
+/// documented PHP behaviour and what four of the trait tests assert.
+///
+/// An augmentation with no adjustments yields exactly the member's own name, so
+/// a language that declares none (Dart today) is unaffected.
+fn bound_names(aug: &Augmentation, member: &str) -> Vec<(String, Option<AugmentationAdjustment>)> {
+    let mut names = Vec::new();
+    let mut excluded = false;
     for adj in &aug.adjustments {
         if adj.member != member {
             continue;
         }
         if adj.exclude {
-            return None;
+            excluded = true;
         }
         if let Some(renamed) = &adj.rename_to {
-            return Some(renamed.clone());
+            names.push((renamed.clone(), Some(adj.clone())));
         }
     }
-    Some(member.to_string())
+    if !excluded {
+        // The visibility-only form (`A::run as protected;`) adjusts the member
+        // under its own name, so it has to travel with the default binding.
+        let own = aug
+            .adjustments
+            .iter()
+            .find(|adj| adj.member == member && adj.rename_to.is_none() && !adj.exclude)
+            .cloned();
+        names.insert(0, (member.to_string(), own));
+    }
+    names
 }
 
-/// Build the contributed method, applying the augmentation's name and
-/// visibility adjustments.
-fn contributed(aug: &Augmentation, method: &NormalMethod, name: &str) -> NormalMethod {
-    let mut out = method.clone();
-    out.canonical_name = name.to_string();
-    for adj in &aug.adjustments {
-        if adj.member == method.canonical_name {
-            if let Some(visibility) = adj.visibility {
-                out.access = visibility;
-            }
-        }
+/// Build the contributed method under one bound name.
+///
+/// Visibility comes from the adjustment that produced THIS binding, never from
+/// a sibling one: `A::run as protected runP;` makes the alias protected and
+/// leaves `run` itself alone.
+/// A PROMOTED member: a forwarder onto the inner value, not a copy of the body.
+///
+/// `func (o Outer) M(a) R { return o.<field>.M(a) }`
+///
+/// The receiver rebinds — which is what separates `Promote` from `Copy`. The
+/// inner call names the source member's OWN spelling, because that is the name
+/// it is stored under on the inner value; only the outer entry point takes the
+/// (possibly renamed) bound name.
+fn promoted(
+    method: &NormalMethod,
+    name: &str,
+    via_field: &str,
+    outer_class: &str,
+    adjustment: Option<&AugmentationAdjustment>,
+) -> NormalMethod {
+    use vybe_ast::{Argument, ExprKind, Expression, Statement, StmtKind};
+
+    let mut out = contributed(method, name, adjustment);
+    // The receiver is a declared parameter in every language that promotes
+    // (Go writes it `func (o Outer) M()`), so params[0] IS the receiver and
+    // its type is now the OUTER struct.
+    let receiver = out
+        .params
+        .first()
+        .map(|param| param.name.clone())
+        .unwrap_or_else(|| "self".to_string());
+    if let Some(param) = out.params.first_mut() {
+        param.type_hint = Some(outer_class.to_string());
+    }
+    let args: Vec<Argument> = out
+        .params
+        .iter()
+        .skip(1)
+        .map(|param| Argument::positional(Expression::ident(&param.name)))
+        .collect();
+    let inner = Expression::new(ExprKind::Member {
+        object: Box::new(Expression::ident(&receiver)),
+        field: via_field.to_string(),
+        null_safe: false,
+    });
+    let call = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(inner),
+            field: method.source_name.clone(),
+            null_safe: false,
+        })),
+        args,
+        optional: false,
+    });
+    out.body = vec![Statement::new(StmtKind::Return(Some(call)))];
+    out
+}
+
+fn contributed(
+    method: &NormalMethod,
+    name: &str,
+    adjustment: Option<&AugmentationAdjustment>,
+) -> NormalMethod {
+    let mut out = if name == method.canonical_name {
+        method.clone()
+    } else {
+        // The model owns what "bound under another name" means; this pass only
+        // says WHICH name.
+        method.bound_as(name)
+    };
+    if let Some(visibility) = adjustment.and_then(|adj| adj.visibility) {
+        out.access = visibility;
     }
     out
 }

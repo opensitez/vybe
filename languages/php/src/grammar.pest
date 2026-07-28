@@ -610,11 +610,23 @@ expression_statement = { expression ~ stmt_terminator }
 // levels into a single rule with named operator alternatives, per the
 // skill MD's "keep it flat" advice.
 
-expression = { assignment_expression }
+expression = { logical_word_or_expression }
+
+logical_word_or_expression = {
+    logical_word_xor_expression ~ (kw_or ~ logical_word_xor_expression)*
+}
+
+logical_word_xor_expression = {
+    logical_word_and_expression ~ (kw_xor ~ logical_word_and_expression)*
+}
+
+logical_word_and_expression = {
+    assignment_expression ~ (kw_and ~ assignment_expression)*
+}
 
 assignment_expression = {
     yield_expression
-    | logical_or_expression ~ (assign_op ~ assignment_expression)?
+    | ternary_expression ~ (assign_op ~ assignment_expression)?
 }
 
 assign_op = {
@@ -627,15 +639,6 @@ yield_expression = {
     kw_yield_from ~ assignment_expression
     | kw_yield ~ (assignment_expression ~ ("=>" ~ assignment_expression)?)?
 }
-
-// `or` (lowest), `xor`, `and` — PHP word operators bind LOWER than `=`,
-// but we put them just above ternary for simplicity. They're rarely
-// used in mixed-precedence contexts.
-logical_or_expression = {
-    ternary_expression ~ (logical_word_op ~ ternary_expression)*
-}
-
-logical_word_op = { kw_or | kw_xor | kw_and }
 
 ternary_expression = {
     null_coalesce_expression
@@ -685,10 +688,16 @@ equality_expression = {
 eq_op = { "===" | "!==" | "==" | "!=" | "<>" }
 
 comparison_expression = {
-    shift_expression ~ (cmp_op ~ shift_expression)*
+    concat_expression ~ (cmp_op ~ concat_expression)*
 }
 
 cmp_op = { "<=>" | "<=" | ">=" | "<" | ">" | kw_instanceof }
+
+concat_expression = {
+    shift_expression ~ (concat_op ~ shift_expression)*
+}
+
+concat_op = { "." }
 
 shift_expression = {
     additive_expression ~ (shift_op ~ additive_expression)*
@@ -700,7 +709,7 @@ additive_expression = {
     multiplicative_expression ~ (additive_op ~ multiplicative_expression)*
 }
 
-additive_op = { "+" | "-" | "." }
+additive_op = { "+" | "-" }
 
 multiplicative_expression = {
     power_expression ~ (mul_op ~ power_expression)*

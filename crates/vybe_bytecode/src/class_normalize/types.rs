@@ -14,6 +14,13 @@
 
 use vybe_ast::{Argument, Expression, Modifiers, Param, Span, Statement};
 
+/// The protocol-slot vocabulary lives in the AST, because the WALKER is what
+/// knows a method's role — Python from a reserved name, Dart from `operator`
+/// syntax, Java from conformance. Recovering it afterwards from the method's
+/// spelling is what made the name the identity. Re-exported under its original
+/// name so existing consumers are unaffected.
+pub use vybe_ast::{PROTOCOL_SLOT_TABLE, ProtocolSlot, ProtocolSlot as SpecialMethodKind};
+
 /// The normalised class declaration — single source of truth for every
 /// per-language class idiom after the walker has flattened it.
 #[derive(Debug, Clone)]
@@ -82,11 +89,6 @@ pub struct NormalClass {
     /// the method's `canonical_name` in `instance_methods`.
     pub special_methods: Vec<SpecialMethod>,
 
-    /// VB `Handles ctrl.Event` bindings. Walker extracts; `emit_class`
-    /// emits the corresponding `vybe:gui.bindEvent` calls during
-    /// constructor compilation.
-    pub event_bindings: Vec<EventBinding>,
-
     /// ClassMembers the normalizer doesn't explicitly model yet
     /// (`ClassMember::Event`, `::Const`, `::NestedType`). Shim
     /// reconstruction appends these back verbatim so the legacy
@@ -106,6 +108,314 @@ pub struct NormalClass {
     /// those still fold in their own walker, which is exactly the duplication
     /// this replaces. See flexclassplan.md §4c.
     pub augmentations: Vec<Augmentation>,
+
+    /// The class's parent is a registered PLATFORM type (a `Type` node in the
+    /// namespace tree), not a user class — so this carries that type's
+    /// construction spec.
+    ///
+    /// Recorded by the declaration pass, which is the only place that can tell
+    /// the two apart: `class TForm1 = class(TForm)` and `class B extends A`
+    /// are the same syntax, and only the tree knows `TForm` is data while `A`
+    /// is a compiled class. Without it the emitter reaches for a constructor
+    /// global that never existed (`global.get (tform)` → undefined) and the
+    /// only way to satisfy it is to manufacture one — which is the
+    /// compiler-side registration pass this design removes.
+    ///
+    /// `Some` means: this class gains the spec's fields, constructs its backing
+    /// control through `control_fn`, and stamps the spec's `ancestry` — the
+    /// same contribution a mixin makes, from a source that is already data.
+    pub platform_base: Option<crate::namespaces::CtorSpec>,
+}
+
+/// The member buckets a normalizer fills while walking a class body.
+///
+/// Every normalizer declared these as 5–9 separate `let mut` locals (87 across
+/// the twelve), filled them in a `match member { … }` loop, then spelled every
+/// one back out in the `NormalClass` literal. This is that accumulation, once.
+///
+/// It is deliberately an ACCUMULATOR and not a partitioner: the caller says
+/// which bucket a member belongs in. Static-vs-instance and name
+/// canonicalisation are language RULES — Ruby's trailing `private`, VB's
+/// `Shared`, Python's `@staticmethod`, Pascal's `class procedure` — and a
+/// shared `partition_members(members, policy)` would drag them into common
+/// code. The walker keeps the decision; this only holds the result.
+#[derive(Debug, Clone, Default)]
+pub struct NormalMembers {
+    pub instance_fields: Vec<NormalField>,
+    pub static_fields: Vec<NormalField>,
+    pub instance_methods: Vec<NormalMethod>,
+    pub static_methods: Vec<NormalMethod>,
+    pub properties: Vec<NormalProperty>,
+    pub constructors: Vec<NormalConstructor>,
+    pub constructor: Option<NormalConstructor>,
+    pub destructor: Option<NormalMethod>,
+    pub auto_init_methods: Vec<String>,
+    pub special_methods: Vec<SpecialMethod>,
+    pub raw_extra_members: Vec<vybe_ast::ClassMember>,
+    pub augmentations: Vec<Augmentation>,
+}
+
+impl NormalMembers {
+    /// Route a field to the static or instance bucket. The caller decides
+    /// `is_static` — that is the language's rule, not this type's.
+    pub fn push_field(&mut self, is_static: bool, field: NormalField) {
+        if is_static {
+            self.static_fields.push(field);
+        } else {
+            self.instance_fields.push(field);
+        }
+    }
+
+    /// Route a method to the static or instance bucket.
+    pub fn push_method(&mut self, is_static: bool, method: NormalMethod) {
+        if is_static {
+            self.static_methods.push(method);
+        } else {
+            self.instance_methods.push(method);
+        }
+    }
+
+    /// Record a constructor — ONE path, whether the language overloads or not.
+    ///
+    /// `constructors` (the list) and `constructor` (the single view) are two
+    /// representations of one concept, and `classes.rs` BRANCHES on which is
+    /// populated (`if !class.constructors.is_empty()` → per-variant dispatch).
+    /// Languages written at different times picked different ones, so the
+    /// shared compiler carries two emit paths for the same thing — the
+    /// duplication this file exists to remove, sitting in the common compiler
+    /// rather than in a language.
+    ///
+    /// This always fills both, putting every migrated language on the
+    /// per-variant path. Measured: cobol 88/9 unchanged, and fortran identical
+    /// either way — the paths agree for a single constructor. Once every
+    /// normalizer is migrated, `constructor` becomes a derived view and the
+    /// second emit path in `classes.rs` deletes.
+    ///
+    /// The single view is the PRIMARY constructor: an UNNAMED one when the
+    /// language has named constructors (Dart's `Point(this.x)` beside
+    /// `Point.origin()`, Lua's named factories), otherwise simply the first.
+    /// `named_name` already records the distinction, so no caller has to
+    /// restate it — a language with no named constructors leaves it `None`
+    /// everywhere and gets first-wins unchanged.
+    pub fn push_constructor(&mut self, ctor: NormalConstructor) {
+        let takes_primary_slot = match &self.constructor {
+            None => true,
+            // An unnamed constructor displaces a named one already in the
+            // slot; it never displaces another unnamed one (first wins).
+            Some(held) => held.named_name.is_some() && ctor.named_name.is_none(),
+        };
+        if takes_primary_slot {
+            self.constructor = Some(ctor.clone());
+        }
+        self.constructors.push(ctor);
+    }
+
+    /// Record an augmentation the class body declared (`ClassMember::Augment`),
+    /// under this language's policy.
+    ///
+    /// The language states its POLICY once — what mode, whose members win, what
+    /// `super` means — and the AST supplies the per-clause data (which type,
+    /// which adjustments). Neither the walker nor this type folds anything; the
+    /// shared `class_augmentation` pass does that once, for every language.
+    /// See flexclassplan.md §4c-R.
+    pub fn push_augment_decl(&mut self, decl: &vybe_ast::AugmentDecl, policy: AugmentationPolicy) {
+        self.augmentations.push(policy.applied_to(decl));
+    }
+
+    /// Re-derive the single view from `constructors` under the same primary
+    /// rule `push_constructor` applies.
+    ///
+    /// For a language that REWRITES constructor bodies after collecting them —
+    /// Pascal rewrites static-value members, implicit `Self.` qualification and
+    /// GCL property accessors across the whole list — the view taken at push
+    /// time is a clone of the ORIGINAL, so it would silently carry
+    /// un-rewritten code. Calling this after the rewrites lands makes the view
+    /// agree with the list again.
+    pub fn resync_constructor_view(&mut self) {
+        self.constructor = self
+            .constructors
+            .iter()
+            .find(|c| c.named_name.is_none())
+            .or_else(|| self.constructors.first())
+            .cloned();
+    }
+
+    /// Route a field the language declares STATIC but which must ALSO be
+    /// readable through an instance — Python's class attributes (`A.kind` and
+    /// `a.kind` both resolve), and Java's `instance.staticField`.
+    ///
+    /// `instance_init` is what the instance copy initialises FROM — a read of
+    /// the class attribute, not a re-evaluation of the original initialiser, so
+    /// a mutable class attribute stays ONE shared object across instances
+    /// (`A.items` is the classic Python gotcha) and `a.kind = x` shadows
+    /// without touching `A.kind`. The expression is built by the language,
+    /// because only it knows how to name the class attribute.
+    pub fn push_static_field_readable_on_instances(
+        &mut self,
+        field: NormalField,
+        instance_init: Expression,
+    ) {
+        self.instance_fields.push(NormalField {
+            init: Some(instance_init),
+            ..field.clone()
+        });
+        self.static_fields.push(field);
+    }
+}
+
+impl NormalClass {
+    /// Attach accumulated members. Pairs with `Default` so a normalizer states
+    /// only its class-level facts:
+    ///
+    /// ```ignore
+    /// NormalClass { span, name, parent, ..Default::default() }.with_members(members)
+    /// ```
+    pub fn with_members(mut self, m: NormalMembers) -> Self {
+        self.instance_fields = m.instance_fields;
+        self.static_fields = m.static_fields;
+        self.instance_methods = m.instance_methods;
+        self.static_methods = m.static_methods;
+        self.properties = m.properties;
+        self.constructors = m.constructors;
+        self.constructor = m.constructor;
+        self.destructor = m.destructor;
+        self.auto_init_methods = m.auto_init_methods;
+        self.special_methods = m.special_methods;
+        self.raw_extra_members = m.raw_extra_members;
+        // Appended, not assigned: a language may declare augmentations in the
+        // `NormalClass` literal too (Dart reads its `with` clause from the class
+        // header, which is not a member), and those must not be dropped when the
+        // body also contributes `Augment` members.
+        self.augmentations.extend(m.augmentations);
+        self
+    }
+
+    /// Fold another PARTIAL declaration of the same type into this one.
+    ///
+    /// A type's members do not always arrive in one syntactic declaration. Go
+    /// writes methods outside the type — `func (t Tag) String() string` — so
+    /// its walker emits one `StructDecl` per method, each a partial view of the
+    /// same struct. Replacing on the second one leaves the type holding only
+    /// its LAST method; this appends instead.
+    ///
+    /// Own members win: a name already present is not overwritten, so folding
+    /// is order-independent for anything the type declares once (which is all
+    /// a source language permits).
+    pub fn merge_partial(&mut self, other: NormalClass) {
+        for field in other.instance_fields {
+            if !self.instance_fields.iter().any(|f| f.name == field.name) {
+                self.instance_fields.push(field);
+            }
+        }
+        for field in other.static_fields {
+            if !self.static_fields.iter().any(|f| f.name == field.name) {
+                self.static_fields.push(field);
+            }
+        }
+        for method in other.instance_methods {
+            if !self
+                .instance_methods
+                .iter()
+                .any(|m| m.canonical_name == method.canonical_name)
+            {
+                self.instance_methods.push(method);
+            }
+        }
+        for method in other.static_methods {
+            if !self
+                .static_methods
+                .iter()
+                .any(|m| m.canonical_name == method.canonical_name)
+            {
+                self.static_methods.push(method);
+            }
+        }
+        for property in other.properties {
+            if !self
+                .properties
+                .iter()
+                .any(|p| p.canonical_name == property.canonical_name)
+            {
+                self.properties.push(property);
+            }
+        }
+        for special in other.special_methods {
+            if !self
+                .special_methods
+                .iter()
+                .any(|s| s.canonical_name == special.canonical_name)
+            {
+                self.special_methods.push(special);
+            }
+        }
+        for aug in other.augmentations {
+            if !self
+                .augmentations
+                .iter()
+                .any(|a| a.from == aug.from && a.via_field == aug.via_field)
+            {
+                self.augmentations.push(aug);
+            }
+        }
+        self.constructors.extend(other.constructors);
+        if self.constructor.is_none() {
+            self.constructor = other.constructor;
+        }
+        if self.destructor.is_none() {
+            self.destructor = other.destructor;
+        }
+        self.raw_extra_members.extend(other.raw_extra_members);
+    }
+}
+
+/// The neutral class: no bases, no members, no language quirks enabled.
+///
+/// Written out rather than derived so each choice is a stated decision, not an
+/// accident of field order — a normalizer that omits a field is relying on
+/// these values, and a wrong one changes a language's semantics silently.
+///
+/// Every `bool` here is "this language does NOT do that": `explicit_self_param`
+/// false means `self`/`this` is an implicit slot (JS/VB/C#/Ruby/PHP/Dart/
+/// Pascal), `implicit_self_fields` false means bare identifiers do not resolve
+/// to fields first (everything except Python and VB). The collections start
+/// empty and the options `None` because "not declared" is the absence of a
+/// member, never a placeholder one.
+///
+/// The point is that a normalizer states only what its language actually says.
+/// Before this, every one of the twelve spelled out 34–90 fields exhaustively,
+/// so adding a single field to this struct meant editing twelve crates and
+/// writing twelve lines that carried no information. Now it costs nothing.
+impl Default for NormalClass {
+    fn default() -> Self {
+        NormalClass {
+            span: Span::default(),
+            // A real class always names itself; this is a placeholder that
+            // every construction path overwrites.
+            name: String::new(),
+            parent: None,
+            bases: Vec::new(),
+            interfaces: Vec::new(),
+            is_abstract: false,
+            is_sealed: false,
+            is_partial: false,
+            is_value_type: false,
+            explicit_self_param: false,
+            implicit_self_fields: false,
+            instance_fields: Vec::new(),
+            static_fields: Vec::new(),
+            instance_methods: Vec::new(),
+            static_methods: Vec::new(),
+            properties: Vec::new(),
+            constructors: Vec::new(),
+            constructor: None,
+            destructor: None,
+            auto_init_methods: Vec::new(),
+            special_methods: Vec::new(),
+            raw_extra_members: Vec::new(),
+            augmentations: Vec::new(),
+            platform_base: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +424,27 @@ pub enum Access {
     Protected,
     Internal, // package / assembly visibility
     Private,
+}
+
+/// The AST's declared visibility IS the normalized access level — the two
+/// vocabularies match one-for-one, and every language that has visibility maps
+/// them the same way.
+///
+/// Five normalizers (java, vb, ruby, php, csharp) each carried a byte-identical
+/// `fn access_from_visibility` doing exactly this. A language with a genuinely
+/// different rule (Ruby's `private` applying to everything after it, Dart's
+/// leading-underscore convention) still decides that in its own walker and
+/// passes the `Access` it means — this only removes the copies of the mapping
+/// that never differed.
+impl From<vybe_ast::Visibility> for Access {
+    fn from(v: vybe_ast::Visibility) -> Self {
+        match v {
+            vybe_ast::Visibility::Public => Access::Public,
+            vybe_ast::Visibility::Protected => Access::Protected,
+            vybe_ast::Visibility::Private => Access::Private,
+            vybe_ast::Visibility::Internal => Access::Internal,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -133,14 +464,16 @@ pub struct NormalMethod {
     /// Cross-language canonical name (the vtable key at runtime).
     /// E.g. Python `__str__` → `"tostring"`.
     pub canonical_name: String,
-    /// Name as it appeared in the source file — preserved for error
-    /// messages and populated into `ClassType.method_aliases` so
-    /// callers from any language find the method.
+    /// Name as it appeared in the source file. This is what the emitter binds
+    /// the member under (`canon(source_name)`), so it is the member's callable
+    /// identity, not just a diagnostic.
+    ///
+    /// A method reachable under a SECOND name is not an extra spelling in a
+    /// list — it is a distinct binding with its own visibility (PHP
+    /// `A::run as protected go;` leaves `run` public). Build it with
+    /// [`NormalMethod::bound_as`], and mark cross-language ROLES with
+    /// `SpecialMethodKind` rather than by name.
     pub source_name: String,
-    /// Additional alias names the walker computed (e.g. a VB method
-    /// tagged `Implements IDisposable.Dispose` gets both `Dispose`
-    /// and `dispose` aliased).
-    pub aliases: Vec<String>,
     pub params: Vec<Param>,
     pub return_type: Option<String>,
     pub body: Vec<Statement>,
@@ -162,6 +495,34 @@ pub struct NormalMethod {
     /// fields (`is_virtual`, `is_override`, `is_abstract`, `access`)
     /// remain authoritative; `raw_modifiers` is just a carrier.
     pub raw_modifiers: Modifiers,
+}
+
+impl NormalMethod {
+    /// The same implementation, bound under a DIFFERENT name.
+    ///
+    /// PHP `use A { run as go; }`, and anything else that gives one body a
+    /// second entry point. A rebound member is its own member — it can carry a
+    /// different visibility from the original — so this is a new binding, not
+    /// an entry in a list of spellings.
+    ///
+    /// The point of having it here is that the identity has to move as a UNIT.
+    /// `canonical_name` is the vtable key and `source_name` is what the emitter
+    /// binds under (`canon(source_name)`), so a producer that sets one and not
+    /// the other publishes a member under the very name it was meant to differ
+    /// from, and two members end up claiming one key. Stating the rule once
+    /// means no caller can get half of it right.
+    ///
+    /// This is NOT how a cross-language role is expressed. `__toString`,
+    /// `__str__` and `to_s` are the same ROLE, marked with
+    /// `SpecialMethodKind::ToString` and resolved by that — never by rebinding
+    /// them all to one hardcoded spelling.
+    pub fn bound_as(&self, name: &str) -> NormalMethod {
+        NormalMethod {
+            canonical_name: name.to_string(),
+            source_name: name.to_string(),
+            ..self.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -216,79 +577,6 @@ pub struct SpecialMethod {
     pub source_name: String,
 }
 
-/// Cross-language operator + protocol method identity. Every language
-/// that defines any of these concepts under its own name resolves to
-/// the same `SpecialMethodKind`. Consumers of the class access the
-/// behaviour via the corresponding canonical method (e.g. `ToString`
-/// → `canonical_name = "tostring"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SpecialMethodKind {
-    // ── Coercion / representation ───────────────────────────────────
-    ToString,    // JS toString, C# ToString, Python __str__, Ruby to_s, PHP __toString
-    Repr,        // Python __repr__, Ruby inspect
-    ValueOf,     // JS valueOf, Python __int__/__float__
-    ToPrimitive, // JS Symbol.toPrimitive
-
-    // ── Iteration ───────────────────────────────────────────────────
-    Iterator,      // JS Symbol.iterator, Python __iter__, Ruby each, C# GetEnumerator
-    AsyncIterator, // JS Symbol.asyncIterator
-    Next,          // JS iterator.next, Python __next__
-
-    // ── Arithmetic operators ────────────────────────────────────────
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Mod,
-    Pow,
-    Neg,
-
-    // ── Comparison ──────────────────────────────────────────────────
-    Eq,      // ==
-    Compare, // <=> (Ruby) / __cmp__ (Python legacy) / CompareTo (C#)
-    Lt,
-    Le,
-    Gt,
-    Ge,
-
-    // ── Bitwise ─────────────────────────────────────────────────────
-    And,
-    Or,
-    Xor,
-    Not,
-    LShift,
-    RShift,
-
-    // ── Container protocol ──────────────────────────────────────────
-    Len,      // len() / length / size / Count
-    GetItem,  // Python __getitem__, Ruby [], Dart operator []
-    SetItem,  // Python __setitem__, Ruby []=, Dart operator []=
-    DelItem,  // Python __delitem__
-    Contains, // Python __contains__, Ruby include?
-
-    // ── Callable / reflection ───────────────────────────────────────
-    Call,        // Python __call__, PHP __invoke, Dart call, C# ()
-    HasInstance, // JS Symbol.hasInstance, Python __instancecheck__
-
-    // ── Property access interception ────────────────────────────────
-    GetAttr, // Python __getattr__, PHP __get, JS Proxy get
-    SetAttr, // Python __setattr__, PHP __set, JS Proxy set
-    DelAttr, // Python __delattr__, PHP __unset
-
-    // ── Context managers ────────────────────────────────────────────
-    Enter, // Python __enter__
-    Exit,  // Python __exit__
-
-    // ── Hash ────────────────────────────────────────────────────────
-    Hash, // Python __hash__, Ruby hash, C# GetHashCode, Java hashCode
-}
-
-#[derive(Debug, Clone)]
-pub struct EventBinding {
-    pub control: String, // "btn1"
-    pub event: String,   // "Click"
-    pub handler: String, // method name on this class
-}
 
 // ── Class augmentation ──────────────────────────────────────────────────
 //
@@ -335,9 +623,18 @@ pub enum AugmentationConflict {
     LastWins,
     /// Earlier wins; later is ignored.
     FirstWins,
-    /// A diagnosable error. Go promotion at EQUAL depth; Java default-method
-    /// diamonds. Silently picking one is a bug, not a policy.
+    /// A diagnosable error. Java default-method diamonds. Silently picking one
+    /// is a bug, not a policy.
     Error,
+    /// NEITHER candidate is contributed, and the clash itself is not an error.
+    ///
+    /// Go promotion at EQUAL depth: `type c struct { a; b }` where both supply
+    /// `f` is a legal type — `x.a.f()` and `x.b.f()` both compile. Only an
+    /// UNQUALIFIED `x.f()` is illegal, because the spec resolves a selector to
+    /// the unique member at the shallowest depth and there is no unique one.
+    /// So the name is simply absent from the promoted set, and the diagnosis
+    /// belongs to the use site rather than the declaration.
+    Ambiguous,
     /// An error unless the class explicitly resolves it (PHP `insteadof`,
     /// Java overriding the diamond, `X.super.m()`).
     RequireExplicit,
@@ -390,6 +687,54 @@ impl Default for AugmentationContributes {
             statics: false,
             constructors: false,
             abstract_members: true,
+        }
+    }
+}
+
+/// A language's augmentation RULES, stated once.
+///
+/// `Augmentation` mixes two things: what the source clause said (which type,
+/// which adjustments — per clause) and what the language's mechanism means
+/// (mode, who wins, what `super` reaches — the same for every clause in that
+/// language). This is the second half, so a normalizer declares its mechanism
+/// as one constant instead of restating five fields per `use`/`with`/`include`.
+///
+/// PHP traits, Dart mixins and Ruby `include` are then three constants, and the
+/// difference between them is readable at a glance.
+#[derive(Debug, Clone, Copy)]
+pub struct AugmentationPolicy {
+    pub mode: AugmentationMode,
+    pub position: AugmentationPosition,
+    pub conflict: AugmentationConflict,
+    pub super_target: AugmentationSuper,
+    pub contributes: AugmentationContributes,
+}
+
+impl AugmentationPolicy {
+    /// Combine this language's rules with one source clause.
+    pub fn applied_to(&self, decl: &vybe_ast::AugmentDecl) -> Augmentation {
+        Augmentation {
+            from: decl.from.clone(),
+            via_field: decl.via_field.clone(),
+            mode: self.mode,
+            position: self.position,
+            conflict: self.conflict,
+            super_target: self.super_target,
+            adjustments: decl
+                .adjustments
+                .iter()
+                .map(|adj| AugmentationAdjustment {
+                    member: adj.member.clone(),
+                    rename_to: adj.rename_to.clone(),
+                    // The AST records source `Visibility`; the normalized model
+                    // speaks `Access`, so the conversion happens once, here,
+                    // rather than in each language.
+                    visibility: adj.visibility.map(Access::from),
+                    exclude: adj.exclude,
+                })
+                .collect(),
+            contributes: self.contributes,
+            depth: 0,
         }
     }
 }

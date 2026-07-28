@@ -7,6 +7,7 @@
 
 use vybe_ast::{ClassMember, ClassModifiers, Span, StmtKind};
 use vybe_bytecode::class_normalize::{
+    NormalMembers,
     access_from_visibility, from_method_stmt, types::*,
 };
 
@@ -18,14 +19,7 @@ pub fn normalize_class(
     members: &[ClassMember],
     modifiers: &ClassModifiers,
 ) -> NormalClass {
-    let mut raw_extra_members = Vec::new();
-    let mut instance_fields = Vec::new();
-    let mut static_fields = Vec::new();
-    let mut instance_methods = Vec::new();
-    let mut static_methods = Vec::new();
-    let mut properties = Vec::new();
-    let mut constructor = None;
-    let mut special_methods = Vec::new();
+    let mut m = NormalMembers::default();
 
     for member in members {
         match member {
@@ -43,14 +37,10 @@ pub fn normalize_class(
                     type_hint: type_hint.clone(),
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
-                    access: access_from_visibility(modifiers.visibility),
+                    access: Access::from(modifiers.visibility),
                     readonly: modifiers.is_readonly,
                 };
-                if modifiers.is_static {
-                    static_fields.push(field);
-                } else {
-                    instance_fields.push(field);
-                }
+                m.push_field(modifiers.is_static, field);
             }
             ClassMember::Method(stmt) => {
                 let StmtKind::FunctionDecl {
@@ -66,22 +56,18 @@ pub fn normalize_class(
                     span.clone(),
                     stmt,
                     &canonical_name,
-                    access_from_visibility(modifiers.visibility),
+                    Access::from(modifiers.visibility),
                 ) else {
                     continue;
                 };
                 if let Some(kind) = special_kind {
-                    special_methods.push(SpecialMethod {
+                    m.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name,
                         source_name: source_name.clone(),
                     });
                 }
-                if modifiers.is_static {
-                    static_methods.push(method);
-                } else {
-                    instance_methods.push(method);
-                }
+                m.push_method(modifiers.is_static, method);
             }
             ClassMember::Constructor {
                 params,
@@ -90,7 +76,7 @@ pub fn normalize_class(
                 name,
                 ..
             } => {
-                constructor = Some(NormalConstructor {
+                m.push_constructor(NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
                     body: body.clone(),
@@ -114,7 +100,7 @@ pub fn normalize_class(
                 modifiers,
             } => {
                 let (canonical_name, _) = crate::protocol::canonical_method(name);
-                properties.push(NormalProperty {
+                m.properties.push(NormalProperty {
                     span: span.clone(),
                     canonical_name,
                     source_name: name.clone(),
@@ -135,7 +121,7 @@ pub fn normalize_class(
                             span.clone(),
                             &stmt,
                             name,
-                            access_from_visibility(modifiers.visibility),
+                            Access::from(modifiers.visibility),
                         )
                     }),
                     setter: setter.as_ref().and_then(|setter| {
@@ -154,42 +140,24 @@ pub fn normalize_class(
                             span.clone(),
                             &stmt,
                             name,
-                            access_from_visibility(modifiers.visibility),
+                            Access::from(modifiers.visibility),
                         )
                     }),
                     auto_field: if *is_auto { Some(name.clone()) } else { None },
                 });
             }
+            // Lua composition is metatable assignment at runtime, not a
+            // declaration, so the walker never produces this.
+            ClassMember::Augment(_) => {}
             other @ (ClassMember::Event { .. }
             | ClassMember::Const { .. }
-            | ClassMember::NestedType(_)) => raw_extra_members.push(other.clone()),
+            | ClassMember::NestedType(_)) => m.raw_extra_members.push(other.clone()),
         }
     }
 
     NormalClass {
-        augmentations: Vec::new(),
-        span,
-        name: name.to_string(),
-        parent: parents.first().cloned(),
-        bases: Vec::new(),
-        interfaces: interfaces.to_vec(),
-        is_abstract: modifiers.is_abstract,
-        is_sealed: modifiers.is_sealed,
-        is_partial: modifiers.is_partial,
-        is_value_type: false,
         explicit_self_param: true,
-        implicit_self_fields: false,
-        instance_fields,
-        static_fields,
-        instance_methods,
-        static_methods,
-        properties,
-        constructors: Vec::new(),
-        constructor,
-        destructor: None,
-        auto_init_methods: Vec::new(),
-        special_methods,
-        event_bindings: Vec::new(),
-        raw_extra_members,
+        ..Default::default()
     }
-    }
+    .with_members(m)
+}

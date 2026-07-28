@@ -107,6 +107,7 @@ class_member = {
         | operator_declaration
         | explicit_interface_indexer_declaration
         | indexer_declaration
+        | destructor_declaration
         | constructor_declaration
         | explicit_interface_method_declaration
         | explicit_interface_property_declaration
@@ -153,6 +154,14 @@ indexer_declaration = {
 // Also: `ClassName(params) => single_expr;` (C# 7+ expression-bodied ctor)
 constructor_declaration = {
     ident_name ~ "(" ~ param_list? ~ ")" ~ constructor_initializer? ~ (block_statement | expression_body)
+}
+
+// `~ClassName() { ... }` — finalizer (ECMA-334 §15.13). Takes no parameters,
+// has no modifiers and no return type. Must precede `constructor_declaration`
+// in `class_member`: both are "name then parens", and only the leading `~`
+// tells them apart.
+destructor_declaration = {
+    "~" ~ ident_name ~ "(" ~ ")" ~ (block_statement | expression_body)
 }
 
 constructor_initializer = {

@@ -856,7 +856,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, val_slot);
                     fn_call!(self, "wasm:js-undefined", "test", 1);
                     self.chunk().emit_if_value(line);
-                    self.emit_js_member_fallback_get(obj_slot, "length");
+                    self.emit_member_get_from_value(obj_slot, "length");
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, val_slot);
                     self.chunk().emit_end(line);

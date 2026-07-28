@@ -3,6 +3,7 @@
 include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
 pub mod emitter;
 pub mod normalize_class;
+pub mod protocol;
 pub mod tree_register;
 mod walker;
 

@@ -708,12 +708,12 @@ impl Compiler {
         };
 
         let mut bind_names = vec![method_name.to_string()];
-        for &alias in crate::compiler::object::cross_language_aliases(method_name) {
-            if alias != method_name {
-                bind_names.push(alias.to_string());
-            }
+        // The PROTOCOL SLOT this method fills, published under a key derived
+        // from the slot's NUMBER (`__vybe_slot_1`), not from any language's
+        // spelling. This is what a cross-language call resolves through.
+        if let Some(slot_key) = self.current_class_slot_keys.get(method_name).cloned() {
+            bind_names.push(slot_key);
         }
-
         // A `methods_bind_on_access` language (Python/Ruby) needs a DISTINCT
         // bound-method object per instance (`C().f is C().f` False). Tag these
         // funcrefs "no-intern" so the VM mints a fresh object per binding (the
@@ -1752,12 +1752,36 @@ impl Compiler {
             ));
         }
         for p in &class.properties {
+            let prop_canon = self.canon(&p.source_name);
+            let prop_is_override = p
+                .getter
+                .as_ref()
+                .is_some_and(|getter| getter.is_override || getter.raw_modifiers.is_override)
+                || p.setter
+                    .as_ref()
+                    .is_some_and(|setter| setter.is_override || setter.raw_modifiers.is_override);
+            let property_storage_name = if self.profile.field_hiding
+                && !p.is_static
+                && !prop_is_override
+                && self.field_hides_ancestor(class.parent.as_deref(), &prop_canon)
+            {
+                format!("__hide_{}${}", self.canon(&class.name), prop_canon)
+            } else {
+                prop_canon.clone()
+            };
+            if property_storage_name != prop_canon {
+                field_storage_names.insert(prop_canon.clone(), property_storage_name.clone());
+            }
+
             // Auto-properties get a backing field named like the property;
             // the runtime reads/writes through auto-emitted __get_/__set_
             // chunks bound later.
             if let Some(auto_field_name) = &p.auto_field {
-                let pname_canon =
-                    field_storage_slot_name(self, auto_field_name, &colliding_method_names);
+                let pname_canon = if property_storage_name != prop_canon {
+                    property_storage_name.clone()
+                } else {
+                    field_storage_slot_name(self, auto_field_name, &colliding_method_names)
+                };
                 if pname_canon != self.canon(auto_field_name) {
                     field_storage_names.insert(self.canon(auto_field_name), pname_canon.clone());
                 }
@@ -1772,6 +1796,8 @@ impl Compiler {
                     fields.push(pname_canon.clone());
                     field_inits.push((pname_canon, None, None, None));
                 }
+            } else if !p.is_static && !fields.contains(&property_storage_name) {
+                fields.push(property_storage_name.clone());
             }
         }
 
@@ -1851,7 +1877,7 @@ impl Compiler {
                 bases: class.bases.clone(),
                 enclosing_class: self.current_class.clone(),
                 fields: fields.clone(),
-                field_storage_names,
+                field_storage_names: field_storage_names.clone(),
                 is_value_type: class.is_value_type,
                 instance_member_names: class
                     .instance_methods
@@ -1932,6 +1958,27 @@ impl Compiler {
         // (name, chunk_idx, is_ctor, is_static)
         let mut method_chunks: Vec<(String, usize, bool, bool)> = Vec::new();
         let mut method_capture_name_map: HashMap<usize, Vec<String>> = HashMap::new();
+        // Which PROTOCOL SLOT each of this class's methods fills, by the
+        // method's canonical name. `special_methods` is what every normalizer
+        // already produces and nothing has ever read (§2g); this is its first
+        // consumer. Resolved to bound names in the method loop below, where the
+        // storage name is computed.
+        let mut class_slots: HashMap<&str, vybe_ast::ProtocolSlot> = class
+            .special_methods
+            .iter()
+            .map(|s| (s.canonical_name.as_str(), s.kind))
+            .collect();
+        // The destructor is held in its own field, so a normalizer that routes
+        // it there never adds it to `special_methods`. It fills the slot by
+        // CONSTRUCTION — that is what the field means — so state it here once
+        // instead of asking twelve normalizers to remember.
+        if let Some(destructor) = &class.destructor {
+            class_slots.insert(
+                destructor.canonical_name.as_str(),
+                vybe_ast::ProtocolSlot::Destructor,
+            );
+        }
+        self.current_class_slot_keys.clear();
         let saved_class = self.current_class.take();
         let saved_implicit = self.current_class_implicit_self;
         self.current_class = Some(name.to_string());
@@ -1942,6 +1989,22 @@ impl Compiler {
         // doesn't hijack a method call via the value-method dispatch
         // table. Walks instance_methods + static_methods + properties
         // directly; no reconstructed member iteration.
+        // An index operator makes `x[i]` on this type a method call. Record it
+        // against the class so the index site can resolve it from the
+        // receiver's static type instead of probing every index at runtime.
+        //
+        // Asked of the ROLE, not the spelling: a Ruby `[]`, a Dart
+        // `operator[]` and a PHP `offsetGet` all fill `GetItem`, and none of
+        // them is spelled `__getitem__` — the synonym list this used to
+        // consult only ever knew two of the spellings.
+        if class
+            .special_methods
+            .iter()
+            .any(|s| s.kind == vybe_ast::ProtocolSlot::GetItem)
+        {
+            let cname = self.canon(&class.name);
+            self.classes_with_indexer.insert(cname);
+        }
         for m in class
             .instance_methods
             .iter()
@@ -1954,13 +2017,6 @@ impl Compiler {
             // lookups are a Phase 2b.3 concern.
             self.defined_class_methods
                 .insert(self.canon(&m.source_name));
-            // An index operator makes `x[i]` on this type a method call. Record
-            // it against the class so the index site can resolve it from the
-            // receiver's static type instead of probing every index at runtime.
-            if crate::compiler::object::cross_language_aliases(&m.source_name).contains(&"__getitem__") {
-                let cname = self.canon(&class.name);
-                self.classes_with_indexer.insert(cname);
-            }
             if let Some(private_name) =
                 self.js_private_member_storage_name_for_class(&class.name, &m.source_name)
             {
@@ -2534,7 +2590,20 @@ impl Compiler {
                         is_virtual,
                     });
             }
-            method_chunks.push((storage_name.clone(), ci, is_ctor, is_static));
+            let explicit_overload_extends_ancestor = !is_static
+                && !is_ctor
+                && storage_name == bound_name
+                && m.raw_modifiers.is_overloads
+                && cc.method_hides_ancestor(class.parent.as_deref(), &bound_name);
+            // Publish this method's slot, if it fills one. Keyed by the name
+            // the bind sites will see, because that is all they have left.
+            if let Some(slot) = class_slots.get(m.canonical_name.as_str()) {
+                cc.current_class_slot_keys
+                    .insert(storage_name.clone(), vybe_ast::protocol_slot_key(*slot));
+            }
+            if !explicit_overload_extends_ancestor {
+                method_chunks.push((storage_name.clone(), ci, is_ctor, is_static));
+            }
             if !is_static && !is_ctor && storage_name == bound_name {
                 let overload_storage_name = cc.overload_storage_name(&bound_name, &param_types);
                 if overload_storage_name != storage_name {
@@ -2620,6 +2689,9 @@ impl Compiler {
                 self.js_private_member_storage_name_for_class(&class.name, &p.source_name)
             {
                 private_name
+            } else if let Some(storage_name) = field_storage_names.get(&self.canon(&p.source_name))
+            {
+                storage_name.clone()
             } else if !p.canonical_name.is_empty() {
                 p.canonical_name.clone()
             } else {
@@ -2761,12 +2833,16 @@ impl Compiler {
         let method_rest_fixed_count =
             |chunk_idx: usize| method_rest_fixed_counts.get(&chunk_idx).copied();
 
-        let ctor_variants: Vec<Option<&NormalConstructor>> = if !class.constructors.is_empty() {
-            class.constructors.iter().map(Some).collect()
-        } else if let Some(ctor) = class.constructor.as_ref() {
-            vec![Some(ctor)]
-        } else {
+        // `constructors` is THE representation. `constructor` is the single
+        // view of the same list and no longer selects a different emit path:
+        // every normalizer fills both (`NormalMembers::push_constructor`, or
+        // the language's own primary-selection rule where it has one), so a
+        // class with a `constructor` and an empty `constructors` cannot be
+        // produced. The arm that handled that case is gone.
+        let ctor_variants: Vec<Option<&NormalConstructor>> = if class.constructors.is_empty() {
             vec![None]
+        } else {
+            class.constructors.iter().map(Some).collect()
         };
         let ctor_global_prefix = self.canon(name);
         let should_stamp_form_identity = self.class_requires_form_identity_stamp(parent);
@@ -3956,6 +4032,28 @@ impl Compiler {
                 let key = self.str_const(mname);
                 self.emit_u16(Op::STRUCT_SET, key);
                 self.emit(Op::DROP);
+                // Publish the PROTOCOL SLOT alongside the method's own name, so
+                // a prototype-dispatch language (JS, PHP, Dart) reaches its
+                // roles through the same numeric key as a bind-dispatch one
+                // (Python, Ruby). Both paths install methods, so both have to
+                // stamp, or the slot exists in half the languages.
+                //
+                // `proto[slot] = proto[mname]`, emitted as its own sequence
+                // rather than folded into the install above: `STRUCT_SET` pops
+                // the VALUE and leaves the TARGET, so stamping mid-sequence
+                // would have to push the funcref a second time — the earlier
+                // shape dup'd the funcref and let it serve as both target and
+                // value, which stamped `fn[slot] = fn` (a cycle on the method
+                // object) and left the prototype without the slot entirely.
+                if let Some(slot_key) = self.current_class_slot_keys.get(mname.as_str()).cloned() {
+                    self.emit_u16(Op::LOCAL_GET, proto_local);
+                    self.emit_u16(Op::LOCAL_GET, proto_local);
+                    let method_key = self.str_const(mname);
+                    self.emit_u16(Op::STRUCT_GET, method_key);
+                    let slot_const = self.str_const(&slot_key);
+                    self.emit_u16(Op::STRUCT_SET, slot_const);
+                    self.emit(Op::DROP);
+                }
             }
         }
 

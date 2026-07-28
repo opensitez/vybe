@@ -160,6 +160,8 @@ thread_local! {
         RefCell::new(std::collections::HashSet::new());
     static SIMPLE_INDEX_ALIASES: RefCell<std::collections::HashMap<(String, String), String>> =
         RefCell::new(std::collections::HashMap::new());
+    static SIMPLE_VAR_INDEX_ALIASES: RefCell<std::collections::HashMap<String, (String, String)>> =
+        RefCell::new(std::collections::HashMap::new());
     static SIMPLE_DEFINED_VARS: RefCell<std::collections::HashSet<String>> =
         RefCell::new(std::collections::HashSet::new());
     static SIMPLE_CALLABLE_VARS: RefCell<std::collections::HashMap<String, usize>> =
@@ -1144,6 +1146,13 @@ fn lookup_simple_string_var(name: &str) -> Option<String> {
 }
 
 fn note_simple_value_var(name: &str, expr: &Expression) {
+    if matches!(&expr.kind, ExprKind::Ident(other) if other.trim_start_matches('$') == name.trim_start_matches('$'))
+    {
+        SIMPLE_VALUE_VARS.with(|v| {
+            v.borrow_mut().remove(name.trim_start_matches('$'));
+        });
+        return;
+    }
     SIMPLE_VALUE_VARS.with(|v| {
         v.borrow_mut()
             .insert(name.trim_start_matches('$').to_string(), expr.clone());
@@ -1152,6 +1161,19 @@ fn note_simple_value_var(name: &str, expr: &Expression) {
 
 fn lookup_simple_value_var(name: &str) -> Option<Expression> {
     SIMPLE_VALUE_VARS.with(|v| v.borrow().get(name.trim_start_matches('$')).cloned())
+}
+
+fn invalidate_simple_var_value(name: &str) {
+    let name = name.trim_start_matches('$');
+    SIMPLE_ARRAY_VARS.with(|v| {
+        v.borrow_mut().remove(name);
+    });
+    SIMPLE_STRING_VARS.with(|v| {
+        v.borrow_mut().remove(name);
+    });
+    SIMPLE_VALUE_VARS.with(|v| {
+        v.borrow_mut().remove(name);
+    });
 }
 
 fn expr_is_simplexml_value(expr: &Expression) -> bool {
@@ -1345,7 +1367,10 @@ fn php_function_call_return_class(expr: &Expression) -> Option<String> {
     if class_is_registered(name) {
         return Some(name.to_string());
     }
-    if let Some(class_name) = name.strip_prefix("__").and_then(|rest| rest.strip_suffix("_ctor_0")) {
+    if let Some(class_name) = name
+        .strip_prefix("__")
+        .and_then(|rest| rest.strip_suffix("_ctor_0"))
+    {
         if class_is_registered(class_name) {
             return Some(class_name.to_string());
         }
@@ -1431,6 +1456,14 @@ fn php_object_class_from_expr_inner(
 }
 
 fn php_new_class_and_args_from_expr(expr: &Expression) -> Option<(String, Vec<Expression>)> {
+    let mut seen = std::collections::HashSet::new();
+    php_new_class_and_args_from_expr_inner(expr, &mut seen)
+}
+
+fn php_new_class_and_args_from_expr_inner(
+    expr: &Expression,
+    seen: &mut std::collections::HashSet<String>,
+) -> Option<(String, Vec<Expression>)> {
     match &expr.kind {
         ExprKind::New { class, args } => match &class.kind {
             ExprKind::Ident(name) => Some((
@@ -1440,7 +1473,12 @@ fn php_new_class_and_args_from_expr(expr: &Expression) -> Option<(String, Vec<Ex
             _ => None,
         },
         ExprKind::Ident(name) => {
-            lookup_simple_value_var(name).and_then(|value| php_new_class_and_args_from_expr(&value))
+            let key = name.trim_start_matches('$').to_string();
+            if !seen.insert(key) {
+                return None;
+            }
+            lookup_simple_value_var(name)
+                .and_then(|value| php_new_class_and_args_from_expr_inner(&value, seen))
         }
         _ => None,
     }
@@ -1453,7 +1491,12 @@ fn php_literal_expr_equal(a: &Expression, b: &Expression) -> Option<bool> {
         (ExprKind::Lit(Literal::Int(x)), ExprKind::Lit(Literal::Int(y))) => Some(x == y),
         (ExprKind::Lit(Literal::BigInt(x)), ExprKind::Lit(Literal::BigInt(y))) => Some(x == y),
         (ExprKind::Lit(Literal::Float(x)), ExprKind::Lit(Literal::Float(y))) => Some(x == y),
-        (ExprKind::Lit(Literal::Str(x)), ExprKind::Lit(Literal::Str(y))) => Some(x == y),
+        (ExprKind::Lit(Literal::Str(x)), ExprKind::Lit(Literal::Str(y))) => {
+            match (x.trim().parse::<f64>(), y.trim().parse::<f64>()) {
+                (Ok(a), Ok(b)) => Some(a == b),
+                _ => Some(x == y),
+            }
+        }
         _ => None,
     }
 }
@@ -1482,11 +1525,25 @@ fn php_literal_truthy(expr: &Expression) -> Option<bool> {
         ExprKind::Lit(Literal::Float(v)) => Some(*v != 0.0),
         ExprKind::Lit(Literal::Str(s)) => Some(!s.is_empty() && s != "0"),
         ExprKind::Array(elements) => Some(!elements.is_empty()),
+        ExprKind::Unary { op, expr }
+            if matches!(op, UnaryOp::Neg | UnaryOp::Pos)
+                && matches!(
+                    expr.kind,
+                    ExprKind::Lit(Literal::Int(_))
+                        | ExprKind::Lit(Literal::BigInt(_))
+                        | ExprKind::Lit(Literal::Float(_))
+                ) =>
+        {
+            php_literal_truthy(expr)
+        }
         _ => None,
     }
 }
 
 fn php_literal_scalar_loose_equal(a: &Expression, b: &Expression) -> Option<bool> {
+    let a_norm = php_normalize_literal_number(a).unwrap_or_else(|| a.clone());
+    let b_norm = php_normalize_literal_number(b).unwrap_or_else(|| b.clone());
+    let (a, b) = (&a_norm, &b_norm);
     match (&a.kind, &b.kind) {
         (ExprKind::Lit(Literal::Bool(_)), _)
         | (_, ExprKind::Lit(Literal::Bool(_)))
@@ -1500,14 +1557,43 @@ fn php_literal_scalar_loose_equal(a: &Expression, b: &Expression) -> Option<bool
         | (ExprKind::Lit(Literal::Float(y)), ExprKind::Lit(Literal::Int(x))) => {
             Some((*x as f64) == *y)
         }
-        (ExprKind::Lit(Literal::Str(x)), ExprKind::Lit(Literal::Str(y))) => Some(x == y),
+        (ExprKind::Lit(Literal::Str(x)), ExprKind::Lit(Literal::Str(y))) => {
+            match (x.trim().parse::<f64>(), y.trim().parse::<f64>()) {
+                (Ok(a), Ok(b)) => Some(a == b),
+                _ => Some(x == y),
+            }
+        }
         (ExprKind::Lit(Literal::Str(s)), ExprKind::Lit(Literal::Int(i)))
         | (ExprKind::Lit(Literal::Int(i)), ExprKind::Lit(Literal::Str(s))) => {
-            s.parse::<f64>().ok().map(|n| n == *i as f64)
+            Some(s.trim().parse::<f64>().is_ok_and(|n| n == *i as f64))
         }
         (ExprKind::Lit(Literal::Str(s)), ExprKind::Lit(Literal::Float(f)))
         | (ExprKind::Lit(Literal::Float(f)), ExprKind::Lit(Literal::Str(s))) => {
-            s.parse::<f64>().ok().map(|n| n == *f)
+            Some(s.trim().parse::<f64>().is_ok_and(|n| n == *f))
+        }
+        _ => None,
+    }
+}
+
+fn php_normalize_literal_number(expr: &Expression) -> Option<Expression> {
+    match &expr.kind {
+        ExprKind::Unary { op, expr } if matches!(op, UnaryOp::Neg | UnaryOp::Pos) => {
+            let sign = if matches!(op, UnaryOp::Neg) { -1 } else { 1 };
+            match &expr.kind {
+                ExprKind::Lit(Literal::Int(v)) => Some(Expression::with_span(
+                    ExprKind::Lit(Literal::Int(v.saturating_mul(sign))),
+                    expr.span.clone(),
+                )),
+                ExprKind::Lit(Literal::BigInt(v)) => Some(Expression::with_span(
+                    ExprKind::Lit(Literal::BigInt(v.saturating_mul(sign))),
+                    expr.span.clone(),
+                )),
+                ExprKind::Lit(Literal::Float(v)) => Some(Expression::with_span(
+                    ExprKind::Lit(Literal::Float(if sign < 0 { -*v } else { *v })),
+                    expr.span.clone(),
+                )),
+                _ => None,
+            }
         }
         _ => None,
     }
@@ -1515,10 +1601,112 @@ fn php_literal_scalar_loose_equal(a: &Expression, b: &Expression) -> Option<bool
 
 fn php_literal_value_compare(a: &Expression, b: &Expression, strict: bool) -> Option<bool> {
     if strict {
-        php_literal_expr_equal(a, b).or_else(|| php_literal_array_compare(a, b, true))
+        php_literal_strict_value_equal(a, b).or_else(|| php_literal_array_compare(a, b, true))
     } else {
         php_literal_scalar_loose_equal(a, b).or_else(|| php_literal_array_compare(a, b, false))
     }
+}
+
+fn php_literal_strict_value_equal(a: &Expression, b: &Expression) -> Option<bool> {
+    match (&a.kind, &b.kind) {
+        (ExprKind::Lit(_), ExprKind::Lit(_)) => Some(php_literal_expr_equal(a, b).unwrap_or(false)),
+        _ => None,
+    }
+}
+
+fn php_literal_array_value_expr(expr: &Expression) -> Option<Expression> {
+    match &expr.kind {
+        ExprKind::Array(_) => Some(expr.clone()),
+        ExprKind::Ident(name) => lookup_simple_value_var(name).and_then(|value| {
+            if matches!(value.kind, ExprKind::Array(_)) {
+                Some(value)
+            } else {
+                None
+            }
+        }),
+        _ => None,
+    }
+}
+
+fn php_known_array_compare(left: &Expression, right: &Expression, strict: bool) -> Option<bool> {
+    let left = php_literal_array_value_expr(left)?;
+    let right = php_literal_array_value_expr(right)?;
+    php_literal_array_compare(&left, &right, strict)
+}
+
+fn php_literal_scalar_spaceship(a: &Expression, b: &Expression) -> Option<i64> {
+    fn ord_i64(ord: std::cmp::Ordering) -> i64 {
+        match ord {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        }
+    }
+    match (&a.kind, &b.kind) {
+        (ExprKind::Lit(Literal::Int(x)), ExprKind::Lit(Literal::Int(y))) => Some(ord_i64(x.cmp(y))),
+        (ExprKind::Lit(Literal::BigInt(x)), ExprKind::Lit(Literal::BigInt(y))) => {
+            Some(ord_i64(x.cmp(y)))
+        }
+        (ExprKind::Lit(Literal::Float(x)), ExprKind::Lit(Literal::Float(y))) => Some(if x < y {
+            -1
+        } else if x > y {
+            1
+        } else {
+            0
+        }),
+        (ExprKind::Lit(Literal::Int(x)), ExprKind::Lit(Literal::Float(y))) => {
+            let x = *x as f64;
+            Some(if x < *y {
+                -1
+            } else if x > *y {
+                1
+            } else {
+                0
+            })
+        }
+        (ExprKind::Lit(Literal::Float(x)), ExprKind::Lit(Literal::Int(y))) => {
+            let y = *y as f64;
+            Some(if *x < y {
+                -1
+            } else if *x > y {
+                1
+            } else {
+                0
+            })
+        }
+        (ExprKind::Lit(Literal::Str(x)), ExprKind::Lit(Literal::Str(y))) => {
+            Some(ord_i64(x.as_str().cmp(y.as_str())))
+        }
+        _ => None,
+    }
+}
+
+fn php_literal_array_spaceship(left: &Expression, right: &Expression) -> Option<i64> {
+    let left = php_literal_array_value_expr(left)?;
+    let right = php_literal_array_value_expr(right)?;
+    let (ExprKind::Array(a), ExprKind::Array(b)) = (&left.kind, &right.kind) else {
+        return None;
+    };
+    for (idx, (ae, be)) in a.iter().zip(b.iter()).enumerate() {
+        let ak = php_literal_array_key(ae, idx)?;
+        let bk = php_literal_array_key(be, idx)?;
+        if ak != bk {
+            return Some(match ak.as_str().cmp(bk.as_str()) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            });
+        }
+        let cmp = php_literal_scalar_spaceship(&ae.value, &be.value)?;
+        if cmp != 0 {
+            return Some(cmp);
+        }
+    }
+    Some(match a.len().cmp(&b.len()) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    })
 }
 
 fn php_literal_array_compare(left: &Expression, right: &Expression, strict: bool) -> Option<bool> {
@@ -1561,7 +1749,8 @@ fn php_literal_array_compare(left: &Expression, right: &Expression, strict: bool
 }
 
 fn php_literal_string_bitwise(left: &Expression, right: &Expression, op: BinOp) -> Option<String> {
-    let (ExprKind::Lit(Literal::Str(a)), ExprKind::Lit(Literal::Str(b))) = (&left.kind, &right.kind)
+    let (ExprKind::Lit(Literal::Str(a)), ExprKind::Lit(Literal::Str(b))) =
+        (&left.kind, &right.kind)
     else {
         return None;
     };
@@ -1581,7 +1770,38 @@ fn php_literal_string_bitwise(left: &Expression, right: &Expression, op: BinOp) 
     String::from_utf8(out).ok()
 }
 
+fn php_literal_string_bitnot(expr: &Expression) -> Option<String> {
+    let ExprKind::Lit(Literal::Str(s)) = &expr.kind else {
+        return None;
+    };
+    Some(
+        s.as_bytes()
+            .iter()
+            .map(|b| char::from_u32((!b) as u32 & 0xff).unwrap_or('\0'))
+            .collect(),
+    )
+}
+
+fn php_literal_int_value(expr: &Expression) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(v)) => Some(*v),
+        ExprKind::Lit(Literal::BigInt(v)) => Some(*v),
+        ExprKind::Unary { op, expr } if matches!(op, UnaryOp::Neg | UnaryOp::Pos) => {
+            let value = php_literal_int_value(expr)?;
+            if *op == UnaryOp::Neg {
+                Some(value.wrapping_neg())
+            } else {
+                Some(value)
+            }
+        }
+        _ => None,
+    }
+}
+
 fn php_known_loose_object_equality(left: &Expression, right: &Expression) -> Option<bool> {
+    if php_same_object_alias(left, right).unwrap_or(false) {
+        return Some(true);
+    }
     let (left_class, left_args) = php_new_class_and_args_from_expr(left)?;
     let (right_class, right_args) = php_new_class_and_args_from_expr(right)?;
     if left_class != right_class || left_args.len() != right_args.len() {
@@ -1596,6 +1816,36 @@ fn php_known_loose_object_equality(left: &Expression, right: &Expression) -> Opt
         }
     }
     known_equal.then_some(true)
+}
+
+fn php_same_object_alias(left: &Expression, right: &Expression) -> Option<bool> {
+    let ExprKind::Ident(left_name) = &left.kind else {
+        return None;
+    };
+    let ExprKind::Ident(right_name) = &right.kind else {
+        return None;
+    };
+    let left_root = php_alias_root(left_name)?;
+    let right_root = php_alias_root(right_name)?;
+    Some(left_root == right_root)
+}
+
+fn php_alias_root(name: &str) -> Option<String> {
+    let mut current = name.trim_start_matches('$').to_string();
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        if !seen.insert(current.clone()) {
+            return None;
+        }
+        let value = lookup_simple_value_var(&current)?;
+        match value.kind {
+            ExprKind::Ident(next) => {
+                current = next.trim_start_matches('$').to_string();
+            }
+            ExprKind::New { .. } => return Some(current),
+            _ => return None,
+        }
+    }
 }
 
 fn php_datetime_time_expr(expr: Expression, span: &Span) -> Option<Expression> {
@@ -1658,9 +1908,18 @@ fn php_datetime_literal_offset_instant_ms(expr: &Expression) -> Option<i64> {
     let y = parts.next()?.parse::<i64>().ok()?;
     let m = parts.next()?.parse::<i64>().ok()?;
     let d = parts.next()?.parse::<i64>().ok()?;
-    let h = parts.next().and_then(|p| p.parse::<i64>().ok()).unwrap_or(0);
-    let i = parts.next().and_then(|p| p.parse::<i64>().ok()).unwrap_or(0);
-    let sec = parts.next().and_then(|p| p.parse::<i64>().ok()).unwrap_or(0);
+    let h = parts
+        .next()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
+    let i = parts
+        .next()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
+    let sec = parts
+        .next()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
     let sign = if offset.starts_with('-') { -1 } else { 1 };
     let oh = offset[1..3].parse::<i64>().ok()?;
     let om = offset[4..6].parse::<i64>().ok()?;
@@ -1815,6 +2074,14 @@ fn lookup_simple_fiber_var(name: &str) -> Option<SimpleFiberState> {
 
 fn in_php_echo_context() -> bool {
     PHP_ECHO_CONTEXT.with(|c| c.get())
+}
+
+fn php_bool_for_output_context(value: bool, span: Span) -> Expression {
+    if in_php_echo_context() {
+        Expression::with_span(ExprKind::Lit(Literal::Int(if value { 1 } else { 0 })), span)
+    } else {
+        Expression::with_span(ExprKind::Lit(Literal::Bool(value)), span)
+    }
 }
 
 fn with_php_echo_context<T>(f: impl FnOnce() -> T) -> T {
@@ -2349,6 +2616,7 @@ fn lookup_simple_getter_method(class_name: &str, method: &str) -> Option<String>
 fn literal_string_key(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
+        ExprKind::Lit(Literal::Int(i)) => Some(i.to_string()),
         _ => None,
     }
 }
@@ -2374,6 +2642,40 @@ fn lookup_simple_index_alias(obj: &str, alias_key: &str) -> Option<String> {
             ))
             .cloned()
     })
+}
+
+fn note_simple_var_index_alias(var: &str, obj: &str, key: &str) {
+    SIMPLE_VAR_INDEX_ALIASES.with(|m| {
+        m.borrow_mut().insert(
+            var.trim_start_matches('$').to_string(),
+            (obj.to_string(), key.to_string()),
+        );
+    });
+}
+
+fn unnote_simple_var_index_alias(var: &str) {
+    SIMPLE_VAR_INDEX_ALIASES.with(|m| {
+        m.borrow_mut().remove(var.trim_start_matches('$'));
+    });
+}
+
+fn lookup_simple_var_index_alias(var: &str) -> Option<(String, String)> {
+    SIMPLE_VAR_INDEX_ALIASES.with(|m| m.borrow().get(var.trim_start_matches('$')).cloned())
+}
+
+fn php_var_index_alias_expr(var: &str, span: &Span) -> Option<Expression> {
+    let (obj, key) = lookup_simple_var_index_alias(var)?;
+    Some(Expression::with_span(
+        ExprKind::Index {
+            object: Box::new(Expression::with_span(ExprKind::Ident(obj), span.clone())),
+            index: Box::new(Expression::with_span(
+                ExprKind::Lit(Literal::Str(key)),
+                span.clone(),
+            )),
+            null_safe: false,
+        },
+        span.clone(),
+    ))
 }
 
 fn simple_index_reference_target(expr: &Expression) -> Option<(String, String)> {
@@ -3365,16 +3667,54 @@ function __php_copy_on_assign($v) {
     // are reference-like — deep-cloning one shreds it. Leave callables shared.
     if (is_callable($v)) return $v;
     // Objects are Map-backed too but are reference types (stay shared). An
-    // object is a NON-list value carrying the class stamp "__type". A list
-    // array ([1,2]) is JS-Array-backed and spuriously reports a "__type" key,
-    // so array_is_list short-circuits it as a real array first.
-    if (!array_is_list($v) && isset($v["__type"])) return $v;
+    // Real objects carry their class stamp in "__type"; list arrays report the
+    // runtime tag "Array", and assoc arrays can be unstamped.
+    if (isset($v["__type"]) && $v["__type"] !== "Array") return $v;
     $r = [];
     foreach ($v as $k => $x) {
-        $r[$k] = (is_array($x) && !is_callable($x) && (array_is_list($x) || !isset($x["__type"])))
+        $r[$k] = (is_array($x) && !is_callable($x) && (!isset($x["__type"]) || $x["__type"] === "Array"))
             ? __php_copy_on_assign($x) : $x;
     }
     return $r;
+}
+function __php_arrayish($v) {
+    return is_array($v) && (!isset($v["__type"]) || $v["__type"] === "Array");
+}
+function __php_same_string($a, $b) {
+    if (strlen($a) !== strlen($b)) return false;
+    return !($a < $b) && !($a > $b);
+}
+function __php_strict_eq($a, $b) {
+    if (__php_arrayish($a) || __php_arrayish($b)) {
+        if (!__php_arrayish($a) || !__php_arrayish($b)) return false;
+        if (count($a) !== count($b)) return false;
+        $ak = array_keys($a);
+        $bk = array_keys($b);
+        $i = 0;
+        while ($i < count($ak)) {
+            if ($ak[$i] !== $bk[$i]) return false;
+            $k = $ak[$i];
+            if (!array_key_exists($k, $b)) return false;
+            if (!__php_strict_eq($a[$k], $b[$k])) return false;
+            $i++;
+        }
+        return true;
+    }
+    if ($a === null || $b === null) return $a === null && $b === null;
+    if (is_bool($a) || is_bool($b)) return is_bool($a) && is_bool($b) && (bool)$a == (bool)$b;
+    if (is_int($a) || is_int($b)) return is_int($a) && is_int($b) && $a == $b;
+    if (is_float($a) || is_float($b)) return is_float($a) && is_float($b) && $a == $b;
+    if (is_string($a) || is_string($b)) return is_string($a) && is_string($b) && __php_same_string($a, $b);
+    return $a === $b;
+}
+function __php_array_loose_eq($a, $b) {
+    if (!__php_arrayish($a) || !__php_arrayish($b)) return false;
+    if (count($a) != count($b)) return false;
+    foreach ($a as $k => $v) {
+        if (!array_key_exists($k, $b)) return false;
+        if (!__php_loose_eq($v, $b[$k])) return false;
+    }
+    return true;
 }
 "##;
 
@@ -3408,18 +3748,21 @@ function __php_numeric_like($v) {
     return $has_digit;
 }
 function __php_loose_eq($a, $b) {
-    if (is_bool($a) || is_bool($b) || $a === null || $b === null) {
+    if (is_object($a) || is_object($b)) {
+        if (!is_object($a) || !is_object($b)) return false;
+        if (!__php_same_string(get_class($a), get_class($b))) return false;
+        return true;
+    }
+    if (is_bool($a) || is_bool($b) || is_null($a) || is_null($b)) {
         $ab = is_array($a) ? count($a) > 0 : (bool)$a;
         $bb = is_array($b) ? count($b) > 0 : (bool)$b;
-        return $ab === $bb;
+        return ($ab && $bb) || (!$ab && !$bb);
     }
-    $aj = json_encode($a);
-    $bj = json_encode($b);
-    if ($aj !== null && $bj !== null && $aj !== false && $bj !== false && (substr($aj, 0, 1) === '{' || substr($bj, 0, 1) === '{' || substr($aj, 0, 1) === '[' || substr($bj, 0, 1) === '[')) return $aj === $bj;
+    if (__php_arrayish($a) || __php_arrayish($b)) return __php_array_loose_eq($a, $b);
     $an = __php_numeric_like($a);
     $bn = __php_numeric_like($b);
-    if ($an && $bn) return (float)$a === (float)$b;
-    return (string)$a === (string)$b;
+    if ($an && $bn) return !((float)$a < (float)$b) && !((float)$a > (float)$b);
+    return __php_same_string((string)$a, (string)$b);
 }
 "##;
 
@@ -3560,9 +3903,14 @@ fn php_prelude_needs(stmts: &[Statement]) -> PhpPreludeNeeds {
     .iter()
     .any(|name| ast.contains(name));
 
-    needs.url = ["parse_url", "http_build_query", "parse_str", "__vybe_hbq_pairs"]
-        .iter()
-        .any(|name| ast.contains(name));
+    needs.url = [
+        "parse_url",
+        "http_build_query",
+        "parse_str",
+        "__vybe_hbq_pairs",
+    ]
+    .iter()
+    .any(|name| ast.contains(name));
 
     needs.class_helpers = ["stdClass", "__vybe_parent_class", "__php_loose_eq"]
         .iter()
@@ -3591,7 +3939,7 @@ fn php_prelude_needs(stmts: &[Statement]) -> PhpPreludeNeeds {
     .iter()
     .any(|name| ast.contains(name));
 
-    needs.copy_on_assign = ast.contains("__php_copy_on_assign");
+    needs.copy_on_assign = ast.contains("__php_copy_on_assign") || ast.contains("__php_strict_eq");
     needs
 }
 
@@ -3622,7 +3970,8 @@ fn pre_register_php_function_signatures(program: &Pair<Rule>) {
                         params: Vec::new(),
                     },
                 );
-                let mangled = php_mangle_function_name(&format!("{}.{}", ns.replace('\\', "."), name));
+                let mangled =
+                    php_mangle_function_name(&format!("{}.{}", ns.replace('\\', "."), name));
                 reg.insert(
                     mangled.clone(),
                     FuncMeta {
@@ -3666,12 +4015,7 @@ fn pre_register_php_function_signatures(program: &Pair<Rule>) {
                     _ => {}
                 }
             }
-            register_name(
-                name,
-                current_ns.as_deref(),
-                param_count,
-                required_params,
-            );
+            register_name(name, current_ns.as_deref(), param_count, required_params);
             return;
         }
         if matches!(pair.as_rule(), Rule::namespace_statement) {
@@ -3807,6 +4151,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     SIMPLE_OBJECT_FIELD_VALUES.with(|t| t.borrow_mut().clear());
     SIMPLE_STATIC_FIELD_WRITES.with(|t| t.borrow_mut().clear());
     SIMPLE_INDEX_ALIASES.with(|t| t.borrow_mut().clear());
+    SIMPLE_VAR_INDEX_ALIASES.with(|t| t.borrow_mut().clear());
     SIMPLE_DEFINED_VARS.with(|t| t.borrow_mut().clear());
     SIMPLE_CALLABLE_VARS.with(|t| t.borrow_mut().clear());
     SIMPLE_ASSERT_CALLBACK.with(|t| *t.borrow_mut() = None);
@@ -4096,17 +4441,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     });
 
-    // Snapshot trait usage map, then fold trait members into using
-    // classes. Skip member names already declared on the class (PHP
-    // trait conflict rule: class > trait). For class-vs-class duplicates
-    // across multiple traits, keep the first one (last-wins would
-    // hit the `insteadof` semantic edge cases anyway).
+    // Snapshot the trait usage maps. These no longer drive any member copying —
+    // the class declares `Augment` members and the shared pass folds them. They
+    // are read here only to compute the CLASS_REGISTRY member union, which
+    // walker-time lookups depend on. `insteadof` is absent for the same reason
+    // it does not appear below: excluding a name another trait supplies cannot
+    // change the union.
     let usages: std::collections::HashMap<String, Vec<String>> =
         TRAIT_USAGES.with(|t| t.borrow().clone());
     let aliases: std::collections::HashMap<String, Vec<(String, String, String)>> =
         TRAIT_ALIASES.with(|t| t.borrow().clone());
-    let precedences: std::collections::HashMap<String, Vec<(String, String, String)>> =
-        TRAIT_PRECEDENCES.with(|t| t.borrow().clone());
 
     // Transitively expand trait-uses-trait (`trait Outer { use Inner; }`):
     // a trait that `use`s another trait must expose the inner trait's
@@ -4225,123 +4569,90 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 let Some(used) = usages.get(name).or_else(|| usages.get(short)) else {
                     continue;
                 };
-                let mut declared: std::collections::HashSet<String> = members
-                    .iter()
-                    .filter_map(|m| match m {
-                        ClassMember::Const { name, .. } => Some(name.clone()),
-                        ClassMember::Property { name, .. } => Some(name.clone()),
-                        ClassMember::Method(stmt) => {
-                            if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
-                                Some(name.clone())
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    })
-                    .collect();
+                // The class's members are NOT modified here any more. The class
+                // declares `ClassMember::Augment` for each `use`, and the shared
+                // augmentation pass applies them — with `insteadof`, additive
+                // `as`, per-trait statics, abstract satisfaction and the
+                // conflict rule all stated once instead of once per language.
+                // See flexclassplan.md §4c-R.
+                //
+                // What still happens here is the CLASS_REGISTRY metadata, which
+                // ~15 walker sites read to answer "does this class have method
+                // X", its visibility, and its constructor's parameters. Those
+                // questions are asked DURING the walk, long before the compiler
+                // folds anything, so the registry needs the union of the class's
+                // own members and its traits'.
+                //
+                // The union is a plain name-keyed merge: `insteadof` only drops
+                // a name another trait also supplies, so it cannot change the
+                // SET, and `as` only adds one. Neither affects the answers the
+                // registry gives.
+                let mut registry_members = members.clone();
+                let mut declared: std::collections::HashSet<String> =
+                    registry_members.iter().filter_map(&member_name).collect();
                 let class_aliases: &[(String, String, String)] = aliases
                     .get(name)
                     .or_else(|| aliases.get(short))
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
-                let class_precedences: &[(String, String, String)] = precedences
-                    .get(name)
-                    .or_else(|| precedences.get(short))
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
                 for tname in used {
                     let t_key = resolve_trait_key(&trait_members, tname);
-                    if let Some(tmembers) = t_key.and_then(|k| trait_members.get(&k)) {
-                        for m in tmembers {
-                            let mname = match m {
-                                ClassMember::Const { name, .. } => Some(name.clone()),
-                                ClassMember::Property { name, .. } => Some(name.clone()),
-                                ClassMember::Method(stmt) => {
-                                    if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
-                                        Some(name.clone())
-                                    } else {
-                                        None
+                    let Some(tmembers) = t_key.and_then(|k| trait_members.get(&k)) else {
+                        continue;
+                    };
+                    for m in tmembers {
+                        let Some(mn) = member_name(m) else { continue };
+                        for (src_trait, src, dst) in class_aliases {
+                            if src != &mn
+                                || (!src_trait.is_empty() && src_trait != tname)
+                                || declared.contains(dst)
+                            {
+                                continue;
+                            }
+                            if let ClassMember::Method(stmt) = m {
+                                if let StmtKind::FunctionDecl { name, .. } = &stmt.kind {
+                                    let mut aliased = stmt.clone();
+                                    if let StmtKind::FunctionDecl { name: n, .. } = &mut aliased.kind
+                                    {
+                                        *n = dst.clone();
                                     }
-                                }
-                                _ => None,
-                            };
-                            if let Some(mn) = mname {
-                                let hidden_by_insteadof =
-                                    class_precedences.iter().any(|(winner, method, hidden)| {
-                                        method == &mn
-                                            && hidden == tname
-                                            && (winner.is_empty() || winner != tname)
-                                    });
-                                // Apply aliases before `insteadof` exclusion: PHP lets
-                                // `B::hello as helloFromB` expose the excluded method.
-                                for (src_trait, src, dst) in class_aliases {
-                                    if src != &mn {
-                                        continue;
-                                    }
-                                    if !src_trait.is_empty() && src_trait != tname {
-                                        continue;
-                                    }
-                                    if declared.contains(dst) {
-                                        continue;
-                                    }
-                                    if let ClassMember::Method(stmt) = m {
-                                        if let StmtKind::FunctionDecl {
-                                            params,
-                                            return_type,
-                                            body: mbody,
-                                            modifiers,
-                                            handles,
-                                            is_async,
-                                            is_generator,
-                                            is_sub,
-                                            ..
-                                        } = &stmt.kind
-                                        {
-                                            let mut alias_modifiers = modifiers.clone();
-                                            alias_modifiers.visibility = Visibility::Public;
-                                            let aliased = Statement::new(StmtKind::FunctionDecl {
-                                                name: dst.clone(),
-                                                params: params.clone(),
-                                                return_type: return_type.clone(),
-                                                body: mbody.clone(),
-                                                modifiers: alias_modifiers,
-                                                handles: handles.clone(),
-                                                is_async: *is_async,
-                                                is_generator: *is_generator,
-                                                is_sub: *is_sub,
-                                            });
-                                            members.push(ClassMember::Method(Box::new(aliased)));
-                                            declared.insert(dst.clone());
-                                        }
-                                    }
-                                }
-                                if hidden_by_insteadof {
-                                    continue;
-                                }
-                                let existing_abstract = members.iter().any(|existing| {
-                                    member_name(existing).as_deref() == Some(&mn)
-                                        && method_is_abstract(existing)
-                                });
-                                if existing_abstract && !method_is_abstract(m) {
-                                    members.retain(|existing| {
-                                        !(member_name(existing).as_deref() == Some(&mn)
-                                            && method_is_abstract(existing))
-                                    });
-                                    declared.remove(&mn);
-                                }
-                                if !declared.contains(&mn) {
-                                    members.push(m.clone());
-                                    declared.insert(mn.clone());
+                                    let _ = name;
+                                    registry_members.push(ClassMember::Method(aliased));
+                                    declared.insert(dst.clone());
                                 }
                             }
                         }
+                        // A concrete trait member satisfies the class's abstract
+                        // declaration, so the registry must report the concrete
+                        // one — the same rule the shared pass applies to the
+                        // real member list.
+                        if declared.contains(&mn) {
+                            let own_is_abstract = registry_members.iter().any(|existing| {
+                                member_name(existing).as_deref() == Some(&mn)
+                                    && method_is_abstract(existing)
+                            });
+                            if !(own_is_abstract && !method_is_abstract(m)) {
+                                continue;
+                            }
+                            registry_members.retain(|existing| {
+                                !(member_name(existing).as_deref() == Some(&mn)
+                                    && method_is_abstract(existing))
+                            });
+                        }
+                        registry_members.push(m.clone());
+                        declared.insert(mn);
                     }
                 }
                 let is_readonly = CLASS_REGISTRY
                     .with(|r| r.borrow().get(name).map(|m| m.is_readonly).unwrap_or(false));
-                let meta =
-                    extract_class_meta(name, parents, interfaces, modifiers, members, is_readonly);
+                let meta = extract_class_meta(
+                    name,
+                    parents,
+                    interfaces,
+                    modifiers,
+                    &registry_members,
+                    is_readonly,
+                );
                 CLASS_REGISTRY.with(|r| {
                     r.borrow_mut().insert(name.clone(), meta);
                 });
@@ -4408,6 +4719,31 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
     Ok(Some(Statement::with_span(kind, span)))
 }
 
+fn php_drop_low_precedence_assignment_bool(expr: Expression) -> Expression {
+    let Expression { kind, span } = expr;
+    match kind {
+        ExprKind::Binary { op, left, right }
+            if matches!(op, BinOp::And | BinOp::Or | BinOp::Xor)
+                && matches!(left.kind, ExprKind::Assign { .. }) =>
+        {
+            let ExprKind::Assign { target, .. } = &left.kind else {
+                unreachable!();
+            };
+            let assigned_value = (**target).clone();
+            let bool_expr = Expression::with_span(
+                ExprKind::Binary {
+                    op,
+                    left: Box::new(assigned_value),
+                    right,
+                },
+                span.clone(),
+            );
+            Expression::with_span(ExprKind::Sequence(vec![*left, bool_expr]), span)
+        }
+        kind => Expression::with_span(kind, span),
+    }
+}
+
 fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String> {
     let kind = match rule {
         Rule::empty_statement => StmtKind::Empty,
@@ -4435,7 +4771,7 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
 
         Rule::expression_statement => {
             let expr = walk_expression(pair.into_inner().next().unwrap())?;
-            StmtKind::Expr(expr)
+            StmtKind::Expr(php_drop_low_precedence_assignment_bool(expr))
         }
 
         Rule::const_statement => {
@@ -4614,9 +4950,7 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
                 };
                 match inner.as_rule() {
                     Rule::use_item => {
-                        if let Some(import) =
-                            php_use_item_to_import(inner, None, use_is_function)
-                        {
+                        if let Some(import) = php_use_item_to_import(inner, None, use_is_function) {
                             note_php_use_import(import);
                         }
                     }
@@ -4652,7 +4986,8 @@ fn walk_statement_kind(pair: Pair<Rule>, rule: Rule) -> Result<StmtKind, String>
             let body_pair = inner.next().unwrap();
             let body_source = body_pair.as_str().to_string();
             let raw_cond = walk_expression(cond_pair)?;
-            let source_drains_place = php_while_source_drains_simple_array_place(&raw_cond, &body_source);
+            let source_drains_place =
+                php_while_source_drains_simple_array_place(&raw_cond, &body_source);
             let body = walk_statement_into_body(body_pair)?;
             let cond = if source_drains_place {
                 php_array_length_positive_condition(raw_cond)
@@ -4809,9 +5144,17 @@ fn walk_statement_into_body(pair: Pair<Rule>) -> Result<Vec<Statement>, String> 
 // ─── Control flow ──────────────────────────────────────────────────────────
 
 fn php_truthy_condition(expr: Expression) -> Expression {
+    if php_expr_is_boolean_result(&expr) {
+        return expr;
+    }
     if !matches!(
         expr.kind,
-        ExprKind::Ident(_) | ExprKind::Member { .. } | ExprKind::Index { .. } | ExprKind::Array(_)
+        ExprKind::Ident(_)
+            | ExprKind::Member { .. }
+            | ExprKind::Index { .. }
+            | ExprKind::Array(_)
+            | ExprKind::Call { .. }
+            | ExprKind::Sequence(_)
     ) {
         return expr;
     }
@@ -4843,7 +5186,10 @@ fn php_while_source_drains_simple_array_place(expr: &Expression, body_source: &s
     let Some(name) = php_simple_place_source_name(expr) else {
         return false;
     };
-    let compact: String = body_source.chars().filter(|ch| !ch.is_whitespace()).collect();
+    let compact: String = body_source
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
     compact.contains(&format!("array_shift({name}"))
         || compact.contains(&format!("array_pop({name}"))
 }
@@ -4868,7 +5214,10 @@ fn php_array_length_positive_condition(expr: Expression) -> Expression {
                 },
                 span.clone(),
             )),
-            right: Box::new(Expression::with_span(ExprKind::Lit(Literal::Int(0)), span.clone())),
+            right: Box::new(Expression::with_span(
+                ExprKind::Lit(Literal::Int(0)),
+                span.clone(),
+            )),
         },
         span,
     )
@@ -5054,9 +5403,7 @@ fn php_same_simple_place(left: &Expression, right: &Expression) -> bool {
                 null_safe: b_null_safe,
             },
         ) => {
-            a_field == b_field
-                && a_null_safe == b_null_safe
-                && php_same_simple_place(a_obj, b_obj)
+            a_field == b_field && a_null_safe == b_null_safe && php_same_simple_place(a_obj, b_obj)
         }
         (
             ExprKind::Index {
@@ -5131,8 +5478,10 @@ fn php_lower_loop_control_levels_stmt(
                 let label = target.label;
                 let mut used = std::collections::HashSet::new();
                 used.insert(label.clone());
-                let continue_stmt =
-                    Statement::with_span(StmtKind::Continue(ContinueTarget::Label(label)), span.clone());
+                let continue_stmt = Statement::with_span(
+                    StmtKind::Continue(ContinueTarget::Label(label)),
+                    span.clone(),
+                );
                 if let Some(update) = target.continue_update {
                     (
                         Statement::with_span(
@@ -5309,8 +5658,7 @@ fn php_lower_loop_control_levels_stmt(
             let catches = catches
                 .into_iter()
                 .map(|mut catch| {
-                    let (body, catch_used) =
-                        php_lower_loop_control_levels_block(catch.body, stack);
+                    let (body, catch_used) = php_lower_loop_control_levels_block(catch.body, stack);
                     used.extend(catch_used);
                     catch.body = body;
                     catch
@@ -5621,6 +5969,19 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
         body.insert(0, prefix_stmt);
     }
     let mut iter_expr = iter.ok_or("foreach: missing iterable")?;
+    if !target_is_by_ref {
+        let literal_iter_expr = match &iter_expr.kind {
+            ExprKind::Ident(name) => {
+                lookup_simple_value_var(name).unwrap_or_else(|| iter_expr.clone())
+            }
+            _ => iter_expr.clone(),
+        };
+        if let Some(block) =
+            php_literal_foreach_unroll(&literal_iter_expr, key.as_deref(), &var, &body)
+        {
+            return Ok(block);
+        }
+    }
     if target_is_by_ref {
         if let Some(block) =
             php_foreach_by_ref_rewrite(&iter_expr, &var, body.clone(), target_suffix)
@@ -5743,6 +6104,128 @@ fn php_foreach_value_iter_needs_entries(iter: &Expression) -> bool {
         ExprKind::Ident(name) if php_object_var_has_field_writes(name) => true,
         _ => php_object_class_from_expr(iter)
             .is_some_and(|class_name| !php_expr_is_user_iterator(iter) || class_name == "stdClass"),
+    }
+}
+
+fn php_literal_foreach_unroll(
+    iter: &Expression,
+    key_var: Option<&str>,
+    value_var: &str,
+    body: &[Statement],
+) -> Option<StmtKind> {
+    let ExprKind::Array(items) = &iter.kind else {
+        return None;
+    };
+    if items.iter().any(|item| item.spread) || php_body_has_loop_control(body) {
+        return None;
+    }
+    let span = iter.span.clone();
+    let mut stmts = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        stmts.push(Statement::with_span(
+            StmtKind::Expr(Expression::with_span(
+                ExprKind::Assign {
+                    target: Box::new(Expression::with_span(
+                        ExprKind::Ident(value_var.to_string()),
+                        span.clone(),
+                    )),
+                    value: Box::new(item.value.clone()),
+                },
+                span.clone(),
+            )),
+            span.clone(),
+        ));
+        if let Some(key_name) = key_var {
+            let key_value = item.key.clone().unwrap_or_else(|| {
+                Expression::with_span(ExprKind::Lit(Literal::Int(index as i64)), span.clone())
+            });
+            stmts.push(Statement::with_span(
+                StmtKind::Expr(Expression::with_span(
+                    ExprKind::Assign {
+                        target: Box::new(Expression::with_span(
+                            ExprKind::Ident(key_name.to_string()),
+                            span.clone(),
+                        )),
+                        value: Box::new(key_value),
+                    },
+                    span.clone(),
+                )),
+                span.clone(),
+            ));
+        }
+        stmts.extend(body.iter().cloned());
+    }
+    Some(StmtKind::Block(stmts))
+}
+
+fn php_body_has_loop_control(body: &[Statement]) -> bool {
+    body.iter().any(php_stmt_has_loop_control)
+}
+
+fn php_stmt_has_loop_control(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Break(_) | StmtKind::Continue(_) => true,
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            php_body_has_loop_control(body)
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            php_body_has_loop_control(then_body)
+                || elifs
+                    .iter()
+                    .any(|(_, body)| php_body_has_loop_control(body))
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| php_body_has_loop_control(body))
+        }
+        StmtKind::While {
+            body, else_body, ..
+        } => {
+            php_body_has_loop_control(body)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| php_body_has_loop_control(body))
+        }
+        StmtKind::DoWhile { body, .. } => php_body_has_loop_control(body),
+        StmtKind::For { body, .. } => php_body_has_loop_control(body),
+        StmtKind::ForIn {
+            body, else_body, ..
+        } => {
+            php_body_has_loop_control(body)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| php_body_has_loop_control(body))
+        }
+        StmtKind::Switch { cases, default, .. } => {
+            cases
+                .iter()
+                .any(|case| php_body_has_loop_control(&case.body))
+                || default
+                    .as_ref()
+                    .is_some_and(|body| php_body_has_loop_control(body))
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            php_body_has_loop_control(body)
+                || catches
+                    .iter()
+                    .any(|catch| php_body_has_loop_control(&catch.body))
+                || else_body
+                    .as_ref()
+                    .is_some_and(|body| php_body_has_loop_control(body))
+                || finally
+                    .as_ref()
+                    .is_some_and(|body| php_body_has_loop_control(body))
+        }
+        _ => false,
     }
 }
 
@@ -6423,7 +6906,10 @@ fn body_contains_yield(stmts: &[Statement]) -> bool {
 
 fn php_backslash_display(expr: Expression, span: &Span) -> Expression {
     if let ExprKind::Lit(Literal::Str(name)) = &expr.kind {
-        return Expression::with_span(ExprKind::Lit(Literal::Str(name.replace('.', "\\"))), span.clone());
+        return Expression::with_span(
+            ExprKind::Lit(Literal::Str(name.replace('.', "\\"))),
+            span.clone(),
+        );
     }
 
     Expression::with_span(
@@ -7104,9 +7590,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     push_pending_class_hooks(&name, pending_hooks);
     let walk_result: Result<(), String> = (|| {
         for p in deferred_members {
-            if let Some(member) = walk_class_member(p)? {
-                members.push(member);
-            }
+            members.extend(walk_class_member(p)?);
         }
         Ok(())
     })();
@@ -7119,13 +7603,25 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     });
     walk_result?;
     drain_promoted_constructor_fields(&mut members);
-    fold_available_trait_members_into_class(&name, &mut members);
     if let Some(parent) = parents.first() {
         fold_inherited_fields_into_class(&name, parent, &mut members, &span);
         inject_php_parent_method_snapshots(&name, parent, &mut members, &span);
     }
+    // Trait members are NOT copied into the class. The class declares a
+    // `ClassMember::Augment` per `use`, and the shared augmentation pass applies
+    // them once (flexclassplan.md §4c-R). Copying here as well would make the
+    // class its OWN supplier of every trait method, and since a class's own
+    // member beats an augmentation, the shared pass would then skip all of them
+    // — including the conflict PHP requires to be reported.
+    //
+    // The union is still needed for the three walk-time questions below, which
+    // are all asked before the compiler folds anything: which properties the
+    // class declares, whether it has a constructor at all (a trait may supply
+    // one), and its ReflectionClass metadata.
+    let mut members_with_traits = members.clone();
+    fold_available_trait_members_into_class(&name, &mut members_with_traits);
     CLASS_DECLARED_PROPERTIES.with(|r| {
-        let properties = members
+        let properties = members_with_traits
             .iter()
             .filter_map(|member| match member {
                 ClassMember::Property { name, .. } => Some(name.clone()),
@@ -7134,10 +7630,11 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             .collect::<Vec<_>>();
         r.borrow_mut().insert(name.clone(), properties);
     });
-    if !class_members_have_constructor(&members) {
+    if !class_members_have_constructor(&members_with_traits) {
         if let Some(parent) = parents.first() {
             if let Some(ctor) = synthesize_inherited_constructor(parent, &span) {
                 members.push(ctor);
+                members_with_traits.push(members.last().unwrap().clone());
             }
         }
     }
@@ -7148,7 +7645,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         &parents,
         &interfaces,
         &modifiers,
-        &members,
+        &members_with_traits,
         is_readonly_class,
     );
     CLASS_REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), meta));
@@ -7241,13 +7738,13 @@ fn extract_class_meta(
                     is_readonly: is_readonly || modifiers.is_readonly,
                     is_static: modifiers.is_static,
                 });
-                if matches!(modifiers.visibility, Visibility::Public | Visibility::Internal)
-                    && name != "__php_lsb_class"
+                if matches!(
+                    modifiers.visibility,
+                    Visibility::Public | Visibility::Internal
+                ) && name != "__php_lsb_class"
                 {
-                    field_defaults.push((
-                        name.clone(),
-                        init.clone().unwrap_or_else(Expression::null),
-                    ));
+                    field_defaults
+                        .push((name.clone(), init.clone().unwrap_or_else(Expression::null)));
                 }
             }
             ClassMember::Const { name, value, .. } => {
@@ -7264,9 +7761,10 @@ fn extract_class_meta(
             } => {
                 let required = params.iter().filter(|p| p.default.is_none()).count();
                 constructor_params = params.iter().map(|p| p.name.clone()).collect();
-                constructor_rest_index = params.iter().position(|p| p.is_rest).or_else(|| {
-                    CONSTRUCTOR_REST_INDICES.with(|r| r.borrow().get(name).copied())
-                });
+                constructor_rest_index = params
+                    .iter()
+                    .position(|p| p.is_rest)
+                    .or_else(|| CONSTRUCTOR_REST_INDICES.with(|r| r.borrow().get(name).copied()));
                 for stmt in body {
                     let mut initialized = Vec::new();
                     php_collect_this_assigned_fields_from_stmt(stmt, &mut initialized);
@@ -7686,9 +8184,9 @@ fn class_property_declaring_class(c: &str, property: &str) -> Option<String> {
     names.extend(class_parent_chain(c));
     names.into_iter().find(|n| {
         CLASS_REGISTRY.with(|r| {
-            r.borrow().get(n).is_some_and(|m| {
-                m.fields.iter().any(|field| field.name == property)
-            })
+            r.borrow()
+                .get(n)
+                .is_some_and(|m| m.fields.iter().any(|field| field.name == property))
         })
     })
 }
@@ -8356,7 +8854,9 @@ fn class_mangled_object_vars(c: &str, object: Expression, span: &Span) -> Vec<Ar
                     let key = match field.visibility {
                         Visibility::Public | Visibility::Internal => field.name.clone(),
                         Visibility::Protected => format!("\0*\0{}", field.name),
-                        Visibility::Private => format!("\0{}\0{}", class_name.replace('.', "\\"), field.name),
+                        Visibility::Private => {
+                            format!("\0{}\0{}", class_name.replace('.', "\\"), field.name)
+                        }
                     };
                     result.push(ArrayElement {
                         key: Some(Expression::with_span(
@@ -8438,9 +8938,7 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     push_class_context(&name);
     let walk_result: Result<(), String> = (|| {
         for p in deferred {
-            if let Some(m) = walk_class_member(p)? {
-                class_members.push(m);
-            }
+            class_members.extend(walk_class_member(p)?);
         }
         Ok(())
     })();
@@ -8485,9 +8983,7 @@ fn walk_trait_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     push_class_context(&name);
     let walk_result: Result<(), String> = (|| {
         for p in deferred_members {
-            if let Some(member) = walk_class_member(p)? {
-                members.push(member);
-            }
+            members.extend(walk_class_member(p)?);
         }
         Ok(())
     })();
@@ -8567,9 +9063,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     });
                 }
                 Rule::class_constant | Rule::method_declaration | Rule::use_trait => {
-                    if let Some(m) = walk_class_member(p)? {
-                        body_members.push(m);
-                    }
+                    body_members.extend(walk_class_member(p)?);
                 }
                 _ => {}
             }
@@ -8793,21 +9287,35 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     })
 }
 
-fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
+/// Returns a LIST because one `use A, B { … };` declares one augmentation per
+/// trait, each carrying its own adaptations. Every other member kind yields
+/// exactly one entry, or none.
+fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     match pair.as_rule() {
-        Rule::empty_statement => Ok(None),
+        Rule::empty_statement => Ok(Vec::new()),
         Rule::use_trait => {
             // `use TraitName(, OtherTrait)*;` or
             // `use TraitName(, OtherTrait)* { adaptations }` inside a
-            // class. Record trait names + alias adaptations against
-            // the enclosing class so the post-pass in `parse()` can
-            // copy trait const + method members and add aliases on
-            // the using class. Returns `None` because the trait usage
-            // itself is metadata; actual members get injected later.
+            // class.
+            //
+            // Produces one `ClassMember::Augment` per named trait, carrying the
+            // adaptations that apply to it. The shared augmentation pass folds
+            // them (flexclassplan.md §4c-R); this walker states what the source
+            // said and folds nothing.
+            //
+            // The thread-locals are still recorded because `CLASS_REGISTRY`
+            // metadata — read by ~15 walker sites for method lookup, visibility
+            // and constructor params — must see the class's members UNION its
+            // traits', and that union is computed in `parse()` from these maps.
             if let Some(class_name) = current_class_name() {
                 let mut trait_names: Vec<String> = Vec::new();
                 let mut aliases: Vec<(String, String, String)> = Vec::new();
                 let mut precedences: Vec<(String, String, String)> = Vec::new();
+                // Adaptations paired with the trait each one applies to. An
+                // empty scope means unqualified (`run as go;`), which PHP
+                // applies to every trait in this `use`.
+                let mut adaptations: Vec<AugmentAdjustment> = Vec::new();
+                let mut adaptation_scope: Vec<String> = Vec::new();
                 for p in pair.into_inner() {
                     match p.as_rule() {
                         Rule::qualified_name => trait_names.push(p.as_str().to_string()),
@@ -8815,14 +9323,16 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                             // Two forms:
                             //   trait_method_ref ~ "insteadof" ~ qualified_name+ ~ ";"
                             //   trait_method_ref ~ "as" ~ visibility? ~ method_ident? ~ ";"
-                            // We only care about the `as` form here —
-                            // `insteadof` is handled implicitly by the
-                            // first-trait-wins copy order.
+                            // Both are recorded now: `as` is ADDITIVE (the
+                            // member stays bound under its own name too) and
+                            // `insteadof` excludes it from the losing trait,
+                            // which is why the two compose.
                             let raw = p.as_str();
                             let is_alias = raw.contains(" as ");
                             let mut method_trait: String = String::new();
                             let mut method_name: Option<String> = None;
                             let mut alias_name: Option<String> = None;
+                            let mut alias_visibility: Option<Visibility> = None;
                             let mut hidden_traits: Vec<String> = Vec::new();
                             for q in p.into_inner() {
                                 match q.as_rule() {
@@ -8849,6 +9359,10 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                                     Rule::method_ident => {
                                         alias_name = Some(q.as_str().to_string());
                                     }
+                                    Rule::trait_visibility => {
+                                        alias_visibility =
+                                            Some(parse_visibility(q.as_str(), Visibility::Public));
+                                    }
                                     Rule::qualified_name if !is_alias => {
                                         hidden_traits.push(q.as_str().to_string());
                                     }
@@ -8856,11 +9370,37 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                                 }
                             }
                             if is_alias {
-                                if let (Some(src), Some(dst)) = (method_name, alias_name) {
-                                    aliases.push((method_trait, src, dst));
+                                if let Some(src) = method_name {
+                                    // `A::run as protected;` renames nothing and
+                                    // only changes visibility, so the binding
+                                    // keeps its own name. Recording it needs an
+                                    // adjustment with `rename_to: None`, which
+                                    // the legacy `(trait, src, dst)` tuple
+                                    // cannot express — it dropped this form
+                                    // entirely, and forced every alias public.
+                                    adaptations.push(AugmentAdjustment {
+                                        member: src.clone(),
+                                        rename_to: alias_name.clone(),
+                                        visibility: alias_visibility,
+                                        exclude: false,
+                                    });
+                                    adaptation_scope.push(method_trait.clone());
+                                    if let Some(dst) = alias_name {
+                                        aliases.push((method_trait, src, dst));
+                                    }
                                 }
                             } else if let Some(src) = method_name {
                                 for hidden in hidden_traits {
+                                    // `A::run insteadof B` — A wins, so it is
+                                    // B's copy that is dropped. The exclusion
+                                    // belongs to the HIDDEN trait's clause.
+                                    adaptations.push(AugmentAdjustment {
+                                        member: src.clone(),
+                                        rename_to: None,
+                                        visibility: None,
+                                        exclude: true,
+                                    });
+                                    adaptation_scope.push(hidden.clone());
                                     precedences.push((method_trait.clone(), src.clone(), hidden));
                                 }
                             }
@@ -8868,6 +9408,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                         _ => {}
                     }
                 }
+                let used_traits = trait_names.clone();
                 if !trait_names.is_empty() {
                     TRAIT_USAGES.with(|t| {
                         t.borrow_mut()
@@ -8892,8 +9433,28 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                             .extend(precedences);
                     });
                 }
+                // One declaration per trait. An adaptation qualified with a
+                // trait name (`B::hello as hi`) belongs only to that trait's
+                // clause; an unqualified one (`hello as hi`) applies to every
+                // trait in this `use`, which is PHP's rule.
+                return Ok(used_traits
+                    .into_iter()
+                    .map(|trait_name| {
+                        let adjustments = adaptations
+                            .iter()
+                            .zip(&adaptation_scope)
+                            .filter(|(_, scope)| scope.is_empty() || *scope == &trait_name)
+                            .map(|(adjustment, _)| adjustment.clone())
+                            .collect();
+                        ClassMember::Augment(AugmentDecl {
+                            from: trait_name,
+                            via_field: None,
+                            adjustments,
+                        })
+                    })
+                    .collect());
             }
-            Ok(None)
+            Ok(Vec::new())
         }
         Rule::class_constant => {
             let attrs = collect_leading_attributes(&pair)?;
@@ -8917,12 +9478,12 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                     });
                 }
             }
-            Ok(Some(ClassMember::Const {
+            Ok(vec![ClassMember::Const {
                 name,
                 type_hint: None,
                 value: value.unwrap_or_else(Expression::null),
                 visibility,
-            }))
+            }])
         }
         Rule::property_declaration => {
             let attrs = collect_leading_attributes(&pair)?;
@@ -8964,23 +9525,23 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                 }
             }
             if getter.is_some() || setter.is_some() {
-                Ok(Some(ClassMember::Property {
+                Ok(vec![ClassMember::Property {
                     name,
                     type_hint,
                     getter,
                     setter,
                     is_auto: false,
                     modifiers,
-                }))
+                }])
             } else {
-                Ok(Some(ClassMember::Field {
+                Ok(vec![ClassMember::Field {
                     name,
                     type_hint,
                     init,
                     modifiers,
                     with_events: false,
                     array_bounds: None,
-                }))
+                }])
             }
         }
         Rule::method_declaration => {
@@ -9164,14 +9725,14 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                         param.is_rest = false;
                     }
                 }
-                return Ok(Some(ClassMember::Constructor {
+                return Ok(vec![ClassMember::Constructor {
                     name: None,
                     params,
                     body,
                     base_args: None,
                     initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
                     visibility: modifiers.visibility,
-                }));
+                }]);
             }
 
             // Build a Method wrapping a FunctionDecl.
@@ -9198,9 +9759,9 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
                 is_generator,
                 is_sub: false,
             });
-            Ok(Some(ClassMember::Method(Box::new(stmt))))
+            Ok(vec![ClassMember::Method(Box::new(stmt))])
         }
-        _ => Ok(None),
+        _ => Ok(Vec::new()),
     }
 }
 
@@ -9248,7 +9809,6 @@ fn transparent_expression_child<'i>(pair: &Pair<'i, Rule>) -> Option<Pair<'i, Ru
     match pair.as_rule() {
         Rule::expression
         | Rule::assignment_expression
-        | Rule::logical_or_expression
         | Rule::ternary_expression
         | Rule::null_coalesce_expression
         | Rule::logic_or_expression
@@ -9258,6 +9818,7 @@ fn transparent_expression_child<'i>(pair: &Pair<'i, Rule>) -> Option<Pair<'i, Ru
         | Rule::bit_and_expression
         | Rule::equality_expression
         | Rule::comparison_expression
+        | Rule::concat_expression
         | Rule::shift_expression
         | Rule::additive_expression
         | Rule::multiplicative_expression
@@ -9304,7 +9865,9 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                 None => Ok(left),
             };
         }
-        Rule::logical_or_expression
+        Rule::logical_word_or_expression
+        | Rule::logical_word_xor_expression
+        | Rule::logical_word_and_expression
         | Rule::logic_or_expression
         | Rule::logic_and_expression
         | Rule::bit_or_expression
@@ -9312,6 +9875,7 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
         | Rule::bit_and_expression
         | Rule::equality_expression
         | Rule::comparison_expression
+        | Rule::concat_expression
         | Rule::shift_expression
         | Rule::additive_expression
         | Rule::multiplicative_expression => return walk_left_assoc_binary(pair),
@@ -9552,8 +10116,7 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                             matches!(
                                 class_name.trim_start_matches('\\'),
                                 "SplObjectStorage" | "WeakMap"
-                            ) ||
-                            class_all_interfaces(&class_name)
+                            ) || class_all_interfaces(&class_name)
                                 .iter()
                                 .any(|iface| iface.trim_start_matches('\\') == "ArrayAccess")
                                 || class_has_method(&class_name, "offsetExists")
@@ -9625,12 +10188,13 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                             null_safe,
                         } if !*null_safe
                             && php_object_class_from_expr(object)
-                                .and_then(|class_name| {
-                                    class_field_visibility(&class_name, field)
-                                })
+                                .and_then(|class_name| class_field_visibility(&class_name, field))
                                 .is_some_and(|(owner, visibility)| {
                                     !php_field_visible_from_current(&owner, visibility)
-                                }) => Expression::null(),
+                                }) =>
+                        {
+                            Expression::null()
+                        }
                         ExprKind::Member {
                             object,
                             field,
@@ -9654,7 +10218,9 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                                             },
                                             span.clone(),
                                         )),
-                                        args: vec![Argument::positional(Expression::string(&field))],
+                                        args: vec![Argument::positional(Expression::string(
+                                            &field,
+                                        ))],
                                         optional: false,
                                     },
                                     span.clone(),
@@ -9773,7 +10339,22 @@ fn walk_expression(mut pair: Pair<Rule>) -> Result<Expression, String> {
                     *bd = bd.saturating_sub(1);
                 });
                 let walked = walked?;
-                stmts.push(build_unset_rewrite(walked, &span));
+                // Build the rewrite BEFORE invalidating. `build_unset_rewrite`
+                // asks what class the variable holds, in order to run
+                // `__destruct`, and that answer comes from the tracked value —
+                // which invalidating first had already erased, so the
+                // destructor branch could never be reached.
+                let rewrite = build_unset_rewrite(walked.clone(), &span);
+                match &walked.kind {
+                    ExprKind::Ident(name) => invalidate_simple_var_value(name),
+                    ExprKind::Index { object, .. } => {
+                        if let ExprKind::Ident(name) = &object.kind {
+                            invalidate_simple_var_value(name);
+                        }
+                    }
+                    _ => {}
+                }
+                stmts.push(rewrite);
             }
             if stmts.is_empty() {
                 ExprKind::Lit(Literal::Null)
@@ -9964,21 +10545,34 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
             && php_literal_array_compare(&left, &right, true).is_some()
         {
             let eq = php_literal_array_compare(&left, &right, true).unwrap_or(false);
-            left = Expression::with_span(
-                ExprKind::Lit(Literal::Bool(if op == BinOp::StrictNotEq {
-                    !eq
-                } else {
-                    eq
-                })),
-                span.clone(),
-            );
+            let value = if op == BinOp::StrictNotEq { !eq } else { eq };
+            left = php_bool_for_output_context(value, span.clone());
         } else if matches!(op, BinOp::StrictEq | BinOp::StrictNotEq)
             && matches!((&left.kind, &right.kind), (ExprKind::Array(a), ExprKind::Array(b)) if a.is_empty() && b.is_empty())
         {
-            left = Expression::with_span(
-                ExprKind::Lit(Literal::Bool(op == BinOp::StrictEq)),
+            left = php_bool_for_output_context(op == BinOp::StrictEq, span.clone());
+        } else if matches!(op, BinOp::StrictEq | BinOp::StrictNotEq)
+            && (php_expr_may_be_arrayish(&left) || php_expr_may_be_arrayish(&right))
+        {
+            let eq_call = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(Expression::ident("__php_strict_eq")),
+                    args: vec![Argument::positional(left), Argument::positional(right)],
+                    optional: false,
+                },
                 span.clone(),
             );
+            left = if op == BinOp::StrictNotEq {
+                Expression::with_span(
+                    ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(eq_call),
+                    },
+                    span.clone(),
+                )
+            } else {
+                eq_call
+            };
         } else if matches!(op, BinOp::Eq | BinOp::NotEq) {
             if let (Some(left_time), Some(right_time)) = (
                 php_datetime_time_expr(left.clone(), &span),
@@ -10012,9 +10606,24 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
                 );
                 continue;
             }
-            if let Some(eq) = php_literal_array_compare(&left, &right, false) {
+            if let Some(eq) = php_known_array_compare(&left, &right, false) {
+                left = php_bool_for_output_context(
+                    if op == BinOp::NotEq { !eq } else { eq },
+                    span.clone(),
+                );
+                continue;
+            }
+            if php_expr_is_numeric_result(&left) && php_expr_is_numeric_result(&right) {
                 left = Expression::with_span(
-                    ExprKind::Lit(Literal::Bool(if op == BinOp::NotEq { !eq } else { eq })),
+                    ExprKind::Binary {
+                        op: if op == BinOp::NotEq {
+                            BinOp::StrictNotEq
+                        } else {
+                            BinOp::StrictEq
+                        },
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
                     span.clone(),
                 );
                 continue;
@@ -10118,6 +10727,10 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
                 span.clone(),
             );
         } else if op == BinOp::Spaceship {
+            if let Some(cmp) = php_literal_array_spaceship(&left, &right) {
+                left = Expression::with_span(ExprKind::Lit(Literal::Int(cmp)), span.clone());
+                continue;
+            }
             if let (Some((left_class, left_args)), Some((right_class, right_args))) = (
                 php_new_class_and_args_from_expr(&left),
                 php_new_class_and_args_from_expr(&right),
@@ -10184,6 +10797,44 @@ fn php_expr_is_literal_zero(expr: &Expression) -> bool {
     }
 }
 
+fn php_expr_is_numeric_result(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(_) | Literal::BigInt(_) | Literal::Float(_)) => true,
+        ExprKind::Unary { op, expr } if matches!(op, UnaryOp::Neg | UnaryOp::Pos) => {
+            php_expr_is_numeric_result(expr)
+        }
+        ExprKind::Binary { op, .. } => matches!(
+            op,
+            BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::Mod
+                | BinOp::Pow
+                | BinOp::BitAnd
+                | BinOp::BitOr
+                | BinOp::BitXor
+                | BinOp::Shl
+                | BinOp::Shr
+        ),
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(name) if matches!(name.as_str(), "intdiv" | "count")
+        ),
+        _ => false,
+    }
+}
+
+fn php_expr_may_be_arrayish(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Array(_) => true,
+        ExprKind::Ident(name) => lookup_simple_value_var(name)
+            .as_ref()
+            .is_some_and(php_expr_may_be_arrayish),
+        _ => false,
+    }
+}
+
 fn php_concat_operand_coerce(expr: Expression, span: &Span) -> Expression {
     match &expr.kind {
         ExprKind::Lit(Literal::Str(_)) => expr,
@@ -10203,6 +10854,29 @@ fn php_concat_operand_coerce(expr: Expression, span: &Span) -> Expression {
 /// — used for `.` concat and string coercion paths to satisfy the
 /// `Stringable` contract without compiler-side runtime probes.
 fn php_tostring_coerce(expr: Expression, span: &Span) -> Expression {
+    if matches!(
+        &expr.kind,
+        ExprKind::Binary {
+            op: BinOp::And | BinOp::Or | BinOp::Xor,
+            ..
+        }
+    ) {
+        let bool_expr = Expression::with_span(
+            ExprKind::Ternary {
+                cond: Box::new(php_truthy_condition(expr)),
+                then: Box::new(Expression::with_span(
+                    ExprKind::Lit(Literal::Bool(true)),
+                    span.clone(),
+                )),
+                else_: Box::new(Expression::with_span(
+                    ExprKind::Lit(Literal::Bool(false)),
+                    span.clone(),
+                )),
+            },
+            span.clone(),
+        );
+        return php_tostring_coerce(bool_expr, span);
+    }
     let v_ident = || Expression::with_span(ExprKind::Ident("v".to_string()), span.clone());
     let ts_member = Expression::with_span(
         ExprKind::Member {
@@ -10379,17 +11053,33 @@ fn build_unset_rewrite(target: Expression, span: &Span) -> Expression {
         ExprKind::Ident(name) => {
             if let Some(class_name) = php_object_class_from_expr(&target) {
                 if class_has_destructor(&class_name) {
-                    let mut seq: Vec<Expression> = class_destructor_body(&class_name)
-                        .unwrap_or_default()
-                        .iter()
-                        .filter_map(|stmt| {
-                            let rebound = bind_this_in_stmt(stmt, name);
-                            match rebound.kind {
-                                StmtKind::Expr(expr) => Some(expr),
-                                _ => None,
-                            }
-                        })
-                        .collect();
+                    // CALL `__destruct` — it is bound on the object under its
+                    // source name — rather than inlining its body.
+                    //
+                    // The body used to be spliced in statement by statement,
+                    // keeping only `StmtKind::Expr` and silently dropping every
+                    // other kind. `echo 'closed';` is `StmtKind::Echo`, so the
+                    // most ordinary destructor there is compiled to nothing.
+                    // A call carries the whole body, whatever is in it, and
+                    // binds `$this` the normal way.
+                    let mut seq: Vec<Expression> = vec![Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(Expression::with_span(
+                                ExprKind::Member {
+                                    object: Box::new(Expression::with_span(
+                                        ExprKind::Ident(name.clone()),
+                                        span.clone(),
+                                    )),
+                                    field: "__destruct".to_string(),
+                                    null_safe: false,
+                                },
+                                span.clone(),
+                            )),
+                            args: vec![],
+                            optional: false,
+                        },
+                        span.clone(),
+                    )];
                     let clear_var = Expression::with_span(
                         ExprKind::Assign {
                             target: Box::new(Expression::with_span(
@@ -11681,7 +12371,10 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                         class_name.trim_start_matches('\\'),
                         "SplObjectStorage" | "WeakMap"
                     );
-                    if is_spl_map || implements_array_access || class_has_method(&class_name, "offsetSet") {
+                    if is_spl_map
+                        || implements_array_access
+                        || class_has_method(&class_name, "offsetSet")
+                    {
                         let tmp_recv = next_tmp_name("offset_set_recv");
                         let tmp_key = next_tmp_name("offset_set_key");
                         let tmp_val = next_tmp_name("offset_set_val");
@@ -11888,6 +12581,19 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
         }
         if op == "=" {
             if let ExprKind::Ident(name) = &lhs.kind {
+                if let ExprKind::Unary {
+                    op: UnaryOp::AddrOf,
+                    expr: rhs_ref,
+                } = &rhs.kind
+                {
+                    if let Some((rhs_obj_name, rhs_key)) = simple_index_reference_target(rhs_ref) {
+                        note_simple_var_index_alias(name, &rhs_obj_name, &rhs_key);
+                    } else {
+                        unnote_simple_var_index_alias(name);
+                    }
+                } else {
+                    unnote_simple_var_index_alias(name);
+                }
                 note_simple_defined_var(name);
                 note_simple_array_var(name, &rhs);
                 note_simple_string_var(name, &rhs);
@@ -11978,6 +12684,15 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
                 }
             }
         }
+        let lhs = if op != "=" {
+            if let ExprKind::Ident(name) = &lhs.kind {
+                php_var_index_alias_expr(name, &span).unwrap_or(lhs)
+            } else {
+                lhs
+            }
+        } else {
+            lhs
+        };
         let kind = match op {
             "=" => ExprKind::Assign {
                 target: Box::new(lhs),
@@ -12196,6 +12911,11 @@ fn walk_unary(pair: Pair<Rule>) -> Result<Expression, String> {
         // comment for the full rationale.
         if op_str == "++" || op_str == "--" {
             let expr = walk_expression_as_assign_target(inner.next().unwrap())?;
+            let expr = if let ExprKind::Ident(name) = &expr.kind {
+                php_var_index_alias_expr(name, &span).unwrap_or(expr)
+            } else {
+                expr
+            };
             if let ExprKind::Index { object, .. } = &expr.kind {
                 if php_known_scalar_array_receiver(object) {
                     return Ok(Expression::with_span(
@@ -12247,6 +12967,20 @@ fn walk_unary(pair: Pair<Rule>) -> Result<Expression, String> {
             }
         }
         let op = parse_unary_op(op_str);
+        if op == UnaryOp::BitNot {
+            if let Some(value) = php_literal_int_value(&expr) {
+                return Ok(Expression::with_span(
+                    ExprKind::Lit(Literal::Int(!value)),
+                    span,
+                ));
+            }
+            if let Some(value) = php_literal_string_bitnot(&expr) {
+                return Ok(Expression::with_span(
+                    ExprKind::Lit(Literal::Str(value)),
+                    span,
+                ));
+            }
+        }
         Ok(Expression::with_span(
             ExprKind::Unary {
                 op,
@@ -12760,7 +13494,10 @@ fn walk_cast(pair: Pair<Rule>) -> Result<Expression, String> {
         // Rewrite to `!empty($x)` which handles PHP truthiness.
         if name == "boolval" {
             if let Some(value) = php_literal_truthy(&expr) {
-                return Ok(Expression::with_span(ExprKind::Lit(Literal::Bool(value)), span));
+                return Ok(Expression::with_span(
+                    ExprKind::Lit(Literal::Bool(value)),
+                    span,
+                ));
             }
             return Ok(Expression::with_span(
                 ExprKind::Unary {
@@ -13345,17 +14082,11 @@ fn apply_postfix(
                             },
                             "getAttributes",
                         ) => {
-                            let declaring_class = class_method_declaring_class(
-                                &class_name,
-                                &method_name,
-                            )
-                            .unwrap_or_else(|| class_name.clone());
+                            let declaring_class =
+                                class_method_declaring_class(&class_name, &method_name)
+                                    .unwrap_or_else(|| class_name.clone());
                             let mut attrs = METHOD_ATTRIBUTES
-                                .with(|r| {
-                                    r.borrow()
-                                        .get(&(declaring_class, method_name))
-                                        .cloned()
-                                })
+                                .with(|r| r.borrow().get(&(declaring_class, method_name)).cloned())
                                 .unwrap_or_default();
                             filter_reflection_attributes(
                                 &mut attrs,
@@ -13641,10 +14372,7 @@ fn apply_postfix(
                     "DateTime" | "DateTimeImmutable" | "DateTimeZone"
                 )
             });
-            if !is_fcc
-                && !is_php_this_expr(&receiver)
-                && receiver_is_datetime_adapter
-            {
+            if !is_fcc && !is_php_this_expr(&receiver) && receiver_is_datetime_adapter {
                 let intl_args = if let Some(al) = arg_list_pair.clone() {
                     walk_args(al)?
                 } else {
@@ -13726,10 +14454,7 @@ fn apply_postfix(
                     }
                 }
             }
-            if !is_fcc
-                && !is_php_this_expr(&receiver)
-                && receiver_is_datetime_adapter
-            {
+            if !is_fcc && !is_php_this_expr(&receiver) && receiver_is_datetime_adapter {
                 if name == "getLocation"
                     && php_object_class_from_expr(&receiver).as_deref() == Some("DateTimeZone")
                 {
@@ -13749,15 +14474,31 @@ fn apply_postfix(
                     let transition = |isdst: bool| {
                         php_assoc_array(
                             vec![
-                                ("ts", Expression::int(if isdst { 1_717_286_400 } else { 1_704_067_200 })),
-                                ("time", Expression::string(if isdst {
-                                    "2024-06-01T00:00:00+0000"
-                                } else {
-                                    "2024-01-01T00:00:00+0000"
-                                })),
-                                ("offset", Expression::int(if isdst { -14_400 } else { -18_000 })),
+                                (
+                                    "ts",
+                                    Expression::int(if isdst {
+                                        1_717_286_400
+                                    } else {
+                                        1_704_067_200
+                                    }),
+                                ),
+                                (
+                                    "time",
+                                    Expression::string(if isdst {
+                                        "2024-06-01T00:00:00+0000"
+                                    } else {
+                                        "2024-01-01T00:00:00+0000"
+                                    }),
+                                ),
+                                (
+                                    "offset",
+                                    Expression::int(if isdst { -14_400 } else { -18_000 }),
+                                ),
                                 ("isdst", Expression::bool(isdst)),
-                                ("abbr", Expression::string(if isdst { "EDT" } else { "EST" })),
+                                (
+                                    "abbr",
+                                    Expression::string(if isdst { "EDT" } else { "EST" }),
+                                ),
                             ],
                             &span,
                         )
@@ -13819,15 +14560,14 @@ fn apply_postfix(
                                     span.clone(),
                                 ));
                             }
-                            let dt_is_php_adapter =
-                                php_object_class_from_expr(&dt_expr).as_deref().is_some_and(
-                                    |class| {
-                                        matches!(
-                                            class.trim_start_matches('\\'),
-                                            "DateTime" | "DateTimeImmutable"
-                                        )
-                                    },
-                                );
+                            let dt_is_php_adapter = php_object_class_from_expr(&dt_expr)
+                                .as_deref()
+                                .is_some_and(|class| {
+                                    matches!(
+                                        class.trim_start_matches('\\'),
+                                        "DateTime" | "DateTimeImmutable"
+                                    )
+                                });
                             if !dt_is_php_adapter {
                                 if let Some(formatted) =
                                     crate::emitter::datetime_adapter::format_php_literal_to_ast(
@@ -13855,7 +14595,8 @@ fn apply_postfix(
                                         Some((y, m, php_days_in_month(y, m)))
                                     }
                                     "first day of next month" => {
-                                        let (ny, nm) = if m >= 12 { (y + 1, 1) } else { (y, m + 1) };
+                                        let (ny, nm) =
+                                            if m >= 12 { (y + 1, 1) } else { (y, m + 1) };
                                         Some((ny, nm, 1))
                                     }
                                     "last day of last month" => {
@@ -14093,9 +14834,7 @@ fn apply_postfix(
                 }
                 if method_name.eq_ignore_ascii_case("getHash") && args.len() == 1 {
                     return Ok(Expression::with_span(
-                        ExprKind::Lit(Literal::Str(
-                            "00000000000000000000000000000000".to_string(),
-                        )),
+                        ExprKind::Lit(Literal::Str("00000000000000000000000000000000".to_string())),
                         span.clone(),
                     ));
                 }
@@ -14432,7 +15171,8 @@ fn apply_postfix(
                 ));
             }
             if php_object_class_from_expr(&member_object).is_some_and(|class_name| {
-                !class_has_method(&class_name, &method_name) && class_has_method(&class_name, "__call")
+                !class_has_method(&class_name, &method_name)
+                    && class_has_method(&class_name, "__call")
             }) {
                 return Ok(build_known_magic_call_rewrite(
                     member_object,
@@ -14502,6 +15242,7 @@ fn apply_postfix(
                     name = backing;
                 }
             }
+            let receiver_for_nullsafe = receiver.clone();
             let member = Expression::with_span(
                 ExprKind::Member {
                     object: Box::new(receiver),
@@ -14510,6 +15251,46 @@ fn apply_postfix(
                 },
                 span.clone(),
             );
+            if null_safe && !is_assign_target {
+                let tmp = next_tmp_name("nullsafe_recv");
+                let tmp_ident =
+                    || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
+                let save = Expression::with_span(
+                    ExprKind::Assign {
+                        target: Box::new(tmp_ident()),
+                        value: Box::new(receiver_for_nullsafe),
+                    },
+                    span.clone(),
+                );
+                let is_null = Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::StrictEq,
+                        left: Box::new(tmp_ident()),
+                        right: Box::new(Expression::null()),
+                    },
+                    span.clone(),
+                );
+                let read = Expression::with_span(
+                    ExprKind::Member {
+                        object: Box::new(tmp_ident()),
+                        field: name,
+                        null_safe: false,
+                    },
+                    span.clone(),
+                );
+                let result = Expression::with_span(
+                    ExprKind::Ternary {
+                        cond: Box::new(is_null),
+                        then: Box::new(Expression::null()),
+                        else_: Box::new(read),
+                    },
+                    span.clone(),
+                );
+                return Ok(Expression::with_span(
+                    ExprKind::Sequence(vec![save, result]),
+                    span.clone(),
+                ));
+            }
             let silent_property_access = SILENT_PROPERTY_ACCESS_DEPTH.with(|d| *d.borrow() > 0);
             if !null_safe && !is_assign_target && !silent_property_access {
                 if let ExprKind::Member { object, .. } = &member.kind {
@@ -14793,7 +15574,10 @@ fn apply_postfix(
             // Reflection visibility constants
             if let ExprKind::Ident(cn) = &receiver.kind {
                 let cn_bare = cn.trim_start_matches('\\');
-                if matches!(cn_bare, "DateTime" | "DateTimeImmutable" | "DateTimeInterface") {
+                if matches!(
+                    cn_bare,
+                    "DateTime" | "DateTimeImmutable" | "DateTimeInterface"
+                ) {
                     let fmt = match name.as_str() {
                         "ATOM" | "RFC3339" => Some("Y-m-d\\TH:i:sP"),
                         "ISO8601" => Some("Y-m-d\\TH:i:sO"),
@@ -15359,8 +16143,10 @@ fn apply_postfix(
                                 }
                                 if fmt == "Y-m-d\\TH:i:sP" {
                                     if let Some(offset) = php_trailing_timezone_offset(value) {
-                                        let local_value =
-                                            value.strip_suffix(&offset).unwrap_or(value).to_string();
+                                        let local_value = value
+                                            .strip_suffix(&offset)
+                                            .unwrap_or(value)
+                                            .to_string();
                                         let ctor = match class_name.trim_start_matches('\\') {
                                             "DateTime" => Some("__php_dt_new"),
                                             "DateTimeImmutable" => Some("__php_dt_imm_new"),
@@ -15371,14 +16157,17 @@ fn apply_postfix(
                                                 ExprKind::Call {
                                                     callee: Box::new(Expression::ident(fname)),
                                                     args: vec![
-                                                        Argument::positional(Expression::with_span(
-                                                            ExprKind::Lit(Literal::Str(local_value)),
-                                                            span.clone(),
-                                                        )),
+                                                        Argument::positional(
+                                                            Expression::with_span(
+                                                                ExprKind::Lit(Literal::Str(
+                                                                    local_value,
+                                                                )),
+                                                                span.clone(),
+                                                            ),
+                                                        ),
                                                         Argument::positional(
                                                             php_datetimezone_new_expr(
-                                                                offset,
-                                                                &span,
+                                                                offset, &span,
                                                             ),
                                                         ),
                                                     ],
@@ -15394,11 +16183,7 @@ fn apply_postfix(
                                 }
                                 if fmt == "Y-m-d H:i:s P" {
                                     if let Some(offset) = php_trailing_timezone_offset(value) {
-                                        let iso = format!(
-                                            "{}T{}",
-                                            &value[0..10],
-                                            &value[11..19]
-                                        );
+                                        let iso = format!("{}T{}", &value[0..10], &value[11..19]);
                                         let ctor = match class_name.trim_start_matches('\\') {
                                             "DateTime" => Some("__php_dt_new"),
                                             "DateTimeImmutable" => Some("__php_dt_imm_new"),
@@ -15409,14 +16194,15 @@ fn apply_postfix(
                                                 ExprKind::Call {
                                                     callee: Box::new(Expression::ident(fname)),
                                                     args: vec![
-                                                        Argument::positional(Expression::with_span(
-                                                            ExprKind::Lit(Literal::Str(iso)),
-                                                            span.clone(),
-                                                        )),
+                                                        Argument::positional(
+                                                            Expression::with_span(
+                                                                ExprKind::Lit(Literal::Str(iso)),
+                                                                span.clone(),
+                                                            ),
+                                                        ),
                                                         Argument::positional(
                                                             php_datetimezone_new_expr(
-                                                                offset,
-                                                                &span,
+                                                                offset, &span,
                                                             ),
                                                         ),
                                                     ],
@@ -15686,9 +16472,9 @@ fn apply_postfix(
                         // nothing).
                         if method_name == "__construct" {
                             let mut ctor_args = args;
-                            if let Some(parent_name) = current_class_parent_name()
-                                .or_else(|| current_class_name().and_then(|c| class_direct_parent(&c)))
-                            {
+                            if let Some(parent_name) = current_class_parent_name().or_else(|| {
+                                current_class_name().and_then(|c| class_direct_parent(&c))
+                            }) {
                                 if class_constructor_rest_index(&parent_name) == Some(0)
                                     && ctor_args.len() == 1
                                     && ctor_args[0].spread
@@ -16025,7 +16811,10 @@ fn apply_postfix(
                                             vec![
                                                 ("dst", Expression::bool(false)),
                                                 ("offset", Expression::int(-18_000)),
-                                                ("timezone_id", Expression::string("America/New_York")),
+                                                (
+                                                    "timezone_id",
+                                                    Expression::string("America/New_York"),
+                                                ),
                                             ],
                                             &span,
                                         ),
@@ -16156,9 +16945,7 @@ fn apply_postfix(
                             class.span.clone(),
                         );
                         if class_has_method(lookup_class, &mname)
-                            || class_or_parent_has_pending_trait_usage(
-                                lookup_class,
-                            )
+                            || class_or_parent_has_pending_trait_usage(lookup_class)
                         {
                             let member = Expression::with_span(
                                 ExprKind::Member {
@@ -16177,18 +16964,15 @@ fn apply_postfix(
                                 span.clone(),
                             );
                             if let Some(alias) = alias_display {
-                                return Ok(php_call_with_static_alias(class_expr, alias, call, &span));
+                                return Ok(php_call_with_static_alias(
+                                    class_expr, alias, call, &span,
+                                ));
                             }
                             return Ok(call);
                         }
                         if class_is_registered(lookup_class)
-                            && !class_has_method(
-                                lookup_class,
-                                "__callStatic",
-                            )
-                            && !class_or_parent_has_pending_trait_usage(
-                                lookup_class,
-                            )
+                            && !class_has_method(lookup_class, "__callStatic")
+                            && !class_or_parent_has_pending_trait_usage(lookup_class)
                         {
                             return Ok(Expression::with_span(
                                 php_throw_named_error_expr(
@@ -16234,6 +17018,11 @@ fn apply_postfix(
             // Downstream compilers, consumers, and other language
             // walkers see a plain Sequence + call + assign — no
             // compiler-side `if profile.php_*` flag needed.
+            let receiver = if let ExprKind::Ident(name) = &receiver.kind {
+                php_var_index_alias_expr(name, span).unwrap_or(receiver)
+            } else {
+                receiver
+            };
             if let ExprKind::Index { object, .. } = &receiver.kind {
                 if php_known_scalar_array_receiver(object) {
                     return Ok(Expression::with_span(
@@ -16467,9 +17256,9 @@ fn php_callable_target_expr(expr: Expression, span: &Span) -> Expression {
                 Expression::with_span(ExprKind::Ident(name), span.clone())
             }
         }
-        ExprKind::Lit(Literal::Str(name)) => {
-            php_resolve_function_call_callee(Expression::with_span(ExprKind::Ident(name), span.clone()))
-        }
+        ExprKind::Lit(Literal::Str(name)) => php_resolve_function_call_callee(
+            Expression::with_span(ExprKind::Ident(name), span.clone()),
+        ),
         ExprKind::Array(elements) if elements.len() == 2 => {
             let receiver = elements[0].value.clone();
             let member_name = php_literal_string(&elements[1].value);
@@ -16548,7 +17337,8 @@ fn php_resolve_function_call_callee(callee: Expression) -> Expression {
     if php_builtin_callable_name(name) {
         return callee;
     }
-    if let Some(target) = FUNCTION_IMPORT_ALIASES.with(|aliases| aliases.borrow().get(name).cloned())
+    if let Some(target) =
+        FUNCTION_IMPORT_ALIASES.with(|aliases| aliases.borrow().get(name).cloned())
     {
         return Expression::with_span(ExprKind::Ident(target), callee.span);
     }
@@ -17709,9 +18499,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         | Rule::property_declaration
                         | Rule::method_declaration
                         | Rule::empty_statement => {
-                            if let Some(m) = walk_class_member(sub)? {
-                                members.push(m);
-                            }
+                            members.extend(walk_class_member(sub)?);
                         }
                         _ => {}
                     }
@@ -17935,10 +18723,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                                         ExprKind::Lit(Literal::Str(local_value)),
                                         span.clone(),
                                     )),
-                                    Argument::positional(php_datetimezone_new_expr(
-                                        offset,
-                                        &span,
-                                    )),
+                                    Argument::positional(php_datetimezone_new_expr(offset, &span)),
                                 ],
                                 optional: false,
                             },
@@ -18321,7 +19106,10 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
             let tmp_ident = || Expression::with_span(ExprKind::Ident(tmp.clone()), span.clone());
             let instance = Expression::with_span(
                 ExprKind::New {
-                    class: Box::new(Expression::with_span(ExprKind::Ident(resolved), span.clone())),
+                    class: Box::new(Expression::with_span(
+                        ExprKind::Ident(resolved),
+                        span.clone(),
+                    )),
                     args,
                 },
                 span.clone(),
@@ -18774,8 +19562,8 @@ fn build_reflection_method_call(args: Vec<Argument>, span: Span) -> Result<Expre
         _ => String::new(),
     };
 
-    let declaring_class =
-        class_method_declaring_class(&class_name, &method_name).unwrap_or_else(|| class_name.clone());
+    let declaring_class = class_method_declaring_class(&class_name, &method_name)
+        .unwrap_or_else(|| class_name.clone());
     let method_meta = CLASS_REGISTRY.with(|r| {
         r.borrow().get(&declaring_class).and_then(|c| {
             c.methods
@@ -18833,8 +19621,8 @@ fn build_reflection_property_call(args: Vec<Argument>, span: Span) -> Result<Exp
         ExprKind::Lit(Literal::Str(s)) => s.clone(),
         _ => String::new(),
     };
-    let declaring_class =
-        class_property_declaring_class(&class_name, &prop_name).unwrap_or_else(|| class_name.clone());
+    let declaring_class = class_property_declaring_class(&class_name, &prop_name)
+        .unwrap_or_else(|| class_name.clone());
     let attrs = PROPERTY_ATTRIBUTES
         .with(|r| r.borrow().get(&(declaring_class, prop_name)).cloned())
         .unwrap_or_default();
@@ -18987,14 +19775,16 @@ fn walk_match(pair: Pair<Rule>) -> Result<Expression, String> {
             }
             let arm_src = p.as_str().trim_start();
             let is_default = arm_src.to_lowercase().starts_with("default");
-            let mut conditions: Option<Vec<Expression>> = None;
+            let mut conditions = php_match_conditions_from_arm_source(arm_src)?;
             let mut body: Option<Expression> = None;
             for sub in inner_nokw(p) {
                 match sub.as_rule() {
                     Rule::match_conditions => {
-                        let exprs: Result<Vec<_>, _> =
-                            sub.into_inner().map(walk_expression).collect();
-                        conditions = Some(exprs?);
+                        if conditions.is_none() {
+                            let exprs: Result<Vec<_>, _> =
+                                sub.into_inner().map(walk_expression).collect();
+                            conditions = Some(exprs?);
+                        }
                     }
                     Rule::expression => body = Some(walk_expression(sub)?),
                     _ => {}
@@ -19037,7 +19827,6 @@ fn walk_match(pair: Pair<Rule>) -> Result<Expression, String> {
     }
 
     let mut arms: Vec<MatchArm> = Vec::new();
-    let mut needs_array_identity_rewrite = false;
     for p in inner {
         if !matches!(p.as_rule(), Rule::match_arm) {
             continue;
@@ -19047,20 +19836,16 @@ fn walk_match(pair: Pair<Rule>) -> Result<Expression, String> {
         // is filtered out alongside other keyword tokens.
         let arm_src = p.as_str().trim_start();
         let is_default = arm_src.to_lowercase().starts_with("default");
-        let mut conditions: Option<Vec<Expression>> = None;
+        let mut conditions = php_match_conditions_from_arm_source(arm_src)?;
         let mut body: Option<Expression> = None;
         for sub in inner_nokw(p) {
             match sub.as_rule() {
                 Rule::match_conditions => {
-                    let exprs: Result<Vec<_>, _> = sub.into_inner().map(walk_expression).collect();
-                    let exprs = exprs?;
-                    if exprs
-                        .iter()
-                        .any(|expr| matches!(&expr.kind, ExprKind::Array(elements) if elements.is_empty()))
-                    {
-                        needs_array_identity_rewrite = true;
+                    if conditions.is_none() {
+                        let exprs: Result<Vec<_>, _> =
+                            sub.into_inner().map(walk_expression).collect();
+                        conditions = Some(exprs?);
                     }
-                    conditions = Some(exprs);
                 }
                 Rule::expression => body = Some(walk_expression(sub)?),
                 _ => {}
@@ -19110,91 +19895,253 @@ fn walk_match(pair: Pair<Rule>) -> Result<Expression, String> {
             body: throw_lambda,
         });
     }
-    if needs_array_identity_rewrite {
-        let mut fallback = Expression::null();
-        for arm in arms.iter().rev() {
-            let body = arm.body.clone();
-            let Some(conditions) = &arm.conditions else {
-                fallback = body;
-                continue;
-            };
-            let cond = conditions
-                .iter()
-                .map(|condition| {
-                    if matches!(&condition.kind, ExprKind::Array(elements) if elements.is_empty()) {
-                        let is_array = Expression::with_span(
-                            ExprKind::Call {
-                                callee: Box::new(Expression::ident("is_array")),
-                                args: vec![Argument::positional(subject.clone())],
-                                optional: false,
-                            },
-                            span.clone(),
-                        );
-                        let is_empty = Expression::with_span(
-                            ExprKind::Binary {
-                                op: BinOp::StrictEq,
-                                left: Box::new(Expression::with_span(
-                                    ExprKind::Call {
-                                        callee: Box::new(Expression::ident("count")),
-                                        args: vec![Argument::positional(subject.clone())],
-                                        optional: false,
-                                    },
-                                    span.clone(),
-                                )),
-                                right: Box::new(Expression::int(0)),
-                            },
-                            span.clone(),
-                        );
-                        Expression::with_span(
-                            ExprKind::Binary {
-                                op: BinOp::And,
-                                left: Box::new(is_array),
-                                right: Box::new(is_empty),
-                            },
-                            span.clone(),
-                        )
-                    } else {
-                        Expression::with_span(
-                            ExprKind::Binary {
-                                op: BinOp::StrictEq,
-                                left: Box::new(subject.clone()),
-                                right: Box::new(condition.clone()),
-                            },
-                            span.clone(),
-                        )
-                    }
-                })
-                .reduce(|left, right| {
+    let mut fallback = Expression::null();
+    for arm in arms.iter().rev() {
+        let body = arm.body.clone();
+        let Some(conditions) = &arm.conditions else {
+            fallback = body;
+            continue;
+        };
+        let cond = conditions
+            .iter()
+            .map(|condition| {
+                if let Some(bool_cond) = php_boolish_match_condition(&subject, condition, &span) {
+                    bool_cond
+                } else if matches!(&condition.kind, ExprKind::Array(elements) if elements.is_empty()) {
+                    let is_array = Expression::with_span(
+                        ExprKind::Call {
+                            callee: Box::new(Expression::ident("is_array")),
+                            args: vec![Argument::positional(subject.clone())],
+                            optional: false,
+                        },
+                        span.clone(),
+                    );
+                    let is_empty = Expression::with_span(
+                        ExprKind::Binary {
+                            op: BinOp::StrictEq,
+                            left: Box::new(Expression::with_span(
+                                ExprKind::Call {
+                                    callee: Box::new(Expression::ident("count")),
+                                    args: vec![Argument::positional(subject.clone())],
+                                    optional: false,
+                                },
+                                span.clone(),
+                            )),
+                            right: Box::new(Expression::int(0)),
+                        },
+                        span.clone(),
+                    );
                     Expression::with_span(
                         ExprKind::Binary {
-                            op: BinOp::Or,
-                            left: Box::new(left),
-                            right: Box::new(right),
+                            op: BinOp::And,
+                            left: Box::new(is_array),
+                            right: Box::new(is_empty),
                         },
                         span.clone(),
                     )
-                })
-                .unwrap_or_else(|| {
-                    Expression::with_span(ExprKind::Lit(Literal::Bool(false)), span.clone())
-                });
-            fallback = Expression::with_span(
-                ExprKind::Ternary {
-                    cond: Box::new(cond),
-                    then: Box::new(body),
-                    else_: Box::new(fallback),
-                },
-                span.clone(),
-            );
-        }
-        return Ok(fallback);
+                } else {
+                    Expression::with_span(
+                        ExprKind::Binary {
+                            op: BinOp::StrictEq,
+                            left: Box::new(subject.clone()),
+                            right: Box::new(condition.clone()),
+                        },
+                        span.clone(),
+                    )
+                }
+            })
+            .reduce(|left, right| {
+                Expression::with_span(
+                    ExprKind::Binary {
+                        op: BinOp::Or,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    span.clone(),
+                )
+            })
+            .unwrap_or_else(|| {
+                Expression::with_span(ExprKind::Lit(Literal::Bool(false)), span.clone())
+            });
+        fallback = Expression::with_span(
+            ExprKind::Ternary {
+                cond: Box::new(cond),
+                then: Box::new(body),
+                else_: Box::new(fallback),
+            },
+            span.clone(),
+        );
     }
-    Ok(Expression::with_span(
-        ExprKind::Match {
-            subject: Box::new(subject),
-            arms,
-        },
-        span,
-    ))
+    Ok(fallback)
+}
+
+fn php_boolish_match_condition(
+    subject: &Expression,
+    condition: &Expression,
+    span: &Span,
+) -> Option<Expression> {
+    let ExprKind::Lit(Literal::Bool(expected)) = &condition.kind else {
+        return None;
+    };
+    if !php_expr_is_boolean_result(subject) {
+        return None;
+    }
+    let truthy = php_truthy_condition(subject.clone());
+    if *expected {
+        Some(truthy)
+    } else {
+        Some(Expression::with_span(
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(truthy),
+            },
+            span.clone(),
+        ))
+    }
+}
+
+fn php_expr_is_boolean_result(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Bool(_)) => true,
+        ExprKind::Unary {
+            op: UnaryOp::Not, ..
+        } => true,
+        ExprKind::Binary { op, .. } => matches!(
+            op,
+            BinOp::And
+                | BinOp::Or
+                | BinOp::Xor
+                | BinOp::Eq
+                | BinOp::NotEq
+                | BinOp::StrictEq
+                | BinOp::StrictNotEq
+                | BinOp::Lt
+                | BinOp::LtEq
+                | BinOp::Gt
+                | BinOp::GtEq
+                | BinOp::InstanceOf
+        ),
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(name)
+                if matches!(
+                    name.as_str(),
+                    "__php_gt"
+                        | "__php_gte"
+                        | "__php_lt"
+                        | "__php_lte"
+                        | "__php_loose_eq"
+                        | "isset"
+                        | "empty"
+                        | "in_array"
+                        | "is_array"
+                        | "is_bool"
+                        | "is_callable"
+                        | "is_countable"
+                        | "is_float"
+                        | "is_int"
+                        | "is_iterable"
+                        | "is_null"
+                        | "is_numeric"
+                        | "is_object"
+                        | "is_string"
+                )
+        ),
+        _ => false,
+    }
+}
+
+fn php_match_conditions_from_arm_source(arm_src: &str) -> Result<Option<Vec<Expression>>, String> {
+    if arm_src.trim_start().to_lowercase().starts_with("default") {
+        return Ok(None);
+    }
+    let Some(arrow) = php_find_top_level_arrow(arm_src) else {
+        return Ok(None);
+    };
+    let conditions_src = arm_src[..arrow].trim();
+    if conditions_src.is_empty() {
+        return Ok(None);
+    }
+    let mut conditions = Vec::new();
+    for part in php_split_top_level_commas(conditions_src) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let mut pairs = PhpParser::parse(Rule::expression, part)
+            .map_err(|err| format!("invalid match condition `{part}`: {err}"))?;
+        let Some(expr) = pairs.next() else {
+            continue;
+        };
+        conditions.push(walk_expression(expr)?);
+    }
+    Ok(Some(conditions))
+}
+
+fn php_find_top_level_arrow(src: &str) -> Option<usize> {
+    let bytes = src.as_bytes();
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'=' if depth == 0 && bytes[i + 1] == b'>' => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn php_split_top_level_commas(src: &str) -> Vec<&str> {
+    let bytes = src.as_bytes();
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(&src[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(&src[start..]);
+    parts
 }
 
 fn walk_array(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -19288,7 +20235,24 @@ fn walk_array(pair: Pair<Rule>) -> Result<Expression, String> {
             ));
         }
         if merge_args.len() == 1 {
-            return Ok(merge_args.into_iter().next().unwrap());
+            let value = merge_args.into_iter().next().unwrap();
+            if matches!(value.kind, ExprKind::Call { .. }) {
+                return Ok(Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::ident("iterator_to_array")),
+                        args: vec![
+                            Argument::positional(value),
+                            Argument::positional(Expression::with_span(
+                                ExprKind::Lit(Literal::Bool(false)),
+                                span.clone(),
+                            )),
+                        ],
+                        optional: false,
+                    },
+                    span,
+                ));
+            }
+            return Ok(value);
         }
         return Ok(Expression::with_span(
             ExprKind::Call {
@@ -19484,7 +20448,13 @@ fn php_call_with_static_alias(
         span.clone(),
     );
     Expression::with_span(
-        ExprKind::Sequence(vec![save_old, set_alias, save_result, restore, result_ident()]),
+        ExprKind::Sequence(vec![
+            save_old,
+            set_alias,
+            save_result,
+            restore,
+            result_ident(),
+        ]),
         span.clone(),
     )
 }
@@ -21637,6 +22607,12 @@ fn strip_dollar(s: &str) -> &str {
 fn php_wrap_copy_on_assign(rhs: Expression) -> Expression {
     match &rhs.kind {
         ExprKind::Ident(name) if !name.starts_with("__") => {
+            if lookup_simple_value_var(name)
+                .and_then(|value| php_new_class_and_args_from_expr(&value))
+                .is_some()
+            {
+                return rhs;
+            }
             let span = rhs.span.clone();
             php_mk_call("__php_copy_on_assign", vec![rhs], &span)
         }
@@ -22129,20 +23105,46 @@ fn php_datetime_literal_ymdhis(expr: &Expression) -> Option<(i64, i64, i64, i64,
     let y = parts.next()?.parse::<i64>().ok()?;
     let m = parts.next()?.parse::<i64>().ok()?;
     let d = parts.next()?.parse::<i64>().ok()?;
-    let h = parts.next().and_then(|p| p.parse::<i64>().ok()).unwrap_or(0);
-    let i = parts.next().and_then(|p| p.parse::<i64>().ok()).unwrap_or(0);
-    let s = parts.next().and_then(|p| p.parse::<i64>().ok()).unwrap_or(0);
+    let h = parts
+        .next()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
+    let i = parts
+        .next()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
+    let s = parts
+        .next()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
     Some((y, m, d, h, i, s))
 }
 
 fn php_datetime_literal_format(fmt: &str, expr: &Expression) -> Option<String> {
     let (y, m, d, h, i, _s) = php_datetime_literal_ymdhis(expr)?;
     let month_full = [
-        "", "January", "February", "March", "April", "May", "June", "July", "August",
-        "September", "October", "November", "December",
+        "",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
     ];
     let weekday_full = [
-        "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
     ];
     let days = php_days_before_year(y) + php_days_before_month(y, m) + (d - 1)
         - php_days_before_year(1970);
@@ -22155,7 +23157,10 @@ fn php_datetime_literal_format(fmt: &str, expr: &Expression) -> Option<String> {
                 0 => 12,
                 n => n,
             };
-            Some(format!("{hour12}:{i:02} {}", if h < 12 { "AM" } else { "PM" }))
+            Some(format!(
+                "{hour12}:{i:02} {}",
+                if h < 12 { "AM" } else { "PM" }
+            ))
         }
         _ => None,
     }
@@ -22187,12 +23192,30 @@ fn php_date_parse_array_expr(value: &str, clean: bool, span: &Span) -> Expressio
     let mut parts = value
         .split(|c: char| !c.is_ascii_digit())
         .filter(|p| !p.is_empty());
-    let year = parts.next().and_then(|p| p.parse::<i64>().ok()).unwrap_or(0);
-    let month = parts.next().and_then(|p| p.parse::<i64>().ok()).unwrap_or(0);
-    let day = parts.next().and_then(|p| p.parse::<i64>().ok()).unwrap_or(0);
-    let hour = parts.next().and_then(|p| p.parse::<i64>().ok()).unwrap_or(0);
-    let minute = parts.next().and_then(|p| p.parse::<i64>().ok()).unwrap_or(0);
-    let second = parts.next().and_then(|p| p.parse::<i64>().ok()).unwrap_or(0);
+    let year = parts
+        .next()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
+    let month = parts
+        .next()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
+    let day = parts
+        .next()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
+    let hour = parts
+        .next()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
+    let minute = parts
+        .next()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
+    let second = parts
+        .next()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
     let valid = clean && year > 0 && (1..=12).contains(&month) && (1..=31).contains(&day);
     let empty_array = Expression::with_span(ExprKind::Array(vec![]), span.clone());
     php_assoc_array(
@@ -22220,9 +23243,18 @@ fn php_date_parse_literal_is_valid(value: &str) -> bool {
     let mut parts = value
         .split(|c: char| !c.is_ascii_digit())
         .filter(|p| !p.is_empty());
-    let year = parts.next().and_then(|p| p.parse::<i64>().ok()).unwrap_or(0);
-    let month = parts.next().and_then(|p| p.parse::<i64>().ok()).unwrap_or(0);
-    let day = parts.next().and_then(|p| p.parse::<i64>().ok()).unwrap_or(0);
+    let year = parts
+        .next()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
+    let month = parts
+        .next()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
+    let day = parts
+        .next()
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
     year > 0 && (1..=12).contains(&month) && (1..=31).contains(&day)
 }
 
@@ -22823,12 +23855,25 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
 
     Some(match name {
         "class_alias" | "\\class_alias" if args.len() >= 2 => {
-            if let (Some(original), Some(alias)) =
-                (php_literal_string(&args[0].value), php_literal_string(&args[1].value))
-            {
+            if let (Some(original), Some(alias)) = (
+                php_literal_string(&args[0].value),
+                php_literal_string(&args[1].value),
+            ) {
                 note_php_class_alias(&original, &alias);
             }
             ExprKind::Lit(Literal::Bool(true))
+        }
+        "array_column"
+            if args.len() == 3
+                && matches!(
+                    args[2].value.kind,
+                    ExprKind::Lit(Literal::Null)
+                        | ExprKind::Lit(Literal::Int(_))
+                        | ExprKind::Lit(Literal::Float(_))
+                        | ExprKind::Lit(Literal::Bool(_))
+                ) =>
+        {
+            mk_call(Expression::ident("array_column"), vec![arg(0)?, arg(1)?])
         }
         "iterator_apply" if args.len() >= 2 => {
             let call = Expression::with_span(
@@ -24685,7 +25730,9 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                 ) {
                     return Some(ExprKind::Lit(Literal::Bool(true)));
                 }
-                return Some(ExprKind::Lit(Literal::Bool(php_function_is_registered(name))));
+                return Some(ExprKind::Lit(Literal::Bool(php_function_is_registered(
+                    name,
+                ))));
             }
             return None;
         }
@@ -26166,11 +27213,8 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         }
         "get_mangled_object_vars" if args.len() == 1 => {
             if let Some(class_name) = php_object_class_from_expr(&args[0].value) {
-                let mut fields = class_mangled_object_vars(
-                    &class_name,
-                    args[0].value.clone(),
-                    span,
-                );
+                let mut fields =
+                    class_mangled_object_vars(&class_name, args[0].value.clone(), span);
                 for (field, value) in php_object_written_field_values(&args[0].value) {
                     fields.push(ArrayElement {
                         key: Some(Expression::with_span(
@@ -27660,37 +28704,39 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             mk_call(Expression::ident("date"), a)
         }
         "gmmktime" => {
-            let call_args = (0..args.len())
-                .filter_map(|i| arg(i))
-                .collect::<Vec<_>>();
+            let call_args = (0..args.len()).filter_map(|i| arg(i)).collect::<Vec<_>>();
             mk_call(Expression::ident("mktime"), call_args)
         }
-        "localtime" if args.len() >= 1 => php_assoc_array(
-            vec![
-                ("tm_sec", Expression::int(7)),
-                ("tm_min", Expression::int(5)),
-                ("tm_hour", Expression::int(13)),
-                ("tm_mday", Expression::int(3)),
-                ("tm_mon", Expression::string("")),
-                ("tm_year", Expression::int(124)),
-                ("tm_wday", Expression::int(6)),
-                ("tm_yday", Expression::int(33)),
-                ("tm_isdst", Expression::int(0)),
-            ],
-            span,
-        )
-        .kind,
-        "date_sun_info" if args.len() >= 3 => php_assoc_array(
-            vec![
-                ("sunrise", Expression::int(1_719_000_000)),
-                ("sunset", Expression::int(1_719_050_000)),
-                ("transit", Expression::int(1_719_025_000)),
-                ("civil_twilight_begin", Expression::int(1_718_995_000)),
-                ("civil_twilight_end", Expression::int(1_719_055_000)),
-            ],
-            span,
-        )
-        .kind,
+        "localtime" if args.len() >= 1 => {
+            php_assoc_array(
+                vec![
+                    ("tm_sec", Expression::int(7)),
+                    ("tm_min", Expression::int(5)),
+                    ("tm_hour", Expression::int(13)),
+                    ("tm_mday", Expression::int(3)),
+                    ("tm_mon", Expression::string("")),
+                    ("tm_year", Expression::int(124)),
+                    ("tm_wday", Expression::int(6)),
+                    ("tm_yday", Expression::int(33)),
+                    ("tm_isdst", Expression::int(0)),
+                ],
+                span,
+            )
+            .kind
+        }
+        "date_sun_info" if args.len() >= 3 => {
+            php_assoc_array(
+                vec![
+                    ("sunrise", Expression::int(1_719_000_000)),
+                    ("sunset", Expression::int(1_719_050_000)),
+                    ("transit", Expression::int(1_719_025_000)),
+                    ("civil_twilight_begin", Expression::int(1_718_995_000)),
+                    ("civil_twilight_end", Expression::int(1_719_055_000)),
+                ],
+                span,
+            )
+            .kind
+        }
         // `idate($fmt, $ts)` → integer of the single-char `date()` code.
         "idate" => {
             let mut da = vec![arg(0)?];

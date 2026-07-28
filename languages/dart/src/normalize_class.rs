@@ -21,10 +21,31 @@
 
 use vybe_ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind};
 use vybe_bytecode::class_normalize::{
-    build_normal_method,
-    canonical::{ClassLang, canonicalize_method},
+    NormalMembers, build_normal_method,
     from_method_stmt,
     types::*,
+};
+
+/// Dart `class X with M` — the language's rules, stated once.
+///
+/// `Copy`: mixin members are applied into the class. `AfterOwn`: the class's own
+/// members beat every mixin. `LastWins`: linearization is left-to-right, so a
+/// later mixin overrides an earlier one. `NextInOrder`: `super` inside a mixin
+/// method resolves to the next entry in the LINEARIZATION — not the mixin's own
+/// parent — which is why Dart needs a real chain and not a flat copy
+/// (flexclassplan.md §4c-R). Mixins declare no constructors.
+const DART_MIXIN: AugmentationPolicy = AugmentationPolicy {
+    mode: AugmentationMode::Copy,
+    position: AugmentationPosition::AfterOwn,
+    conflict: AugmentationConflict::LastWins,
+    super_target: AugmentationSuper::NextInOrder,
+    contributes: AugmentationContributes {
+        methods: true,
+        fields: true,
+        statics: false,
+        constructors: false,
+        abstract_members: true,
+    },
 };
 
 pub fn normalize_class(
@@ -35,15 +56,7 @@ pub fn normalize_class(
     members: &[ClassMember],
     modifiers: &ClassModifiers,
 ) -> NormalClass {
-    let mut raw_extra_members: Vec<ClassMember> = Vec::new();
-    let mut instance_fields: Vec<NormalField> = Vec::new();
-    let mut static_fields: Vec<NormalField> = Vec::new();
-    let mut instance_methods: Vec<NormalMethod> = Vec::new();
-    let mut static_methods: Vec<NormalMethod> = Vec::new();
-    let mut properties: Vec<NormalProperty> = Vec::new();
-    let mut constructor: Option<NormalConstructor> = None;
-    let mut constructors: Vec<NormalConstructor> = Vec::new();
-    let mut special_methods: Vec<SpecialMethod> = Vec::new();
+    let mut m = NormalMembers::default();
 
     for member in members {
         match member {
@@ -51,7 +64,7 @@ pub fn normalize_class(
                 name: fname,
                 type_hint,
                 init,
-                modifiers: m,
+                modifiers: field_modifiers,
                 array_bounds,
                 ..
             } => {
@@ -62,40 +75,32 @@ pub fn normalize_class(
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
                     access: Access::Public, // Dart's `_name` convention isn't enforced
-                    readonly: m.is_readonly,
+                    readonly: field_modifiers.is_readonly,
                 };
-                if m.is_static {
-                    static_fields.push(field);
-                } else {
-                    instance_fields.push(field);
-                }
+                m.push_field(field_modifiers.is_static, field);
             }
             ClassMember::Method(stmt) => {
                 let StmtKind::FunctionDecl {
                     name: src_name,
-                    modifiers: m,
+                    modifiers: method_modifiers,
                     ..
                 } = &stmt.kind
                 else {
                     continue;
                 };
-                let (canonical, special_kind) = canonicalize_method(ClassLang::Dart, src_name);
+                let (canonical, special_kind) = crate::protocol::canonical_method(src_name);
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, Access::Public)
                 else {
                     continue;
                 };
                 if let Some(kind) = special_kind {
-                    special_methods.push(SpecialMethod {
+                    m.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical,
                         source_name: src_name.clone(),
                     });
                 }
-                if m.is_static {
-                    static_methods.push(method);
-                } else {
-                    instance_methods.push(method);
-                }
+                m.push_method(method_modifiers.is_static, method);
             }
             ClassMember::Constructor {
                 name: ctor_name,
@@ -127,28 +132,24 @@ pub fn normalize_class(
                 // A class can declare an unnamed ctor AND several named ones
                 // (`Point(this.x)` + `Point.origin()`); they are distinct
                 // constructors, not overloads, and often share an arity. Every
-                // one is a variant — assigning to a single slot would keep
-                // only the last one walked.
-                if ctor_name.is_none() {
-                    constructor = Some(normal.clone());
-                }
-                constructors.push(normal);
+                // one is a variant, and the unnamed one is the primary — which
+                // `push_constructor` reads off `named_name`.
+                m.push_constructor(normal);
             }
             ClassMember::Property {
                 name: pname,
                 getter,
                 setter,
                 is_auto,
-                modifiers: m,
+                modifiers: prop_modifiers,
                 ..
             } => {
-                let (canonical, _) = canonicalize_method(ClassLang::Dart, pname);
+                let (canonical, _) = crate::protocol::canonical_method(pname);
                 let getter_method = getter.as_ref().map(|body| {
                     build_normal_method(
                         span.clone(),
                         &canonical,
                         pname,
-                        Vec::new(),
                         vec![],
                         None,
                         body.clone(),
@@ -164,7 +165,6 @@ pub fn normalize_class(
                         span.clone(),
                         &canonical,
                         pname,
-                        Vec::new(),
                         vec![s.param.clone()],
                         None,
                         s.body.clone(),
@@ -175,20 +175,23 @@ pub fn normalize_class(
                         Modifiers::default(),
                     )
                 });
-                properties.push(NormalProperty {
+                m.properties.push(NormalProperty {
                     span: span.clone(),
                     canonical_name: canonical,
                     source_name: pname.clone(),
-                    is_static: m.is_static,
+                    is_static: prop_modifiers.is_static,
                     getter: getter_method,
                     setter: setter_method,
                     auto_field: if *is_auto { Some(pname.clone()) } else { None },
                 });
             }
+            // Dart's `with M` is a HEADER clause, not a body member, so it is
+            // read from the class header below rather than arriving here.
+            ClassMember::Augment(decl) => m.push_augment_decl(decl, DART_MIXIN),
             other @ (ClassMember::Event { .. }
             | ClassMember::Const { .. }
             | ClassMember::NestedType(_)) => {
-                raw_extra_members.push(other.clone());
+                m.raw_extra_members.push(other.clone());
             }
         }
     }
@@ -203,50 +206,22 @@ pub fn normalize_class(
         // declare no constructors. See flexclassplan.md §4c.
         augmentations: crate::walker::dart_class_mixins(name)
             .iter()
-            .map(|m| Augmentation {
-                from: m.clone(),
-                via_field: None,
-                mode: AugmentationMode::Copy,
-                position: AugmentationPosition::AfterOwn,
-                conflict: AugmentationConflict::LastWins,
-                super_target: AugmentationSuper::NextInOrder,
-                adjustments: Vec::new(),
-                contributes: AugmentationContributes {
-                    constructors: false,
+            .map(|mixin| {
+                DART_MIXIN.applied_to(&vybe_ast::AugmentDecl {
+                    from: mixin.clone(),
                     ..Default::default()
-                },
-                depth: 0,
+                })
             })
             .collect(),
-        span,
-        name: name.to_string(),
-        parent: parents.first().cloned(),
-        bases: Vec::new(),
-        interfaces: interfaces.to_vec(),
-        is_abstract: modifiers.is_abstract,
-        is_sealed: modifiers.is_sealed,
-        is_partial: false,
-        is_value_type: false,
-        explicit_self_param: false,
         // Dart resolves bare identifiers in instance methods to `this.field`
         // (the `this.` is only needed when a local shadows). Setting this true
         // lets `String toString() => '($x, $y)'` and `_balance += v` reach
         // the instance fields without explicit `this.` qualification.
         implicit_self_fields: true,
-        instance_fields,
-        static_fields,
-        instance_methods,
-        static_methods,
-        properties,
-        constructors,
-        constructor,
-        destructor: None,
-        auto_init_methods: Vec::new(),
-        special_methods,
-        event_bindings: Vec::new(),
-        raw_extra_members,
+        ..Default::default()
     }
-    }
+    .with_members(m)
+}
 
 #[cfg(test)]
 mod tests {

@@ -7,14 +7,13 @@
 //! The emit half needs the `Compiler`, so it stays in `vybe_compiler`; the IR
 //! + shared builders live here so any language crate can produce them.
 
-pub mod canonical;
 pub mod types;
 
-pub use canonical::canonicalize_method;
 pub use types::{
     Access, Augmentation, AugmentationAdjustment, AugmentationConflict, AugmentationContributes,
-    AugmentationMode, AugmentationPosition, AugmentationSuper, BaseCall, EventBinding, NormalClass,
-    NormalConstructor, NormalField, NormalMethod, NormalProperty, SpecialMethod, SpecialMethodKind,
+    AugmentationMode, AugmentationPolicy, AugmentationPosition, AugmentationSuper, BaseCall,
+    NormalClass, NormalConstructor, NormalField, NormalMembers, NormalMethod, NormalProperty,
+    PROTOCOL_SLOT_TABLE, SpecialMethod, SpecialMethodKind,
 };
 
 use vybe_ast::{Modifiers, Param, Span, Statement, StmtKind, Visibility};
@@ -28,7 +27,6 @@ pub fn build_normal_method(
     span: Span,
     canonical_name: &str,
     source_name: &str,
-    aliases: Vec<String>,
     params: Vec<Param>,
     return_type: Option<String>,
     body: Vec<Statement>,
@@ -42,7 +40,6 @@ pub fn build_normal_method(
         span,
         canonical_name: canonical_name.to_string(),
         source_name: source_name.to_string(),
-        aliases,
         params,
         return_type,
         body,
@@ -84,7 +81,6 @@ pub fn from_method_stmt(
         span,
         canonical_name,
         src_name,
-        Vec::new(),
         params.clone(),
         return_type.clone(),
         body.clone(),

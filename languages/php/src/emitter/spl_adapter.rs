@@ -707,7 +707,10 @@ pub fn emit_spl_objectstorage_new(
         ),
         ("rewind", build_map_rewind_method(chunks, line)),
         ("addall", build_map_add_all_method(chunks, line)),
-        ("removeall", build_map_remove_all_method(chunks, false, line)),
+        (
+            "removeall",
+            build_map_remove_all_method(chunks, false, line),
+        ),
         (
             "removeallexcept",
             build_map_remove_all_method(chunks, true, line),

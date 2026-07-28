@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::compiler::object::emit_bind_method_with_aliases;
+use vybe_compiler::compiler::object::emit_bind_method_with_slot;
 use vybe_compiler::compiler::functions::create_function_chunk;
 use vybe_compiler::compiler::instructions::core_wasm;
 
@@ -50,14 +50,22 @@ fn bind_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, this_slot: u16, 
     method.local_count = 1;
     chunks.push(method);
     let method_idx = chunks.len() - 1;
-    emit_bind_method_with_aliases(
-        &mut chunks[current],
-        this_slot,
-        "tostring",
-        method_idx,
-        None,
-        line,
-    );
+    // `.NET`'s own spelling of the member, plus the lowercased vtable key a
+    // case-insensitive caller (VB) lands on, plus the ToString ROLE for a
+    // caller in any other language. The first two are this type's real API
+    // surface — not a guess at what some other language might call it, which
+    // is what the deleted synonym table was doing.
+    for name in ["tostring", "ToString"] {
+        emit_bind_method_with_slot(
+            &mut chunks[current],
+            this_slot,
+            name,
+            Some(vybe_ast::ProtocolSlot::ToString),
+            method_idx,
+            None,
+            line,
+        );
+    }
 }
 
 fn emit_wrap_guid_from_slot(chunks: &mut Vec<Chunk>, current: usize, text_slot: u16, line: u32) {

@@ -20,7 +20,7 @@ case_sensitive = true
 string_indexing = "zero_based"
 entry_point = "main"
 dynamic_add = true
-uses_normalize_class = false
+uses_normalize_class = true
 materialize_bool_results = true
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -41,7 +41,7 @@ materialize_bool_results = true
 "fmt.Sprint"      = { emit = "common:go.fmt_sprint",     min_args = 0, max_args = 255 }
 "fmt.Sprintf"     = { emit = "common:go.fmt_sprintf",    min_args = 1, max_args = 255 }
 "__go_sprintf"    = { emit = "common:go.fmt_sprintf",    min_args = 1, max_args = 255 }
-"__go_fmt_string" = { emit = "host:ecma:string:String",  min_args = 1, max_args = 1 }
+"__go_fmt_string" = { emit = "common:object.to_string_role", min_args = 1, max_args = 1 }
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 

@@ -736,9 +736,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "java.period_between" => {
             super::instant_adapter::emit_period_between(chunks, current, line);
         }
-        "java.class_is_instance" => {
-            super::class_adapter::emit_is_instance(chunks, current, line);
-        }
         "java.class_name" => {
             super::reflection_adapter::emit_class_name(chunks, current, line);
         }

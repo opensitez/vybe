@@ -458,6 +458,15 @@ pub struct Compiler {
     /// compilation order, and augmenting types (traits / mixins / promoted
     /// fields) can be resolved by name. See flexclassplan.md §3a, §4c.
     normalized_classes: HashMap<String, vybe_bytecode::class_normalize::NormalClass>,
+    /// For the class being emitted: bound method name → the PROTOCOL SLOT key
+    /// that method also publishes under (`__vybe_slot_<id>`).
+    ///
+    /// Built in `compile_class`, where the `NormalMethod` and the class's
+    /// `special_methods` are both still in hand. By the time the bind sites run
+    /// a method is only a `(name, chunk_idx)` pair, so the role has to be
+    /// carried here or it is lost — which is exactly how the compiler ended up
+    /// re-deriving roles from spellings. See flexclassplan.md §2g.
+    current_class_slot_keys: HashMap<String, String>,
     current_class: Option<String>,
     current_namespace: Option<String>,
     /// Mirrors `NormalClass.implicit_self_fields` for the class the
@@ -2206,6 +2215,7 @@ impl Compiler {
             current_ref_out_params: None,
             pending_classes: HashMap::new(),
             normalized_classes: HashMap::new(),
+            current_class_slot_keys: HashMap::new(),
             current_class: None,
             current_namespace: None,
             current_class_implicit_self: false,
@@ -2508,6 +2518,7 @@ impl Compiler {
         // ALL normalized classes, THEN register member surfaces. Order matters
         // — a contributed member missing from registration reintroduces the
         // order-dependence bug (flexclassplan.md §3a, §4c).
+        self.record_platform_bases();
         self.apply_class_augmentations()?;
         self.predeclare_class_surfaces();
         self.predeclare_function_names(&merged_body);

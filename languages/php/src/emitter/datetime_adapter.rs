@@ -1589,11 +1589,7 @@ fn emit_format_code_dispatch(
                 let name_slot = alloc_local(&mut chunks[current]);
                 emit_timezone_name_from_dt_slot(&mut chunks[current], dt_slot, line);
                 local_set(&mut chunks[current], name_slot, line);
-                emit_timezone_offset_string_from_name_slot(
-                    &mut chunks[current],
-                    name_slot,
-                    line,
-                );
+                emit_timezone_offset_string_from_name_slot(&mut chunks[current], name_slot, line);
                 emit_append_to_result(&mut chunks[current], result_slot, line);
             },
         );

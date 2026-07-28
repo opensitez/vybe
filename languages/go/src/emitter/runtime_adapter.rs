@@ -110,10 +110,17 @@ fn emit_formatted_local(chunks: &mut [Chunk], current: usize, slot: u16, line: u
     }
     chunks[current].emit_else(line);
     {
-        // else: ecma:string.String(v)
-        chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-        let to_string = chunks[current].add_import("ecma:string", "String");
-        chunks[current].emit_call(to_string, 1, line);
+        // else: the value's ToString ROLE if it fills one, otherwise the ECMA
+        // `String()` coercion. A Go type says "here is my text form" by having
+        // `String() string` — that is all `fmt.Stringer` is — and the
+        // normalizer records it as `ProtocolSlot::ToString`, so this reaches it
+        // without the walker having to infer the receiver's type first (which
+        // is why `go_stringer_call_expr` only ever fired at some call sites).
+        vybe_compiler::compiler::expressions::emit_rich_to_string(
+            &mut chunks[current],
+            slot,
+            line,
+        );
     }
     chunks[current].emit_end(line);
 }

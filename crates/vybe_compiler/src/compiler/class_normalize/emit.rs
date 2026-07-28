@@ -58,10 +58,38 @@ pub fn normalize_class_from_ast(
         normalize_from_ast_legacy(span.clone(), cname, parents, interfaces, members, modifiers)
     };
     nc.is_value_type = is_value_type;
-    // Fill ALL direct bases centrally from the AST parents so no per-language
-    // normalizer has to. `parent` stays `parents.first()`; `bases[1..]` is only
-    // read behind the `class_multiple_inheritance` opt-in.
+    // Fill the fields that are a straight copy of this function's own
+    // arguments. Every one of the twelve normalizers wrote these identically —
+    // `parent: parents.first().cloned()`, `is_abstract: modifiers.is_abstract`,
+    // … — which is duplication AND a place to silently disagree (a language
+    // could take `parents.last()` and nothing would catch it). The caller
+    // already holds the answers, so it states them once.
+    //
+    nc.span = span;
+    nc.name = cname.to_string();
+    nc.parent = parents.first().cloned();
+    nc.is_abstract = modifiers.is_abstract;
+    nc.is_sealed = modifiers.is_sealed;
+    nc.is_partial = modifiers.is_partial;
+    // ALL direct bases: `parent` is `bases[0]`; `bases[1..]` is only read
+    // behind the `class_multiple_inheritance` opt-in.
     nc.bases = parents.to_vec();
+    // Interfaces are a COMMON concept — `classes.rs` merges them with
+    // reflection interfaces, dedups and registers them, which is what lets a
+    // Java class implement a PHP interface. So the DECLARED list is filled here
+    // and a normalizer never copies it.
+    //
+    // A language may still ADD an entry its rules mandate (Pascal: every class
+    // implicitly roots at `TObject`; Python: extra bases join the list under
+    // multiple inheritance). Those append to the declared list rather than
+    // replacing it — additive rules, not a second implementation.
+    let mut merged = interfaces.to_vec();
+    for extra in std::mem::take(&mut nc.interfaces) {
+        if !merged.iter().any(|i| i.eq_ignore_ascii_case(&extra)) {
+            merged.push(extra);
+        }
+    }
+    nc.interfaces = merged;
     Ok(nc)
 }
 
@@ -172,32 +200,22 @@ fn normalize_from_ast_legacy(
     }
 
     NormalClass {
-        augmentations: Vec::new(),
         span,
         name: name.to_string(),
         parent: parents.first().cloned(),
-        bases: Vec::new(),
         interfaces: interfaces.to_vec(),
         is_abstract: modifiers.is_abstract,
         is_sealed: modifiers.is_sealed,
         is_partial: modifiers.is_partial,
-        is_value_type: false,
         explicit_self_param: true,
-        implicit_self_fields: false,
         instance_fields,
         static_fields,
         instance_methods,
         static_methods,
-        properties: Vec::new(),
-        constructors: Vec::new(),
-        constructor: None,
-        destructor: None,
-        auto_init_methods: Vec::new(),
-        special_methods: Vec::new(),
-        event_bindings: Vec::new(),
         raw_extra_members,
+        ..Default::default()
     }
-    }
+}
 
 /// Compile a `NormalClass` — the compiler-neutral entry point.
 pub fn emit_class(compiler: &mut Compiler, class: NormalClass) -> Result<(), String> {

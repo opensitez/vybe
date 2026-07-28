@@ -1,5 +1,5 @@
 // Classes were centralized into the compiler. The OBJECT-level primitives
-// (method/accessor binding, the cross-language alias table) stayed in
+// (method/accessor binding, protocol-slot publication) stayed in
 // `vybe_compiler::compiler::object`, because crates BELOW the compiler — platforms/dotnet —
 // still call them. Class construction, registration and super wiring moved to
 // `vybe_compiler::compiler::classes`. This test spans both, so it names both.
@@ -7,110 +7,96 @@ use vybe_compiler::compiler::classes;
 use vybe_compiler::compiler::object;
 use vybe_compiler::compiler::dict;
 
-// ── cross_language_aliases lookup table ─────────────────────
+// ── protocol slots: cross-language reach without synonyms ───
+//
+// These replace a synonym-table test set. The table bound every language's
+// spelling of a special method as its own property, so the tests asserted
+// things like "Python __contains__ aliases to C# contains" — which is exactly
+// the behaviour that captured unrelated user methods. Reach is now a numeric
+// role key, so what is worth asserting is that roles are distinct and that
+// their keys cannot be spelled by a user.
+
+use vybe_ast::{ProtocolSlot, protocol_slot_key};
 
 #[test]
-fn alias_tostring_to_str() {
-    let aliases = object::cross_language_aliases("toString");
-    assert!(
-        aliases.contains(&"__str__"),
-        "JS toString should alias to Python __str__"
-    );
+fn one_role_is_one_key_whatever_the_language_calls_it() {
+    // Python `__str__`, Ruby `to_s`, PHP `__toString` and C# `ToString` all
+    // normalize to `ProtocolSlot::ToString` in their own crates; by the time
+    // a key is derived there is only the role left.
+    assert_eq!(protocol_slot_key(ProtocolSlot::ToString), "__vybe_slot_1");
 }
 
 #[test]
-fn alias_tostring_lowercase() {
-    let aliases = object::cross_language_aliases("tostring");
-    assert!(
-        aliases.contains(&"__str__"),
-        "VB tostring should alias to Python __str__"
-    );
-    assert!(
-        aliases.contains(&"toString"),
-        "VB tostring should alias to JS toString"
-    );
+fn slot_keys_are_derived_from_the_number_not_a_spelling() {
+    // The point of the numeric derivation: a user method genuinely named
+    // `toString` stays an ordinary member, because no slot key is ever a
+    // pronounceable identifier.
+    for slot in [
+        ProtocolSlot::ToString,
+        ProtocolSlot::Len,
+        ProtocolSlot::GetItem,
+        ProtocolSlot::Contains,
+    ] {
+        let key = protocol_slot_key(slot);
+        assert!(key.starts_with("__vybe_slot_"));
+        assert!(key["__vybe_slot_".len()..].chars().all(|c| c.is_ascii_digit()));
+    }
 }
 
 #[test]
-fn alias_len_length() {
-    let aliases = object::cross_language_aliases("__len__");
-    assert!(
-        aliases.contains(&"__get_length"),
-        "Python __len__ should alias to JS length"
-    );
-    assert!(
-        aliases.contains(&"__get_count"),
-        "Python __len__ should alias to VB/C# Count"
-    );
+fn distinct_roles_never_share_a_key() {
+    // Roles that DID share one until 2026-07-28: `/` and `//` both claimed
+    // Div, `__int__`/`__float__` both claimed ValueOf, and PHP's `__invoke`
+    // and `__call` both claimed Call. Each collision silently evicted one
+    // method when the other installed.
+    let pairs = [
+        (ProtocolSlot::Div, ProtocolSlot::FloorDiv),
+        (ProtocolSlot::Int, ProtocolSlot::Float),
+        (ProtocolSlot::Call, ProtocolSlot::CallMissing),
+        (ProtocolSlot::Eq, ProtocolSlot::Ne),
+    ];
+    for (a, b) in pairs {
+        assert_ne!(protocol_slot_key(a), protocol_slot_key(b), "{a:?} vs {b:?}");
+    }
 }
 
 #[test]
-fn alias_length_to_len() {
-    let aliases = object::cross_language_aliases("__get_length");
-    assert!(
-        aliases.contains(&"__len__"),
-        "JS length should alias to Python __len__"
+fn bind_with_slot_publishes_the_name_and_the_role() {
+    let mut chunk = Chunk::new("test");
+    object::emit_bind_method_with_slot(
+        &mut chunk,
+        0,
+        "__str__",
+        Some(ProtocolSlot::ToString),
+        0,
+        None,
+        1,
     );
+    let constants: Vec<String> = chunk
+        .constants
+        .iter()
+        .filter_map(|c| match c {
+            Value::String(text) => Some(text.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(constants.contains(&"__str__".to_string()));
+    assert!(constants.contains(&protocol_slot_key(ProtocolSlot::ToString)));
 }
 
 #[test]
-fn alias_contains_all_directions() {
-    let py = object::cross_language_aliases("__contains__");
-    let js = object::cross_language_aliases("includes");
-    let cs = object::cross_language_aliases("contains");
-    // All should map to the same set
-    assert!(
-        py.contains(&"includes"),
-        "Python __contains__ → JS includes"
-    );
-    assert!(
-        py.contains(&"contains"),
-        "Python __contains__ → C# contains"
-    );
-    assert!(
-        js.contains(&"__contains__"),
-        "JS includes → Python __contains__"
-    );
-    assert!(
-        cs.contains(&"__contains__"),
-        "C# contains → Python __contains__"
-    );
-}
-
-#[test]
-fn alias_bool_valueof() {
-    let aliases = object::cross_language_aliases("__bool__");
-    assert!(
-        aliases.contains(&"valueOf"),
-        "Python __bool__ should alias to JS valueOf"
-    );
-}
-
-#[test]
-fn alias_eq_equals() {
-    let aliases = object::cross_language_aliases("__eq__");
-    assert!(
-        aliases.contains(&"equals"),
-        "Python __eq__ should alias to C#/VB equals"
-    );
-}
-
-#[test]
-fn alias_regular_method_no_aliases() {
-    let aliases = object::cross_language_aliases("doSomething");
-    assert!(
-        aliases.is_empty(),
-        "Regular method names should have no aliases"
-    );
-}
-
-#[test]
-fn alias_repr() {
-    let aliases = object::cross_language_aliases("__repr__");
-    assert!(
-        aliases.contains(&"toDebugString"),
-        "__repr__ → toDebugString"
-    );
+fn an_ordinary_method_binds_under_one_name_only() {
+    let mut chunk = Chunk::new("test");
+    object::emit_bind_method_with_slot(&mut chunk, 0, "doSomething", None, 0, None, 1);
+    let names: Vec<String> = chunk
+        .constants
+        .iter()
+        .filter_map(|c| match c {
+            Value::String(text) => Some(text.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, vec!["doSomething".to_string()]);
 }
 
 // ── emit helpers produce correct bytecode ───────────────────

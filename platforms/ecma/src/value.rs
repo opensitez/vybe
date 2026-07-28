@@ -3012,9 +3012,32 @@ fn is_error_like_object(obj: &Arc<Mutex<Object>>) -> bool {
     matches!(object.properties.get("__type"), Some(Value::String(tag)) if tag.ends_with("Error"))
 }
 
+/// ECMA-262 §7.3.11 GetMethod(V, P) — resolve `method` on `receiver` for a
+/// call, walking the prototype chain.
+///
+/// §7.3.11 defers to §7.3.2 GetV, which is defined for ANY value: for a
+/// primitive it is ToObject(V) then `[[Get]]`, i.e. the lookup starts at that
+/// primitive's INTRINSIC prototype. This used to return `Null` for every
+/// non-object, so `Number.prototype.doubled = …; (5).doubled()` found nothing
+/// while `[1,2].second()` worked (arrays are ordinary objects) — an ECMA
+/// conformance bug, and the same gap that broke every Dart `extension on int` /
+/// `on String` / `on List<int>`.
+///
+/// `js_prototype_of` already answers for primitives (it is what
+/// `Object.getPrototypeOf(5)` returns), so no wrapper is allocated and no host
+/// function is added — this is the existing `ecma:value` surface behaving as
+/// the spec step it already implements.
 fn lookup_method_for_call(receiver: &Value, method: &str) -> Value {
-    let Value::Object(receiver_obj) = receiver else {
-        return Value::Null;
+    let receiver_obj = match receiver {
+        Value::Object(obj) => obj.clone(),
+        // Primitive: start at the intrinsic prototype. The method is returned
+        // UNBOUND — §7.3.2 passes the original primitive V as the receiver, not
+        // the wrapper, and the call site binds it as `this`. `null`/`undefined`
+        // have no prototype and fall out here.
+        _ => match crate::object::js_prototype_of(receiver) {
+            Value::Object(proto) => return lookup_user_member_on_chain(proto, method),
+            _ => return Value::Null,
+        },
     };
 
     let mut current = Some(receiver_obj.clone());
@@ -3040,6 +3063,60 @@ fn lookup_method_for_call(receiver: &Value, method: &str) -> Value {
     }
 
     Value::Null
+}
+
+/// Walk a prototype chain for a USER-installed `method`, returning it UNBOUND —
+/// the primitive-receiver case, where there is no object to bind and the call
+/// site supplies the primitive as `this`.
+///
+/// The intrinsic methods themselves (`valueOf`, `toFixed`, `toUpperCase`, …)
+/// are deliberately NOT returned here. They sit on the prototype as
+/// receiver-host-fn refs, which take the receiver as their first ARGUMENT, and
+/// they already resolve through the intrinsic dispatch (`dispatch_number` /
+/// `dispatch_string` / `dispatch_boolean`) that runs before this. Returning one
+/// would route it through the ordinary call-a-function-object convention, which
+/// passes the receiver as `this` instead — `(5).valueOf()` would read a missing
+/// argument and answer `0`.
+///
+/// So: builtins keep the path that already works, and only what a user put on
+/// the intrinsic prototype resolves here. That is the "not a known builtin"
+/// condition, decided structurally rather than from a name table.
+fn lookup_user_member_on_chain(start: Arc<Mutex<Object>>, method: &str) -> Value {
+    let mut current = Some(start);
+    while let Some(obj) = current {
+        let (found, next_proto) = {
+            let o = obj.lock().unwrap();
+            (
+                o.properties.get(method).cloned(),
+                o.properties.get("__proto__").cloned(),
+            )
+        };
+        if let Some(value) = found {
+            if !matches!(value, Value::Null | Value::Undefined) {
+                return if is_receiver_host_fn(&value) {
+                    Value::Null
+                } else {
+                    value
+                };
+            }
+        }
+        current = match next_proto {
+            Some(Value::Object(proto)) => Some(proto),
+            _ => None,
+        };
+    }
+    Value::Null
+}
+
+/// A builtin installed on an intrinsic prototype: it takes its receiver as the
+/// first argument, not as `this`.
+fn is_receiver_host_fn(value: &Value) -> bool {
+    let Value::Object(obj) = value else {
+        return false;
+    };
+    let o = obj.lock().unwrap();
+    matches!(o.kind, vybe_bytecode::value::ObjectKind::HostFunction(_))
+        && o.properties.contains_key("__vybe_method_receiver")
 }
 
 fn bind_method_receiver(receiver: Arc<Mutex<Object>>, method: Value) -> Value {

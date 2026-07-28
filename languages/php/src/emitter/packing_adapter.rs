@@ -192,7 +192,9 @@ pub fn emit_php_pack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     emit_slot_eq_str(&mut chunks[current], fmt, "C", line);
     chunks[current].emit_if_value(line);
     if argc >= 2 {
-        vybe_compiler::compiler::packing::emit_pack_byte_from_f64_slot(chunks, current, first, line);
+        vybe_compiler::compiler::packing::emit_pack_byte_from_f64_slot(
+            chunks, current, first, line,
+        );
     } else {
         chunks[current].emit_string_const("", line);
     }
@@ -201,10 +203,22 @@ pub fn emit_php_pack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     emit_slot_eq_str(&mut chunks[current], fmt, "CCC", line);
     chunks[current].emit_if_value(line);
     if argc >= 4 {
-        vybe_compiler::compiler::packing::emit_pack_byte_from_f64_slot(chunks, current, first, line);
-        vybe_compiler::compiler::packing::emit_pack_byte_from_f64_slot(chunks, current, first + 1, line);
+        vybe_compiler::compiler::packing::emit_pack_byte_from_f64_slot(
+            chunks, current, first, line,
+        );
+        vybe_compiler::compiler::packing::emit_pack_byte_from_f64_slot(
+            chunks,
+            current,
+            first + 1,
+            line,
+        );
         emit_concat_top(chunks, current, line);
-        vybe_compiler::compiler::packing::emit_pack_byte_from_f64_slot(chunks, current, first + 2, line);
+        vybe_compiler::compiler::packing::emit_pack_byte_from_f64_slot(
+            chunks,
+            current,
+            first + 2,
+            line,
+        );
         emit_concat_top(chunks, current, line);
     } else {
         chunks[current].emit_string_const("", line);
@@ -214,8 +228,15 @@ pub fn emit_php_pack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     emit_slot_eq_str(&mut chunks[current], fmt, "C2", line);
     chunks[current].emit_if_value(line);
     if argc >= 3 {
-        vybe_compiler::compiler::packing::emit_pack_byte_from_f64_slot(chunks, current, first, line);
-        vybe_compiler::compiler::packing::emit_pack_byte_from_f64_slot(chunks, current, first + 1, line);
+        vybe_compiler::compiler::packing::emit_pack_byte_from_f64_slot(
+            chunks, current, first, line,
+        );
+        vybe_compiler::compiler::packing::emit_pack_byte_from_f64_slot(
+            chunks,
+            current,
+            first + 1,
+            line,
+        );
         emit_concat_top(chunks, current, line);
     } else {
         chunks[current].emit_string_const("", line);
@@ -386,9 +407,21 @@ pub fn emit_php_unpack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     let second_slot = alloc_local(&mut chunks[current]);
     emit_map_new(chunks, current, line);
     lset(&mut chunks[current], map_slot, line);
-    vybe_compiler::compiler::packing::emit_char_code_at_i32_const(chunks, current, string_slot, 0, line);
+    vybe_compiler::compiler::packing::emit_char_code_at_i32_const(
+        chunks,
+        current,
+        string_slot,
+        0,
+        line,
+    );
     lset(&mut chunks[current], first_slot, line);
-    vybe_compiler::compiler::packing::emit_char_code_at_i32_const(chunks, current, string_slot, 1, line);
+    vybe_compiler::compiler::packing::emit_char_code_at_i32_const(
+        chunks,
+        current,
+        string_slot,
+        1,
+        line,
+    );
     lset(&mut chunks[current], second_slot, line);
     emit_map_set_string_key(chunks, current, map_slot, "first", first_slot, line);
     emit_map_set_string_key(chunks, current, map_slot, "second", second_slot, line);
@@ -413,7 +446,13 @@ pub fn emit_php_unpack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     lget(&mut chunks[current], len_slot, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
     vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
-    vybe_compiler::compiler::packing::emit_char_code_at_i32_slot(chunks, current, string_slot, i_slot, line);
+    vybe_compiler::compiler::packing::emit_char_code_at_i32_slot(
+        chunks,
+        current,
+        string_slot,
+        i_slot,
+        line,
+    );
     lset(&mut chunks[current], byte_slot, line);
     lget(&mut chunks[current], star_map, line);
     lget(&mut chunks[current], i_slot, line);

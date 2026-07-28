@@ -3119,9 +3119,18 @@ impl Compiler {
                             self.emit(Op::I32_EQZ);
                             let line = self.line;
                             self.chunk().emit_if(line);
-                            // Probe __toString.
+                            // Probe the ToString SLOT, not the PHP spelling. A
+                            // value echoed here may have been declared in any
+                            // language — the slot is filled by Python's
+                            // `__str__`, Ruby's `to_s` and C#'s `ToString`
+                            // just as much as by PHP's `__toString`, so this
+                            // stringifies a foreign object correctly instead of
+                            // falling through to the default rendering.
                             self.emit_u16(Op::LOCAL_GET, v_slot);
-                            let ts_key = self.str_const("__toString");
+                            let ts_key =
+                                self.str_const(&vybe_ast::protocol_slot_key(
+                                    vybe_ast::ProtocolSlot::ToString,
+                                ));
                             self.emit_u16(Op::STRUCT_GET, ts_key);
                             let fn_slot = self.define_local("__echo_ts_fn");
                             self.emit_u16(Op::LOCAL_SET, fn_slot);
@@ -5218,7 +5227,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
                     self.compile_expr(index)?;
                     self.emit_u16(Op::LOCAL_SET, key_slot);
-                    let setter = self.str_const("__setitem__");
+                    let setter = self.str_const(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::SetItem));
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_u16(Op::STRUCT_GET, setter);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);

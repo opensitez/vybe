@@ -110,6 +110,16 @@ pub fn emit_common(
             }
             object::emit_to_string_or(&mut chunks[current], line);
         }
+        // Text conversion that resolves the ToString ROLE first and falls back
+        // to the ECMA `String()` coercion. A language whose print path binds
+        // this reaches a user's string conversion whatever the CLASS's own
+        // language spelled it — Go's `String()`, Python's `__str__`, Ruby's
+        // `to_s` — because the lookup is the numeric slot, not a name.
+        "object.to_string_role" => {
+            let slot = chunks[current].alloc_scratch(1);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+            crate::compiler::expressions::emit_rich_to_string(&mut chunks[current], slot, line);
+        }
 
         // ── Reflection substrate ──
         // These are runtime primitives only. Language adapters retain their

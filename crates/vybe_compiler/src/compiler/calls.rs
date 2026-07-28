@@ -7492,6 +7492,49 @@ impl Compiler {
                 return Ok(());
             }
 
+            if field.eq_ignore_ascii_case("Invoke") {
+                let receiver_type_hint = self.infer_expr_type_hint(object);
+                let receiver_is_delegate = receiver_type_hint
+                    .as_deref()
+                    .is_some_and(|type_hint| Self::is_callable_type_hint(type_hint))
+                    || (self.profile.namespaces.use_dotnet
+                        && receiver_type_hint.as_deref().is_some_and(|type_hint| {
+                            let normalized = Self::normalize_type_hint(type_hint);
+                            !self.defined_classes.contains(&self.canon(&normalized))
+                                && !matches!(
+                                    normalized.to_ascii_lowercase().as_str(),
+                                    "object"
+                                        | "system.object"
+                                        | "string"
+                                        | "system.string"
+                                        | "integer"
+                                        | "int"
+                                        | "int32"
+                                        | "system.int32"
+                                        | "boolean"
+                                        | "bool"
+                                        | "system.boolean"
+                                )
+                        }))
+                    || matches!(
+                        object.kind,
+                        ExprKind::Lambda { .. } | ExprKind::AddressOf(_)
+                    );
+                if receiver_is_delegate {
+                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                    for arg in &arg_exprs {
+                        self.compile_expr(arg)?;
+                    }
+                    common::delegates::emit_invoke(
+                        &mut self.chunks,
+                        self.current,
+                        (arg_exprs.len() + 1) as u8,
+                        self.line,
+                    );
+                    return Ok(());
+                }
+            }
+
             let receiver_key = self.str_const("__vybe_method_receiver");
 
             let buffered_generator_end = if self.profile.buffered_iterator_methods {
@@ -8882,6 +8925,43 @@ impl Compiler {
                 return Ok(());
             }
 
+            if !is_known_func {
+                let is_delegate_typed = self.lookup_var_type_hint(name).is_some_and(|type_hint| {
+                    Self::is_callable_type_hint(type_hint)
+                        || (self.profile.namespaces.use_dotnet && {
+                            let normalized = Self::normalize_type_hint(type_hint);
+                            !self.defined_classes.contains(&self.canon(&normalized))
+                                && !matches!(
+                                    normalized.to_ascii_lowercase().as_str(),
+                                    "object"
+                                        | "system.object"
+                                        | "string"
+                                        | "system.string"
+                                        | "integer"
+                                        | "int"
+                                        | "int32"
+                                        | "system.int32"
+                                        | "boolean"
+                                        | "bool"
+                                        | "system.boolean"
+                                )
+                        })
+                });
+                if is_delegate_typed {
+                    self.emit_var_get(name);
+                    for arg in &arg_exprs {
+                        self.compile_expr(arg)?;
+                    }
+                    common::delegates::emit_invoke(
+                        &mut self.chunks,
+                        self.current,
+                        (arg_exprs.len() + 1) as u8,
+                        self.line,
+                    );
+                    return Ok(());
+                }
+            }
+
             // VB array access: `arr(idx)` when `arr` is a known data variable
             // (local OR top-level global from `Dim arr(5)`) and is NOT a
             // declared function or class. VB syntactically overloads `()` for
@@ -9300,7 +9380,11 @@ impl Compiler {
                 self.chunk().emit_if_value(line);
 
                 self.emit_u16(Op::LOCAL_GET, callee_slot);
-                let dunder_prop = self.str_const("__call__");
+                // The Call SLOT. Python spells it `__call__`, PHP `__invoke`,
+                // Dart `call`, C# an `()` operator — one slot, so a callable
+                // object stays callable across the language boundary.
+                let dunder_prop =
+                    self.str_const(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Call));
                 self.emit_u16(Op::STRUCT_GET, dunder_prop);
                 let dunder_slot = self.define_local("__py_dunder_call_method");
                 self.emit_u16(Op::LOCAL_SET, dunder_slot);

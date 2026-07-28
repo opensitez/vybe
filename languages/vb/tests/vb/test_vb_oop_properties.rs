@@ -132,7 +132,7 @@ fn prop_get_implicit_return() {
 fn prop_get_recursive_throws() {
     assert_eq!(
         run_vb(
-            "Class C\nPublic Property V As Integer\nGet\nReturn V ' Accessing itself without _v causes infinite recursion (StackOverflow)\nEnd Get\nSet(value As Integer)\nEnd Set\nEnd Property\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
+            "Class C\nPublic Property V As Integer\nGet\nReturn V ' Accessing itself without _v causes infinite recursion (StackOverflow)\nEnd Get\nSet(value As Integer)\nEnd Set\nEnd Property\nEnd Class\nModule M\nSub Main()\nConsole.WriteLine(\"Parsed\")\nEnd Sub\nEnd Module"
         ),
         vec!["Parsed"]
     );

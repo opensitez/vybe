@@ -16,7 +16,7 @@ use vybe_ast::{
     ClassMember, ClassModifiers, ConstructorInitializerTarget, Span, StmtKind, Visibility,
 };
 use vybe_bytecode::class_normalize::{
-    canonical::{ClassLang, canonicalize_method},
+    NormalMembers,
     from_method_stmt,
     types::*,
 };
@@ -29,14 +29,7 @@ pub fn normalize_class(
     members: &[ClassMember],
     modifiers: &ClassModifiers,
 ) -> NormalClass {
-    let mut raw_extra_members: Vec<ClassMember> = Vec::new();
-    let mut instance_fields: Vec<NormalField> = Vec::new();
-    let mut static_fields: Vec<NormalField> = Vec::new();
-    let mut instance_methods: Vec<NormalMethod> = Vec::new();
-    let mut static_methods: Vec<NormalMethod> = Vec::new();
-    let mut constructors: Vec<NormalConstructor> = Vec::new();
-    let mut constructor: Option<NormalConstructor> = None;
-    let mut special_methods: Vec<SpecialMethod> = Vec::new();
+    let mut out = NormalMembers::default();
 
     for member in members {
         match member {
@@ -54,14 +47,10 @@ pub fn normalize_class(
                     type_hint: type_hint.clone(),
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
-                    access: access_from_visibility(m.visibility),
+                    access: Access::from(m.visibility),
                     readonly: m.is_readonly,
                 };
-                if m.is_static {
-                    static_fields.push(field);
-                } else {
-                    instance_fields.push(field);
-                }
+                out.push_field(m.is_static, field);
             }
             ClassMember::Method(stmt) => {
                 let StmtKind::FunctionDecl {
@@ -73,8 +62,8 @@ pub fn normalize_class(
                     continue;
                 };
 
-                let (canonical, special_kind) = canonicalize_method(ClassLang::Java, src_name);
-                let access = access_from_visibility(m.visibility);
+                let (canonical, special_kind) = crate::protocol::canonical_method(src_name);
+                let access = Access::from(m.visibility);
                 if m.is_abstract {
                     continue;
                 }
@@ -82,17 +71,13 @@ pub fn normalize_class(
                     continue;
                 };
                 if let Some(kind) = special_kind {
-                    special_methods.push(SpecialMethod {
+                    out.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical.clone(),
                         source_name: src_name.clone(),
                     });
                 }
-                if m.is_static {
-                    static_methods.push(method);
-                } else {
-                    instance_methods.push(method);
-                }
+                out.push_method(m.is_static, method);
             }
             ClassMember::Constructor {
                 params,
@@ -128,51 +113,24 @@ pub fn normalize_class(
                     },
                     named_name: None,
                 };
-                constructor = Some(normalized.clone());
-                constructors.push(normalized);
+                out.push_constructor(normalized);
             }
+            // Java's augmentation is interface `default` methods, declared
+            // through `implements` in the class HEADER rather than as a body
+            // member. Migrating them is flexclassplan.md §4c-R step R7, and it
+            // needs `Chain` first.
+            ClassMember::Augment(_) => {}
             other @ (ClassMember::Property { .. }
             | ClassMember::Event { .. }
             | ClassMember::Const { .. }
             | ClassMember::NestedType(_)) => {
-                raw_extra_members.push(other.clone());
+                out.raw_extra_members.push(other.clone());
             }
         }
     }
 
-    NormalClass {
-        augmentations: Vec::new(),
-        span,
-        name: name.to_string(),
-        parent: parents.first().cloned(),
-        bases: Vec::new(),
-        interfaces: interfaces.to_vec(),
-        is_abstract: modifiers.is_abstract,
-        is_sealed: modifiers.is_sealed,
-        is_partial: false,
-        is_value_type: false,
-        explicit_self_param: false,
-        implicit_self_fields: false,
-        instance_fields,
-        static_fields,
-        instance_methods,
-        static_methods,
-        properties: Vec::new(),
-        constructors,
-        constructor,
-        destructor: None,
-        auto_init_methods: Vec::new(),
-        special_methods,
-        event_bindings: Vec::new(),
-        raw_extra_members,
-    }
-    }
-
-fn access_from_visibility(v: Visibility) -> Access {
-    match v {
-        Visibility::Public => Access::Public,
-        Visibility::Protected => Access::Protected,
-        Visibility::Private => Access::Private,
-        Visibility::Internal => Access::Internal,
-    }
+    // Java states nothing beyond its members: `this` is implicit, bare
+    // identifiers do not resolve to fields, and classes are reference types.
+    NormalClass::default().with_members(out)
 }
+

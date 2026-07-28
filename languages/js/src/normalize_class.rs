@@ -35,8 +35,8 @@ use vybe_ast::{
     PropertySetter, Span, Statement, StmtKind,
 };
 use vybe_bytecode::class_normalize::{
+    NormalMembers,
     build_normal_method,
-    canonical::{ClassLang, canonicalize_method},
     from_method_stmt,
     types::*,
 };
@@ -55,14 +55,7 @@ pub fn normalize_class(
     members: &[ClassMember],
     modifiers: &ClassModifiers,
 ) -> NormalClass {
-    let mut raw_extra_members: Vec<ClassMember> = Vec::new();
-    let mut instance_fields: Vec<NormalField> = Vec::new();
-    let mut static_fields: Vec<NormalField> = Vec::new();
-    let mut instance_methods: Vec<NormalMethod> = Vec::new();
-    let mut static_methods: Vec<NormalMethod> = Vec::new();
-    let mut properties: Vec<NormalProperty> = Vec::new();
-    let mut constructor: Option<NormalConstructor> = None;
-    let mut special_methods: Vec<SpecialMethod> = Vec::new();
+    let mut out = NormalMembers::default();
 
     for member in members {
         match member {
@@ -83,11 +76,7 @@ pub fn normalize_class(
                     access: access_for_js(fname),
                     readonly: false, // JS doesn't have readonly at class field level
                 };
-                if modifiers.is_static {
-                    static_fields.push(field);
-                } else {
-                    instance_fields.push(field);
-                }
+                out.push_field(modifiers.is_static, field);
             }
             ClassMember::Method(stmt) => {
                 if let Some(nm) = method_from_funcdecl(span.clone(), stmt) {
@@ -95,30 +84,26 @@ pub fn normalize_class(
                         && (nm.source_name == "__static_init"
                             || nm.source_name == "__static_init__")
                     {
-                        static_fields.push(static_block_field(
-                            span.clone(),
-                            static_fields.len(),
-                            nm.body,
-                        ));
+                        let block_index = out.static_fields.len();
+                        out.push_field(
+                            true,
+                            static_block_field(span.clone(), block_index, nm.body),
+                        );
                         continue;
                     }
-                    let (canon, kind) = canonicalize_method(ClassLang::Js, &nm.source_name);
+                    let (canon, kind) = crate::protocol::canonical_method(&nm.source_name);
                     let nm = NormalMethod {
                         canonical_name: canon.clone(),
                         ..nm
                     };
                     if let Some(k) = kind {
-                        special_methods.push(SpecialMethod {
+                        out.special_methods.push(SpecialMethod {
                             kind: k,
                             canonical_name: canon,
                             source_name: nm.source_name.clone(),
                         });
                     }
-                    if is_static_method(stmt) {
-                        static_methods.push(nm);
-                    } else {
-                        instance_methods.push(nm);
-                    }
+                    out.push_method(is_static_method(stmt), nm);
                 }
             }
             ClassMember::Constructor {
@@ -127,7 +112,7 @@ pub fn normalize_class(
                 base_args,
                 ..
             } => {
-                constructor = Some(NormalConstructor {
+                out.push_constructor(NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
                     body: body.clone(),
@@ -154,7 +139,7 @@ pub fn normalize_class(
                 modifiers,
                 ..
             } => {
-                let (canon, _kind) = canonicalize_method(ClassLang::Js, pname);
+                let (canon, _kind) = crate::protocol::canonical_method(pname);
                 let mut prop_mods = Modifiers::default();
                 prop_mods.is_override = modifiers.is_override;
                 let getter_method = getter.as_ref().map(|body| {
@@ -162,7 +147,6 @@ pub fn normalize_class(
                         span.clone(),
                         &canon,
                         pname,
-                        Vec::new(),
                         vec![],
                         None,
                         body.clone(),
@@ -178,7 +162,6 @@ pub fn normalize_class(
                         span.clone(),
                         &canon,
                         pname,
-                        Vec::new(),
                         vec![s.param.clone()],
                         None,
                         s.body.clone(),
@@ -189,7 +172,7 @@ pub fn normalize_class(
                         prop_mods.clone(),
                     )
                 });
-                properties.push(NormalProperty {
+                out.properties.push(NormalProperty {
                     span: span.clone(),
                     canonical_name: canon,
                     source_name: pname.clone(),
@@ -203,41 +186,24 @@ pub fn normalize_class(
             // (those are VB / C# / Pascal constructs). Keep the match
             // exhaustive so future ClassMember additions force a
             // conscious choice here.
+            // JS has no augmentation declaration: a "mixin" is a plain function
+            // that mutates a prototype at runtime, which the prototype fallback
+            // (§4d) already handles. Nothing static to declare.
+            ClassMember::Augment(_) => {}
             other @ (ClassMember::Event { .. }
             | ClassMember::Const { .. }
             | ClassMember::NestedType(_)) => {
-                raw_extra_members.push(other.clone());
+                out.raw_extra_members.push(other.clone());
             }
         }
     }
 
     NormalClass {
-        augmentations: Vec::new(),
-        span,
-        name: name.to_string(),
-        parent: parents.first().cloned(),
-        bases: Vec::new(),
-        interfaces: Vec::new(),
-        is_abstract: modifiers.is_abstract,
-        is_sealed: modifiers.is_sealed,
-        is_partial: false,
-        is_value_type: false,
-        explicit_self_param: false,
         implicit_self_fields: false, // JS: bare `foo` doesn't resolve to this.foo
-        instance_fields,
-        static_fields,
-        instance_methods,
-        static_methods,
-        properties,
-        constructors: Vec::new(),
-        constructor,
-        destructor: None, // JS has no destructor syntax
-        auto_init_methods: Vec::new(),
-        special_methods,
-        event_bindings: Vec::new(),
-        raw_extra_members,
+        ..Default::default() // JS has no destructor syntax
     }
-    }
+    .with_members(out)
+}
 
 fn static_block_field(span: Span, index: usize, body: Vec<Statement>) -> NormalField {
     let lambda = Expression::new(ExprKind::Lambda {

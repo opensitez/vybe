@@ -572,6 +572,75 @@ pub enum ClassMember {
     },
 
     NestedType(Box<Statement>),
+
+    /// The class draws members from another declared type: PHP `use T;`,
+    /// Dart `with M`, Ruby `include`/`prepend`, Java interface `default`
+    /// methods, Go field promotion.
+    ///
+    /// This is a DECLARATION, not a fold. Every language parsed it and then
+    /// dropped it into a walker thread-local (`TRAIT_USAGES` / `TRAIT_ALIASES` /
+    /// `TRAIT_PRECEDENCES` in PHP, `DART_CLASS_MIXINS` in Dart) because the AST
+    /// had nowhere to put it — which is why each language then had to fold it
+    /// itself. A thread-local is also cleared per `parse()`, so it cannot
+    /// survive multi-file compilation.
+    ///
+    /// The walker records what the source said; `normalize_class` turns it into
+    /// an `Augmentation`; the shared `class_augmentation` pass applies it once.
+    /// See flexclassplan.md §4c-R.
+    Augment(AugmentDecl),
+}
+
+/// One augmentation clause as the source wrote it.
+#[derive(Debug, Clone, Default)]
+pub struct AugmentDecl {
+    /// The augmenting type's name, in the SOURCE spelling — the compiler
+    /// resolves it against declared classes (a trait may be referenced short
+    /// and declared fully qualified).
+    pub from: String,
+    /// Go field promotion only: the field the receiver rebinds to.
+    pub via_field: Option<String>,
+    /// Per-member adjustments (PHP `as` / `insteadof`). Empty for every other
+    /// language's mechanism.
+    pub adjustments: Vec<AugmentAdjustment>,
+}
+
+/// A per-member adjustment on an augmentation clause: PHP `A::run as protected
+/// go;` (rename and/or change visibility) and `A::run insteadof B;` (exclude).
+///
+/// PHP's `as` is ADDITIVE — the member stays bound under its own name too — and
+/// it composes with `insteadof`, so an excluded member is still reachable under
+/// its alias.
+#[derive(Debug, Clone, Default)]
+pub struct AugmentAdjustment {
+    /// Source member this applies to.
+    pub member: String,
+    /// Also bind under this name (PHP `as other`).
+    pub rename_to: Option<String>,
+    /// Override the member's visibility (PHP `as protected run`).
+    pub visibility: Option<Visibility>,
+    /// Drop this member from THIS augmentation (PHP `insteadof`).
+    pub exclude: bool,
+}
+
+/// What kind of type a `ClassDecl` actually declares.
+///
+/// `class`, `interface`, `trait`, `mixin` and `module` all parse to
+/// `StmtKind::ClassDecl` with nothing to tell them apart, so PHP kept a
+/// `trait_names: HashSet` and Dart a `DART_MIXIN_NAMES` in walker thread-locals
+/// to recover it. The compiler needs it to know a type is not instantiable and
+/// to answer `trait_exists` / `kind_of?`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClassKind {
+    #[default]
+    Class,
+    Interface,
+    /// PHP `trait` — an augmentation source, never instantiable.
+    Trait,
+    /// Dart `mixin` — an augmentation source with an optional `on` constraint.
+    Mixin,
+    /// Ruby `module` — an augmentation source, and a namespace.
+    Module,
+    Struct,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1601,6 +1670,307 @@ pub enum CompoundOp {
 // Modifiers
 // ════════════════════════════════════════════════════════════════════════════
 
+/// Cross-language operator + protocol method identity — the PROTOCOL SLOT.
+/// Every language that defines one of these concepts under its own name
+/// resolves to the same variant: Python `__str__`, Ruby `to_s`, PHP
+/// `__toString`, C# `ToString` are one slot, not five spellings.
+///
+/// A slot is reached by its [`slot_id`](ProtocolSlot::slot_id) — an
+/// integer — never by a name. That is the whole point: a shared *string* like
+/// `"tostring"` lives in the identifier namespace, so it collides with a user
+/// method of that name in one direction and cannot carry a per-language
+/// signature in the other (flexclassplan.md §1e, §2a, §2g). Construction
+/// already works this way — `ExprKind::New` names no constructor in any of the
+/// 261 walker sites that emit it — and this is that mechanism for the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProtocolSlot {
+    // ── Lifecycle ───────────────────────────────────────────────────
+    /// The class's destructor / finaliser. PHP `__destruct`, Python
+    /// `__del__`, C# `~Foo()`, Pascal `destructor Destroy`, VB `Finalize`.
+    ///
+    /// Every one of those was previously re-derived by a bespoke string test
+    /// inside the language's own normalizer — four different checks in four
+    /// crates for one concept. It resolves here like every other cross-language
+    /// method identity, so a language declares its spelling once and the
+    /// normalizer routes on the KIND.
+    Destructor,
+
+    // ── Coercion / representation ───────────────────────────────────
+    ToString,    // JS toString, C# ToString, Python __str__, Ruby to_s, PHP __toString
+    Repr,        // Python __repr__, Ruby inspect, PHP __debugInfo
+    ValueOf,     // JS valueOf
+    ToPrimitive, // JS Symbol.toPrimitive
+    /// Truthiness — Python `__bool__`, C# `operator true`, Ruby `truthy?`.
+    /// Distinct from [`ValueOf`](ProtocolSlot::ValueOf): a class can define
+    /// both, and `if (obj)` must reach this one.
+    Bool,
+    Int,    // Python __int__
+    Float,  // Python __float__
+    Bytes,  // Python __bytes__
+    Format, // Python __format__
+    /// Serialization hooks — PHP `__serialize` / `__sleep`, `jsonSerialize`.
+    Serialize,
+    /// The reverse — PHP `__unserialize` / `__wakeup`.
+    Deserialize,
+    /// Explicit copy — PHP `__clone`, Java `clone`, C# `Clone`, Python
+    /// `__copy__`.
+    Clone,
+
+    // ── Iteration ───────────────────────────────────────────────────
+    Iterator,      // JS Symbol.iterator, Python __iter__, Ruby each, C# GetEnumerator
+    AsyncIterator, // JS Symbol.asyncIterator, Python __aiter__
+    Next,          // JS iterator.next, Python __next__, Dart moveNext
+    AsyncNext,     // Python __anext__
+    Reversed,      // Python __reversed__, Ruby reverse_each
+
+    // ── Arithmetic operators ────────────────────────────────────────
+    Add,
+    Sub,
+    Mul,
+    Div,
+    /// Truncating division — Python `__floordiv__`, Dart `operator ~/`.
+    /// Its own slot rather than sharing [`Div`](ProtocolSlot::Div): Python
+    /// classes routinely define both, and one slot cannot hold two methods.
+    FloorDiv,
+    Mod,
+    Pow,
+    MatMul, // Python __matmul__ (@)
+    Neg,
+    Pos, // unary + — Python __pos__
+    Abs, // Python __abs__
+
+    // ── Numeric rounding protocol ───────────────────────────────────
+    Round, // Python __round__
+    Floor, // Python __floor__
+    Ceil,  // Python __ceil__
+    Trunc, // Python __trunc__
+    Index, // Python __index__ — lossless conversion to an integer index
+
+    // ── Comparison ──────────────────────────────────────────────────
+    Eq,      // ==
+    Ne,      // != / <> — C# `operator !=`, VB `Operator <>`, Python __ne__
+    Compare, // <=> (Ruby) / __cmp__ (Python legacy) / CompareTo (C#)
+    Lt,
+    Le,
+    Gt,
+    Ge,
+
+    // ── Bitwise ─────────────────────────────────────────────────────
+    And,
+    Or,
+    Xor,
+    Not,
+    LShift,
+    RShift,
+
+    // ── Container protocol ──────────────────────────────────────────
+    Len,      // len() / length / size / Count
+    GetItem,  // Python __getitem__, Ruby [], Dart operator [], PHP offsetGet
+    SetItem,  // Python __setitem__, Ruby []=, Dart operator []=, PHP offsetSet
+    DelItem,  // Python __delitem__, PHP offsetUnset
+    HasItem,  // PHP offsetExists
+    Missing,  // Python __missing__ — key absent from a mapping subclass
+    Contains, // Python __contains__, Ruby include?, Dart contains
+
+    // ── Callable / reflection ───────────────────────────────────────
+    Call, // Python __call__, PHP __invoke, Dart call, C# ()
+    /// The missing-method interceptor — PHP `__call`, Ruby `method_missing`,
+    /// Dart `noSuchMethod`. NOT [`Call`](ProtocolSlot::Call): a PHP class may
+    /// define `__invoke` and `__call` at once, and folding both onto one slot
+    /// means the second install silently evicts the first.
+    CallMissing,
+    /// The static-side missing-method interceptor — PHP `__callStatic`.
+    CallStatic,
+    HasInstance, // JS Symbol.hasInstance, Python __instancecheck__
+
+    // ── Property access interception ────────────────────────────────
+    GetAttr, // Python __getattr__, PHP __get, JS Proxy get
+    SetAttr, // Python __setattr__, PHP __set, JS Proxy set
+    DelAttr, // Python __delattr__, PHP __unset
+    HasAttr, // PHP __isset, JS Proxy has
+
+    // ── Context managers ────────────────────────────────────────────
+    Enter,      // Python __enter__, C#/Java using-block acquire
+    Exit,       // Python __exit__, Java AutoCloseable.close, C# Dispose
+    AsyncEnter, // Python __aenter__
+    AsyncExit,  // Python __aexit__
+
+    // ── Hash ────────────────────────────────────────────────────────
+    Hash, // Python __hash__, Ruby hash, C# GetHashCode, Java hashCode
+
+    // ── In-place (augmented-assignment) operators ───────────────────
+    //
+    // `x += y` is a DISTINCT method from `x + y` wherever a language lets a
+    // class mutate in place (Python's `__iadd__` family). Without their own
+    // slots these fall back to the binary op, which silently turns a mutation
+    // into a rebind.
+    IAdd,
+    ISub,
+    IMul,
+    IDiv,
+    IFloorDiv,
+    IMod,
+    IPow,
+    IMatMul,
+    IAnd,
+    IOr,
+    IXor,
+    ILShift,
+    IRShift,
+
+    // ── Reflected (right-hand) operators ────────────────────────────
+    //
+    // `2 + vec` — the LEFT operand's type has no rule for the right one, so
+    // dispatch reflects onto the right operand's method (Python `__radd__`).
+    // A separate slot per operator because the parameter order differs.
+    RAdd,
+    RSub,
+    RMul,
+    RDiv,
+    RFloorDiv,
+    RMod,
+    RPow,
+    RMatMul,
+    RAnd,
+    ROr,
+    RXor,
+    RLShift,
+    RRShift,
+}
+
+/// The reserved property holding a class's protocol slot table.
+///
+/// ONE hidden key per object, whose value would map `slot_id` → the bound
+/// method. The per-key form ([`protocol_slot_key`]) is what shipped; this name
+/// is reserved so the two cannot both be claimed.
+///
+/// What both replace: a synonym table that stamped every cross-language
+/// SPELLING of a method as its own property, so a Python class declaring
+/// `__str__` also published `toString`, `tostring`, `ToString`, `to_s` and
+/// `__toString` — five extra names in the same namespace user members live in.
+/// That is what let a synonym set capture an unrelated user method (Dart's
+/// `add`, `contains`, `length`). Deleted 2026-07-28.
+pub const PROTOCOL_SLOT_TABLE: &str = "__vybe_slots";
+
+/// The reserved member key a slot's implementation is published under.
+///
+/// Derived from the slot's NUMBER, never from any language's spelling — that is
+/// the whole difference from the synonym stamping it replaces. `ToString` is
+/// `__vybe_slot_1` whether the source wrote `__str__`, `to_s`, `toString` or
+/// `__toString`, so a caller in any language reaches the same member, and a
+/// user method genuinely named `toString` stays an ordinary member that nothing
+/// else can capture.
+pub fn protocol_slot_key(slot: ProtocolSlot) -> String {
+    format!("__vybe_slot_{}", slot.slot_id())
+}
+
+impl ProtocolSlot {
+    /// The slot's stable numeric identity — what dispatch keys on.
+    ///
+    /// Stable because it is written out, not derived from declaration order: a
+    /// variant inserted in the middle must not renumber the others, since the
+    /// ids are emitted into bytecode. Add new slots at the END of this match.
+    pub fn slot_id(self) -> u16 {
+        use ProtocolSlot::*;
+        match self {
+            Destructor => 0,
+            ToString => 1,
+            Repr => 2,
+            ValueOf => 3,
+            ToPrimitive => 4,
+            Iterator => 5,
+            AsyncIterator => 6,
+            Next => 7,
+            Add => 8,
+            Sub => 9,
+            Mul => 10,
+            Div => 11,
+            Mod => 12,
+            Pow => 13,
+            Neg => 14,
+            Eq => 15,
+            Compare => 16,
+            Lt => 17,
+            Le => 18,
+            Gt => 19,
+            Ge => 20,
+            And => 21,
+            Or => 22,
+            Xor => 23,
+            Not => 24,
+            LShift => 25,
+            RShift => 26,
+            Len => 27,
+            GetItem => 28,
+            SetItem => 29,
+            DelItem => 30,
+            Contains => 31,
+            Call => 32,
+            HasInstance => 33,
+            GetAttr => 34,
+            SetAttr => 35,
+            DelAttr => 36,
+            Enter => 37,
+            Exit => 38,
+            Hash => 39,
+            // Appended 2026-07-28 — ids continue from 39, existing ones unmoved.
+            FloorDiv => 40,
+            Bool => 41,
+            Int => 42,
+            Float => 43,
+            Bytes => 44,
+            Format => 45,
+            Serialize => 46,
+            Deserialize => 47,
+            Clone => 48,
+            AsyncNext => 49,
+            Reversed => 50,
+            MatMul => 51,
+            Pos => 52,
+            Abs => 53,
+            Round => 54,
+            Floor => 55,
+            Ceil => 56,
+            Trunc => 57,
+            Index => 58,
+            Ne => 59,
+            HasItem => 60,
+            Missing => 61,
+            CallStatic => 62,
+            HasAttr => 63,
+            AsyncEnter => 64,
+            AsyncExit => 65,
+            IAdd => 66,
+            ISub => 67,
+            IMul => 68,
+            IDiv => 69,
+            IFloorDiv => 70,
+            IMod => 71,
+            IPow => 72,
+            IMatMul => 73,
+            IAnd => 74,
+            IOr => 75,
+            IXor => 76,
+            ILShift => 77,
+            IRShift => 78,
+            RAdd => 79,
+            RSub => 80,
+            RMul => 81,
+            RDiv => 82,
+            RFloorDiv => 83,
+            RMod => 84,
+            RPow => 85,
+            RMatMul => 86,
+            RAnd => 87,
+            ROr => 88,
+            RXor => 89,
+            RLShift => 90,
+            RRShift => 91,
+            CallMissing => 92,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Modifiers {
     pub visibility: Visibility,
@@ -1613,6 +1983,35 @@ pub struct Modifiers {
     pub is_extension: bool,
     pub is_overloads: bool,
     pub is_not_overridable: bool,
+    /// This member is the class's DESTRUCTOR / finaliser, not an ordinary
+    /// method. Set by the walker, which is the only place that knows how its
+    /// language spells one — Pascal and C# mark it syntactically (`destructor
+    /// Destroy;`, `~Foo()`), PHP and Python by a reserved name (`__destruct`,
+    /// `__del__`).
+    ///
+    /// Without this the AST could not say "this class has a destructor" at
+    /// all: it arrived as an ordinary `ClassMember::Method` and each normalizer
+    /// re-derived the fact with its own name check — four different string
+    /// tests in four crates, the same shape as the hardcoded `isInstance` name
+    /// list that §4e retired.
+    ///
+    /// Subsumed by `protocol_slot == Some(ProtocolSlot::Destructor)`; kept
+    /// until every walker sets the slot instead.
+    pub is_destructor: bool,
+    /// The cross-language ROLE this member fills, if any — `ToString`, `Add`,
+    /// `Iterator`, `Destructor`, … See [`ProtocolSlot`].
+    ///
+    /// Set by the WALKER, which is the only place that knows how its language
+    /// marks a role: Python by a reserved name (`__str__`), Dart and C# by
+    /// syntax (`operator ==`, `implicit operator`), Java by conformance
+    /// (`Comparable.compareTo`). Recovering it later from the method's name —
+    /// which is what `canonicalize_method` does today — throws away what the
+    /// frontend already knew and reintroduces the spelling as identity.
+    ///
+    /// `None` means an ordinary method, and that is the common case: a Dart
+    /// `add` or a PHP `tostring` is an ordinary member unless its language
+    /// says otherwise.
+    pub protocol_slot: Option<ProtocolSlot>,
     pub decorators: Vec<Expression>,
 }
 
@@ -1623,6 +2022,10 @@ pub struct ClassModifiers {
     pub is_abstract: bool,
     pub is_sealed: bool,
     pub is_static: bool,
+    /// `class` / `interface` / `trait` / `mixin` / `module` / `struct` — all of
+    /// which parse to `StmtKind::ClassDecl`. Defaults to `Class`, so a walker
+    /// that does not set it is unchanged.
+    pub kind: ClassKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

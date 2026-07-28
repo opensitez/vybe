@@ -1658,6 +1658,12 @@ pub fn emit_vb_collection_count(chunks: &mut [Chunk], current: usize, line: u32)
     collections::emit_len(chunks, current, line);
 }
 
+pub fn emit_vb_collection_to_array(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = stash_args(chunks, current, 1, line);
+    emit_get_field(chunks, current, base, VB_COLLECTION_ITEMS, line);
+    collections::emit_clone(chunks, current, line);
+}
+
 pub fn emit_vb_collection_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 2, line);
     emit_get_field(chunks, current, base, VB_COLLECTION_KEYS, line);

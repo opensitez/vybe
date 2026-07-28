@@ -182,13 +182,27 @@ impl Compiler {
         }
     }
 
-    pub(super) fn emit_js_member_fallback_get(&mut self, obj_slot: u16, field_name: &str) {
-        // Direct ecma `[[Get]]` (Reflect.get, §28.1.6): walks the prototype
-        // chain, invokes a `__get_<field>` accessor with the receiver, else
-        // returns the raw data property (undefined if missing). Replaces the
-        // `__vybe_js_get_method` adapter's manual getter-then-property two-step.
-        // Reflect.get throws on a non-object, but the adapter returned undefined
-        // for primitives/null — so guard: non-object → undefined (no throw).
+    pub(super) fn emit_member_get_from_value(&mut self, obj_slot: u16, field_name: &str) {
+        // ECMA-262 §7.3.2 GetV(V, P): for an OBJECT receiver, `[[Get]]`
+        // directly (Reflect.get, §28.1.6) — walks the prototype chain, invokes
+        // a `__get_<field>` accessor with the receiver, else returns the raw
+        // data property. For a PRIMITIVE receiver the spec says ToObject(V)
+        // first, then `[[Get]]` on that wrapper — which means the member is
+        // looked up on the primitive's INTRINSIC prototype.
+        //
+        // This branch used to yield `undefined` for every primitive, so
+        // `Number.prototype.doubled = …; (5).doubled` read undefined while
+        // `[1,2].second()` worked (arrays are ordinary objects). That is an
+        // ECMA conformance bug in JS AND the cause of every Dart extension on a
+        // built-in type (`extension on int` / `on String` / `on List<int>`) —
+        // one gap, two languages, so the fix is here and not a per-language
+        // call-site rewrite.
+        //
+        // `ecma:object.getPrototypeOf` already answers for primitives (it falls
+        // through to `js_prototype_of` on a non-object), so ToObject needs no
+        // wrapper allocation and no new host function: read the intrinsic
+        // prototype, then `[[Get]]` on it. `Reflect.get` throws on a
+        // non-object, so the primitive can never be passed to it directly.
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         inst!(self, recipes::is_object);
         let line = self.line;
@@ -197,6 +211,32 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_const(Value::String(Arc::from(field_name)));
         self.emit_host_call(idx, 2);
+        self.chunk().emit_else(line);
+        self.emit_primitive_prototype_member_get(obj_slot, field_name);
+        self.chunk().emit_end(line);
+    }
+
+    /// §7.3.2 GetV on a PRIMITIVE receiver: look `field_name` up on the
+    /// primitive's intrinsic prototype. `null`/`undefined` have no prototype —
+    /// `getPrototypeOf` yields undefined for them and `[[Get]]` on undefined
+    /// would throw, so those short-circuit to `undefined` rather than raising,
+    /// preserving the lenient read this path has always had.
+    pub(super) fn emit_primitive_prototype_member_get(&mut self, obj_slot: u16, field_name: &str) {
+        let line = self.line;
+        let proto_slot = self.define_local("__js_primitive_proto");
+
+        let get_proto = self.import("ecma:object", "getPrototypeOf");
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_host_call(get_proto, 1);
+        self.emit_u16(Op::LOCAL_SET, proto_slot);
+
+        self.emit_u16(Op::LOCAL_GET, proto_slot);
+        inst!(self, recipes::is_object);
+        self.chunk().emit_if_value(line);
+        let reflect_get = self.import("ecma:reflect", "get");
+        self.emit_u16(Op::LOCAL_GET, proto_slot);
+        self.emit_const(Value::String(Arc::from(field_name)));
+        self.emit_host_call(reflect_get, 2);
         self.chunk().emit_else(line);
         inst!(self, core_wasm::undefined);
         self.chunk().emit_end(line);
@@ -1466,7 +1506,7 @@ impl Compiler {
                                     // A user `operator -()` / `__neg__` defines
                                     // negation for its own type; numeric
                                     // negation would coerce it instead.
-                                    self.emit_rich_unary("__neg__", common::math::emit_neg);
+                                    self.emit_rich_unary(vybe_ast::ProtocolSlot::Neg, common::math::emit_neg);
                                 } else {
                                     common::math::emit_neg(self.chunk(), l);
                                 }
@@ -1524,7 +1564,7 @@ impl Compiler {
                                     self.emit_host_call(idx, 1);
                                 } else if self.uses_rich_operators() {
                                     self.emit_rich_unary(
-                                        "__bitnot__",
+                                        vybe_ast::ProtocolSlot::Not,
                                         common::expressions::emit_i32_not,
                                     );
                                 } else {
@@ -2240,7 +2280,7 @@ impl Compiler {
                             fn_call!(self, "wasm:js-undefined", "test", 1);
                             let lookup_line = self.line;
                             self.chunk().emit_if_value(lookup_line);
-                            self.emit_js_member_fallback_get(obj_slot, &field_name);
+                            self.emit_member_get_from_value(obj_slot, &field_name);
                             self.chunk().emit_else(lookup_line);
                             self.emit_u16(Op::LOCAL_GET, val_slot);
                             self.chunk().emit_end(lookup_line);
@@ -2304,7 +2344,7 @@ impl Compiler {
                             fn_call!(self, "wasm:js-undefined", "test", 1);
                             let lookup_line = self.line;
                             self.chunk().emit_if_value(lookup_line);
-                            self.emit_js_member_fallback_get(obj_slot, "length");
+                            self.emit_member_get_from_value(obj_slot, "length");
                             self.chunk().emit_else(lookup_line);
                             self.emit_u16(Op::LOCAL_GET, val_slot);
                             self.chunk().emit_end(lookup_line);
@@ -2345,7 +2385,7 @@ impl Compiler {
                         fn_call!(self, "wasm:js-undefined", "test", 1);
                         let lookup_line = self.line;
                         self.chunk().emit_if_value(lookup_line);
-                        self.emit_js_member_fallback_get(obj_slot, &field_name);
+                        self.emit_member_get_from_value(obj_slot, &field_name);
                         self.chunk().emit_else(lookup_line);
                         self.emit_u16(Op::LOCAL_GET, val_slot);
                         self.chunk().emit_end(lookup_line);
@@ -2944,7 +2984,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
                     self.compile_expr(index)?;
                     self.emit_u16(Op::LOCAL_SET, key_slot);
-                    let getter = self.str_const("__getitem__");
+                    let getter = self.str_const(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::GetItem));
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_u16(Op::STRUCT_GET, getter);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -3994,7 +4034,27 @@ impl Compiler {
                             },
                         )) = self.resolve_profile_namespace_chain(&[type_name.to_string()])
                         {
-                            return self.emit_tree_ctor_construction(&spec, args);
+                            // Generic field-capture construction only when the
+                            // spec actually DESCRIBES a construction — captured
+                            // params/fields, or a `vybe:gui` control factory
+                            // (flutter widgets, plib GCL controls).
+                            //
+                            // A spec may instead be IDENTITY-ONLY: just an
+                            // `ancestry`, declared so `isInstance`/`is` can
+                            // answer, with the real constructor held in the
+                            // type's `ctor_call` (Java's stdlib types are this
+                            // shape — `new ArrayList()` is
+                            // `common:java.mutable_list_of`). Building those
+                            // generically yields an EMPTY object and loses the
+                            // constructor entirely, so they fall through to the
+                            // backing-call path below, which also stamps the
+                            // ancestry.
+                            let describes_construction = !spec.params.is_empty()
+                                || !spec.fields.is_empty()
+                                || spec.control_fn.is_some();
+                            if describes_construction {
+                                return self.emit_tree_ctor_construction(&spec, args);
+                            }
                         }
                     }
 
@@ -4023,27 +4083,19 @@ impl Compiler {
                         );
                         return Ok(());
                     }
-                    if self.profile.name == "java" {
-                        if let Some((module, func)) = self
-                            .profile
-                            .lookup_known_type(type_name)
-                            .map(|(m, f)| (m.to_string(), f.to_string()))
-                        {
-                            for a in args {
-                                self.compile_expr(&a.value)?;
-                            }
-                            if module == "common" {
-                                let line = self.line;
-                                self.emit_common(&func, args.len() as u8, line);
-                            } else {
-                                let idx = self.import(&module, &func);
-                                self.emit_host_call(idx, args.len() as u8);
-                            }
-                            return Ok(());
-                        }
-                    }
-                    // Dotnet component descriptor constructors — fallback after
-                    // GUI so .NET-only types like Dictionary still work.
+                    // Registered-type constructors — after GUI so .NET-only
+                    // types like Dictionary still work.
+                    //
+                    // A language-name fork used to sit here, sending one
+                    // language's `new X()` straight to `lookup_known_type` and
+                    // returning. That skipped the identity stamp below, so
+                    // every stdlib type that language registered was
+                    // constructible but anonymous — no `__type`, no `__types` —
+                    // and the language grew its own `isInstance` fallback to
+                    // compensate. Types the tree does not register still reach
+                    // `lookup_known_type` at the fallback further down, so the
+                    // only behaviour change is that registered types now carry
+                    // their declared ancestry.
                     let dotnet_constructor = vybe_bytecode::namespaces::lookup_type_ctor_target(
                         &self.profile.namespaces.type_scopes,
                         bare_str,
@@ -4091,6 +4143,42 @@ impl Compiler {
                         let type_key = self.str_const("__type");
                         self.emit_u16(Op::STRUCT_SET, type_key);
                         self.emit(Op::DROP);
+
+                        // …and stamp the ANCESTRY chain when the registered
+                        // type declares one, so `isInstance` / `instanceof` /
+                        // `is` answer from the shared `__types` array
+                        // (`reflection::emit_instanceof`) exactly as they do
+                        // for a user class.
+                        //
+                        // Without this a platform type was constructible but
+                        // not IDENTIFIABLE: `new ArrayList()` produced a value
+                        // with no `__types`, so the shared check could not
+                        // answer and each language grew its own fallback — Java
+                        // carried a hardcoded ~30-name list plus a
+                        // `__java_class_is_instance` helper for exactly this.
+                        // The ancestry is data the platform already declares.
+                        if let Some(spec) = vybe_bytecode::namespaces::lookup_type_ctor_spec(
+                            &self.profile.namespaces.type_scopes,
+                            bare_str,
+                        ) {
+                            if !spec.ancestry.is_empty() {
+                                let line = self.line;
+                                inst!(self, core_wasm::dup);
+                                for ancestor in &spec.ancestry {
+                                    self.emit_const(Value::String(Arc::from(ancestor.as_str())));
+                                }
+                                crate::compiler::collections::emit_array_new(
+                                    &mut self.chunks,
+                                    self.current,
+                                    spec.ancestry.len() as u16,
+                                    line,
+                                );
+                                let types_key = self
+                                    .str_const(crate::compiler::reflection::FIELD_TYPES);
+                                self.emit_u16(Op::STRUCT_SET, types_key);
+                                self.emit(Op::DROP);
+                            }
+                        }
 
                         // .NET List / ArrayList instance calls like `list.Sort()`
                         // should stay on the shared compare-aware frontend path
@@ -7447,7 +7535,12 @@ pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     }
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    let key = chunk.add_constant(Value::String(Arc::from("__str__")));
+    // The ToString SLOT — filled by whatever the object's own language spells
+    // it (`__str__`, `to_s`, `toString`, `__toString`), so this reaches a
+    // user's string conversion regardless of where the class came from.
+    let key = chunk.add_constant(Value::String(Arc::from(
+        vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString).as_str(),
+    )));
     chunk.emit_op_u16(Op::STRUCT_GET, key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
 
@@ -7623,11 +7716,29 @@ pub fn emit_smart_length(chunk: &mut Chunk, obj_slot: u16, line: u32) {
         chunk.scratch_high_water = chunk.local_count;
     }
 
-    // Try struct_get "__get_length" on object
+    // The Len SLOT first — Python `__len__`, Ruby `size`, C# `Count`, Java
+    // `size()` all fill it, so a user-defined length works whatever language
+    // declared the class.
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    let slot_key = chunk.add_constant(Value::String(Arc::from(
+        vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Len).as_str(),
+    )));
+    chunk.emit_op_u16(Op::STRUCT_GET, slot_key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+
+    // Then the property form. This probe also serves values that never went
+    // through a class — a `length` PROPERTY lowers to a `__get_length` getter
+    // and carries no slot, and a plain array carries neither. So the slot is an
+    // additional key here, not a replacement: substituting it would fix
+    // `__len__` and break every property-based length.
+    chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let key = chunk.add_constant(Value::String(Arc::from("__get_length")));
     chunk.emit_op_u16(Op::STRUCT_GET, key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, method_slot, line);
+    chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);

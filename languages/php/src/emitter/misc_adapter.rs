@@ -4,10 +4,10 @@ use vybe_compiler::compiler::instructions::core_wasm;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
-use vybe_compiler::compiler::object::{
-    emit_bind_bound_method_with_aliases, emit_bind_getter, emit_bind_setter,
-};
 use vybe_compiler::compiler::functions::create_function_chunk;
+use vybe_compiler::compiler::object::{
+    emit_bind_bound_method, emit_bind_getter, emit_bind_setter,
+};
 
 const SERIAL_KIND_KEY: &str = "vybe$php_ser_kind";
 
@@ -481,7 +481,7 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
                         .unwrap_or(method_name.as_str());
                     emit_bind_setter(&mut helper, obj_slot, prop, *method_chunk_idx, line);
                 } else {
-                    emit_bind_bound_method_with_aliases(
+                    emit_bind_bound_method(
                         &mut helper,
                         obj_slot,
                         method_name,
@@ -1377,6 +1377,20 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_end(line);
     chunk.emit_else(line);
 
+    // Arrays must be tested before object metadata: JS Array-backed PHP arrays
+    // can expose internal fields, but PHP truthiness is length-based.
+    lget(chunk, value_slot, line);
+    let _ = chunk;
+    call_import(chunks, current, "ecma:array", "isArray", 1, line);
+    let chunk = &mut chunks[current];
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    lget(chunk, value_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    core_wasm::i32_const(chunk, line, 0);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_else(line);
+
     lget(chunk, value_slot, line);
     struct_get_key(chunk, "__type", line);
     let type_slot = alloc_local(chunk);
@@ -1441,6 +1455,7 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_else(line);
 
     push_const(chunk, Value::Bool(false), line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);

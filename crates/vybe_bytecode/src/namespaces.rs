@@ -539,6 +539,49 @@ fn find_type_ctor_call(scope: &[String], class_name: &str) -> Option<NamespaceNo
         .find_map(|root| guard.tree.get(root).and_then(|v| walk(v, &leaf, &wanted, root)))
 }
 
+/// The construction SPEC a platform declared for `class_name`, if the name is a
+/// registered `Type` under `scope`. This is what makes a platform base class
+/// foldable: the spec is the whole contribution (fields, control factory, GUI
+/// field mapping, ancestry).
+pub fn lookup_type_ctor_spec(scope: &[String], class_name: &str) -> Option<CtorSpec> {
+    let bare = class_name
+        .split(['<', '('])
+        .next()
+        .unwrap_or(class_name)
+        .trim();
+    find_type_spec(scope, bare)
+}
+
+fn find_type_spec(scope: &[String], class_name: &str) -> Option<CtorSpec> {
+    let wanted = class_name.trim().to_lowercase();
+    let leaf = wanted.rsplit('.').next().unwrap_or(&wanted).to_string();
+    let guard = registry().read().unwrap();
+
+    fn walk(node: &NamespaceNode, leaf: &str, wanted: &str, path: &str) -> Option<CtorSpec> {
+        match node {
+            NamespaceNode::Namespace(children) => children.iter().find_map(|(k, v)| {
+                let next = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
+                walk(v, leaf, wanted, &next)
+            }),
+            NamespaceNode::Type { ctor, .. } => {
+                let this_leaf = path.rsplit('.').next().unwrap_or(path);
+                (this_leaf == leaf && (wanted == leaf || path.ends_with(wanted)))
+                    .then(|| ctor.clone())
+                    .flatten()
+            }
+            _ => None,
+        }
+    }
+
+    scope
+        .iter()
+        .find_map(|root| guard.tree.get(root).and_then(|v| walk(v, &leaf, &wanted, root)))
+}
+
 /// The CONSTRUCTOR target for `class_name`, from its registered `Type` node.
 ///
 /// A platform declares a backing constructor as a tree NODE (`Fn` for a host

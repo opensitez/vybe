@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::compiler::object::emit_bind_method_with_aliases;
+use vybe_compiler::compiler::object::emit_bind_method_with_slot;
 use vybe_compiler::compiler::functions::create_function_chunk;
 use vybe_compiler::compiler::instructions::host;
 
@@ -74,10 +74,11 @@ fn bind_uri_methods(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line
     make_relative.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
     make_relative.emit_op_u16(Op::STRUCT_SET, href_key, line);
     make_relative.emit_op(Op::DROP, line);
-    emit_bind_method_with_aliases(
+    emit_bind_method_with_slot(
         &mut make_relative,
         uri_slot,
         "tostring",
+        Some(vybe_ast::ProtocolSlot::ToString),
         tostring_idx,
         None,
         line,
@@ -89,21 +90,31 @@ fn bind_uri_methods(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line
     let make_relative_idx = chunks.len() - 1;
 
     let chunk = &mut chunks[current];
-    emit_bind_method_with_aliases(chunk, obj_slot, "tostring", tostring_idx, None, line);
-    emit_bind_method_with_aliases(chunk, obj_slot, "isbaseof", is_base_of_idx, None, line);
-    emit_bind_method_with_aliases(chunk, obj_slot, "IsBaseOf", is_base_of_idx, None, line);
-    emit_bind_method_with_aliases(
+    emit_bind_method_with_slot(
+        chunk,
+        obj_slot,
+        "tostring",
+        Some(vybe_ast::ProtocolSlot::ToString),
+        tostring_idx,
+        None,
+        line,
+    );
+    emit_bind_method_with_slot(chunk, obj_slot, "isbaseof", None, is_base_of_idx, None, line);
+    emit_bind_method_with_slot(chunk, obj_slot, "IsBaseOf", None, is_base_of_idx, None, line);
+    emit_bind_method_with_slot(
         chunk,
         obj_slot,
         "makerelativeuri",
+        None,
         make_relative_idx,
         None,
         line,
     );
-    emit_bind_method_with_aliases(
+    emit_bind_method_with_slot(
         chunk,
         obj_slot,
         "MakeRelativeUri",
+        None,
         make_relative_idx,
         None,
         line,
@@ -291,10 +302,11 @@ fn bind_uri_tostring_only(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16
     tostring.local_count = 1;
     chunks.push(tostring);
     let tostring_idx = chunks.len() - 1;
-    emit_bind_method_with_aliases(
+    emit_bind_method_with_slot(
         &mut chunks[current],
         obj_slot,
         "tostring",
+        Some(vybe_ast::ProtocolSlot::ToString),
         tostring_idx,
         None,
         line,

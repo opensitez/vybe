@@ -1120,6 +1120,17 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     let saved_this = 7;
     let js_this = c.add_constant(vybe_bytecode::Value::String(Arc::from("__js_this")));
     let async_iter_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("asyncIterator")));
+    // NOT yet on the Iterator slot. Swapping this single key for
+    // `__vybe_slot_5` cost one python `class` test (246/310 → 245/311): the
+    // helper probes ONE alternate key, and the slot and the spelling are not
+    // interchangeable here — a native iterable reaches this path too, and only
+    // the spelling is present on those. Iterator needs a two-key probe (slot,
+    // then spelling) rather than a substitution. The slot itself is verified
+    // stamped and callable: `getattr(r, "__vybe_slot_5")()` returns a working
+    // iterator. See flexclassplan.md §2g.
+    let iter_slot_key = c.add_constant(vybe_bytecode::Value::String(Arc::from(
+        vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Iterator).as_str(),
+    )));
     let iter_alt_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("__iter__")));
     let done_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("done")));
     let value_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("value")));
@@ -1227,6 +1238,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_end(0);
     c.patch_block(try_alt);
 
+
     let try_async = c.emit_block(0);
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
@@ -1237,6 +1249,22 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, method, 0);
     c.emit_end(0);
     c.patch_block(try_async);
+
+    // The Iterator SLOT — Python `__iter__`, Ruby `each`, C# `GetEnumerator`,
+    // Dart `iterator`. Another link in the probe chain rather than a
+    // replacement for the spelling below: this helper also runs on values that
+    // never went through a class, and those carry a native iterator or the bare
+    // spelling, not a slot.
+    let try_slot = c.emit_block(0);
+    c.emit_op_u16(Op::LOCAL_GET, method, 0);
+    c.emit_op(Op::REF_IS_NULL, 0);
+    crate::compiler::ops::emit_dyn_not_into(imports, &mut c, 0);
+    c.emit_br_if(0, 0);
+    c.emit_op_u16(Op::LOCAL_GET, v, 0);
+    c.emit_op_u16(Op::STRUCT_GET, iter_slot_key, 0);
+    c.emit_op_u16(Op::LOCAL_SET, method, 0);
+    c.emit_end(0);
+    c.patch_block(try_slot);
 
     // typeof method !== "function" → result = v, exit
     let has_method = c.emit_block(0);

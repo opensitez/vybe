@@ -323,7 +323,13 @@ impl Compiler {
     /// `operator +` (Dart), `__add__` (Python) or `op_Addition` (C#)
     /// normalises to the same bound method name, so this reaches all of
     /// them, including across languages.
-    fn emit_rich_binop(&mut self, dunder: &str, fallback: fn(&mut Chunk, u32)) {
+    /// Try the user operator bound to `slot` on the operands, else `fallback`.
+    ///
+    /// Takes a SLOT, not a spelling, so an operator cannot be dispatched by
+    /// name here even by accident — and the same code reaches Python's
+    /// `__add__`, Dart's `operator +` and C#'s `operator+` because all three
+    /// fill `ProtocolSlot::Add`.
+    fn emit_rich_binop(&mut self, slot: vybe_ast::ProtocolSlot, fallback: fn(&mut Chunk, u32)) {
         let line = self.line;
         let rhs_slot = self.define_local("__rich_op_rhs");
         let lhs_slot = self.define_local("__rich_op_lhs");
@@ -333,7 +339,7 @@ impl Compiler {
             self.chunk(),
             lhs_slot,
             rhs_slot,
-            dunder,
+            &vybe_ast::protocol_slot_key(slot),
             fallback,
             line,
         );
@@ -341,11 +347,21 @@ impl Compiler {
 
     /// Try a user unary-operator method on the operand, else `fallback`.
     /// Stack: `[operand]` → `[result]`.
-    pub(super) fn emit_rich_unary(&mut self, dunder: &str, fallback: fn(&mut Chunk, u32)) {
+    pub(super) fn emit_rich_unary(
+        &mut self,
+        protocol_slot: vybe_ast::ProtocolSlot,
+        fallback: fn(&mut Chunk, u32),
+    ) {
         let line = self.line;
         let slot = self.define_local("__rich_op_operand");
         self.emit_u16(Op::LOCAL_SET, slot);
-        common::expressions::emit_rich_unary(self.chunk(), slot, dunder, fallback, line);
+        common::expressions::emit_rich_unary(
+            self.chunk(),
+            slot,
+            &vybe_ast::protocol_slot_key(protocol_slot),
+            fallback,
+            line,
+        );
     }
 
     pub(super) fn compile_binop(&mut self, op: &BinOp) {
@@ -375,7 +391,7 @@ impl Compiler {
                     // and never consult it. Falls through to the same
                     // dynamic add for every non-object operand.
                     if self.uses_rich_operators() {
-                        self.emit_rich_binop("__add__", crate::compiler::ops::emit_dyn_add);
+                        self.emit_rich_binop(vybe_ast::ProtocolSlot::Add, crate::compiler::ops::emit_dyn_add);
                         return;
                     }
                     {
@@ -488,7 +504,7 @@ impl Compiler {
                         self.chunk(),
                         left_slot,
                         right_slot,
-                        "__eq__",
+                        &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Eq),
                         eq_fallback,
                         line,
                     );
@@ -528,7 +544,7 @@ impl Compiler {
                         self.chunk(),
                         left_slot,
                         right_slot,
-                        "__eq__",
+                        &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Eq),
                         eq_fallback,
                         line,
                     );
@@ -608,7 +624,7 @@ impl Compiler {
                         self.chunk(),
                         left_slot,
                         right_slot,
-                        "__lt__",
+                        &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Lt),
                         crate::compiler::ops::emit_dyn_lt,
                         line,
                     );
@@ -649,7 +665,7 @@ impl Compiler {
                         self.chunk(),
                         left_slot,
                         right_slot,
-                        "__gt__",
+                        &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Gt),
                         crate::compiler::ops::emit_dyn_gt,
                         line,
                     );
@@ -690,7 +706,7 @@ impl Compiler {
                         self.chunk(),
                         left_slot,
                         right_slot,
-                        "__le__",
+                        &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Le),
                         crate::compiler::ops::emit_dyn_le,
                         line,
                     );
@@ -731,7 +747,7 @@ impl Compiler {
                         self.chunk(),
                         left_slot,
                         right_slot,
-                        "__ge__",
+                        &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Ge),
                         crate::compiler::ops::emit_dyn_ge,
                         line,
                     );

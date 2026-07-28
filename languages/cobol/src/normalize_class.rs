@@ -6,6 +6,7 @@
 
 use vybe_ast::{ClassMember, ClassModifiers, Span, StmtKind};
 use vybe_bytecode::class_normalize::{
+    NormalMembers,
     Access, BaseCall, NormalClass, NormalConstructor, NormalField, from_method_stmt,
 };
 
@@ -17,12 +18,7 @@ pub fn normalize_class(
     members: &[ClassMember],
     modifiers: &ClassModifiers,
 ) -> NormalClass {
-    let mut raw_extra_members = Vec::new();
-    let mut instance_fields = Vec::new();
-    let mut static_fields = Vec::new();
-    let mut instance_methods = Vec::new();
-    let mut static_methods = Vec::new();
-    let mut constructor = None;
+    let mut m = NormalMembers::default();
 
     for member in members {
         match member {
@@ -43,11 +39,7 @@ pub fn normalize_class(
                     access: Access::Public,
                     readonly: field_modifiers.is_readonly,
                 };
-                if field_modifiers.is_static {
-                    static_fields.push(field);
-                } else {
-                    instance_fields.push(field);
-                }
+                m.push_field(field_modifiers.is_static, field);
             }
             ClassMember::Method(stmt) => {
                 let StmtKind::FunctionDecl {
@@ -63,7 +55,7 @@ pub fn normalize_class(
 
                 let is_constructor = source_name.eq_ignore_ascii_case("new");
                 if is_constructor {
-                    constructor = Some(NormalConstructor {
+                    m.push_constructor(NormalConstructor {
                         span: span.clone(),
                         params: params.clone(),
                         body: body.clone(),
@@ -81,47 +73,25 @@ pub fn normalize_class(
                 if let Some(method) =
                     from_method_stmt(span.clone(), stmt, &canonical_name, Access::Public)
                 {
-                    if method_modifiers.is_static {
-                        static_methods.push(method);
-                    } else {
-                        instance_methods.push(method);
-                    }
+                    m.push_method(method_modifiers.is_static, method);
                 }
             }
+            // COBOL has no trait/mixin/module mechanism — `INHERITS` is plain
+            // single inheritance — so the walker never produces this.
+            ClassMember::Augment(_) => {}
             other @ (ClassMember::Constructor { .. }
             | ClassMember::Property { .. }
             | ClassMember::Event { .. }
             | ClassMember::Const { .. }
             | ClassMember::NestedType(_)) => {
-                raw_extra_members.push(other.clone());
+                m.raw_extra_members.push(other.clone());
             }
         }
     }
 
     NormalClass {
-        augmentations: Vec::new(),
-        span,
-        name: name.to_string(),
-        parent: parents.first().cloned(),
-        bases: Vec::new(),
-        interfaces: interfaces.to_vec(),
-        is_abstract: modifiers.is_abstract,
-        is_sealed: modifiers.is_sealed,
-        is_partial: modifiers.is_partial,
-        is_value_type: false,
-        explicit_self_param: false,
         implicit_self_fields: true,
-        instance_fields,
-        static_fields,
-        instance_methods,
-        static_methods,
-        properties: Vec::new(),
-        constructors: Vec::new(),
-        constructor,
-        destructor: None,
-        auto_init_methods: Vec::new(),
-        special_methods: Vec::new(),
-        event_bindings: Vec::new(),
-        raw_extra_members,
+        ..Default::default()
     }
-    }
+    .with_members(m)
+}

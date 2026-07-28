@@ -295,6 +295,10 @@ fn extract_class_member(member: &ClassMember, out: &mut Vec<Symbol>) {
         ClassMember::NestedType(stmt) => {
             extract_stmt(stmt, out);
         }
+        // `use T;` / `with M` declares no symbol of its own — the members it
+        // contributes belong to the augmenting type, which is outlined where it
+        // is declared.
+        ClassMember::Augment(_) => {}
     }
 }
 

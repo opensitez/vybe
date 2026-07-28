@@ -35,16 +35,7 @@ pub fn build_math_helper_fn(name: &str, params: &[&str], body: Vec<Statement>) -
         is_sub: false,
         modifiers: Modifiers {
             visibility: Visibility::Private,
-            is_static: false,
-            is_abstract: false,
-            is_virtual: false,
-            is_override: false,
-            is_readonly: false,
-            is_shared: false,
-            is_extension: false,
-            is_overloads: false,
-            is_not_overridable: false,
-            decorators: vec![],
+            ..Default::default()
         },
         handles: vec![],
     })

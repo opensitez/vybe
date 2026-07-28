@@ -93,7 +93,9 @@ pub fn emit_throw_const(
     chunk.local_count += 1;
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
     for name in php_exception_chain(exc_name) {
-        vybe_compiler::compiler::reflection::emit_instanceof_chain(chunks, current, this_slot, name, line);
+        vybe_compiler::compiler::reflection::emit_instanceof_chain(
+            chunks, current, this_slot, name, line,
+        );
     }
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
