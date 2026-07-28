@@ -350,6 +350,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
         prelude.append(&mut body);
         body = prelude;
     }
+    if source.contains("pprint") {
+        let mut prelude = parse_python_prelude(PPRINT_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
 
     Ok(Module {
         name: "main".into(),
@@ -1502,6 +1507,156 @@ def __py_random_setstate(state):
 /// substitution with `$$` escape and a class-attribute `delimiter`),
 /// `Formatter` (delegates to `str.format`), and `capwords`. Constants
 /// (ascii_letters, digits, …) are intercepted in [desugar_member_reads].
+/// Pure-Python `pprint` surface: `pformat`/`pprint`/`pp`, the stateful
+/// `PrettyPrinter` class, plus `saferepr`/`isreadable`/`isrecursive`.
+///
+/// A prelude (not adapters) because `PrettyPrinter` is a genuinely stateful
+/// CLASS carrying indent/width/depth/compact/sort_dicts across calls, and the
+/// module functions are thin wrappers over the same recursive layout routine —
+/// splitting them would duplicate the algorithm. See
+/// `feedback_adapters_over_preludes`: "a class needs a class".
+///
+/// Recursion detection tracks container identity down the current path only, so
+/// a value repeated in sibling positions is not a cycle.
+const PPRINT_PRELUDE: &str = r#"
+def __pprint_is_container(o):
+    return isinstance(o, (list, tuple, dict, set, frozenset))
+def __pprint_cycle(o, seen):
+    for s in seen:
+        if s is o:
+            return True
+    return False
+def __pprint_has_cycle(o, seen):
+    if not __pprint_is_container(o):
+        return False
+    if __pprint_cycle(o, seen):
+        return True
+    seen = seen + [o]
+    if isinstance(o, dict):
+        for k in o:
+            if __pprint_has_cycle(o[k], seen):
+                return True
+        return False
+    for it in o:
+        if __pprint_has_cycle(it, seen):
+            return True
+    return False
+def __pprint_kind(o):
+    if isinstance(o, dict):
+        return "dict"
+    if isinstance(o, tuple):
+        return "tuple"
+    if isinstance(o, frozenset):
+        return "frozenset"
+    if isinstance(o, set):
+        return "set"
+    return "list"
+def __pprint_underscore(n):
+    s = str(n)
+    neg = s.startswith("-")
+    if neg:
+        s = s[1:]
+    out = ""
+    c = 0
+    i = len(s) - 1
+    while i >= 0:
+        out = s[i] + out
+        c += 1
+        if c % 3 == 0 and i > 0:
+            out = "_" + out
+        i -= 1
+    if neg:
+        out = "-" + out
+    return out
+def __pprint_fmt(o, ind, width, depth, compact, sort_dicts, under, level, seen, col):
+    if __pprint_is_container(o):
+        if __pprint_cycle(o, seen):
+            return "<Recursion on " + __pprint_kind(o) + " with id=0>"
+        if depth is not None and level >= depth:
+            return "..."
+    if isinstance(o, bool) or o is None:
+        return repr(o)
+    if under and isinstance(o, int):
+        return __pprint_underscore(o)
+    if not __pprint_is_container(o):
+        return repr(o)
+    seen = seen + [o]
+    pad = " " * (col + ind)
+    if isinstance(o, dict):
+        keys = list(o)
+        if sort_dicts:
+            keys = sorted(keys)
+        parts = []
+        for k in keys:
+            parts.append(repr(k) + ": " + __pprint_fmt(o[k], ind, width, depth, compact,
+                                                       sort_dicts, under, level + 1, seen, col + ind))
+        return __pprint_wrap(parts, "{", "}", width, col, pad, False)
+    if isinstance(o, (set, frozenset)):
+        parts = []
+        for it in sorted(o):
+            parts.append(__pprint_fmt(it, ind, width, depth, compact, sort_dicts,
+                                      under, level + 1, seen, col + ind))
+        body = __pprint_wrap(parts, "{", "}", width, col, pad, False)
+        if isinstance(o, frozenset):
+            if len(parts) == 0:
+                return "frozenset()"
+            return "frozenset(" + body + ")"
+        if len(parts) == 0:
+            return "set()"
+        return body
+    parts = []
+    for it in o:
+        parts.append(__pprint_fmt(it, ind, width, depth, compact, sort_dicts,
+                                  under, level + 1, seen, col + ind))
+    if isinstance(o, tuple):
+        return __pprint_wrap(parts, "(", ")", width, col, pad, len(parts) == 1)
+    return __pprint_wrap(parts, "[", "]", width, col, pad, False)
+def __pprint_wrap(parts, open_c, close_c, width, col, pad, trail_comma):
+    flat = open_c + ", ".join(parts) + ("," if trail_comma else "") + close_c
+    if col + len(flat) <= width or len(parts) <= 1:
+        return flat
+    return open_c + (",\n" + pad).join(parts) + close_c
+def __pprint_pformat(o, indent=1, width=80, depth=None, compact=False, sort_dicts=True,
+                     underscore_numbers=False):
+    return __pprint_fmt(o, indent, width, depth, compact, sort_dicts,
+                        underscore_numbers, 0, [], 0)
+def __pprint_pprint(o, stream=None, indent=1, width=80, depth=None, compact=False,
+                    sort_dicts=True, underscore_numbers=False):
+    text = __pprint_pformat(o, indent, width, depth, compact, sort_dicts, underscore_numbers)
+    if stream is None:
+        print(text)
+    else:
+        stream.write(text + "\n")
+def __pprint_pp(o, stream=None, **kwargs):
+    __pprint_pprint(o, stream, **kwargs)
+def __pprint_saferepr(o):
+    return __pprint_fmt(o, 1, 1000000, None, False, True, False, 0, [], 0)
+def __pprint_isrecursive(o):
+    return __pprint_has_cycle(o, [])
+def __pprint_isreadable(o):
+    return not __pprint_has_cycle(o, [])
+class __pprint_PrettyPrinter:
+    def __init__(self, indent=1, width=80, depth=None, stream=None, compact=False,
+                 sort_dicts=True, underscore_numbers=False):
+        self.indent = indent
+        self.width = width
+        self.depth = depth
+        self.stream = stream
+        self.compact = compact
+        self.sort_dicts = sort_dicts
+        self.underscore_numbers = underscore_numbers
+    def pformat(self, o):
+        return __pprint_pformat(o, self.indent, self.width, self.depth, self.compact,
+                                self.sort_dicts, self.underscore_numbers)
+    def pprint(self, o):
+        __pprint_pprint(o, self.stream, self.indent, self.width, self.depth,
+                        self.compact, self.sort_dicts, self.underscore_numbers)
+    def isrecursive(self, o):
+        return __pprint_isrecursive(o)
+    def isreadable(self, o):
+        return __pprint_isreadable(o)
+"#;
+
 const STRING_PRELUDE: &str = r#"
 def __string_is_id_start(c):
     return c == "_" or ("a" <= c <= "z") or ("A" <= c <= "Z")
@@ -5264,6 +5419,123 @@ fn string_module_member(field: &str) -> Option<&'static str> {
     })
 }
 
+/// Runtime `isinstance(value, <type_name>)` for a builtin type — the JS-compiler
+/// shapes (`typeof` / `ref.test`), no host or VM involvement. `None` = not a
+/// builtin we special-case, so the caller falls back to `instanceof <name>`.
+///
+/// Shared by the single-type form and the tuple form so
+/// `isinstance(x, (list, dict))` uses the IDENTICAL check per member; before,
+/// the tuple form had no runtime path at all and leaked a raw `0`/`1`.
+fn py_isinstance_runtime_check(value: &Expression, type_name: &str) -> Option<Expression> {
+    let typeof_check = |name: &str| {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::new(ExprKind::TypeOf(Box::new(value.clone())))),
+            right: Box::new(Expression::string(name)),
+        })
+    };
+    let ref_test = |name: &str| {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::InstanceOf,
+            left: Box::new(value.clone()),
+            right: Box::new(Expression::new(ExprKind::Ident(name.into()))),
+        })
+    };
+    // `ref.test` pushes a raw wasm i32 — materialize a real Python bool.
+    let as_bool = |e: Expression| {
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(e),
+            then: Box::new(Expression::bool(true)),
+            else_: Box::new(Expression::bool(false)),
+        })
+    };
+    let member = |field: &str| {
+        Expression::new(ExprKind::Index {
+            object: Box::new(value.clone()),
+            index: Box::new(Expression::string(field)),
+            null_safe: false,
+        })
+    };
+    let and = |l: Expression, r: Expression| {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(l),
+            right: Box::new(r),
+        })
+    };
+
+    // A dict is EITHER Map-backed (`dict_literals_as_map = true`, the default
+    // for literals) OR a legacy struct carrying a `__keys` array. Probing only
+    // `__keys` — as this did before dicts became Maps — reports False for every
+    // ordinary `{...}`. Sets are excluded (they trap on index) and so are
+    // strings (they index by character).
+    let dict_check = || {
+        let keys_probe = Expression::new(ExprKind::Binary {
+            op: BinOp::StrictNotEq,
+            left: Box::new(member("__keys")),
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
+        });
+        let not_set = Expression::new(ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(ref_test("Set")),
+        });
+        let struct_dict = and(
+            and(typeof_check("object"), not_set),
+            keys_probe,
+        );
+        Expression::new(ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(ref_test("Map")),
+            right: Box::new(struct_dict),
+        })
+    };
+
+    Some(match type_name {
+        "str" => typeof_check("string"),
+        "bool" => typeof_check("boolean"),
+        "float" => typeof_check("number"),
+        // int includes bool — Python's bool IS an int subtype.
+        "int" => Expression::new(ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(typeof_check("number")),
+            right: Box::new(typeof_check("boolean")),
+        }),
+        // Both are ObjectKind::Array (the abstract WASM GC heap type), but a
+        // tuple carries the `__tuple` tag (`tuple_literals_tagged`), which is
+        // what repr/type() already key on. Without it `isinstance([1], tuple)`
+        // is True and every list reprs as a tuple.
+        "tuple" => as_bool(and(ref_test("array"), member("__tuple"))),
+        "list" => as_bool(and(
+            ref_test("array"),
+            Expression::new(ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(member("__tuple")),
+            }),
+        )),
+        "dict" => as_bool(dict_check()),
+        // A frozenset is a Set carrying the `__frozenset` tag (the same tag
+        // `repr` reads to print `frozenset({…})`), so a bare `instanceof
+        // frozenset` never matches.
+        "frozenset" => as_bool(and(ref_test("Set"), member("__frozenset"))),
+        "set" => as_bool(ref_test("Set")),
+        _ => return None,
+    })
+}
+
+/// `pprint.<name>` → the injected prelude global (see [PPRINT_PRELUDE]).
+fn pprint_module_member(field: &str) -> Option<&'static str> {
+    Some(match field {
+        "pformat" => "__pprint_pformat",
+        "pprint" => "__pprint_pprint",
+        "pp" => "__pprint_pp",
+        "saferepr" => "__pprint_saferepr",
+        "isreadable" => "__pprint_isreadable",
+        "isrecursive" => "__pprint_isrecursive",
+        "PrettyPrinter" => "__pprint_PrettyPrinter",
+        _ => return None,
+    })
+}
+
 /// DB-API 2.0 module constants for `sqlite3` (static mount → compile-time).
 fn sqlite3_module_constant(field: &str) -> Option<Literal> {
     Some(match field {
@@ -7074,6 +7346,19 @@ fn desugar_member_reads(e: Expression) -> Expression {
                 if let Some(lit) = sys_module_constant(&field) {
                     return Expression::new(ExprKind::Lit(lit));
                 }
+                // `sys.version_info` is a TUPLE, not a scalar, so it cannot go
+                // through `sys_module_constant`. Version-gated code compares it
+                // (`sys.version_info >= (3, 8)`), which needs the lexicographic
+                // sequence ordering in `emit_seq_relational`.
+                if field == "version_info" {
+                    return Expression::new(ExprKind::Tuple(vec![
+                        Expression::int(3),
+                        Expression::int(12),
+                        Expression::int(0),
+                        Expression::string("final"),
+                        Expression::int(0),
+                    ]));
+                }
             }
             // `sqlite3.<const>` — DB-API module constants (static mount).
             if matches!(&object.kind, ExprKind::Ident(n) if n == "sqlite3") {
@@ -7522,6 +7807,26 @@ fn desugar_member_reads(e: Expression) -> Expression {
                 if let Some(lowered) = operator_call_lowering(field, &desugared) {
                     return lowered;
                 }
+            }
+            // `pprint.pformat(...)` / `pprint.PrettyPrinter(...)` / … — call the
+            // injected prelude global (see [PPRINT_PRELUDE]). Kept a real Call so
+            // keyword args (`pformat(d, width=20, sort_dicts=False)`) survive.
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && matches!(&object.kind, ExprKind::Ident(n) if n == "pprint")
+                && let Some(name) = pprint_module_member(field)
+            {
+                let args = args
+                    .into_iter()
+                    .map(|mut a| {
+                        a.value = desugar_member_reads(a.value);
+                        a
+                    })
+                    .collect();
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Ident(name.into()))),
+                    args,
+                    optional,
+                });
             }
             // `string.Template(...)` / `string.Formatter()` / `string.capwords(...)`
             // — call the injected prelude global (see [STRING_PRELUDE]). Kept as a
@@ -8117,6 +8422,53 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                         });
                                         continue;
                                     }
+                                    // Runtime forms. The tuple form ORs the same
+                                    // per-type check, so `isinstance(x, (a, b))`
+                                    // agrees with `isinstance(x, a)`.
+                                    match &args[1].value.kind {
+                                        ExprKind::Ident(type_name) => {
+                                            if let Some(r) = py_isinstance_runtime_check(
+                                                &args[0].value,
+                                                type_name,
+                                            ) {
+                                                expr = r;
+                                                continue;
+                                            }
+                                        }
+                                        ExprKind::Tuple(types) => {
+                                            let mut acc: Option<Expression> = None;
+                                            let mut all_known = !types.is_empty();
+                                            for ty in types {
+                                                let Some(one) = (match &ty.kind {
+                                                    ExprKind::Ident(n) => {
+                                                        py_isinstance_runtime_check(
+                                                            &args[0].value,
+                                                            n,
+                                                        )
+                                                    }
+                                                    _ => None,
+                                                }) else {
+                                                    all_known = false;
+                                                    break;
+                                                };
+                                                acc = Some(match acc {
+                                                    None => one,
+                                                    Some(prev) => {
+                                                        Expression::new(ExprKind::Binary {
+                                                            op: BinOp::Or,
+                                                            left: Box::new(prev),
+                                                            right: Box::new(one),
+                                                        })
+                                                    }
+                                                });
+                                            }
+                                            if all_known && let Some(a) = acc {
+                                                expr = a;
+                                                continue;
+                                            }
+                                        }
+                                        _ => {}
+                                    }
                                     if let ExprKind::Ident(type_name) = &args[1].value.kind {
                                         if type_name == "int" {
                                             // isinstance(x, int) → typeof x === "number" || typeof x === "boolean"
@@ -8283,13 +8635,17 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     continue;
                                 }
                                 "list" if args.len() == 1 => {
-                                    // list(iterable) → [...iterable]
+                                    // list(iterable) → [...iterable]. A dict
+                                    // iterates its KEYS (`list({'a':1})` is
+                                    // `['a']`), but a Map spreads as [k, v]
+                                    // pairs — route through the Python iterate
+                                    // helper first, same as `sorted`.
                                     let iterable = args[0].value.clone();
                                     expr = Expression::new(ExprKind::Array(vec![ArrayElement {
                                         key: None,
                                         spread: true,
                                         by_ref: false,
-                                        value: iterable,
+                                        value: call_ident("__py_iter_array__", vec![iterable]),
                                     }]));
                                     continue;
                                 }
@@ -8446,12 +8802,15 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                         .find(|a| a.name.as_deref() == Some("key"))
                                         .map(|a| a.value.clone())
                                         .map(wrap_key_ident_in_lambda);
+                                    // A dict iterates its KEYS, but spreading a
+                                    // Map yields [k, v] pairs — route through
+                                    // the Python iterate helper first.
                                     let spread_array =
                                         Expression::new(ExprKind::Array(vec![ArrayElement {
                                             key: None,
                                             spread: true,
                                             by_ref: false,
-                                            value: iterable,
+                                            value: call_ident("__py_iter_array__", vec![iterable]),
                                         }]));
                                     let sorted = if let Some(key_fn) = key_fn {
                                         call_ident("__py_sort_by_key", vec![spread_array, key_fn])

@@ -263,6 +263,58 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     }
     c.emit_end(line);
 
+    // ── range → `range(0, 3)` / `range(1, 10, 2)` ───────────────────────
+    // A range is lazy and opaque, so `emit_range` stamps its bounds onto the
+    // object for exactly this. CPython omits the step when it is 1.
+    lget(&mut c, value, line);
+    struct_get(&mut c, "__py_range_stop", line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if(line);
+    {
+        let concat = c.add_import("wasm:js-string", "concat");
+        let to_str = c.add_import("ecma:string", "String");
+
+        str_const(&mut c, "range(", line);
+        lget(&mut c, value, line);
+        struct_get(&mut c, "__py_range_start", line);
+        c.emit_call(to_str, 1, line);
+        c.emit_call(concat, 2, line);
+        str_const(&mut c, ", ", line);
+        c.emit_call(concat, 2, line);
+        lget(&mut c, value, line);
+        struct_get(&mut c, "__py_range_stop", line);
+        c.emit_call(to_str, 1, line);
+        c.emit_call(concat, 2, line);
+        lset(&mut c, out, line);
+
+        // step != 1 → append ", <step>"
+        lget(&mut c, value, line);
+        struct_get(&mut c, "__py_range_step", line);
+        {
+            let to_f64 = c.add_import("wasm:js-number", "toF64");
+            c.emit_call(to_f64, 1, line);
+        }
+        c.emit_f64_const(1.0, line);
+        c.emit_op(Op::F64_NE, line);
+        c.emit_if(line);
+        lget(&mut c, out, line);
+        str_const(&mut c, ", ", line);
+        c.emit_call(concat, 2, line);
+        lget(&mut c, value, line);
+        struct_get(&mut c, "__py_range_step", line);
+        c.emit_call(to_str, 1, line);
+        c.emit_call(concat, 2, line);
+        lset(&mut c, out, line);
+        c.emit_end(line);
+
+        lget(&mut c, out, line);
+        str_const(&mut c, ")", line);
+        c.emit_call(concat, 2, line);
+        c.emit_op(Op::RETURN, line);
+    }
+    c.emit_end(line);
+
     // ── user object with __repr__ / __str__ ─────────────────────────────
     // Class methods live on the PROTOTYPE, not as own properties, so look them
     // up prototype-aware via `__vybe_js_get_method` (the same global the

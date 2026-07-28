@@ -68,6 +68,26 @@ fn emit_is_map(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_call(eq, 2, line);
 }
 
+/// Python `list(x)` / `sorted(x)` — materialize an iterable as an array the way
+/// CPython iterates it. A dict iterates its **KEYS** (`list({'b':2,'a':1})` is
+/// `['b','a']`), but a Map spreads as `[key, value]` entry pairs, so the Map
+/// case has to be split out. Everything else keeps whatever the caller already
+/// built. Stack: `[value]` → `[array]`.
+pub fn emit_py_iter_array(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let v = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v, line);
+
+    emit_is_map(chunks, current, v, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    call_import(chunks, current, "ecma:map", "keys", 1, line);
+    call_import(chunks, current, "ecma:array", "from", 1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    chunks[current].emit_end(line);
+}
+
 fn call_import(
     chunks: &mut [Chunk],
     current: usize,

@@ -15,11 +15,16 @@ print(formatted)
 
 #[test]
 fn test_pprint_pformat_indent() {
+    // `indent` only shows once the output actually wraps — CPython renders
+    // `pformat({"a": [1, 2]}, indent=4)` as the flat `{'a': [1, 2]}`, so the
+    // previous single-pair/default-width case asserted True on something real
+    // Python answers False for. Verified against CPython 3:
+    //   "{   'alpha': [1, 2, 3, 4, 5],\n    'beta': [6, 7, 8, 9, 10],\n    'gamma': ...}"
     let out = run_python(r#"
 import pprint
-d = {"a": [1, 2]}
-formatted = pprint.pformat(d, indent=4)
-print("    'a'" in formatted or "    " in formatted)
+d = {"alpha": [1, 2, 3, 4, 5], "beta": [6, 7, 8, 9, 10], "gamma": [11, 12, 13, 14]}
+formatted = pprint.pformat(d, indent=4, width=30)
+print("    'beta'" in formatted)
 "#);
     assert_eq!(out, vec!["True"]);
 }

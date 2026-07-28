@@ -73,6 +73,8 @@ uses_normalize_class = true
 
 # ── Internal operators (emitter adapters) ────────────────────────────────────
 __pyadd__       = { emit = "common:python.pyadd",            min_args = 2, max_args = 2 }
+# `list(x)`/`sorted(x)` iterate a dict's KEYS, not its entry pairs.
+__py_iter_array__ = { emit = "common:python.iter_array",     min_args = 1, max_args = 1 }
 __pyneg__       = { emit = "common:python.pyneg",            min_args = 1, max_args = 1 }
 __pylt__        = { emit = "common:python.pylt",             min_args = 2, max_args = 2 }
 __pygt__        = { emit = "common:python.pygt",             min_args = 2, max_args = 2 }

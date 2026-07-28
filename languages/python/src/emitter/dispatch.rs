@@ -120,6 +120,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.index" => {
             crate::emitter::collections_adapter::emit_index(chunks, current, argc, line)
         }
+        "python.iter_array" => {
+            crate::emitter::collections_adapter::emit_py_iter_array(chunks, current, argc, line)
+        }
         "python.from_end" => {
             crate::emitter::collections_adapter::emit_from_end(chunks, current, argc, line)
         }

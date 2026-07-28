@@ -295,11 +295,126 @@ fn emit_relational(
     chunk.emit_if_value(line);
     emit_set_relational(chunk, a_slot, b_slot, dunder, line);
     chunk.emit_else(line);
+    // `(1, 2) < (1, 3)` / `[1] < [1, 0]` — sequences compare LEXICOGRAPHICALLY
+    // in Python. Without this both operands fall to the numeric path and trap
+    // in `toF64` (this is what broke `sys.version_info >= (3, 8)`).
+    emit_is_array(chunk, a_slot, line);
+    emit_is_array(chunk, b_slot, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+    emit_seq_relational(chunk, a_slot, b_slot, dunder, line);
+    chunk.emit_else(line);
     emit_object_binop_or(chunk, a_slot, b_slot, dunder, cmp, line);
+    chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     // The comparison ops yield an i32; Python's `bool` is a real value.
     vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+}
+
+fn emit_is_array(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    let idx = chunk.add_import("ecma:array", "isArray");
+    chunk.emit_call(idx, 1, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+}
+
+/// Lexicographic sequence ordering (CPython's list/tuple comparison): walk to
+/// the first differing element and compare THAT; if one sequence is a prefix of
+/// the other, the shorter is smaller. Both slots hold arrays. Leaves an i32.
+fn emit_seq_relational(chunk: &mut Chunk, a_slot: u16, b_slot: u16, dunder: &str, line: u32) {
+    let i = chunk.alloc_scratch(1);
+    let n = chunk.alloc_scratch(1);
+    let la = chunk.alloc_scratch(1);
+    let lb = chunk.alloc_scratch(1);
+    let diff = chunk.alloc_scratch(1); // -1 = not found yet, else index
+
+    let len_of = |chunk: &mut Chunk, slot: u16, line: u32| {
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunk.emit_op(Op::ARRAY_LENGTH, line);
+    };
+    len_of(chunk, a_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, la, line);
+    len_of(chunk, b_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, lb, line);
+
+    // n = min(la, lb)
+    chunk.emit_op_u16(Op::LOCAL_GET, la, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, lb, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, la, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, lb, line);
+    chunk.emit_end(line);
+    chunk.emit_op_u16(Op::LOCAL_SET, n, line);
+
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    chunk.emit_i32_const(-1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, diff, line);
+
+    // while i < n and diff == -1: if a[i] != b[i]: diff = i else i += 1
+    let block_patch = chunk.emit_block(line);
+    let (loop_patch, _) = chunk.emit_loop_s(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, n, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, diff, line);
+    chunk.emit_i32_const(-1, line);
+    chunk.emit_op(Op::I32_EQ, line);
+    chunk.emit_op(Op::I32_AND, line);
+    // Break out of the block when the condition is false (depth 0 = loop,
+    // 1 = block) — the i32 tail of `loops::emit_loop_cond`, without its
+    // dyn conversion since this condition is already an i32.
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(1, line);
+
+    let elem = |chunk: &mut Chunk, slot: u16, i: u16, line: u32| {
+        chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+        chunk.emit_op(Op::ARRAY_GET, line);
+    };
+    elem(chunk, a_slot, i, line);
+    elem(chunk, b_slot, i, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line); // 1 when they differ
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, diff, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, i, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, i, line);
+    chunk.emit_end(line);
+    chunk.emit_br(0, line);
+    chunk.emit_end(line); // end loop
+    chunk.patch_loop(loop_patch);
+    chunk.emit_end(line); // end block
+    chunk.patch_block(block_patch);
+
+    // Differing element decides; otherwise the lengths do.
+    let cmp: fn(&mut Chunk, u32) = match dunder {
+        "__lt__" => vybe_compiler::compiler::ops::emit_dyn_lt,
+        "__gt__" => vybe_compiler::compiler::ops::emit_dyn_gt,
+        "__le__" => vybe_compiler::compiler::ops::emit_dyn_le,
+        _ => vybe_compiler::compiler::ops::emit_dyn_ge,
+    };
+    chunk.emit_op_u16(Op::LOCAL_GET, diff, line);
+    chunk.emit_i32_const(-1, line);
+    chunk.emit_op(Op::I32_NE, line);
+    chunk.emit_if_value(line);
+    elem(chunk, a_slot, diff, line);
+    elem(chunk, b_slot, diff, line);
+    cmp(chunk, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, la, line);
+    chunk.emit_op(Op::F64_CONVERT_I32_U, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, lb, line);
+    chunk.emit_op(Op::F64_CONVERT_I32_U, line);
+    cmp(chunk, line);
+    chunk.emit_end(line);
 }
 
 /// `set` ordering: `<=`→subset, `<`→proper subset, `>=`→superset,
@@ -1317,7 +1432,56 @@ pub fn emit_count(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
 /// multi-argument forms still fall back to the shared runtime helper for
 /// now because they need Python's nullable-argument reshaping semantics.
 pub fn emit_range(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    // Stash the arguments before the shared emitter consumes them, then stamp
+    // them back onto the resulting object: CPython reprs a range as
+    // `range(0, 3)` / `range(1, 10, 2)`, which needs start/stop/step to survive
+    // on the (otherwise opaque, lazy) range value. See `repr_adapter`.
+    let base = chunks[current].alloc_scratch(argc as u16);
+    for off in (0..argc as u16).rev() {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, base + off, line);
+    }
+    for off in 0..argc as u16 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + off, line);
+    }
+
     collections::emit_range_targeted(chunks, current, argc, &Target::wasm(), line);
+
+    // `range(stop)` → start 0; `range(start, stop[, step])` → args as written.
+    let (start, stop): (Option<u16>, u16) = if argc >= 2 {
+        (Some(base), base + 1)
+    } else {
+        (None, base)
+    };
+    let stamp = |chunks: &mut [Chunk], key: &str, push: &dyn Fn(&mut Chunk)| {
+        chunks[current].emit_dup(line);
+        push(&mut chunks[current]);
+        let k = chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(
+            key,
+        )));
+        chunks[current].emit_op_u16(Op::STRUCT_SET, k, line);
+        chunks[current].emit_op(Op::DROP, line);
+    };
+    match start {
+        Some(slot) => stamp(chunks, "__py_range_start", &move |c: &mut Chunk| {
+            c.emit_op_u16(Op::LOCAL_GET, slot, line)
+        }),
+        None => stamp(chunks, "__py_range_start", &move |c: &mut Chunk| {
+            c.emit_f64_const(0.0, line)
+        }),
+    }
+    stamp(chunks, "__py_range_stop", &move |c: &mut Chunk| {
+        c.emit_op_u16(Op::LOCAL_GET, stop, line)
+    });
+    if argc >= 3 {
+        let step = base + 2;
+        stamp(chunks, "__py_range_step", &move |c: &mut Chunk| {
+            c.emit_op_u16(Op::LOCAL_GET, step, line)
+        });
+    } else {
+        stamp(chunks, "__py_range_step", &move |c: &mut Chunk| {
+            c.emit_f64_const(1.0, line)
+        });
+    }
 }
 
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {

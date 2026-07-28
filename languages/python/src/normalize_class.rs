@@ -25,7 +25,6 @@ use vybe_ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, Stm
 use vybe_bytecode::class_normalize::{
     NormalMembers,
     build_normal_method,
-    canonical::{ClassLang, canonicalize_method},
     from_method_stmt,
     types::*,
 };
@@ -97,7 +96,7 @@ pub fn normalize_class(
                     continue;
                 };
 
-                let (canonical, special_kind) = canonicalize_method(ClassLang::Python, src_name);
+                let (canonical, special_kind) = crate::protocol::canonical_method(src_name);
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, Access::Public)
                 else {
                     continue;
@@ -158,13 +157,12 @@ pub fn normalize_class(
                 // Python `@property` / `@foo.setter` aren't yet captured
                 // by the walker — if this arm fires at all today, it's
                 // from a dunder mapping in the walker. Keep it general.
-                let (canonical, _) = canonicalize_method(ClassLang::Python, pname);
+                let (canonical, _) = crate::protocol::canonical_method(pname);
                 let getter_method = getter.as_ref().map(|body| {
                     build_normal_method(
                         span.clone(),
                         &canonical,
                         pname,
-                        Vec::new(),
                         vec![],
                         None,
                         body.clone(),
@@ -180,7 +178,6 @@ pub fn normalize_class(
                         span.clone(),
                         &canonical,
                         pname,
-                        Vec::new(),
                         vec![s.param.clone()],
                         None,
                         s.body.clone(),
