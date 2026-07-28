@@ -120,6 +120,113 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.index" => {
             crate::emitter::collections_adapter::emit_index(chunks, current, argc, line)
         }
+        "python.file_readline" => {
+            crate::emitter::file_adapter::emit_readline(chunks, current, argc, line)
+        }
+        "python.file_writelines" => {
+            crate::emitter::file_adapter::emit_writelines(chunks, current, argc, line)
+        }
+        "python.file_seek" => {
+            crate::emitter::file_adapter::emit_seek(chunks, current, argc, line)
+        }
+        "python.file_tell" => {
+            crate::emitter::file_adapter::emit_tell(chunks, current, argc, line)
+        }
+        "python.tmp_gettempdir" => {
+            crate::emitter::file_adapter::emit_gettempdir(chunks, current, argc, line)
+        }
+        "python.tmp_mkdtemp" => {
+            crate::emitter::file_adapter::emit_mkdtemp(chunks, current, argc, line)
+        }
+        "python.tmp_named" => {
+            crate::emitter::file_adapter::emit_named_temp_file(chunks, current, argc, line)
+        }
+        "python.file_open" => {
+            crate::emitter::file_adapter::emit_open(chunks, current, argc, line)
+        }
+        "python.file_read" => {
+            crate::emitter::file_adapter::emit_read(chunks, current, argc, line)
+        }
+        "python.file_write" => {
+            crate::emitter::file_adapter::emit_write(chunks, current, argc, line)
+        }
+        "python.file_readlines" => {
+            crate::emitter::file_adapter::emit_readlines(chunks, current, argc, line)
+        }
+        "python.file_close" => {
+            crate::emitter::file_adapter::emit_close(chunks, current, argc, line)
+        }
+        "python.shutil_copytree" => {
+            crate::emitter::os_adapter::emit_copytree(chunks, current, argc, line)
+        }
+        "python.shutil_which" => {
+            crate::emitter::os_adapter::emit_which(chunks, current, argc, line)
+        }
+        "python.tmp_mkstemp" => {
+            crate::emitter::file_adapter::emit_mkstemp(chunks, current, argc, line)
+        }
+        "python.ospath_samefile" => {
+            crate::emitter::file_adapter::emit_samefile(chunks, current, argc, line)
+        }
+        "python.tmp_prefix" => {
+            crate::emitter::file_adapter::emit_tmp_prefix(chunks, current, argc, line)
+        }
+        "python.os_device_encoding" => {
+            crate::emitter::os_adapter::emit_device_encoding(chunks, current, argc, line)
+        }
+        "python.os_term_size" => {
+            crate::emitter::os_adapter::emit_term_size(chunks, current, argc, line)
+        }
+        "python.sys_getsizeof" => {
+            crate::emitter::os_adapter::emit_getsizeof(chunks, current, argc, line)
+        }
+        "python.sys_intern" => {
+            crate::emitter::os_adapter::emit_intern(chunks, current, argc, line)
+        }
+        "python.sys_getrecursionlimit" => {
+            crate::emitter::os_adapter::emit_getrecursionlimit(chunks, current, argc, line)
+        }
+        "python.sys_setrecursionlimit" => {
+            crate::emitter::os_adapter::emit_setrecursionlimit(chunks, current, argc, line)
+        }
+        "python.sys_encoding" => {
+            crate::emitter::os_adapter::emit_encoding(chunks, current, argc, line)
+        }
+        "python.sys_is_finalizing" => {
+            crate::emitter::os_adapter::emit_is_finalizing(chunks, current, argc, line)
+        }
+        "python.sys_exc_info" => {
+            crate::emitter::os_adapter::emit_exc_info(chunks, current, argc, line)
+        }
+        "python.os_stat" => {
+            crate::emitter::os_adapter::emit_stat(chunks, current, argc, line)
+        }
+        "python.os_entry_stat" => {
+            crate::emitter::os_adapter::emit_entry_stat(chunks, current, argc, line)
+        }
+        "python.os_scandir" => {
+            crate::emitter::os_adapter::emit_scandir(chunks, current, argc, line)
+        }
+        "python.os_walk" => crate::emitter::os_adapter::emit_walk(chunks, current, argc, line),
+        "python.os_cpu_count" => {
+            crate::emitter::os_adapter::emit_cpu_count(chunks, current, argc, line)
+        }
+        "python.os_fspath" => {
+            crate::emitter::os_adapter::emit_fspath(chunks, current, argc, line)
+        }
+        "python.os_strerror" => {
+            crate::emitter::os_adapter::emit_strerror(chunks, current, argc, line)
+        }
+        "python.os_is_file" => {
+            crate::emitter::os_adapter::emit_entry_flag(chunks, current, "__is_file", line)
+        }
+        "python.os_is_dir" => {
+            crate::emitter::os_adapter::emit_entry_flag(chunks, current, "__is_dir", line)
+        }
+        "python.os_is_symlink" => {
+            crate::emitter::os_adapter::emit_entry_false(chunks, current, line)
+        }
+        "python.os_inode" => crate::emitter::os_adapter::emit_entry_zero(chunks, current, line),
         "python.iter_array" => {
             crate::emitter::collections_adapter::emit_py_iter_array(chunks, current, argc, line)
         }
@@ -477,6 +584,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.clear" => crate::emitter::collections_adapter::emit_clear(chunks, current, line),
         "python.length" => crate::emitter::collections_adapter::emit_length(chunks, current, line),
+        "python.str_translate" => {
+            crate::emitter::string_adapter::emit_translate(chunks, current, argc, line)
+        }
+        "python.str_maketrans" => {
+            crate::emitter::string_adapter::emit_maketrans(chunks, current, argc, line)
+        }
+        "python.str_istitle" => {
+            crate::emitter::string_adapter::emit_istitle(chunks, current, argc, line)
+        }
         "python.str_casefold" => {
             crate::emitter::string_adapter::emit_casefold(chunks, current, argc, line)
         }

@@ -721,3 +721,299 @@ pub fn emit_splitlines(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
 }
+
+/// `str.maketrans(x[, y[, z]])` → a Map from single-character key to its
+/// replacement (a string, or null to delete the character).
+///
+/// Three forms, all of which the suite uses:
+///   * `maketrans(from, to)`      — positional character pairing
+///   * `maketrans(from, to, del)` — plus characters mapped to null (deleted)
+///   * `maketrans(dict)`          — `{ord('a'): 'AA', ord('b'): None}`; integer
+///     keys are code points, so they are converted back to characters here and
+///     `translate` can stay a plain per-character lookup.
+pub fn emit_maketrans(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let table = chunks[current].alloc_scratch(1);
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, table, line);
+
+    if argc == 1 {
+        // Dict form: re-key `ord(c) -> repl` as `c -> repl`.
+        let entries = chunks[current].alloc_scratch(1);
+        let i = chunks[current].alloc_scratch(1);
+        let n = chunks[current].alloc_scratch(1);
+        let pair = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+        call_import(chunks, current, "ecma:object", "entries", 1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, entries, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, entries, line);
+        chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+        chunks[current].emit_i32_const(0, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+        let block = chunks[current].emit_block(line);
+        let lp = chunks[current].emit_loop_s(line).0;
+        chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+        chunks[current].emit_op(Op::I32_GE_S, line);
+        chunks[current].emit_br_if(1, line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, entries, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+        chunks[current].emit_op(Op::ARRAY_GET, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, pair, line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, table, line);
+        // key: fromCodePoint(Number(pair[0]))
+        chunks[current].emit_op_u16(Op::LOCAL_GET, pair, line);
+        chunks[current].emit_i32_const(0, line);
+        chunks[current].emit_op(Op::ARRAY_GET, line);
+        call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+        call_import(chunks, current, "ecma:string", "fromCodePoint", 1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, pair, line);
+        chunks[current].emit_i32_const(1, line);
+        chunks[current].emit_op(Op::ARRAY_GET, line);
+        call_import(chunks, current, "ecma:map", "set", 3, line);
+        chunks[current].emit_op(Op::DROP, line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+        chunks[current].emit_i32_const(1, line);
+        chunks[current].emit_op(Op::I32_ADD, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+        chunks[current].emit_br(0, line);
+        chunks[current].emit_end(line);
+        chunks[current].patch_loop(lp);
+        chunks[current].emit_end(line);
+        chunks[current].patch_block(block);
+    } else {
+        // from/to pairing, then the optional delete set.
+        emit_pair_chars(chunks, current, table, base, base + 1, false, line);
+        if argc >= 3 {
+            emit_pair_chars(chunks, current, table, base + 2, base + 2, true, line);
+        }
+    }
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, table, line);
+}
+
+/// Map `src[i] -> dst[i]` for every index of `src`. When `delete` is set the
+/// value stored is null, which `translate` treats as "drop this character".
+fn emit_pair_chars(
+    chunks: &mut [Chunk],
+    current: usize,
+    table: u16,
+    src: u16,
+    dst: u16,
+    delete: bool,
+    line: u32,
+) {
+    let i = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+
+    let block = chunks[current].emit_block(line);
+    let lp = chunks[current].emit_loop_s(line).0;
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, table, line);
+    emit_char_at(chunks, current, src, i, line);
+    if delete {
+        let k = chunks[current].add_constant(vybe_bytecode::Value::Null);
+        chunks[current].emit_op_u16(Op::CONST, k, line);
+    } else {
+        emit_char_at(chunks, current, dst, i, line);
+    }
+    call_import(chunks, current, "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+}
+
+/// Push `s[i:i+1]`.
+fn emit_char_at(chunks: &mut [Chunk], current: usize, s: u16, i: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    strings::emit_substring(&mut chunks[current], line);
+}
+
+/// `s.translate(table)` — per-character lookup in the `maketrans` Map. A missing
+/// key keeps the character; a null value deletes it.
+pub fn emit_translate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let s = base;
+    let table = base + 1;
+
+    let result = chunks[current].alloc_scratch(1);
+    chunks[current].emit_string_const("", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+    let i = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    let n = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    let ch = chunks[current].alloc_scratch(1);
+    let repl = chunks[current].alloc_scratch(1);
+
+    let block = chunks[current].emit_block(line);
+    let lp = chunks[current].emit_loop_s(line).0;
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    emit_char_at(chunks, current, s, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, ch, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, table, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch, line);
+    call_import(chunks, current, "ecma:map", "has", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, table, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch, line);
+    call_import(chunks, current, "ecma:map", "get", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, repl, line);
+    // null → delete the character.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, repl, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, repl, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+}
+
+/// `str.istitle()` — the string equals its title-cased form AND contains at
+/// least one cased character (so `"123".istitle()` is False even though it is
+/// trivially equal to its own title-case).
+pub fn emit_istitle(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let s = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
+
+    // s == title(s)
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    emit_title_of(chunks, current, s, line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+
+    // ... and the string has a cased character: upper(s) != lower(s).
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    call_import(chunks, current, "ecma:string", "toUpperCase", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
+    call_import(chunks, current, "ecma:string", "toLowerCase", 1, line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+
+    chunks[current].emit_op(Op::I32_AND, line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// Push the title-cased form of the string in `src`.
+fn emit_title_of(chunks: &mut [Chunk], current: usize, src: u16, line: u32) {
+    let result = chunks[current].alloc_scratch(1);
+    chunks[current].emit_string_const("", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+    let i = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    let n = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    let ch = chunks[current].alloc_scratch(1);
+    let start = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, start, line);
+
+    let block = chunks[current].emit_block(line);
+    let lp = chunks[current].emit_loop_s(line).0;
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    emit_char_at(chunks, current, src, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, ch, line);
+
+    // A character is "cased" when upper and lower differ.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch, line);
+    call_import(chunks, current, "ecma:string", "toUpperCase", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch, line);
+    call_import(chunks, current, "ecma:string", "toLowerCase", 1, line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_op(Op::I32_EQZ, line); // 1 when cased
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, start, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch, line);
+    call_import(chunks, current, "ecma:string", "toUpperCase", 1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch, line);
+    call_import(chunks, current, "ecma:string", "toLowerCase", 1, line);
+    chunks[current].emit_end(line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, start, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ch, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, start, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+}

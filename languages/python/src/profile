@@ -73,8 +73,14 @@ uses_normalize_class = true
 
 # ── Internal operators (emitter adapters) ────────────────────────────────────
 __pyadd__       = { emit = "common:python.pyadd",            min_args = 2, max_args = 2 }
+"str.maketrans" = { emit = "common:python.str_maketrans", min_args = 1, max_args = 3 }
 # `list(x)`/`sorted(x)` iterate a dict's KEYS, not its entry pairs.
 __py_iter_array__ = { emit = "common:python.iter_array",     min_args = 1, max_args = 1 }
+# Raw filesystem primitives for the `os` prelude (wasi first, node for gaps).
+__os_readdir__  = { emit = "host:wasi:filesystem:readDirEntries", min_args = 1, max_args = 1 }
+__os_stat_raw__ = { emit = "host:wasi:filesystem:stat",           min_args = 1, max_args = 1 }
+__os_isdir__    = { emit = "host:wasi:filesystem:isDir",          min_args = 1, max_args = 1 }
+__os_cpus__     = { emit = "host:node:os:cpus",                   min_args = 0, max_args = 0 }
 __pyneg__       = { emit = "common:python.pyneg",            min_args = 1, max_args = 1 }
 __pylt__        = { emit = "common:python.pylt",             min_args = 2, max_args = 2 }
 __pygt__        = { emit = "common:python.pygt",             min_args = 2, max_args = 2 }
@@ -479,9 +485,48 @@ format          = { emit = "common:sprintf.format",           min_args = 1, max_
 
 # ── OS / File I/O ────────────────────────────────────────────────────────────
 
-open            = { emit = "host:wasi:filesystem:open",       min_args = 1, max_args = 3 }
+open            = { emit = "common:python.file_open",        min_args = 1, max_args = 3 }
 
-"os.getcwd"         = { emit = "host:wasi:filesystem:cwd",            min_args = 0, max_args = 0 }
+# `wasi:filesystem` (the flat shim) has no cwd — the process working directory
+# is a process concept, not a filesystem one, so it comes from node:process.
+"os.getcwd"         = { emit = "host:wasi:cli/environment:initial-cwd", min_args = 0, max_args = 0 }
+"os.getpid"         = { emit = "host:node:process:pid",               min_args = 0, max_args = 0 }
+# shutil — the wasi shim already does the heavy lifting: `mkdir` is
+# create_dir_all, `remove` is remove_dir_all for directories, `copy` is a file
+# copy. Only copytree/which need real logic.
+"shutil.copy"       = { emit = "host:wasi:filesystem:copy",           min_args = 2, max_args = 3 }
+"shutil.copyfile"   = { emit = "host:wasi:filesystem:copy",           min_args = 2, max_args = 3 }
+"shutil.copy2"      = { emit = "host:wasi:filesystem:copy",           min_args = 2, max_args = 3 }
+"shutil.rmtree"     = { emit = "host:wasi:filesystem:remove",         min_args = 1, max_args = 3 }
+"shutil.move"       = { emit = "host:wasi:filesystem:rename",         min_args = 2, max_args = 3 }
+"shutil.copytree"   = { emit = "common:python.shutil_copytree",       min_args = 2, max_args = 8 }
+"shutil.which"      = { emit = "common:python.shutil_which",          min_args = 1, max_args = 3 }
+"tempfile.TemporaryDirectory" = { emit = "common:python.tmp_mkdtemp", min_args = 0, max_args = 3 }
+"tempfile.gettempprefix"      = { emit = "common:python.tmp_prefix",  min_args = 0, max_args = 0 }
+"tempfile.mkstemp"            = { emit = "common:python.tmp_mkstemp", min_args = 0, max_args = 4 }
+"os.path.samefile"            = { emit = "common:python.ospath_samefile", min_args = 2, max_args = 2 }
+"tempfile.gettempdir"        = { emit = "common:python.tmp_gettempdir", min_args = 0, max_args = 0 }
+"tempfile.mkdtemp"           = { emit = "common:python.tmp_mkdtemp",    min_args = 0, max_args = 3 }
+"tempfile.NamedTemporaryFile" = { emit = "common:python.tmp_named",     min_args = 0, max_args = 6 }
+"tempfile.TemporaryFile"     = { emit = "common:python.tmp_named",      min_args = 0, max_args = 6 }
+"os.stat"           = { emit = "common:python.os_stat",               min_args = 1, max_args = 1 }
+"os.lstat"          = { emit = "common:python.os_stat",               min_args = 1, max_args = 1 }
+"os.scandir"        = { emit = "common:python.os_scandir",            min_args = 0, max_args = 1 }
+"os.walk"           = { emit = "common:python.os_walk",               min_args = 1, max_args = 3 }
+"os.cpu_count"      = { emit = "common:python.os_cpu_count",          min_args = 0, max_args = 0 }
+"os.fspath"         = { emit = "common:python.os_fspath",             min_args = 1, max_args = 1 }
+"os.strerror"       = { emit = "common:python.os_strerror",           min_args = 1, max_args = 1 }
+"os.getppid"        = { emit = "host:node:process:ppid",              min_args = 0, max_args = 0 }
+# `replace` is rename with silent overwrite — the wasi shim already overwrites.
+"os.replace"        = { emit = "host:wasi:filesystem:rename",         min_args = 2, max_args = 2 }
+"os.rmdir"          = { emit = "host:wasi:filesystem:remove",         min_args = 1, max_args = 1 }
+"os.removedirs"     = { emit = "host:wasi:filesystem:remove",         min_args = 1, max_args = 1 }
+"os.truncate"       = { emit = "host:node:fs:truncateSync",           min_args = 2, max_args = 2 }
+"os.isatty"         = { emit = "host:node:tty:isatty",                min_args = 1, max_args = 1 }
+# NOTE the namespace is `wasi:random/random`, not `wasi:random`.
+"os.urandom"        = { emit = "host:wasi:random/random:get-random-bytes", min_args = 1, max_args = 1 }
+"os.device_encoding" = { emit = "common:python.os_device_encoding",   min_args = 1, max_args = 1 }
+"os.get_terminal_size" = { emit = "common:python.os_term_size",       min_args = 0, max_args = 1 }
 "os.listdir"        = { emit = "host:wasi:filesystem:listDir",        min_args = 0, max_args = 1 }
 "os.mkdir"          = { emit = "host:wasi:filesystem:mkdir",           min_args = 1, max_args = 2 }
 "os.makedirs"       = { emit = "host:wasi:filesystem:mkdir",           min_args = 1, max_args = 2 }
@@ -518,6 +563,14 @@ open            = { emit = "host:wasi:filesystem:open",       min_args = 1, max_
 "sys.exit"       = { emit = "host:wasi:cli:exit",             min_args = 0, max_args = 1 }
 "sys.argv"       = { emit = "host:wasi:cli:args",             min_args = 0, max_args = 0 }
 "sys.platform"   = { emit = "host:wasi:cli:platform",         min_args = 0, max_args = 0 }
+# Dotted `sys.x(...)` does NOT consult the namespace tree (only `from sys
+# import x` does), so the same leaves are listed here too.
+"sys.getsizeof"          = { emit = "common:python.sys_getsizeof",         min_args = 1, max_args = 2 }
+"sys.intern"             = { emit = "common:python.sys_intern",            min_args = 1, max_args = 1 }
+"sys.getrecursionlimit"  = { emit = "common:python.sys_getrecursionlimit", min_args = 0, max_args = 0 }
+"sys.setrecursionlimit"  = { emit = "common:python.sys_setrecursionlimit", min_args = 1, max_args = 1 }
+"sys.is_finalizing"      = { emit = "common:python.sys_is_finalizing",     min_args = 0, max_args = 0 }
+"sys.exc_info"           = { emit = "common:python.sys_exc_info",          min_args = 0, max_args = 0 }
 
 # ── json module ──────────────────────────────────────────────────────────────
 
@@ -602,6 +655,13 @@ ljust           = { emit = "common:str_pad_end",              min_args = 1, max_
 rjust           = { emit = "common:str_pad_start",            min_args = 1, max_args = 2 }
 zfill           = { emit = "intrinsic:zfill",          min_args = 1, max_args = 1 }
 casefold        = { emit = "common:python.str_casefold",     min_args = 0, max_args = 0 }
+# os.DirEntry methods — read the fields `emit_scandir` stamps on each entry.
+is_file         = { emit = "common:python.os_is_file",       min_args = 0, max_args = 0 }
+is_dir          = { emit = "common:python.os_is_dir",        min_args = 0, max_args = 0 }
+is_symlink      = { emit = "common:python.os_is_symlink",    min_args = 0, max_args = 0 }
+inode           = { emit = "common:python.os_inode",         min_args = 0, max_args = 0 }
+translate       = { emit = "common:python.str_translate",    min_args = 1, max_args = 1 }
+istitle         = { emit = "common:python.str_istitle",      min_args = 0, max_args = 0 }
 removeprefix    = { emit = "common:python.str_removeprefix",  min_args = 1, max_args = 1 }
 removesuffix    = { emit = "common:python.str_removesuffix",  min_args = 1, max_args = 1 }
 partition       = { emit = "intrinsic:partition",      min_args = 1, max_args = 1 }
@@ -671,11 +731,14 @@ issuperset      = { emit = "common:python.set_issuperset",   min_args = 1, max_a
 isdisjoint      = { emit = "common:python.set_isdisjoint",   min_args = 1, max_args = 1 }
 
 # File object methods
-read            = { emit = "host:wasi:filesystem:readFile",   min_args = 0, max_args = 1 }
-write           = { emit = "host:wasi:filesystem:writeFile",  min_args = 1, max_args = 1 }
-readline        = { emit = "host:wasi:filesystem:readLine",   min_args = 0, max_args = 1 }
-readlines       = { emit = "host:wasi:filesystem:readLines",  min_args = 0, max_args = 0 }
-close           = { emit = "host:wasi:filesystem:close",      min_args = 0, max_args = 0 }
+read            = { emit = "common:python.file_read",         min_args = 0, max_args = 1 }
+write           = { emit = "common:python.file_write",        min_args = 1, max_args = 1 }
+readline        = { emit = "common:python.file_readline",     min_args = 0, max_args = 1 }
+writelines      = { emit = "common:python.file_writelines",   min_args = 1, max_args = 1 }
+seek            = { emit = "common:python.file_seek",         min_args = 1, max_args = 2 }
+tell            = { emit = "common:python.file_tell",         min_args = 0, max_args = 0 }
+readlines       = { emit = "common:python.file_readlines",    min_args = 0, max_args = 0 }
+close           = { emit = "common:python.file_close",        min_args = 0, max_args = 0 }
 
 # datetime instance methods. `value_methods` are keyed by method name
 # alone, so any name shared by several datetime types dispatches on the

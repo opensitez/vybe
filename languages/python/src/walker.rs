@@ -355,7 +355,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
         prelude.append(&mut body);
         body = prelude;
     }
-
     Ok(Module {
         name: "main".into(),
         language: Lang::Python,
@@ -3565,6 +3564,42 @@ fn build_sql_with_desugar(conn: &str, body: Vec<Statement>) -> Vec<Statement> {
     ]
 }
 
+/// `with open(...) as f: BODY` → `f = open(...)` + `try: BODY finally: f.close()`.
+fn build_file_with_desugar(
+    item: &WithItem,
+    body: Vec<Statement>,
+    closes: bool,
+) -> Vec<Statement> {
+    let n = WITH_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let target = item
+        .var
+        .clone()
+        .unwrap_or_else(|| format!("__with_file_{n}"));
+    vec![
+        with_stmt(StmtKind::Assign {
+            targets: vec![Expression::ident(&target)],
+            value: item.expr.clone(),
+        }),
+        with_stmt(StmtKind::Try {
+            body,
+            catches: vec![],
+            else_body: None,
+            finally: Some(if closes {
+                vec![with_stmt(StmtKind::Expr(with_call(
+                    Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident(&target)),
+                        field: "close".into(),
+                        null_safe: false,
+                    }),
+                    vec![],
+                )))]
+            } else {
+                vec![]
+            }),
+        }),
+    ]
+}
+
 fn build_with_desugar(items: &[WithItem], body: Vec<Statement>) -> Vec<Statement> {
     let first = &items[0];
     // sqlite3 Connection used as a context manager → transaction semantics.
@@ -3574,6 +3609,32 @@ fn build_with_desugar(items: &[WithItem], body: Vec<Statement>) -> Vec<Statement
                 return build_sql_with_desugar(name, body);
             }
         }
+    }
+    // `with open(...) as f:` — a file object is a plain adapter-built value, not
+    // a class, so it has no `__enter__`/`__exit__` to call. Bind it directly and
+    // close in a `finally`, which IS CPython's file context-manager semantics.
+    // (Adding `__enter__`/`__exit__` as value_methods instead would shadow every
+    // user-defined context manager, since value methods win over user methods.)
+    if items.len() == 1
+        && let ExprKind::Call { callee, .. } = &first.expr.kind
+        && (matches!(&callee.kind, ExprKind::Ident(n) if n == "open")
+            // `tempfile.NamedTemporaryFile(...)` yields the same file object.
+            || matches!(&callee.kind, ExprKind::Member { object, field, .. }
+                if matches!(&object.kind, ExprKind::Ident(m) if m == "tempfile")
+                    && (field == "NamedTemporaryFile"
+                        || field == "TemporaryFile"
+                        || field == "TemporaryDirectory"))
+            // `with os.scandir(d) as it:` — an array; nothing to close.
+            || matches!(&callee.kind, ExprKind::Member { object, field, .. }
+                if matches!(&object.kind, ExprKind::Ident(m) if m == "os")
+                    && field == "scandir"))
+    {
+        // `TemporaryDirectory()` yields a PATH STRING, not a file object — it
+        // has no `close()`, so bind it and skip the cleanup call.
+        let closes = !matches!(&first.expr.kind, ExprKind::Call { callee, .. }
+            if matches!(&callee.kind, ExprKind::Member { field, .. }
+                if field == "TemporaryDirectory" || field == "scandir"));
+        return build_file_with_desugar(first, body, closes);
     }
     let n = WITH_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mgr = format!("__with_mgr_{n}");
@@ -7808,6 +7869,77 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     return lowered;
                 }
             }
+            // `tempfile.NamedTemporaryFile(prefix=…, suffix=…, dir=…)` etc. —
+            // adapters see only a stack of values, never argument NAMES, so the
+            // keywords are flattened here into a fixed (prefix, suffix, dir)
+            // order with "" defaults.
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && matches!(&object.kind, ExprKind::Ident(n) if n == "tempfile")
+                && matches!(
+                    field.as_str(),
+                    "NamedTemporaryFile" | "TemporaryFile" | "TemporaryDirectory" | "mkdtemp"
+                        | "mkstemp"
+                )
+            {
+                let kw = |name: &str| {
+                    args.iter()
+                        .find(|a| a.name.as_deref() == Some(name))
+                        .map(|a| desugar_member_reads(a.value.clone()))
+                        .unwrap_or_else(|| Expression::string(""))
+                };
+                let fixed = vec![
+                    Argument::positional(kw("prefix")),
+                    Argument::positional(kw("suffix")),
+                    Argument::positional(kw("dir")),
+                ];
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident("tempfile")),
+                        field: field.clone(),
+                        null_safe: false,
+                    })),
+                    args: fixed,
+                    optional,
+                });
+            }
+            // `tempfile.NamedTemporaryFile(prefix=…, suffix=…, dir=…)` etc.
+            // `emit_common(name, chunks, current, argc, line)` receives a value
+            // stack and a COUNT — argument names do not survive to emit time —
+            // so the keywords are flattened here into a fixed
+            // (prefix, suffix, dir) order with "" defaults, the same way
+            // `json.dumps(indent=…)` and `sorted(key=…)` are handled.
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && matches!(&object.kind, ExprKind::Ident(n) if n == "tempfile")
+                && matches!(
+                    field.as_str(),
+                    "NamedTemporaryFile"
+                        | "TemporaryFile"
+                        | "TemporaryDirectory"
+                        | "mkdtemp"
+                        | "mkstemp"
+                )
+            {
+                let kw = |name: &str| {
+                    args.iter()
+                        .find(|a| a.name.as_deref() == Some(name))
+                        .map(|a| desugar_member_reads(a.value.clone()))
+                        .unwrap_or_else(|| Expression::string(""))
+                };
+                let fixed = vec![
+                    Argument::positional(kw("prefix")),
+                    Argument::positional(kw("suffix")),
+                    Argument::positional(kw("dir")),
+                ];
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident("tempfile")),
+                        field: field.clone(),
+                        null_safe: false,
+                    })),
+                    args: fixed,
+                    optional,
+                });
+            }
             // `pprint.pformat(...)` / `pprint.PrettyPrinter(...)` / … — call the
             // injected prelude global (see [PPRINT_PRELUDE]). Kept a real Call so
             // keyword args (`pformat(d, width=20, sort_dicts=False)`) survive.
@@ -11066,10 +11198,106 @@ fn parse_python_string(s: &str) -> String {
     if raw {
         return s.to_string();
     }
-    decode_python_escape_bytes(s)
-        .into_iter()
-        .map(char::from)
-        .collect()
+    decode_python_escape_str(s)
+}
+
+/// Unescape a `str` literal at the CHARACTER level.
+///
+/// The byte-level decoder is for `b"…"` literals. Running a `str` through it
+/// and then `char::from(u8)` maps each byte to its LATIN-1 code point, so the
+/// two UTF-8 bytes of `é` become `Ã` + `©` — every non-ASCII literal came out
+/// mojibake, `len("héllo")` was 6, and `.encode("utf-8")` double-encoded.
+///
+/// Escapes that name a code point (`\xNN`, `\uNNNN`, `\UNNNNNNNN`) produce that
+/// CHARACTER, per CPython: `"\xe9"` is `é` (U+00E9), not the byte 0xE9.
+fn decode_python_escape_str(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    // Read `n` hex digits starting at `from`, if all present and valid.
+    let hex_at = |from: usize, n: usize| -> Option<u32> {
+        if from + n > chars.len() {
+            return None;
+        }
+        let mut v: u32 = 0;
+        for c in &chars[from..from + n] {
+            v = v * 16 + c.to_digit(16)?;
+        }
+        Some(v)
+    };
+    while i < chars.len() {
+        if chars[i] != '\\' || i + 1 >= chars.len() {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        match chars[i + 1] {
+            'n' => {
+                out.push('\n');
+                i += 2;
+            }
+            't' => {
+                out.push('\t');
+                i += 2;
+            }
+            'r' => {
+                out.push('\r');
+                i += 2;
+            }
+            '0' => {
+                out.push('\0');
+                i += 2;
+            }
+            'a' => {
+                out.push('\u{7}');
+                i += 2;
+            }
+            'b' => {
+                out.push('\u{8}');
+                i += 2;
+            }
+            'f' => {
+                out.push('\u{c}');
+                i += 2;
+            }
+            'v' => {
+                out.push('\u{b}');
+                i += 2;
+            }
+            '\\' | '\'' | '"' => {
+                out.push(chars[i + 1]);
+                i += 2;
+            }
+            // Line continuation: a backslash before a newline emits nothing.
+            '\n' => {
+                i += 2;
+            }
+            'x' | 'u' | 'U' => {
+                let n = match chars[i + 1] {
+                    'x' => 2,
+                    'u' => 4,
+                    _ => 8,
+                };
+                match hex_at(i + 2, n).and_then(char::from_u32) {
+                    Some(c) => {
+                        out.push(c);
+                        i += 2 + n;
+                    }
+                    None => {
+                        out.push(chars[i + 1]);
+                        i += 2;
+                    }
+                }
+            }
+            other => {
+                // Unknown escape — CPython keeps the backslash AND the char.
+                out.push('\\');
+                out.push(other);
+                i += 2;
+            }
+        }
+    }
+    out
 }
 
 fn parse_python_bytes(s: &str) -> Vec<u8> {

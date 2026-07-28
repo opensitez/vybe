@@ -1,54 +1,137 @@
-//! `collections.*` namespace-tree registration — the Python stdlib
-//! `collections` module contributed to the SHARED common resolver, exactly like
-//! `dotnet.*` (C#) and `php.*` (PHP). Resolution logic lives only in the common
-//! resolver; `from collections import deque` / `collections.deque(...)` walk the
-//! tree via `resolve_path(["collections", "deque"])`.
+//! Python namespace-tree registration.
+//!
+//! Mirrors `languages/php/src/tree_register.rs`: the LANGUAGE contributes DATA
+//! — its own profile tables, the same ones its emit dispatch executes — to the
+//! shared tree in `vybe_bytecode::namespaces`. Resolution logic lives only in
+//! the common resolver; nothing in the VM or the common compiler changes.
+//!
+//! The one difference from PHP is what a DOTTED profile key means. PHP skips
+//! them (`$obj->method` is receiver dispatch), but in Python `"os.stat"`,
+//! `"os.path.join"` and `"math.pi"` ARE module members, so each dotted key
+//! nests into real subtrees — `os` → `path` → `join`. That is what makes
+//! `from os import stat` / `from math import pi` resolve generically, instead
+//! of needing a hand-written `[[esm_default]] kind = "module-export"` row per
+//! name (the json rows are exactly that workaround).
+//!
+//! Leaf kinds come from the profile entry:
+//! - `emit = "common:python.<fn>"` → `CommonEmit`
+//! - `emit = "host:<module>:<fn>"` → `Fn`
+//! - `[namespace_constants]` → `Const`
+//! - opcode/intrinsic/print builtins have no process-global target — skipped.
 //!
 //! Python is CASE-SENSITIVE, so keys keep their exact source casing
-//! (`OrderedDict`, `Counter`) — the lowercase-canonical rule applies only to
-//! case-insensitive languages, so we build the `Subtree` directly rather than
-//! via the lowercase-asserting `namespace()` helper.
-//!
-//! Leaf kinds:
-//! - plain host-backed ctors register as `Fn` leaves (`deque`/`OrderedDict` are
-//!   just an ecma array / ecma object);
-//! - ctors needing custom construction logic register as `CommonEmit` leaves
-//!   dispatched through the Python emit dispatcher (`Counter`, `defaultdict`).
-//!
-//! Instance methods (`rotate`, `move_to_end`, `most_common`, …) are NEVER
-//! resolved through the tree — member dispatch is receiver-based (the profile
-//! method table + emit dispatch). Only the constructors live here.
+//! (`OrderedDict`, `NamedTemporaryFile`); the lowercase-canonical rule applies
+//! only to case-insensitive languages, so the `Subtree` is built directly
+//! rather than through the lowercase-asserting `namespace()` helper.
 
+use std::collections::BTreeMap;
 use std::sync::Once;
 
+use vybe_bytecode::Value;
 use vybe_bytecode::namespaces::{self, NamespaceNode, Subtree};
+use vybe_bytecode::profile::{BuiltinEmit, ConstantValue, parse_profile};
 
-/// Register the `collections` module surface under the `collections` root.
-/// Idempotent; first call wins.
+/// Insert `leaf` at a dotted path (`["path", "join"]` under root `os`),
+/// creating intermediate namespaces. An existing entry wins — first
+/// registration is authoritative, as in the other registrars.
+fn insert_path(root: &mut Subtree, path: &[&str], leaf: NamespaceNode) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let mut current = root;
+    for seg in parents {
+        let entry = current
+            .entry((*seg).to_string())
+            .or_insert_with(|| NamespaceNode::Namespace(Subtree::new()));
+        match entry {
+            NamespaceNode::Namespace(children) => current = children,
+            // A leaf already occupies this segment — it cannot also be a
+            // namespace, so leave the working entry alone.
+            _ => return,
+        }
+    }
+    current.entry((*last).to_string()).or_insert(leaf);
+}
+
+/// Register the Python surface. Idempotent; first call wins.
 pub fn register_namespace_tree() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let mut root = Subtree::new();
-        // `deque(iterable)` IS an ecma array (same as `list`); its methods
-        // (append/pop/appendleft/popleft/rotate/extendleft) are array emits.
-        root.insert(
-            "deque".to_string(),
-            namespaces::host_fn("ecma:array", "from"),
-        );
-        // `OrderedDict(...)` IS an insertion-ordered dict — an ecma object.
-        root.insert(
-            "OrderedDict".to_string(),
-            namespaces::host_fn("ecma:object", "create"),
-        );
-        // Counting / default-factory maps need custom construction.
-        root.insert(
-            "Counter".to_string(),
-            NamespaceNode::CommonEmit("python.counter_new".to_string()),
-        );
-        root.insert(
-            "defaultdict".to_string(),
-            NamespaceNode::CommonEmit("python.defaultdict_new".to_string()),
-        );
-        namespaces::register_namespace_tree("collections", NamespaceNode::Namespace(root));
+        register_collections();
+        register_from_profile();
     });
+}
+
+/// Everything derivable from the profile — no hand-maintained module list.
+fn register_from_profile() {
+    let Ok(profile) = parse_profile(crate::profile_source()) else {
+        return;
+    };
+
+    let mut roots: BTreeMap<String, Subtree> = BTreeMap::new();
+    let mut add = |key: &str, leaf: NamespaceNode| {
+        let segments: Vec<&str> = key.split('.').collect();
+        // A bare builtin (`len`, `print`) is not module surface.
+        if segments.len() < 2 {
+            return;
+        }
+        let root = roots.entry(segments[0].to_string()).or_default();
+        insert_path(root, &segments[1..], leaf);
+    };
+
+    for (name, def) in &profile.builtins {
+        match &def.emit {
+            BuiltinEmit::Common(op) => add(name, NamespaceNode::CommonEmit(op.clone())),
+            BuiltinEmit::HostCall(module, func) => add(name, namespaces::host_fn(module, func)),
+            _ => {}
+        }
+    }
+
+    // `[namespace_constants]` are VALUES (`math.pi`, `math.inf`) — precisely
+    // the members a named import binds. Without them `from math import pi` has
+    // nothing to resolve to and lands as `nan`.
+    for (name, value) in &profile.namespace_constants {
+        let node = match value {
+            ConstantValue::Float(f) => NamespaceNode::Const(Value::F64(*f)),
+            // `inf`/`nan` are spelled as strings in the profile but ARE floats.
+            ConstantValue::Str(s) => match s.as_str() {
+                "Infinity" => NamespaceNode::Const(Value::F64(f64::INFINITY)),
+                "-Infinity" => NamespaceNode::Const(Value::F64(f64::NEG_INFINITY)),
+                "NaN" => NamespaceNode::Const(Value::F64(f64::NAN)),
+                _ => NamespaceNode::Const(Value::String(std::sync::Arc::from(s.as_str()))),
+            },
+        };
+        add(name, node);
+    }
+
+    for (root, tree) in roots {
+        namespaces::register_namespace_tree(&root, NamespaceNode::Namespace(tree));
+    }
+}
+
+/// `collections` constructors. Hand-written because these are not profile
+/// builtins: `deque`/`OrderedDict` ARE plain ecma constructors, and
+/// `Counter`/`defaultdict` need custom construction.
+///
+/// Instance methods (`rotate`, `move_to_end`, `most_common`, …) are NEVER
+/// resolved through the tree — member dispatch is receiver-based.
+fn register_collections() {
+    let mut root = Subtree::new();
+    root.insert(
+        "deque".to_string(),
+        namespaces::host_fn("ecma:array", "from"),
+    );
+    root.insert(
+        "OrderedDict".to_string(),
+        namespaces::host_fn("ecma:object", "create"),
+    );
+    root.insert(
+        "Counter".to_string(),
+        NamespaceNode::CommonEmit("python.counter_new".to_string()),
+    );
+    root.insert(
+        "defaultdict".to_string(),
+        NamespaceNode::CommonEmit("python.defaultdict_new".to_string()),
+    );
+    namespaces::register_namespace_tree("collections", NamespaceNode::Namespace(root));
 }
