@@ -227,7 +227,7 @@ fn duplicate_check_has_pair() {
         run_pascal(
             r#"program T; function HasDup(const a:array of Integer):Boolean; var i,j:Integer; begin Result:=false; for i:=0 to High(a) do for j:=i+1 to High(a) do if a[i]=a[j] then Result:=true; end; var arr:array[0..3] of Integer; begin arr[0]:=1; arr[1]:=2; arr[2]:=2; arr[3]:=3; WriteLn(HasDup(arr)); end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -237,7 +237,7 @@ fn duplicate_check_all_unique() {
         run_pascal(
             r#"program T; function HasDup(const a:array of Integer):Boolean; var i,j:Integer; begin Result:=false; for i:=0 to High(a) do for j:=i+1 to High(a) do if a[i]=a[j] then Result:=true; end; var arr:array[0..2] of Integer; begin arr[0]:=1; arr[1]:=2; arr[2]:=3; WriteLn(HasDup(arr)); end."#
         ),
-        &["false"]
+        &["False"]
     );
 }
 
@@ -337,7 +337,7 @@ fn array_all_equal_check() {
         run_pascal(
             r#"program T; function AllEq(const a:array of Integer; v:Integer):Boolean; var i:Integer; begin Result:=true; for i:=0 to High(a) do if a[i]<>v then Result:=false; end; var arr:array[0..2] of Integer; begin arr[0]:=5; arr[1]:=5; arr[2]:=5; WriteLn(AllEq(arr,5)); end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -347,7 +347,7 @@ fn array_is_sorted_ascending() {
         run_pascal(
             r#"program T; function Sorted(const a:array of Integer):Boolean; var i:Integer; begin Result:=true; for i:=0 to High(a)-1 do if a[i]>a[i+1] then Result:=false; end; var arr:array[0..3] of Integer; begin arr[0]:=1; arr[1]:=2; arr[2]:=2; arr[3]:=4; WriteLn(Sorted(arr)); end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -357,7 +357,7 @@ fn array_is_not_sorted() {
         run_pascal(
             r#"program T; function Sorted(const a:array of Integer):Boolean; var i:Integer; begin Result:=true; for i:=0 to High(a)-1 do if a[i]>a[i+1] then Result:=false; end; var arr:array[0..2] of Integer; begin arr[0]:=1; arr[1]:=3; arr[2]:=2; WriteLn(Sorted(arr)); end."#
         ),
-        &["false"]
+        &["False"]
     );
 }
 

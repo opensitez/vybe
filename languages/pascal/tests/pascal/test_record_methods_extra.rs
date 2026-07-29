@@ -57,7 +57,7 @@ fn record_method_is_origin() {
         run_pascal(
             r#"program T; type TPt=record X,Y:Integer; function IsZero:Boolean; end; function TPt.IsZero:Boolean; begin Result:=(X=0) and (Y=0); end; var p:TPt; begin p.X:=0; p.Y:=0; WriteLn(p.IsZero); end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -127,7 +127,7 @@ fn record_helper_compare_x() {
         run_pascal(
             r#"program T; type TPt=record X,Y:Integer; end; TPtHelper=record helper for TPt function SameX(const o:TPt):Boolean; end; function TPtHelper.SameX(const o:TPt):Boolean; begin Result:=X=o.X; end; var a,b:TPt; begin a.X:=1; a.Y:=2; b.X:=1; b.Y:=9; WriteLn(a.SameX(b)); end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -137,7 +137,7 @@ fn record_method_toggle_flag() {
         run_pascal(
             r#"program T; type TFlag=record On:Boolean; procedure Flip; end; procedure TFlag.Flip; begin On:=not On; end; var f:TFlag; begin f.On:=false; f.Flip; WriteLn(f.On); end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -217,7 +217,7 @@ fn record_helper_is_positive_x() {
         run_pascal(
             r#"program T; type TPt=record X,Y:Integer; end; TPtHelper=record helper for TPt function XPos:Boolean; end; function TPtHelper.XPos:Boolean; begin Result:=X>0; end; var p:TPt; begin p.X:=3; WriteLn(p.XPos); end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -287,7 +287,7 @@ fn record_helper_equal_coords() {
         run_pascal(
             r#"program T; type TPt=record X,Y:Integer; end; TPtHelper=record helper for TPt function Equal(const o:TPt):Boolean; end; function TPtHelper.Equal(const o:TPt):Boolean; begin Result:=(X=o.X) and (Y=o.Y); end; var a,b:TPt; begin a.X:=1; a.Y:=2; b:=a; WriteLn(a.Equal(b)); end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -327,7 +327,7 @@ fn record_method_compare_y() {
         run_pascal(
             r#"program T; type TPt=record X,Y:Integer; function YGreater(const o:TPt):Boolean; end; function TPt.YGreater(const o:TPt):Boolean; begin Result:=Y>o.Y; end; var a,b:TPt; begin a.Y:=5; b.Y:=2; WriteLn(a.YGreater(b)); end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -357,7 +357,7 @@ fn record_helper_has_zero() {
         run_pascal(
             r#"program T; type TPair=record A,B:Integer; end; TPairHelper=record helper for TPair function HasZero:Boolean; end; function TPairHelper.HasZero:Boolean; begin Result:=(A=0) or (B=0); end; var p:TPair; begin p.A:=0; p.B:=3; WriteLn(p.HasZero); end."#
         ),
-        &["true"]
+        &["True"]
     );
 }
 

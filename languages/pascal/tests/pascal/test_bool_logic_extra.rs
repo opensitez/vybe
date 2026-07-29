@@ -271,7 +271,7 @@ fn xor_three_terms() {
 fn bool_from_equal() {
     assert_eq!(
         run_pascal(r#"program T; var a,b:Integer; begin a:=4; b:=4; WriteLn(a=b); end."#),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -279,7 +279,7 @@ fn bool_from_equal() {
 fn bool_from_not_equal() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(3<>4); end."#),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -355,7 +355,7 @@ fn boolean_implies_style() {
         run_pascal(
             r#"program T; begin if (not true) or (false) then WriteLn('imp') else WriteLn('fail'); end."#
         ),
-        &["imp"]
+        &["fail"]
     );
 }
 

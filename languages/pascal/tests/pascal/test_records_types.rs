@@ -51,7 +51,7 @@ begin
   WriteLn(IsAdult(15));
 end."#
         ),
-        &["true", "false"]
+        &["True", "False"]
     );
 }
 
@@ -913,7 +913,7 @@ begin
   WriteLn(f.Active);
 end."#
         ),
-        &["false"]
+        &["False"]
     );
 }
 

@@ -237,7 +237,7 @@ begin
   WriteLn(r.Contains(25));
 end."#
         ),
-        &["true", "false"]
+        &["True", "False"]
     );
 }
 
@@ -359,7 +359,7 @@ begin
   WriteLn(a.Equals(b));
 end."#
         ),
-        &["true", "false"]
+        &["True", "False"]
     );
 }
 

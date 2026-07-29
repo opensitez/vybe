@@ -58,7 +58,7 @@ begin
   WriteLn(not (a and b) = ((not a) or (not b)));
 end."#
         ),
-        &["true", "true", "true", "true"]
+        &["True", "True", "True", "True"]
     );
 }
 
@@ -175,7 +175,7 @@ begin
   WriteLn(InRectangle(15, 5, 0, 0, 10, 10));
 end."#
         ),
-        &["true", "false"]
+        &["True", "False"]
     );
 }
 
@@ -306,7 +306,7 @@ begin
   WriteLn(IsEvenAndPositive(3));
 end."#
         ),
-        &["true", "false", "false"]
+        &["True", "False", "False"]
     );
 }
 
@@ -325,7 +325,7 @@ begin
   WriteLn(IsBoundary(5, 10));
 end."#
         ),
-        &["true", "true", "false"]
+        &["True", "True", "False"]
     );
 }
 
@@ -394,7 +394,7 @@ begin
   WriteLn(Implies(False, False));
 end."#
         ),
-        &["true", "false", "true", "true"]
+        &["True", "False", "True", "True"]
     );
 }
 
@@ -458,6 +458,6 @@ begin
   WriteLn(p.FullAccess);
 end."#
         ),
-        &["true", "false"]
+        &["True", "False"]
     );
 }

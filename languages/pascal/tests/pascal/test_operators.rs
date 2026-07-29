@@ -290,7 +290,7 @@ fn shift_right_halves_bits() {
 fn real_equality_exact_match() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(1.5 = 1.5); end."#),
-        &["true"]
+        &["True"]
     );
 }
 
@@ -298,7 +298,7 @@ fn real_equality_exact_match() {
 fn string_not_equal_operator() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn('a' <> 'b'); end."#),
-        &["true"]
+        &["True"]
     );
 }
 

@@ -255,9 +255,9 @@ fn case_record_tag_then_branch_field_read() {
 fn record_with_set_field() {
     assert_eq!(
         run_pascal(
-            r#"program T; type TDays=set of (Mon,Tue,Wed); type TSched=record Open:TDays; end; var s:TSched; begin s.Open:=[Mon,Wed]; WriteLn(Ord(Mon) in s.Open); WriteLn(Ord(Tue) in s.Open); end."#
+            r#"program T; type TDay=(Mon,Tue,Wed); type TDays=set of TDay; type TSched=record Open:TDays; end; var s:TSched; begin s.Open:=[Mon,Wed]; WriteLn(Ord(Mon) in s.Open); WriteLn(Ord(Tue) in s.Open); end."#
         ),
-        &["true", "false"]
+        &["True", "False"]
     );
 }
 
@@ -295,7 +295,7 @@ fn nested_record_reset_inner_only() {
 fn case_record_four_tags() {
     assert_eq!(
         run_pascal(
-            r#"program T; type TOp=record case Code:Integer of 0:(Add:Integer); 1:(Sub:Integer); 2:(Mul:Integer); 3:(Div:Integer); end; var o:TOp; begin o.Code:=3; o.Div:=2; WriteLn(o.Div); end."#
+            r#"program T; type TOp=record case Code:Integer of 0:(Add:Integer); 1:(Sub:Integer); 2:(Mul:Integer); 3:(DivValue:Integer); end; var o:TOp; begin o.Code:=3; o.DivValue:=2; WriteLn(o.DivValue); end."#
         ),
         &["2"]
     );
