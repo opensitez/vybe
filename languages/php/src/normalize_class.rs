@@ -17,7 +17,7 @@
 //!   - `class Foo implements I1, I2` → `interfaces`.
 
 use vybe_ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind};
-use vybe_bytecode::class_normalize::{
+use vybe_ast::class_normalize::{
     NormalMembers, build_normal_method,
     from_method_stmt,
     types::*,

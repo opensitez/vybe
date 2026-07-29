@@ -12,8 +12,8 @@
 //! array here, so these compose the same helpers `List<T>` uses.
 
 use super::array_adapter;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::Chunk;
+use vybe_runtime::opcode::Op;
+use vybe_runtime::Chunk;
 use vybe_compiler::primitives::instructions::core_wasm;
 
 fn alloc_locals(chunk: &mut Chunk, n: u16) -> u16 {

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use vybe_bytecode::{Chunk, VM};
+use vybe_runtime::{Chunk, VM};
 
 pub type EmitFn = fn(&FunctionRegistry, &mut Chunk, u32);
 

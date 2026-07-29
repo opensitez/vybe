@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 inventory = { workspace = true }
-vybe_bytecode = { workspace = true }
+vybe_runtime = { workspace = true }
 vybe_platform_ecma = { workspace = true }
 
 # WHATWG / W3C web-platform support crates (moved from vybe_host).

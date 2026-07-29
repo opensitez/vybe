@@ -1,8 +1,8 @@
 //! WASM module section encoding (import, function, memory, export).
 
 use crate::encoding::*;
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// Collect all runtime imports needed by the chunks.
 /// Returns (module, name) pairs for both vybe:rt and wasm:js-* builtins.
@@ -178,7 +178,7 @@ pub fn collect_globals(chunks: &[Chunk]) -> (Vec<String>, std::collections::Hash
             if let Some(op) = Op::decode(group, sub) {
                 if op == Op::GLOBAL_GET || op == Op::GLOBAL_SET {
                     let name_idx = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
-                    if let Some(vybe_bytecode::value::Value::String(name)) =
+                    if let Some(vybe_runtime::value::Value::String(name)) =
                         chunk.constants.get(name_idx as usize)
                     {
                         let name_str = name.to_string();

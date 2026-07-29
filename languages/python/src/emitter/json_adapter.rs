@@ -11,8 +11,8 @@
 //! the shared separator-aware renderer so Python's `", "` / `": "` defaults
 //! come out right.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// `emit = "common:python.json_dumps"`.
 /// Stack in (bottom→top): value, default, sort_keys, indent, item_sep, kv_sep.
@@ -29,7 +29,7 @@ pub fn emit_json_dumps(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         for i in argc..6 {
             match i {
                 1 | 3 => {
-                    let k = c.add_constant(vybe_bytecode::Value::Null);
+                    let k = c.add_constant(vybe_runtime::Value::Null);
                     c.emit_op_u16(Op::CONST, k, line);
                 }
                 2 => c.emit_i32_const(0, line),

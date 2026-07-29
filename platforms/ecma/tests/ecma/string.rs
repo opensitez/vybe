@@ -10,9 +10,9 @@
 //! delegates rather than reimplementing — keeping a single source
 //! of truth and maximising cross-runtime portability.
 
-use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::{Object, ObjectKind, Value};
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn invoke(name: &str, args: Vec<Value>) -> Value {
@@ -712,7 +712,7 @@ fn raw_interpolates_without_escape_processing() {
     // String.raw receives a template-object (array of raw strings) + substitutions.
     // The host function takes the raw strings array + subs and joins them.
     let raw_parts = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(
-        vybe_bytecode::value::Object::new_array(vec![s("Hello\\n"), s("!")]),
+        vybe_runtime::value::Object::new_array(vec![s("Hello\\n"), s("!")]),
     )));
     let result = invoke("raw", vec![raw_parts, s("World")]);
     // Result should be "Hello\nWorld!" with a literal backslash-n, not a newline.

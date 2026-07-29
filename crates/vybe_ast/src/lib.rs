@@ -16,6 +16,7 @@
 //!   dotnet     → namespace resolution (profile-driven)
 
 pub mod channels;
+pub mod class_normalize;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Module (top-level compilation unit)

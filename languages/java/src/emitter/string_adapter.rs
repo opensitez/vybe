@@ -3,8 +3,8 @@
 //! These adapters keep Java's overloaded string APIs in the Java frontend
 //! while still targeting the existing ECMA-shaped runtime surface.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::instructions::host;
 

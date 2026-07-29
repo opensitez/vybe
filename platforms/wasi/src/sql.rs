@@ -31,8 +31,8 @@ use driver::{SqlDriver, open};
 use state::{ConnEntry, StmtEntry, next_id, state};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{HostContext, VM, Value};
 
 // ── Shared scalar parser (used by postgres.rs and mysql.rs) ──────────────────
 
@@ -125,7 +125,7 @@ fn make_conn_obj(id: u64, url: &str) -> Value {
         .insert("connectiontimeout".into(), Value::F64(30.0));
     obj.properties
         .insert("state".into(), Value::String(Arc::from("Open")));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn make_stmt_obj(id: u64) -> Value {
@@ -136,7 +136,7 @@ fn make_stmt_obj(id: u64) -> Value {
     );
     obj.properties
         .insert("__wasi_id".into(), Value::F64(id as f64));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn make_error_obj(msg: &str) -> Value {
@@ -145,11 +145,11 @@ fn make_error_obj(msg: &str) -> Value {
         .insert("__wasi_kind".into(), Value::String(Arc::from("sql-error")));
     obj.properties
         .insert("message".into(), Value::String(Arc::from(msg)));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn rows_array(rows: Vec<Value>) -> Value {
-    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(rows)))
+    Value::Object(vybe_runtime::heap::alloc(Object::new_array(rows)))
 }
 
 fn string_value(value: &str) -> Value {
@@ -283,7 +283,7 @@ fn data_table_from_rows(name: &str, rows: &[Value], col_names: &[String]) -> Val
     table
         .properties
         .insert("rows".into(), rows_array(rows.to_vec()));
-    Value::Object(vybe_bytecode::heap::alloc(table))
+    Value::Object(vybe_runtime::heap::alloc(table))
 }
 
 fn make_params_obj() -> Value {
@@ -291,7 +291,7 @@ fn make_params_obj() -> Value {
     obj.properties
         .insert("__type".into(), string_value("SqlParameterCollection"));
     obj.properties.insert("__items".into(), rows_array(vec![]));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn make_command_obj(type_name: &str, conn_id: u64, conn_string: &str) -> Value {
@@ -309,7 +309,7 @@ fn make_command_obj(type_name: &str, conn_id: u64, conn_string: &str) -> Value {
         .insert("connectionstring".into(), string_value(conn_string));
     obj.properties
         .insert("parameters".into(), make_params_obj());
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn make_transaction_obj(conn_id: u64) -> Value {
@@ -319,7 +319,7 @@ fn make_transaction_obj(conn_id: u64) -> Value {
     obj.properties
         .insert("__conn_id".into(), Value::F64(conn_id as f64));
     obj.properties.insert("isclosed".into(), Value::Bool(false));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn make_reader_obj_with_cols(rows: Vec<Value>, col_names: Vec<String>) -> Value {
@@ -338,7 +338,7 @@ fn make_reader_obj_with_cols(rows: Vec<Value>, col_names: Vec<String>) -> Value 
     obj.properties
         .insert("fieldcount".into(), Value::F64(col_names.len() as f64));
     obj.properties.insert("isclosed".into(), Value::Bool(false));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn make_reader_obj(rows: Vec<Value>) -> Value {
@@ -356,7 +356,7 @@ fn make_data_adapter_obj(sql: &str, conn_id: u64, conn_string: &str) -> Value {
         .insert("__conn_id".into(), Value::F64(conn_id as f64));
     obj.properties
         .insert("connectionstring".into(), string_value(conn_string));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn current_reader_row(reader: &Arc<Mutex<Object>>) -> Option<Value> {
@@ -523,7 +523,7 @@ pub fn register(vm: &mut VM) {
                 .insert("connectiontimeout".into(), Value::F64(30.0));
             obj.properties
                 .insert("state".into(), string_value("Closed"));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -817,7 +817,7 @@ pub fn register(vm: &mut VM) {
                 .insert("__type".into(), string_value("SqlParameter"));
             obj.properties.insert("name".into(), string_value(&name));
             obj.properties.insert("value".into(), value);
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -845,7 +845,7 @@ pub fn register(vm: &mut VM) {
             };
             let mut items_guard = items.lock().unwrap();
             if let ObjectKind::Array(ref mut elems) = items_guard.kind {
-                elems.push(Value::Object(vybe_bytecode::heap::alloc(param)));
+                elems.push(Value::Object(vybe_runtime::heap::alloc(param)));
             }
             Value::Null
         }),
@@ -1008,7 +1008,7 @@ pub fn register(vm: &mut VM) {
                 row.properties.insert("ColumnName".into(), value.clone());
                 row.properties
                     .insert("ColumnOrdinal".into(), Value::F64(index as f64));
-                rows.push(Value::Object(vybe_bytecode::heap::alloc(row)));
+                rows.push(Value::Object(vybe_runtime::heap::alloc(row)));
             }
             let col_names = vec!["ColumnName".to_string(), "ColumnOrdinal".to_string()];
             data_table_from_rows("SchemaTable", &rows, &col_names)
@@ -1126,7 +1126,7 @@ fn register_flat_api(vm: &mut VM) {
                 obj.properties.insert("__conn_id".into(), Value::F64(0.0));
                 obj.properties
                     .insert("state".into(), Value::String(Arc::from("Closed")));
-                return Value::Object(vybe_bytecode::heap::alloc(obj));
+                return Value::Object(vybe_runtime::heap::alloc(obj));
             }
             let url = normalize_conn_str_full(&raw);
             match open(&url) {
@@ -1209,7 +1209,7 @@ fn register_flat_api(vm: &mut VM) {
                 .insert("__conn_id".into(), Value::F64(conn_id as f64));
             obj.properties
                 .insert("commandtext".into(), Value::String(Arc::from("")));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 

@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
 /// Register the test output-capture bindings. Mirrors the real host's two
 /// output surfaces so assertions see what a user would:
@@ -83,7 +83,7 @@ pub fn run_js(src: &str) -> Vec<String> {
     vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vybe_compiler::dynamic::run_with_js_dynamic_runtime(
         &mut vm,
-        vybe_bytecode::capabilities::Capabilities::all(),
+        vybe_runtime::capabilities::Capabilities::all(),
         chunks,
     )
     .expect("JS run failed");
@@ -123,7 +123,7 @@ pub fn run_js_with_imports(src: &str) -> Vec<String> {
     vybe_compiler::host_imports::install(&mut vm, &result.host_imports);
     vybe_compiler::dynamic::run_with_js_dynamic_runtime(
         &mut vm,
-        vybe_bytecode::capabilities::Capabilities::all(),
+        vybe_runtime::capabilities::Capabilities::all(),
         result.chunks,
     )
     .expect("JS run failed");
@@ -153,7 +153,7 @@ pub fn run_js_vm(src: &str) -> (VM, Arc<Mutex<Vec<String>>>) {
     vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vybe_compiler::dynamic::run_with_js_dynamic_runtime(
         &mut vm,
-        vybe_bytecode::capabilities::Capabilities::all(),
+        vybe_runtime::capabilities::Capabilities::all(),
         chunks,
     )
     .expect("JS run failed");

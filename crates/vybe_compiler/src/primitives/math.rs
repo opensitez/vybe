@@ -5,8 +5,8 @@
 //! Those use host imports (standard across all languages).
 
 use crate::primitives::Target;
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 // ── Direct WASM opcodes (no host call) ──────────────────────
 

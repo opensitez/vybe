@@ -4,7 +4,7 @@
 //! Mirrors the dotnet registrar: the plib platform contributes DATA — its
 //! GCL class table (`gcl::gcl_classes()`, the same table the Pascal
 //! lowering executes) — to the shared namespace tree in
-//! `vybe_bytecode::namespaces`. Resolution LOGIC lives only in the common
+//! `vybe_runtime::namespaces`. Resolution LOGIC lives only in the common
 //! resolver; any language can walk `plib.tbutton.create`.
 //!
 //! Leaves follow the dotnet rules:
@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::sync::Once;
 
 use vybe_compiler::primitives::gui;
-use vybe_bytecode::namespaces::{self, CtorSpec, FieldGui, NamespaceNode, Subtree};
+use vybe_runtime::namespaces::{self, CtorSpec, FieldGui, NamespaceNode, Subtree};
 
 /// The `is`/`inherits` ancestry of a GCL class — self first, then its parent
 /// chain, so `TButton is TControl` answers from the same `__types` stamp every

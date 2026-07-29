@@ -6,8 +6,8 @@
 //! floats (float literals, `/` true division, `float()`, float-returning math)
 //! — never a blanket cast of every number.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::ops;
 

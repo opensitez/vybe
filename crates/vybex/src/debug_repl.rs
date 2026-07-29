@@ -1,5 +1,5 @@
 //! Built-in step-debugger REPL — the client half of the debug surface. The VM
-//! (in `vybe_bytecode`) owns the pause/breakpoint state machine; this module is
+//! (in `vybe_runtime`) owns the pause/breakpoint state machine; this module is
 //! pure transport + presentation: it attaches channels to the VM, spawns a
 //! stdin-reader thread and an event-printer thread, and formats the typed
 //! protocol for a terminal.
@@ -12,10 +12,10 @@ use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use vybe_bytecode::debugger::{
+use vybe_runtime::debugger::{
     ChunkRef, DebugEvent, DebugResponse, FrameInfo, Location, PauseReason,
 };
-use vybe_bytecode::{DebugCommand, DebugRequest, VM};
+use vybe_runtime::{DebugCommand, DebugRequest, VM};
 use vybe_platform_vybe::gui_state::GuiState;
 
 /// Attach a debugger to `vm` and spawn the REPL worker threads. Call this before

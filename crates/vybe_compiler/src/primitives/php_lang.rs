@@ -2,7 +2,7 @@ use crate::primitives as common;
 use crate::primitives::*;
 use std::sync::Arc;
 use vybe_ast::{ExprKind, Expression, Literal};
-use vybe_bytecode::{Op, Value};
+use vybe_runtime::{Op, Value};
 
 #[derive(Clone, Copy)]
 enum BufferedGeneratorStepMode {

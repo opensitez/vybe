@@ -35,7 +35,7 @@
 //! The writer pass-through lives in `code.rs` (0xFC `_ =>` case already
 //! emits `prefix + leb128(sub)` with no further immediates — correct).
 
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 pub const IMPORTS: &[(&str, &str)] = &[];
 pub const GLOBAL_IMPORTS: &[(&str, &str)] = &[];

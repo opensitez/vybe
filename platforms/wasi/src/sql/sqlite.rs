@@ -1,7 +1,7 @@
 use super::driver::SqlDriver;
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::Value;
-use vybe_bytecode::value::Object;
+use vybe_runtime::Value;
+use vybe_runtime::value::Object;
 
 pub(super) struct SqliteDriver {
     conn: Mutex<rusqlite::Connection>,
@@ -49,14 +49,14 @@ fn row_to_obj(row: &rusqlite::Row, col_names: &[String]) -> Value {
     }
     obj.properties.insert(
         "__col_names".into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(
             col_names
                 .iter()
                 .map(|name| Value::String(Arc::from(name.as_str())))
                 .collect(),
         ))),
     );
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 impl SqlDriver for SqliteDriver {

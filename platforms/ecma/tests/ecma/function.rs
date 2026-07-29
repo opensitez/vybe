@@ -6,9 +6,9 @@
 //! properties, Function.prototype.toString, and the Function constructor.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, Value};
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::{Object, Value};
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn invoke(name: &str, args: Vec<Value>) -> Value {
@@ -123,7 +123,7 @@ fn call_invokes_function_with_explicit_this() {
 fn apply_invokes_function_spreading_args_array() {
     let f = fn_obj("f", 0);
     let args_arr = Value::Object(Arc::new(Mutex::new(
-        vybe_bytecode::value::Object::new_array(vec![]),
+        vybe_runtime::value::Object::new_array(vec![]),
     )));
     let result = invoke("apply", vec![f, Value::Null, args_arr]);
     assert_eq!(result, Value::I32(42));

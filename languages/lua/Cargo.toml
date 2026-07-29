@@ -12,14 +12,14 @@ name = "vybe_language_lua"
 vybe_compiler = { workspace = true }
 inventory = { workspace = true }
 vybe_ast = { workspace = true }
-vybe_bytecode = { workspace = true }
+vybe_runtime = { workspace = true }
 vybe_platform_vybe = { workspace = true, features = ["gui"] }
 pest = { workspace = true }
 pest_derive = { workspace = true }
 
 [dev-dependencies]
 vybe_compiler = { workspace = true }
-vybe_bytecode = { workspace = true }
+vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
 
 [[test]]

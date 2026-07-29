@@ -20,8 +20,8 @@ use std::thread;
 
 use serde_json::{json, Value as J};
 
-use vybe_bytecode::debugger::{DebugEvent, DebugResponse, PauseReason};
-use vybe_bytecode::{DebugCommand, DebugRequest, VM};
+use vybe_runtime::debugger::{DebugEvent, DebugResponse, PauseReason};
+use vybe_runtime::{DebugCommand, DebugRequest, VM};
 
 /// Attach a DAP server to `vm` (pausing on entry) and spawn the TCP listener.
 /// `source_path` is reported to the client for stack frames.

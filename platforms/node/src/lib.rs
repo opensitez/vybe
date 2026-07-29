@@ -51,7 +51,7 @@ pub mod vm_module;
 pub mod worker_threads;
 pub mod zlib;
 
-use vybe_bytecode::VM;
+use vybe_runtime::VM;
 
 /// Register the always-on Node modules. Capability-gated modules (`fs`,
 /// `child_process`) live behind the caller's capability check in [`crate::modules`].

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
-use vybe_bytecode::component::FuncSig;
-use vybe_bytecode::component_model::{
+use vybe_runtime::component::FuncSig;
+use vybe_runtime::component_model::{
     ClassType, ComponentDescriptor, ConstructorTarget, HostTarget, MethodBody,
 };
 
@@ -105,8 +105,8 @@ fn register_host_import(
             &target.name,
             FuncSig {
                 name: target.name.clone(),
-                params: vec![vybe_bytecode::component::ValType::Any; arity as usize],
-                results: vec![vybe_bytecode::component::ValType::Any],
+                params: vec![vybe_runtime::component::ValType::Any; arity as usize],
+                results: vec![vybe_runtime::component::ValType::Any],
             },
         );
     }

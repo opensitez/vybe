@@ -1,4 +1,4 @@
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 fn compile_dart(src: &str) -> Vec<Chunk> {
     let module = vybe_language_dart::parse(src).expect("dart parse");

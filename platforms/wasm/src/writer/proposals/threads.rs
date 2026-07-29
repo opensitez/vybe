@@ -19,7 +19,7 @@
 //! `code.rs` — no special handling needed. Actual atomic semantics are
 //! implemented VM-side in `vm.rs`.
 
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 pub const IMPORTS: &[(&str, &str)] = &[];
 pub const GLOBAL_IMPORTS: &[(&str, &str)] = &[];

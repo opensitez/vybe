@@ -5,9 +5,9 @@
 //! Each test covers a distinct behaviour.
 
 use std::sync::Arc;
-use vybe_bytecode::value::Value;
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::Value;
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn invoke(name: &str, args: Vec<Value>) -> Value {
@@ -146,7 +146,7 @@ fn two_error_instances_are_not_the_same_object() {
 #[test]
 fn aggregate_error_name_is_aggregate_error() {
     use std::sync::Mutex;
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let errors = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![]))));
     let e = invoke("AggregateError", vec![errors]);
     assert_eq!(prop(&e, "name"), s("AggregateError"));
@@ -155,7 +155,7 @@ fn aggregate_error_name_is_aggregate_error() {
 #[test]
 fn aggregate_error_has_errors_property_as_array() {
     use std::sync::Mutex;
-    use vybe_bytecode::value::{Object, ObjectKind};
+    use vybe_runtime::value::{Object, ObjectKind};
     let errors = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
         invoke("TypeError", vec![s("first")]),
         invoke("RangeError", vec![s("second")]),
@@ -173,7 +173,7 @@ fn aggregate_error_has_errors_property_as_array() {
 fn error_cause_is_preserved_from_options_object() {
     // ECMA-262 ES2022: new Error("msg", { cause: originalError }) stores cause.
     use std::sync::Mutex;
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let cause = invoke("TypeError", vec![s("root cause")]);
     let opts = {
         let mut o = Object::new();
@@ -239,7 +239,7 @@ fn is_error_true_for_subtype_error_instances() {
 fn is_error_false_for_plain_objects() {
     // Error.isError({}) → false; plain objects are not Errors.
     use std::sync::Mutex;
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let obj = Value::Object(Arc::new(Mutex::new(Object::new())));
     assert_eq!(invoke("isError", vec![obj]), Value::Bool(false));
 }
@@ -259,7 +259,7 @@ fn is_error_false_for_primitives() {
 #[test]
 fn to_string_formats_name_colon_message() {
     use std::sync::Mutex;
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let e = invoke(
         "TypeError",
         vec![
@@ -276,7 +276,7 @@ fn to_string_formats_name_colon_message() {
 #[test]
 fn to_string_omits_message_when_empty() {
     use std::sync::Mutex;
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let e = invoke(
         "RangeError",
         vec![Value::Object(Arc::new(Mutex::new(Object::new()))), s("")],
@@ -290,7 +290,7 @@ fn to_string_omits_message_when_empty() {
 #[test]
 fn to_string_of_plain_error_uses_error_name() {
     use std::sync::Mutex;
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let e = invoke(
         "Error",
         vec![

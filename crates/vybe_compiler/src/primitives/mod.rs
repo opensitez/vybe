@@ -125,9 +125,9 @@ use crate::primitives::scope::Scope;
 use crate::profile::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
-use vybe_bytecode::chunk::Import as BytecodeImport;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::chunk::Import as BytecodeImport;
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 // ════════════════════════════════════════════════════════════════════════════
 // Loop context for break/continue patching
@@ -462,7 +462,7 @@ pub struct Compiler {
     /// body compiles, so a class's member set is knowable regardless of
     /// compilation order, and augmenting types (traits / mixins / promoted
     /// fields) can be resolved by name. See flexclassplan.md §3a, §4c.
-    normalized_classes: HashMap<String, vybe_bytecode::class_normalize::NormalClass>,
+    normalized_classes: HashMap<String, vybe_ast::class_normalize::NormalClass>,
     /// For the class being emitted: bound method name → the PROTOCOL SLOT key
     /// that method also publishes under (`__vybe_slot_<id>`).
     ///
@@ -548,7 +548,7 @@ pub struct Compiler {
     /// canon(local_name) → Value. These are inlined as constants at the
     /// use-site rather than routed through `CALL_IMPORT`, which only handles
     /// callable function exports.
-    host_const_bindings: HashMap<String, vybe_bytecode::Value>,
+    host_const_bindings: HashMap<String, vybe_runtime::Value>,
     /// Named imports resolved through the common namespace tree rather than an
     /// ESM host module. This covers language/module surfaces registered as
     /// namespace data (`from math import sqrt`, `use function Lib\fn`) whose
@@ -604,7 +604,7 @@ pub struct Compiler {
     /// entries from `flatten_module_value_exports`. Populated at compile time
     /// and used during `collect_host_imports` to route value exports into
     /// `host_const_bindings` instead of `host_import_bindings`.
-    module_value_exports: HashMap<String, HashMap<String, vybe_bytecode::Value>>,
+    module_value_exports: HashMap<String, HashMap<String, vybe_runtime::Value>>,
     /// Active finally blocks for the current control-flow path.
     ///
     /// Used to make early returns execute structured `finally` bodies
@@ -2431,7 +2431,7 @@ impl Compiler {
     /// includes Value exports: `module → (export_name → Value)`.
     pub fn with_module_value_exports(
         mut self,
-        value_exports: HashMap<String, HashMap<String, vybe_bytecode::Value>>,
+        value_exports: HashMap<String, HashMap<String, vybe_runtime::Value>>,
     ) -> Self {
         self.module_value_exports = value_exports;
         self
@@ -3005,5 +3005,5 @@ fn is_host_specifier(path: &str) -> bool {
 /// `register_platform()`), so the compiler never names one and a platform can
 /// become a dylib.
 pub fn platform_emit_dispatch(prefix: &str) -> Option<crate::languages::EmitDispatch> {
-    vybe_bytecode::registry::platform_emit_dispatch_for(prefix)
+    vybe_runtime::registry::platform_emit_dispatch_for(prefix)
 }

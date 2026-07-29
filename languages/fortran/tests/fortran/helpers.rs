@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
 #[macro_export]
 macro_rules! fortran_cases {
@@ -15,7 +15,7 @@ macro_rules! fortran_cases {
     };
 }
 
-fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
+fn compile_chunks(src: &str) -> Result<Vec<vybe_runtime::Chunk>, String> {
     {
         static R: std::sync::Once = std::sync::Once::new();
         R.call_once(vybe_language_fortran::register);

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 /// Tests for memory operations, table operations, and WASM binary I/O.
-use vybe_bytecode::value::{Function, Object, ObjectKind};
-use vybe_bytecode::{Chunk, Op, VM, Value};
+use vybe_runtime::value::{Function, Object, ObjectKind};
+use vybe_runtime::{Chunk, Op, VM, Value};
 
 // ============================================================
 // MEMORY OPERATIONS

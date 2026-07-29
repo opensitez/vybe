@@ -1,7 +1,7 @@
 //! # `ecma:arraybuffer`, `ecma:sharedarraybuffer`, `ecma:dataview`
 //!
 //! Native Rust impls satisfying the imports declared in
-//! `crates/vybe_bytecode/src/wasm/js_arraybuffer_builtins.rs` per
+//! `crates/vybe_runtime/src/wasm/js_arraybuffer_builtins.rs` per
 //! ECMA-262 §25.1 / §25.2 / §25.3.
 //!
 //! ## Storage (Phase B4)
@@ -26,8 +26,8 @@
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{ArrayBufferState, Object, ObjectKind, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{ArrayBufferState, Object, ObjectKind, Value};
 
 pub const DV_TAG: &str = "__vybe_js_dataview";
 const DV_BUFFER_PROP: &str = "__vybe_dv_buffer";
@@ -63,7 +63,7 @@ fn new_arraybuffer(byte_length: i32, max_byte_length: i32, resizable: bool, shar
     };
     obj.properties
         .insert("__type".into(), Value::String(Arc::from(type_name)));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn is_arraybuffer(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
@@ -109,7 +109,7 @@ fn apply_arraybuffer_receiver_species(result: &Value, receiver: &Arc<Mutex<Objec
             .insert("__proto__".into(), Value::Object(proto));
     }
     if let Some(name) = name {
-        let types = vybe_bytecode::heap::alloc(Object::new_array(vec![Value::String(
+        let types = vybe_runtime::heap::alloc(Object::new_array(vec![Value::String(
             Arc::from(name.as_str()),
         )]));
         result_lock
@@ -309,7 +309,7 @@ fn register_arraybuffer(vm: &mut VM) {
                     new_obj
                         .properties
                         .insert("maxByteLength".into(), Value::I32(slice_len as i32));
-                    let out = Value::Object(vybe_bytecode::heap::alloc(new_obj));
+                    let out = Value::Object(vybe_runtime::heap::alloc(new_obj));
                     apply_arraybuffer_receiver_species(&out, &ab);
                     return out;
                 }
@@ -413,7 +413,7 @@ fn register_arraybuffer(vm: &mut VM) {
                 new_obj
                     .properties
                     .insert("detached".into(), Value::Bool(false));
-                return Value::Object(vybe_bytecode::heap::alloc(new_obj));
+                return Value::Object(vybe_runtime::heap::alloc(new_obj));
             }
             Value::Null
         }),
@@ -468,7 +468,7 @@ fn register_arraybuffer(vm: &mut VM) {
                 new_obj
                     .properties
                     .insert("detached".into(), Value::Bool(false));
-                return Value::Object(vybe_bytecode::heap::alloc(new_obj));
+                return Value::Object(vybe_runtime::heap::alloc(new_obj));
             }
             Value::Null
         }),
@@ -597,7 +597,7 @@ fn register_sharedarraybuffer(vm: &mut VM) {
                     new_obj
                         .properties
                         .insert("maxByteLength".into(), Value::I32(slice_len as i32));
-                    return Value::Object(vybe_bytecode::heap::alloc(new_obj));
+                    return Value::Object(vybe_runtime::heap::alloc(new_obj));
                 }
             }
             Value::Null
@@ -648,7 +648,7 @@ pub fn new_dataview(buffer: Value, byte_offset: i32, byte_length: i32) -> Value 
         .insert("byteLength".into(), Value::I32(byte_length.max(0)));
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("DataView")));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn is_dataview(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
@@ -1321,7 +1321,7 @@ fn f16_to_f64(bits: u16) -> f64 {
 /// Dispatches instance method calls on ArrayBuffer objects.
 /// `args[0]` = the ArrayBuffer object; remaining args are user-supplied.
 pub fn dispatch_arraybuffer_method(
-    ctx: &mut vybe_bytecode::HostContext,
+    ctx: &mut vybe_runtime::HostContext,
     obj: Arc<Mutex<Object>>,
     method: &str,
     args: &[Value],
@@ -1379,7 +1379,7 @@ pub fn dispatch_arraybuffer_method(
                 new_obj
                     .properties
                     .insert("__type".into(), Value::String(Arc::from(type_name)));
-                let out = Value::Object(vybe_bytecode::heap::alloc(new_obj));
+                let out = Value::Object(vybe_runtime::heap::alloc(new_obj));
                 apply_arraybuffer_receiver_species(&out, &obj);
                 return Some(out);
             }
@@ -1489,7 +1489,7 @@ pub fn dispatch_arraybuffer_method(
             new_obj
                 .properties
                 .insert("__type".into(), Value::String(Arc::from(type_name)));
-            Some(Value::Object(vybe_bytecode::heap::alloc(new_obj)))
+            Some(Value::Object(vybe_runtime::heap::alloc(new_obj)))
         }
         _ => None,
     }
@@ -1498,7 +1498,7 @@ pub fn dispatch_arraybuffer_method(
 /// Dispatches instance method calls on DataView objects.
 /// `args[0]` = the DataView object; remaining args are user-supplied.
 pub fn dispatch_dataview_method(
-    ctx: &mut vybe_bytecode::HostContext,
+    ctx: &mut vybe_runtime::HostContext,
     obj: Arc<Mutex<Object>>,
     method: &str,
     args: &[Value],

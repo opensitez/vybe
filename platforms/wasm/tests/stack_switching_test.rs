@@ -3,9 +3,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use vybe_bytecode::chunk::StackSwitchHandler;
-use vybe_bytecode::value::Object;
-use vybe_bytecode::{Chunk, Op, VM, Value};
+use vybe_runtime::chunk::StackSwitchHandler;
+use vybe_runtime::value::Object;
+use vybe_runtime::{Chunk, Op, VM, Value};
 use vybe_platform_wasm as wasm;
 use vybe_platform_wasm::write_wasm;
 
@@ -501,7 +501,7 @@ fn cont_new_returns_continuation_object() {
         Value::Object(obj) => {
             let o = obj.lock().unwrap();
             match &o.kind {
-                vybe_bytecode::value::ObjectKind::Continuation(_) => {}
+                vybe_runtime::value::ObjectKind::Continuation(_) => {}
                 other => panic!("expected Continuation, got {other:?}"),
             }
         }
@@ -810,7 +810,7 @@ fn cont_bind_produces_continuation_with_bound_args() {
     };
     let o = obj.lock().unwrap();
     match &o.kind {
-        vybe_bytecode::value::ObjectKind::Continuation(_) => {}
+        vybe_runtime::value::ObjectKind::Continuation(_) => {}
         other => panic!("expected Continuation kind, got {other:?}"),
     }
     let bound = o
@@ -819,7 +819,7 @@ fn cont_bind_produces_continuation_with_bound_args() {
         .expect("CONT_BIND should stash bound args on the new cont");
     if let Value::Object(bo) = bound {
         let b = bo.lock().unwrap();
-        if let vybe_bytecode::value::ObjectKind::Array(elems) = &b.kind {
+        if let vybe_runtime::value::ObjectKind::Array(elems) = &b.kind {
             assert_eq!(elems.len(), 1);
             assert_eq!(elems[0].as_i32(), 42);
         } else {
@@ -932,7 +932,7 @@ fn generator_chunk_returns_continuation_on_call() {
         Value::Object(obj) => {
             let o = obj.lock().unwrap();
             match &o.kind {
-                vybe_bytecode::value::ObjectKind::Continuation(_) => {}
+                vybe_runtime::value::ObjectKind::Continuation(_) => {}
                 other => panic!("expected Continuation, got {other:?}"),
             }
         }
@@ -948,7 +948,7 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
     // suspended inside a `while` (pushes label entries) or nested
     // inside another coroutine (pushes cont entries) restores to
     // the exact shape it was captured at.
-    use vybe_bytecode::vm::LabelEntry;
+    use vybe_runtime::vm::LabelEntry;
     let mut vm = VM::new();
     vm.label_stack.push(LabelEntry {
         target: 123,
@@ -986,10 +986,10 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
         stack_height: 0,
     });
     vm.active_continuations
-        .push(vybe_bytecode::vm::ActiveContinuation {
+        .push(vybe_runtime::vm::ActiveContinuation {
             cont,
-            caller_fiber: vybe_bytecode::fiber::Fiber::new(Vec::new(), Vec::new(), Vec::new()),
-            mode: vybe_bytecode::vm::ResumeMode::Iterator,
+            caller_fiber: vybe_runtime::fiber::Fiber::new(Vec::new(), Vec::new(), Vec::new()),
+            mode: vybe_runtime::vm::ResumeMode::Iterator,
             handlers: Vec::new(),
         });
 
@@ -1130,7 +1130,7 @@ fn jspi_pending_promise_inside_generator_preserves_continuation_and_yields_on_re
     vm.register_host_fn(
         "test",
         "awaitable",
-        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+        Box::new(|_ctx: &mut vybe_runtime::HostContext, _args: &[Value]| {
             make_promise(77, "pending", Value::Null)
         }),
     );
@@ -1199,7 +1199,7 @@ fn reentrant_host_callback_inside_generator_does_not_complete_it() {
     vm.register_host_fn(
         "test",
         "applyCb",
-        Box::new(|ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut vybe_runtime::HostContext, args: &[Value]| {
             let cb = args[0].clone();
             let arg = args.get(1).cloned().unwrap_or(Value::Null);
             ctx.invoke(&cb, &[arg])
@@ -1277,7 +1277,7 @@ fn continuation_started_inside_host_callback_runs_nested_calls_before_first_susp
     vm.register_host_fn(
         "test",
         "drive",
-        Box::new(|ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+        Box::new(|ctx: &mut vybe_runtime::HostContext, args: &[Value]| {
             let cb = args[0].clone();
             let cont = args.get(1).cloned().unwrap_or(Value::Null);
             ctx.invoke(&cb, &[cont])

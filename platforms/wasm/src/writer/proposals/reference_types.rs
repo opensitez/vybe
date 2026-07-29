@@ -36,7 +36,7 @@
 //! that type through the Value enum — a larger refactor than closing
 //! the opcode-level gaps.
 
-use vybe_bytecode::{Chunk, Op};
+use vybe_runtime::{Chunk, Op};
 
 /// Reference-types imports nothing — all ops are core (prefix 0x00).
 pub fn declare_imports() -> &'static [(&'static str, &'static str)] {

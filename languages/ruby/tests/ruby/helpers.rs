@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
 /// Run Ruby source through vybex pipeline: pest grammar → walker → common AST → compiler → VM
 pub fn run_ruby(src: &str) -> Vec<String> {

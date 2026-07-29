@@ -11,7 +11,7 @@
 //! cannot capture the member, but a consumer of one of these roles must check
 //! the contract rather than assume the signature.
 
-use vybe_bytecode::class_normalize::types::SpecialMethodKind;
+use vybe_ast::class_normalize::types::SpecialMethodKind;
 
 /// Resolve a Go method name to `(canonical, slot?)`.
 ///

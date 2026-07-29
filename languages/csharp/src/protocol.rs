@@ -4,7 +4,7 @@
 //! `SpecialMethodKind` (a numeric slot) and a canonical name. Which member
 //! spells which role is C#'s business and is decided here.
 
-use vybe_bytecode::class_normalize::types::SpecialMethodKind;
+use vybe_ast::class_normalize::types::SpecialMethodKind;
 
 /// Resolve a C# member name to `(canonical, slot?)`.
 ///

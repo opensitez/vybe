@@ -120,7 +120,7 @@ fn dotnet_factory_return_type(scope: &[String], callee: &Expression) -> Option<S
         return None;
     };
     let class_name = terminal_type_name(object)?;
-    vybe_bytecode::namespaces::lookup_type_member_return(scope, &class_name, field)
+    vybe_runtime::namespaces::lookup_type_member_return(scope, &class_name, field)
 }
 
 fn dotnet_static_member_return_type(scope: &[String], expr: &Expression) -> Option<String> {
@@ -128,7 +128,7 @@ fn dotnet_static_member_return_type(scope: &[String], expr: &Expression) -> Opti
         return None;
     };
     let class_name = terminal_type_name(object)?;
-    vybe_bytecode::namespaces::lookup_type_member_return(scope, &class_name, field)
+    vybe_runtime::namespaces::lookup_type_member_return(scope, &class_name, field)
 }
 
 fn js_dynamic_import_alias(module: &str) -> String {
@@ -422,7 +422,7 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                         {
                             let class_name = Compiler::normalize_type_hint(&receiver_type);
                             if let Some(return_type) =
-                                vybe_bytecode::namespaces::lookup_type_member_return(
+                                vybe_runtime::namespaces::lookup_type_member_return(
                                     &compiler.profile.namespaces.type_scopes,
                                     &class_name,
                                     field,
@@ -443,7 +443,7 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                 .or_else(|| match &callee.kind {
                     ExprKind::Ident(name) => {
                         let resolved = compiler.resolve_source_type_alias(name);
-                        vybe_bytecode::namespaces::lookup_type_ctor_target(
+                        vybe_runtime::namespaces::lookup_type_ctor_target(
                             &compiler.profile.namespaces.type_scopes,
                             &resolved,
                         )
@@ -451,7 +451,7 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                     }
                     ExprKind::Member { field, .. } => {
                         let resolved = compiler.resolve_source_type_alias(field);
-                        vybe_bytecode::namespaces::lookup_type_ctor_target(
+                        vybe_runtime::namespaces::lookup_type_ctor_target(
                             &compiler.profile.namespaces.type_scopes,
                             &resolved,
                         )
@@ -926,9 +926,9 @@ impl Compiler {
             .resolve_pending_class_name_for_type_hint(type_hint)
             .unwrap_or_else(|| Self::normalize_type_hint(type_hint));
         loop {
-            if vybe_bytecode::namespaces::is_registered_type(scope, &current) {
+            if vybe_runtime::namespaces::is_registered_type(scope, &current) {
                 // Platform class — its registered members finish the chain.
-                return vybe_bytecode::namespaces::lookup_type_instance_target(
+                return vybe_runtime::namespaces::lookup_type_instance_target(
                     scope,
                     &current,
                     method_name,
@@ -3609,7 +3609,7 @@ impl Compiler {
                     // like `Stack`, `Queue`, or `Dictionary`.
                 } else {
                     let class_name = Self::normalize_type_hint(&class_name);
-                    if let Some(target) = vybe_bytecode::namespaces::lookup_type_instance_target(
+                    if let Some(target) = vybe_runtime::namespaces::lookup_type_instance_target(
                         &self.profile.namespaces.type_scopes,
                         &class_name,
                         field,
@@ -3646,7 +3646,7 @@ impl Compiler {
                                 }
                                 let total_argc = (arg_exprs.len() + 1) as u8;
                                 match &target {
-                                    vybe_bytecode::component_model::InstanceMethodTarget::Host {
+                                    vybe_runtime::component_model::InstanceMethodTarget::Host {
                                         module,
                                         func,
                                         ..
@@ -3654,7 +3654,7 @@ impl Compiler {
                                         let idx = self.import(module, func);
                                         self.emit_host_call(idx, total_argc);
                                     }
-                                    vybe_bytecode::component_model::InstanceMethodTarget::Common {
+                                    vybe_runtime::component_model::InstanceMethodTarget::Common {
                                         emit, ..
                                     } => {
                                         let line = self.line;
@@ -3677,7 +3677,7 @@ impl Compiler {
                             }
                         }
 
-                        if matches!(&target, vybe_bytecode::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
+                        if matches!(&target, vybe_runtime::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
                             && arg_exprs.is_empty()
                         {
                             self.compile_expr(object)?;
@@ -3737,7 +3737,7 @@ impl Compiler {
                             return Ok(());
                         }
 
-                        if matches!(&target, vybe_bytecode::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
+                        if matches!(&target, vybe_runtime::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
                             && arg_exprs.len() == 1
                             && class_name.rsplit('.').next().is_some_and(|name| {
                                 name.eq_ignore_ascii_case("List")
@@ -3761,7 +3761,7 @@ impl Compiler {
                         }
                         let total_argc = (arg_exprs.len() + 1) as u8;
                         match target {
-                            vybe_bytecode::component_model::InstanceMethodTarget::Host {
+                            vybe_runtime::component_model::InstanceMethodTarget::Host {
                                 module,
                                 func,
                                 ..
@@ -3769,7 +3769,7 @@ impl Compiler {
                                 let idx = self.import(&module, &func);
                                 self.emit_host_call(idx, total_argc);
                             }
-                            vybe_bytecode::component_model::InstanceMethodTarget::Common {
+                            vybe_runtime::component_model::InstanceMethodTarget::Common {
                                 emit,
                                 ..
                             } => {
@@ -4673,7 +4673,7 @@ impl Compiler {
                                 let is_const = ns_parts
                                     .last()
                                     .map(|name| {
-                                        vybe_bytecode::namespaces::lookup_type_static_member(
+                                        vybe_runtime::namespaces::lookup_type_static_member(
                                             &self.profile.namespaces.type_scopes,
                                             name,
                                             name,
@@ -5433,7 +5433,7 @@ impl Compiler {
                     && (is_dotnet_linq_method_name(field)
                         || !self.defined_class_methods.contains(&self.canon(field)))
                     && (is_dotnet_linq_method_name(field)
-                        || !vybe_bytecode::namespaces::scope_declares_member_arity(
+                        || !vybe_runtime::namespaces::scope_declares_member_arity(
                             &scope_segments(&self.profile.namespaces.runtime_collection_scope),
                             field,
                             arg_exprs.len() as u8,
@@ -5460,14 +5460,14 @@ impl Compiler {
                             || owner.ends_with("[]")
                             || owner.ends_with("()"));
                     let target = if prefer_linq_extension {
-                        vybe_bytecode::namespaces::lookup_type_instance_target(
+                        vybe_runtime::namespaces::lookup_type_instance_target(
                             &self.profile.namespaces.type_scopes,
                             "IEnumerable",
                             field,
                             arg_exprs.len() as u8,
                         )
                     } else {
-                        vybe_bytecode::namespaces::lookup_type_instance_target(
+                        vybe_runtime::namespaces::lookup_type_instance_target(
                             &self.profile.namespaces.type_scopes,
                             &owner,
                             field,
@@ -5478,7 +5478,7 @@ impl Compiler {
                         if is_dotnet_linq_method_name(field)
                             && !owner.eq_ignore_ascii_case("IEnumerable")
                         {
-                            vybe_bytecode::namespaces::lookup_type_instance_target(
+                            vybe_runtime::namespaces::lookup_type_instance_target(
                                 &self.profile.namespaces.type_scopes,
                                 "IEnumerable",
                                 field,
@@ -5489,7 +5489,7 @@ impl Compiler {
                         }
                     });
                     if let Some(target) = target {
-                        if matches!(&target, vybe_bytecode::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
+                        if matches!(&target, vybe_runtime::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "collections.sort")
                             && arg_exprs.is_empty()
                         {
                             self.compile_expr(object)?;
@@ -5549,7 +5549,7 @@ impl Compiler {
                             return Ok(());
                         }
 
-                        if matches!(&target, vybe_bytecode::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
+                        if matches!(&target, vybe_runtime::component_model::InstanceMethodTarget::Common { emit, .. } if emit == "dotnet.array_sort")
                             && arg_exprs.len() == 1
                             && class_name.rsplit('.').next().is_some_and(|name| {
                                 name.eq_ignore_ascii_case("List")
@@ -5574,7 +5574,7 @@ impl Compiler {
                         }
                         let total_argc = (arg_exprs.len() + 1) as u8;
                         match target {
-                            vybe_bytecode::component_model::InstanceMethodTarget::Host {
+                            vybe_runtime::component_model::InstanceMethodTarget::Host {
                                 module,
                                 func,
                                 ..
@@ -5582,7 +5582,7 @@ impl Compiler {
                                 let idx = self.import(&module, &func);
                                 self.emit_host_call(idx, total_argc);
                             }
-                            vybe_bytecode::component_model::InstanceMethodTarget::Common {
+                            vybe_runtime::component_model::InstanceMethodTarget::Common {
                                 emit,
                                 ..
                             } => {
@@ -5790,7 +5790,7 @@ impl Compiler {
                 // Array-only value methods like `.entries()` must not steal
                 // Map/Set receivers away from runtime method dispatch.
             } else if self.profile.namespaces.use_dotnet
-                && vybe_bytecode::namespaces::scope_declares_member_arity(
+                && vybe_runtime::namespaces::scope_declares_member_arity(
                     &scope_segments(&self.profile.namespaces.runtime_collection_scope),
                     field,
                     arg_exprs.len() as u8,
@@ -7721,7 +7721,7 @@ impl Compiler {
                 if self.profile.namespaces.use_dotnet
                     && arg_exprs.is_empty()
                     && field.eq_ignore_ascii_case("sort")
-                    && vybe_bytecode::namespaces::scope_declares_member_arity(
+                    && vybe_runtime::namespaces::scope_declares_member_arity(
                         &scope_segments(&self.profile.namespaces.runtime_collection_scope),
                         field,
                         0,
@@ -8186,7 +8186,7 @@ impl Compiler {
             if self.profile.namespaces.use_dotnet
                 && arg_exprs.is_empty()
                 && field.eq_ignore_ascii_case("sort")
-                && vybe_bytecode::namespaces::scope_declares_member_arity(
+                && vybe_runtime::namespaces::scope_declares_member_arity(
                     &scope_segments(&self.profile.namespaces.runtime_collection_scope),
                     field,
                     0,
@@ -9274,7 +9274,7 @@ impl Compiler {
                                 name,
                                 arg_exprs.len() as u8,
                             ) {
-                                let target = vybe_bytecode::namespaces::lookup_type_instance_target(
+                                let target = vybe_runtime::namespaces::lookup_type_instance_target(
                                     &self.profile.namespaces.type_scopes,
                                     &owner,
                                     name,
@@ -9287,7 +9287,7 @@ impl Compiler {
                                         }
                                         let total_argc = (arg_exprs.len() + 1) as u8;
                                         match target {
-                                            vybe_bytecode::component_model::InstanceMethodTarget::Host {
+                                            vybe_runtime::component_model::InstanceMethodTarget::Host {
                                                 module,
                                                 func,
                                                 ..
@@ -9295,7 +9295,7 @@ impl Compiler {
                                                 let idx = self.import(&module, &func);
                                                 self.emit_host_call(idx, total_argc);
                                             }
-                                            vybe_bytecode::component_model::InstanceMethodTarget::Common {
+                                            vybe_runtime::component_model::InstanceMethodTarget::Common {
                                                 emit,
                                                 ..
                                             } => {

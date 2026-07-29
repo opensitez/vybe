@@ -28,7 +28,7 @@ pub mod fetch;
 pub mod timers;
 pub mod url;
 
-use vybe_bytecode::VM;
+use vybe_runtime::VM;
 
 pub fn register(vm: &mut VM) {
     crypto::register(vm);

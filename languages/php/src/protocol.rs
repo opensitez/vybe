@@ -4,7 +4,7 @@
 //! `SpecialMethodKind` (a numeric slot) and a canonical name. Which magic
 //! method spells which role is PHP's business and is decided here.
 
-use vybe_bytecode::class_normalize::types::SpecialMethodKind;
+use vybe_ast::class_normalize::types::SpecialMethodKind;
 
 /// Resolve a PHP method name to `(canonical, slot?)`.
 pub fn canonical_method(name: &str) -> (String, Option<SpecialMethodKind>) {

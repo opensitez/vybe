@@ -16,8 +16,8 @@
 //! `__fpath` first and falls through to its previous behaviour for any other
 //! receiver (a StringIO, a socket, …) rather than hijacking the name.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use vybe_compiler::primitives::{ops, strings};
 
@@ -43,14 +43,14 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
 }
 
 fn set_field(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
-    let k = chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(key)));
+    let k = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
     chunks[current].emit_op_u16(Op::STRUCT_SET, k, line);
     chunks[current].emit_op(Op::DROP, line);
 }
 
 fn field_of(chunks: &mut [Chunk], current: usize, slot: u16, key: &str, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let k = chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(key)));
+    let k = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
     chunks[current].emit_op_u16(Op::STRUCT_GET, k, line);
 }
 
@@ -203,7 +203,7 @@ pub fn emit_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_f64_const(1.0, line);
     set_field(chunks, current, "__fclosed", line);
     chunks[current].emit_end(line);
-    let k = chunks[current].add_constant(vybe_bytecode::Value::Null);
+    let k = chunks[current].add_constant(vybe_runtime::Value::Null);
     chunks[current].emit_op_u16(Op::CONST, k, line);
 }
 
@@ -285,7 +285,7 @@ fn emit_write_from_stack(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
     ops::emit_dyn_add(&mut chunks[current], line);
     set_field(chunks, current, "__fdata", line);
-    let k = chunks[current].add_constant(vybe_bytecode::Value::Null);
+    let k = chunks[current].add_constant(vybe_runtime::Value::Null);
     chunks[current].emit_op_u16(Op::CONST, k, line);
 }
 

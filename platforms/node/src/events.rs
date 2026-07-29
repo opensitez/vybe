@@ -9,15 +9,15 @@
 //!   `__evo_<name>` → Array of once listeners
 
 use std::sync::Arc;
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{Object, ObjectKind, Value};
 
 fn empty_array() -> Value {
     arr_val(vec![])
 }
 
 fn arr_val(elems: Vec<Value>) -> Value {
-    Value::Object(vybe_bytecode::heap::alloc(Object {
+    Value::Object(vybe_runtime::heap::alloc(Object {
         kind: ObjectKind::Array(elems),
         properties: std::collections::HashMap::new(),
         type_id: 0,
@@ -81,7 +81,7 @@ fn make_emitter() -> Value {
     ] {
         o.properties.insert(m.into(), Value::Undefined);
     }
-    Value::Object(vybe_bytecode::heap::alloc(o))
+    Value::Object(vybe_runtime::heap::alloc(o))
 }
 
 pub fn register(vm: &mut VM) {

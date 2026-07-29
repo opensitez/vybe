@@ -1,5 +1,5 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_bytecode::component_model::{ClassType, MethodBody, MethodDef};
+use vybe_runtime::component_model::{ClassType, MethodBody, MethodDef};
 
 pub(super) fn apply_linq_registrations(exports: &mut [DotnetClassExport]) {
     for export in exports.iter_mut() {

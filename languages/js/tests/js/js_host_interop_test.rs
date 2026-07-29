@@ -2,7 +2,7 @@ use super::helpers::{run_js, run_js_vm};
 /// Tests for JS → host function interop: objects crossing the boundary,
 /// namespace resolution, Map/Set via host, invoke from Rust.
 use std::sync::Arc;
-use vybe_bytecode::{VM, Value};
+use vybe_runtime::{VM, Value};
 
 fn run_js_one(code: &str) -> String {
     run_js(code).into_iter().next().unwrap_or_default()

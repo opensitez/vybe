@@ -2,7 +2,7 @@
 /// namespace resolution, host returning objects to VB, callbacks.
 use super::helpers::{run_vb, run_vb_vm};
 use std::sync::Arc;
-use vybe_bytecode::Value;
+use vybe_runtime::Value;
 
 // ============================================================
 // A. HOST RETURNS OBJECT TO VB

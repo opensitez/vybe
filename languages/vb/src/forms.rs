@@ -105,7 +105,7 @@ pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
                 gui.register_event(
                     &ctrl_name,
                     event,
-                    vybe_bytecode::Value::String(std::sync::Arc::from(handler_name.as_str())),
+                    vybe_runtime::Value::String(std::sync::Arc::from(handler_name.as_str())),
                 );
             }
 
@@ -156,7 +156,7 @@ pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
                 gui.register_event(
                     ctrl,
                     event,
-                    vybe_bytecode::Value::String(std::sync::Arc::from(handler_name.as_str())),
+                    vybe_runtime::Value::String(std::sync::Arc::from(handler_name.as_str())),
                 );
             }
         }

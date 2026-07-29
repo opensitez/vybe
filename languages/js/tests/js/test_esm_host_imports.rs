@@ -310,7 +310,7 @@ console.log(Number.isNaN(NumberNaN));
 
 #[test]
 fn calling_value_import_reports_not_callable_runtime_error() {
-    use vybe_bytecode::VM;
+    use vybe_runtime::VM;
 
     let mut vm = VM::new();
     vybe_compiler::primitives::platforms::init_platforms(&mut vm);
@@ -336,7 +336,7 @@ version();
     vybe_compiler::host_imports::install(&mut vm, &result.host_imports);
     let err = vybe_compiler::dynamic::run_with_js_dynamic_runtime(
         &mut vm,
-        vybe_bytecode::capabilities::Capabilities::all(),
+        vybe_runtime::capabilities::Capabilities::all(),
         result.chunks,
     )
     .expect_err("calling a value import should fail at runtime");
@@ -352,7 +352,7 @@ version();
 fn validator_accepts_resolvable_imports() {
     // `wasi:cli/log` resolves through the registered Synthetic module.
     // Validator should return an empty unresolved list.
-    use vybe_bytecode::VM;
+    use vybe_runtime::VM;
     let mut vm = VM::new();
     vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     vybe_compiler::adapters::register_all(&mut vm).expect("adapters");
@@ -389,7 +389,7 @@ log("hi");
 fn validator_flags_unknown_export() {
     // Importing a name that doesn't exist in `wasi:cli` should surface
     // at link time, not at VM setup.
-    use vybe_bytecode::VM;
+    use vybe_runtime::VM;
     let mut vm = VM::new();
     vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     vybe_compiler::adapters::register_all(&mut vm).expect("adapters");

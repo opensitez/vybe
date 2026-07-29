@@ -6,8 +6,8 @@
 //! a fresh plain object via `ecma:globalThis.get` so user code can
 //! detect its existence and bind properties on it.
 
-use vybe_bytecode::value::Object;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::Object;
+use vybe_runtime::{HostContext, VM, Value};
 
 /// Process-global singleton — initialised on first request and
 /// returned identically forever after. Matches §19.3.1 "the same
@@ -16,7 +16,7 @@ static GLOBAL_THIS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
 
 fn global_this() -> Value {
     GLOBAL_THIS
-        .get_or_init(|| Value::Object(vybe_bytecode::heap::alloc(Object::new())))
+        .get_or_init(|| Value::Object(vybe_runtime::heap::alloc(Object::new())))
         .clone()
 }
 

@@ -17,8 +17,8 @@
 //!   - Block/loop/end label stack matches WASM spec
 //!   - br depth targets the Nth enclosing construct
 
-use vybe_bytecode::value::Value;
-use vybe_bytecode::{Chunk, Op, VM};
+use vybe_runtime::value::Value;
+use vybe_runtime::{Chunk, Op, VM};
 
 /// Helper: build a script chunk from an emit closure, run it, return the popped result.
 fn run_script(emit: impl FnOnce(&mut Chunk)) -> Value {
@@ -1246,7 +1246,7 @@ fn every_opcode_is_two_bytes() {
     // Verify encoding round-trip matches spec.
     for byte1 in [0x00u16, 0xF0, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF] {
         for byte2 in 0u16..=0xFF {
-            let _ = vybe_bytecode::opcode::Op::decode(byte1, byte2);
+            let _ = vybe_runtime::opcode::Op::decode(byte1, byte2);
         }
     }
 }
@@ -2132,7 +2132,7 @@ fn every_proposal_module_exposes_uniform_surface() {
     );
 
     // ESM readiness check accepts a non-empty chunk list.
-    let chunk = vybe_bytecode::Chunk::new("ok");
+    let chunk = vybe_runtime::Chunk::new("ok");
     assert!(esm_integration::check_esm_readiness(&[chunk]).is_ok());
     assert!(esm_integration::check_esm_readiness(&[]).is_err());
 
@@ -2524,7 +2524,7 @@ fn name_section_includes_data_and_tag_subsections() {
 #[test]
 fn ref_eq_matches_identical_objects() {
     use std::sync::{Arc, Mutex};
-    use vybe_bytecode::value::{Object, ObjectKind};
+    use vybe_runtime::value::{Object, ObjectKind};
 
     // Two constants pointing at the same Arc<Object>.
     let obj = Arc::new(Mutex::new(Object {
@@ -2991,7 +2991,7 @@ fn ref_eq_emits_as_core_0xd3_byte_in_wasm() {
 /// spec sub. LEB128 of 0x100 is `0x80 0x02`; of 0x113 is `0x93 0x02`.
 #[test]
 fn relaxed_simd_emits_correct_spec_subopcode() {
-    use vybe_bytecode::opcode::relaxed_simd;
+    use vybe_runtime::opcode::relaxed_simd;
     // Build a chunk that exercises i8x16.relaxed_swizzle (spec 0x100).
     let mut script = Chunk::new("<script>");
     let zero = script.add_constant(Value::V128([0u8; 16]));

@@ -14,8 +14,8 @@ use std::sync::{
 };
 use std::thread;
 use std::time::{Duration, Instant};
-use vybe_bytecode::value::Object;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::Object;
+use vybe_runtime::{HostContext, VM, Value};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -59,7 +59,7 @@ fn make_obj(type_name: &str, id: u64) -> Value {
     obj.properties
         .insert("__socket_id".into(), Value::F64(id as f64));
     obj.properties.insert("connected".into(), Value::Bool(true));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn get_id(args: &[Value]) -> u64 {
@@ -103,7 +103,7 @@ fn tcp_listener_new(args: &[Value]) -> Value {
                 .unwrap()
                 .tcp_listeners
                 .insert(id, listener);
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }
         Err(e) => {
             eprintln!("TcpListener bind error on port {}: {}", requested_port, e);
@@ -222,7 +222,7 @@ fn tcp_connect(args: &[Value]) -> Value {
             obj.properties
                 .insert("port".into(), Value::F64(port as f64));
             get_state().lock().unwrap().tcp_streams.insert(id, stream);
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }
         Err(e) => {
             eprintln!("TcpClient connect error: {}", e);
@@ -259,7 +259,7 @@ fn udp_new(args: &[Value]) -> Value {
             obj.properties
                 .insert("port".into(), Value::F64(port as f64));
             get_state().lock().unwrap().udp_sockets.insert(id, socket);
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }
         Err(e) => {
             eprintln!("UdpClient bind error: {}", e);
@@ -1030,7 +1030,7 @@ fn make_network_handle() -> Value {
     let mut obj = Object::new();
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("Network")));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn make_tcp_socket_resource(family: &str) -> Value {
@@ -1041,7 +1041,7 @@ fn make_tcp_socket_resource(family: &str) -> Value {
         .insert("__state".into(), Value::String(Arc::from("unbound")));
     obj.properties
         .insert("__address_family".into(), Value::String(Arc::from(family)));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn make_udp_socket_resource(family: &str) -> Value {
@@ -1052,7 +1052,7 @@ fn make_udp_socket_resource(family: &str) -> Value {
         .insert("__state".into(), Value::String(Arc::from("unbound")));
     obj.properties
         .insert("__address_family".into(), Value::String(Arc::from(family)));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn make_input_stream(socket_id: u64) -> Value {
@@ -1061,7 +1061,7 @@ fn make_input_stream(socket_id: u64) -> Value {
         .insert("__type".into(), Value::String(Arc::from("InputStream")));
     obj.properties
         .insert("__socket_id".into(), Value::F64(socket_id as f64));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn make_output_stream(socket_id: u64) -> Value {
@@ -1070,7 +1070,7 @@ fn make_output_stream(socket_id: u64) -> Value {
         .insert("__type".into(), Value::String(Arc::from("OutputStream")));
     obj.properties
         .insert("__socket_id".into(), Value::F64(socket_id as f64));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn make_resolve_address_stream(addresses: Vec<Value>) -> Value {
@@ -1082,7 +1082,7 @@ fn make_resolve_address_stream(addresses: Vec<Value>) -> Value {
     obj.properties
         .insert("__addresses".into(), value_array_inner(addresses));
     obj.properties.insert("__pos".into(), Value::F64(0.0));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn make_incoming_datagram_stream(socket: Value) -> Value {
@@ -1092,7 +1092,7 @@ fn make_incoming_datagram_stream(socket: Value) -> Value {
         Value::String(Arc::from("IncomingDatagramStream")),
     );
     obj.properties.insert("__socket".into(), socket);
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn make_outgoing_datagram_stream(socket: Value) -> Value {
@@ -1102,7 +1102,7 @@ fn make_outgoing_datagram_stream(socket: Value) -> Value {
         Value::String(Arc::from("OutgoingDatagramStream")),
     );
     obj.properties.insert("__socket".into(), socket);
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn make_dns_host_entry(host: &str) -> Value {
@@ -1118,7 +1118,7 @@ fn make_dns_host_entry(host: &str) -> Value {
                 .collect(),
         ),
     );
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn resolve_name_strings(host: &str) -> Vec<String> {
@@ -1141,7 +1141,7 @@ pub fn make_pollable(target: Arc<Mutex<Object>>) -> Value {
         .insert("__type".into(), Value::String(Arc::from("Pollable")));
     obj.properties
         .insert("__target".into(), Value::Object(target));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn write_dotnet_stream_text(target: Option<&Value>, text: &str) -> Value {
@@ -1220,7 +1220,7 @@ fn load_file_reader_state(obj: &mut Object, path: &Arc<str>) {
                 .collect();
             obj.properties.insert(
                 "__lines".into(),
-                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(lines))),
+                Value::Object(vybe_runtime::heap::alloc(Object::new_array(lines))),
             );
             obj.properties.insert("__pos".into(), Value::F64(0.0));
         }
@@ -1267,7 +1267,7 @@ fn read_dotnet_stream_line(target: Option<&Value>) -> Value {
         .unwrap_or(0);
     if let Some(Value::Object(lines_obj)) = locked.properties.get("__lines") {
         let lines = lines_obj.lock().unwrap();
-        if let vybe_bytecode::value::ObjectKind::Array(elems) = &lines.kind {
+        if let vybe_runtime::value::ObjectKind::Array(elems) = &lines.kind {
             if pos < elems.len() {
                 let line = elems[pos].clone();
                 let new_pos = pos + 1;
@@ -1322,7 +1322,7 @@ fn read_dotnet_stream_to_end(target: Option<&Value>) -> Value {
         .unwrap_or(0);
     if let Some(Value::Object(lines_obj)) = locked.properties.get("__lines").cloned() {
         let lines = lines_obj.lock().unwrap();
-        if let vybe_bytecode::value::ObjectKind::Array(elems) = &lines.kind {
+        if let vybe_runtime::value::ObjectKind::Array(elems) = &lines.kind {
             let remaining = elems[pos..]
                 .iter()
                 .map(|value| format!("{}", value))
@@ -1347,7 +1347,7 @@ fn read_dotnet_stream_to_end(target: Option<&Value>) -> Value {
 
 fn elems_len(lines_obj: &Arc<Mutex<Object>>) -> usize {
     let lines = lines_obj.lock().unwrap();
-    if let vybe_bytecode::value::ObjectKind::Array(elems) = &lines.kind {
+    if let vybe_runtime::value::ObjectKind::Array(elems) = &lines.kind {
         elems.len()
     } else {
         0
@@ -1424,7 +1424,7 @@ pub fn bytes_from_value(value: &Value) -> Vec<u8> {
         Value::String(text) => text.as_bytes().to_vec(),
         Value::Object(array) => {
             let array = array.lock().unwrap();
-            if let vybe_bytecode::value::ObjectKind::Array(elems) = &array.kind {
+            if let vybe_runtime::value::ObjectKind::Array(elems) = &array.kind {
                 elems
                     .iter()
                     .map(|elem| elem.as_i32().clamp(0, 255) as u8)
@@ -1539,7 +1539,7 @@ pub fn value_array_elements(value: &Value) -> Option<Vec<Value>> {
     match value {
         Value::Object(obj) => {
             let obj = obj.lock().unwrap();
-            if let vybe_bytecode::value::ObjectKind::Array(elements) = &obj.kind {
+            if let vybe_runtime::value::ObjectKind::Array(elements) = &obj.kind {
                 Some(elements.clone())
             } else {
                 None
@@ -1551,7 +1551,7 @@ pub fn value_array_elements(value: &Value) -> Option<Vec<Value>> {
 
 pub fn array_len(array: &Arc<Mutex<Object>>) -> usize {
     let array = array.lock().unwrap();
-    if let vybe_bytecode::value::ObjectKind::Array(elements) = &array.kind {
+    if let vybe_runtime::value::ObjectKind::Array(elements) = &array.kind {
         elements.len()
     } else {
         0
@@ -1716,7 +1716,7 @@ fn parse_ip_socket_record(
     }
     if let Some(Value::Object(address)) = props.get("address") {
         let address_obj = address.lock().unwrap();
-        if let vybe_bytecode::value::ObjectKind::Array(elems) = &address_obj.kind {
+        if let vybe_runtime::value::ObjectKind::Array(elems) = &address_obj.kind {
             let family = if elems.len() == 4 { "ipv4" } else { "ipv6" };
             let host = if elems.len() == 4 {
                 format!(
@@ -1772,7 +1772,7 @@ fn make_ip_socket_address(host: &str, port: u16, family: &str) -> Value {
         .insert("port".into(), Value::F64(port as f64));
     obj.properties
         .insert("address".into(), ip_address_value(host, family));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn ip_address_value(host: &str, family: &str) -> Value {
@@ -1799,7 +1799,7 @@ fn ip_address_value(host: &str, family: &str) -> Value {
 }
 
 pub fn value_array(elements: Vec<Value>) -> Value {
-    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elements)))
+    Value::Object(vybe_runtime::heap::alloc(Object::new_array(elements)))
 }
 
 fn value_array_inner(elements: Vec<Value>) -> Value {
@@ -2499,7 +2499,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
                                 "remote-address".into(),
                                 make_ip_socket_address(&addr.ip().to_string(), addr.port(), family),
                             );
-                            datagrams.push(Value::Object(vybe_bytecode::heap::alloc(dg)));
+                            datagrams.push(Value::Object(vybe_runtime::heap::alloc(dg)));
                         }
                         Err(_) => break,
                     }
@@ -2579,7 +2579,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
             let dgs = match &dgs_val {
                 Value::Object(obj) => {
                     let o = obj.lock().unwrap();
-                    if let vybe_bytecode::value::ObjectKind::Array(elems) = &o.kind {
+                    if let vybe_runtime::value::ObjectKind::Array(elems) = &o.kind {
                         elems.clone()
                     } else {
                         Vec::new()
@@ -2644,7 +2644,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
             let addr_list = s.properties.get("__addresses").cloned();
             if let Some(Value::Object(arr_obj)) = addr_list {
                 let arr = arr_obj.lock().unwrap();
-                if let vybe_bytecode::value::ObjectKind::Array(elems) = &arr.kind {
+                if let vybe_runtime::value::ObjectKind::Array(elems) = &arr.kind {
                     if pos < elems.len() {
                         let next = elems[pos].clone();
                         drop(arr);

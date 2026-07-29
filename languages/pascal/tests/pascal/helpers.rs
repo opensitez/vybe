@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use vybe_bytecode::value::ObjectKind;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::ObjectKind;
+use vybe_runtime::{HostContext, VM, Value};
 use vybe_platform_vybe::gui_state::GuiState;
 
 /// Run Pascal source through vybex pipeline: pest grammar -> walker -> common AST -> compiler -> VM

@@ -13,8 +13,8 @@
 //! SplFixedArray is handled entirely by the walker (→ `array_fill`).
 
 use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::heap;
 
 fn sconst(c: &mut Chunk, s: &str) -> u16 {

@@ -29,7 +29,7 @@ pub use context::{
     take_context, with_context,
 };
 
-use vybe_bytecode::VM;
+use vybe_runtime::VM;
 
 /// Register every `node:http` host function on the VM.
 ///

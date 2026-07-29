@@ -10,8 +10,8 @@
 
 use std::sync::Arc;
 
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 /// Current error handler: `{cb, mask, prev}` object, or null.
 const HANDLER_G: &str = "__php_err_handler";

@@ -21,8 +21,8 @@
 //!   §27.7.4.x Promise.withResolvers() (ES2024)
 
 use std::sync::{Arc, OnceLock};
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{HostContext, VM, Value};
 
 static PROMISE_REACTION_HOST_IDX: OnceLock<usize> = OnceLock::new();
 // Host-fn indices for the settle thunks, so free functions (resolve_promise_with_value)
@@ -402,7 +402,7 @@ pub fn register(vm: &mut VM) {
             // reactions so `await Promise.all([...])` resumes once all settle.
             let aggregate = make_promise("pending", Value::Undefined);
             let id = ctx.next_promise_id();
-            let results = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+            let results = Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
                     Value::Undefined;
                     n
                 ])));
@@ -483,7 +483,7 @@ pub fn register(vm: &mut VM) {
             };
             let n = inputs.len();
             let aggregate = pending_promise_with_id(ctx);
-            let results = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+            let results = Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
                 Value::Undefined;
                 n
             ])));
@@ -543,7 +543,7 @@ pub fn register(vm: &mut VM) {
             };
             let n = inputs.len();
             let aggregate = pending_promise_with_id(ctx);
-            let errors = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+            let errors = Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
                 Value::Undefined;
                 n
             ])));
@@ -634,7 +634,7 @@ pub fn register(vm: &mut VM) {
             obj.properties.insert("promise".into(), promise);
             obj.properties.insert("resolve".into(), resolve_fn);
             obj.properties.insert("reject".into(), reject_fn);
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -664,7 +664,7 @@ pub fn register(vm: &mut VM) {
                         .insert("status".into(), Value::String(Arc::from("pending")));
                 }
             }
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -810,13 +810,13 @@ fn add_reaction(promise: &Value, on_fulfilled: Value, on_rejected: Value, result
     let reactions = o
         .properties
         .entry("__pending_reactions".into())
-        .or_insert_with(|| Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![]))));
+        .or_insert_with(|| Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![]))));
     let reaction = {
         let mut r = Object::new();
         r.properties.insert("on_fulfilled".into(), on_fulfilled);
         r.properties.insert("on_rejected".into(), on_rejected);
         r.properties.insert("result_promise".into(), result_promise);
-        Value::Object(vybe_bytecode::heap::alloc(r))
+        Value::Object(vybe_runtime::heap::alloc(r))
     };
     if let Value::Object(arr) = reactions {
         if let ObjectKind::Array(ref mut elems) = arr.lock().unwrap().kind {
@@ -849,7 +849,7 @@ fn promise_reaction(
     let mut obj = Object::new();
     obj.properties.insert(
         "__bound_args".into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
             result_promise,
             Value::String(Arc::from(state)),
             on_fulfilled,
@@ -857,7 +857,7 @@ fn promise_reaction(
         ]))),
     );
     obj.kind = ObjectKind::HostFunction(idx);
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn finally_reaction(result_promise: Value, state: &str, on_finally: Value) -> Value {
@@ -881,7 +881,7 @@ fn finalizer_forwarder(on_finally: Value, state: &str) -> Value {
         Value::String(Arc::from(state)),
     );
     obj.kind = ObjectKind::HostFunction(idx);
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn queue_promise_reaction(
@@ -1322,7 +1322,7 @@ fn settled_descriptor(state: &str, value: Value) -> Value {
             .insert("status".into(), Value::String(Arc::from("fulfilled")));
         obj.properties.insert("value".into(), value);
     }
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn aggregate_error(errors: Vec<Value>) -> Value {
@@ -1337,9 +1337,9 @@ fn aggregate_error(errors: Vec<Value>) -> Value {
     );
     agg.properties.insert(
         "errors".into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(errors))),
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(errors))),
     );
-    Value::Object(vybe_bytecode::heap::alloc(agg))
+    Value::Object(vybe_runtime::heap::alloc(agg))
 }
 
 fn any_record_rejection(aggregate: &Value, index: usize, reason: Value) -> Option<Value> {
@@ -1409,17 +1409,17 @@ pub fn make_promise(state: &str, value: Value) -> Value {
     obj.properties
         .insert("__state".into(), Value::String(Arc::from(state)));
     obj.properties.insert("__value".into(), value);
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn bound_settler(idx: usize, promise: Value) -> Value {
     let mut obj = Object::new();
     obj.properties.insert(
         "__bound_args".into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![promise]))),
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![promise]))),
     );
     obj.kind = ObjectKind::HostFunction(idx);
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 /// Host-fn ref bound to three args (e.g. `__preserve`'s `[promise, state, value]`).
@@ -1427,10 +1427,10 @@ fn bound_settler3(idx: usize, a: Value, b: Value, c: Value) -> Value {
     let mut obj = Object::new();
     obj.properties.insert(
         "__bound_args".into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![a, b, c]))),
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![a, b, c]))),
     );
     obj.kind = ObjectKind::HostFunction(idx);
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 /// Host-fn ref bound to two args (e.g. Promise.all's `[aggregate, index]`).
@@ -1438,10 +1438,10 @@ fn bound_settler2(idx: usize, a: Value, b: Value) -> Value {
     let mut obj = Object::new();
     obj.properties.insert(
         "__bound_args".into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![a, b]))),
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![a, b]))),
     );
     obj.kind = ObjectKind::HostFunction(idx);
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 /// Record a fulfilled `Promise.all` element. Returns `Some(results)` once the

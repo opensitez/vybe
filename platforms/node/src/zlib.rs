@@ -3,8 +3,8 @@
 //! Reference: <https://nodejs.org/api/zlib.html>.
 
 use std::io::{Read, Write};
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{Object, ObjectKind, Value};
 
 fn bytes_from_value(v: &Value) -> Vec<u8> {
     match v {
@@ -29,7 +29,7 @@ fn bytes_from_value(v: &Value) -> Vec<u8> {
 
 fn buf_from_bytes(bytes: Vec<u8>) -> Value {
     let elems = bytes.into_iter().map(|b| Value::I32(b as i32)).collect();
-    Value::Object(vybe_bytecode::heap::alloc(Object {
+    Value::Object(vybe_runtime::heap::alloc(Object {
         kind: ObjectKind::Array(elems),
         properties: std::collections::HashMap::new(),
         type_id: 0,
@@ -128,7 +128,7 @@ fn unzip_sync(input: &[u8]) -> Vec<u8> {
 }
 
 fn stub_stream() -> Value {
-    Value::Object(vybe_bytecode::heap::alloc(Object::new()))
+    Value::Object(vybe_runtime::heap::alloc(Object::new()))
 }
 
 pub fn register(vm: &mut VM) {
@@ -275,7 +275,7 @@ pub fn register(vm: &mut VM) {
                 .insert("BROTLI_PARAM_QUALITY".into(), Value::I32(1));
             o.properties
                 .insert("BROTLI_PARAM_LGWIN".into(), Value::I32(2));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 

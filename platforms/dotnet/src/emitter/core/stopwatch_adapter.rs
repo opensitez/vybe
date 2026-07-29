@@ -5,8 +5,8 @@
 //!   `{__type: "Stopwatch", __start_ns: f64, __accumulated_ns: f64, isrunning: bool}`
 
 use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::instructions::core_wasm;
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {

@@ -10,9 +10,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::{Object, ObjectKind, Value};
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 // ── Test scaffolding ──────────────────────────────────────────────
@@ -551,7 +551,7 @@ fn read_sync_returns_bytes_read_count() {
     let fd = call_fs("openSync", vec![s(file.to_str().unwrap()), s("r")]);
     // Build a 10-byte buffer (Array of zeroed I32s)
     let buf = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(
-        vybe_bytecode::value::Object {
+        vybe_runtime::value::Object {
             kind: ObjectKind::Array(vec![Value::I32(0); 10]),
             properties: HashMap::new(),
             type_id: 0,
@@ -1061,7 +1061,7 @@ fn write_sync_with_buffer_writes_bytes() {
     std::fs::write(&file, "").unwrap();
     let fd = call_fs("openSync", vec![s(file.to_str().unwrap()), s("w")]);
     let buf = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(
-        vybe_bytecode::value::Object {
+        vybe_runtime::value::Object {
             kind: ObjectKind::Array(vec![Value::I32(0x41), Value::I32(0x42)]), // "AB"
             properties: HashMap::new(),
             type_id: 0,

@@ -4,8 +4,8 @@
 //! so the search is emitted here from ordinary opcodes rather than invented as
 //! a host fn. `insort` composes the same search with `ecma:array.splice`.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::instructions::core_wasm;
 
 /// Which end of a run of equal values the insertion point lands on.

@@ -16,9 +16,9 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use vybe_bytecode::typedef::TypeDef;
-use vybe_bytecode::value::Object;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::typedef::TypeDef;
+use vybe_runtime::value::Object;
+use vybe_runtime::{HostContext, VM, Value};
 
 const KIND_HEADERS: &str = "headers";
 const KIND_OUTGOING_REQUEST: &str = "outgoing-request";
@@ -145,7 +145,7 @@ fn make_resource(kind: &str, id: u32, type_id: usize) -> Value {
     object
         .properties
         .insert("__wasi_id".into(), Value::F64(id as f64));
-    Value::Object(vybe_bytecode::heap::alloc(object))
+    Value::Object(vybe_runtime::heap::alloc(object))
 }
 
 fn resource_id(value: &Value, expected_kind: &str) -> Option<u32> {
@@ -170,7 +170,7 @@ fn err(code: &str) -> Value {
     object
         .properties
         .insert("__wasi_error".into(), Value::String(Arc::from(code)));
-    Value::Object(vybe_bytecode::heap::alloc(object))
+    Value::Object(vybe_runtime::heap::alloc(object))
 }
 
 fn string_arg(args: &[Value], idx: usize) -> Option<String> {
@@ -187,7 +187,7 @@ fn header_value_bytes(value: &str) -> Value {
         .iter()
         .map(|byte| Value::F64(*byte as f64))
         .collect::<Vec<_>>();
-    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(bytes)))
+    Value::Object(vybe_runtime::heap::alloc(Object::new_array(bytes)))
 }
 
 fn header_values_array(values: &[Vec<u8>]) -> Value {
@@ -195,20 +195,20 @@ fn header_values_array(values: &[Vec<u8>]) -> Value {
         .iter()
         .map(|value| header_value_bytes(&String::from_utf8_lossy(value)))
         .collect::<Vec<_>>();
-    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(arrays)))
+    Value::Object(vybe_runtime::heap::alloc(Object::new_array(arrays)))
 }
 
 fn header_entries_array(entries: &[(String, Vec<u8>)]) -> Value {
     let pairs = entries
         .iter()
         .map(|(name, value)| {
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
                 Value::String(Arc::from(name.as_str())),
                 header_value_bytes(&String::from_utf8_lossy(value)),
             ])))
         })
         .collect::<Vec<_>>();
-    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(pairs)))
+    Value::Object(vybe_runtime::heap::alloc(Object::new_array(pairs)))
 }
 
 #[derive(Debug, Clone)]
@@ -396,7 +396,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
                 return err("invalid-argument");
             };
             let Some(name) = string_arg(args, 1) else {
-                return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())));
+                return Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())));
             };
             let registry = registry().lock().unwrap();
             let Some(headers) = registry.headers.get(&headers_id) else {
@@ -613,7 +613,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             obj.properties
                 .insert("__type".into(), Value::String(Arc::from("Pollable")));
             obj.properties.insert("__ready".into(), Value::Bool(true));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -638,7 +638,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
                 .retain(|(k, _)| !k.eq_ignore_ascii_case(&key));
             if let Some(Value::Object(arr)) = args.get(2) {
                 let inner = arr.lock().unwrap();
-                if let vybe_bytecode::value::ObjectKind::Array(ref elems) = inner.kind {
+                if let vybe_runtime::value::ObjectKind::Array(ref elems) = inner.kind {
                     for val in elems {
                         let bytes = format!("{}", val).into_bytes();
                         headers.entries.push((key.clone(), bytes));
@@ -720,11 +720,11 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
             if let Some(Value::Object(arr)) = args.first() {
                 let inner = arr.lock().unwrap();
-                if let vybe_bytecode::value::ObjectKind::Array(ref pairs) = inner.kind {
+                if let vybe_runtime::value::ObjectKind::Array(ref pairs) = inner.kind {
                     for pair in pairs {
                         if let Value::Object(p) = pair {
                             let p = p.lock().unwrap();
-                            if let vybe_bytecode::value::ObjectKind::Array(ref kv) = p.kind {
+                            if let vybe_runtime::value::ObjectKind::Array(ref kv) = p.kind {
                                 let name = kv
                                     .first()
                                     .map(|v| format!("{}", v))
@@ -987,7 +987,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             );
             obj.properties
                 .insert("__wasi_id".into(), Value::F64(stream_id as f64));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -1021,7 +1021,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             obj.properties
                 .insert("__type".into(), Value::String(Arc::from("Pollable")));
             obj.properties.insert("__ready".into(), Value::Bool(true));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -1124,7 +1124,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             let bytes_val = args.get(1).cloned().unwrap_or(Value::Null);
             if let Value::Object(arr) = &bytes_val {
                 let inner = arr.lock().unwrap();
-                if let vybe_bytecode::value::ObjectKind::Array(ref elems) = inner.kind {
+                if let vybe_runtime::value::ObjectKind::Array(ref elems) = inner.kind {
                     let bytes: Vec<u8> = elems.iter().map(|v| v.as_f64() as u8).collect();
                     drop(inner);
                     let mut registry = registry().lock().unwrap();
@@ -1382,7 +1382,7 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
                 return err("invalid-argument");
             };
             let Some(name) = string_arg(args, 1) else {
-                return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())));
+                return Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())));
             };
             let target = name.to_ascii_lowercase();
             let mut registry = registry().lock().unwrap();
@@ -1710,7 +1710,7 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
             ctx.stream_close(stream_id);
             let (future_val, future_id) = ctx.create_future();
             ctx.resolve_future(future_id, Value::Null);
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
                 stream_val, future_val,
             ])))
         }),
@@ -1767,7 +1767,7 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
             ctx.stream_close(stream_id);
             let (future_val, future_id) = ctx.create_future();
             ctx.resolve_future(future_id, Value::Null);
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
                 stream_val, future_val,
             ])))
         }),

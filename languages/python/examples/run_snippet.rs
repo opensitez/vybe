@@ -3,7 +3,7 @@
 // unrelated in-flight files. Usage: cargo run -p vybe_language_python \
 //   --example run_snippet -- path/to/snippet.py
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
 fn main() {
     let path = std::env::args().nth(1).expect("usage: run_snippet <file.py>");

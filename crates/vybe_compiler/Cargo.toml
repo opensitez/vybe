@@ -19,7 +19,7 @@ pest = { workspace = true }
 pest_derive = { workspace = true }
 chrono = { workspace = true }
 vybe_ast = { workspace = true }
-vybe_bytecode = { workspace = true }
+vybe_runtime = { workspace = true }
 vybe_widgets = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }

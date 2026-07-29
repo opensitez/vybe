@@ -5,16 +5,16 @@
 //! Each test covers a distinct behaviour.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::{Object, ObjectKind, Value};
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn invoke(name: &str, args: Vec<Value>) -> Value {
     invoke_result(name, args).expect("VM run failed")
 }
 
-fn invoke_result(name: &str, args: Vec<Value>) -> Result<Value, vybe_bytecode::VMError> {
+fn invoke_result(name: &str, args: Vec<Value>) -> Result<Value, vybe_runtime::VMError> {
     let (result, _) = invoke_result_with_exception(name, args);
     result
 }
@@ -22,7 +22,7 @@ fn invoke_result(name: &str, args: Vec<Value>) -> Result<Value, vybe_bytecode::V
 fn invoke_result_with_exception(
     name: &str,
     args: Vec<Value>,
-) -> (Result<Value, vybe_bytecode::VMError>, Option<Value>) {
+) -> (Result<Value, vybe_runtime::VMError>, Option<Value>) {
     let mut chunk = Chunk::new("<ecma-json-test>");
     let import_idx = chunk.add_import("ecma:json", name);
     let argc = args.len() as u8;
@@ -293,7 +293,7 @@ fn stringify_circular_object_throws_type_error() {
 fn stringify_array_replacer_filters_to_listed_keys() {
     // ECMA-262 §25.5.2.1: if replacer is an Array, only listed keys are included.
     use std::sync::{Arc, Mutex};
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let o = obj(vec![
         ("a", Value::I32(1)),
         ("b", Value::I32(2)),
@@ -319,7 +319,7 @@ fn parse_with_reviver_transforms_each_value() {
     // ECMA-262 §25.5.1: reviver(key, value) is called for each member; can transform.
     // Encode a reviver that doubles numeric values via object descriptor.
     use std::sync::{Arc, Mutex};
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let reviver = {
         let mut o = Object::new();
         o.properties
@@ -350,7 +350,7 @@ fn is_raw_json_true_for_raw_json_object() {
 #[test]
 fn is_raw_json_false_for_plain_objects() {
     use std::sync::Mutex;
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let plain = Value::Object(Arc::new(Mutex::new(Object::new())));
     assert_eq!(invoke("isRawJSON", vec![plain]), Value::Bool(false));
 }

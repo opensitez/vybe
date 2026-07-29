@@ -10,7 +10,7 @@
 //! ops only. The shared compiler routes here through the language hook and the
 //! shared `dynamic_symbols` recipe owns the bytecode shape.
 
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 fn php_class_spelling(name: &str) -> String {
     name.replace('.', "\\")

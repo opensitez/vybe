@@ -4,8 +4,8 @@
 //! Keep Python-specific call shapes here instead of sending them through
 //! the old runtime-helper function table.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::{collections, reflection, target::Target};
 
 /// Python value-equality fallback for `==`/`!=` when no user `__eq__` is found.
@@ -34,7 +34,7 @@ pub fn emit_py_value_eq(chunk: &mut Chunk, line: u32) {
     chunk.emit_if_value(line);
     {
         let size_key =
-            chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("size")));
+            chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("size")));
         chunk.emit_op_u16(Op::LOCAL_GET, a, line);
         chunk.emit_op_u16(Op::STRUCT_GET, size_key, line);
         chunk.emit_op_u16(Op::LOCAL_GET, b, line);
@@ -436,7 +436,7 @@ fn emit_set_relational(chunk: &mut Chunk, a_slot: u16, b_slot: u16, dunder: &str
     if strict {
         // AND size(a) != size(b)
         let size_key =
-            chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("size")));
+            chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("size")));
         chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
         chunk.emit_op_u16(Op::STRUCT_GET, size_key, line);
         chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
@@ -457,7 +457,7 @@ fn emit_unary_dunder_or(
     line: u32,
 ) {
     let typeof_fn = chunk.add_import("ecma:value", "typeof");
-    let key = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(dunder)));
+    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(dunder)));
     let method = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_call(typeof_fn, 1, line);
@@ -497,7 +497,7 @@ fn emit_object_binop_or(
     line: u32,
 ) {
     let typeof_fn = chunk.add_import("ecma:value", "typeof");
-    let key = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(dunder)));
+    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(dunder)));
     let method = chunk.alloc_scratch(1);
     // Only real objects (typeof == "object") can carry the dunder; STRUCT_GET on
     // a primitive traps, so gate the lookup behind the type check.
@@ -576,7 +576,7 @@ fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
     // method lookup returns undefined for primitives, so `print(5)` etc. fall
     // straight through to the default formatting below.
     let get_method = std::sync::Arc::from("__vybe_js_get_method");
-    let get_method_c = chunk.add_constant(vybe_bytecode::Value::String(get_method));
+    let get_method_c = chunk.add_constant(vybe_runtime::Value::String(get_method));
     let str_method = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::GLOBAL_GET, get_method_c, line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
@@ -610,7 +610,7 @@ fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_call(is_view, 1, line);
     chunk.emit_if_value(line);
-    let repr_fn = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(
+    let repr_fn = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
         "__vybe_bytes_repr",
     )));
     chunk.emit_op_u16(Op::GLOBAL_GET, repr_fn, line);
@@ -1013,7 +1013,7 @@ pub fn emit_delattr(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `0`. Guarded by the typeof check because `STRUCT_GET` traps on primitives.
 fn emit_is_set(chunk: &mut Chunk, slot: u16, line: u32) {
     let typeof_fn = chunk.add_import("ecma:value", "typeof");
-    let type_key = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__type")));
+    let type_key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__type")));
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_call(typeof_fn, 1, line);
     chunk.emit_string_const("object", line);
@@ -1455,7 +1455,7 @@ pub fn emit_range(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let stamp = |chunks: &mut [Chunk], key: &str, push: &dyn Fn(&mut Chunk)| {
         chunks[current].emit_dup(line);
         push(&mut chunks[current]);
-        let k = chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(
+        let k = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
             key,
         )));
         chunks[current].emit_op_u16(Op::STRUCT_SET, k, line);

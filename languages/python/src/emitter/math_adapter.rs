@@ -5,8 +5,8 @@
 //! functions (`factorial`, `gcd`, …) leave a raw `i32` so they repr as `120`,
 //! not `120.0`; the rest produce boxed f64 (Python floats).
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use vybe_compiler::primitives::{collections, ops, tuples};
 

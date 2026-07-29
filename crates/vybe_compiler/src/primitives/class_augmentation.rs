@@ -34,7 +34,7 @@
 
 use std::collections::HashMap;
 
-use vybe_bytecode::class_normalize::{
+use vybe_ast::class_normalize::{
     Augmentation, AugmentationAdjustment, AugmentationConflict, AugmentationMode,
     AugmentationPosition, AugmentationSuper, NormalClass, NormalMethod,
 };

@@ -8,8 +8,8 @@
 //! controls how many values flow through calls/returns/assignments; packing
 //! controls how values become bytes and how bytes become values.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Endian {

@@ -1,7 +1,7 @@
 //! Small Java `java.time` adapter backed by ECMA date helpers.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {

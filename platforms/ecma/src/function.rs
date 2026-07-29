@@ -1,7 +1,7 @@
 //! ECMA-262 §20.2 — Function.prototype.{bind, call, apply}.
 //!
 //! `bind` returns a new function ref carrying `__bound_args` so the VM
-//! call dispatch in `vybe_bytecode/src/calls.rs` prepends them on every
+//! call dispatch in `vybe_runtime/src/calls.rs` prepends them on every
 //! invocation. The VM hook is the same mechanism `new Promise(executor)`
 //! uses for resolve/reject thunks — see `crate::promise`.
 //!
@@ -11,8 +11,8 @@
 //! just route through `ctx.invoke` with the resolved args list.
 
 use std::sync::{Arc, Mutex, OnceLock};
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{HostContext, VM, Value};
 
 static FUNCTION_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
@@ -31,12 +31,12 @@ pub fn shared_function_prototype() -> Value {
                     .insert("name".into(), Value::String(Arc::from("")));
                 proto.properties.insert(
                     "__nonenum".into(),
-                    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
                         Value::String(Arc::from("length")),
                         Value::String(Arc::from("name")),
                     ]))),
                 );
-                vybe_bytecode::heap::alloc(proto)
+                vybe_runtime::heap::alloc(proto)
             })
             .clone(),
     )
@@ -145,7 +145,7 @@ pub fn register(vm: &mut VM) {
                 .insert("__fn_body".into(), Value::String(Arc::from(body.as_str())));
             obj.properties
                 .insert("__fn_return".into(), Value::Undefined);
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -171,7 +171,7 @@ pub fn register(vm: &mut VM) {
                 .insert("__fn_body".into(), Value::String(Arc::from(body.as_str())));
             obj.properties
                 .insert("__fn_return".into(), Value::Undefined);
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -294,7 +294,7 @@ pub fn register(vm: &mut VM) {
             ts.properties
                 .insert("__vybe_method_receiver".into(), Value::Bool(true));
             p.properties
-                .insert("toString".into(), Value::Object(vybe_bytecode::heap::alloc(ts)));
+                .insert("toString".into(), Value::Object(vybe_runtime::heap::alloc(ts)));
             // toString is non-enumerable on %Function.prototype%.
             if let Some(Value::Object(ne)) = p.properties.get("__nonenum") {
                 let mut a = ne.lock().unwrap();
@@ -462,8 +462,8 @@ pub fn invoke_with_explicit_this(
     if let Value::Object(obj) = target {
         if let Some((proxy_target, handler)) = crate::object::proxy_target_and_handler(obj) {
             if let Some(trap) = crate::object::proxy_trap(&handler, "apply") {
-                let args_arr = Value::Object(vybe_bytecode::heap::alloc(
-                    vybe_bytecode::value::Object::new_array(args.to_vec()),
+                let args_arr = Value::Object(vybe_runtime::heap::alloc(
+                    vybe_runtime::value::Object::new_array(args.to_vec()),
                 ));
                 return invoke_with_explicit_this(
                     ctx,
@@ -650,7 +650,7 @@ fn invoke_compiled_function(ctx: &mut HostContext, target: &Value, args: &[Value
     for index in 0..fixed_count {
         packed_args.push(args.get(index).cloned().unwrap_or(Value::Undefined));
     }
-    packed_args.push(Value::Object(vybe_bytecode::heap::alloc(Object::new_array(
+    packed_args.push(Value::Object(vybe_runtime::heap::alloc(Object::new_array(
         args.iter().skip(fixed_count).cloned().collect(),
     ))));
     ctx.invoke(target, &packed_args)
@@ -669,7 +669,7 @@ fn try_invoke_compiled_function(
     for index in 0..fixed_count {
         packed_args.push(args.get(index).cloned().unwrap_or(Value::Undefined));
     }
-    packed_args.push(Value::Object(vybe_bytecode::heap::alloc(Object::new_array(
+    packed_args.push(Value::Object(vybe_runtime::heap::alloc(Object::new_array(
         args.iter().skip(fixed_count).cloned().collect(),
     ))));
     ctx.try_invoke(target, &packed_args)
@@ -819,7 +819,7 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
     let consumed_args = stored_bound.len().saturating_sub(3);
     wrapper.properties.insert(
         "__bound_args".into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(stored_bound))),
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(stored_bound))),
     );
     // §10.4.1.3 BoundFunctionCreate step 1: the bound function's
     // [[Prototype]] is the TARGET's [[Prototype]] — a bound async fn
@@ -848,7 +848,7 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
     if !matches!(target_proto, Value::Null | Value::Undefined) {
         wrapper.properties.insert("prototype".into(), target_proto);
     }
-    Value::Object(vybe_bytecode::heap::alloc(wrapper))
+    Value::Object(vybe_runtime::heap::alloc(wrapper))
 }
 
 /// Build a function ref carrying bound args. Mirrors the convention in
@@ -940,7 +940,7 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
     let consumed_args = stored_bound.len().saturating_sub(3);
     wrapper.properties.insert(
         "__bound_args".into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(stored_bound))),
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(stored_bound))),
     );
     // §10.4.1.3 BoundFunctionCreate step 1: the bound function's
     // [[Prototype]] is the TARGET's [[Prototype]] — a bound async fn
@@ -969,5 +969,5 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
     if !matches!(target_proto, Value::Null | Value::Undefined) {
         wrapper.properties.insert("prototype".into(), target_proto);
     }
-    Value::Object(vybe_bytecode::heap::alloc(wrapper))
+    Value::Object(vybe_runtime::heap::alloc(wrapper))
 }

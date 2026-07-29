@@ -3476,7 +3476,7 @@ impl Compiler {
                             "data segment offset must be a constant integer expression".to_string()
                         })?;
                     self.chunks[0].active_data_segments.push(
-                        vybe_bytecode::chunk::ActiveDataSegment {
+                        vybe_runtime::chunk::ActiveDataSegment {
                             memory_index: *memory_index,
                             offset: offset_val,
                             data_index,
@@ -4824,14 +4824,14 @@ impl Compiler {
                     if let Some(type_hint) = self.infer_expr_type_hint(object) {
                         let class_name = Self::normalize_type_hint(&type_hint);
                         if let Some(target) =
-                            vybe_bytecode::namespaces::lookup_type_property_setter_target(
+                            vybe_runtime::namespaces::lookup_type_property_setter_target(
                                 &self.profile.namespaces.type_scopes,
                                 &class_name,
                                 field,
                             )
                         {
                             match target {
-                                vybe_bytecode::component_model::InstancePropertyTarget::Host {
+                                vybe_runtime::component_model::InstancePropertyTarget::Host {
                                     module,
                                     func,
                                     key,
@@ -4851,7 +4851,7 @@ impl Compiler {
                                     self.emit(Op::DROP);
                                     return Ok(());
                                 }
-                                vybe_bytecode::component_model::InstancePropertyTarget::Common { emit } => {
+                                vybe_runtime::component_model::InstancePropertyTarget::Common { emit } => {
                                     let value_tmp = self.define_local("__dotnet_prop_value");
                                     self.emit_u16(Op::LOCAL_SET, value_tmp);
                                     self.compile_expr(object)?;
@@ -4919,12 +4919,12 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let line = self.line;
                     if self.in_strict {
-                        vybe_bytecode::registry::hooks(&self.profile.name)
+                        vybe_runtime::registry::hooks(&self.profile.name)
                             .proxy_set_bool
                             .unwrap()(&mut self.chunks, self.current, line);
                         self.emit_strict_set_failure_check()?;
                     } else {
-                        vybe_bytecode::registry::hooks(&self.profile.name)
+                        vybe_runtime::registry::hooks(&self.profile.name)
                             .proxy_set
                             .unwrap()(&mut self.chunks, self.current, line);
                         self.emit(Op::DROP); // adapter leaves [value] on stack
@@ -5520,12 +5520,12 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let line = self.line;
                     if self.in_strict {
-                        vybe_bytecode::registry::hooks(&self.profile.name)
+                        vybe_runtime::registry::hooks(&self.profile.name)
                             .proxy_set_bool
                             .unwrap()(&mut self.chunks, self.current, line);
                         self.emit_strict_set_failure_check()?;
                     } else {
-                        vybe_bytecode::registry::hooks(&self.profile.name)
+                        vybe_runtime::registry::hooks(&self.profile.name)
                             .proxy_set
                             .unwrap()(&mut self.chunks, self.current, line);
                         self.emit(Op::DROP);

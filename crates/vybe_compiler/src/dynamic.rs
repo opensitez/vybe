@@ -8,11 +8,11 @@ use std::sync::{Arc, Mutex};
 use crate::bundle::{Bundle, CompiledBundle, EntryPoint, SourceFile};
 use crate::primitives::HostImportMetadata;
 use crate::languages::{self, Language};
-use vybe_bytecode::capabilities::{Capabilities, Capability};
-use vybe_bytecode::chunk::Chunk;
-use vybe_bytecode::chunk::Import;
-use vybe_bytecode::value::{Function, Object, ObjectKind};
-use vybe_bytecode::{HostContext, ImportTarget, VM, Value};
+use vybe_runtime::capabilities::{Capabilities, Capability};
+use vybe_runtime::chunk::Chunk;
+use vybe_runtime::chunk::Import;
+use vybe_runtime::value::{Function, Object, ObjectKind};
+use vybe_runtime::{HostContext, ImportTarget, VM, Value};
 
 thread_local! {
     static ACTIVE_PHP_RUNTIME: RefCell<Option<*mut PhpIncludeRuntime>> = const { RefCell::new(None) };
@@ -491,7 +491,7 @@ pub fn install_chunk_globals(vm: &mut VM, chunks: &[Chunk], base_chunk_index: us
         };
         let mut obj = Object::new();
         obj.kind = ObjectKind::Function(func);
-        let val = Value::Object(vybe_bytecode::heap::alloc(obj));
+        let val = Value::Object(vybe_runtime::heap::alloc(obj));
         vm.globals.insert(chunk.name.to_lowercase(), val);
     }
 }
@@ -844,7 +844,7 @@ impl JsDynamicRuntime {
         // prelude, which shifted every span and silently broke the
         // completion-value split below into the no-`return` fallback). Reached
         // through the registry so this crate never names the JS language crate.
-        let parse_eval = match vybe_bytecode::registry::hooks("js").parse_eval {
+        let parse_eval = match vybe_runtime::registry::hooks("js").parse_eval {
             Some(f) => f,
             None => return throw_eval_error(ctx, "EvalError", "js eval hook not registered"),
         };
@@ -1453,9 +1453,9 @@ fn throw_eval_error(ctx: &mut HostContext, kind: &str, message: &str) -> Value {
     ]);
     obj.properties.insert(
         "__types".into(),
-        Value::Object(vybe_bytecode::heap::alloc(chain)),
+        Value::Object(vybe_runtime::heap::alloc(chain)),
     );
-    ctx.throw_value(Value::Object(vybe_bytecode::heap::alloc(obj)));
+    ctx.throw_value(Value::Object(vybe_runtime::heap::alloc(obj)));
     Value::Undefined
 }
 
@@ -1605,7 +1605,7 @@ fn ensure_js_runtime_registered(vm: &mut VM) {
         obj.kind = ObjectKind::HostFunction(idx);
         vm.globals.insert(
             "eval".to_string(),
-            Value::Object(vybe_bytecode::heap::alloc(obj)),
+            Value::Object(vybe_runtime::heap::alloc(obj)),
         );
     }
 }
@@ -1698,7 +1698,7 @@ fn dynamic_host_function_value(
         .properties
         .insert("__proto__".into(), function_proto.clone());
 
-    let function_value = Value::Object(vybe_bytecode::heap::alloc(function_obj));
+    let function_value = Value::Object(vybe_runtime::heap::alloc(function_obj));
     let mut prototype = Object::new();
     prototype
         .properties
@@ -1711,7 +1711,7 @@ fn dynamic_host_function_value(
     if let Value::Object(function_obj) = &function_value {
         function_obj.lock().unwrap().properties.insert(
             "prototype".into(),
-            Value::Object(vybe_bytecode::heap::alloc(prototype)),
+            Value::Object(vybe_runtime::heap::alloc(prototype)),
         );
     }
 
@@ -1797,7 +1797,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{JsDynamicRuntime, RuntimeCompilerService, ensure_js_runtime_registered};
-    use vybe_bytecode::{VM, Value};
+    use vybe_runtime::{VM, Value};
 
     struct DynamicSmokeCase {
         language: &'static str,
@@ -1931,7 +1931,7 @@ mod tests {
         let mut vm = configured_vm();
         let mut service = RuntimeCompilerService::with_capabilities(
             &mut vm,
-            vybe_bytecode::capabilities::Capabilities::safe(),
+            vybe_runtime::capabilities::Capabilities::safe(),
         );
 
         let err = service
@@ -1948,7 +1948,7 @@ mod tests {
 
         let value = {
             let mut runtime =
-                JsDynamicRuntime::new(vybe_bytecode::capabilities::Capabilities::all());
+                JsDynamicRuntime::new(vybe_runtime::capabilities::Capabilities::all());
             let _guard = runtime.activate(&mut vm, vec![], vec![]);
             runtime
                 .handle_function_constructor(&[
@@ -1977,28 +1977,28 @@ mod tests {
             .get(&("vybe:js".to_string(), "function_constructor".to_string()))
             .expect("vybe:js:function_constructor host fn");
 
-        let mut chunk = vybe_bytecode::chunk::Chunk::new("<script>");
+        let mut chunk = vybe_runtime::chunk::Chunk::new("<script>");
         let arg_a = chunk.add_constant(Value::String("a".into()));
         let arg_b = chunk.add_constant(Value::String("b".into()));
         let body = chunk.add_constant(Value::String("return a + b;".into()));
         let result_name = chunk.add_constant(Value::String("__test_result".into()));
         let import_idx = chunk.add_import("vybe:js", "function_constructor");
-        chunk.emit_op_u16(vybe_bytecode::opcode::Op::CONST, arg_a, 0);
-        chunk.emit_op_u16(vybe_bytecode::opcode::Op::CONST, arg_b, 0);
-        chunk.emit_op_u16(vybe_bytecode::opcode::Op::CONST, body, 0);
-        chunk.emit_op_u16(vybe_bytecode::opcode::Op::CALL_IMPORT, import_idx, 0);
+        chunk.emit_op_u16(vybe_runtime::opcode::Op::CONST, arg_a, 0);
+        chunk.emit_op_u16(vybe_runtime::opcode::Op::CONST, arg_b, 0);
+        chunk.emit_op_u16(vybe_runtime::opcode::Op::CONST, body, 0);
+        chunk.emit_op_u16(vybe_runtime::opcode::Op::CALL_IMPORT, import_idx, 0);
         chunk.emit(3, 0);
-        chunk.emit_op_u16(vybe_bytecode::opcode::Op::GLOBAL_SET, result_name, 0);
-        chunk.emit_op(vybe_bytecode::opcode::Op::NULL, 0);
-        chunk.emit_op(vybe_bytecode::opcode::Op::HALT, 0);
+        chunk.emit_op_u16(vybe_runtime::opcode::Op::GLOBAL_SET, result_name, 0);
+        chunk.emit_op(vybe_runtime::opcode::Op::NULL, 0);
+        chunk.emit_op(vybe_runtime::opcode::Op::HALT, 0);
 
         {
             let mut runtime =
-                JsDynamicRuntime::new(vybe_bytecode::capabilities::Capabilities::all());
+                JsDynamicRuntime::new(vybe_runtime::capabilities::Capabilities::all());
             let _guard = runtime.activate(&mut vm, vec![], vec![]);
             vm.run_linked(
                 vec![chunk],
-                vec![vybe_bytecode::ImportTarget::Host(host_idx)],
+                vec![vybe_runtime::ImportTarget::Host(host_idx)],
             )
             .expect("call vybe:js:function_constructor")
         };

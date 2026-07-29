@@ -12,8 +12,8 @@
 use crate::primitives::runtime_helpers::build_runtime_helpers;
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 /// Mapping from helper chunk name to the global name used at call sites.
 const MAPPINGS: &[(&str, &str)] = &[
@@ -223,7 +223,7 @@ pub fn finalize_with_runtime_helpers_excluding(
     chunks: &mut Vec<Chunk>,
     excluded_exports: &[&'static str],
 ) {
-    use vybe_bytecode::chunk::{ConstExpr, GlobalInit};
+    use vybe_runtime::chunk::{ConstExpr, GlobalInit};
 
     let mut requested = referenced_helper_exports(chunks);
     add_helper_dependencies(&mut requested);

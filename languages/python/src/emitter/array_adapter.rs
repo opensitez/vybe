@@ -9,8 +9,8 @@
 //!
 //! No new host fns.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::instructions::core_wasm;
 
 /// Width in bytes of each `array` typecode, per CPython's table.
@@ -31,7 +31,7 @@ const ITEMSIZES: &[(&str, i32)] = &[
 ];
 
 fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
-    let k = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(key)));
+    let k = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
     chunk.emit_op_u16(Op::STRUCT_SET, k, line);
     chunk.emit_op(Op::DROP, line);
 }

@@ -1,5 +1,5 @@
 //! Per-language WinForms designer registry — the same registration style as
-//! `vybe_bytecode::registry`, but for form modules (which need `Form`/`GuiState`).
+//! `vybe_runtime::registry`, but for form modules (which need `Form`/`GuiState`).
 //! VB / C# register themselves; the primitives/project loader reads by name.
 
 use std::sync::{Mutex, OnceLock};

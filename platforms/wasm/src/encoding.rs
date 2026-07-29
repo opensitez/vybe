@@ -2,7 +2,7 @@
 //! Constants, LEB128, section writing, value serialization.
 
 use std::sync::Arc;
-use vybe_bytecode::value::Value;
+use vybe_runtime::value::Value;
 
 // ── WASM binary format constants ────────────────────────────────────────
 

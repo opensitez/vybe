@@ -1,7 +1,7 @@
 use vybe_compiler::primitives::instructions::host;
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use super::support::stash_args;
 

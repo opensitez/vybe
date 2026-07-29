@@ -8,8 +8,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{Object, Value};
 
 fn s(text: &str) -> Value {
     Value::String(Arc::from(text))
@@ -431,7 +431,7 @@ pub fn register(vm: &mut VM) {
             _ => {
                 let mut o = Object::new();
                 o.properties.insert("__isContext".into(), Value::Bool(true));
-                Value::Object(vybe_bytecode::heap::alloc(o))
+                Value::Object(vybe_runtime::heap::alloc(o))
             }
         }),
     );
@@ -462,7 +462,7 @@ pub fn register(vm: &mut VM) {
             let mut o = Object::new();
             o.properties
                 .insert("__code".into(), Value::String(Arc::from(code.as_str())));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -515,7 +515,7 @@ pub fn register(vm: &mut VM) {
             let mut o = Object::new();
             o.properties
                 .insert("__code".into(), Value::String(Arc::from(code.as_str())));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -527,7 +527,7 @@ pub fn register(vm: &mut VM) {
             o.properties.insert("total".into(), Value::F64(0.0));
             o.properties
                 .insert("jsMemoryEstimate".into(), Value::F64(0.0));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 }

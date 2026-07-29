@@ -17,9 +17,9 @@
 //!   - `Script.createCachedData()` (requires V8 bytecode serialization)
 
 use std::sync::Arc;
-use vybe_bytecode::value::Value;
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::Value;
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn call_vm(name: &str, args: Vec<Value>) -> Value {
@@ -78,7 +78,7 @@ fn run_in_new_context_evaluates_null() {
 
 #[test]
 fn run_in_new_context_with_sandbox_exposes_variable() {
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let mut sandbox = Object::new();
     sandbox.properties.insert("x".to_string(), Value::I32(10));
     let sandbox_val = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(sandbox)));
@@ -117,7 +117,7 @@ fn create_context_returns_object() {
 
 #[test]
 fn create_context_with_sandbox_preserves_properties() {
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let mut sb = Object::new();
     sb.properties.insert("myVar".to_string(), Value::I32(42));
     let sb_val = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(sb)));
@@ -147,7 +147,7 @@ fn is_context_true_for_contextified_sandbox() {
 
 #[test]
 fn is_context_false_for_plain_object() {
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let plain = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(Object::new())));
     let result = call_vm("isContext", vec![plain]);
     assert_eq!(result, Value::Bool(false));

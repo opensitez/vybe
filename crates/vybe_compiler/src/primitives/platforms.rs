@@ -2,15 +2,15 @@
 //!
 //! There is no platform list here, and no plugin list anywhere in the tree.
 //! Every plugin crate — language, platform, host-function provider, they are
-//! all the same `vybe_bytecode::Plugin` — submits itself at link time via
+//! all the same `vybe_runtime::Plugin` — submits itself at link time via
 //! `register_plugin!`, and these calls run whatever the final binary linked.
 //! Which plugins a binary has is a Cargo question; running them is one loop.
 //!
 //! Use it wherever a VM needs host functions: emit-time host-fn validation,
 //! eval/mini-VMs, and test harnesses.
 
-use vybe_bytecode::VM;
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::VM;
+use vybe_runtime::capabilities::Capabilities;
 
 /// Register every linked plugin onto `vm` via the one loop, gated by `caps`.
 ///
@@ -18,7 +18,7 @@ use vybe_bytecode::capabilities::Capabilities;
 /// `finalize` registers its runtime types (ECMA globals + TypeRegistry
 /// vtables), in the framework's two-phase pass.
 pub fn register_platforms(vm: &mut VM, caps: &Capabilities) {
-    vybe_bytecode::init_all_registered(vm, caps);
+    vybe_runtime::init_all_registered(vm, caps);
 }
 
 /// [`register_platforms`] with every capability granted, plus the `vybe:gui`
@@ -37,13 +37,13 @@ pub fn register_platforms_all(vm: &mut VM) {
 /// harnesses that capture output do:
 /// [`init_platforms`] → override host fns → [`finalize_platforms`].
 pub fn init_platforms(vm: &mut VM) {
-    vybe_bytecode::init_registered_plugins(vm, &Capabilities::all());
+    vybe_runtime::init_registered_plugins(vm, &Capabilities::all());
 }
 
 /// Phase 2 only — every plugin's `Plugin::finalize` (ECMA globals +
 /// TypeRegistry vtables). Pair with [`init_platforms`].
 pub fn finalize_platforms(vm: &mut VM) {
-    vybe_bytecode::finalize_registered_plugins(vm, &Capabilities::all());
+    vybe_runtime::finalize_registered_plugins(vm, &Capabilities::all());
 }
 
 // The `vybe:gui` no-op stubs are installed by the `vybe` plugin itself when no

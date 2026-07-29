@@ -16,9 +16,9 @@
 //!   - In test context file descriptors are redirected — isatty(0/1/2) returns false.
 //!   - Out-of-range or non-numeric fds must return false, not throw.
 
-use vybe_bytecode::value::Value;
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::Value;
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn call_tty(name: &str, args: Vec<Value>) -> Value {

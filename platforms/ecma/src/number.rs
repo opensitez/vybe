@@ -15,15 +15,15 @@
 //! has the full ECMA-262 numeric surface.
 
 use std::sync::{Arc, Mutex, OnceLock};
-use vybe_bytecode::value::Object;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::Object;
+use vybe_runtime::{HostContext, VM, Value};
 
 static NUMBER_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
 pub fn shared_number_prototype() -> Value {
     Value::Object(
         NUMBER_PROTOTYPE
-            .get_or_init(|| vybe_bytecode::heap::alloc(Object::new()))
+            .get_or_init(|| vybe_runtime::heap::alloc(Object::new()))
             .clone(),
     )
 }
@@ -35,7 +35,7 @@ pub fn boxed_number(value: Value) -> Value {
     obj.properties.insert("__primitive".into(), value);
     obj.properties
         .insert("__proto__".into(), shared_number_prototype());
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn f_arg(args: &[Value], idx: usize) -> Option<f64> {
@@ -146,7 +146,7 @@ fn coerce_to_number(value: &Value) -> f64 {
         Value::Object(obj) => {
             let o = obj.lock().unwrap();
             match &o.kind {
-                vybe_bytecode::value::ObjectKind::Array(elems) => {
+                vybe_runtime::value::ObjectKind::Array(elems) => {
                     let joined: Vec<String> = elems
                         .iter()
                         .map(|v| match v {

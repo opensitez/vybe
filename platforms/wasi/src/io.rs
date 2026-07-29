@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use vybe_bytecode::value::Object;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::Object;
+use vybe_runtime::{HostContext, VM, Value};
 
 use super::filesystem as fs;
 use crate::sockets as skt;
@@ -72,7 +72,7 @@ fn read_file_stream(id: u32, max: usize) -> Value {
                     buf.truncate(n);
                     *position += n as u64;
                     let elems: Vec<Value> = buf.into_iter().map(|b| Value::I32(b as i32)).collect();
-                    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elems)))
+                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems)))
                 }
                 Err(e) => fs::err(fs::map_io_error(&e)),
             }
@@ -85,7 +85,7 @@ fn read_file_stream(id: u32, max: usize) -> Value {
                 .map(|b| Value::I32(*b as i32))
                 .collect();
             *position += cap;
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elems)))
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems)))
         }
     }
 }
@@ -135,7 +135,7 @@ fn make_ready_pollable() -> Value {
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("Pollable")));
     obj.properties.insert("__ready".into(), Value::Bool(true));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn read_bytes_from_stream(stream: &Value, len: usize, blocking: bool) -> Vec<u8> {

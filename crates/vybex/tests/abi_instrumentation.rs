@@ -10,9 +10,9 @@
 //! These are not pass/fail tests — they always pass; they print.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
-fn compile_python(src: &str) -> Vec<vybe_bytecode::Chunk> {
+fn compile_python(src: &str) -> Vec<vybe_runtime::Chunk> {
     let module = vybe_language_python::parse(src).expect("parse");
     let profile = vybe_compiler::profile::parse_profile(vybe_language_python::profile_source())
         .expect("profile");
@@ -21,7 +21,7 @@ fn compile_python(src: &str) -> Vec<vybe_bytecode::Chunk> {
         .expect("compile")
 }
 
-fn compile_js(src: &str) -> Vec<vybe_bytecode::Chunk> {
+fn compile_js(src: &str) -> Vec<vybe_runtime::Chunk> {
     let module = vybe_language_js::parse(src).expect("parse");
     let profile =
         vybe_compiler::profile::parse_profile(vybe_language_js::profile_source()).expect("profile");
@@ -30,7 +30,7 @@ fn compile_js(src: &str) -> Vec<vybe_bytecode::Chunk> {
         .expect("compile")
 }
 
-fn compile_vb(src: &str) -> Vec<vybe_bytecode::Chunk> {
+fn compile_vb(src: &str) -> Vec<vybe_runtime::Chunk> {
     let module = vybe_language_vb::parse(src).expect("parse");
     let profile =
         vybe_compiler::profile::parse_profile(vybe_language_vb::profile_source()).expect("profile");
@@ -39,7 +39,7 @@ fn compile_vb(src: &str) -> Vec<vybe_bytecode::Chunk> {
         .expect("compile")
 }
 
-fn run_with_recorder(chunks: Vec<vybe_bytecode::Chunk>) -> (Vec<String>, String) {
+fn run_with_recorder(chunks: Vec<vybe_runtime::Chunk>) -> (Vec<String>, String) {
     let chunk_names: Vec<String> = chunks.iter().map(|c| c.name.clone()).collect();
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));

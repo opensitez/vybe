@@ -2,8 +2,8 @@
 //! round-trip read/write, and opcode byte-value compliance per the spec.
 //! Binary I/O compliance — not execution semantics (those live in per-opcode files).
 
-use vybe_bytecode::value::Value;
-use vybe_bytecode::{Chunk, Op, VM};
+use vybe_runtime::value::Value;
+use vybe_runtime::{Chunk, Op, VM};
 use vybe_platform_wasm as wasm;
 
 // ── WASM binary magic and version ─────────────────────────────────────────
@@ -1390,7 +1390,7 @@ fn threads_opcodes_have_spec_byte_values() {
 #[test]
 fn roundtrip_multiple_functions() {
     use std::sync::Arc;
-    use vybe_bytecode::chunk::{ConstExpr, GlobalInit};
+    use vybe_runtime::chunk::{ConstExpr, GlobalInit};
 
     let mut add_fn = Chunk::new("add");
     add_fn.arity = 2;

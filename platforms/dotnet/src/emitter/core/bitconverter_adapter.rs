@@ -1,5 +1,5 @@
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::Chunk;
+use vybe_runtime::opcode::Op;
+use vybe_runtime::Chunk;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 
 fn stash_two(chunk: &mut Chunk, line: u32) -> (u16, u16) {

@@ -8,14 +8,14 @@
 //!
 //! Symbol equality semantics in Vybe: `Value::Symbol(Arc<str>)` — two
 //! symbols are `===` iff they're cloned from the same `Arc<str>` (per
-//! the `PartialEq` impl in `vybe_bytecode/src/value.rs`). Each
+//! the `PartialEq` impl in `vybe_runtime/src/value.rs`). Each
 //! `Symbol(desc)` call mints a fresh `Arc<str>` so identity is unique.
 //! `Symbol.for(key)` interns through a process-global registry so
 //! repeat lookups return the same `Arc`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
 // Well-known symbols — created once at register time, exposed through
 // the namespace registry (see `crate::namespaces::value`).

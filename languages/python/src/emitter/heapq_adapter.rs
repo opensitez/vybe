@@ -3,7 +3,7 @@
 //! The heap algorithm lives in `vybe_compiler::primitives::heap` so Python, Go, Java, and
 //! C# priority-queue surfaces can converge on the same bytecode behavior.
 
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 pub fn emit_heapify(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     vybe_compiler::primitives::heap::emit_heapify(chunks, current, argc, line);

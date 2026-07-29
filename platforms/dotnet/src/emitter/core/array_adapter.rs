@@ -11,8 +11,8 @@
 //!
 //! Pure WASM, zero `vybe:types` involvement.
 
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::Chunk;
+use vybe_runtime::opcode::Op;
+use vybe_runtime::Chunk;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 
 fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
@@ -836,7 +836,7 @@ pub fn emit_array_create_instance(chunks: &mut [Chunk], current: usize, argc: u8
 /// the observable singleton behavior for the supported surface.
 pub fn emit_array_empty(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let name = chunk.add_constant(vybe_bytecode::Value::String(
+    let name = chunk.add_constant(vybe_runtime::Value::String(
         std::sync::Arc::from("__dotnet_array_empty"),
     ));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, line);

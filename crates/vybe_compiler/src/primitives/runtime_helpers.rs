@@ -24,8 +24,8 @@
 
 use crate::primitives::instructions::core_wasm;
 use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 fn emit_typeof(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("ecma:value", "typeof");
@@ -276,7 +276,7 @@ pub(crate) fn build_polyfill(
 /// safely advance past variable-length opcodes — same logic the
 /// disassembler uses, so it stays aligned automatically.
 fn relocate_call_import_operands(chunk: &mut Chunk, remap: &[u16]) {
-    use vybe_bytecode::opcode::Op;
+    use vybe_runtime::opcode::Op;
     let mut offset = 0;
     while offset + 3 < chunk.code.len() {
         let group = ((chunk.code[offset] as u16) << 8) | chunk.code[offset + 1] as u16;
@@ -293,7 +293,7 @@ fn relocate_call_import_operands(chunk: &mut Chunk, remap: &[u16]) {
         // Rewrite the import index for CALL_IMPORT specifically — other
         // U16_U8 opcodes (if any) don't index into the imports table.
         // Vybe stores u16 operands BIG-endian (see `Chunk::read_u16` in
-        // `vybe_bytecode/src/chunk.rs:314`).
+        // `vybe_runtime/src/chunk.rs:314`).
         if op == Op::CALL_IMPORT {
             let hi = chunk.code[operand_start] as u16;
             let lo = chunk.code[operand_start + 1] as u16;
@@ -445,7 +445,7 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     exports.push("__stdlib_hash");
     chunks.push(build_vb_format(imports));
     exports.push("__stdlib_vb_format");
-    chunks.push(vybe_bytecode::registry::platform_numeric_format_helper()
+    chunks.push(vybe_runtime::registry::platform_numeric_format_helper()
         .expect("no platform registered a numeric-format helper")(
         imports
     ));
@@ -618,7 +618,7 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_hash" => build_hash(imports),
         "__stdlib_vb_format" => build_vb_format(imports),
         "__stdlib_dotnet_numeric_format" => {
-            vybe_bytecode::registry::platform_numeric_format_helper()
+            vybe_runtime::registry::platform_numeric_format_helper()
                 .expect("no platform registered a numeric-format helper")(imports)
         }
         "__stdlib_format_map" => build_format_map(imports),
@@ -1112,8 +1112,8 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     let step = 5;
     let counter = 6;
     let saved_this = 7;
-    let js_this = c.add_constant(vybe_bytecode::Value::String(Arc::from("__js_this")));
-    let async_iter_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("asyncIterator")));
+    let js_this = c.add_constant(vybe_runtime::Value::String(Arc::from("__js_this")));
+    let async_iter_key = c.add_constant(vybe_runtime::Value::String(Arc::from("asyncIterator")));
     // NOT yet on the Iterator slot. Swapping this single key for
     // `__vybe_slot_5` cost one python `class` test (246/310 → 245/311): the
     // helper probes ONE alternate key, and the slot and the spelling are not
@@ -1122,12 +1122,12 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     // then spelling) rather than a substitution. The slot itself is verified
     // stamped and callable: `getattr(r, "__vybe_slot_5")()` returns a working
     // iterator. See flexclassplan.md §2g.
-    let iter_slot_key = c.add_constant(vybe_bytecode::Value::String(Arc::from(
+    let iter_slot_key = c.add_constant(vybe_runtime::Value::String(Arc::from(
         vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Iterator).as_str(),
     )));
-    let iter_alt_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("__iter__")));
-    let done_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("done")));
-    let value_key = c.add_constant(vybe_bytecode::Value::String(Arc::from("value")));
+    let iter_alt_key = c.add_constant(vybe_runtime::Value::String(Arc::from("__iter__")));
+    let done_key = c.add_constant(vybe_runtime::Value::String(Arc::from("done")));
+    let value_key = c.add_constant(vybe_runtime::Value::String(Arc::from("value")));
 
     // Single function-level outer block as the structured-control-flow
     // exit label. Every "early return" sets `result` and `br exit` to

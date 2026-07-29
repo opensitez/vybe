@@ -5,16 +5,16 @@
 //!
 //! Reference: ECMA-262 §22.2 RegExp + §22.1.3.{13,14,16,18,19,20}.
 
-use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::{Object, ObjectKind, Value};
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn invoke(name: &str, args: Vec<Value>) -> Value {
     invoke_result(name, args).expect("VM run failed")
 }
 
-fn invoke_result(name: &str, args: Vec<Value>) -> Result<Value, vybe_bytecode::VMError> {
+fn invoke_result(name: &str, args: Vec<Value>) -> Result<Value, vybe_runtime::VMError> {
     let (result, _) = invoke_result_with_exception(name, args);
     result
 }
@@ -22,7 +22,7 @@ fn invoke_result(name: &str, args: Vec<Value>) -> Result<Value, vybe_bytecode::V
 fn invoke_result_with_exception(
     name: &str,
     args: Vec<Value>,
-) -> (Result<Value, vybe_bytecode::VMError>, Option<Value>) {
+) -> (Result<Value, vybe_runtime::VMError>, Option<Value>) {
     let mut chunk = Chunk::new("<ecma-regexp-test>");
     let import_idx = chunk.add_import("ecma:regexp", name);
     let argc = args.len() as u8;

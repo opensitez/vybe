@@ -1,5 +1,5 @@
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 
 use vybe_compiler::primitives::{collections, dict, ops, strings, tuples};
@@ -291,7 +291,7 @@ pub fn emit_move_to_end(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let d = base;
     let key = base + 1;
     let keys_k =
-        chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__keys")));
     chunks[current].emit_op_u16(Op::LOCAL_GET, d, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_k, line);
     let keys = chunks[current].alloc_scratch(1);
@@ -381,7 +381,7 @@ pub fn emit_popitem(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     // trim __keys when present
     let keys_k =
-        chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__keys")));
     chunks[current].emit_op_u16(Op::LOCAL_GET, d, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, keys_k, line);
     let kk = chunks[current].alloc_scratch(1);
@@ -428,7 +428,7 @@ pub fn emit_counter_count(chunks: &mut [Chunk], current: usize, line: u32) {
     let d = base;
     let it = base + 1;
     let keys_k =
-        chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__keys")));
 
     // arr = spread(iterable)
     chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
@@ -720,7 +720,7 @@ pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_else(line);
 
     // object → user `__contains__(self, item)` if present, else own-key test
-    let contains_key = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(
+    let contains_key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
         "__contains__",
     )));
     let contains_method = chunk.alloc_scratch(1);
@@ -800,7 +800,7 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 1, line);
     let recv = base;
     let keys_key =
-        chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__keys")));
 
     // Map-backed dict → shared `ecma:map.clear`.
     emit_is_map(chunks, current, recv, line);
@@ -869,13 +869,13 @@ pub fn emit_frozenset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     // make repr skip the set branch and render `frozenset()` as "".
     c.emit_dup(line);
     c.emit_string_const("Set", line);
-    let tk = c.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__type")));
+    let tk = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__type")));
     c.emit_op_u16(Op::STRUCT_SET, tk, line);
     c.emit_op(Op::DROP, line);
     // Stamp `__frozenset = true` so repr renders `frozenset({...})`.
     c.emit_dup(line);
     core_wasm::bool_const(c, line, true);
-    let k = c.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__frozenset")));
+    let k = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__frozenset")));
     c.emit_op_u16(Op::STRUCT_SET, k, line);
     c.emit_op(Op::DROP, line);
 }
@@ -952,7 +952,7 @@ pub fn emit_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 1, line);
     let recv = base;
     let keys_key =
-        chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__keys")));
 
     // Map-backed dict → new Map from its entries (shallow copy).
     emit_is_map(chunks, current, recv, line);
@@ -1001,7 +1001,7 @@ pub fn emit_update(chunks: &mut [Chunk], current: usize, line: u32) {
     let recv = base;
     let src = base + 1;
     let keys_key =
-        chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("__keys")));
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__keys")));
 
     // A hashlib/hmac digest object also has `.update(data)` — feed the host
     // digest instead of merging keys. Detected by `__algo`, which only
@@ -1203,11 +1203,11 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = stash_args(chunks, current, 1, line);
     let recv = base;
     let size_key =
-        chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("size")));
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("size")));
 
     // User-defined `__len__` → call it with the receiver. (Cross-language:
     // bound alongside `__get_length`/`__get_count`.)
-    let len_key = chunks[current].add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(
+    let len_key = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
         "__len__",
     )));
     let len_method = chunks[current].alloc_scratch(1);

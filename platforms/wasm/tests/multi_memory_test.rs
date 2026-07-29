@@ -1,5 +1,5 @@
 /// Tests for multi-memory support.
-use vybe_bytecode::{Chunk, Op, VM, Value};
+use vybe_runtime::{Chunk, Op, VM, Value};
 use vybe_platform_wasm as wasm;
 
 fn write_leb_u32(out: &mut Vec<u8>, mut value: u32) {

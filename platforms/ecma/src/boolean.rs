@@ -12,15 +12,15 @@
 //! dynamic-dispatch fallback.
 
 use std::sync::{Arc, Mutex, OnceLock};
-use vybe_bytecode::value::Object;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::Object;
+use vybe_runtime::{HostContext, VM, Value};
 
 static BOOLEAN_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
 pub fn shared_boolean_prototype() -> Value {
     Value::Object(
         BOOLEAN_PROTOTYPE
-            .get_or_init(|| vybe_bytecode::heap::alloc(Object::new()))
+            .get_or_init(|| vybe_runtime::heap::alloc(Object::new()))
             .clone(),
     )
 }
@@ -33,7 +33,7 @@ pub fn boxed_boolean(value: bool) -> Value {
         .insert("__primitive".into(), Value::Bool(value));
     obj.properties
         .insert("__proto__".into(), shared_boolean_prototype());
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 pub fn register(vm: &mut VM) {

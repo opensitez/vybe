@@ -45,8 +45,8 @@
 //! [`wasi-random`/random.wit]: proposals/WASI/proposals/random/wit/random.wit
 
 use std::sync::Arc;
-use vybe_bytecode::value::Object;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::Object;
+use vybe_runtime::{HostContext, VM, Value};
 
 /// OS entropy for the CSPRNG-grade interface. `None` when the platform has
 /// no entropy source — callers must surface that rather than silently
@@ -98,7 +98,7 @@ fn next_f64() -> f64 {
 
 fn bytes_to_list(bytes: &[u8]) -> Value {
     let values: Vec<Value> = bytes.iter().map(|b| Value::F64(*b as f64)).collect();
-    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(values)))
+    Value::Object(vybe_runtime::heap::alloc(Object::new_array(values)))
 }
 
 /// Insecure `list<u8>` from the xorshift stream.
@@ -178,7 +178,7 @@ pub fn register(vm: &mut VM) {
             let a = next_u64();
             let b = next_u64();
             let pair = vec![Value::F64(a as f64), Value::F64(b as f64)];
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(pair)))
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(pair)))
         }),
     );
 

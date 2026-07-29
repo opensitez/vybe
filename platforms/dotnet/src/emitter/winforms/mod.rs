@@ -5,7 +5,7 @@ pub mod imports;
 pub mod namespaces;
 pub mod types;
 
-use vybe_bytecode::component_model::ComponentDescriptor;
+use vybe_runtime::component_model::ComponentDescriptor;
 
 #[path = "../classes/mod.rs"]
 pub mod classes;

@@ -21,15 +21,15 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 use unicode_normalization::UnicodeNormalization;
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{HostContext, VM, Value};
 
 static STRING_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 
 pub fn shared_string_prototype() -> Value {
     Value::Object(
         STRING_PROTOTYPE
-            .get_or_init(|| vybe_bytecode::heap::alloc(Object::new()))
+            .get_or_init(|| vybe_runtime::heap::alloc(Object::new()))
             .clone(),
     )
 }
@@ -53,18 +53,18 @@ pub fn boxed_string(text: Arc<str>) -> Value {
     }
     obj.properties.insert(
         "__keys".into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(keys))),
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(keys))),
     );
     obj.properties.insert(
         "__nonenum".into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
             Value::String(Arc::from("length")),
             Value::String(Arc::from("toString")),
             Value::String(Arc::from("valueOf")),
         ]))),
     );
 
-    let arc = vybe_bytecode::heap::alloc(obj);
+    let arc = vybe_runtime::heap::alloc(obj);
     if let Value::Object(proto) = shared_string_prototype() {
         let proto = proto.lock().unwrap();
         for name in ["toString", "valueOf"] {
@@ -79,7 +79,7 @@ pub fn boxed_string(text: Arc<str>) -> Value {
     Value::Object(arc)
 }
 
-fn to_string_primitive(ctx: &mut vybe_bytecode::HostContext, value: Value) -> Arc<str> {
+fn to_string_primitive(ctx: &mut vybe_runtime::HostContext, value: Value) -> Arc<str> {
     if let Value::Object(obj) = &value {
         let function_name = {
             let o = obj.lock().unwrap();
@@ -923,7 +923,7 @@ fn register_split(vm: &mut VM) {
                 Some(n) => parts.into_iter().take(n).collect(),
                 None => parts,
             };
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(truncated)))
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(truncated)))
         }),
     );
 }
@@ -1404,7 +1404,7 @@ fn register_base64(vm: &mut VM) {
                             });
                         }
                     }
-                    return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(arr_vals)));
+                    return Value::Object(vybe_runtime::heap::alloc(Object::new_array(arr_vals)));
                 }
             }
             Value::Null

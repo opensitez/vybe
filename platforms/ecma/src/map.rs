@@ -8,12 +8,12 @@
 //! collapse to the same key regardless of `I32` / `I64` / `F64` source).
 //!
 //! Marshaling + error-handling contract:
-//! `crates/vybe_bytecode/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
+//! `crates/vybe_runtime/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
 
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{Object, ObjectKind, Value};
 
 static MAP_ITERATOR_IDX: OnceLock<usize> = OnceLock::new();
 
@@ -43,11 +43,11 @@ fn bound_iterator_method(
         .insert("name".into(), Value::String(Arc::from(name)));
     fn_obj.properties.insert(
         "__bound_args".into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
             Value::Object(receiver.clone()),
         ]))),
     );
-    Value::Object(vybe_bytecode::heap::alloc(fn_obj))
+    Value::Object(vybe_runtime::heap::alloc(fn_obj))
 }
 
 fn new_map_value() -> Value {
@@ -59,7 +59,7 @@ fn new_map_value() -> Value {
     // it, JS-shape `m.set(k,v)` would dereference a missing property.
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("Map")));
-    let map = vybe_bytecode::heap::alloc(obj);
+    let map = vybe_runtime::heap::alloc(obj);
     if let Some(idx) = MAP_ITERATOR_IDX.get() {
         map.lock().unwrap().properties.insert(
             "iterator".into(),
@@ -126,13 +126,13 @@ fn is_callable_value(value: &Value) -> bool {
     }
 }
 
-fn throw_type_error(ctx: &mut vybe_bytecode::HostContext, message: &str) -> Value {
+fn throw_type_error(ctx: &mut vybe_runtime::HostContext, message: &str) -> Value {
     ctx.throw_value(crate::error::new_error(ctx, "TypeError", message));
     Value::Undefined
 }
 
 fn collect_groupby_items(
-    ctx: &mut vybe_bytecode::HostContext,
+    ctx: &mut vybe_runtime::HostContext,
     items: &Value,
     message: &str,
 ) -> Option<Vec<Value>> {
@@ -397,7 +397,7 @@ pub fn register(vm: &mut VM) {
                     let pairs: Vec<Value> = im
                         .iter()
                         .map(|(k, v)| {
-                            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
                                 k.clone(),
                                 v.clone(),
                             ])))
@@ -478,7 +478,7 @@ pub fn register(vm: &mut VM) {
                     let mut mo = outobj.lock().unwrap();
                     if let ObjectKind::Map(ref mut im) = mo.kind {
                         let entry = im.entry(key).or_insert_with(|| {
-                            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))
+                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))
                         });
                         if let Value::Object(group) = entry {
                             let mut g = group.lock().unwrap();

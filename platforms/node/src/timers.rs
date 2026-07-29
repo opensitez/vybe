@@ -7,8 +7,8 @@
 //! no-ops for the clear* functions.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{Object, Value};
 
 static NEXT_TIMER_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -21,7 +21,7 @@ fn make_handle() -> Value {
     o.properties.insert("unref".into(), Value::Undefined);
     o.properties.insert("hasRef".into(), Value::Undefined);
     o.properties.insert("refresh".into(), Value::Undefined);
-    Value::Object(vybe_bytecode::heap::alloc(o))
+    Value::Object(vybe_runtime::heap::alloc(o))
 }
 
 pub fn register(vm: &mut VM) {

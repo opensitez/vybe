@@ -880,8 +880,8 @@ impl Compiler {
 use crate::primitives::collections;
 use std::sync::Arc;
 use vybe_ast::{ArrayElement, ExprKind, Expression, Literal};
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 // Shared reflection substrate for language adapters.
 //
 // This module is intentionally not "JavaScript reflection". Vybe's runtime

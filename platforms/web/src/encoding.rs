@@ -14,8 +14,8 @@
 
 use std::str;
 use std::sync::Arc;
-use vybe_bytecode::value::{Object, ObjectKind, TypedElemKind};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::{Object, ObjectKind, TypedElemKind};
+use vybe_runtime::{HostContext, VM, Value};
 
 fn make_uint8_array(bytes: Vec<u8>) -> Value {
     let array = vybe_platform_ecma::typedarray::new_typed_array(TypedElemKind::U8, bytes.len());
@@ -129,7 +129,7 @@ pub fn register(vm: &mut VM) {
                 .insert("__type".into(), Value::String(Arc::from("TextEncoder")));
             obj.properties
                 .insert("encoding".into(), Value::String(Arc::from("utf-8")));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -183,7 +183,7 @@ pub fn register(vm: &mut VM) {
             result
                 .properties
                 .insert("written".into(), Value::F64(written as f64));
-            Value::Object(vybe_bytecode::heap::alloc(result))
+            Value::Object(vybe_runtime::heap::alloc(result))
         }),
     );
 
@@ -215,7 +215,7 @@ pub fn register(vm: &mut VM) {
                 "ignoreBOM".into(),
                 Value::Bool(option_bool(args.get(1), "ignoreBOM")),
             );
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 

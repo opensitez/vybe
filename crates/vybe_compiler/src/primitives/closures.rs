@@ -8,8 +8,8 @@
 //! The name→index mapping is compile-time only. At runtime, the env
 //! is a plain array: env[0] = first captured var, env[1] = second, etc.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// Read a captured variable from the environment array by index.
 pub fn emit_env_get(chunk: &mut Chunk, env_slot: u16, index: u16, line: u32) {

@@ -3,7 +3,7 @@
 //! Semantics follow the exception-handling proposal (final/exnref phase):
 //! tags are entities, `throw <tagidx>` packages the payload with its tag,
 //! catch clauses match by TAG IDENTITY only. Full semantic coverage lives in
-//! `vybe_bytecode/tests/wasm_eh_compliance_test.rs`; this file covers the
+//! `vybe_runtime/tests/wasm_eh_compliance_test.rs`; this file covers the
 //! platform layer: binary decode of the EH ops plus the internal encoding
 //! round-trip.
 //!
@@ -13,8 +13,8 @@
 //!   catch_ip = ip-after-this-clause + offset (big-endian u16).
 
 use std::sync::Arc;
-use vybe_bytecode::value::Value;
-use vybe_bytecode::{Chunk, Op, VM};
+use vybe_runtime::value::Value;
+use vybe_runtime::{Chunk, Op, VM};
 use vybe_platform_wasm as wasm;
 
 const KIND_CATCH: u8 = 0;

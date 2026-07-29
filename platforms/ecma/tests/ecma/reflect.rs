@@ -6,9 +6,9 @@
 //! semantics differ from the equivalent Object methods.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, Value};
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::{Object, Value};
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn invoke(name: &str, args: Vec<Value>) -> Value {
@@ -126,7 +126,7 @@ fn own_keys_returns_array_of_string_keys() {
 
 #[test]
 fn own_keys_empty_object_returns_empty_array() {
-    use vybe_bytecode::value::ObjectKind;
+    use vybe_runtime::value::ObjectKind;
     let o = obj(vec![]);
     let keys = invoke("ownKeys", vec![o]);
     if let Value::Object(arc) = keys {
@@ -242,7 +242,7 @@ fn apply_invokes_target_and_returns_result() {
     // ECMA-262 §28.1.1: Reflect.apply(target, thisArg, argumentsList).
     // Encode: a host callable that echoes its first arg.
     use std::sync::{Arc, Mutex};
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let fn_obj = {
         let mut o = Object::new();
         o.properties
@@ -265,7 +265,7 @@ fn apply_invokes_target_and_returns_result() {
 fn construct_produces_a_new_object_instance() {
     // ECMA-262 §28.1.2: Reflect.construct(Target, argumentsList) → new instance.
     use std::sync::{Arc, Mutex};
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let ctor = {
         let mut o = Object::new();
         o.properties

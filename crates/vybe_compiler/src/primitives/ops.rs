@@ -8,8 +8,8 @@
 //!   `Op::IF` (0x04) / `Op::ELSE` (0x05) / `Op::END` (0x0B)
 //! No flat-offset BR_IF_FALSE / BR_IF_TRUE / BR_IF_NULL custom opcodes.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 // ── helpers ────────────────────────────────────────────────────────────
 

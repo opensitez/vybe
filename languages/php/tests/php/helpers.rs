@@ -14,7 +14,7 @@
 #![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
 #[macro_export]
 macro_rules! php_cases {
@@ -116,7 +116,7 @@ fn finish_output(output: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
     result
 }
 
-fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
+fn compile_chunks(src: &str) -> Result<Vec<vybe_runtime::Chunk>, String> {
     {
         static R: std::sync::Once = std::sync::Once::new();
         R.call_once(vybe_language_php::register);
@@ -150,7 +150,7 @@ pub fn compile_ok(src: &str) {
 }
 
 /// Returns the compiled chunks, or panics with the error.
-pub fn compile(src: &str) -> Vec<vybe_bytecode::Chunk> {
+pub fn compile(src: &str) -> Vec<vybe_runtime::Chunk> {
     match compile_chunks(src) {
         Ok(c) => c,
         Err(e) => panic!("compile failed: {}", e),

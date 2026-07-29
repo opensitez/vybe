@@ -20,8 +20,8 @@
 //! `false` if the name is unknown — letting the caller fall through to its
 //! own dispatch for language-specific common ops.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use crate::primitives::threading as thread_adapter;
 use crate::primitives::{collections, dict, heap, object, ops, reflection, strings, threading, xml};

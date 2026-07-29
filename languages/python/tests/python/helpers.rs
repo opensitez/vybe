@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
 #[macro_export]
 macro_rules! runtime_case {

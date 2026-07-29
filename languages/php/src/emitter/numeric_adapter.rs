@@ -12,8 +12,8 @@
 //! `ecma:number.parseInt` plus string opcodes.
 
 use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)

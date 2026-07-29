@@ -1,7 +1,7 @@
 //! Namespace RESOLUTION — the compiler's query surface over the registry.
 //!
 //! The registry itself (types, storage, `register_namespace_tree`, the node
-//! constructors) lives in `vybe_bytecode::namespaces`, the crate every writer
+//! constructors) lives in `vybe_runtime::namespaces`, the crate every writer
 //! already depends on. Resolution is compiler behaviour and lives here; the
 //! POLICY around it — ambient roots, alias handling — is in
 //! `crate::primitives::resolver`.
@@ -9,11 +9,11 @@
 //! Verified when this split was made: platforms and languages only ever WRITE.
 //! Neither calls `resolve_path`.
 
-use vybe_bytecode::Value;
+use vybe_runtime::Value;
 // Re-exported so `crate::primitives::namespaces::{CtorSpec, FieldGui, …}` keeps
 // resolving for the compiler sites that consume the resolved shapes.
-pub use vybe_bytecode::namespaces::{CtorSpec, FieldGui, NamespaceNode, Path, Subtree};
-use vybe_bytecode::namespaces::{mount_host_exports, registry_read};
+pub use vybe_runtime::namespaces::{CtorSpec, FieldGui, NamespaceNode, Path, Subtree};
+use vybe_runtime::namespaces::{mount_host_exports, registry_read};
 
 use super::*;
 
@@ -228,7 +228,7 @@ fn terminal(
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    use vybe_bytecode::namespaces::*;
+    use vybe_runtime::namespaces::*;
 
     // The registry is process-global; serialize tests that touch it.
     static LOCK: Mutex<()> = Mutex::new(());

@@ -23,9 +23,9 @@
 //!   - `createSign` / `createVerify` full round-trip (needs key objects)
 
 use std::sync::Arc;
-use vybe_bytecode::value::{ObjectKind, Value};
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::{ObjectKind, Value};
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn call_crypto(name: &str, args: Vec<Value>) -> Value {
@@ -818,7 +818,7 @@ fn get_random_values_fills_typed_array() {
     // getRandomValues fills a TypedArray in place and returns it.
     // We use an array of zeros as a proxy typed array.
     use std::collections::HashMap;
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let typed = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(Object {
         kind: ObjectKind::Array(vec![Value::I32(0); 8]),
         properties: HashMap::new(),
@@ -905,7 +905,7 @@ fn subtle_has_import_export_key_methods() {
 
 #[test]
 fn generate_key_pair_sync_rsa_returns_object_pair() {
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let opts = Value::Object(std::sync::Arc::new(std::sync::Mutex::new({
         let mut o = Object::new();
         o.properties

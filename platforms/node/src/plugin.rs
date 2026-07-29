@@ -1,6 +1,6 @@
-//! The node platform as a `vybe_bytecode::Plugin` — one plugin, same type as all
+//! The node platform as a `vybe_runtime::Plugin` — one plugin, same type as all
 //! the others. `init` registers the `node:*` host functions, gating each
-//! surface by capability via [`vybe_bytecode::Framework::granted`]:
+//! surface by capability via [`vybe_runtime::Framework::granted`]:
 //! - `node:os`/`path`/`process` — always-on (read-only / pure).
 //! - `node:fs` — FileRead ∨ FileWrite.
 //! - `node:child_process` — Process.
@@ -9,13 +9,13 @@
 /// The node platform plugin.
 pub struct Plugin;
 
-impl vybe_bytecode::Plugin for Plugin {
+impl vybe_runtime::Plugin for Plugin {
     fn name(&self) -> &'static str {
         "node"
     }
 
-    fn init(&self, fw: &mut vybe_bytecode::Framework<'_>) {
-        use vybe_bytecode::capabilities::Capability;
+    fn init(&self, fw: &mut vybe_runtime::Framework<'_>) {
+        use vybe_runtime::capabilities::Capability;
 
         let files = fw.granted(Capability::FileRead) || fw.granted(Capability::FileWrite);
         let process = fw.granted(Capability::Process);
@@ -41,4 +41,4 @@ impl vybe_bytecode::Plugin for Plugin {
 
 // Link-time registration: this crate submits its plugin to the one registry.
 // Nothing lists plugins in code — linking this crate IS the registration.
-vybe_bytecode::register_plugin!(Plugin);
+vybe_runtime::register_plugin!(Plugin);

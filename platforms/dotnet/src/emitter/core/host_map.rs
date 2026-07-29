@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use super::super::host_map::DotnetStaticMethodMapping;
-use vybe_bytecode::component_model::MethodBody;
+use vybe_runtime::component_model::MethodBody;
 
 static STATIC_METHOD_MAPPINGS: LazyLock<Vec<DotnetStaticMethodMapping>> = LazyLock::new(|| {
     super::component_classes::class_exports()

@@ -7,8 +7,8 @@
 //! - `strings::emit_*(chunk, line)` for string helpers (single chunk)
 //! - `core_wasm::*(&mut chunk, line, ...)` for raw WASM ops
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_compiler::primitives::{collections, strings};
 

@@ -4,8 +4,8 @@
 //! (`wasi:http@0.3.0-rc-2025-09-16`). Resource funcs use the Component Model
 //! `[method]<resource>.<name>` / `[static]<resource>.<name>` naming.
 
-use vybe_bytecode::VM;
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::VM;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn registered() -> VM {

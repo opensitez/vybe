@@ -23,7 +23,7 @@
 //! The VM stores SIMD vectors as `Value::V128([u8; 16])`. All SIMD
 //! opcodes are implemented in `vm.rs` via the `simd_helpers` group.
 
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 pub const IMPORTS: &[(&str, &str)] = &[];
 pub const GLOBAL_IMPORTS: &[(&str, &str)] = &[];

@@ -3,8 +3,8 @@
 //! Reference: <https://nodejs.org/api/net.html>.
 
 use std::sync::Arc;
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{Object, Value};
 
 fn ee_methods() -> &'static [&'static str] {
     &[
@@ -54,7 +54,7 @@ fn make_socket() -> Value {
     for m in ee_methods() {
         o.properties.insert((*m).into(), Value::Undefined);
     }
-    Value::Object(vybe_bytecode::heap::alloc(o))
+    Value::Object(vybe_runtime::heap::alloc(o))
 }
 
 fn make_server() -> Value {
@@ -76,7 +76,7 @@ fn make_server() -> Value {
     for m in ee_methods() {
         o.properties.insert((*m).into(), Value::Undefined);
     }
-    Value::Object(vybe_bytecode::heap::alloc(o))
+    Value::Object(vybe_runtime::heap::alloc(o))
 }
 
 fn is_ipv4(s: &str) -> bool {
@@ -154,12 +154,12 @@ pub fn register(vm: &mut VM) {
         "BlockList",
         Box::new(|_ctx, _args| {
             let mut o = Object::new();
-            let rules = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())));
+            let rules = Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())));
             o.properties.insert("rules".into(), rules);
             for m in ["addAddress", "addRange", "addSubnet", "check"] {
                 o.properties.insert(m.into(), Value::Undefined);
             }
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -192,14 +192,14 @@ pub fn register(vm: &mut VM) {
             o.properties.insert("port".into(), Value::I32(port));
             o.properties
                 .insert("family".into(), Value::String(Arc::from(family.as_str())));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
     vm.register_host_fn(
         "node:net",
         "NetConnectOpts",
-        Box::new(|_ctx, _args| Value::Object(vybe_bytecode::heap::alloc(Object::new()))),
+        Box::new(|_ctx, _args| Value::Object(vybe_runtime::heap::alloc(Object::new()))),
     );
 
     // Top-level addAddress / check forwarded to BlockList instance (first arg)

@@ -19,8 +19,8 @@
 //! GuiState — they just produce dotnet `Object`s with the right shape.
 
 use std::sync::Arc;
-use vybe_bytecode::value::Object;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::Object;
+use vybe_runtime::{HostContext, VM, Value};
 
 pub fn register(vm: &mut VM) {
     // Register Color as a global namespace with named colour constants.
@@ -70,11 +70,11 @@ pub fn register(vm: &mut VM) {
             c.properties.insert("a".into(), Value::F64(alpha as f64));
             color_obj
                 .properties
-                .insert(name.to_lowercase(), Value::Object(vybe_bytecode::heap::alloc(c)));
+                .insert(name.to_lowercase(), Value::Object(vybe_runtime::heap::alloc(c)));
         }
         vm.globals.insert(
             "color".into(),
-            Value::Object(vybe_bytecode::heap::alloc(color_obj)),
+            Value::Object(vybe_runtime::heap::alloc(color_obj)),
         );
     }
 
@@ -90,7 +90,7 @@ pub fn register(vm: &mut VM) {
                 .insert("__type".into(), Value::String(Arc::from("Point")));
             obj.properties.insert("x".into(), Value::F64(x));
             obj.properties.insert("y".into(), Value::F64(y));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -106,7 +106,7 @@ pub fn register(vm: &mut VM) {
                 .insert("__type".into(), Value::String(Arc::from("Size")));
             obj.properties.insert("width".into(), Value::F64(w));
             obj.properties.insert("height".into(), Value::F64(h));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -128,7 +128,7 @@ pub fn register(vm: &mut VM) {
             obj.properties.insert("size".into(), Value::F64(size));
             obj.properties.insert("bold".into(), Value::Bool(false));
             obj.properties.insert("italic".into(), Value::Bool(false));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -160,7 +160,7 @@ pub fn register(vm: &mut VM) {
             // actually reads.
             obj.properties.insert("X".into(), Value::F64(x));
             obj.properties.insert("Y".into(), Value::F64(y));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -179,7 +179,7 @@ pub fn register(vm: &mut VM) {
             obj.properties.insert("height".into(), Value::F64(h));
             obj.properties.insert("Width".into(), Value::F64(w));
             obj.properties.insert("Height".into(), Value::F64(h));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -196,7 +196,7 @@ pub fn register(vm: &mut VM) {
             obj.properties.insert("width".into(), Value::F64(width));
             obj.properties.insert("dashstyle".into(), Value::F64(0.0));
             obj.properties.insert("dashoffset".into(), Value::F64(0.0));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -210,7 +210,7 @@ pub fn register(vm: &mut VM) {
             obj.properties
                 .insert("__type".into(), Value::String(Arc::from("SolidBrush")));
             obj.properties.insert("color".into(), color);
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -255,7 +255,7 @@ pub fn register(vm: &mut VM) {
                 "name".into(),
                 Value::String(Arc::from(format!("#{:02X}{:02X}{:02X}", r, g, b).as_str())),
             );
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -286,7 +286,7 @@ pub fn register(vm: &mut VM) {
                 "name".into(),
                 Value::String(Arc::from(format!("#{:02X}{:02X}{:02X}", r, g, b).as_str())),
             );
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -304,7 +304,7 @@ pub fn register(vm: &mut VM) {
                 .insert("__type".into(), Value::String(Arc::from("Color")));
             obj.properties
                 .insert("name".into(), Value::String(Arc::from(name.as_str())));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -335,7 +335,7 @@ pub fn register(vm: &mut VM) {
                 "__control_name".into(),
                 Value::String(Arc::from("graphics")),
             );
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -365,7 +365,7 @@ pub fn register(vm: &mut VM) {
             obj.properties.insert("backgroundcolor".into(), bg);
             obj.properties.insert("foregroundcolor".into(), fg);
             obj.properties.insert("hatchstyle".into(), style);
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -387,7 +387,7 @@ pub fn register(vm: &mut VM) {
             obj.properties.insert("startcolor".into(), c1);
             obj.properties.insert("endcolor".into(), c2);
             obj.properties.insert("wrapmode".into(), mode);
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 }

@@ -4,8 +4,8 @@
 
 use std::process::Command;
 use std::sync::Arc;
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{VM, Value};
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{VM, Value};
 
 fn s_arg(args: &[Value], idx: usize, default: &str) -> String {
     match args.get(idx) {
@@ -52,7 +52,7 @@ fn null_stream() -> Value {
     ] {
         o.properties.insert(m.into(), Value::Undefined);
     }
-    Value::Object(vybe_bytecode::heap::alloc(o))
+    Value::Object(vybe_runtime::heap::alloc(o))
 }
 
 fn make_child_process(pid: u32) -> Value {
@@ -68,7 +68,7 @@ fn make_child_process(pid: u32) -> Value {
     let stdio = vec![null_stream(), null_stream(), null_stream()];
     o.properties.insert(
         "stdio".into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(stdio))),
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(stdio))),
     );
     for m in [
         "send",
@@ -87,7 +87,7 @@ fn make_child_process(pid: u32) -> Value {
         o.properties.insert(m.into(), Value::Undefined);
     }
     o.properties.insert("kill".into(), Value::Bool(true));
-    Value::Object(vybe_bytecode::heap::alloc(o))
+    Value::Object(vybe_runtime::heap::alloc(o))
 }
 
 pub fn register(vm: &mut VM) {
@@ -213,7 +213,7 @@ pub fn register(vm: &mut VM) {
                         o.properties.insert("status".into(), Value::Null);
                         o.properties.insert("signal".into(), Value::Null);
                         o.properties.insert("error".into(), s_val(&e.to_string()));
-                        return Value::Object(vybe_bytecode::heap::alloc(o));
+                        return Value::Object(vybe_runtime::heap::alloc(o));
                     }
                 };
                 if let Some(mut stdin) = child.stdin.take() {
@@ -243,7 +243,7 @@ pub fn register(vm: &mut VM) {
                 );
                 o.properties.insert("signal".into(), Value::Null);
                 o.properties.insert("error".into(), Value::Null);
-                return Value::Object(vybe_bytecode::heap::alloc(o));
+                return Value::Object(vybe_runtime::heap::alloc(o));
             }
 
             let mut o = Object::new();
@@ -263,7 +263,7 @@ pub fn register(vm: &mut VM) {
                     let output_arr = vec![Value::Null, s_val(&stdout), s_val(&stderr)];
                     o.properties.insert(
                         "output".into(),
-                        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(output_arr))),
+                        Value::Object(vybe_runtime::heap::alloc(Object::new_array(output_arr))),
                     );
                 }
                 Err(e) => {
@@ -276,7 +276,7 @@ pub fn register(vm: &mut VM) {
                         .insert("error".into(), s_val(&format!("{}", e)));
                 }
             }
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 

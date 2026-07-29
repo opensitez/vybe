@@ -17,8 +17,8 @@
 
 use std::sync::Once;
 
-use vybe_bytecode::namespaces::{self, NamespaceNode, Subtree};
-use vybe_bytecode::profile::{BuiltinEmit, EsmDefault, parse_profile};
+use vybe_runtime::namespaces::{self, NamespaceNode, Subtree};
+use vybe_runtime::profile::{BuiltinEmit, EsmDefault, parse_profile};
 
 /// Insert `node` at the dotted `path` under `root`, creating interior
 /// namespaces as needed. Keys are lowercase-canonical.

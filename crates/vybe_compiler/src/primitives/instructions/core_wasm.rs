@@ -1,5 +1,5 @@
-use vybe_bytecode::Value;
-use vybe_bytecode::{Chunk, Op};
+use vybe_runtime::Value;
+use vybe_runtime::{Chunk, Op};
 
 pub fn dup(c: &mut Chunk, line: u32) {
     c.emit_dup(line);

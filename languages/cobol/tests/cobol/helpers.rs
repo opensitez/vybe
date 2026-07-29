@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::Object;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::Object;
+use vybe_runtime::{HostContext, VM, Value};
 
 /// Replace real-TTY stdin with an EOF stub so COBOL `ACCEPT` never blocks a test
 /// run on the terminal. The default `get-stdin` returns a `{ fd: 0 }` handle,
@@ -20,7 +20,7 @@ fn stub_stdin(vm: &mut VM) {
     );
 }
 
-fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
+fn compile_chunks(src: &str) -> Result<Vec<vybe_runtime::Chunk>, String> {
     {
         static R: std::sync::Once = std::sync::Once::new();
         R.call_once(vybe_language_cobol::register);
@@ -40,7 +40,7 @@ pub fn compile_ok(src: &str) {
     }
 }
 
-pub fn compile(src: &str) -> Vec<vybe_bytecode::Chunk> {
+pub fn compile(src: &str) -> Vec<vybe_runtime::Chunk> {
     match compile_chunks(src) {
         Ok(c) => c,
         Err(e) => panic!("compile failed: {}", e),

@@ -1,7 +1,7 @@
 use super::super::super::class_exports::DotnetClassExport;
 use super::super::super::classes::DotnetClass;
 use super::super::exceptions::EXCEPTION_HIERARCHY;
-use vybe_bytecode::component_model::{
+use vybe_runtime::component_model::{
     ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef, PropertyDef,
 };
 

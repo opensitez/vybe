@@ -22,7 +22,7 @@
 //! to (1)–(3) above. Functionality-wise it has no runtime behaviour —
 //! the actual ESM wiring happens in the JS runtime.
 
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 /// Readiness check — returns `Ok(())` if the provided chunks will emit
 /// a module that can be loaded as an ES module. Used from tests.

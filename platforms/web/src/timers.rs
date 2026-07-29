@@ -10,7 +10,7 @@
 //! which replaces the previous dead-thread spawn approach. The event loop
 //! fires callbacks at the right time during the run_event_loop drain phase.
 
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
 pub fn register(vm: &mut VM) {
     // setTimeout(handler, delay?, ...args) → id

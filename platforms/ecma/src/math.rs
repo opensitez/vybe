@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
 pub fn register(vm: &mut VM) {
     // Core math — callable ops stay as host functions, while spec
@@ -409,7 +409,7 @@ fn collect_nums(args: &[Value]) -> Vec<f64> {
     if args.len() == 1 {
         if let Some(Value::Object(arr)) = args.first() {
             let o = arr.lock().unwrap();
-            if let vybe_bytecode::value::ObjectKind::Array(ref v) = o.kind {
+            if let vybe_runtime::value::ObjectKind::Array(ref v) = o.kind {
                 return v.iter().map(|e| e.as_f64()).collect();
             }
         }

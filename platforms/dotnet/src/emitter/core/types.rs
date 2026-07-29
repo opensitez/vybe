@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use super::super::types::{KnownTypeMapping, KnownTypeTarget};
-use vybe_bytecode::component_model::ConstructorTarget;
+use vybe_runtime::component_model::ConstructorTarget;
 
 const KNOWN_CONSTANTS: &[&str] = &[
     "pi",

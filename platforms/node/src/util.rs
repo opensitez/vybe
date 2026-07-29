@@ -23,8 +23,8 @@
 //!   - `deprecate(fn, msg)`, `debuglog(section)`
 
 use std::sync::Arc;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::{HostContext, VM};
+use vybe_runtime::value::{Object, ObjectKind, Value};
+use vybe_runtime::{HostContext, VM};
 
 const MODULE: &str = "node:util";
 
@@ -567,13 +567,13 @@ fn new_parse_args_result(values: Vec<(String, Value)>, positionals: Vec<Value>) 
     let mut result = Object::new();
     result.properties.insert(
         "values".into(),
-        Value::Object(vybe_bytecode::heap::alloc(values_obj)),
+        Value::Object(vybe_runtime::heap::alloc(values_obj)),
     );
     result.properties.insert(
         "positionals".into(),
-        Value::Object(vybe_bytecode::heap::alloc(positionals_arr)),
+        Value::Object(vybe_runtime::heap::alloc(positionals_arr)),
     );
-    Value::Object(vybe_bytecode::heap::alloc(result))
+    Value::Object(vybe_runtime::heap::alloc(result))
 }
 
 // ── types.* — type predicates ────────────────────────────────────────
@@ -1034,7 +1034,7 @@ fn register_extras(vm: &mut VM) {
             let mut o = Object::new();
             o.properties
                 .insert("encoding".into(), Value::String(Arc::from("utf-8")));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -1052,7 +1052,7 @@ fn register_extras(vm: &mut VM) {
                 .iter()
                 .map(|&b| Value::I32(b as i32))
                 .collect();
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(bytes)))
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(bytes)))
         }),
     );
 
@@ -1082,7 +1082,7 @@ fn register_extras(vm: &mut VM) {
             let mut o = Object::new();
             o.properties
                 .insert("encoding".into(), Value::String(Arc::from(enc.as_str())));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -1177,10 +1177,10 @@ fn register_extras(vm: &mut VM) {
                 let arr = vec![Value::I32(code), Value::String(Arc::from(name))];
                 o.properties.insert(
                     code.to_string(),
-                    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(arr))),
+                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(arr))),
                 );
             }
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -1188,22 +1188,22 @@ fn register_extras(vm: &mut VM) {
     vm.register_host_fn(
         MODULE,
         "promisify",
-        Box::new(|_ctx, _args| Value::Object(vybe_bytecode::heap::alloc(Object::new()))),
+        Box::new(|_ctx, _args| Value::Object(vybe_runtime::heap::alloc(Object::new()))),
     );
     vm.register_host_fn(
         MODULE,
         "callbackify",
-        Box::new(|_ctx, _args| Value::Object(vybe_bytecode::heap::alloc(Object::new()))),
+        Box::new(|_ctx, _args| Value::Object(vybe_runtime::heap::alloc(Object::new()))),
     );
     vm.register_host_fn(
         MODULE,
         "deprecate",
-        Box::new(|_ctx, _args| Value::Object(vybe_bytecode::heap::alloc(Object::new()))),
+        Box::new(|_ctx, _args| Value::Object(vybe_runtime::heap::alloc(Object::new()))),
     );
     vm.register_host_fn(
         MODULE,
         "debuglog",
-        Box::new(|_ctx, _args| Value::Object(vybe_bytecode::heap::alloc(Object::new()))),
+        Box::new(|_ctx, _args| Value::Object(vybe_runtime::heap::alloc(Object::new()))),
     );
     vm.register_host_fn(MODULE, "inherits", Box::new(|_ctx, _args| Value::Undefined));
 
@@ -1232,16 +1232,16 @@ fn register_extras(vm: &mut VM) {
                 .insert("essence".into(), Value::String(Arc::from(essence.as_str())));
             o.properties.insert(
                 "params".into(),
-                Value::Object(vybe_bytecode::heap::alloc(Object::new())),
+                Value::Object(vybe_runtime::heap::alloc(Object::new())),
             );
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
     vm.register_host_fn(
         MODULE,
         "MIMEParams",
-        Box::new(|_ctx, _args| Value::Object(vybe_bytecode::heap::alloc(Object::new()))),
+        Box::new(|_ctx, _args| Value::Object(vybe_runtime::heap::alloc(Object::new()))),
     );
 
     // ── styleText (Node 22+) ───────────────────────────────────────────

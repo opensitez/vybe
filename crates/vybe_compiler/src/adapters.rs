@@ -8,7 +8,7 @@
 //!
 //! Until a real adapter target exists, adapter registration stays empty.
 
-use vybe_bytecode::VM;
+use vybe_runtime::VM;
 
 /// Register every bundled adapter module against the VM.
 ///

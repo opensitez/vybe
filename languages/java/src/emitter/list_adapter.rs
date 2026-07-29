@@ -1,9 +1,9 @@
 //! Java collection overloads composed from the shared ECMA array surface.
 
 use std::sync::Arc;
-use vybe_bytecode::Chunk;
-use vybe_bytecode::Value;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::Value;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::{
     collections,
     functions::create_function_chunk,

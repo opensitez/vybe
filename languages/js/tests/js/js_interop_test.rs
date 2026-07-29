@@ -638,7 +638,7 @@ fn test_e44_invoke_global_function() {
         .cloned()
         .expect("double not in globals");
     let result = vm
-        .invoke(&func, &[vybe_bytecode::Value::F64(21.0)])
+        .invoke(&func, &[vybe_runtime::Value::F64(21.0)])
         .expect("invoke failed");
     assert_eq!(format!("{}", result), "42");
 }
@@ -655,9 +655,9 @@ fn test_e45_invoke_with_multiple_args() {
         .invoke(
             &func,
             &[
-                vybe_bytecode::Value::F64(10.0),
-                vybe_bytecode::Value::F64(20.0),
-                vybe_bytecode::Value::F64(30.0),
+                vybe_runtime::Value::F64(10.0),
+                vybe_runtime::Value::F64(20.0),
+                vybe_runtime::Value::F64(30.0),
             ],
         )
         .expect("invoke failed");
@@ -678,7 +678,7 @@ fn test_e46_invoke_method_on_global_object() {
     let (mut vm, _output) = run_js_vm(code);
     let obj = vm.globals.get("obj").cloned().expect("obj not in globals");
     // Extract the method from the object
-    if let vybe_bytecode::Value::Object(ref rc) = obj {
+    if let vybe_runtime::Value::Object(ref rc) = obj {
         let borrowed = rc.lock().unwrap();
         let method = borrowed
             .properties
@@ -709,7 +709,7 @@ fn test_e47_invoke_returns_correct_value() {
         .cloned()
         .expect("fn not found");
     let result = vm
-        .invoke(&func, &[vybe_bytecode::Value::String("World".into())])
+        .invoke(&func, &[vybe_runtime::Value::String("World".into())])
         .expect("invoke failed");
     assert_eq!(format!("{}", result), "Hello World!");
 }
@@ -753,7 +753,7 @@ fn test_e49_invoke_class_method_with_this() {
     "#;
     let (vm, _output) = run_js_vm(code);
     let adder = vm.globals.get("adder").cloned().expect("adder not found");
-    if let vybe_bytecode::Value::Object(ref rc) = adder {
+    if let vybe_runtime::Value::Object(ref rc) = adder {
         let borrowed = rc.lock().unwrap();
         let method = borrowed
             .properties
@@ -762,9 +762,9 @@ fn test_e49_invoke_class_method_with_this() {
             .expect("add not found");
         // Sanity: the `add` slot resolves to a callable.
         assert!(
-            matches!(&method, vybe_bytecode::Value::Object(o)
+            matches!(&method, vybe_runtime::Value::Object(o)
                 if matches!(o.lock().unwrap().kind,
-                    vybe_bytecode::value::ObjectKind::Function(_))),
+                    vybe_runtime::value::ObjectKind::Function(_))),
             "add property is not a Function"
         );
     } else {
@@ -794,7 +794,7 @@ fn test_e50_invoke_closure_modifies_captured() {
         .get("getState")
         .cloned()
         .expect("getState not found");
-    vm.invoke(&set_fn, &[vybe_bytecode::Value::F64(42.0)])
+    vm.invoke(&set_fn, &[vybe_runtime::Value::F64(42.0)])
         .expect("set failed");
     let result = vm.invoke(&get_fn, &[]).expect("get failed");
     assert_eq!(format!("{}", result), "42");
@@ -821,8 +821,8 @@ fn test_e51_invoke_after_class_definition() {
         .invoke(
             &func,
             &[
-                vybe_bytecode::Value::F64(6.0),
-                vybe_bytecode::Value::F64(7.0),
+                vybe_runtime::Value::F64(6.0),
+                vybe_runtime::Value::F64(7.0),
             ],
         )
         .expect("invoke failed");

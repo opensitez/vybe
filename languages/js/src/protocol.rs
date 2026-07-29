@@ -4,7 +4,7 @@
 //! `SpecialMethodKind` (a numeric slot) and a canonical name. Which member
 //! spells which role is JS's business and is decided here.
 
-use vybe_bytecode::class_normalize::types::SpecialMethodKind;
+use vybe_ast::class_normalize::types::SpecialMethodKind;
 
 /// Resolve a JS method name to `(canonical, slot?)`.
 ///

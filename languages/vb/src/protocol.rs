@@ -4,7 +4,7 @@
 //! `SpecialMethodKind` (a numeric slot) and a canonical name. Which member
 //! spells which role is VB's business and is decided here.
 
-use vybe_bytecode::class_normalize::types::SpecialMethodKind;
+use vybe_ast::class_normalize::types::SpecialMethodKind;
 
 /// Resolve a VB member name to `(canonical, slot?)`.
 ///

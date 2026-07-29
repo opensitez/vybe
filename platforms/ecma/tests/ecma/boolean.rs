@@ -5,9 +5,9 @@
 //! Covers the Boolean() coercion rules (ToBoolean), Boolean object wrapper,
 //! and valueOf. Each test covers a distinct ECMA-262 behaviour.
 
-use vybe_bytecode::value::Value;
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::Value;
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn invoke(name: &str, args: Vec<Value>) -> Value {
@@ -103,7 +103,7 @@ fn string_zero_is_truthy() {
 fn object_is_always_truthy() {
     // ECMA-262 §7.1.2: all objects (including empty ones) are truthy.
     use std::sync::{Arc, Mutex};
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let empty_obj = Value::Object(Arc::new(Mutex::new(Object::new())));
     assert_eq!(invoke("toBoolean", vec![empty_obj]), Value::Bool(true));
 }

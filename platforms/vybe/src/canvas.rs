@@ -51,8 +51,8 @@ mod canvas_impl {
 
     use crate::gui_state::GuiState;
     use std::sync::{Arc, Mutex};
-    use vybe_bytecode::value::Object;
-    use vybe_bytecode::{HostContext, VM, Value};
+    use vybe_runtime::value::Object;
+    use vybe_runtime::{HostContext, VM, Value};
     use vybe_widgets::canvas::{Canvas, Color, Font, FontStyle, FontWeight, LineCap, LineJoin};
 
     pub fn register(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
@@ -94,7 +94,7 @@ mod canvas_impl {
                         "__control_name".into(),
                         Value::String(Arc::from(ctrl_name.to_lowercase().as_str())),
                     );
-                    Value::Object(vybe_bytecode::heap::alloc(o))
+                    Value::Object(vybe_runtime::heap::alloc(o))
                 }),
             );
         }
@@ -601,7 +601,7 @@ mod canvas_impl {
                         .insert("__type".into(), Value::String(Arc::from("Canvas")));
                     o.properties
                         .insert("name".into(), Value::String(Arc::from(name.as_str())));
-                    Value::Object(vybe_bytecode::heap::alloc(o))
+                    Value::Object(vybe_runtime::heap::alloc(o))
                 }),
             );
         }
@@ -802,4 +802,4 @@ pub use canvas_impl::register;
 /// so non-GUI consumers get a no-op (and the old test fallback path
 /// supplies its own stubs).
 #[cfg(not(feature = "gui"))]
-pub fn register(_vm: &mut vybe_bytecode::VM) {}
+pub fn register(_vm: &mut vybe_runtime::VM) {}

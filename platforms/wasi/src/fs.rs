@@ -1,8 +1,8 @@
 use std::io::{BufRead, Write};
 use std::sync::Arc;
 use std::sync::Mutex;
-use vybe_bytecode::value::Object;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::Object;
+use vybe_runtime::{HostContext, VM, Value};
 
 pub fn register(vm: &mut VM) {
     vm.register_host_fn(
@@ -25,7 +25,7 @@ pub fn register(vm: &mut VM) {
             match std::fs::read(&path) {
                 Ok(bytes) => {
                     let vals: Vec<Value> = bytes.iter().map(|b| Value::F64(*b as f64)).collect();
-                    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vals)))
+                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(vals)))
                 }
                 Err(_) => Value::Null,
             }
@@ -116,9 +116,9 @@ pub fn register(vm: &mut VM) {
                         .filter_map(|e| e.ok())
                         .map(|e| Value::String(Arc::from(e.file_name().to_string_lossy().as_ref())))
                         .collect();
-                    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(items)))
+                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
                 }
-                Err(_) => Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![]))),
+                Err(_) => Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![]))),
             }
         }),
     );
@@ -187,7 +187,7 @@ pub fn register(vm: &mut VM) {
                         obj.properties
                             .insert("modified".into(), Value::F64(ms as f64));
                     }
-                    Value::Object(vybe_bytecode::heap::alloc(obj))
+                    Value::Object(vybe_runtime::heap::alloc(obj))
                 }
                 Err(_) => Value::Null,
             }
@@ -216,12 +216,12 @@ pub fn register(vm: &mut VM) {
                                 obj.properties
                                     .insert("isDir".into(), Value::Bool(ft.is_dir()));
                             }
-                            Value::Object(vybe_bytecode::heap::alloc(obj))
+                            Value::Object(vybe_runtime::heap::alloc(obj))
                         })
                         .collect();
-                    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(items)))
+                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
                 }
-                Err(_) => Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![]))),
+                Err(_) => Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![]))),
             }
         }),
     );
@@ -491,12 +491,12 @@ pub fn register(vm: &mut VM) {
                                 .split(',')
                                 .map(|s| Value::String(Arc::from(s.trim())))
                                 .collect();
-                            return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vals)));
+                            return Value::Object(vybe_runtime::heap::alloc(Object::new_array(vals)));
                         }
                     }
                 }
             }
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![])))
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![])))
         }),
     );
 }

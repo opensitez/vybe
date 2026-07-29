@@ -1,4 +1,4 @@
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::strings;
 
 #[test]

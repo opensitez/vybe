@@ -38,8 +38,8 @@
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{
+use vybe_runtime::VM;
+use vybe_runtime::value::{
     ArrayBufferState, Object, ObjectKind, TypedArrayState, TypedElemKind, Value,
 };
 
@@ -306,7 +306,7 @@ pub fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
     ab_obj
         .properties
         .insert("maxByteLength".into(), Value::I32(byte_length as i32));
-    let buffer_obj = vybe_bytecode::heap::alloc(ab_obj);
+    let buffer_obj = vybe_runtime::heap::alloc(ab_obj);
 
     let state = TypedArrayState {
         elem,
@@ -334,7 +334,7 @@ pub fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
         "tostringtag".into(),
         Value::String(Arc::from(typed_array_name(elem))),
     );
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 /// Construct a view over an existing `ArrayBuffer`.
@@ -380,7 +380,7 @@ pub fn new_view_over_buffer(
         "tostringtag".into(),
         Value::String(Arc::from(typed_array_name(elem))),
     );
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 pub fn apply_constructor_species(result: &Value, ctor: Value) {
@@ -415,7 +415,7 @@ pub fn apply_constructor_species(result: &Value, ctor: Value) {
         let types_obj = match result_lock.properties.get("__types") {
             Some(Value::Object(types)) => types.clone(),
             _ => {
-                let types = vybe_bytecode::heap::alloc(Object::new_array(Vec::new()));
+                let types = vybe_runtime::heap::alloc(Object::new_array(Vec::new()));
                 result_lock
                     .properties
                     .insert("__types".into(), Value::Object(types.clone()));
@@ -1597,7 +1597,7 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                     let live = ta_live_length(ta);
                     let es: Vec<Value> = (0..live)
                         .map(|i| {
-                            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
                                 Value::I32(i as i32),
                                 read_element(ta, i),
                             ])))

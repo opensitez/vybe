@@ -8,7 +8,7 @@
 //! proposals/custom-descriptors/proposals/custom-descriptors/Overview.md
 
 use crate::encoding::*;
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 // Custom Descriptors binary encoding
 const CD_DESCRIPTOR: u8 = 0x4D; // (descriptor $x) prefix
@@ -65,7 +65,7 @@ pub struct WasmTypeContext {
 }
 
 pub(crate) fn continuation_tag_key(
-    tag: &vybe_bytecode::chunk::ContinuationTag,
+    tag: &vybe_runtime::chunk::ContinuationTag,
 ) -> (String, String, String) {
     (
         tag.name.clone(),
@@ -84,7 +84,7 @@ pub(crate) fn continuation_tag_valtype(type_name: &str) -> u8 {
     }
 }
 
-fn collect_continuation_tags(chunks: &[Chunk]) -> Vec<vybe_bytecode::chunk::ContinuationTag> {
+fn collect_continuation_tags(chunks: &[Chunk]) -> Vec<vybe_runtime::chunk::ContinuationTag> {
     let mut seen = std::collections::HashSet::new();
     let mut tags = Vec::new();
     for chunk in chunks {
@@ -147,7 +147,7 @@ pub fn build_type_context(
     };
 
     // Collect TypeEntry definitions from chunk 0
-    let type_entries: Vec<&vybe_bytecode::chunk::TypeEntry> = chunks
+    let type_entries: Vec<&vybe_runtime::chunk::TypeEntry> = chunks
         .first()
         .map(|c| c.types.iter().collect())
         .unwrap_or_default();
@@ -180,10 +180,10 @@ pub fn build_type_context(
         while bip + 3 < code.len() {
             let g = ((code[bip] as u16) << 8) | code[bip + 1] as u16;
             let s = ((code[bip + 2] as u16) << 8) | code[bip + 3] as u16;
-            if let Some(op) = vybe_bytecode::opcode::Op::decode(g, s) {
-                if op == vybe_bytecode::opcode::Op::BLOCK
-                    || op == vybe_bytecode::opcode::Op::LOOP
-                    || op == vybe_bytecode::opcode::Op::IF
+            if let Some(op) = vybe_runtime::opcode::Op::decode(g, s) {
+                if op == vybe_runtime::opcode::Op::BLOCK
+                    || op == vybe_runtime::opcode::Op::LOOP
+                    || op == vybe_runtime::opcode::Op::IF
                 {
                     // Layout: group (2) + sub (2) + result_count (1) = 5 bytes total.
                     if bip + 4 < code.len() {
@@ -212,14 +212,14 @@ pub fn build_type_context(
         while bip + 3 < code.len() {
             let g = ((code[bip] as u16) << 8) | code[bip + 1] as u16;
             let s = ((code[bip + 2] as u16) << 8) | code[bip + 3] as u16;
-            if let Some(op) = vybe_bytecode::opcode::Op::decode(g, s) {
+            if let Some(op) = vybe_runtime::opcode::Op::decode(g, s) {
                 if matches!(op,
-                    o if o == vybe_bytecode::opcode::Op::CONT_NEW
-                      || o == vybe_bytecode::opcode::Op::CONT_BIND
-                      || o == vybe_bytecode::opcode::Op::SUSPEND
-                      || o == vybe_bytecode::opcode::Op::RESUME
-                      || o == vybe_bytecode::opcode::Op::RESUME_THROW
-                      || o == vybe_bytecode::opcode::Op::SWITCH
+                    o if o == vybe_runtime::opcode::Op::CONT_NEW
+                      || o == vybe_runtime::opcode::Op::CONT_BIND
+                      || o == vybe_runtime::opcode::Op::SUSPEND
+                      || o == vybe_runtime::opcode::Op::RESUME
+                      || o == vybe_runtime::opcode::Op::RESUME_THROW
+                      || o == vybe_runtime::opcode::Op::SWITCH
                 ) {
                     return true;
                 }
@@ -387,8 +387,8 @@ pub fn build_type_context(
             }
             let g = ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16;
             let s = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
-            if let Some(op) = vybe_bytecode::opcode::Op::decode(g, s) {
-                if op == vybe_bytecode::opcode::Op::CALL_IMPORT {
+            if let Some(op) = vybe_runtime::opcode::Op::decode(g, s) {
+                if op == vybe_runtime::opcode::Op::CALL_IMPORT {
                     let import_idx = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
                     let argc = chunk.code[ip + 6];
                     if (import_idx as usize) < host_import_count {

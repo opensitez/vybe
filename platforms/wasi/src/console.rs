@@ -1,6 +1,6 @@
 use std::sync::Arc;
-use vybe_bytecode::value::Object;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::Object;
+use vybe_runtime::{HostContext, VM, Value};
 
 pub fn register(vm: &mut VM) {
     // wasi:logging/logging.log — WASI logging proposal
@@ -63,7 +63,7 @@ pub fn register(vm: &mut VM) {
             h.properties.insert("fd".into(), Value::I32(1));
             h.properties
                 .insert("__type".into(), Value::String(Arc::from("output-stream")));
-            Value::Object(vybe_bytecode::heap::alloc(h))
+            Value::Object(vybe_runtime::heap::alloc(h))
         }),
     );
 
@@ -75,7 +75,7 @@ pub fn register(vm: &mut VM) {
             h.properties.insert("fd".into(), Value::I32(2));
             h.properties
                 .insert("__type".into(), Value::String(Arc::from("output-stream")));
-            Value::Object(vybe_bytecode::heap::alloc(h))
+            Value::Object(vybe_runtime::heap::alloc(h))
         }),
     );
 
@@ -87,7 +87,7 @@ pub fn register(vm: &mut VM) {
             h.properties.insert("fd".into(), Value::I32(0));
             h.properties
                 .insert("__type".into(), Value::String(Arc::from("input-stream")));
-            Value::Object(vybe_bytecode::heap::alloc(h))
+            Value::Object(vybe_runtime::heap::alloc(h))
         }),
     );
 

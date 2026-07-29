@@ -12,8 +12,8 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{ArrayBufferState, Object, ObjectKind, Value};
-use vybe_bytecode::VM;
+use vybe_runtime::value::{ArrayBufferState, Object, ObjectKind, Value};
+use vybe_runtime::VM;
 
 pub fn register(vm: &mut VM) {
     vm.register_host_fn(
@@ -58,7 +58,7 @@ pub fn register(vm: &mut VM) {
 }
 
 fn deep_clone(
-    ctx: &mut vybe_bytecode::HostContext,
+    ctx: &mut vybe_runtime::HostContext,
     v: &Value,
     seen: &mut HashMap<usize, Value>,
     active: &mut HashSet<usize>,
@@ -92,7 +92,7 @@ fn deep_clone(
 }
 
 fn clone_object(
-    ctx: &mut vybe_bytecode::HostContext,
+    ctx: &mut vybe_runtime::HostContext,
     obj: &Arc<Mutex<Object>>,
     seen: &mut HashMap<usize, Value>,
     active: &mut HashSet<usize>,
@@ -181,7 +181,7 @@ fn kind_discriminant(k: &ObjectKind) -> KindTag {
 }
 
 fn clone_ordinary(
-    ctx: &mut vybe_bytecode::HostContext,
+    ctx: &mut vybe_runtime::HostContext,
     src: &Arc<Mutex<Object>>,
     id: usize,
     seen: &mut HashMap<usize, Value>,
@@ -205,7 +205,7 @@ fn clone_ordinary(
 
     // Allocate empty target first, insert into seen, then copy
     // property values (so cycles resolve to the same target).
-    let target_arc = vybe_bytecode::heap::alloc(Object::new());
+    let target_arc = vybe_runtime::heap::alloc(Object::new());
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());
 
@@ -293,7 +293,7 @@ fn clone_builtin_object(
                 "__proto__".into(),
                 crate::date::shared_date_prototype(),
             );
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }
         "RegExp" => {
             let (source, flags, last_index) = regexp_fields?;
@@ -337,7 +337,7 @@ fn clone_builtin_object(
                 "__proto__".into(),
                 crate::regexp::shared_regexp_prototype(),
             );
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }
         "Boolean" => match primitive {
             Some(Value::Bool(value)) => crate::boolean::boxed_boolean(value),
@@ -362,13 +362,13 @@ fn clone_builtin_object(
 }
 
 fn clone_array(
-    ctx: &mut vybe_bytecode::HostContext,
+    ctx: &mut vybe_runtime::HostContext,
     src: &Arc<Mutex<Object>>,
     id: usize,
     seen: &mut HashMap<usize, Value>,
     active: &mut HashSet<usize>,
 ) -> Result<Value, Value> {
-    let target_arc = vybe_bytecode::heap::alloc(Object::new_array(Vec::new()));
+    let target_arc = vybe_runtime::heap::alloc(Object::new_array(Vec::new()));
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());
 
@@ -406,7 +406,7 @@ fn clone_array(
 }
 
 fn clone_map(
-    ctx: &mut vybe_bytecode::HostContext,
+    ctx: &mut vybe_runtime::HostContext,
     src: &Arc<Mutex<Object>>,
     id: usize,
     seen: &mut HashMap<usize, Value>,
@@ -418,7 +418,7 @@ fn clone_map(
     target_obj
         .properties
         .insert("__type".into(), Value::String(Arc::from("Map")));
-    let target_arc = vybe_bytecode::heap::alloc(target_obj);
+    let target_arc = vybe_runtime::heap::alloc(target_obj);
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());
 
@@ -453,7 +453,7 @@ fn clone_map(
 }
 
 fn clone_set(
-    ctx: &mut vybe_bytecode::HostContext,
+    ctx: &mut vybe_runtime::HostContext,
     src: &Arc<Mutex<Object>>,
     id: usize,
     seen: &mut HashMap<usize, Value>,
@@ -465,7 +465,7 @@ fn clone_set(
     target_obj
         .properties
         .insert("__type".into(), Value::String(Arc::from("Set")));
-    let target_arc = vybe_bytecode::heap::alloc(target_obj);
+    let target_arc = vybe_runtime::heap::alloc(target_obj);
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());
 
@@ -544,7 +544,7 @@ fn clone_arraybuffer(
         .insert("maxByteLength".into(), Value::I32(max_byte_length as i32));
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("ArrayBuffer")));
-    let out = Value::Object(vybe_bytecode::heap::alloc(obj));
+    let out = Value::Object(vybe_runtime::heap::alloc(obj));
     seen.insert(id, out.clone());
     Ok(out)
 }
@@ -698,7 +698,7 @@ fn clone_dataview(
         .insert("maxByteLength".into(), Value::I32(byte_length as i32));
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("ArrayBuffer")));
-    let buffer_value = Value::Object(vybe_bytecode::heap::alloc(obj));
+    let buffer_value = Value::Object(vybe_runtime::heap::alloc(obj));
     let out = crate::arraybuffer::new_dataview(buffer_value, 0, byte_length as i32);
     seen.insert(id, out.clone());
     Ok(out)
@@ -734,14 +734,14 @@ fn error_clone_kind(src: &Arc<Mutex<Object>>) -> Option<String> {
 }
 
 fn clone_error_like(
-    ctx: &mut vybe_bytecode::HostContext,
+    ctx: &mut vybe_runtime::HostContext,
     src: &Arc<Mutex<Object>>,
     id: usize,
     seen: &mut HashMap<usize, Value>,
     active: &mut HashSet<usize>,
     source_kind: &str,
 ) -> Result<Value, Value> {
-    let target_arc = vybe_bytecode::heap::alloc(Object::new());
+    let target_arc = vybe_runtime::heap::alloc(Object::new());
     let target_val = Value::Object(target_arc.clone());
     seen.insert(id, target_val.clone());
 
@@ -809,7 +809,7 @@ fn stamp_error_clone(obj: &mut Object, kind: &str, display_name: &str, message: 
         .collect();
     obj.properties.insert(
         "__types".into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(chain))),
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(chain))),
     );
 }
 
@@ -873,7 +873,7 @@ fn error_kind_from_tag(o: &Object) -> Option<String> {
 }
 
 fn validate_transfer_options(
-    _ctx: &vybe_bytecode::HostContext,
+    _ctx: &vybe_runtime::HostContext,
     options: Option<&Value>,
 ) -> Option<Value> {
     match options {
@@ -887,7 +887,7 @@ fn validate_transfer_options(
 }
 
 fn collect_transfer_list(
-    ctx: &mut vybe_bytecode::HostContext,
+    ctx: &mut vybe_runtime::HostContext,
     options: Option<&Value>,
 ) -> Result<Vec<Arc<Mutex<Object>>>, Value> {
     let Some(Value::Object(options)) = options else {

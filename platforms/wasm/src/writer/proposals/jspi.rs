@@ -41,7 +41,7 @@
 //! ignored when the consumer doesn't know the name).
 
 use crate::encoding::*;
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 pub const SECTION_NAME: &str = "vybe.jspi";
 

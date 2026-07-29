@@ -3,8 +3,8 @@
 //! Reference: <https://nodejs.org/api/crypto.html>.
 
 use std::sync::Arc;
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{Object, ObjectKind, Value};
 
 use vybe_platform_wasi::crypto::{HashAlgorithm, md5_hex, sha256_hex};
 
@@ -39,7 +39,7 @@ fn random_bytes_vec(n: usize) -> Vec<u8> {
 
 fn bytes_to_array(bytes: Vec<u8>) -> Value {
     let elems: Vec<Value> = bytes.iter().map(|b| Value::I32(*b as i32)).collect();
-    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elems)))
+    Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems)))
 }
 
 fn bytes_from_value(v: &Value) -> Vec<u8> {
@@ -265,7 +265,7 @@ fn make_crypto_fn_ref(vm: &VM, name: &str) -> Value {
     {
         let mut obj = Object::new();
         obj.kind = ObjectKind::HostFunction(idx);
-        Value::Object(vybe_bytecode::heap::alloc(obj))
+        Value::Object(vybe_runtime::heap::alloc(obj))
     } else {
         Value::Undefined
     }
@@ -406,7 +406,7 @@ pub fn register(vm: &mut VM) {
                 } else {
                     let new_arr: Vec<Value> =
                         new_data.iter().map(|b| Value::I32(*b as i32)).collect();
-                    let arr_val = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(new_arr)));
+                    let arr_val = Value::Object(vybe_runtime::heap::alloc(Object::new_array(new_arr)));
                     obj.properties.insert("__data_arr".into(), arr_val);
                 }
             }
@@ -467,7 +467,7 @@ pub fn register(vm: &mut VM) {
                 for (k, v) in &src.properties {
                     o.properties.insert(k.clone(), v.clone());
                 }
-                return Value::Object(vybe_bytecode::heap::alloc(o));
+                return Value::Object(vybe_runtime::heap::alloc(o));
             }
             Value::Undefined
         }),
@@ -492,7 +492,7 @@ pub fn register(vm: &mut VM) {
                 } else {
                     let new_arr: Vec<Value> =
                         new_data.iter().map(|b| Value::I32(*b as i32)).collect();
-                    let arr_val = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(new_arr)));
+                    let arr_val = Value::Object(vybe_runtime::heap::alloc(Object::new_array(new_arr)));
                     obj.properties.insert("__data_arr".into(), arr_val);
                 }
             }
@@ -562,7 +562,7 @@ pub fn register(vm: &mut VM) {
     let make_fn_ref = |idx: usize| -> Value {
         let mut obj = Object::new();
         obj.kind = ObjectKind::HostFunction(idx);
-        Value::Object(vybe_bytecode::heap::alloc(obj))
+        Value::Object(vybe_runtime::heap::alloc(obj))
     };
 
     // createHash(algorithm) → Hash object
@@ -574,7 +574,7 @@ pub fn register(vm: &mut VM) {
             let mut o = Object::new();
             o.properties
                 .insert("__algo".into(), Value::String(Arc::from(algo.as_str())));
-            let data_arr = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())));
+            let data_arr = Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())));
             o.properties.insert("__data_arr".into(), data_arr);
             o.properties
                 .insert("update".into(), make_fn_ref(hash_update_idx));
@@ -582,7 +582,7 @@ pub fn register(vm: &mut VM) {
                 .insert("digest".into(), make_fn_ref(hash_digest_idx));
             o.properties
                 .insert("copy".into(), make_fn_ref(hash_copy_idx));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -597,13 +597,13 @@ pub fn register(vm: &mut VM) {
             o.properties
                 .insert("__algo".into(), Value::String(Arc::from(algo.as_str())));
             o.properties.insert("__key".into(), key);
-            let data_arr = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())));
+            let data_arr = Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())));
             o.properties.insert("__data_arr".into(), data_arr);
             o.properties
                 .insert("update".into(), make_fn_ref(hmac_update_idx));
             o.properties
                 .insert("digest".into(), make_fn_ref(hmac_digest_idx));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -611,12 +611,12 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "node:crypto",
         "_cipherUpdate",
-        Box::new(|_ctx, _args| Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))),
+        Box::new(|_ctx, _args| Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))),
     );
     vm.register_host_fn(
         "node:crypto",
         "_cipherFinal",
-        Box::new(|_ctx, _args| Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))),
+        Box::new(|_ctx, _args| Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))),
     );
     let cipher_update_idx = *vm
         .host_registry
@@ -629,7 +629,7 @@ pub fn register(vm: &mut VM) {
     let make_cipher_fn = move |idx: usize| -> Value {
         let mut obj = Object::new();
         obj.kind = ObjectKind::HostFunction(idx);
-        Value::Object(vybe_bytecode::heap::alloc(obj))
+        Value::Object(vybe_runtime::heap::alloc(obj))
     };
 
     vm.register_host_fn(
@@ -644,7 +644,7 @@ pub fn register(vm: &mut VM) {
             o.properties
                 .insert("setAutoPadding".into(), Value::Bool(true));
             o.properties.insert("getAuthTag".into(), Value::Bool(true));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -659,7 +659,7 @@ pub fn register(vm: &mut VM) {
                 .insert("final".into(), make_cipher_fn(cipher_final_idx));
             o.properties
                 .insert("setAutoPadding".into(), Value::Bool(true));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -671,7 +671,7 @@ pub fn register(vm: &mut VM) {
             let mut o = Object::new();
             o.properties.insert("update".into(), Value::Bool(true));
             o.properties.insert("sign".into(), Value::Bool(true));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -682,7 +682,7 @@ pub fn register(vm: &mut VM) {
             let mut o = Object::new();
             o.properties.insert("update".into(), Value::Bool(true));
             o.properties.insert("verify".into(), Value::Bool(true));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -707,7 +707,7 @@ pub fn register(vm: &mut VM) {
                 .insert("setPublicKey".into(), Value::Bool(true));
             o.properties
                 .insert("setPrivateKey".into(), Value::Bool(true));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -728,7 +728,7 @@ pub fn register(vm: &mut VM) {
                 .insert("setPublicKey".into(), Value::Bool(true));
             o.properties
                 .insert("setPrivateKey".into(), Value::Bool(true));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -838,7 +838,7 @@ pub fn register(vm: &mut VM) {
                 "chacha20-poly1305",
             ];
             let elems: Vec<Value> = names.iter().map(|n| Value::String(Arc::from(*n))).collect();
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elems)))
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems)))
         }),
     );
 
@@ -852,7 +852,7 @@ pub fn register(vm: &mut VM) {
                 .iter()
                 .map(|n| Value::String(Arc::from(*n)))
                 .collect();
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elems)))
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems)))
         }),
     );
 
@@ -869,7 +869,7 @@ pub fn register(vm: &mut VM) {
                 "X448",
             ];
             let elems: Vec<Value> = names.iter().map(|n| Value::String(Arc::from(*n))).collect();
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elems)))
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems)))
         }),
     );
 
@@ -934,7 +934,7 @@ pub fn register(vm: &mut VM) {
                 .insert("POINT_CONVERSION_COMPRESSED".into(), Value::I32(2));
             o.properties
                 .insert("POINT_CONVERSION_UNCOMPRESSED".into(), Value::I32(4));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -956,7 +956,7 @@ pub fn register(vm: &mut VM) {
                     "-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----",
                 )),
             );
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -982,7 +982,7 @@ pub fn register(vm: &mut VM) {
             ] {
                 o.properties.insert(m.into(), Value::Bool(true));
             }
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 

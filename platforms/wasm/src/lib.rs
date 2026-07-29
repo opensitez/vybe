@@ -8,7 +8,7 @@
 //! - `disassembler/` — `Vec<Chunk>` → WAT text for human inspection
 //! - `encoding` — shared vocabulary: magic, section IDs, LEB128
 //!
-//! Depends only on `vybe_bytecode`'s data model (`Chunk`/`Op`/`Value`);
+//! Depends only on `vybe_runtime`'s data model (`Chunk`/`Op`/`Value`);
 //! the VM never depends on this crate. Future platforms (java: .class,
 //! dotnet: assemblies) follow the same shape and register their loaders
 //! the same way.
@@ -26,7 +26,7 @@ pub use writer::write_wasm;
 /// resolver, so `ModuleResolver` can load `.wasm` files without
 /// depending on this crate. Call once at host startup.
 pub fn register() {
-    vybe_bytecode::registry::register_platform(vybe_bytecode::registry::PlatformDef {
+    vybe_runtime::registry::register_platform(vybe_runtime::registry::PlatformDef {
         name: "wasm",
         emit_dispatch: None,
         register_tree: None,
@@ -36,22 +36,22 @@ pub fn register() {
         numeric_format_helper: None,
         read_binary_module: Some(crate::reader::read_wasm),
     });
-    vybe_bytecode::register_binary_loader("wasm", read_wasm);
+    vybe_runtime::register_binary_loader("wasm", read_wasm);
 }
 
-/// This crate as a `vybe_bytecode::Plugin` — the same single plugin type
+/// This crate as a `vybe_runtime::Plugin` — the same single plugin type
 /// languages and every other platform use. It has no VM-side surface, so
 /// `init` only contributes its binary-module reader to the registry.
 pub struct Plugin;
-impl vybe_bytecode::Plugin for Plugin {
+impl vybe_runtime::Plugin for Plugin {
     fn name(&self) -> &'static str {
         "wasm"
     }
-    fn init(&self, _fw: &mut vybe_bytecode::Framework<'_>) {
+    fn init(&self, _fw: &mut vybe_runtime::Framework<'_>) {
         register();
     }
 }
 
 // Link-time registration: this crate submits its plugin to the one registry.
 // Nothing lists plugins in code — linking this crate IS the registration.
-vybe_bytecode::register_plugin!(Plugin);
+vybe_runtime::register_plugin!(Plugin);

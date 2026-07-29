@@ -8,8 +8,8 @@
 //! warranted.
 
 use std::sync::Arc;
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{VM, Value};
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{VM, Value};
 
 fn s_val(text: &str) -> Value {
     Value::String(Arc::from(text))
@@ -209,10 +209,10 @@ pub fn register(vm: &mut VM) {
                 o.properties.insert("model".into(), s_val(&model));
                 o.properties.insert("speed".into(), Value::F64(speed));
                 o.properties
-                    .insert("times".into(), Value::Object(vybe_bytecode::heap::alloc(times)));
-                items.push(Value::Object(vybe_bytecode::heap::alloc(o)));
+                    .insert("times".into(), Value::Object(vybe_runtime::heap::alloc(times)));
+                items.push(Value::Object(vybe_runtime::heap::alloc(o)));
             }
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(items)))
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
         }),
     );
 
@@ -229,7 +229,7 @@ pub fn register(vm: &mut VM) {
             );
             o.properties.insert("uid".into(), Value::F64(-1.0));
             o.properties.insert("gid".into(), Value::F64(-1.0));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -262,7 +262,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, _args| {
             let vals = read_loadavg();
             let items = vec![Value::F64(vals.0), Value::F64(vals.1), Value::F64(vals.2)];
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(items)))
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
         }),
     );
 
@@ -287,12 +287,12 @@ pub fn register(vm: &mut VM) {
             entry
                 .properties
                 .insert("internal".into(), Value::Bool(true));
-            let arr = vec![Value::Object(vybe_bytecode::heap::alloc(entry))];
+            let arr = vec![Value::Object(vybe_runtime::heap::alloc(entry))];
             root.properties.insert(
                 "lo".into(),
-                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(arr))),
+                Value::Object(vybe_runtime::heap::alloc(Object::new_array(arr))),
             );
-            Value::Object(vybe_bytecode::heap::alloc(root))
+            Value::Object(vybe_runtime::heap::alloc(root))
         }),
     );
 
@@ -395,17 +395,17 @@ pub fn register(vm: &mut VM) {
             let mut root = Object::new();
             root.properties.insert(
                 "errno".into(),
-                Value::Object(vybe_bytecode::heap::alloc(errno_obj)),
+                Value::Object(vybe_runtime::heap::alloc(errno_obj)),
             );
             root.properties.insert(
                 "signals".into(),
-                Value::Object(vybe_bytecode::heap::alloc(signals_obj)),
+                Value::Object(vybe_runtime::heap::alloc(signals_obj)),
             );
             root.properties.insert(
                 "priority".into(),
-                Value::Object(vybe_bytecode::heap::alloc(priority_obj)),
+                Value::Object(vybe_runtime::heap::alloc(priority_obj)),
             );
-            Value::Object(vybe_bytecode::heap::alloc(root))
+            Value::Object(vybe_runtime::heap::alloc(root))
         }),
     );
 }

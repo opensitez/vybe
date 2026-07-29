@@ -23,8 +23,8 @@
 //! picture defaults to `""` → toString). Stack on exit: `[string]`.
 
 use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {

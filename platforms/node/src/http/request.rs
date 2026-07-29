@@ -10,8 +10,8 @@
 //! `RequestContext` via `OnceLock`.
 
 use std::sync::Arc;
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{HostContext, VM, Value};
 
 use super::context::with_context;
 
@@ -313,7 +313,7 @@ fn string_arg(args: &[Value], idx: usize) -> String {
 fn array_value(items: Vec<Value>) -> Value {
     let mut obj = Object::new();
     obj.kind = ObjectKind::Array(items);
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn pair_object(name: &str, value: &str) -> Value {
@@ -322,5 +322,5 @@ fn pair_object(name: &str, value: &str) -> Value {
         .insert("name".into(), Value::String(Arc::from(name)));
     obj.properties
         .insert("value".into(), Value::String(Arc::from(value)));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }

@@ -24,9 +24,9 @@
 //! ```
 
 use std::fmt::Write;
-use vybe_bytecode::chunk::Chunk;
-use vybe_bytecode::opcode::{Op, OperandFormat, read_leb_u32, read_leb_u64};
-use vybe_bytecode::value::Value;
+use vybe_runtime::chunk::Chunk;
+use vybe_runtime::opcode::{Op, OperandFormat, read_leb_u32, read_leb_u64};
+use vybe_runtime::value::Value;
 
 /// Render a collection of chunks as a single WAT module. The output
 /// is human-readable; indentation reflects nesting depth of WASM
@@ -252,12 +252,12 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
         }
         OperandFormat::SlI32 => {
             let mut pos = ip + 2;
-            let val = vybe_bytecode::opcode::read_leb_i32(&chunk.code, &mut pos);
+            let val = vybe_runtime::opcode::read_leb_i32(&chunk.code, &mut pos);
             let _ = write!(out, " {val}");
         }
         OperandFormat::SlI64 => {
             let mut pos = ip + 2;
-            let val = vybe_bytecode::opcode::read_leb_i64(&chunk.code, &mut pos);
+            let val = vybe_runtime::opcode::read_leb_i64(&chunk.code, &mut pos);
             let _ = write!(out, " {val}");
         }
         OperandFormat::RawF32 => {

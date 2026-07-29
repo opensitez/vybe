@@ -1,7 +1,7 @@
 //! Java UUID adapters over the existing ECMA string/crypto surface.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::{instructions::host, strings};
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {

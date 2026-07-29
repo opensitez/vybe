@@ -13,8 +13,8 @@
 //! helpers rather than inlining raw opcodes.
 
 use std::sync::Arc;
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// The intrinsic constructor global whose `.prototype` becomes a function
 /// object's [[Prototype]], selected by function kind.
@@ -51,15 +51,15 @@ pub fn emit_stamp_function_kind_proto(
         };
         crate::primitives::instructions::core_wasm::dup(chunk, line); // [fn, fn]
         chunk.emit_string_const(kind, line); // [fn, fn, kind]
-        let kind_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("__fn_kind")));
+        let kind_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__fn_kind")));
         chunk.emit_op_u16(Op::STRUCT_SET, kind_key, line); // [fn, fn]
         chunk.emit_op(Op::DROP, line); // [fn]
     }
-    let ctor_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from(intrinsic)));
+    let ctor_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from(intrinsic)));
     chunk.emit_op_u16(Op::GLOBAL_GET, ctor_key, line); // [fn, ctor]
-    let proto_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("prototype")));
+    let proto_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("prototype")));
     chunk.emit_op_u16(Op::STRUCT_GET, proto_key, line); // [fn, proto]
-    let proto_link_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("__proto__")));
+    let proto_link_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__proto__")));
     chunk.emit_op_u16(Op::STRUCT_SET, proto_link_key, line); // [fn]
     chunk.emit_op(Op::DROP, line);
 }
@@ -76,7 +76,7 @@ pub fn emit_stamp_fn_metadata_nonenum(chunk: &mut Chunk, line: u32) {
     // §10.2.5: `prototype` on ordinary functions is non-enumerable too.
     chunk.emit_string_const("prototype", line);
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, line); // [fn, [3 keys]]
-    let key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("__nonenum")));
+    let key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__nonenum")));
     chunk.emit_op_u16(Op::STRUCT_SET, key, line); // [fn]
     chunk.emit_op(Op::DROP, line);
 }

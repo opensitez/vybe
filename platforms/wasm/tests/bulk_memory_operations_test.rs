@@ -3,8 +3,8 @@
 //!
 //! Covers VM semantics for memory/table copy, fill, init, and drop.
 
-use vybe_bytecode::value::ObjectKind;
-use vybe_bytecode::{Chunk, Op, VM, Value};
+use vybe_runtime::value::ObjectKind;
+use vybe_runtime::{Chunk, Op, VM, Value};
 
 fn write_leb_u32(out: &mut Vec<u8>, mut value: u32) {
     loop {

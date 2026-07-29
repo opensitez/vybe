@@ -15,7 +15,7 @@
 //! - Function entries appear in strictly increasing function-index order.
 //! - Multiple functions each get their own hint list.
 
-use vybe_bytecode::{Chunk, Op, Value};
+use vybe_runtime::{Chunk, Op, Value};
 use vybe_platform_wasm::writer::proposals::compilation_hints::BRANCH_HINT_SECTION_NAME;
 
 // ── binary helpers ────────────────────────────────────────────────────────

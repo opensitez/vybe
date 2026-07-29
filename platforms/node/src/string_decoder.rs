@@ -7,8 +7,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{Object, ObjectKind, Value};
 
 fn s(text: &str) -> Value {
     Value::String(Arc::from(text))
@@ -58,7 +58,7 @@ fn set_buf_bytes(decoder: &Value, bytes: Vec<u8>) {
     if let Value::Object(obj) = decoder {
         let mut obj = obj.lock().unwrap();
         let elems: Vec<Value> = bytes.into_iter().map(|b| Value::I32(b as i32)).collect();
-        let buf = Value::Object(vybe_bytecode::heap::alloc(Object {
+        let buf = Value::Object(vybe_runtime::heap::alloc(Object {
             kind: ObjectKind::Array(elems),
             properties: HashMap::new(),
             type_id: 0,
@@ -208,14 +208,14 @@ pub fn register(vm: &mut VM) {
             let empty: Vec<Value> = vec![];
             obj.properties.insert(
                 "__buf".into(),
-                Value::Object(vybe_bytecode::heap::alloc(Object {
+                Value::Object(vybe_runtime::heap::alloc(Object {
                     kind: ObjectKind::Array(empty),
                     properties: HashMap::new(),
                     type_id: 0,
                     fields: Vec::new(),
                 })),
             );
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 

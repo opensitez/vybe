@@ -21,8 +21,8 @@
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::{HostContext, VM};
+use vybe_runtime::value::{Object, ObjectKind, Value};
+use vybe_runtime::{HostContext, VM};
 
 pub const WEAKMAP_TAG: &str = "__vybe_js_weakmap";
 pub const WEAKSET_TAG: &str = "__vybe_js_weakset";
@@ -35,11 +35,11 @@ fn new_weakmap() -> Value {
     obj.properties.insert(WEAKMAP_TAG.into(), Value::I32(1));
     obj.properties.insert(
         WM_KEYS_PROP.into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new()))),
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))),
     );
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("WeakMap")));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn new_weakset() -> Value {
@@ -47,7 +47,7 @@ fn new_weakset() -> Value {
     obj.properties.insert(WEAKSET_TAG.into(), Value::I32(1));
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("WeakSet")));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn is_weakmap(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {

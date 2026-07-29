@@ -6,10 +6,10 @@
 //! `chdir`, `exit`-test-deferred). Streams (`stdin`/`stdout`/`stderr`),
 //! event listeners (`on('exit', ...)`), and `nextTick` come later.
 
-use vybe_bytecode::module_record::ExportEntry;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::module_record::ExportEntry;
+use vybe_runtime::value::{Object, ObjectKind, Value};
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn call_proc(name: &str, args: Vec<Value>) -> Value {

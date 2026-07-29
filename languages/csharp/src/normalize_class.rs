@@ -27,7 +27,7 @@ use vybe_ast::{
     ClassMember, ClassModifiers, ConstructorInitializerTarget, Modifiers, PropertySetter, Span,
     StmtKind, Visibility,
 };
-use vybe_bytecode::class_normalize::{
+use vybe_ast::class_normalize::{
     NormalMembers, build_normal_method, from_method_stmt, types::*,
 };
 

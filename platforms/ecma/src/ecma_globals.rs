@@ -13,8 +13,8 @@
 //! invocation target via the `__call` convention.
 
 use std::sync::Arc;
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{VM, Value};
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{VM, Value};
 use crate::receiver_host_fn_ref;
 
 // ---- Namespace/global wiring helpers (moved from vybe_host::namespaces) ----
@@ -36,7 +36,7 @@ fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
     {
         existing.clone()
     } else {
-        let obj = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
+        let obj = Value::Object(vybe_runtime::heap::alloc(Object::new()));
         vm.globals.insert(root_orig.clone(), obj.clone());
         if root_lc != root_orig {
             vm.globals.insert(root_lc, obj.clone());
@@ -59,7 +59,7 @@ fn ensure_namespace(vm: &mut VM, path: &[&str]) -> Value {
         if let Some(existing) = next {
             current = existing;
         } else {
-            let new_obj = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
+            let new_obj = Value::Object(vybe_runtime::heap::alloc(Object::new()));
             if let Value::Object(ref obj) = current {
                 let mut o = obj.lock().unwrap();
                 o.properties.insert(orig.clone(), new_obj.clone());
@@ -119,7 +119,7 @@ fn host_fn_ref(vm: &VM, module: &str, name: &str) -> Value {
         obj.properties
             .insert("name".into(), Value::String(Arc::from(name)));
         obj.kind = ObjectKind::HostFunction(idx);
-        Value::Object(vybe_bytecode::heap::alloc(obj))
+        Value::Object(vybe_runtime::heap::alloc(obj))
     } else {
         Value::Null
     }
@@ -343,7 +343,7 @@ pub fn register(vm: &mut VM) {
     vm.globals.insert("Boolean".to_string(), boolean.clone());
     vm.globals.insert("boolean".to_string(), boolean.clone());
 
-    let function = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
+    let function = Value::Object(vybe_runtime::heap::alloc(Object::new()));
     set_prop(&function, "name", Value::String(Arc::from("Function")));
     let function_proto = crate::function::shared_function_prototype();
     set_constructor_once(&function_proto, function.clone());
@@ -504,7 +504,7 @@ pub fn register(vm: &mut VM) {
                 "__proto__",
                 crate::function::shared_function_prototype(),
             );
-            let proto = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
+            let proto = Value::Object(vybe_runtime::heap::alloc(Object::new()));
             set_prop(&proto, "__proto__", object_proto.clone());
             set_constructor_once(&proto, ctor.clone());
             if let Value::Object(p) = &proto {
@@ -773,7 +773,7 @@ pub fn register(vm: &mut VM) {
             }
             set_prop(&ctor, "BYTES_PER_ELEMENT", Value::I32(*bpe));
             set_prop(&ctor, "__vybe_typed_array_ctor", Value::Bool(true));
-            let proto = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
+            let proto = Value::Object(vybe_runtime::heap::alloc(Object::new()));
             set_prop(&proto, "__proto__", object_proto.clone());
             for method in [
                 "at",
@@ -839,7 +839,7 @@ pub fn register(vm: &mut VM) {
         let ctor = host_fn_ref(vm, module, "new");
         if !matches!(ctor, Value::Null) {
             set_prop(&ctor, "name", Value::String(Arc::from(*global_name)));
-            let proto = Value::Object(vybe_bytecode::heap::alloc(Object::new()));
+            let proto = Value::Object(vybe_runtime::heap::alloc(Object::new()));
             set_prop(&proto, "__proto__", object_proto.clone());
             for method in ["slice", "resize", "transfer", "transferToFixedLength"] {
                 if let Some(&idx) = vm

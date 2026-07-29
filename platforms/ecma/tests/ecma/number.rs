@@ -11,9 +11,9 @@
 //! beyond that proposal (parseInt/parseFloat/isNaN/isFinite/etc.)
 //! is registered here.
 
-use vybe_bytecode::value::Value;
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::Value;
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn invoke(name: &str, args: Vec<Value>) -> Value {

@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 use vybe_platform_vybe::gui_state::GuiState;
 
 /// Capture VB console output on BOTH surfaces, mirroring the C#/libc harness:

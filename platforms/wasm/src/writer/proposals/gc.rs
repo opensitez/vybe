@@ -52,7 +52,7 @@
 //! extensions (`ref.eq`, `ref.as_non_null`, `br_on_null`,
 //! `br_on_non_null`) emit from `emit_core_op`.
 
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 /// GC proposal declares no imports — types live in the type section.
 pub const IMPORTS: &[(&str, &str)] = &[];

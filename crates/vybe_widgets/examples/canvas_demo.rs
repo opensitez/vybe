@@ -11,7 +11,7 @@
 //!
 //! This binary depends ONLY on `vybe_widgets` and `tiny_skia` (which is
 //! already a `vybe_widgets` dependency, re-exported as
-//! `vybe_widgets::Pixmap`). No `vybe_host`, no `vybe_bytecode`, no .NET
+//! `vybe_widgets::Pixmap`). No `vybe_host`, no `vybe_runtime`, no .NET
 //! wrapper layer.
 
 use vybe_widgets::canvas::{Canvas, Color, LineCap, LineJoin, RecordingCanvas, TinySkiaCanvas};

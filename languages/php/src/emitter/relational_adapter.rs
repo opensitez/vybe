@@ -13,8 +13,8 @@
 //! `profile.name == "php"` branch.
 
 use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 use vybe_compiler::primitives::ops::{emit_dyn_eq, emit_dyn_to_bool};
 

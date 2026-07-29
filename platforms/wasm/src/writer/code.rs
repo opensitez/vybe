@@ -13,9 +13,9 @@ use crate::writer::sections::{
     emit_box_f64, emit_box_i32, emit_import_call, emit_unbox_f64, emit_unbox_i32,
 };
 use crate::writer::types::WasmTypeContext;
-use vybe_bytecode::opcode::{OperandFormat, read_leb_u32};
-use vybe_bytecode::value::Value;
-use vybe_bytecode::{Chunk, Op};
+use vybe_runtime::opcode::{OperandFormat, read_leb_u32};
+use vybe_runtime::value::Value;
+use vybe_runtime::{Chunk, Op};
 
 /// A try/catch region extracted from the bytecode.
 ///
@@ -840,7 +840,7 @@ fn emit_core_op(
         // and v8 correctly rejects it.
         _ if op == Op::GLOBAL_GET => {
             let name_idx = read_u16(&chunk.code, ip);
-            if let Some(vybe_bytecode::value::Value::String(name)) =
+            if let Some(vybe_runtime::value::Value::String(name)) =
                 chunk.constants.get(name_idx as usize)
             {
                 if let Some(&gidx) = global_map.get(name.as_ref()) {
@@ -858,7 +858,7 @@ fn emit_core_op(
         }
         _ if op == Op::GLOBAL_SET => {
             let name_idx = read_u16(&chunk.code, ip);
-            if let Some(vybe_bytecode::value::Value::String(name)) =
+            if let Some(vybe_runtime::value::Value::String(name)) =
                 chunk.constants.get(name_idx as usize)
             {
                 if let Some(&gidx) = global_map.get(name.as_ref()) {

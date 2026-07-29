@@ -22,7 +22,7 @@
 //! language without a combinatorial type explosion.
 
 use crate::encoding::*;
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 pub const IMPORTS: &[(&str, &str)] = &[];
 pub const GLOBAL_IMPORTS: &[(&str, &str)] = &[];
@@ -84,10 +84,10 @@ pub fn module_uses_exceptions(chunks: &[Chunk]) -> bool {
         while ip + 3 < chunk.code.len() {
             let g = ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16;
             let s = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
-            if let Some(op) = vybe_bytecode::opcode::Op::decode(g, s) {
-                if op == vybe_bytecode::opcode::Op::THROW
-                    || op == vybe_bytecode::opcode::Op::THROW_REF
-                    || op == vybe_bytecode::opcode::Op::TRY_TABLE
+            if let Some(op) = vybe_runtime::opcode::Op::decode(g, s) {
+                if op == vybe_runtime::opcode::Op::THROW
+                    || op == vybe_runtime::opcode::Op::THROW_REF
+                    || op == vybe_runtime::opcode::Op::TRY_TABLE
                 {
                     return true;
                 }

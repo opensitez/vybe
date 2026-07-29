@@ -1,4 +1,4 @@
-use vybe_bytecode::{Chunk, Op};
+use vybe_runtime::{Chunk, Op};
 
 use vybe_compiler::primitives::{collections, strings};
 

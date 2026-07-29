@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::Object;
-use vybe_bytecode::value::Value;
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::Object;
+use vybe_runtime::value::Value;
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn invoke(name: &str, args: Vec<Value>) -> Value {
@@ -464,7 +464,7 @@ fn fround_reduces_precision_of_non_representable_value() {
 #[test]
 fn sum_precise_avoids_floating_point_cancellation() {
     // Math.sumPrecise([1e20, -1e20, 1.0]) = 1.0 without catastrophic cancellation.
-    use vybe_bytecode::value::Object;
+    use vybe_runtime::value::Object;
     let values = Value::Object(Arc::new(Mutex::new(Object::new_array(vec![
         Value::F64(1e20),
         Value::F64(-1e20),

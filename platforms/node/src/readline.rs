@@ -3,8 +3,8 @@
 //! Reference: <https://nodejs.org/api/readline.html>.
 
 use std::sync::Arc;
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{Object, Value};
 
 fn make_interface() -> Value {
     let mut o = Object::new();
@@ -34,7 +34,7 @@ fn make_interface() -> Value {
     o.properties
         .insert("line".into(), Value::String(Arc::from("")));
     o.properties.insert("cursor".into(), Value::I32(0));
-    Value::Object(vybe_bytecode::heap::alloc(o))
+    Value::Object(vybe_runtime::heap::alloc(o))
 }
 
 pub fn register(vm: &mut VM) {

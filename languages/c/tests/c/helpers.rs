@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
 /// Build a complete C program from includes, declarations, and main body.
 pub fn program_src(includes: &[&str], declarations: &str, body: &str) -> String {
@@ -51,7 +51,7 @@ macro_rules! c_compile_cases {
     };
 }
 
-fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
+fn compile_chunks(src: &str) -> Result<Vec<vybe_runtime::Chunk>, String> {
     {
         static R: std::sync::Once = std::sync::Once::new();
         R.call_once(vybe_language_c::register);

@@ -3,8 +3,8 @@
 //! C stdio formatting is owned here under the libc platform, not by the
 //! generic common formatter.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn call_math(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, line: u32) {
     let idx = chunks[current].add_import("ecma:math", func);

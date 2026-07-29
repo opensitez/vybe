@@ -39,7 +39,7 @@ use bytes::Bytes;
 use http::Request;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 use vybe_platform_node::http::{RequestContext, ResponseMessage, install_context};
 
 use super::response_stream::{BoxBody, build_response};

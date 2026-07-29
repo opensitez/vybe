@@ -6,8 +6,8 @@
 //! so PHP-specific routing lives in the PHP module instead of the common
 //! dispatcher. Returns `true` if `name` was recognized and emitted.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// PHP `isset($a, $b, ...)` — true iff every arg is non-null. Variadic, so it
 /// can't be a fixed-arity stdlib chunk.
@@ -84,7 +84,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.intval" => {
             let num_idx = chunks[current].add_import("ecma:number", "Number");
             chunks[current].emit_call(num_idx, 1, line);
-            chunks[current].emit_op(vybe_bytecode::opcode::Op::F64_TRUNC, line);
+            chunks[current].emit_op(vybe_runtime::opcode::Op::F64_TRUNC, line);
         }
         // Guarded delegators: PHP throws TypeError when the first argument
         // isn't an array; the underlying op is the shared `common:*` emit.
@@ -794,14 +794,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.mb_check_enc" => {
             let chunk = &mut chunks[current];
             for _ in 0..argc {
-                chunk.emit_op(vybe_bytecode::Op::DROP, line);
+                chunk.emit_op(vybe_runtime::Op::DROP, line);
             }
             chunk.emit_bool_const(true, line);
         }
         "php.mb_detect_enc" => {
             let chunk = &mut chunks[current];
             for _ in 0..argc {
-                chunk.emit_op(vybe_bytecode::Op::DROP, line);
+                chunk.emit_op(vybe_runtime::Op::DROP, line);
             }
             chunk.emit_string_const("UTF-8", line);
         }

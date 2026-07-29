@@ -4,7 +4,7 @@
 //! `SpecialMethodKind` (a numeric slot) and a canonical name. Which binding
 //! spells which role is Fortran's business and is decided here.
 
-use vybe_bytecode::class_normalize::types::SpecialMethodKind;
+use vybe_ast::class_normalize::types::SpecialMethodKind;
 
 /// Resolve a Fortran type-bound binding name to `(canonical, slot?)`.
 ///

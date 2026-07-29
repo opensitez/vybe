@@ -11,8 +11,8 @@
 //! returns the result. The chunk uses `emit_await` (JSPI suspend) for
 //! the await point — no custom opcodes.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use crate::primitives::functions;
 use std::sync::Arc;
@@ -86,9 +86,9 @@ fn emit_rejected_promise(chunk: &mut Chunk, line: u32) {
     let err = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, err, line);
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-    let type_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("__type")));
-    let state_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("__state")));
-    let value_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("__value")));
+    let type_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__type")));
+    let state_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__state")));
+    let value_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__value")));
     chunk.emit_dup(line);
     chunk.emit_string_const("Promise", line);
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);

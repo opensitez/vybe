@@ -1090,11 +1090,11 @@ impl Compiler {
                         // the real `app.http.request` type.
                         let aliased = self.resolve_source_type_alias(type_name);
                         let name_canon = self.canon(&aliased);
-                        let idx = self.chunk().add_constant(vybe_bytecode::Value::String(
+                        let idx = self.chunk().add_constant(vybe_runtime::Value::String(
                             std::sync::Arc::from(name_canon.as_str()),
                         ));
                         self.chunk()
-                            .emit_op_u16(vybe_bytecode::Op::REF_TEST, idx, line);
+                            .emit_op_u16(vybe_runtime::Op::REF_TEST, idx, line);
                         return Ok(());
                     }
                 }
@@ -2151,7 +2151,7 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.emit_const(Value::String(Arc::from(field.as_str())));
                     let line = self.line;
-                    vybe_bytecode::registry::hooks(&self.profile.name)
+                    vybe_runtime::registry::hooks(&self.profile.name)
                         .proxy_get
                         .unwrap()(&mut self.chunks, self.current, line);
                     return Ok(());
@@ -2656,7 +2656,7 @@ impl Compiler {
                     && !*null_safe
                     && let Some(target) = receiver_type_hint.as_deref().and_then(|type_hint| {
                         let class_name = Self::normalize_type_hint(type_hint);
-                        vybe_bytecode::namespaces::lookup_type_property_target(
+                        vybe_runtime::namespaces::lookup_type_property_target(
                             &self.profile.namespaces.type_scopes,
                             &class_name,
                             field,
@@ -2665,7 +2665,7 @@ impl Compiler {
                 {
                     self.compile_expr(object)?;
                     match target {
-                        vybe_bytecode::component_model::InstancePropertyTarget::Host {
+                        vybe_runtime::component_model::InstancePropertyTarget::Host {
                             module,
                             func,
                             key,
@@ -2679,7 +2679,7 @@ impl Compiler {
                             }
                             return Ok(());
                         }
-                        vybe_bytecode::component_model::InstancePropertyTarget::Common { emit } => {
+                        vybe_runtime::component_model::InstancePropertyTarget::Common { emit } => {
                             self.emit_common(&emit, 1, self.line);
                             return Ok(());
                         }
@@ -2699,7 +2699,7 @@ impl Compiler {
                 {
                     receiver_type_hint.as_deref().and_then(|type_hint| {
                         let class_name = Self::normalize_type_hint(type_hint);
-                        vybe_bytecode::namespaces::lookup_type_instance_target(
+                        vybe_runtime::namespaces::lookup_type_instance_target(
                             &self.profile.namespaces.type_scopes,
                             &class_name,
                             field,
@@ -2711,7 +2711,7 @@ impl Compiler {
                 };
 
                 if let Some(target) = dotnet_instance_zero_arg_method {
-                    if let vybe_bytecode::component_model::InstanceMethodTarget::Common {
+                    if let vybe_runtime::component_model::InstanceMethodTarget::Common {
                         emit,
                         ..
                     } = &target
@@ -2760,7 +2760,7 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     match target {
-                        vybe_bytecode::component_model::InstanceMethodTarget::Host {
+                        vybe_runtime::component_model::InstanceMethodTarget::Host {
                             module,
                             func,
                             ..
@@ -2768,7 +2768,7 @@ impl Compiler {
                             let idx = self.import(&module, &func);
                             self.emit_host_call(idx, 1);
                         }
-                        vybe_bytecode::component_model::InstanceMethodTarget::Common {
+                        vybe_runtime::component_model::InstanceMethodTarget::Common {
                             emit,
                             ..
                         } => {
@@ -3290,7 +3290,7 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
                     let line = self.line;
-                    vybe_bytecode::registry::hooks(&self.profile.name)
+                    vybe_runtime::registry::hooks(&self.profile.name)
                         .proxy_get
                         .unwrap()(&mut self.chunks, self.current, line);
                 } else if self.profile.dynamic_member_access && *null_safe {
@@ -3757,7 +3757,7 @@ impl Compiler {
                             self.compile_expr(&args[0].value)?;
                             self.compile_expr(&args[1].value)?;
                             let line = self.line;
-                            vybe_bytecode::registry::hooks(&self.profile.name)
+                            vybe_runtime::registry::hooks(&self.profile.name)
                                 .proxy_create
                                 .unwrap()(
                                 &mut self.chunks, self.current, line
@@ -4106,7 +4106,7 @@ impl Compiler {
                     // `lookup_known_type` at the fallback further down, so the
                     // only behaviour change is that registered types now carry
                     // their declared ancestry.
-                    let dotnet_constructor = vybe_bytecode::namespaces::lookup_type_ctor_target(
+                    let dotnet_constructor = vybe_runtime::namespaces::lookup_type_ctor_target(
                         &self.profile.namespaces.type_scopes,
                         bare_str,
                     );
@@ -4128,11 +4128,11 @@ impl Compiler {
                             .unwrap_or(type_name)
                             .to_string();
                         match target {
-                            vybe_bytecode::component_model::ConstructorTarget::Host(target) => {
+                            vybe_runtime::component_model::ConstructorTarget::Host(target) => {
                                 let idx = self.import(&target.module, &target.name);
                                 self.emit_host_call(idx, args.len() as u8);
                             }
-                            vybe_bytecode::component_model::ConstructorTarget::Common(name) => {
+                            vybe_runtime::component_model::ConstructorTarget::Common(name) => {
                                 let line = self.line;
                                 self.emit_common(&name, args.len() as u8, line);
                             }
@@ -4167,7 +4167,7 @@ impl Compiler {
                         // carried a hardcoded ~30-name list plus a
                         // `__java_class_is_instance` helper for exactly this.
                         // The ancestry is data the platform already declares.
-                        if let Some(spec) = vybe_bytecode::namespaces::lookup_type_ctor_spec(
+                        if let Some(spec) = vybe_runtime::namespaces::lookup_type_ctor_spec(
                             &self.profile.namespaces.type_scopes,
                             bare_str,
                         ) {
@@ -5165,7 +5165,7 @@ impl Compiler {
                 let line = self.line;
                 let type_idx =
                     self.chunk()
-                        .add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(
+                        .add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
                             canon_type.as_str(),
                         )));
                 let matched_slot = self.define_local("__type_test_matched");
@@ -5174,7 +5174,7 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, obj_slot);
                 self.chunk()
-                    .emit_op_u16(vybe_bytecode::Op::REF_TEST, type_idx, line);
+                    .emit_op_u16(vybe_runtime::Op::REF_TEST, type_idx, line);
                 crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if(line);
                 self.emit_const(Value::I32(1));
@@ -5205,12 +5205,12 @@ impl Compiler {
                     .cloned()
                     .collect();
                 for candidate in &reflection_matches {
-                    let candidate_idx = self.chunk().add_constant(vybe_bytecode::Value::String(
+                    let candidate_idx = self.chunk().add_constant(vybe_runtime::Value::String(
                         std::sync::Arc::from(candidate.as_str()),
                     ));
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.chunk()
-                        .emit_op_u16(vybe_bytecode::Op::REF_TEST, candidate_idx, line);
+                        .emit_op_u16(vybe_runtime::Op::REF_TEST, candidate_idx, line);
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
@@ -5250,10 +5250,10 @@ impl Compiler {
 
                     let list_idx = self
                         .chunk()
-                        .add_constant(vybe_bytecode::Value::String(std::sync::Arc::from("list")));
+                        .add_constant(vybe_runtime::Value::String(std::sync::Arc::from("list")));
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.chunk()
-                        .emit_op_u16(vybe_bytecode::Op::REF_TEST, list_idx, line);
+                        .emit_op_u16(vybe_runtime::Op::REF_TEST, list_idx, line);
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
@@ -7165,8 +7165,8 @@ impl Compiler {
 // halves of the same topic and now live in one file.
 use crate::primitives::instructions::core_wasm;
 use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 // Expression compilation helpers — shared bytecode patterns for common expressions.
 //
 // Ternary conditionals, short-circuit logic, and null coalescing are identical

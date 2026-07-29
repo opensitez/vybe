@@ -4,7 +4,7 @@
 //! adapters. Registered in `languages/mod.rs` as Lua's emit_dispatch.
 //! Returns `true` if the name was handled, `false` otherwise.
 
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     match name {

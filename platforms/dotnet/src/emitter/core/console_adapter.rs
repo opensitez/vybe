@@ -16,8 +16,8 @@
 //! Without this conversion, `Console.WriteLine(true)` prints `true` and
 //! `is_constant_pattern` etc. fail their .NET-shaped assertions.
 
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::Chunk;
+use vybe_runtime::opcode::Op;
+use vybe_runtime::Chunk;
 
 /// Stage the .NET string form of the value in `v_local` into `result_local`.
 ///

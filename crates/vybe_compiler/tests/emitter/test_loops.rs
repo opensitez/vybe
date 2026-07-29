@@ -3,7 +3,7 @@
 //! the imports it registers land on `chunks[0]` (module-level WASM
 //! convention). These tests drive them through a one-element slice.
 
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 use vybe_compiler::primitives::loops;
 
 fn one_chunk(local_count: u16) -> Vec<Chunk> {
@@ -68,7 +68,7 @@ fn emit_for_in_produces_loop() {
     let mut chunks = one_chunk(10);
     let state = loops::emit_for_in_start(&mut chunks, 0, 1, 2, 0);
     // element is on stack here — drop it to simulate body
-    chunks[0].emit_op(vybe_bytecode::opcode::Op::DROP, 0);
+    chunks[0].emit_op(vybe_runtime::opcode::Op::DROP, 0);
     loops::emit_for_in_end(&mut chunks, 0, 2, state, 0);
     assert!(
         chunks[0].code.len() > 10,

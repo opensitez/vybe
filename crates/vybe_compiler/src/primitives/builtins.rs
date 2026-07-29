@@ -803,7 +803,7 @@ impl Compiler {
             for arg in args {
                 self.compile_expr(arg)?;
             }
-            vybe_bytecode::registry::hooks(&self.profile.name)
+            vybe_runtime::registry::hooks(&self.profile.name)
                 .str_getcsv
                 .unwrap()(&mut self.chunks, self.current, args.len() as u8, line);
             return Ok(true);
@@ -840,7 +840,7 @@ impl Compiler {
                         // other member read (the dotted form normalizes to
                         // __len__ and would otherwise bypass §10.5.8).
                         self.emit_const(Value::String(Arc::from("length")));
-                        vybe_bytecode::registry::hooks(&self.profile.name)
+                        vybe_runtime::registry::hooks(&self.profile.name)
                             .proxy_get
                             .unwrap()(&mut self.chunks, self.current, line);
                     } else {
@@ -1993,7 +1993,7 @@ impl Compiler {
                 for arg in args {
                     self.compile_expr(arg)?;
                 }
-                vybe_bytecode::registry::hooks(&self.profile.name)
+                vybe_runtime::registry::hooks(&self.profile.name)
                     .str_getcsv
                     .unwrap()(
                     &mut self.chunks, self.current, args.len() as u8, line
@@ -2147,7 +2147,7 @@ impl Compiler {
                     self.emit(Op::NULL);
                     return Ok(());
                 };
-                use vybe_bytecode::opcode::OperandFormat;
+                use vybe_runtime::opcode::OperandFormat;
                 let l = self.line;
                 match op.operand_format() {
                     // v128.const: args are all immediates — a shape token then

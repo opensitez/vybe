@@ -13,7 +13,7 @@
 //! lookup, which only matches sequential values — the raw read hits the
 //! reverse field directly.
 
-use vybe_bytecode::{Chunk, Op};
+use vybe_runtime::{Chunk, Op};
 
 use crate::primitives::instructions::host;
 

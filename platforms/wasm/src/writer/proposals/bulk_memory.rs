@@ -22,7 +22,7 @@
 //! memory-ref sub-opcodes. Table operations would need our element
 //! section to expose drop-able segments, which we don't currently do.
 
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 pub const IMPORTS: &[(&str, &str)] = &[];
 pub const GLOBAL_IMPORTS: &[(&str, &str)] = &[];

@@ -15,8 +15,8 @@
 //! output, PHP/JS compact); [`emit_render_separated`] handles only the
 //! compact-with-spaces case ECMA can't produce (Python default output).
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use crate::primitives::functions::create_function_chunk;
 use crate::primitives::loops::LoopState;

@@ -14,8 +14,8 @@
 
 use std::sync::Arc;
 
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_compiler::primitives::ops::{
     emit_dyn_add_into, emit_dyn_eq_into, emit_dyn_ge_into, emit_dyn_gt_into, emit_dyn_lt_into,

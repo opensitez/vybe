@@ -1,4 +1,4 @@
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 use super::support::emit_null_result;
 

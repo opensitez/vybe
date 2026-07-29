@@ -36,14 +36,14 @@ use crate::weakmap::{
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 use unicode_normalization::UnicodeNormalization;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::{HostContext, VM};
+use vybe_runtime::value::{Object, ObjectKind, Value};
+use vybe_runtime::{HostContext, VM};
 
 fn make_array(elems: Vec<Value>) -> Value {
     let mut obj = Object::new_array(elems);
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("Array")));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn utf16_units(text: &str) -> Vec<u16> {
@@ -166,7 +166,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let is_cont = matches!(args.first(), Some(Value::Object(o))
                 if matches!(o.lock().unwrap().kind,
-                    vybe_bytecode::value::ObjectKind::Continuation(_)));
+                    vybe_runtime::value::ObjectKind::Continuation(_)));
             Value::Bool(is_cont)
         }),
     );
@@ -179,10 +179,10 @@ pub fn register(vm: &mut VM) {
                 Some(Value::Object(o)) => {
                     let obj = o.lock().unwrap();
                     match &obj.kind {
-                        vybe_bytecode::value::ObjectKind::Continuation(cs) => {
+                        vybe_runtime::value::ObjectKind::Continuation(cs) => {
                             matches!(
                                 *cs.state.lock().unwrap(),
-                                vybe_bytecode::value::ContinuationPhase::Done
+                                vybe_runtime::value::ContinuationPhase::Done
                             )
                         }
                         _ => false,
@@ -433,7 +433,7 @@ pub fn error_constructor_for(name: &str) -> Value {
     // `const T = TypeError; new T(msg, {cause})`) builds a proper Error.
     ctor.properties
         .insert("__error_ctor_name".into(), Value::String(Arc::from(name)));
-    let value = Value::Object(vybe_bytecode::heap::alloc(ctor));
+    let value = Value::Object(vybe_runtime::heap::alloc(ctor));
     map.insert(name.to_string(), value.clone());
     value
 }
@@ -521,7 +521,7 @@ fn dispatch_boolean(receiver: &Value, method: &str, _args: &[Value]) -> Value {
     }
 }
 
-fn dispatch_bigint(n: &vybe_bytecode::bigint::BigIntVal, method: &str, args: &[Value]) -> Value {
+fn dispatch_bigint(n: &vybe_runtime::bigint::BigIntVal, method: &str, args: &[Value]) -> Value {
     match method {
         "toString" => {
             let radix = args.first().map(|v| v.as_i32() as u32).unwrap_or(10);
@@ -995,8 +995,8 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             }
             let is_callable = matches!(&replacement, Value::Object(o)
                 if matches!(o.lock().unwrap().kind,
-                    vybe_bytecode::value::ObjectKind::Function(_)
-                    | vybe_bytecode::value::ObjectKind::HostFunction(_)));
+                    vybe_runtime::value::ObjectKind::Function(_)
+                    | vybe_runtime::value::ObjectKind::HostFunction(_)));
             let find = args.first().map(to_str).unwrap_or_default();
             if is_callable {
                 // Plain-string find with callable replacement: replace
@@ -1859,7 +1859,7 @@ fn array_iterator_result(value: Value, done: bool) -> Value {
     let mut obj = Object::new();
     obj.properties.insert("value".into(), value);
     obj.properties.insert("done".into(), Value::Bool(done));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn v_len_after(o: &Object) -> i32 {
@@ -2439,7 +2439,7 @@ fn dispatch_typed_array(
         }
         "map" => {
             let cb = args.first().cloned().unwrap_or(Value::Null);
-            let (elem, snapshot): (Option<vybe_bytecode::value::TypedElemKind>, Vec<Value>) = {
+            let (elem, snapshot): (Option<vybe_runtime::value::TypedElemKind>, Vec<Value>) = {
                 let o = obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ta) = &o.kind {
                     let live = ta_live_length(ta);
@@ -3115,7 +3115,7 @@ fn is_receiver_host_fn(value: &Value) -> bool {
         return false;
     };
     let o = obj.lock().unwrap();
-    matches!(o.kind, vybe_bytecode::value::ObjectKind::HostFunction(_))
+    matches!(o.kind, vybe_runtime::value::ObjectKind::HostFunction(_))
         && o.properties.contains_key("__vybe_method_receiver")
 }
 
@@ -3163,9 +3163,9 @@ fn bind_method_receiver(receiver: Arc<Mutex<Object>>, method: Value) -> Value {
     bound_obj.kind = kind;
     bound_obj.properties.insert(
         "__bound_args".into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(combined))),
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(combined))),
     );
-    Value::Object(vybe_bytecode::heap::alloc(bound_obj))
+    Value::Object(vybe_runtime::heap::alloc(bound_obj))
 }
 
 fn js_instanceof(receiver: &Value, ctor: &Value) -> bool {

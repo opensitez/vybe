@@ -8,7 +8,7 @@
 //! Each test runs through the VM dispatch AND round-trips through the
 //! WASM binary writer to confirm both sides stay in sync.
 
-use vybe_bytecode::{Chunk, Op, VM, Value};
+use vybe_runtime::{Chunk, Op, VM, Value};
 
 // ── table.get / table.set ──────────────────────────────────────────────
 

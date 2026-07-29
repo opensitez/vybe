@@ -1,4 +1,4 @@
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 use vybe_compiler::primitives::errors;
 
 #[test]
@@ -29,7 +29,7 @@ fn try_catch_roundtrip() {
     let catch_jump = errors::emit_try_start(&mut chunk, 0);
     // ... body would go here ...
     errors::emit_try_end(&mut chunk, 0);
-    let skip = chunk.emit_jump(vybe_bytecode::opcode::Op::BR, 0);
+    let skip = chunk.emit_jump(vybe_runtime::opcode::Op::BR, 0);
     errors::patch_catch(&mut chunk, catch_jump);
     // ... handler would go here ...
     chunk.patch_jump(skip);

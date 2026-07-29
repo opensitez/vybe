@@ -3,9 +3,9 @@
 use crate::encoding::*;
 use std::collections::HashSet;
 use std::sync::Arc;
-use vybe_bytecode::chunk::{ActiveDataSegment, ActiveElementSegment, StackSwitchHandler};
-use vybe_bytecode::value::Value;
-use vybe_bytecode::{Chunk, Op};
+use vybe_runtime::chunk::{ActiveDataSegment, ActiveElementSegment, StackSwitchHandler};
+use vybe_runtime::value::Value;
+use vybe_runtime::{Chunk, Op};
 
 #[derive(Default)]
 struct StandardSections {
@@ -2367,7 +2367,7 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             let (idx, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
             match op.operand_format() {
-                vybe_bytecode::opcode::OperandFormat::U16 => chunk.emit_op_u16(op, idx as u16, 0),
+                vybe_runtime::opcode::OperandFormat::U16 => chunk.emit_op_u16(op, idx as u16, 0),
                 _ => chunk.emit_op(op, 0),
             }
         }
@@ -2467,7 +2467,7 @@ fn emit_simd_prefixed(
                 chunk.emit(b, 0);
             }
         }
-        _ if op.operand_format() == vybe_bytecode::opcode::OperandFormat::U8 => {
+        _ if op.operand_format() == vybe_runtime::opcode::OperandFormat::U8 => {
             let lane = wasm.get(*pos).copied().unwrap_or(0);
             *pos += 1;
             chunk.emit_op_u8(op, lane, 0);
@@ -3351,7 +3351,7 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
                 .unwrap_or("")
                 .to_string();
             pos += nlen as usize;
-            imports.push(vybe_bytecode::chunk::Import {
+            imports.push(vybe_runtime::chunk::Import {
                 module,
                 name: iname,
             });
@@ -3412,7 +3412,7 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
                     // Decode field descriptor flags (WASM Annotations format)
                     let flags = data[pos];
                     pos += 1;
-                    let descriptor = vybe_bytecode::chunk::PropertyDescriptor {
+                    let descriptor = vybe_runtime::chunk::PropertyDescriptor {
                         writable: (flags & 0x01) != 0,
                         enumerable: (flags & 0x02) != 0,
                         configurable: (flags & 0x04) != 0,
@@ -3465,13 +3465,13 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
                     None
                 };
 
-                types.push(vybe_bytecode::chunk::TypeEntry {
+                types.push(vybe_runtime::chunk::TypeEntry {
                     name: type_name,
                     // The custom type section does not (yet) serialize the
                     // composite kind; decoded types are struct/class shaped.
                     // Array-kind round-tripping is part of the deferred
                     // imported-.wasm stamping work.
-                    kind: vybe_bytecode::chunk::CompositeKind::Struct,
+                    kind: vybe_runtime::chunk::CompositeKind::Struct,
                     parent,
                     fields,
                     methods,

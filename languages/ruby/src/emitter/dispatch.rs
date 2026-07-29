@@ -5,8 +5,8 @@
 //! Arms run as side-effects; `_ => return false` signals "not mine" so
 //! the caller can fall through. Returns `true` once an arm matched.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// Route a `ruby.<op>` name to its emitter. Returns `true` if handled.
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {

@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use super::super::class_exports::DotnetClassExport;
-use vybe_bytecode::component_model::{
+use vybe_runtime::component_model::{
     ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef, PropertyDef,
 };
 

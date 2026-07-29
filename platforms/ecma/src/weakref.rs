@@ -36,8 +36,8 @@
 //! See `JS_BUILTIN_CONVENTIONS.md` for marshaling rules.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{Object, ObjectKind, Value};
 
 const MODULE_WEAKREF: &str = "ecma:weakref";
 const MODULE_REGISTRY: &str = "ecma:finalizationregistry";
@@ -58,7 +58,7 @@ fn new_weakref(target: Value) -> Value {
         .insert("__type".into(), Value::String(Arc::from("WeakRef")));
     obj.properties.insert(WEAKREF_TAG.into(), Value::I32(1));
     obj.properties.insert(WEAKREF_TARGET_PROP.into(), target);
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn new_finalization_registry(callback: Value) -> Value {
@@ -73,9 +73,9 @@ fn new_finalization_registry(callback: Value) -> Value {
     // Entries: Array of `[target, heldValue, unregisterToken]` tuples.
     obj.properties.insert(
         REGISTRY_ENTRIES_PROP.into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new()))),
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))),
     );
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 // ── Type guards ───────────────────────────────────────────────────
@@ -180,7 +180,7 @@ fn register_finalization_registry_module(vm: &mut VM, module: &'static str) {
             let held = args.get(2).cloned().unwrap_or(Value::Undefined);
             let token = args.get(3).cloned().unwrap_or(Value::Undefined);
 
-            let entry = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+            let entry = Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
                 target, held, token,
             ])));
 
@@ -207,7 +207,7 @@ fn register_finalization_registry_module(vm: &mut VM, module: &'static str) {
             let target = args.get(1).cloned().unwrap_or(Value::Undefined);
             let held = args.get(2).cloned().unwrap_or(Value::Undefined);
             let token = args.get(3).cloned().unwrap_or(Value::Undefined);
-            let entry = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+            let entry = Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
                 target, held, token,
             ])));
             let lock = registry.lock().unwrap();
@@ -347,7 +347,7 @@ pub fn dispatch_registry_method(
             let target = args.first().cloned().unwrap_or(Value::Undefined);
             let held = args.get(1).cloned().unwrap_or(Value::Undefined);
             let token = args.get(2).cloned().unwrap_or(Value::Undefined);
-            let entry = Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+            let entry = Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
                 target, held, token,
             ])));
             let lock = registry.lock().unwrap();

@@ -3,8 +3,8 @@
 //! The shared host has no `ecma:optional` module, so Java lowers Optional to a
 //! tiny pair array: `[present: bool, value]`.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::strings;
 

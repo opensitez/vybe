@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
-fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
+fn compile_chunks(src: &str) -> Result<Vec<vybe_runtime::Chunk>, String> {
     // Java is now its own crate; register it into the shared plugin registry
     // so the compiler's emit-dispatch/normalize reach it.
     static REG: std::sync::Once = std::sync::Once::new();
@@ -21,7 +21,7 @@ pub fn compile_ok(src: &str) {
     }
 }
 
-pub fn compile(src: &str) -> Vec<vybe_bytecode::Chunk> {
+pub fn compile(src: &str) -> Vec<vybe_runtime::Chunk> {
     match compile_chunks(src) {
         Ok(c) => c,
         Err(e) => panic!("compile failed: {}", e),

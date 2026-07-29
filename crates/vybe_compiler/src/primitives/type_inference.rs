@@ -84,7 +84,7 @@ impl Compiler {
             return Some("Graphics".into());
         }
         let class_name = Self::expr_terminal_type_name(object)?;
-        vybe_bytecode::namespaces::lookup_type_member_return(
+        vybe_runtime::namespaces::lookup_type_member_return(
             &self.profile.namespaces.type_scopes,
             &class_name,
             field,
@@ -354,7 +354,7 @@ impl Compiler {
                             {
                                 let class_name = Self::normalize_type_hint(&receiver_type);
                                 if let Some(return_type) =
-                                    vybe_bytecode::namespaces::lookup_type_member_return(
+                                    vybe_runtime::namespaces::lookup_type_member_return(
                                         &self.profile.namespaces.type_scopes,
                                         &class_name,
                                         field,

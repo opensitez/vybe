@@ -2,7 +2,7 @@
 //!
 //! Phase 0: wraps the EXISTING Link-phase maps (`host_import_bindings`,
 //! `host_const_bindings`, `host_namespace_aliases`, `host_package_roots`)
-//! plus the global namespace tree (`vybe_bytecode::namespaces`) behind one
+//! plus the global namespace tree (`vybe_runtime::namespaces`) behind one
 //! query API implementing the plan's resolution order:
 //!
 //!   1. **Scope bindings** — locals/params/upvalues always shadow; a name
@@ -34,8 +34,8 @@ pub(super) fn register_platform_trees() {
     // which mounts the tree at plugin-registration time. The compiler no longer
     // names a platform, so a platform can become a dylib.
     crate::ensure_languages_registered();
-    vybe_bytecode::registry::register_all_platform_trees();
-    vybe_bytecode::registry::register_all_trees();
+    vybe_runtime::registry::register_all_platform_trees();
+    vybe_runtime::registry::register_all_trees();
 }
 
 /// What a name (or dotted chain) resolves to, in resolution order.
@@ -45,7 +45,7 @@ pub(crate) enum Resolution {
     /// Named ESM binding: direct `CALL_IMPORT module/func`.
     HostImport { module: String, func: String },
     /// Named ESM binding to an `ExportEntry::Value` — inlined at use-site.
-    HostConst(vybe_bytecode::Value),
+    HostConst(vybe_runtime::Value),
     /// `import * as ns from "module"` — member access under `module`.
     NamespaceAlias { module: String },
     /// Component-Model package root (`Imports System` style); the caller
@@ -269,7 +269,7 @@ impl Compiler {
     ///
     /// The compiler owns only the common resolution rules: scope shadowing,
     /// tree mounts, ambient roots, and namespace objects. Platform-specific
-    /// surface lives in `vybe_bytecode::namespaces` registrations.
+    /// surface lives in `vybe_runtime::namespaces` registrations.
     pub(crate) fn resolve_profile_namespace_chain(&self, parts: &[String]) -> Option<Resolution> {
         let first = parts.first()?;
         let lower: Vec<String> = parts.iter().map(|s| self.canon(s)).collect();

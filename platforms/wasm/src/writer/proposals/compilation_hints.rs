@@ -57,7 +57,7 @@
 
 use crate::encoding::*;
 use crate::writer::code;
-use vybe_bytecode::{Chunk, Op};
+use vybe_runtime::{Chunk, Op};
 
 /// The canonical section names — exported so the writer can use them.
 pub const COMPILATION_ORDER_SECTION_NAME: &str = "metadata.code.compilation_order";

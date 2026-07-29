@@ -21,8 +21,8 @@
 //! See `JS_BUILTIN_CONVENTIONS.md`.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{Object, ObjectKind, Value};
 
 /// Property marker denoting "this array's length is immutable".
 /// Mutation handlers (push/pop/shift/splice/setLength) check this
@@ -52,7 +52,7 @@ pub fn register(vm: &mut VM) {
                 .unwrap_or(0);
             let mut obj = Object::new_array(vec![Value::Null; n]);
             obj.properties.insert(FROZEN_MARK.into(), Value::I32(1));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -74,7 +74,7 @@ pub fn register(vm: &mut VM) {
             };
             let mut obj = Object::new_array(elements);
             obj.properties.insert(FROZEN_MARK.into(), Value::I32(1));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -95,7 +95,7 @@ pub fn register(vm: &mut VM) {
                 _ => Vec::new(),
             };
             // No FROZEN_MARK — growable.
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elements)))
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(elements)))
         }),
     );
 

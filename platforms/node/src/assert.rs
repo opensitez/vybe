@@ -3,7 +3,7 @@
 //! Reference: <https://nodejs.org/api/assert.html>.
 
 use std::sync::Arc;
-use vybe_bytecode::{VM, Value};
+use vybe_runtime::{VM, Value};
 
 fn loose_eq(a: &Value, b: &Value) -> bool {
     // Same type — direct equality
@@ -46,7 +46,7 @@ fn is_truthy(v: &Value) -> bool {
     }
 }
 
-fn throw_assert(ctx: &mut vybe_bytecode::vm::HostContext, msg: &str) {
+fn throw_assert(ctx: &mut vybe_runtime::vm::HostContext, msg: &str) {
     ctx.throw_value(Value::String(Arc::from(msg)));
 }
 

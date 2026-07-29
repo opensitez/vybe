@@ -6,9 +6,9 @@
 //!         br_on_cast/br_on_cast_fail.
 
 use std::sync::Arc;
-use vybe_bytecode::chunk::TypeEntry;
-use vybe_bytecode::value::Value;
-use vybe_bytecode::{Chunk, Op, VM};
+use vybe_runtime::chunk::TypeEntry;
+use vybe_runtime::value::Value;
+use vybe_runtime::{Chunk, Op, VM};
 use vybe_platform_wasm::read_wasm;
 use vybe_platform_wasm::write_wasm;
 
@@ -41,7 +41,7 @@ fn has_bytes(bytes: &[u8], needle: &[u8]) -> bool {
 fn type_entry(name: &str, fields: &[&str]) -> TypeEntry {
     TypeEntry {
         name: name.into(),
-        kind: vybe_bytecode::chunk::CompositeKind::Struct,
+        kind: vybe_runtime::chunk::CompositeKind::Struct,
         parent: String::new(),
         fields: fields.iter().map(|field| field.to_string()).collect(),
         methods: Vec::new(),
@@ -731,7 +731,7 @@ fn array_init_data_copies_into_array() {
     // the VM must assume i32 (4-byte elements), and reading one element from
     // byte offset 2 of a 4-byte segment would legitimately trap.
     let i8_array_type = {
-        let mut td = vybe_bytecode::typedef::TypeDef::new("<array i8>");
+        let mut td = vybe_runtime::typedef::TypeDef::new("<array i8>");
         td.add_field("i8");
         vm.type_registry.register(td)
     };

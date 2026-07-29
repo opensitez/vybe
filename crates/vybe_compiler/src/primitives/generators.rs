@@ -7,9 +7,9 @@
 
 use crate::primitives::instructions::{core_wasm, host, recipes};
 use std::sync::Arc;
-use vybe_bytecode::chunk::StackSwitchHandler;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::chunk::StackSwitchHandler;
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 use crate::primitives::collections;
 use crate::primitives::ops;
@@ -555,14 +555,14 @@ pub fn emit_resolve_async_iterator(
     let fn_slot = chunk.alloc_scratch(1);
 
     // Already an iterator (`next` present) → leave as-is (§25.1.2 fast path).
-    let next_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("next")));
+    let next_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("next")));
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, next_key, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
 
     // fn = obj[Symbol(@@asyncIterator)] ?? obj.asyncIterator
-    let async_sym = chunk.add_constant(vybe_bytecode::Value::String(Arc::from(
+    let async_sym = chunk.add_constant(vybe_runtime::Value::String(Arc::from(
         "Symbol(@@asyncIterator)",
     )));
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
@@ -571,7 +571,7 @@ pub fn emit_resolve_async_iterator(
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
-    let async_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("asyncIterator")));
+    let async_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("asyncIterator")));
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, async_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
@@ -586,7 +586,7 @@ pub fn emit_resolve_async_iterator(
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
-    let js_this_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("__js_this")));
+    let js_this_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__js_this")));
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
     chunk.emit_op_u16(Op::GLOBAL_SET, js_this_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
@@ -639,7 +639,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     // Skip the [Symbol.iterator] call to avoid infinite chains
     // (e.g. ArrayIterator has ObjectKind::Array → TypeRegistry
     // would resolve values() as its @@iterator, creating a loop).
-    let next_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("next")));
+    let next_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("next")));
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, next_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, next_fn_slot, line);
@@ -652,7 +652,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     // §7.4.2 GetIterator: for async, try @@asyncIterator first
     if async_iter {
         chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-        let async_sym = chunk.add_constant(vybe_bytecode::Value::String(Arc::from(
+        let async_sym = chunk.add_constant(vybe_runtime::Value::String(Arc::from(
             "Symbol(@@asyncIterator)",
         )));
         chunk.emit_op_u16(Op::STRUCT_GET, async_sym, line);
@@ -662,7 +662,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
         chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         let async_key =
-            chunk.add_constant(vybe_bytecode::Value::String(Arc::from("asyncIterator")));
+            chunk.add_constant(vybe_runtime::Value::String(Arc::from("asyncIterator")));
         chunk.emit_op_u16(Op::STRUCT_GET, async_key, line);
         chunk.emit_op_u16(Op::LOCAL_SET, iter_fn_slot, line);
         chunk.emit_end(line);
@@ -673,7 +673,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     }
     // Sync: try @@iterator
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    let sym_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from(
+    let sym_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from(
         "Symbol(@@iterator)",
     )));
     chunk.emit_op_u16(Op::STRUCT_GET, sym_key, line);
@@ -684,7 +684,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    let iter_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("iterator")));
+    let iter_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("iterator")));
     chunk.emit_op_u16(Op::STRUCT_GET, iter_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, iter_fn_slot, line);
     chunk.emit_end(line);
@@ -699,7 +699,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     chunk.emit_br_if(0, line); // BR to end of IF(no next), not outer_block
 
     // iter = iter_fn(obj) — §7.4.2 step 4: Call(method, obj)
-    let js_this_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("__js_this")));
+    let js_this_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__js_this")));
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::GLOBAL_SET, js_this_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, iter_fn_slot, line);
@@ -732,7 +732,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
 
-    let length_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("length")));
+    let length_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("length")));
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, length_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, done_slot, line); // reuse done_slot for length
@@ -800,7 +800,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
 
     // done = step.done; if truthy → break
     chunk.emit_op_u16(Op::LOCAL_GET, step_slot, line);
-    let done_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("done")));
+    let done_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("done")));
     chunk.emit_op_u16(Op::STRUCT_GET, done_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, done_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, done_slot, line);
@@ -810,7 +810,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     // result.push(step.value)
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, step_slot, line);
-    let value_key = chunk.add_constant(vybe_bytecode::Value::String(Arc::from("value")));
+    let value_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("value")));
     chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
     crate::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);

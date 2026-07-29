@@ -45,8 +45,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{HostContext, VM, Value};
 
 const COMMON: &str = "wasi:crypto/common";
 const SYMMETRIC: &str = "wasi:crypto/symmetric";
@@ -263,7 +263,7 @@ fn handle(kind: &str, id: u64) -> Value {
         .insert("__wasi_kind".into(), Value::String(Arc::from(kind)));
     obj.properties
         .insert("__wasi_id".into(), Value::F64(id as f64));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 /// A handle's id, when it is of the expected kind.
@@ -290,7 +290,7 @@ fn err(code: &str) -> Value {
     let mut obj = Object::new();
     obj.properties
         .insert("__wasi_error".into(), Value::String(Arc::from(code)));
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 // ── Byte decoding ────────────────────────────────────────────────────────
@@ -330,7 +330,7 @@ fn bytes_of(v: &Value) -> Vec<u8> {
 
 fn bytes_to_value(bytes: &[u8]) -> Value {
     let elems: Vec<Value> = bytes.iter().map(|b| Value::I32(*b as i32)).collect();
-    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elems)))
+    Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems)))
 }
 
 fn str_of(v: Option<&Value>) -> String {
@@ -432,7 +432,7 @@ fn register_common(vm: &mut VM) {
         COMMON,
         "options-open",
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-            Value::Object(vybe_bytecode::heap::alloc(Object::new()))
+            Value::Object(vybe_runtime::heap::alloc(Object::new()))
         }),
     );
     for name in [

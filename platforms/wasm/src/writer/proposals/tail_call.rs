@@ -22,7 +22,7 @@
 //! recursion in all our compiled languages (VB → JS all compile tail
 //! positions to `RETURN_CALL`).
 
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 pub const IMPORTS: &[(&str, &str)] = &[];
 pub const GLOBAL_IMPORTS: &[(&str, &str)] = &[];

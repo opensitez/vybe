@@ -1,5 +1,5 @@
-use vybe_bytecode::value::Value;
-use vybe_bytecode::{Chunk, Op, VM};
+use vybe_runtime::value::Value;
+use vybe_runtime::{Chunk, Op, VM};
 
 fn run_chunk_expect_i32(chunk: Chunk, expected: i32) {
     match VM::new().run(vec![chunk]).expect("chunk should execute") {

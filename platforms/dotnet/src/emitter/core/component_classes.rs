@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use super::super::class_exports::DotnetClassExport;
-use vybe_bytecode::component_model::ClassType;
+use vybe_runtime::component_model::ClassType;
 
 #[path = "component_classes_collections.rs"]
 mod component_classes_collections;

@@ -12,7 +12,7 @@
 
 use super::helpers::{run_vb, run_vb_gui, run_vb_vm};
 use std::sync::Arc;
-use vybe_bytecode::Value;
+use vybe_runtime::Value;
 
 // ============================================================
 // A. CLASS METHOD RESOLUTION (10 tests)

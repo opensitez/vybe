@@ -14,7 +14,7 @@ gui = ["vybe_widgets"]
 
 [dependencies]
 inventory = { workspace = true }
-vybe_bytecode = { workspace = true }
+vybe_runtime = { workspace = true }
 vybe_widgets = { workspace = true, optional = true }
 
 [dev-dependencies]

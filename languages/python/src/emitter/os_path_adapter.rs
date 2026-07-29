@@ -9,8 +9,8 @@
 //! Arguments arrive pre-pushed on the stack (left to right), matching the
 //! `emit_common` free-function calling convention (same as `math_adapter`).
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use vybe_compiler::primitives::{collections, ops, strings, tuples};
 

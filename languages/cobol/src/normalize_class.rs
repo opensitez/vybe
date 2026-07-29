@@ -5,7 +5,7 @@
 //! consume OO COBOL without needing a dedicated semantic lowering pass yet.
 
 use vybe_ast::{ClassMember, ClassModifiers, Span, StmtKind};
-use vybe_bytecode::class_normalize::{
+use vybe_ast::class_normalize::{
     NormalMembers,
     Access, BaseCall, NormalClass, NormalConstructor, NormalField, from_method_stmt,
 };

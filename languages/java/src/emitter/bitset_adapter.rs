@@ -1,7 +1,7 @@
 //! Java BitSet backed by `ecma:set` members containing set bit indexes.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::{
     collections,
     instructions::{core_wasm, host},

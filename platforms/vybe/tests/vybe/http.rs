@@ -7,9 +7,9 @@
 //!
 //! Reference: Vybe HTTP host module (`crates/vybe_host/src/modules/http.rs`).
 
-use vybe_bytecode::value::{ObjectKind, Value};
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::{ObjectKind, Value};
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn call_http(name: &str, args: Vec<Value>) -> Value {

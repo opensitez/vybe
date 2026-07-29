@@ -382,6 +382,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
         prelude.append(&mut body);
         body = prelude;
     }
+    if source.contains("__annotations__") {
+        let mut prelude = parse_python_prelude(TYPEOBJ_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
     if source.contains("collections") {
         let mut prelude = parse_collections_prelude();
         prelude.append(&mut body);
@@ -2255,13 +2260,25 @@ def new_class(name, bases=(), kwds=None, exec_body=None):
 "#;
 
 const FUNCTOOLS_PRELUDE: &str = r#"
-def wraps(wrapped):
+def wraps(wrapped, assigned=("__module__", "__name__", "__qualname__", "__doc__", "__annotations__"), updated=("__dict__",)):
     def decorator(wrapper):
-        wrapper.__name__ = wrapped.__name__
-        wrapper.__doc__ = wrapped.__doc__
+        if "__name__" in assigned:
+            wrapper.__name__ = wrapped.__name__
+        if "__doc__" in assigned:
+            wrapper.__doc__ = wrapped.__doc__
+        if "__annotations__" in assigned:
+            wrapper.__annotations__ = wrapped.__annotations__
         wrapper.__wrapped__ = wrapped
         return wrapper
     return decorator
+"#;
+
+const TYPEOBJ_PRELUDE: &str = r#"
+class __py_type_obj:
+    def __init__(self, name):
+        self.__name__ = name
+    def __repr__(self):
+        return "<class '" + self.__name__ + "'>"
 "#;
 
 const BYTES_REPR_PRELUDE: &str = r#"
@@ -3572,6 +3589,101 @@ fn walk_class_def(pair: Pair<Rule>, decorators: Vec<Expression>) -> Result<StmtK
     })
 }
 
+fn method_call_args_from_params(params: &[Param]) -> Vec<Argument> {
+    params
+        .iter()
+        .map(|p| Argument {
+            value: Expression::ident(&p.name),
+            name: None,
+            by_ref: false,
+            spread: p.is_rest || p.is_kwargs,
+        })
+        .collect()
+}
+
+fn decorated_method_body(
+    name: &str,
+    params: &[Param],
+    return_type: &Option<String>,
+    body: &[Statement],
+    decorators: Vec<Expression>,
+) -> Vec<Statement> {
+    let original_name = format!("__py_orig_{name}");
+    let original = StmtKind::FunctionDecl {
+        name: original_name.clone(),
+        params: params.to_vec(),
+        return_type: return_type.clone(),
+        body: body.to_vec(),
+        modifiers: Modifiers::default(),
+        handles: Vec::new(),
+        is_async: false,
+        is_generator: false,
+        is_sub: false,
+    };
+    let mut stmts = vec![Statement::new(original)];
+    assign_function_metadata(&mut stmts, &original_name, params, return_type.as_ref(), body);
+    let decorated = call_decorator_stack(decorators, Expression::ident(&original_name));
+    stmts.push(Statement::new(StmtKind::Return(Some(Expression::new(
+        ExprKind::Call {
+            callee: Box::new(decorated),
+            args: method_call_args_from_params(params),
+            optional: false,
+        },
+    )))));
+    stmts
+}
+
+fn block_desugared_function(stmt: &Statement) -> Option<StmtKind> {
+    let StmtKind::Block(stmts) = &stmt.kind else {
+        return None;
+    };
+    let Some(first) = stmts.first() else {
+        return None;
+    };
+    let StmtKind::FunctionDecl {
+        name,
+        params,
+        return_type,
+        body,
+        modifiers,
+        handles,
+        is_async,
+        is_generator,
+        is_sub,
+    } = &first.kind
+    else {
+        return None;
+    };
+    let (public_name, final_value) = stmts.iter().rev().find_map(|s| {
+        if let StmtKind::Assign { targets, value } = &s.kind
+            && targets.len() == 1
+            && let ExprKind::Ident(public) = &targets[0].kind
+        {
+            return Some((public.clone(), value.clone()));
+        }
+        None
+    })?;
+    let wrapped_body = vec![
+        Statement::new(first.kind.clone()),
+        Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::Call {
+            callee: Box::new(final_value),
+            args: method_call_args_from_params(params),
+            optional: false,
+        })))),
+    ];
+    Some(StmtKind::FunctionDecl {
+        name: public_name,
+        params: params.clone(),
+        return_type: return_type.clone(),
+        body: wrapped_body,
+        modifiers: modifiers.clone(),
+        handles: handles.clone(),
+        is_async: *is_async,
+        is_generator: *is_generator,
+        is_sub: *is_sub,
+    })
+}
+
 fn stmts_to_class_members(class_name: &str, stmts: Vec<Statement>) -> Vec<ClassMember> {
     let mut members: Vec<ClassMember> = Vec::new();
     // Track Property member index by name so @x.setter can find the getter.
@@ -3579,10 +3691,16 @@ fn stmts_to_class_members(class_name: &str, stmts: Vec<Statement>) -> Vec<ClassM
         std::collections::HashMap::new();
 
     for stmt in stmts {
+        let stmt = if let Some(recovered) = block_desugared_function(&stmt) {
+            Statement::new(recovered)
+        } else {
+            stmt
+        };
         match &stmt.kind {
             StmtKind::FunctionDecl {
                 name,
                 params,
+                return_type,
                 body,
                 modifiers,
                 is_async,
@@ -3667,6 +3785,23 @@ fn stmts_to_class_members(class_name: &str, stmts: Vec<Statement>) -> Vec<ClassM
                     .decorators
                     .iter()
                     .any(|d| matches!(&d.kind, ExprKind::Ident(n) if n == "classmethod"));
+                let general_decorators: Vec<Expression> = modifiers
+                    .decorators
+                    .iter()
+                    .filter(|d| !is_special_decorator(d))
+                    .cloned()
+                    .collect();
+                let final_body = if general_decorators.is_empty() {
+                    body.clone()
+                } else {
+                    decorated_method_body(
+                        name,
+                        params,
+                        return_type,
+                        body,
+                        general_decorators,
+                    )
+                };
                 // For @staticmethod, prepend a dummy "self" so that
                 // explicit_self_param's skip(1) removes the dummy, keeping
                 // the real params intact. Without this, skip(1) would drop
@@ -3711,13 +3846,14 @@ fn stmts_to_class_members(class_name: &str, stmts: Vec<Statement>) -> Vec<ClassM
                 let is_static =
                     has_staticmethod || has_classmethod || final_params.first().map_or(true, |p| p.name != "self");
                 let mut mods = modifiers.clone();
+                mods.decorators.retain(is_special_decorator);
                 mods.is_static = is_static;
                 members.push(ClassMember::Method(Box::new(Statement::new(
                     StmtKind::FunctionDecl {
                         name: name.clone(),
                         params: final_params,
                         return_type: None,
-                        body: body.clone(),
+                        body: final_body,
                         modifiers: mods,
                         handles: Vec::new(),
                         is_async: *is_async,
@@ -3822,6 +3958,103 @@ fn assign_member(object: Expression, field: &str, value: Expression) -> Statemen
     })
 }
 
+fn function_doc_expr(body: &[Statement]) -> Expression {
+    function_docstring(body)
+        .map(|doc| Expression::string(&doc))
+        .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)))
+}
+
+fn py_annotation_expr(type_hint: &str) -> Expression {
+    match type_hint.trim() {
+        "int" | "str" | "bool" | "float" | "list" | "dict" | "tuple" | "set" => call_ident(
+            "__py_type_obj",
+            vec![Expression::string(type_hint.trim())],
+        ),
+        other => Expression::string(other),
+    }
+}
+
+fn function_annotations_expr(params: &[Param], return_type: Option<&String>) -> Option<Expression> {
+    let mut props = Vec::new();
+    for p in params {
+        if let Some(hint) = &p.type_hint {
+            props.push(ObjectProperty::KeyValue {
+                key: Expression::string(&p.name),
+                value: py_annotation_expr(hint),
+            });
+        }
+    }
+    if let Some(hint) = return_type {
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string("return"),
+            value: py_annotation_expr(hint),
+        });
+    }
+    if props.is_empty() {
+        None
+    } else {
+        Some(Expression::new(ExprKind::Object(props)))
+    }
+}
+
+fn assign_function_metadata(
+    out: &mut Vec<Statement>,
+    fn_name: &str,
+    params: &[Param],
+    return_type: Option<&String>,
+    body: &[Statement],
+) {
+    out.push(assign_member(
+        Expression::ident(fn_name),
+        "__name__",
+        Expression::string(fn_name),
+    ));
+    out.push(assign_member(
+        Expression::ident(fn_name),
+        "__doc__",
+        function_doc_expr(body),
+    ));
+    if let Some(annotations) = function_annotations_expr(params, return_type) {
+        out.push(assign_member(
+            Expression::ident(fn_name),
+            "__annotations__",
+            annotations,
+        ));
+    }
+}
+
+fn call_decorator_stack(decorators: Vec<Expression>, base: Expression) -> Expression {
+    let mut acc = base;
+    for d in decorators.into_iter().rev() {
+        acc = Expression::new(call_or_new(
+            d,
+            vec![Argument {
+                value: acc,
+                name: None,
+                by_ref: false,
+                spread: false,
+            }],
+        ));
+    }
+    acc
+}
+
+fn decorator_root_ident(expr: &Expression) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.as_str()),
+        ExprKind::Call { callee, .. } => decorator_root_ident(callee),
+        ExprKind::Member { object, .. } => decorator_root_ident(object),
+        _ => None,
+    }
+}
+
+fn decorator_stack_contains_class(decorators: &[Expression]) -> bool {
+    decorators
+        .iter()
+        .filter_map(decorator_root_ident)
+        .any(is_defined_class)
+}
+
 /// Desugar Python function decorators to runtime application:
 /// `@a @b def f(...)` → `f = a(b(<function f>))`. Fires only when every
 /// decorator is a general (user) decorator; if any is special the declaration
@@ -3830,49 +4063,84 @@ fn desugar_function_decorators(decl: StmtKind, decorators: Vec<Expression>) -> S
     if decorators.is_empty() || decorators.iter().any(is_special_decorator) {
         return decl;
     }
-    let StmtKind::FunctionDecl { name, body, .. } = &decl else {
+    let (fn_name, params, return_type, body) = if let StmtKind::FunctionDecl {
+        name,
+        params,
+        return_type,
+        body,
+        ..
+    } = &decl {
+        (
+            name.clone(),
+            params.clone(),
+            return_type.clone(),
+            body.clone(),
+        )
+    } else {
         return decl;
     };
-    let fn_name = name.clone();
-    let doc = function_docstring(body).unwrap_or_default();
     // Strip the now-runtime-applied decorators off the inner declaration so the
     // metadata pass doesn't ALSO treat them as (inert) annotations.
+    let use_private_original = decorator_stack_contains_class(&decorators);
+    let original_name = if use_private_original {
+        format!("__py_orig_{fn_name}")
+    } else {
+        fn_name.clone()
+    };
     let mut inner = decl;
-    if let StmtKind::FunctionDecl { modifiers, .. } = &mut inner {
+    if let StmtKind::FunctionDecl {
+        name, modifiers, ..
+    } = &mut inner
+    {
+        if use_private_original {
+            *name = original_name.clone();
+        }
         modifiers.decorators = Vec::new();
     }
-    let mut stmts = vec![
-        Statement::new(inner),
-        assign_member(
-            Expression::ident(&fn_name),
+    let mut stmts = vec![Statement::new(inner)];
+    assign_function_metadata(&mut stmts, &original_name, &params, return_type.as_ref(), &body);
+    if use_private_original {
+        stmts.push(assign_member(
+            Expression::ident(&original_name),
             "__name__",
             Expression::string(&fn_name),
-        ),
-        assign_member(
-            Expression::ident(&fn_name),
-            "__doc__",
-            Expression::string(&doc),
-        ),
-    ];
-    // Fold innermost-first (reversed) so `@a @b def f` becomes `a(b(f))`.
-    let mut acc = Expression::ident(&fn_name);
-    for d in decorators.into_iter().rev() {
-        acc = Expression::new(ExprKind::Call {
-            callee: Box::new(d),
-            args: vec![Argument {
-                value: acc,
-                name: None,
-                by_ref: false,
-                spread: false,
-            }],
-            optional: false,
-        });
+        ));
     }
+    // Fold innermost-first (reversed) so `@a @b def f` becomes `a(b(f))`.
+    let acc = call_decorator_stack(decorators, Expression::ident(&original_name));
     stmts.push(Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident(&fn_name)],
         value: acc,
     }));
     StmtKind::Block(stmts)
+}
+
+fn class_decl_name(decl: &StmtKind) -> Option<String> {
+    match decl {
+        StmtKind::ClassDecl { name, .. } => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn desugar_class_decorators(decl: StmtKind, decorators: Vec<Expression>) -> StmtKind {
+    let general: Vec<Expression> = decorators
+        .into_iter()
+        .filter(|d| !is_dataclass_decorator(d))
+        .collect();
+    if general.is_empty() {
+        return decl;
+    }
+    let Some(name) = class_decl_name(&decl) else {
+        return decl;
+    };
+    let value = call_decorator_stack(general, Expression::ident(&name));
+    StmtKind::Block(vec![
+        Statement::new(decl),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&name)],
+            value,
+        }),
+    ])
 }
 
 fn walk_decorated(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -3901,7 +4169,10 @@ fn walk_decorated(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 let decl = walk_func_def(item, false, decorators.clone())?;
                 Ok(desugar_function_decorators(decl, decorators))
             }
-            Rule::class_def => walk_class_def(item, decorators),
+            Rule::class_def => {
+                let decl = walk_class_def(item, decorators.clone())?;
+                Ok(desugar_class_decorators(decl, decorators))
+            }
             Rule::async_stmt => {
                 // async def with decorators
                 for p in item.into_inner() {

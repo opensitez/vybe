@@ -9,11 +9,11 @@
 //! Membership uses `SameValueZero` via `Value`'s `Hash + Eq`.
 //!
 //! Marshaling + error-handling contract:
-//! `crates/vybe_bytecode/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
+//! `crates/vybe_runtime/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
 
 use std::sync::{Arc, Mutex, OnceLock};
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{Object, ObjectKind, Value};
 
 static SET_ITERATOR_IDX: OnceLock<usize> = OnceLock::new();
 
@@ -43,11 +43,11 @@ fn bound_iterator_method(
         .insert("name".into(), Value::String(Arc::from(name)));
     fn_obj.properties.insert(
         "__bound_args".into(),
-        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+        Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
             Value::Object(receiver.clone()),
         ]))),
     );
-    Value::Object(vybe_bytecode::heap::alloc(fn_obj))
+    Value::Object(vybe_runtime::heap::alloc(fn_obj))
 }
 
 /// Build a fully-formed Set object from `values`, carrying the same
@@ -66,7 +66,7 @@ pub fn make_set(values: indexmap::IndexSet<Value>) -> Value {
     // TypeRegistry-driven `STRUCT_GET s "add"` lookup misses.
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("Set")));
-    let set = vybe_bytecode::heap::alloc(obj);
+    let set = vybe_runtime::heap::alloc(obj);
     if let Some(idx) = SET_ITERATOR_IDX.get() {
         set.lock().unwrap().properties.insert(
             "iterator".into(),
@@ -305,7 +305,7 @@ pub fn register(vm: &mut VM) {
                     let pairs: Vec<Value> = s
                         .iter()
                         .map(|v| {
-                            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
                                 v.clone(),
                                 v.clone(),
                             ])))

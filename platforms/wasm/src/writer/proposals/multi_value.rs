@@ -20,7 +20,7 @@
 //! pre-scan. The code emitter writes the corresponding typeidx
 //! blocktype (signed-LEB128) per the spec.
 
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 pub const IMPORTS: &[(&str, &str)] = &[];
 pub const GLOBAL_IMPORTS: &[(&str, &str)] = &[];

@@ -1,5 +1,5 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_bytecode::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
+use vybe_runtime::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     let mut task = ClassType::new("Task")

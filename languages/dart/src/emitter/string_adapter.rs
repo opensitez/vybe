@@ -5,8 +5,8 @@
 //! `common::*` helper exists.
 
 use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_compiler::primitives::{
     collections, errors, functions, generators, loops, reflection, strings,
@@ -988,7 +988,7 @@ pub fn emit_dart_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
 /// CALL_IMPORT indexes them (registering on chunks[0] made the index
 /// misresolve whenever the tables diverged).
 pub fn emit_dart_print(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    use vybe_bytecode::Op as VOp;
+    use vybe_runtime::Op as VOp;
     emit_dart_to_string(chunks, current, line);
     let log_idx = chunks[current].add_import("wasi:logging/logging", "log");
     chunks[current].emit_op_u16(VOp::CALL_IMPORT, log_idx, line);
@@ -1292,7 +1292,7 @@ pub fn emit_dart_list_last(chunks: &mut [Chunk], current: usize, line: u32) {
 /// emitters; Map fall-through goes to `ecma:object.length` which returns
 /// the property count (Dart `Map.length` semantics).
 pub fn emit_dart_length(chunks: &mut [Chunk], current: usize, line: u32) {
-    use vybe_bytecode::Op as VOp;
+    use vybe_runtime::Op as VOp;
     let receiver_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);

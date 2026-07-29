@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
 #[macro_export]
 macro_rules! csharp_cases {
@@ -33,7 +33,7 @@ pub fn run_csharp(src: &str) -> Vec<String> {
             eprintln!(
                 "\n-- chunk 0: {} --\n{}",
                 chunk.name,
-                vybe_bytecode::debug::disassemble(chunk)
+                vybe_runtime::debug::disassemble(chunk)
             );
             eprintln!("-- constants --");
             for (ci, cv) in chunk.constants.iter().enumerate() {

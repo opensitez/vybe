@@ -21,10 +21,10 @@ pub mod winforms;
 pub use core::dotnet_core_component_descriptor;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
-use vybe_bytecode::component_model::{
+use vybe_runtime::component_model::{
     ComponentDescriptor, ComponentItemKind, ConstructorTarget, MethodBody,
 };
-use vybe_bytecode::component_model::{
+use vybe_runtime::component_model::{
     InstanceMethodTarget, InstancePropertyTarget, StaticPropertyTarget,
 };
 pub use winforms::classes;
@@ -1592,7 +1592,7 @@ mod tests {
 
 pub fn registry_lookup_constructor(
     name: &str,
-) -> Option<vybe_bytecode::component_model::ConstructorTarget> {
+) -> Option<vybe_runtime::component_model::ConstructorTarget> {
     surface().lookup_constructor(name)
 }
 
@@ -1600,14 +1600,14 @@ pub fn registry_lookup_instance_method(
     class_name: &str,
     method_name: &str,
     arg_count: u8,
-) -> Option<vybe_bytecode::component_model::InstanceMethodTarget> {
+) -> Option<vybe_runtime::component_model::InstanceMethodTarget> {
     surface().lookup_instance_method(class_name, method_name, arg_count)
 }
 
 pub fn registry_lookup_instance_property(
     class_name: &str,
     property_name: &str,
-) -> Option<vybe_bytecode::component_model::InstancePropertyTarget> {
+) -> Option<vybe_runtime::component_model::InstancePropertyTarget> {
     surface().lookup_instance_property(class_name, property_name)
 }
 

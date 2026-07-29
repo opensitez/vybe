@@ -1,4 +1,4 @@
-//! The vybe platform as a `vybe_bytecode::Plugin` — one plugin, same type as all
+//! The vybe platform as a `vybe_runtime::Plugin` — one plugin, same type as all
 //! the others. Its `init` registers everything this provider offers: the
 //! always-on `vybe:gui` 2D drawing surface, and (under the `gui` feature, when
 //! the `Gui` capability is granted and a `GuiState` is present) the
@@ -48,12 +48,12 @@ impl Plugin {
     }
 }
 
-impl vybe_bytecode::Plugin for Plugin {
+impl vybe_runtime::Plugin for Plugin {
     fn name(&self) -> &'static str {
         "vybe"
     }
 
-    fn init(&self, fw: &mut vybe_bytecode::Framework<'_>) {
+    fn init(&self, fw: &mut vybe_runtime::Framework<'_>) {
         // Whether the widget-backed surface got registered below. When it
         // did not, this plugin installs its own no-op `vybe:gui` stubs so
         // compiled control/form code still links. That fallback used to live
@@ -62,7 +62,7 @@ impl vybe_bytecode::Plugin for Plugin {
         #[allow(unused_mut)]
         let mut widgets_registered = false;
         #[cfg(feature = "gui")]
-        let gui_granted = fw.granted(vybe_bytecode::capabilities::Capability::Gui);
+        let gui_granted = fw.granted(vybe_runtime::capabilities::Capability::Gui);
 
         if let Some(vm) = fw.vm.as_deref_mut() {
             // Always-on: the vybe:gui 2D drawing surface.
@@ -87,7 +87,7 @@ impl vybe_bytecode::Plugin for Plugin {
         }
     }
 
-    fn finalize(&self, fw: &mut vybe_bytecode::Framework<'_>) {
+    fn finalize(&self, fw: &mut vybe_runtime::Framework<'_>) {
         // The vybe:gui control hierarchy + WinForms enums + control ctors,
         // registered via the `register_type` primitive after every plugin's
         // host fns exist. Idempotent across the base + gui-variant passes.
@@ -103,10 +103,10 @@ impl vybe_bytecode::Plugin for Plugin {
 /// `GuiState`, and the compiler must not name a platform crate.
 #[cfg(feature = "gui")]
 pub fn init_platforms_with_gui(
-    vm: &mut vybe_bytecode::VM,
+    vm: &mut vybe_runtime::VM,
 ) -> std::sync::Arc<std::sync::Mutex<crate::gui_state::GuiState>> {
     let plugin = Plugin::with_gui();
-    vybe_bytecode::init_registered_plugins(vm, &vybe_bytecode::capabilities::Capabilities::all());
+    vybe_runtime::init_registered_plugins(vm, &vybe_runtime::capabilities::Capabilities::all());
     plugin
         .gui_state()
         .expect("with_gui() always installs a GuiState")
@@ -114,4 +114,4 @@ pub fn init_platforms_with_gui(
 
 // Link-time registration: this crate submits its plugin to the one registry.
 // Nothing lists plugins in code — linking this crate IS the registration.
-vybe_bytecode::register_plugin!(Plugin);
+vybe_runtime::register_plugin!(Plugin);

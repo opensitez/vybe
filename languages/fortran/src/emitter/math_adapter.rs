@@ -4,8 +4,8 @@
 //! intrinsics. Composes pure WASM `f64.max` / `f64.min` opcodes —
 //! no host calls.
 
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::instructions::host;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {

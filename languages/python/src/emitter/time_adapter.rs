@@ -6,8 +6,8 @@
 //! it indexes/slices/unpacks/reprs (`time.struct_time(...)`) with no bespoke
 //! runtime type. No new host fns.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::instructions::core_wasm;
 
 const MS_PER_SECOND: f64 = 1_000.0;

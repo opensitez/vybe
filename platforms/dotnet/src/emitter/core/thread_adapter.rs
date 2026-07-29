@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use vybe_bytecode::{opcode::Op, Chunk, Value};
+use vybe_runtime::{opcode::Op, Chunk, Value};
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::instructions::core_wasm;
 

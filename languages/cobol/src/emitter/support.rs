@@ -1,5 +1,5 @@
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 pub(super) fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 {
     let base = chunks[current].alloc_scratch(argc as u16);

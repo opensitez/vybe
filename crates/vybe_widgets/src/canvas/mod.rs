@@ -3,7 +3,7 @@
 //! This module is the **toolkit-level drawing primitive**. It is
 //! deliberately VM-agnostic: a Rust user pulling in `vybe_widgets` as a
 //! standalone toolkit can build a `Canvas` widget, paint on it via the
-//! [`Canvas`] trait, and ship — with no `vybe_host`, `vybe_bytecode`, or
+//! [`Canvas`] trait, and ship — with no `vybe_host`, `vybe_runtime`, or
 //! .NET wrapper layer involved.
 //!
 //! ## Trait shape

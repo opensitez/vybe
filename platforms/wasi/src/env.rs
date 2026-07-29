@@ -1,6 +1,6 @@
 use std::sync::Arc;
-use vybe_bytecode::value::Object;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::Object;
+use vybe_runtime::{HostContext, VM, Value};
 
 // `register_dotnet_net` retired — `Dns.GetHostName()` lowers to
 // `node:os.hostname()` via `emitter::dotnet::core::sockets_adapter`.
@@ -26,13 +26,13 @@ pub fn register(vm: &mut VM) {
             }
             let pairs: Vec<Value> = std::env::vars()
                 .map(|(key, value)| {
-                    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
                         Value::String(Arc::from(key.as_str())),
                         Value::String(Arc::from(value.as_str())),
                     ])))
                 })
                 .collect();
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(pairs)))
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(pairs)))
         }),
     );
 
@@ -43,7 +43,7 @@ pub fn register(vm: &mut VM) {
             let args: Vec<Value> = std::env::args()
                 .map(|arg| Value::String(Arc::from(arg.as_str())))
                 .collect();
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(args)))
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(args)))
         }),
     );
 

@@ -5,7 +5,7 @@
 //! spells which role is Python's business and is decided here, before the
 //! `NormalClass` reaches any shared code.
 
-use vybe_bytecode::class_normalize::types::SpecialMethodKind;
+use vybe_ast::class_normalize::types::SpecialMethodKind;
 
 /// Resolve a Python method name to `(canonical, slot?)`.
 ///

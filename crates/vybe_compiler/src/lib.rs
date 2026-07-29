@@ -39,7 +39,7 @@ pub mod platforms {
     //! `gcl`). Route those through the registry and these dependencies — and
     //! this facade — go away entirely.
 }
-pub use vybe_bytecode::profile;
+pub use vybe_runtime::profile;
 pub mod projects;
 pub mod registry; // platform class-library registration (dotnet BCL, pascal plib)
 

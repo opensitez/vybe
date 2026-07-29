@@ -19,8 +19,8 @@
 //!   * `ecma:date.getUTCMonth` is 0-based, Python's `.month` is 1-based.
 //!   * `getUTCDay` is Sunday=0, Python's `weekday()` is Monday=0.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::instructions::core_wasm;
 
 pub const TYPE_KEY: &str = "__type";
@@ -53,13 +53,13 @@ const COMPONENTS: &[(&str, &str)] = &[
 ];
 
 fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
-    let k = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(key)));
+    let k = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
     chunk.emit_op_u16(Op::STRUCT_SET, k, line);
     chunk.emit_op(Op::DROP, line);
 }
 
 fn struct_get(chunk: &mut Chunk, key: &str, line: u32) {
-    let k = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(key)));
+    let k = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
     chunk.emit_op_u16(Op::STRUCT_GET, k, line);
 }
 

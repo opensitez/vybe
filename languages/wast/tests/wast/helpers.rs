@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
 /// Render a value the way a WASM host logs it: an i64 is a plain integer, not a
 /// JS BigInt, so drop the trailing `n` that `Value::BigInt`'s Display appends
@@ -66,7 +66,7 @@ pub fn run_wast_result(src: &str) -> Result<Vec<String>, String> {
         .unwrap_or_else(|e| panic!("WAST compile failed:\n{}", e));
 
     for (i, c) in chunks.iter().enumerate() {
-        println!("Chunk {i}:\n{}", vybe_bytecode::debug::disassemble(c));
+        println!("Chunk {i}:\n{}", vybe_runtime::debug::disassemble(c));
     }
 
     let mut vm = VM::new();

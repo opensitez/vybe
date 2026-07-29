@@ -4,8 +4,8 @@
 //! always match the lower-level ECMA array helpers, so keep those translations
 //! in the Java frontend.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::{collections, instructions::host};
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {

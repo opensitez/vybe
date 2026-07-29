@@ -1,8 +1,8 @@
 //! Pascal runtime-surface helpers routed via `common:pascal.*`.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::Op;
-use vybe_bytecode::Value;
+use vybe_runtime::Chunk;
+use vybe_runtime::Op;
+use vybe_runtime::Value;
 use vybe_compiler::primitives::collections;
 
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {

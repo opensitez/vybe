@@ -1,7 +1,7 @@
 //! Java reflection surface backed by the shared reflection descriptor shape.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::instructions::host;
 use vybe_compiler::primitives::{reflection, strings};
 

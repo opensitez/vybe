@@ -6,8 +6,8 @@
 
 use crate::primitives::collections;
 use crate::primitives::instructions::core_wasm;
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn emit_slot_is_nullish(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);

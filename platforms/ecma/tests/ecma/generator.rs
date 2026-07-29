@@ -6,9 +6,9 @@
 //! Each test covers a distinct behaviour of the generator state machine.
 
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, Value};
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::{Object, Value};
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn invoke(name: &str, args: Vec<Value>) -> Value {
@@ -54,7 +54,7 @@ fn from_values_yields_each_element_in_order() {
     let g = invoke(
         "fromValues",
         vec![Value::Object(Arc::new(Mutex::new(
-            vybe_bytecode::value::Object::new_array(vec![
+            vybe_runtime::value::Object::new_array(vec![
                 Value::I32(1),
                 Value::I32(2),
                 Value::I32(3),
@@ -87,7 +87,7 @@ fn next_after_exhaustion_returns_undefined_done_true() {
     let g = invoke(
         "fromValues",
         vec![Value::Object(Arc::new(Mutex::new(
-            vybe_bytecode::value::Object::new_array(vec![Value::I32(1)]),
+            vybe_runtime::value::Object::new_array(vec![Value::I32(1)]),
         )))],
     );
     invoke("next", vec![g.clone()]); // consume the one value
@@ -105,7 +105,7 @@ fn return_closes_the_generator_and_returns_given_value() {
     let g = invoke(
         "fromValues",
         vec![Value::Object(Arc::new(Mutex::new(
-            vybe_bytecode::value::Object::new_array(vec![Value::I32(1), Value::I32(2)]),
+            vybe_runtime::value::Object::new_array(vec![Value::I32(1), Value::I32(2)]),
         )))],
     );
     let result = invoke("return", vec![g.clone(), Value::I32(99)]);
@@ -126,7 +126,7 @@ fn throw_on_done_generator_propagates_the_error() {
     let g = invoke(
         "fromValues",
         vec![Value::Object(Arc::new(Mutex::new(
-            vybe_bytecode::value::Object::new_array(vec![]),
+            vybe_runtime::value::Object::new_array(vec![]),
         )))],
     );
     invoke("next", vec![g.clone()]); // exhaust immediately
@@ -217,12 +217,12 @@ fn to_array_collects_all_yielded_values() {
     let g = invoke(
         "fromValues",
         vec![Value::Object(Arc::new(Mutex::new(
-            vybe_bytecode::value::Object::new_array(vec![Value::I32(10), Value::I32(20)]),
+            vybe_runtime::value::Object::new_array(vec![Value::I32(10), Value::I32(20)]),
         )))],
     );
     let arr = invoke("toArray", vec![g]);
     if let Value::Object(o) = arr {
-        if let vybe_bytecode::value::ObjectKind::Array(elems) = &o.lock().unwrap().kind {
+        if let vybe_runtime::value::ObjectKind::Array(elems) = &o.lock().unwrap().kind {
             assert_eq!(elems.len(), 2);
             assert_eq!(elems[0], Value::I32(10));
             assert_eq!(elems[1], Value::I32(20));
@@ -242,7 +242,7 @@ fn generator_symbol_iterator_returns_self() {
     let g = invoke(
         "fromValues",
         vec![Value::Object(Arc::new(Mutex::new(
-            vybe_bytecode::value::Object::new_array(vec![Value::I32(1)]),
+            vybe_runtime::value::Object::new_array(vec![Value::I32(1)]),
         )))],
     );
     let self_iter = invoke("symbolIterator", vec![g.clone()]);

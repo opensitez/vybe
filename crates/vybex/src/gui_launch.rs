@@ -246,7 +246,7 @@ fn make_widget(ctrl: &vybe_platform_dotnet::winforms::designer::Control) -> Box<
 struct FormApp {
     font_system: FontSystem,
     swash_cache: SwashCache,
-    vm: Rc<RefCell<vybe_bytecode::VM>>,
+    vm: Rc<RefCell<vybe_runtime::VM>>,
     gui: Arc<Mutex<GuiState>>,
     // Data binding state
     data_bindings: Vec<DataBindingEntry>,
@@ -323,7 +323,7 @@ impl Application for FormApp {
     /// tick — nothing drove them before.
     fn on_tick(&mut self) {
         let now = std::time::Instant::now();
-        let due: Vec<vybe_bytecode::Value> = {
+        let due: Vec<vybe_runtime::Value> = {
             let timers = self.gui.lock().unwrap().active_timers();
             let mut due = Vec::new();
             for (name, interval_ms, handler) in timers {
@@ -346,13 +346,13 @@ impl Application for FormApp {
             vm.globals.get("__f").cloned()
         }
         .or_else(|| self.gui.lock().unwrap().form_object.clone())
-        .unwrap_or(vybe_bytecode::Value::Null);
+        .unwrap_or(vybe_runtime::Value::Null);
         for handler in due {
             let mut vm = self.vm.borrow_mut();
             let _ = match fn_arity(&handler) {
                 0 => vm.invoke(&handler, &[]),
                 1 => vm.invoke(&handler, &[me.clone()]),
-                _ => vm.invoke(&handler, &[me.clone(), vybe_bytecode::Value::Null]),
+                _ => vm.invoke(&handler, &[me.clone(), vybe_runtime::Value::Null]),
             };
         }
     }
@@ -380,14 +380,14 @@ impl FormApp {
                 .globals
                 .get("__f")
                 .cloned()
-                .unwrap_or(vybe_bytecode::Value::Null);
+                .unwrap_or(vybe_runtime::Value::Null);
             let arity = fn_arity(&cb);
             let result = match arity {
                 0 => vm.invoke(&cb, &[]),
                 1 => vm.invoke(&cb, &[me]),
                 _ => vm.invoke(
                     &cb,
-                    &[me, vybe_bytecode::Value::Null, vybe_bytecode::Value::Null],
+                    &[me, vybe_runtime::Value::Null, vybe_runtime::Value::Null],
                 ),
             };
             if let Err(e) = result {
@@ -421,7 +421,7 @@ impl FormApp {
     /// FIRST argument for an arity-1 handler — matching Flutter's
     /// `onChanged(v)`. Arity-2+ handlers keep the framework-agnostic
     /// `(sender, e)` shape (`.NET`/VB), so no language is special-cased.
-    fn fire_value_event(&mut self, control_name: &str, value: vybe_bytecode::Value) {
+    fn fire_value_event(&mut self, control_name: &str, value: vybe_runtime::Value) {
         let callback = {
             let g = self.gui.lock().unwrap();
             g.get_event_handler(control_name, "Click").cloned()
@@ -433,18 +433,18 @@ impl FormApp {
 
     fn invoke_callback_with_value(
         &mut self,
-        cb: &vybe_bytecode::Value,
+        cb: &vybe_runtime::Value,
         control_name: &str,
-        value: vybe_bytecode::Value,
+        value: vybe_runtime::Value,
     ) {
         let mut vm = self.vm.borrow_mut();
         let me = vm
             .globals
             .get("__f")
             .cloned()
-            .unwrap_or(vybe_bytecode::Value::Null);
+            .unwrap_or(vybe_runtime::Value::Null);
         let arity = fn_arity(cb);
-        let sender = vybe_bytecode::Value::String(Arc::from(control_name));
+        let sender = vybe_runtime::Value::String(Arc::from(control_name));
         let result = match arity {
             0 => vm.invoke(cb, &[]),
             // Flutter `onChanged(value)` — the new value is the sole argument.
@@ -459,15 +459,15 @@ impl FormApp {
         drop(vm);
     }
 
-    fn invoke_callback(&mut self, cb: &vybe_bytecode::Value, control_name: &str) {
+    fn invoke_callback(&mut self, cb: &vybe_runtime::Value, control_name: &str) {
         let mut vm = self.vm.borrow_mut();
         let me = vm
             .globals
             .get("__f")
             .cloned()
-            .unwrap_or(vybe_bytecode::Value::Null);
+            .unwrap_or(vybe_runtime::Value::Null);
         let arity = fn_arity(cb);
-        let sender = vybe_bytecode::Value::String(Arc::from(control_name));
+        let sender = vybe_runtime::Value::String(Arc::from(control_name));
         if Self::gui_trace_enabled() {
             eprintln!(
                 "[gui] invoke_callback control={} sender={} arity={} me_type={}",
@@ -482,7 +482,7 @@ impl FormApp {
             0 => vm.invoke(cb, &[]),
             1 => vm.invoke(cb, &[me]),
             2 => vm.invoke(cb, &[me, sender]),
-            _ => vm.invoke(cb, &[me, sender, vybe_bytecode::Value::Null]),
+            _ => vm.invoke(cb, &[me, sender, vybe_runtime::Value::Null]),
         };
         if Self::gui_trace_enabled() {
             eprintln!(
@@ -495,11 +495,11 @@ impl FormApp {
             eprintln!("Event handler error: {e}");
         } else if Self::gui_trace_enabled() {
             eprintln!("[gui] invoke_callback ok");
-            if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
+            if let Some(vybe_runtime::Value::Object(form_obj)) = vm.globals.get("__f") {
                 let form = form_obj.lock().unwrap();
                 let keys: Vec<String> = form.properties.keys().cloned().collect();
                 let txtcalc_text = form.properties.get("txtcalc").and_then(|value| {
-                    if let vybe_bytecode::Value::Object(control_obj) = value {
+                    if let vybe_runtime::Value::Object(control_obj) = value {
                         let control = control_obj.lock().unwrap();
                         control
                             .properties
@@ -510,7 +510,7 @@ impl FormApp {
                     }
                 });
                 let txtdisplay_text = form.properties.get("txtdisplay").and_then(|value| {
-                    if let vybe_bytecode::Value::Object(control_obj) = value {
+                    if let vybe_runtime::Value::Object(control_obj) = value {
                         let control = control_obj.lock().unwrap();
                         control
                             .properties
@@ -533,10 +533,10 @@ impl FormApp {
         let updates = {
             let vm = self.vm.borrow();
             let mut ups: Vec<(String, String)> = Vec::new();
-            if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
+            if let Some(vybe_runtime::Value::Object(form_obj)) = vm.globals.get("__f") {
                 let fo = form_obj.lock().unwrap();
                 for (field_name, value) in &fo.properties {
-                    if let vybe_bytecode::Value::Object(control_obj) = value {
+                    if let vybe_runtime::Value::Object(control_obj) = value {
                         let control = control_obj.lock().unwrap();
                         let control_name = control
                             .properties
@@ -579,16 +579,16 @@ impl FormApp {
                 // that value as the handler's first argument so Flutter's
                 // `onChanged(v)` receives it (see `fire_value_event`).
                 WidgetEvent::CheckboxToggled(name, v) | WidgetEvent::RadioSelected(name, v) => {
-                    self.fire_value_event(name, vybe_bytecode::Value::Bool(*v));
+                    self.fire_value_event(name, vybe_runtime::Value::Bool(*v));
                 }
                 WidgetEvent::TextChanged(name, s) => {
                     self.fire_value_event(
                         name,
-                        vybe_bytecode::Value::String(Arc::from(s.as_str())),
+                        vybe_runtime::Value::String(Arc::from(s.as_str())),
                     );
                 }
                 WidgetEvent::SliderChanged(name, v) => {
-                    self.fire_value_event(name, vybe_bytecode::Value::F64(*v as f64));
+                    self.fire_value_event(name, vybe_runtime::Value::F64(*v as f64));
                 }
                 WidgetEvent::SelectChanged(name, _) | WidgetEvent::ListBoxSelected(name, _) => {
                     let callback = {
@@ -666,13 +666,13 @@ impl FormApp {
 
     fn get_connection_string(&self, bs_name: &str, adapter_name: &str) -> String {
         let vm = self.vm.borrow();
-        if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
+        if let Some(vybe_runtime::Value::Object(form_obj)) = vm.globals.get("__f") {
             let fo = form_obj.lock().unwrap();
-            if let Some(vybe_bytecode::Value::Object(bs_obj)) =
+            if let Some(vybe_runtime::Value::Object(bs_obj)) =
                 fo.properties.get(&bs_name.to_lowercase())
             {
                 let bs = bs_obj.lock().unwrap();
-                if let Some(vybe_bytecode::Value::Object(da_obj)) = bs.properties.get("datasource")
+                if let Some(vybe_runtime::Value::Object(da_obj)) = bs.properties.get("datasource")
                 {
                     let da = da_obj.lock().unwrap();
                     if let Some(v) = da.properties.get("connectionstring") {
@@ -680,7 +680,7 @@ impl FormApp {
                     }
                 }
             }
-            if let Some(vybe_bytecode::Value::Object(da_obj)) =
+            if let Some(vybe_runtime::Value::Object(da_obj)) =
                 fo.properties.get(&adapter_name.to_lowercase())
             {
                 let da = da_obj.lock().unwrap();
@@ -704,7 +704,7 @@ impl FormApp {
         let row = &store.rows[store.position as usize];
 
         let vm = self.vm.borrow_mut();
-        if let Some(vybe_bytecode::Value::Object(form_obj)) = vm.globals.get("__f") {
+        if let Some(vybe_runtime::Value::Object(form_obj)) = vm.globals.get("__f") {
             let fo = form_obj.lock().unwrap();
             for binding in &self.data_bindings {
                 if !binding.source_name.eq_ignore_ascii_case(bs_name) {
@@ -719,11 +719,11 @@ impl FormApp {
                     .cloned()
                     .unwrap_or_default();
                 let ctrl_lower = binding.control_name.to_lowercase();
-                if let Some(vybe_bytecode::Value::Object(ctrl_obj)) = fo.properties.get(&ctrl_lower)
+                if let Some(vybe_runtime::Value::Object(ctrl_obj)) = fo.properties.get(&ctrl_lower)
                 {
                     ctrl_obj.lock().unwrap().properties.insert(
                         binding.property.to_lowercase(),
-                        vybe_bytecode::Value::String(Arc::from(value.as_str())),
+                        vybe_runtime::Value::String(Arc::from(value.as_str())),
                     );
                 }
             }
@@ -780,10 +780,10 @@ impl FormApp {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-pub(crate) fn fn_arity(val: &vybe_bytecode::Value) -> usize {
+pub(crate) fn fn_arity(val: &vybe_runtime::Value) -> usize {
     match val {
-        vybe_bytecode::Value::Object(obj) => match &obj.lock().unwrap().kind {
-            vybe_bytecode::value::ObjectKind::Function(f) => f.arity as usize,
+        vybe_runtime::Value::Object(obj) => match &obj.lock().unwrap().kind {
+            vybe_runtime::value::ObjectKind::Function(f) => f.arity as usize,
             _ => 0,
         },
         _ => 0,
@@ -792,16 +792,16 @@ pub(crate) fn fn_arity(val: &vybe_bytecode::Value) -> usize {
 
 // ── Dialog registration ────────────────────────────────────────────────
 
-fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
+fn register_dialog_fns(vm: &mut vybe_runtime::VM) {
     use std::sync::Arc;
-    use vybe_bytecode::Value;
-    use vybe_bytecode::value::{Object, ObjectKind};
+    use vybe_runtime::Value;
+    use vybe_runtime::value::{Object, ObjectKind};
     use vybe_widgets::dialogs::{FileDialog, FolderDialog};
 
     vm.register_host_fn(
         "vybe:gui",
         "__dlg_show",
-        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+        Box::new(|_ctx: &mut vybe_runtime::HostContext, args: &[Value]| {
             let (dialog_type, title) = if let Some(Value::Object(obj)) = args.first() {
                 let o = obj.lock().unwrap();
                 let dt = o
@@ -884,7 +884,7 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
     vm.register_host_fn(
         "vybe:gui",
         "inputBox",
-        Box::new(|_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+        Box::new(|_ctx: &mut vybe_runtime::HostContext, args: &[Value]| {
             let default = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
             Value::String(Arc::from(default.as_str()))
         }),
@@ -897,7 +897,7 @@ fn register_dialog_fns(vm: &mut vybe_bytecode::VM) {
     let dlg_show_ref = {
         let mut o = Object::new();
         o.kind = ObjectKind::HostFunction(dlg_show_idx);
-        Value::Object(vybe_bytecode::heap::alloc(o))
+        Value::Object(vybe_runtime::heap::alloc(o))
     };
     vm.globals.insert("__dlg_show_ref".into(), dlg_show_ref);
 }
@@ -988,7 +988,7 @@ fn extract_binding_info(
 /// Requires the `gui_forms` feature.
 #[cfg(feature = "gui_forms")]
 pub fn launch_vybewidget_form(
-    mut vm: vybe_bytecode::VM,
+    mut vm: vybe_runtime::VM,
     gui: Arc<Mutex<GuiState>>,
     form: &vybe_platform_dotnet::winforms::designer::Form,
 ) {
@@ -1063,7 +1063,7 @@ pub fn launch_vybewidget_form(
 }
 
 /// Launch a programmatic form — GuiState already has all widgets and event handlers.
-pub fn launch_gui(mut vm: vybe_bytecode::VM, gui: Arc<Mutex<GuiState>>) {
+pub fn launch_gui(mut vm: vybe_runtime::VM, gui: Arc<Mutex<GuiState>>) {
     register_dialog_fns(&mut vm);
 
     let (title, width, height) = {
@@ -1095,7 +1095,7 @@ pub fn launch_gui(mut vm: vybe_bytecode::VM, gui: Arc<Mutex<GuiState>>) {
 /// Requires the `gui_forms` feature for the designer form path.
 #[cfg(feature = "gui_forms")]
 pub fn launch_vm_form(
-    vm: vybe_bytecode::VM,
+    vm: vybe_runtime::VM,
     gui: Arc<Mutex<GuiState>>,
     initial_form: Option<vybe_platform_dotnet::winforms::designer::Form>,
 ) {
@@ -1114,8 +1114,8 @@ pub fn launch_vm_form(
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use vybe_bytecode::value::ObjectKind;
-    use vybe_bytecode::{HostContext, VM, Value};
+    use vybe_runtime::value::ObjectKind;
+    use vybe_runtime::{HostContext, VM, Value};
     use vybe_compiler::primitives::Compiler;
     use vybe_compiler::profile::parse_profile;
     use vybe_compiler::projects;
@@ -1131,7 +1131,7 @@ mod tests {
             .expect("VB compile failed");
 
         let mut vm = VM::new();
-        let gui = crate::cli::register_plugins_with_gui(&mut vm, &vybe_bytecode::capabilities::Capabilities::all());
+        let gui = crate::cli::register_plugins_with_gui(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
         vm.register_host_fn(
             "wasi:logging/logging",
             "log",
@@ -1147,7 +1147,7 @@ mod tests {
         let chunks = bundle.compile().expect("project compile failed");
 
         let mut vm = VM::new();
-        let gui = crate::cli::register_plugins_with_gui(&mut vm, &vybe_bytecode::capabilities::Capabilities::all());
+        let gui = crate::cli::register_plugins_with_gui(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
         vm.register_host_fn(
             "wasi:logging/logging",
             "log",

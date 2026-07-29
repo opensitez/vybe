@@ -2,7 +2,7 @@
 //! (DOM Living Standard §4.5.1 `DOMImplementation.createDocument`).
 
 use std::sync::Arc;
-use vybe_bytecode::{Chunk, Op, VM, Value};
+use vybe_runtime::{Chunk, Op, VM, Value};
 use vybe_compiler::primitives::platforms::register_platforms_all;
 
 fn call(module: &str, name: &str, args: Vec<Value>) -> Value {

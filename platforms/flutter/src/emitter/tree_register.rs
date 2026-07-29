@@ -1,7 +1,7 @@
 //! `flutter.*` namespace-tree registration.
 //!
 //! The Flutter platform contributes DATA — its widget catalog — to the shared
-//! namespace tree in `vybe_bytecode::namespaces`. Each widget registers as a
+//! namespace tree in `vybe_runtime::namespaces`. Each widget registers as a
 //! `Type` node at `flutter.<name>` carrying a `CtorSpec`, so the name is
 //! reachable fully-qualified from ANY language and constructs through the ONE
 //! common-resolver `Ctor` path (`Compiler::emit_tree_ctor_construction`) — no
@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::sync::Once;
 
-use vybe_bytecode::namespaces::{self, CtorSpec, FieldGui, NamespaceNode, Subtree};
+use vybe_runtime::namespaces::{self, CtorSpec, FieldGui, NamespaceNode, Subtree};
 
 use super::catalog::{self, FlutterClass};
 

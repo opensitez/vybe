@@ -12,8 +12,8 @@
 
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{HostContext, VM, Value};
 
 // Reuses the sha1/md5 crates already in the workspace so subtle.digest
 // covers the W3C mandatory algorithm list without new deps.
@@ -43,7 +43,7 @@ fn make_promise_fulfilled(value: Value) -> Value {
     obj.properties
         .insert("__state".into(), Value::String(Arc::from("fulfilled")));
     obj.properties.insert("__value".into(), value);
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 pub fn register(vm: &mut VM) {
@@ -107,14 +107,14 @@ pub fn register(vm: &mut VM) {
             };
             let mut buf_obj = Object::new();
             buf_obj.kind = ObjectKind::ArrayBuffer(make_buffer_state(digest_bytes));
-            let buffer = Value::Object(vybe_bytecode::heap::alloc(buf_obj));
+            let buffer = Value::Object(vybe_runtime::heap::alloc(buf_obj));
             make_promise_fulfilled(buffer)
         }),
     );
 }
 
-fn make_buffer_state(bytes: Vec<u8>) -> vybe_bytecode::value::ArrayBufferState {
-    vybe_bytecode::value::ArrayBufferState {
+fn make_buffer_state(bytes: Vec<u8>) -> vybe_runtime::value::ArrayBufferState {
+    vybe_runtime::value::ArrayBufferState {
         bytes: Arc::new(Mutex::new(bytes)),
         max_byte_length: 0,
         resizable: false,

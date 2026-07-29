@@ -45,7 +45,7 @@ pub mod version_adapter;
 pub mod visualbasic_adapter;
 pub mod xml_linq_adapter;
 
-use vybe_bytecode::component_model::ComponentDescriptor;
+use vybe_runtime::component_model::ComponentDescriptor;
 
 pub use host_map::{map_host_func, namespace_to_host_module, static_method_mappings};
 pub use imports::default_interface_imports;

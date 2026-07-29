@@ -133,13 +133,13 @@ impl Compiler {
 
     fn seed_dotnet_reflection_metadata(&mut self) {
         use crate::profile::ReflectionTypeNaming;
-        use vybe_bytecode::component_model::ComponentItemKind;
+        use vybe_runtime::component_model::ComponentItemKind;
 
         if self.profile.reflection_type_naming != ReflectionTypeNaming::Dotnet {
             return;
         }
 
-        for export in vybe_bytecode::registry::platform_component_descriptors()
+        for export in vybe_runtime::registry::platform_component_descriptors()
             .into_iter()
             .flat_map(|d| d.exports)
         {

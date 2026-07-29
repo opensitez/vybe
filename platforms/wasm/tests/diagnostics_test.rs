@@ -8,8 +8,8 @@
 //!      Useful for visually inspecting what we produce without
 //!      running through an external disassembler.
 
-use vybe_bytecode::value::ValueTag;
-use vybe_bytecode::{Chunk, Op, VM, Value};
+use vybe_runtime::value::ValueTag;
+use vybe_runtime::{Chunk, Op, VM, Value};
 use vybe_platform_wasm::disassembler::{write_wat, write_wat_chunk};
 
 // ── Type recorder ──────────────────────────────────────────────────

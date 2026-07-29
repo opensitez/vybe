@@ -24,9 +24,9 @@
 //!   - Async iterator protocol (`on(ee, event)` → AsyncIterator)
 
 use std::sync::Arc;
-use vybe_bytecode::value::{ObjectKind, Value};
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::{ObjectKind, Value};
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn call_events(name: &str, args: Vec<Value>) -> Value {

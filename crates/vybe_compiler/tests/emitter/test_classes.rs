@@ -105,8 +105,8 @@ fn an_ordinary_method_binds_under_one_name_only() {
 
 // ── emit helpers produce correct bytecode ───────────────────
 
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 #[test]
 fn emit_new_typed_object_stamps_type() {

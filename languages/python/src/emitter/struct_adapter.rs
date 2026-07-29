@@ -3,8 +3,8 @@
 //! Python owns the format grammar and tuple result shape. Shared byte/endian
 //! mechanics come from `vybe_compiler::primitives::packing`.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
@@ -138,7 +138,7 @@ fn emit_throw_exception(chunk: &mut Chunk, message: &str, line: u32) {
 }
 
 fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
-    let key = chunk.add_constant(vybe_bytecode::Value::String(std::sync::Arc::from(key)));
+    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
     chunk.emit_op_u16(Op::STRUCT_SET, key, line);
     chunk.emit_op(Op::DROP, line);
 }

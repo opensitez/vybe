@@ -1,5 +1,5 @@
 use super::helpers::{load_vb_profile, run_vb, run_vb_vm};
-use vybe_bytecode::{Value, value::ObjectKind};
+use vybe_runtime::{Value, value::ObjectKind};
 
 macro_rules! vb_full_spec {
     ($name:ident, $src:expr, [$($expected:expr),* $(,)?]) => {

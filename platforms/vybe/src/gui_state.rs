@@ -5,7 +5,7 @@
 //! The CLI just takes the finished form and runs it in a window.
 
 use std::collections::HashMap;
-use vybe_bytecode::Value;
+use vybe_runtime::Value;
 use vybe_widgets::canvas::RecordingCanvas;
 use vybe_widgets::{
     BindingNavigator, Button, Canvas as CanvasWidget, Checkbox, CommandValue, ContextMenu,

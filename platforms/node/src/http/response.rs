@@ -5,7 +5,7 @@
 //! (matching PHP's `headers_sent` warning behavior).
 
 use std::sync::Arc;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
 use super::context::with_context;
 
@@ -271,7 +271,7 @@ pub fn register(vm: &mut VM) {
                 // Options may arrive as either a Map or an Ordinary object
                 // (PHP stdlib construction varies). Read both shapes.
                 let get = |key: &str| -> Option<String> {
-                    if let vybe_bytecode::value::ObjectKind::Map(m) = &opts.kind {
+                    if let vybe_runtime::value::ObjectKind::Map(m) = &opts.kind {
                         let as_str = m.get(&Value::String(std::sync::Arc::from(key)));
                         return as_str.map(|v| format!("{}", v));
                     }

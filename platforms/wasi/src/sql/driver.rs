@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use vybe_bytecode::Value;
+use vybe_runtime::Value;
 
 /// A database driver — one implementation per backend (SQLite, PostgreSQL, MySQL).
 ///

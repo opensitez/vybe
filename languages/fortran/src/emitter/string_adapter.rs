@@ -8,7 +8,7 @@
 //!   (stub: trimStart for now; full adjustl needs declared length).
 //! - `adjustr(s)` — symmetric.
 
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 use vybe_compiler::primitives::instructions::host;
 
 /// Fortran `len_trim(s)` — length of string after stripping trailing

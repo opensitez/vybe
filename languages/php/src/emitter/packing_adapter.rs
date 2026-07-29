@@ -4,8 +4,8 @@
 //! Byte/endian mechanics use `vybe_compiler::primitives::packing` so PHP shares the same
 //! binary packing surface as Lua/Ruby/Python-style adapters.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)

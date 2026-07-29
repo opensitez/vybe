@@ -7,8 +7,8 @@
 //! The receiver and explicit arguments arrive pre-pushed on the stack (receiver
 //! first), matching the `emit_common` value-method calling convention.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 use vybe_compiler::primitives::{collections, ops, strings};
 
@@ -826,7 +826,7 @@ fn emit_pair_chars(
     chunks[current].emit_op_u16(Op::LOCAL_GET, table, line);
     emit_char_at(chunks, current, src, i, line);
     if delete {
-        let k = chunks[current].add_constant(vybe_bytecode::Value::Null);
+        let k = chunks[current].add_constant(vybe_runtime::Value::Null);
         chunks[current].emit_op_u16(Op::CONST, k, line);
     } else {
         emit_char_at(chunks, current, dst, i, line);

@@ -7,7 +7,7 @@
 //! functionality and belongs in the vybe platform crate.
 
 use std::sync::Arc;
-use vybe_bytecode::{VM, Value};
+use vybe_runtime::{VM, Value};
 
 /// Register the `vybe:gui` no-op stubs on `vm`.
 pub fn register_gui_stubs(vm: &mut VM) {
@@ -75,7 +75,7 @@ pub fn register_gui_stubs(vm: &mut VM) {
             "vybe:gui",
             "newControlsCollection",
             Box::new(|_ctx, args| {
-                use vybe_bytecode::value::Object;
+                use vybe_runtime::value::Object;
                 let owner = args.first().cloned();
                 let mut collection = Object::new_array(vec![]);
                 collection.properties.insert(
@@ -88,14 +88,14 @@ pub fn register_gui_stubs(vm: &mut VM) {
                 collection
                     .properties
                     .insert("count".into(), Value::F64(0.0));
-                Value::Object(vybe_bytecode::heap::alloc(collection))
+                Value::Object(vybe_runtime::heap::alloc(collection))
             }),
         );
         vm.register_host_fn(
             "vybe:gui",
             "newComponentsCollection",
             Box::new(|_ctx, args| {
-                use vybe_bytecode::value::Object;
+                use vybe_runtime::value::Object;
                 let owner = args.first().cloned();
                 let mut collection = Object::new_array(vec![]);
                 collection.properties.insert(
@@ -108,7 +108,7 @@ pub fn register_gui_stubs(vm: &mut VM) {
                 collection
                     .properties
                     .insert("count".into(), Value::F64(0.0));
-                Value::Object(vybe_bytecode::heap::alloc(collection))
+                Value::Object(vybe_runtime::heap::alloc(collection))
             }),
         );
         vm.register_host_fn(
@@ -119,7 +119,7 @@ pub fn register_gui_stubs(vm: &mut VM) {
                     let value = args.get(1).cloned().unwrap_or(Value::Null);
                     let mut collection = collection.lock().unwrap();
                     let mut len = None;
-                    if let vybe_bytecode::value::ObjectKind::Array(items) = &mut collection.kind {
+                    if let vybe_runtime::value::ObjectKind::Array(items) = &mut collection.kind {
                         if !items.iter().any(|existing| existing.eq(&value)) {
                             items.push(value);
                         }
@@ -143,7 +143,7 @@ pub fn register_gui_stubs(vm: &mut VM) {
             Box::new(|_ctx, args| {
                 if let Some(Value::Object(collection)) = args.first() {
                     let mut collection = collection.lock().unwrap();
-                    if let vybe_bytecode::value::ObjectKind::Array(items) = &mut collection.kind {
+                    if let vybe_runtime::value::ObjectKind::Array(items) = &mut collection.kind {
                         items.clear();
                     }
                     collection
@@ -166,7 +166,7 @@ pub fn register_gui_stubs(vm: &mut VM) {
                 let needle = args.get(1).cloned().unwrap_or(Value::Null);
                 let collection = collection.lock().unwrap();
                 let contains =
-                    if let vybe_bytecode::value::ObjectKind::Array(items) = &collection.kind {
+                    if let vybe_runtime::value::ObjectKind::Array(items) = &collection.kind {
                         items.iter().any(|existing| existing.eq(&needle))
                     } else {
                         false
@@ -178,7 +178,7 @@ pub fn register_gui_stubs(vm: &mut VM) {
             "vybe:gui",
             "newForm",
             Box::new(|_ctx, args| {
-                use vybe_bytecode::value::Object;
+                use vybe_runtime::value::Object;
                 let title = args.first().map(|v| format!("{v}")).unwrap_or_default();
                 let mut obj = Object::new();
                 obj.properties
@@ -196,7 +196,7 @@ pub fn register_gui_stubs(vm: &mut VM) {
                 ctrls.properties.insert("count".into(), Value::F64(0.0));
                 obj.properties.insert(
                     "controls".into(),
-                    Value::Object(vybe_bytecode::heap::alloc(ctrls)),
+                    Value::Object(vybe_runtime::heap::alloc(ctrls)),
                 );
                 let mut comps = Object::new_array(vec![]);
                 comps.properties.insert(
@@ -206,9 +206,9 @@ pub fn register_gui_stubs(vm: &mut VM) {
                 comps.properties.insert("count".into(), Value::F64(0.0));
                 obj.properties.insert(
                     "components".into(),
-                    Value::Object(vybe_bytecode::heap::alloc(comps)),
+                    Value::Object(vybe_runtime::heap::alloc(comps)),
                 );
-                Value::Object(vybe_bytecode::heap::alloc(obj))
+                Value::Object(vybe_runtime::heap::alloc(obj))
             }),
         );
         vm.register_host_fn("vybe:gui", "addHandler", Box::new(|_ctx, _| Value::Null));
@@ -254,7 +254,7 @@ pub fn register_gui_stubs(vm: &mut VM) {
             "vybe:gui",
             "getContext",
             Box::new(|_ctx, args| {
-                use vybe_bytecode::value::Object;
+                use vybe_runtime::value::Object;
                 let ctrl_name = args.first().map(|v| format!("{}", v)).unwrap_or_default();
                 let mut o = Object::new();
                 o.properties
@@ -267,7 +267,7 @@ pub fn register_gui_stubs(vm: &mut VM) {
                     "__control_name".into(),
                     Value::String(Arc::from(ctrl_name.to_lowercase().as_str())),
                 );
-                Value::Object(vybe_bytecode::heap::alloc(o))
+                Value::Object(vybe_runtime::heap::alloc(o))
             }),
         );
         for fn_name in &[
@@ -405,7 +405,7 @@ pub fn register_gui_stubs(vm: &mut VM) {
                 &format!("new_{}", ct),
                 Box::new(move |_ctx, _args| {
                     use std::sync::atomic::{AtomicU32, Ordering};
-                    use vybe_bytecode::value::Object;
+                    use vybe_runtime::value::Object;
                     static COUNTER: AtomicU32 = AtomicU32::new(1);
                     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
                     let name = format!("{}_{}", type_name.to_lowercase(), id);
@@ -424,7 +424,7 @@ pub fn register_gui_stubs(vm: &mut VM) {
                     );
                     obj.properties
                         .insert("name".into(), Value::String(Arc::from(name.as_str())));
-                    Value::Object(vybe_bytecode::heap::alloc(obj))
+                    Value::Object(vybe_runtime::heap::alloc(obj))
                 }),
             );
         }

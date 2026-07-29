@@ -6,7 +6,7 @@ use crate::ast::*;
 use crate::languages::Language;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use vybe_bytecode::{ExportEntry, ModuleRecord};
+use vybe_runtime::{ExportEntry, ModuleRecord};
 
 /// How the program starts.
 #[derive(Debug, Clone)]
@@ -51,7 +51,7 @@ pub struct Bundle {
 /// so the VM setup can install globals for read-as-value imports and
 /// synthesize namespace objects for wildcard imports.
 pub struct CompiledBundle {
-    pub chunks: Vec<vybe_bytecode::Chunk>,
+    pub chunks: Vec<vybe_runtime::Chunk>,
     pub host_imports: crate::primitives::HostImportMetadata,
 }
 
@@ -200,7 +200,7 @@ impl Bundle {
     /// (tests, older code) that don't need the import metadata. Newer
     /// callers that install ESM host bindings should use
     /// [`Self::compile_full`].
-    pub fn compile(&self) -> Result<Vec<vybe_bytecode::Chunk>, String> {
+    pub fn compile(&self) -> Result<Vec<vybe_runtime::Chunk>, String> {
         self.compile_full().map(|r| r.chunks)
     }
 
@@ -224,14 +224,14 @@ impl Bundle {
     /// Linker sees pre-resolved `(final_module, final_name)` pairs.
     pub fn compile_full_with_modules(
         &self,
-        modules: &std::collections::HashMap<String, vybe_bytecode::ModuleRecord>,
+        modules: &std::collections::HashMap<String, vybe_runtime::ModuleRecord>,
     ) -> Result<CompiledBundle, String> {
         self.compile_full_with_modules_and_php_entry_override(modules, None)
     }
 
     pub fn compile_full_with_modules_and_php_entry_override(
         &self,
-        modules: &std::collections::HashMap<String, vybe_bytecode::ModuleRecord>,
+        modules: &std::collections::HashMap<String, vybe_runtime::ModuleRecord>,
         php_entry_path_override: Option<&Path>,
     ) -> Result<CompiledBundle, String> {
         let module = self.prepared_module_with_php_entry_override(php_entry_path_override)?;
@@ -247,7 +247,7 @@ impl Bundle {
     pub fn compile_prepared_module(
         &self,
         module: &Module,
-        modules: &std::collections::HashMap<String, vybe_bytecode::ModuleRecord>,
+        modules: &std::collections::HashMap<String, vybe_runtime::ModuleRecord>,
     ) -> Result<CompiledBundle, String> {
         // Load profile + compile source code.
         //
@@ -263,7 +263,7 @@ impl Bundle {
         {
             static SEED: std::sync::Once = std::sync::Once::new();
             SEED.call_once(|| {
-                let constants = vybe_bytecode::registry::platform_namespace_constants();
+                let constants = vybe_runtime::registry::platform_namespace_constants();
                 let m = constants
                     .iter()
                     .map(|c| **c)
@@ -293,7 +293,7 @@ impl Bundle {
         for wf in &self.wasm_files {
             // Through the registry: the platform that can decode this format
             // registered a reader. The compiler does not name `vybe_platform_wasm`.
-            let wasm_chunks = vybe_bytecode::registry::platform_read_binary_module(&wf.data)
+            let wasm_chunks = vybe_runtime::registry::platform_read_binary_module(&wf.data)
                 .ok_or_else(|| {
                     format!("no platform registered a reader for {}", wf.path.display())
                 })?
@@ -2098,7 +2098,7 @@ fn normalize_php_source_for_parser(source: &str) -> String {
         normalized.push('\n');
     }
 
-    let mixed_normalized = match vybe_bytecode::registry::hooks("php").normalize_source {
+    let mixed_normalized = match vybe_runtime::registry::hooks("php").normalize_source {
         Some(f) => f(&normalized),
         None => normalized,
     };
@@ -2291,7 +2291,7 @@ fn resolve_imports(module: &mut Module, lang: &Language, base_dir: &Path) {
 mod tests {
     /// Register the frontends these tests need. `vybe_compiler` links no
     /// language crate in production — languages register THEMSELVES through
-    /// `vybe_bytecode::registry` — so this crate's test binary starts with an
+    /// `vybe_runtime::registry` — so this crate's test binary starts with an
     /// empty registry. This is the same `register()` entry point vybex and a
     /// dylib host would call.
     fn register_test_languages() {
@@ -2303,7 +2303,7 @@ mod tests {
 
     fn run_php_bundle_prints(bundle: &Bundle) -> Vec<String> {
         use std::sync::{Arc, Mutex};
-        use vybe_bytecode::{HostContext, VM, Value};
+        use vybe_runtime::{HostContext, VM, Value};
 
         let compiled = bundle.compile_full().expect("compiled bundle");
         let mut vm = VM::new();
@@ -3728,8 +3728,8 @@ pub fn flatten_module_exports(
 /// through `CALL_IMPORT`.
 pub fn flatten_module_value_exports(
     modules: &HashMap<String, ModuleRecord>,
-) -> HashMap<String, HashMap<String, vybe_bytecode::Value>> {
-    let mut out: HashMap<String, HashMap<String, vybe_bytecode::Value>> = HashMap::new();
+) -> HashMap<String, HashMap<String, vybe_runtime::Value>> {
+    let mut out: HashMap<String, HashMap<String, vybe_runtime::Value>> = HashMap::new();
     for (specifier, record) in modules {
         for (name, _entry) in &record.exports {
             // Follow Indirect chains
@@ -3783,7 +3783,7 @@ pub fn flatten_module_value_exports(
 /// name, following the same Indirect chain walk as
 /// `flatten_module_exports`.
 pub fn validate_imports_against_modules(
-    chunks: &[vybe_bytecode::Chunk],
+    chunks: &[vybe_runtime::Chunk],
     host_imports: &crate::primitives::HostImportMetadata,
     modules: &HashMap<String, ModuleRecord>,
 ) -> Vec<String> {

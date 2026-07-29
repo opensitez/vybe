@@ -351,7 +351,7 @@ impl Compiler {
 
     fn dotnet_descriptor_parent_has_no_user_ctor(&self, parent_name: &str) -> bool {
         self.profile.namespaces.use_dotnet
-            && vybe_bytecode::registry::platform_owns_descriptor_class(parent_name)
+            && vybe_runtime::registry::platform_owns_descriptor_class(parent_name)
             && !self.is_framework_control_parent(parent_name)
             && !self.defined_classes.contains(&self.canon(parent_name))
     }
@@ -5414,7 +5414,7 @@ pub fn register_type(
     is_interface: bool,
     implements: Vec<String>,
     constructor_chunk: Option<usize>,
-    field_descriptors: std::collections::HashMap<String, vybe_bytecode::chunk::PropertyDescriptor>,
+    field_descriptors: std::collections::HashMap<String, vybe_runtime::chunk::PropertyDescriptor>,
 ) {
     // The walker is responsible for case-canonicalising the name per
     // its language's case-sensitivity (`Compiler::canon` lowercases
@@ -5423,9 +5423,9 @@ pub fn register_type(
     // distinct types in case-sensitive languages (`B` and `b`). The VM
     // matches names exactly; case-insensitivity is entirely a
     // compile-time concern via `canon()`.
-    chunks[0].types.push(vybe_bytecode::chunk::TypeEntry {
+    chunks[0].types.push(vybe_runtime::chunk::TypeEntry {
         name: name.to_string(),
-        kind: vybe_bytecode::chunk::CompositeKind::Struct,
+        kind: vybe_runtime::chunk::CompositeKind::Struct,
         parent: parent.to_string(),
         fields,
         methods,
@@ -5459,9 +5459,9 @@ pub fn register_gc_array_type(chunks: &mut [Chunk], name: &str, elem_type: &str)
     } else {
         vec![elem_type.to_string()]
     };
-    chunks[0].types.push(vybe_bytecode::chunk::TypeEntry {
+    chunks[0].types.push(vybe_runtime::chunk::TypeEntry {
         name: name.to_string(),
-        kind: vybe_bytecode::chunk::CompositeKind::Array,
+        kind: vybe_runtime::chunk::CompositeKind::Array,
         parent: String::new(),
         fields,
         methods: Vec::new(),
@@ -5485,9 +5485,9 @@ pub fn register_interface(
 ) {
     // Names arrive pre-canonicalised by the walker — see [`register_type`].
     let method_entries: Vec<(String, usize)> = methods.into_iter().map(|m| (m, 0usize)).collect();
-    chunks[0].types.push(vybe_bytecode::chunk::TypeEntry {
+    chunks[0].types.push(vybe_runtime::chunk::TypeEntry {
         name: name.to_string(),
-        kind: vybe_bytecode::chunk::CompositeKind::Struct,
+        kind: vybe_runtime::chunk::CompositeKind::Struct,
         parent: String::new(),
         fields: Vec::new(),
         methods: method_entries,

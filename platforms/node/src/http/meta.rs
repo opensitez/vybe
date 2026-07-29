@@ -10,7 +10,7 @@
 //!   programmatic mode lands.
 
 use std::sync::Arc;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::{HostContext, VM, Value};
 
 use super::context::with_context;
 

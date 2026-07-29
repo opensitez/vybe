@@ -63,7 +63,7 @@ go_run_cases! {
 #[test]
 fn nested_defer_inner_recover_gets_nil() {
     use std::sync::{Arc, Mutex};
-    use vybe_bytecode::{HostContext, VM, Value};
+    use vybe_runtime::{HostContext, VM, Value};
 
     let chunks = crate::helpers::compile(
         "package main; import \"fmt\"; func run() { defer func() { defer func() { fmt.Println(recover() == nil) }() }(); panic(\"outer\") }; func main() { run() }",
@@ -92,7 +92,7 @@ fn nested_defer_inner_recover_gets_nil() {
 #[test]
 fn defer_recover_three_level_nesting() {
     use std::sync::{Arc, Mutex};
-    use vybe_bytecode::{HostContext, VM, Value};
+    use vybe_runtime::{HostContext, VM, Value};
 
     let chunks = crate::helpers::compile(
         "package main; import \"fmt\"; func run() { defer func() { defer func() { defer func() { fmt.Println(recover()) }() }(); panic(\"triple\") }(); fmt.Println(\"start\") }; func main() { run() }",

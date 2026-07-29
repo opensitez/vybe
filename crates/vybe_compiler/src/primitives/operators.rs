@@ -500,7 +500,7 @@ impl Compiler {
                     // equality — Python tuples/dicts, Dart records), else plain
                     // reference/primitive equality. Hook presence is the property;
                     // never a profile-name check.
-                    let eq_fallback = vybe_bytecode::registry::hooks(&self.profile.name)
+                    let eq_fallback = vybe_runtime::registry::hooks(&self.profile.name)
                         .value_eq
                         .unwrap_or(crate::primitives::ops::emit_dyn_eq);
                     common::expressions::emit_rich_compare_locals(
@@ -540,7 +540,7 @@ impl Compiler {
                     // equality — Python tuples/dicts, Dart records), else plain
                     // reference/primitive equality. Hook presence is the property;
                     // never a profile-name check.
-                    let eq_fallback = vybe_bytecode::registry::hooks(&self.profile.name)
+                    let eq_fallback = vybe_runtime::registry::hooks(&self.profile.name)
                         .value_eq
                         .unwrap_or(crate::primitives::ops::emit_dyn_eq);
                     common::expressions::emit_rich_compare_locals(
@@ -600,7 +600,7 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    vybe_bytecode::registry::hooks(&self.profile.name)
+                    vybe_runtime::registry::hooks(&self.profile.name)
                         .relational_compare
                         .unwrap()(
                         self.chunk(), crate::primitives::ops::emit_dyn_lt, line
@@ -641,7 +641,7 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    vybe_bytecode::registry::hooks(&self.profile.name)
+                    vybe_runtime::registry::hooks(&self.profile.name)
                         .relational_compare
                         .unwrap()(
                         self.chunk(), crate::primitives::ops::emit_dyn_gt, line
@@ -682,7 +682,7 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    vybe_bytecode::registry::hooks(&self.profile.name)
+                    vybe_runtime::registry::hooks(&self.profile.name)
                         .relational_compare
                         .unwrap()(
                         self.chunk(), crate::primitives::ops::emit_dyn_le, line
@@ -723,7 +723,7 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    vybe_bytecode::registry::hooks(&self.profile.name)
+                    vybe_runtime::registry::hooks(&self.profile.name)
                         .relational_compare
                         .unwrap()(
                         self.chunk(), crate::primitives::ops::emit_dyn_ge, line
@@ -771,7 +771,7 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    vybe_bytecode::registry::hooks(&self.profile.name)
+                    vybe_runtime::registry::hooks(&self.profile.name)
                         .relational_compare
                         .unwrap()(
                         self.chunk(), crate::primitives::ops::emit_dyn_lt, line
@@ -796,7 +796,7 @@ impl Compiler {
                     self.coerce_top_two_to_primitive();
                 } else if self.profile.string_aware_relational {
                     let line = self.line;
-                    vybe_bytecode::registry::hooks(&self.profile.name)
+                    vybe_runtime::registry::hooks(&self.profile.name)
                         .relational_compare
                         .unwrap()(
                         self.chunk(), crate::primitives::ops::emit_dyn_gt, line
@@ -936,7 +936,7 @@ impl Compiler {
                 if self.uses_proxy {
                     self.emit_u16(Op::LOCAL_GET, t_y);
                     self.emit_u16(Op::LOCAL_GET, t_x);
-                    vybe_bytecode::registry::hooks(&self.profile.name)
+                    vybe_runtime::registry::hooks(&self.profile.name)
                         .proxy_has
                         .unwrap()(&mut self.chunks, self.current, l);
                     return;

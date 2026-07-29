@@ -7,7 +7,7 @@
 //!
 //! Plus the §6.1.6.2 operation adapters the compiler's dynamic dispatch
 //! calls (`ecma:bigint.add` etc.). All EXACT at arbitrary width —
-//! `Value::BigInt` is backed by `vybe_bytecode::bigint::BigIntVal`
+//! `Value::BigInt` is backed by `vybe_runtime::bigint::BigIntVal`
 //! (sign + limbs). The only wraps anywhere are the js-types JS-API
 //! ToBigInt64/ToBigUint64 conversions at wasm boundaries, and the
 //! spec's own asIntN/asUintN operators.
@@ -17,8 +17,8 @@
 //! explosive operators (pow, shl) via `BigIntVal::exceeds_cap`.
 
 use std::sync::Arc;
-use vybe_bytecode::bigint::BigIntVal;
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::bigint::BigIntVal;
+use vybe_runtime::{HostContext, VM, Value};
 
 /// §7.1.14 StringToBigInt — exact at any length. None = invalid → the
 /// caller decides (BigInt() throws SyntaxError; coercions treat as 0).

@@ -28,8 +28,8 @@
 //! different GUI binding) requires no compiler changes.
 
 use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 // ─── Canonical control type registry ─────────────────────────────────────────
 //
@@ -198,9 +198,9 @@ pub const GUI_MODULE: &str = "vybe:gui";
 /// This is called by the primitives/Linker to populate the component descriptor
 /// so all languages automatically get GUI functions without per-language
 /// profile duplication (similar to WASI registration).
-pub fn gui_component_exports() -> Vec<vybe_bytecode::component_model::ComponentExport> {
-    use vybe_bytecode::component::{FuncSig, ValType};
-    use vybe_bytecode::component_model::{ComponentExport, ComponentItemKind};
+pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentExport> {
+    use vybe_runtime::component::{FuncSig, ValType};
+    use vybe_runtime::component_model::{ComponentExport, ComponentItemKind};
 
     vec![
         // Control creation

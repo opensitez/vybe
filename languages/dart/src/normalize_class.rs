@@ -20,7 +20,7 @@
 //!   - Dart doesn't have destructors (uses Finalizer from dart:ffi).
 
 use vybe_ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind};
-use vybe_bytecode::class_normalize::{
+use vybe_ast::class_normalize::{
     NormalMembers, build_normal_method, from_method_stmt, types::*,
 };
 

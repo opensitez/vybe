@@ -5,8 +5,8 @@
 //! chunk-free (no `__vybe_*` fallback remains).
 
 use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::dict;
 use vybe_compiler::primitives::errors;
@@ -14785,7 +14785,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         "ruby.srand" => {
             let n_s = chunks[current].alloc_scratch(1);
             chunks[current].emit_op_u16(Op::LOCAL_SET, n_s, line);
-            let seed_g = chunks[current].add_constant(vybe_bytecode::Value::String(
+            let seed_g = chunks[current].add_constant(vybe_runtime::Value::String(
                 std::sync::Arc::from("__vybe_rng_seed"),
             ));
             chunks[current].emit_op_u16(Op::GLOBAL_GET, seed_g, line); // old seed (null if unset)

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 /// Tests for the runtime helpers — pure bytecode implementations that run on any runtime.
-use vybe_bytecode::{Chunk, Op, VM, Value};
+use vybe_runtime::{Chunk, Op, VM, Value};
 use vybe_compiler::primitives::runtime_helpers::build_runtime_helpers;
 
 /// Link a pre-built helper into a VM and run the script chunk.

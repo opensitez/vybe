@@ -18,8 +18,8 @@ use chrono::{
     DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc,
 };
 use std::sync::{Arc, Mutex, OnceLock};
-use vybe_bytecode::value::Object;
-use vybe_bytecode::{HostContext, Value, VM};
+use vybe_runtime::value::Object;
+use vybe_runtime::{HostContext, Value, VM};
 
 const MODULE: &str = "ecma:date";
 
@@ -32,7 +32,7 @@ static DATE_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
 pub fn shared_date_prototype() -> Value {
     Value::Object(
         DATE_PROTOTYPE
-            .get_or_init(|| vybe_bytecode::heap::alloc(Object::new()))
+            .get_or_init(|| vybe_runtime::heap::alloc(Object::new()))
             .clone(),
     )
 }
@@ -482,7 +482,7 @@ pub fn register(vm: &mut VM) {
                 match args.first() {
                     Some(Value::Object(obj)) => {
                         let o = obj.lock().unwrap();
-                        if let vybe_bytecode::value::ObjectKind::Array(elems) = &o.kind {
+                        if let vybe_runtime::value::ObjectKind::Array(elems) = &o.kind {
                             construct_date_from_args(elems)
                         } else if matches!(o.properties.get("__type"), Some(Value::String(tag)) if tag.as_ref() == "Date") {
                             o.properties.get("__time").map(Value::as_f64).unwrap_or(f64::NAN)
@@ -509,7 +509,7 @@ pub fn register(vm: &mut VM) {
         obj.properties.insert("__time".into(), Value::F64(ms));
         obj.properties
             .insert("__proto__".into(), shared_date_prototype());
-        Value::Object(vybe_bytecode::heap::alloc(obj))
+        Value::Object(vybe_runtime::heap::alloc(obj))
     }));
 
     // Date.parse(str) → ms since epoch, NaN on failure.

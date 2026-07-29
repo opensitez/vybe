@@ -20,7 +20,7 @@ pub mod types;
 use proposals::{compilation_hints, exception_handling, extended_name_section, jspi};
 
 use crate::encoding::*;
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 // ── Writer ──────────────────────────────────────────────────────────────
 

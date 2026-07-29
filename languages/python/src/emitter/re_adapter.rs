@@ -7,8 +7,8 @@
 //! `exec(regexp, str)`; `match/matchAll/search/split(str, regexp)`;
 //! `replace/replaceAll(str, regexp, replacement)`.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::tuples;
 
 fn lget(c: &mut Chunk, s: u16, line: u32) {

@@ -21,8 +21,8 @@
 //! Language is determined automatically.
 
 use std::path::{Path, PathBuf};
-use vybe_bytecode::VM;
-use vybe_bytecode::chunk::Chunk;
+use vybe_runtime::VM;
+use vybe_runtime::chunk::Chunk;
 use vybe_compiler::ast::{ExprKind, Literal, Module, StmtKind};
 
 #[derive(Default)]
@@ -161,15 +161,15 @@ fn print_chunk_summary(chunks: &[Chunk], filter: Option<&str>) {
 /// Registration for the whole binary: ONE loop over the ONE registry.
 ///
 /// There is no plugin list here. Every plugin crate — language, platform,
-/// host-function provider, all the same `vybe_bytecode::Plugin` — submits
+/// host-function provider, all the same `vybe_runtime::Plugin` — submits
 /// itself at link time, and this runs whatever `vybex` linked. Adding or
 /// removing a plugin is a Cargo edit; this file never changes.
 
 /// Every plugin registers into `vm` in a single loop. Non-GUI (drawing-only) —
 /// installs `vybe:gui` no-op stubs so compiled control/form code doesn't hit
 /// unresolved imports.
-pub fn register_plugins(vm: &mut vybe_bytecode::VM, caps: &vybe_bytecode::capabilities::Capabilities) {
-    vybe_bytecode::init_all_registered(vm, caps);
+pub fn register_plugins(vm: &mut vybe_runtime::VM, caps: &vybe_runtime::capabilities::Capabilities) {
+    vybe_runtime::init_all_registered(vm, caps);
     if vm
         .host_registry
         .get(&("vybe:gui".to_string(), "controlSetProperty".to_string()))
@@ -183,11 +183,11 @@ pub fn register_plugins(vm: &mut vybe_bytecode::VM, caps: &vybe_bytecode::capabi
 /// the same one loop runs, and the shared handle is returned for the form
 /// launcher.
 pub fn register_plugins_with_gui(
-    vm: &mut vybe_bytecode::VM,
-    caps: &vybe_bytecode::capabilities::Capabilities,
+    vm: &mut vybe_runtime::VM,
+    caps: &vybe_runtime::capabilities::Capabilities,
 ) -> std::sync::Arc<std::sync::Mutex<vybe_platform_vybe::gui_state::GuiState>> {
     let vybe = vybe_platform_vybe::Plugin::with_gui();
-    vybe_bytecode::init_all_registered(vm, caps);
+    vybe_runtime::init_all_registered(vm, caps);
     vybe.gui_state().expect("with_gui() always installs a GuiState")
 }
 
@@ -319,9 +319,9 @@ pub fn run() {
     }
 
     let dynamic_compile_caps = if sandbox {
-        vybe_bytecode::capabilities::Capabilities::safe()
+        vybe_runtime::capabilities::Capabilities::safe()
     } else {
-        vybe_bytecode::capabilities::Capabilities::all()
+        vybe_runtime::capabilities::Capabilities::all()
     };
 
     // ── One registration ──────────────────────────────────────────────────
@@ -343,22 +343,22 @@ pub fn run() {
             "wasi:cli",
             "log",
             Box::new(
-                |_ctx: &mut vybe_bytecode::HostContext, args: &[vybe_bytecode::Value]| {
+                |_ctx: &mut vybe_runtime::HostContext, args: &[vybe_runtime::Value]| {
                     for a in args {
                         print!("{}", a);
                     }
                     println!();
-                    vybe_bytecode::Value::Null
+                    vybe_runtime::Value::Null
                 },
             ),
         );
         vm.register_host_fn(
             "wasi:cli",
             "readLine",
-            Box::new(|_ctx: &mut vybe_bytecode::HostContext, _| {
+            Box::new(|_ctx: &mut vybe_runtime::HostContext, _| {
                 let mut line = String::new();
                 std::io::stdin().read_line(&mut line).ok();
-                vybe_bytecode::Value::String(std::sync::Arc::from(line.trim()))
+                vybe_runtime::Value::String(std::sync::Arc::from(line.trim()))
             }),
         );
     }
@@ -368,7 +368,7 @@ pub fn run() {
         std::process::exit(1);
     }
 
-    if eval_source.is_some() && !dynamic_compile_caps.has(vybe_bytecode::capabilities::Capability::DynamicCompile) {
+    if eval_source.is_some() && !dynamic_compile_caps.has(vybe_runtime::capabilities::Capability::DynamicCompile) {
         eprintln!(
             "Dynamic compilation is disabled in the current mode (missing Capability::DynamicCompile)"
         );
@@ -511,7 +511,7 @@ pub fn run() {
     if dump {
         print_chunk_summary(&compiled.chunks, chunk_filter.as_deref());
         for chunk in filter_chunks(&compiled.chunks, chunk_filter.as_deref()) {
-            println!("{}", vybe_bytecode::debug::disassemble(chunk));
+            println!("{}", vybe_runtime::debug::disassemble(chunk));
         }
         return;
     }
@@ -581,13 +581,13 @@ pub fn run() {
             };
             let me = form_object
                 .or_else(|| vm.globals.get("__f").cloned())
-                .unwrap_or(vybe_bytecode::Value::Null);
-            let sender = vybe_bytecode::Value::String(std::sync::Arc::from(control));
-            let args: Vec<vybe_bytecode::Value> = match crate::gui_launch::fn_arity(&cb) {
+                .unwrap_or(vybe_runtime::Value::Null);
+            let sender = vybe_runtime::Value::String(std::sync::Arc::from(control));
+            let args: Vec<vybe_runtime::Value> = match crate::gui_launch::fn_arity(&cb) {
                 0 => vec![],
                 1 => vec![me],
                 2 => vec![me, sender],
-                _ => vec![me, sender, vybe_bytecode::Value::Null],
+                _ => vec![me, sender, vybe_runtime::Value::Null],
             };
             Ok(vm.invoke_callback(&cb, &args))
         }));
@@ -649,11 +649,11 @@ pub fn run() {
 /// Returns the fresh chunk set for `VM::debug_reload` to diff and swap.
 fn recompile_for_reload(
     source_path: &Path,
-    caps: vybe_bytecode::capabilities::Capabilities,
-) -> Result<Vec<vybe_bytecode::Chunk>, String> {
+    caps: vybe_runtime::capabilities::Capabilities,
+) -> Result<Vec<vybe_runtime::Chunk>, String> {
     let bundle = vybe_compiler::projects::load(source_path).map_err(|e| e.to_string())?;
-    let mut tv = vybe_bytecode::VM::new();
-    let _gui = register_plugins_with_gui(&mut tv, &vybe_bytecode::capabilities::Capabilities::all());
+    let mut tv = vybe_runtime::VM::new();
+    let _gui = register_plugins_with_gui(&mut tv, &vybe_runtime::capabilities::Capabilities::all());
     crate::server::programmatic::register(&mut tv);
     let _ = crate::adapters::register_all(&mut tv);
     let compiled = crate::dynamic::RuntimeCompilerService::with_capabilities(&mut tv, caps)
@@ -682,13 +682,13 @@ fn run_wasm(path: &Path, dump: bool, trace: bool, chunk_filter: Option<&str>) {
 
     if dump {
         for chunk in filter_chunks(&chunks, chunk_filter) {
-            println!("{}", vybe_bytecode::debug::disassemble(chunk));
+            println!("{}", vybe_runtime::debug::disassemble(chunk));
         }
         return;
     }
 
     let mut vm = VM::new();
-    let gui = register_plugins_with_gui(&mut vm, &vybe_bytecode::capabilities::Capabilities::all());
+    let gui = register_plugins_with_gui(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
 
     if trace {
         vm.set_trace(true);

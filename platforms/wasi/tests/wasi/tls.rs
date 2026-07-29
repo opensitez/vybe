@@ -1,5 +1,5 @@
-use vybe_bytecode::VM;
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::VM;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn has_import(module: &str, name: &str) -> bool {

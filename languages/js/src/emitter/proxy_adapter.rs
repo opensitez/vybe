@@ -28,8 +28,8 @@
 //! zero overhead. The compiler scans the AST once and sets
 //! `Compiler::uses_proxy` for the routing decision.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)

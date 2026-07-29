@@ -3,9 +3,9 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use vybe_bytecode::value::Value;
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::Value;
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn invoke(module: &str, name: &str, args: Vec<Value>) -> Value {

@@ -28,7 +28,7 @@
 //! No changes needed in the language-agnostic compiler.
 
 use crate::primitives::{collections, strings};
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 /// A canonical builtin operation. Walkers normalize language-specific syntax to these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -18,7 +18,7 @@ use vybe_ast::{
     Argument, CaseCondition, ClassMember, ClassModifiers, ExprKind, Expression, Literal, Modifiers,
     PropertySetter, Span, Statement, StmtKind,
 };
-use vybe_bytecode::class_normalize::{
+use vybe_ast::class_normalize::{
     NormalMembers, build_normal_method, from_method_stmt, types::*,
 };
 

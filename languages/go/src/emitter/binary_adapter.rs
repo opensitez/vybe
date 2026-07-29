@@ -3,8 +3,8 @@
 //! Go owns the `encoding/binary` API surface; shared byte/endian mechanics
 //! live in `vybe_compiler::primitives::packing`.
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 pub fn emit_helper(
     name: &str,

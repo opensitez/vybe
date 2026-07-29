@@ -10,8 +10,8 @@
 //! The Linker wires them together.
 
 use std::collections::HashMap;
-use vybe_bytecode::Chunk;
-use vybe_bytecode::component::{Component, ExportImpl, Language};
+use vybe_runtime::Chunk;
+use vybe_runtime::component::{Component, ExportImpl, Language};
 
 /// Build a Component from compiled chunks.
 /// Scans chunks for top-level functions and classes, registers them as exports.

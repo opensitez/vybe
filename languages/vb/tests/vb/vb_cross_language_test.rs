@@ -3,7 +3,7 @@
 /// These tests require compiling two languages into the same VM with different
 /// profiles, which is not yet supported in the vybex unified pipeline.
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::{VM, Value};
+use vybe_runtime::{VM, Value};
 
 fn setup_vm() -> (VM, Arc<Mutex<Vec<String>>>) {
     let mut vm = VM::new();
@@ -14,7 +14,7 @@ fn setup_vm() -> (VM, Arc<Mutex<Vec<String>>>) {
         "wasi:logging/logging",
         "log",
         Box::new(
-            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            move |_ctx: &mut vybe_runtime::HostContext, args: &[Value]| {
                 let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
                 out.lock().unwrap().push(parts.join(" "));
                 Value::Null

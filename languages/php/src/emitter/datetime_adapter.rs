@@ -13,8 +13,8 @@
 //! `DateInterval` for runtime dispatch; `__time` is ms-since-epoch.
 
 use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::instructions::core_wasm;
 
 const TYPE_KEY: &str = "__type";

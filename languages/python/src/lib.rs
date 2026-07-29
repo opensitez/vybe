@@ -24,7 +24,7 @@ pub fn profile_source() -> &'static str {
 
 /// Register this language with the shared plugin registry (dylib entry point).
 pub fn register() {
-    vybe_bytecode::registry::register_language(vybe_bytecode::registry::LanguageDef {
+    vybe_runtime::registry::register_language(vybe_runtime::registry::LanguageDef {
         name: "python",
         parse,
         profile_source,
@@ -32,27 +32,27 @@ pub fn register() {
         normalize_class: Some(normalize_class::normalize_class),
         register_tree: Some(emitter::tree_register::register_namespace_tree),
     });
-    vybe_bytecode::registry::register_hooks(
+    vybe_runtime::registry::register_hooks(
         "python",
-        vybe_bytecode::registry::LanguageHooks {
+        vybe_runtime::registry::LanguageHooks {
             value_eq: Some(emitter::runtime_adapter::emit_py_value_eq),
             ..Default::default()
         },
     );
 }
 
-/// This crate as a [`vybe_bytecode::Plugin`] — its `init` registers the
+/// This crate as a [`vybe_runtime::Plugin`] — its `init` registers the
 /// language (and any forms) with the shared framework. Also the dylib entry point.
 pub struct Plugin;
-impl vybe_bytecode::Plugin for Plugin {
+impl vybe_runtime::Plugin for Plugin {
     fn name(&self) -> &'static str {
         "python"
     }
-    fn init(&self, _fw: &mut vybe_bytecode::Framework<'_>) {
+    fn init(&self, _fw: &mut vybe_runtime::Framework<'_>) {
         register();
     }
 }
 
 // Link-time registration: this crate submits its plugin to the one registry.
 // Nothing lists plugins in code — linking this crate IS the registration.
-vybe_bytecode::register_plugin!(Plugin);
+vybe_runtime::register_plugin!(Plugin);

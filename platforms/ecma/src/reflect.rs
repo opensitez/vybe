@@ -28,8 +28,8 @@ use crate::object::{
     track_nonconfig, track_nonenum,
 };
 use std::sync::Arc;
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{HostContext, VM, Value};
 
 // §28.1 step 1 of most Reflect ops: "If target is not an Object, throw a
 // TypeError". Thrown as a real error object so `e instanceof TypeError`
@@ -271,22 +271,22 @@ pub fn register(vm: &mut VM) {
                     proxy.properties.insert("__proto__".into(), proto);
                 }
             }
-            let proxy_value = Value::Object(vybe_bytecode::heap::alloc(proxy));
+            let proxy_value = Value::Object(vybe_runtime::heap::alloc(proxy));
 
             let mut revoke = Object::new();
             revoke.kind = ObjectKind::HostFunction(proxy_revoke_idx);
             revoke.properties.insert(
                 "__bound_args".into(),
-                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![
+                Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
                     proxy_value.clone(),
                 ]))),
             );
-            let revoke_value = Value::Object(vybe_bytecode::heap::alloc(revoke));
+            let revoke_value = Value::Object(vybe_runtime::heap::alloc(revoke));
 
             let mut result = Object::new();
             result.properties.insert("proxy".into(), proxy_value);
             result.properties.insert("revoke".into(), revoke_value);
-            Value::Object(vybe_bytecode::heap::alloc(result))
+            Value::Object(vybe_runtime::heap::alloc(result))
         }),
     );
 
@@ -348,7 +348,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let target = args.first().cloned().unwrap_or(Value::Undefined);
             let args_list = args.get(1).cloned().unwrap_or_else(|| {
-                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new())))
+                Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))
             });
             let new_target = args.get(2).cloned();
             crate::proxy::construct_dispatch_with_new_target(
@@ -536,9 +536,9 @@ pub fn register(vm: &mut VM) {
                         keys.extend(sym_entries.iter().cloned());
                     }
                 }
-                return Value::Object(vybe_bytecode::heap::alloc(Object::new_array(keys)));
+                return Value::Object(vybe_runtime::heap::alloc(Object::new_array(keys)));
             }
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(vec![])))
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![])))
         }),
     );
 
@@ -558,7 +558,7 @@ pub fn register(vm: &mut VM) {
                         .insert("enumerable".into(), Value::Bool(!key.starts_with("__")));
                     desc.properties
                         .insert("configurable".into(), Value::Bool(true));
-                    return Value::Object(vybe_bytecode::heap::alloc(desc));
+                    return Value::Object(vybe_runtime::heap::alloc(desc));
                 }
             }
             Value::Undefined

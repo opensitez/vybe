@@ -14,7 +14,7 @@
 //! function prototype (`receiver_host_fn_ref`, `bound_host_fn_ref`).
 //!
 //! Marshaling + error-handling contract:
-//! `crates/vybe_bytecode/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
+//! `crates/vybe_runtime/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
 
 // ── ECMA-262 spec types (one file per spec chapter) ──────────────────
 pub mod array; // §23.1  Array
@@ -46,7 +46,7 @@ pub mod weakref; // §26.1/§26.2  WeakRef + FinalizationRegistry (co-located)
 // ── Global wiring (constructor↔prototype, globalThis) ────────────────
 pub mod builtin_types; // TypeRegistry vtables for the JS/Intl surface; run in Plugin::finalize
 pub mod ecma_globals; // stamps shared prototypes + wires constructors; run AFTER register()
-pub mod plugin; // the ecma platform as one vybe_bytecode::Plugin
+pub mod plugin; // the ecma platform as one vybe_runtime::Plugin
 pub use plugin::Plugin;
 
 
@@ -59,8 +59,8 @@ pub mod structured_clone; // HTML spec §2.8 — not ECMA, but JS-runtime-adjace
 pub mod value; // generic JS-value reflection (Vybe extension)
 
 use std::sync::Arc;
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{VM, Value};
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{VM, Value};
 
 /// Wire the ECMA global objects: stamp the shared prototypes with their
 /// methods, pin each constructor↔prototype link, and install `globalThis` +
@@ -162,13 +162,13 @@ pub fn receiver_host_fn_ref(module: &str, name: &str, idx: usize) -> Value {
     obj.properties
         .insert("name".into(), Value::String(Arc::from(name)));
     obj.kind = ObjectKind::HostFunction(idx);
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 /// Create a HostFunction Value with bound args (Function.prototype.bind shape).
 /// When the resulting ref is called, `bound_args` are prepended to the runtime
 /// args before the host fn runs. Standard ECMA-262 §20.2.3.2 semantics. The
-/// VM-side dispatch lives in `vybe_bytecode/src/calls.rs` HostFunction arm.
+/// VM-side dispatch lives in `vybe_runtime/src/calls.rs` HostFunction arm.
 #[allow(dead_code)]
 pub fn bound_host_fn_ref(vm: &VM, module: &str, name: &str, bound_args: Vec<Value>) -> Value {
     if let Some(&idx) = vm
@@ -188,10 +188,10 @@ pub fn bound_host_fn_ref(vm: &VM, module: &str, name: &str, bound_args: Vec<Valu
             .insert("name".into(), Value::String(Arc::from(name)));
         obj.properties.insert(
             "__bound_args".into(),
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(bound_args))),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(bound_args))),
         );
         obj.kind = ObjectKind::HostFunction(idx);
-        Value::Object(vybe_bytecode::heap::alloc(obj))
+        Value::Object(vybe_runtime::heap::alloc(obj))
     } else {
         Value::Null
     }

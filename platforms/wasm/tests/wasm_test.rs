@@ -1,6 +1,6 @@
 use std::sync::Arc;
-use vybe_bytecode::value::*;
-use vybe_bytecode::*;
+use vybe_runtime::value::*;
+use vybe_runtime::*;
 use vybe_platform_wasm as wasm;
 
 // ============================================================
@@ -1176,7 +1176,7 @@ fn jspi_resolved_promise_returns_immediately() {
     vm.register_host_fn(
         "test",
         "fetch_sync",
-        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+        Box::new(|_ctx: &mut vybe_runtime::HostContext, _args: &[Value]| {
             make_promise(1, "fulfilled", Value::String(Arc::from("data from server")))
         }),
     );
@@ -1211,7 +1211,7 @@ fn jspi_non_promise_passes_through() {
     vm.register_host_fn(
         "test",
         "compute",
-        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| Value::I32(42)),
+        Box::new(|_ctx: &mut vybe_runtime::HostContext, _args: &[Value]| Value::I32(42)),
     );
 
     let mut chunk = Chunk::new("<test>");
@@ -1235,7 +1235,7 @@ fn jspi_pending_promise_suspends() {
     vm.register_host_fn(
         "test",
         "slow_fetch",
-        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+        Box::new(|_ctx: &mut vybe_runtime::HostContext, _args: &[Value]| {
             make_promise(99, "pending", Value::Null)
         }),
     );
@@ -1279,7 +1279,7 @@ fn jspi_suspend_then_resume() {
         "test",
         "log",
         Box::new(
-            move |_ctx: &mut vybe_bytecode::HostContext, args: &[Value]| {
+            move |_ctx: &mut vybe_runtime::HostContext, args: &[Value]| {
                 out.lock()
                     .unwrap()
                     .push(format!("{}", args.first().unwrap_or(&Value::Null)));
@@ -1290,7 +1290,7 @@ fn jspi_suspend_then_resume() {
     vm.register_host_fn(
         "test",
         "async_load",
-        Box::new(|_ctx: &mut vybe_bytecode::HostContext, _args: &[Value]| {
+        Box::new(|_ctx: &mut vybe_runtime::HostContext, _args: &[Value]| {
             make_promise(42, "pending", Value::Null)
         }),
     );

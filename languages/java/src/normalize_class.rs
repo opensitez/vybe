@@ -15,7 +15,7 @@
 use vybe_ast::{
     ClassMember, ClassModifiers, ConstructorInitializerTarget, Span, StmtKind, Visibility,
 };
-use vybe_bytecode::class_normalize::{NormalMembers, from_method_stmt, types::*};
+use vybe_ast::class_normalize::{NormalMembers, from_method_stmt, types::*};
 
 pub fn normalize_class(
     span: Span,

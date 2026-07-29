@@ -17,9 +17,9 @@
 //!   - `URL.createObjectURL` / `URL.revokeObjectURL` (Blob integration)
 
 use std::sync::Arc;
-use vybe_bytecode::value::{ObjectKind, Value};
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::{ObjectKind, Value};
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn call_url(name: &str, args: Vec<Value>) -> Value {
@@ -414,7 +414,7 @@ fn search_params_get_all_returns_array() {
     let result = call_url("searchParamsGetAll", vec![sp, s("x")]);
     if let Value::Object(obj) = &result {
         let o = obj.lock().unwrap();
-        if let vybe_bytecode::value::ObjectKind::Array(elems) = &o.kind {
+        if let vybe_runtime::value::ObjectKind::Array(elems) = &o.kind {
             assert_eq!(elems.len(), 3, "getAll('x') must return 3 values");
         }
     }
@@ -427,7 +427,7 @@ fn search_params_get_all_missing_key_returns_empty_array() {
     let result = call_url("searchParamsGetAll", vec![sp, s("z")]);
     if let Value::Object(obj) = &result {
         let o = obj.lock().unwrap();
-        if let vybe_bytecode::value::ObjectKind::Array(elems) = &o.kind {
+        if let vybe_runtime::value::ObjectKind::Array(elems) = &o.kind {
             assert!(elems.is_empty(), "getAll missing key must return []");
         }
     }

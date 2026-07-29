@@ -47,8 +47,8 @@
 use crate::encoding::*;
 use crate::writer::sections::rt_globals;
 use crate::writer::types::WasmTypeContext;
-use vybe_bytecode::Chunk;
-use vybe_bytecode::Op;
+use vybe_runtime::Chunk;
+use vybe_runtime::Op;
 
 /// Produce the payload of the `"name"` custom section for the given
 /// chunks + declared imports/globals. The caller wraps this in a

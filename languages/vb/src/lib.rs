@@ -27,7 +27,7 @@ pub fn profile_source() -> &'static str {
             .iter()
             .map(|(name, value)| (name.to_string(), *value))
             .collect();
-        vybe_bytecode::profile::register_dotnet_namespace_constants(mappings);
+        vybe_runtime::profile::register_dotnet_namespace_constants(mappings);
     });
     include_str!("profile")
 }
@@ -40,7 +40,7 @@ pub fn register() {
     // construct vybex. See flexclassplan.md.
     vybe_platform_dotnet::register();
 
-    vybe_bytecode::registry::register_language(vybe_bytecode::registry::LanguageDef {
+    vybe_runtime::registry::register_language(vybe_runtime::registry::LanguageDef {
         name: "vb",
         parse,
         profile_source,
@@ -59,18 +59,18 @@ pub fn register() {
     );
 }
 
-/// This crate as a [`vybe_bytecode::Plugin`] — its `init` registers the
+/// This crate as a [`vybe_runtime::Plugin`] — its `init` registers the
 /// language (and any forms) with the shared framework. Also the dylib entry point.
 pub struct Plugin;
-impl vybe_bytecode::Plugin for Plugin {
+impl vybe_runtime::Plugin for Plugin {
     fn name(&self) -> &'static str {
         "vb"
     }
-    fn init(&self, _fw: &mut vybe_bytecode::Framework<'_>) {
+    fn init(&self, _fw: &mut vybe_runtime::Framework<'_>) {
         register();
     }
 }
 
 // Link-time registration: this crate submits its plugin to the one registry.
 // Nothing lists plugins in code — linking this crate IS the registration.
-vybe_bytecode::register_plugin!(Plugin);
+vybe_runtime::register_plugin!(Plugin);

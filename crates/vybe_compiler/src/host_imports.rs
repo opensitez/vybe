@@ -18,9 +18,9 @@
 //! for direct calls: those become `CALL_IMPORT`. This module only
 //! matters for read-as-value and namespace access.
 
-use vybe_bytecode::module_record::ExportEntry;
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{VM, Value};
+use vybe_runtime::module_record::ExportEntry;
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{VM, Value};
 
 use crate::primitives::HostImportMetadata;
 
@@ -102,5 +102,5 @@ fn build_namespace(vm: &VM, module: &str) -> Value {
     for (name, val) in exports {
         obj.properties.insert(name, val);
     }
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }

@@ -846,7 +846,7 @@ Dim f As New Form1()
     assert!(handler.is_some(), "Handler should exist");
     let h = handler.unwrap();
     assert!(
-        !matches!(h, vybe_bytecode::Value::Null),
+        !matches!(h, vybe_runtime::Value::Null),
         "Handler should not be Null, got {:?}",
         h
     );

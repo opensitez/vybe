@@ -28,7 +28,7 @@
 //!     that semantic when the direct `emit_class` path lands.
 
 use vybe_ast::{ClassMember, ClassModifiers, ExprKind, Literal, PropertySetter, Span, StmtKind};
-use vybe_bytecode::class_normalize::{
+use vybe_ast::class_normalize::{
     NormalMembers, build_normal_method, from_method_stmt, types::*,
 };
 

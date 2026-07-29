@@ -25,7 +25,7 @@ pub mod env;
 pub mod random;
 pub mod fs;
 
-use vybe_bytecode::VM;
+use vybe_runtime::VM;
 
 /// Register the always-on WASI modules. Capability gating happens
 /// in [`crate::modules`].

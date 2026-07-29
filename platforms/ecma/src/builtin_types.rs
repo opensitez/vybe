@@ -9,8 +9,8 @@
 //! fn by registry index (via [`Framework::host_fn_index`]), so it must run
 //! after every plugin's `init` — which is exactly what `finalize` guarantees.
 
-use vybe_bytecode::{Method, TypeDef};
-use vybe_bytecode::Framework;
+use vybe_runtime::{Method, TypeDef};
+use vybe_runtime::Framework;
 
 /// Register the ECMA/Intl built-in types into the VM's TypeRegistry. Called
 /// from the ecma plugin's `finalize`, after `register_globals`.

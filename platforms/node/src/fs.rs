@@ -14,8 +14,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{HostContext, VM, Value};
 
 // ── Global FD table — maps host-fd-number → (path, mode, position) ──
 static FD_TABLE: OnceLock<Mutex<HashMap<i32, (String, String, u64)>>> = OnceLock::new();
@@ -67,7 +67,7 @@ fn host_fn_ref(vm: &VM, name: &str) -> Value {
         obj.properties
             .insert("__host_idx".into(), Value::F64(idx as f64));
         obj.kind = ObjectKind::HostFunction(idx);
-        Value::Object(vybe_bytecode::heap::alloc(obj))
+        Value::Object(vybe_runtime::heap::alloc(obj))
     } else {
         Value::Null
     }
@@ -135,7 +135,7 @@ fn build_stats(meta: &std::fs::Metadata, vm_for_methods: &VM) -> Value {
         host_fn_ref(vm_for_methods, "_statIsSocket"),
     );
 
-    Value::Object(vybe_bytecode::heap::alloc(o))
+    Value::Object(vybe_runtime::heap::alloc(o))
 }
 
 fn stat_type(args: &[Value]) -> i32 {
@@ -218,7 +218,7 @@ pub fn register(vm: &mut VM) {
                     _ => {
                         let elems: Vec<Value> =
                             bytes.into_iter().map(|b| Value::I32(b as i32)).collect();
-                        Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elems)))
+                        Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems)))
                     }
                 },
                 Err(e) => Value::String(Arc::from(format!("ENOENT: {}", e).as_str())),
@@ -318,7 +318,7 @@ pub fn register(vm: &mut VM) {
         obj.properties
             .insert("__host_idx".into(), Value::F64(idx as f64));
         obj.kind = ObjectKind::HostFunction(idx);
-        Value::Object(vybe_bytecode::heap::alloc(obj))
+        Value::Object(vybe_runtime::heap::alloc(obj))
     };
     let build_stats_with_idxs = move |meta: &std::fs::Metadata| -> Value {
         let mut o = Object::new();
@@ -371,7 +371,7 @@ pub fn register(vm: &mut VM) {
             "isSocket".into(),
             make_pred_ref("_statIsSocket", is_sock_idx),
         );
-        Value::Object(vybe_bytecode::heap::alloc(o))
+        Value::Object(vybe_runtime::heap::alloc(o))
     };
     let build_stats_clone = build_stats_with_idxs.clone();
     let build_stats_fstat = build_stats_with_idxs.clone();
@@ -395,7 +395,7 @@ pub fn register(vm: &mut VM) {
             let make_fn = |idx: usize| -> Value {
                 let mut obj = Object::new();
                 obj.kind = ObjectKind::HostFunction(idx);
-                Value::Object(vybe_bytecode::heap::alloc(obj))
+                Value::Object(vybe_runtime::heap::alloc(obj))
             };
             let mut o = Object::new();
             o.properties
@@ -406,7 +406,7 @@ pub fn register(vm: &mut VM) {
                 .insert("isDirectory".into(), make_fn(is_dir_idx2));
             o.properties
                 .insert("isSymbolicLink".into(), make_fn(is_sym_idx2));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }
     };
 
@@ -485,16 +485,16 @@ pub fn register(vm: &mut VM) {
                                         )),
                                     );
                                     o.properties.insert("__type".into(), Value::I32(0));
-                                    Value::Object(vybe_bytecode::heap::alloc(o))
+                                    Value::Object(vybe_runtime::heap::alloc(o))
                                 }
                             } else {
                                 Value::String(Arc::from(e.file_name().to_string_lossy().as_ref()))
                             }
                         })
                         .collect();
-                    Value::Object(vybe_bytecode::heap::alloc(Object::new_array(items)))
+                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
                 }
-                Err(_) => Value::Object(vybe_bytecode::heap::alloc(Object::new_array(Vec::new()))),
+                Err(_) => Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))),
             }
         }),
     );
@@ -935,7 +935,7 @@ pub fn register(vm: &mut VM) {
             ] {
                 o.properties.insert(m.into(), Value::Undefined);
             }
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -965,7 +965,7 @@ pub fn register(vm: &mut VM) {
             ] {
                 o.properties.insert(m.into(), Value::Undefined);
             }
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -981,7 +981,7 @@ pub fn register(vm: &mut VM) {
             for m in ["close", "on", "once", "off", "emit"] {
                 o.properties.insert(m.into(), Value::Undefined);
             }
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -997,7 +997,7 @@ pub fn register(vm: &mut VM) {
             for m in ["stop", "on", "once", "off"] {
                 o.properties.insert(m.into(), Value::Undefined);
             }
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -1030,7 +1030,7 @@ pub fn register(vm: &mut VM) {
             o.properties.insert("O_TRUNC".into(), Value::I32(512));
             o.properties.insert("O_APPEND".into(), Value::I32(8));
             o.properties.insert("O_SYNC".into(), Value::I32(2048));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 }

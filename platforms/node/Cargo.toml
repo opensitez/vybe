@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 inventory = { workspace = true }
-vybe_bytecode = { workspace = true }
+vybe_runtime = { workspace = true }
 vybe_platform_wasi = { workspace = true } # node:crypto reuses wasi:crypto md5/sha256
 
 # Node.js compat support crates (moved from vybe_host).

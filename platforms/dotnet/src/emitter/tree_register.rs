@@ -1,7 +1,7 @@
 //! `dotnet.*` namespace-tree registration (namespaceplan.md, dotnet phase).
 //!
 //! The dotnet platform contributes DATA — its component-model class
-//! descriptors — to the shared namespace tree in `vybe_bytecode::namespaces`.
+//! descriptors — to the shared namespace tree in `vybe_runtime::namespaces`.
 //! Resolution LOGIC lives only in the common resolver: VB, C#, and every
 //! other language resolve `dotnet.system.console.writeline` through the
 //! same tree walk, instead of a platform-owned dotted-name cascade
@@ -11,8 +11,8 @@
 use std::collections::BTreeMap;
 use std::sync::Once;
 
-use vybe_bytecode::component_model::{ConstructorTarget, MethodBody};
-use vybe_bytecode::namespaces::{self, NamespaceNode, Subtree};
+use vybe_runtime::component_model::{ConstructorTarget, MethodBody};
+use vybe_runtime::namespaces::{self, NamespaceNode, Subtree};
 
 /// Register every component class descriptor as a `Type` node at
 /// `<interface path>.<class name>` — statics become `CommonEmit`/host-fn
@@ -163,7 +163,7 @@ pub fn register_namespace_tree() {
 /// One accessor leaf. The generic `vybe:gui` property host functions take the
 /// property NAME as an argument, so those bind it; a dedicated per-property
 /// host function (`Environment.NewLine` → `node:os.EOL`) does not.
-fn accessor_node(target: &vybe_bytecode::component_model::HostTarget, prop: &str) -> NamespaceNode {
+fn accessor_node(target: &vybe_runtime::component_model::HostTarget, prop: &str) -> NamespaceNode {
     if target.name == vybe_compiler::primitives::gui::HOST_FN_GET_PROPERTY
         || target.name == vybe_compiler::primitives::gui::HOST_FN_SET_PROPERTY
     {
@@ -175,7 +175,7 @@ fn accessor_node(target: &vybe_bytecode::component_model::HostTarget, prop: &str
 
 /// A class's own properties followed by every inherited one, nearest first, so
 /// an `or_insert` fold gives override-shadows-base.
-fn inherited_properties(class_name: &str) -> Vec<vybe_bytecode::component_model::PropertyDef> {
+fn inherited_properties(class_name: &str) -> Vec<vybe_runtime::component_model::PropertyDef> {
     let descriptor = crate::emitter::surface().component_descriptor();
     let mut out = Vec::new();
     let mut current = descriptor
@@ -270,7 +270,7 @@ fn console_stderr_writer_node() -> NamespaceNode {
 
 #[cfg(test)]
 mod resolve_gap_tests {
-    use vybe_bytecode::namespaces::{registry_read, NamespaceNode};
+    use vybe_runtime::namespaces::{registry_read, NamespaceNode};
 
     /// These assert what this file is responsible for — that the entries are
     /// REGISTERED — rather than resolving through them. Resolution moved to
@@ -330,7 +330,7 @@ mod ctor_parity_tests {
                 continue;
             };
             let got =
-                vybe_bytecode::namespaces::lookup_type_ctor_target(&scope, &export.class.name);
+                vybe_runtime::namespaces::lookup_type_ctor_target(&scope, &export.class.name);
             if got.as_ref() != Some(&want) {
                 gaps.push(format!(
                     "{}: want {:?} got {:?}",
@@ -362,7 +362,7 @@ mod member_parity_tests {
                     &m.name,
                     m.arity,
                 );
-                let got = vybe_bytecode::namespaces::lookup_type_instance_target(
+                let got = vybe_runtime::namespaces::lookup_type_instance_target(
                     &scope,
                     &export.class.name,
                     &m.name,
@@ -402,13 +402,13 @@ mod property_parity_tests {
                             .lookup_instance_property(&export.class.name, &p.name)
                     };
                     let got = if want_setter {
-                        vybe_bytecode::namespaces::lookup_type_property_setter_target(
+                        vybe_runtime::namespaces::lookup_type_property_setter_target(
                             &scope,
                             &export.class.name,
                             &p.name,
                         )
                     } else {
-                        vybe_bytecode::namespaces::lookup_type_property_target(
+                        vybe_runtime::namespaces::lookup_type_property_target(
                             &scope,
                             &export.class.name,
                             &p.name,

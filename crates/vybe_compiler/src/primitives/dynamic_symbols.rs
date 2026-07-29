@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 use super::*;
 
@@ -193,7 +193,7 @@ impl Compiler {
     pub(crate) fn emit_constructor_global_ref(&mut self, ctor_global: &str, source_name: &str) {
         if self.profile.supports_autoload {
             let line = self.line;
-            vybe_bytecode::registry::hooks(&self.profile.name)
+            vybe_runtime::registry::hooks(&self.profile.name)
                 .constructor_ref_autoload
                 .unwrap()(self.chunk(), ctor_global, source_name, line);
         } else {
@@ -213,7 +213,7 @@ impl Compiler {
     ) {
         if self.profile.supports_autoload {
             let line = self.line;
-            vybe_bytecode::registry::hooks(&self.profile.name)
+            vybe_runtime::registry::hooks(&self.profile.name)
                 .dynamic_constructor_ref_autoload
                 .unwrap()(
                 self.chunk(),

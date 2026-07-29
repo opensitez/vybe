@@ -17,8 +17,8 @@
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, ObjectKind, TypedElemKind, Value};
-use vybe_bytecode::{HostContext, VM};
+use vybe_runtime::value::{Object, ObjectKind, TypedElemKind, Value};
+use vybe_runtime::{HostContext, VM};
 
 pub fn register(vm: &mut VM) {
     vm.register_host_fn(
@@ -132,7 +132,7 @@ pub fn register(vm: &mut VM) {
                 .insert("__type".into(), Value::String(Arc::from("RawJSON")));
             obj.properties
                 .insert("rawJSON".into(), Value::String(Arc::from(text.as_str())));
-            Value::Object(vybe_bytecode::heap::alloc(obj))
+            Value::Object(vybe_runtime::heap::alloc(obj))
         }),
     );
 
@@ -345,7 +345,7 @@ fn serialize_array(
     Some(format!("[\n{}\n{}]", body, stepback))
 }
 
-fn stringify_typed_array(ta: &vybe_bytecode::value::TypedArrayState) -> String {
+fn stringify_typed_array(ta: &vybe_runtime::value::TypedArrayState) -> String {
     // Typed arrays stringify as the comma-joined element values
     // wrapped in an object shape — actually JSON.stringify on a typed
     // array produces a plain object with numeric-string keys. v8:
@@ -719,7 +719,7 @@ fn apply_to_json(ctx: &mut HostContext, value: &Value, key: &str) -> Option<Valu
 fn make_root_holder(value: Value) -> Value {
     let mut root = Object::new();
     root.properties.insert("".into(), value);
-    Value::Object(vybe_bytecode::heap::alloc(root))
+    Value::Object(vybe_runtime::heap::alloc(root))
 }
 
 fn quote_string(s: &str) -> String {
@@ -769,7 +769,7 @@ fn double_numbers_revive(value: Value) -> Value {
                     .map(|e| double_numbers_revive(e.clone()))
                     .collect();
                 drop(guard);
-                Value::Object(vybe_bytecode::heap::alloc(Object::new_array(elems2)))
+                Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems2)))
             } else {
                 let keys: Vec<String> = guard.properties.keys().cloned().collect();
                 let vals: Vec<(String, Value)> = keys
@@ -786,7 +786,7 @@ fn double_numbers_revive(value: Value) -> Value {
                 for (k, v) in vals {
                     new_obj.properties.insert(k, v);
                 }
-                Value::Object(vybe_bytecode::heap::alloc(new_obj))
+                Value::Object(vybe_runtime::heap::alloc(new_obj))
             }
         }
         _ => value,
@@ -909,7 +909,7 @@ fn mark_array_hole(object: &mut Object, index: i32) {
     let holes = match object.properties.get("__holes") {
         Some(Value::Object(existing)) => existing.clone(),
         _ => {
-            let created = vybe_bytecode::heap::alloc(Object::new_array(Vec::new()));
+            let created = vybe_runtime::heap::alloc(Object::new_array(Vec::new()));
             object
                 .properties
                 .insert("__holes".into(), Value::Object(created.clone()));
@@ -1109,7 +1109,7 @@ impl<'a> Parser<'a> {
         self.skip_whitespace();
         if self.peek() == Some(b']') {
             self.pos += 1;
-            return Some(Value::Object(vybe_bytecode::heap::alloc(Object::new_array(
+            return Some(Value::Object(vybe_runtime::heap::alloc(Object::new_array(
                 elems,
             ))));
         }
@@ -1127,7 +1127,7 @@ impl<'a> Parser<'a> {
                 _ => return None,
             }
         }
-        Some(Value::Object(vybe_bytecode::heap::alloc(Object::new_array(
+        Some(Value::Object(vybe_runtime::heap::alloc(Object::new_array(
             elems,
         ))))
     }
@@ -1143,7 +1143,7 @@ impl<'a> Parser<'a> {
         self.skip_whitespace();
         if self.peek() == Some(b'}') {
             self.pos += 1;
-            return Some(Value::Object(vybe_bytecode::heap::alloc(obj)));
+            return Some(Value::Object(vybe_runtime::heap::alloc(obj)));
         }
         loop {
             self.skip_whitespace();
@@ -1172,9 +1172,9 @@ impl<'a> Parser<'a> {
         }
         obj.properties.insert(
             "__keys".into(),
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(tracked_keys))),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(tracked_keys))),
         );
-        Some(Value::Object(vybe_bytecode::heap::alloc(obj)))
+        Some(Value::Object(vybe_runtime::heap::alloc(obj)))
     }
 }
 

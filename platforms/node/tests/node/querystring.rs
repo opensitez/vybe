@@ -12,9 +12,9 @@
 //! is preferred for new code, but querystring remains in LTS Node.js.
 
 use std::sync::Arc;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
-use vybe_bytecode::{Chunk, Op, VM};
-use vybe_bytecode::capabilities::Capabilities;
+use vybe_runtime::value::{Object, ObjectKind, Value};
+use vybe_runtime::{Chunk, Op, VM};
+use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
 fn call_qs(name: &str, args: Vec<Value>) -> Value {

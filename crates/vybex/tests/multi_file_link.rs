@@ -15,8 +15,8 @@ use vybe_compiler::projects;
 fn languages_registered() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let mut vm = vybe_bytecode::VM::new();
-        vybex::cli::register_plugins(&mut vm, &vybe_bytecode::capabilities::Capabilities::all());
+        let mut vm = vybe_runtime::VM::new();
+        vybex::cli::register_plugins(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
     });
 }
 

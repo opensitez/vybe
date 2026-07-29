@@ -2,7 +2,7 @@
 //!
 //! Mirrors `languages/php/src/tree_register.rs`: the LANGUAGE contributes DATA
 //! — its own profile tables, the same ones its emit dispatch executes — to the
-//! shared tree in `vybe_bytecode::namespaces`. Resolution logic lives only in
+//! shared tree in `vybe_runtime::namespaces`. Resolution logic lives only in
 //! the common resolver; nothing in the VM or the common compiler changes.
 //!
 //! The one difference from PHP is what a DOTTED profile key means. PHP skips
@@ -27,9 +27,9 @@
 use std::collections::BTreeMap;
 use std::sync::Once;
 
-use vybe_bytecode::Value;
-use vybe_bytecode::namespaces::{self, NamespaceNode, Subtree};
-use vybe_bytecode::profile::{BuiltinEmit, ConstantValue, parse_profile};
+use vybe_runtime::Value;
+use vybe_runtime::namespaces::{self, NamespaceNode, Subtree};
+use vybe_runtime::profile::{BuiltinEmit, ConstantValue, parse_profile};
 
 /// Insert `leaf` at a dotted path (`["path", "join"]` under root `os`),
 /// creating intermediate namespaces. An existing entry wins — first

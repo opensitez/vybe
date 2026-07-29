@@ -4,8 +4,8 @@
 
 use std::sync::{Arc, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{Object, ObjectKind, Value};
 
 fn s(text: &str) -> Value {
     Value::String(Arc::from(text))
@@ -30,7 +30,7 @@ fn time_origin_ms() -> f64 {
 }
 
 fn empty_array() -> Value {
-    Value::Object(vybe_bytecode::heap::alloc(Object {
+    Value::Object(vybe_runtime::heap::alloc(Object {
         kind: ObjectKind::Array(vec![]),
         properties: std::collections::HashMap::new(),
         type_id: 0,
@@ -45,7 +45,7 @@ fn mark_entry(name: &str) -> Value {
     o.properties
         .insert("startTime".into(), Value::F64(now_ms()));
     o.properties.insert("duration".into(), Value::F64(0.0));
-    Value::Object(vybe_bytecode::heap::alloc(o))
+    Value::Object(vybe_runtime::heap::alloc(o))
 }
 
 fn histogram_stub() -> Value {
@@ -58,7 +58,7 @@ fn histogram_stub() -> Value {
     o.properties.insert("percentile".into(), Value::Null);
     o.properties.insert("percentiles".into(), Value::Null);
     o.properties.insert("count".into(), Value::I32(0));
-    Value::Object(vybe_bytecode::heap::alloc(o))
+    Value::Object(vybe_runtime::heap::alloc(o))
 }
 
 pub fn register(vm: &mut VM) {
@@ -102,7 +102,7 @@ pub fn register(vm: &mut VM) {
             o.properties
                 .insert("startTime".into(), Value::F64(now_ms()));
             o.properties.insert("duration".into(), Value::F64(0.0));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -144,7 +144,7 @@ pub fn register(vm: &mut VM) {
             o.properties.insert("idle".into(), Value::F64(0.0));
             o.properties.insert("active".into(), Value::F64(0.0));
             o.properties.insert("utilization".into(), Value::F64(0.0));
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -172,7 +172,7 @@ pub fn register(vm: &mut VM) {
         vm.register_host_fn(
             "node:perf_hooks",
             name,
-            Box::new(|_ctx, _args| Value::Object(vybe_bytecode::heap::alloc(Object::new()))),
+            Box::new(|_ctx, _args| Value::Object(vybe_runtime::heap::alloc(Object::new()))),
         );
     }
 }

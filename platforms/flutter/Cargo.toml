@@ -8,4 +8,4 @@ license.workspace = true
 [dependencies]
 inventory = { workspace = true }
 vybe_ast = { workspace = true }
-vybe_bytecode = { workspace = true }
+vybe_runtime = { workspace = true }

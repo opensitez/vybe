@@ -206,7 +206,7 @@ begin f := TForm1.Create(nil); end.
     assert!(handler.is_some());
     let h = handler.unwrap();
     assert!(
-        !matches!(h, vybe_bytecode::Value::Null),
+        !matches!(h, vybe_runtime::Value::Null),
         "Handler should not be Null"
     );
 }

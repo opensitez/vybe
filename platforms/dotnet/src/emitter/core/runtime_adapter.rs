@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use vybe_bytecode::Chunk;
-use vybe_bytecode::Op;
-use vybe_bytecode::Value;
+use vybe_runtime::Chunk;
+use vybe_runtime::Op;
+use vybe_runtime::Value;
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::instructions::host;
 

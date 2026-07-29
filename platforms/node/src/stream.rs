@@ -2,8 +2,8 @@
 //!
 //! Reference: <https://nodejs.org/api/stream.html>.
 
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, ObjectKind, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{Object, ObjectKind, Value};
 
 fn ee_methods() -> Vec<&'static str> {
     vec![
@@ -46,7 +46,7 @@ fn make_readable() -> Value {
     ] {
         o.properties.insert(m.into(), Value::Undefined);
     }
-    Value::Object(vybe_bytecode::heap::alloc(o))
+    Value::Object(vybe_runtime::heap::alloc(o))
 }
 
 fn make_writable() -> Value {
@@ -70,7 +70,7 @@ fn make_writable() -> Value {
     ] {
         o.properties.insert(m.into(), Value::Undefined);
     }
-    Value::Object(vybe_bytecode::heap::alloc(o))
+    Value::Object(vybe_runtime::heap::alloc(o))
 }
 
 fn make_duplex() -> Value {
@@ -105,7 +105,7 @@ fn make_duplex() -> Value {
     ] {
         o.properties.insert(m.into(), Value::Undefined);
     }
-    Value::Object(vybe_bytecode::heap::alloc(o))
+    Value::Object(vybe_runtime::heap::alloc(o))
 }
 
 fn is_readable_val(v: &Value) -> bool {
@@ -163,7 +163,7 @@ pub fn register(vm: &mut VM) {
             for m in ["pipe", "destroy", "pause", "resume"] {
                 o.properties.insert(m.into(), Value::Undefined);
             }
-            Value::Object(vybe_bytecode::heap::alloc(o))
+            Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
 
@@ -208,7 +208,7 @@ pub fn register(vm: &mut VM) {
             for m in ["pipe", "read", "push", "destroy", "pause", "resume"] {
                 s.properties.insert(m.into(), Value::Undefined);
             }
-            Value::Object(vybe_bytecode::heap::alloc(s))
+            Value::Object(vybe_runtime::heap::alloc(s))
         }),
     );
 
@@ -230,7 +230,7 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "node:stream",
         "compose",
-        Box::new(|_ctx, _args| Value::Object(vybe_bytecode::heap::alloc(Object::new()))),
+        Box::new(|_ctx, _args| Value::Object(vybe_runtime::heap::alloc(Object::new()))),
     );
 }
 

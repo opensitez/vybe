@@ -12,7 +12,7 @@
 //! name is an error, not a silent pick.
 
 use vybe_ast::{ClassMember, ClassModifiers, Span, StmtKind};
-use vybe_bytecode::class_normalize::{
+use vybe_ast::class_normalize::{
     Access, Augmentation, AugmentationConflict, AugmentationContributes, AugmentationMode,
     AugmentationPosition, AugmentationSuper, NormalClass, NormalField, NormalMembers,
     SpecialMethod, access_from_visibility, from_method_stmt,
@@ -146,7 +146,7 @@ pub fn normalize_class(
 mod tests {
     use super::*;
     use vybe_ast::{Modifiers, Statement, Visibility};
-    use vybe_bytecode::class_normalize::types::SpecialMethodKind;
+    use vybe_ast::class_normalize::types::SpecialMethodKind;
 
     fn dummy_span() -> Span {
         Span::default()

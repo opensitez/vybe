@@ -6,7 +6,7 @@
 //! here; downstream class emission stays language-neutral.
 
 use vybe_ast::{ClassMember, ClassModifiers, Span, StmtKind};
-use vybe_bytecode::class_normalize::{
+use vybe_ast::class_normalize::{
     NormalMembers,
     access_from_visibility, from_method_stmt, types::*,
 };

@@ -3,8 +3,8 @@
 //! Reference: <https://nodejs.org/api/dgram.html>.
 
 use std::sync::Arc;
-use vybe_bytecode::VM;
-use vybe_bytecode::value::{Object, Value};
+use vybe_runtime::VM;
+use vybe_runtime::value::{Object, Value};
 
 fn make_socket(sock_type: &str) -> Value {
     let mut o = Object::new();
@@ -57,7 +57,7 @@ fn make_socket(sock_type: &str) -> Value {
     ] {
         o.properties.insert(m.into(), Value::Undefined);
     }
-    Value::Object(vybe_bytecode::heap::alloc(o))
+    Value::Object(vybe_runtime::heap::alloc(o))
 }
 
 pub fn register(vm: &mut VM) {

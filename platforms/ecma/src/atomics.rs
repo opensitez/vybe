@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{HostContext, VM, Value};
 
 /// Resolve a typed-array argument to its backing buffer + offset metadata.
 /// Returns (buffer, byteOffset, elementByteLength) when valid.
@@ -384,7 +384,7 @@ pub fn register(vm: &mut VM) {
                 "ok"
             };
             // Return { async: true, value: Promise<result_str> } — simplified as an object
-            let mut obj = vybe_bytecode::value::Object::new();
+            let mut obj = vybe_runtime::value::Object::new();
             obj.properties.insert("async".into(), Value::Bool(true));
             obj.properties
                 .insert("value".into(), Value::String(Arc::from(result_str)));

@@ -7,11 +7,11 @@
 //!
 //! Behavioral tests (handler logic + end-to-end execution via
 //! CALL_IMPORT) live in `vybe_host/tests/js_builtins_behavior_test.rs`
-//! since `vybe_bytecode` can't depend on `vybe_host`.
+//! since `vybe_runtime` can't depend on `vybe_host`.
 //!
 //! See `dynamicruntime_support.md` Phase B6.
 
-use vybe_bytecode::{Chunk, Op, Value};
+use vybe_runtime::{Chunk, Op, Value};
 use vybe_platform_wasm::write_wasm;
 use vybe_platform_wasm::writer::builtins::{
     js_array_builtins, js_arraybuffer_builtins, js_map_builtins, js_object_builtins,

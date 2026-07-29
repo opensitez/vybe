@@ -13,8 +13,8 @@
 
 use crate::receiver_host_fn_ref;
 use std::sync::{Arc, Mutex};
-use vybe_bytecode::value::{Object, ObjectKind};
-use vybe_bytecode::{HostContext, VM, Value};
+use vybe_runtime::value::{Object, ObjectKind};
+use vybe_runtime::{HostContext, VM, Value};
 
 // Method indices captured at register time so `make_iterator` can attach
 // them as direct properties on every iterator instance — chained
@@ -41,7 +41,7 @@ fn make_iterator(values: Vec<Value>) -> Value {
     obj.kind = ObjectKind::Array(values);
     obj.properties.insert("__index".into(), Value::I32(0));
     attach_iterator_methods(&mut obj);
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 fn make_lazy_map(source: Value, mapper: Value) -> Value {
@@ -54,7 +54,7 @@ fn make_lazy_map(source: Value, mapper: Value) -> Value {
     obj.properties.insert("__mapper".into(), mapper);
     obj.properties.insert("__index".into(), Value::I32(0));
     attach_iterator_methods(&mut obj);
-    Value::Object(vybe_bytecode::heap::alloc(obj))
+    Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
 pub fn maybe_await_value(value: Value) -> Value {
@@ -429,7 +429,7 @@ pub fn register(vm: &mut VM) {
         "toArray",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let v = materialize_iterable_values(_ctx, args.first().unwrap_or(&Value::Null), false);
-            Value::Object(vybe_bytecode::heap::alloc(Object::new_array(v)))
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(v)))
         }),
     );
 
@@ -471,7 +471,7 @@ pub fn register(vm: &mut VM) {
                 let mut result = Object::new();
                 result.properties.insert("value".into(), Value::Undefined);
                 result.properties.insert("done".into(), Value::Bool(true));
-                return Value::Object(vybe_bytecode::heap::alloc(result));
+                return Value::Object(vybe_runtime::heap::alloc(result));
             };
             if let Some((source, mapper, index)) = lazy_map_parts(it) {
                 let values = materialize_iterable_values(ctx, &source, false);
@@ -486,12 +486,12 @@ pub fn register(vm: &mut VM) {
                     let mut result = Object::new();
                     result.properties.insert("value".into(), mapped);
                     result.properties.insert("done".into(), Value::Bool(false));
-                    return Value::Object(vybe_bytecode::heap::alloc(result));
+                    return Value::Object(vybe_runtime::heap::alloc(result));
                 }
                 let mut result = Object::new();
                 result.properties.insert("value".into(), Value::Undefined);
                 result.properties.insert("done".into(), Value::Bool(true));
-                return Value::Object(vybe_bytecode::heap::alloc(result));
+                return Value::Object(vybe_runtime::heap::alloc(result));
             }
             let mut lock = it.lock().unwrap();
             let index = lock
@@ -506,13 +506,13 @@ pub fn register(vm: &mut VM) {
                     let mut result = Object::new();
                     result.properties.insert("value".into(), value);
                     result.properties.insert("done".into(), Value::Bool(false));
-                    return Value::Object(vybe_bytecode::heap::alloc(result));
+                    return Value::Object(vybe_runtime::heap::alloc(result));
                 }
             }
             let mut result = Object::new();
             result.properties.insert("value".into(), Value::Undefined);
             result.properties.insert("done".into(), Value::Bool(true));
-            Value::Object(vybe_bytecode::heap::alloc(result))
+            Value::Object(vybe_runtime::heap::alloc(result))
         }),
     );
 
@@ -561,9 +561,9 @@ fn invoke_magic_callback(cb: &Value, args: &[Value]) -> Option<Value> {
         drop(o);
         if let Some(x) = args.first() {
             let arr = Object::new_array(vec![x.clone(), x.clone()]);
-            return Some(Value::Object(vybe_bytecode::heap::alloc(arr)));
+            return Some(Value::Object(vybe_runtime::heap::alloc(arr)));
         }
-        return Some(Value::Object(vybe_bytecode::heap::alloc(Object::new_array(
+        return Some(Value::Object(vybe_runtime::heap::alloc(Object::new_array(
             vec![],
         ))));
     }

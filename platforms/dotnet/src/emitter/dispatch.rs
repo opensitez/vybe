@@ -2,10 +2,10 @@
 //! language module; the common dispatcher delegates here).
 
 use std::sync::Arc;
-use vybe_bytecode::{Chunk, Value};
+use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::instructions::core_wasm;
 
-use vybe_bytecode::opcode::Op;
+use vybe_runtime::opcode::Op;
 
 /// `Control.CreateGraphics()` — construct a `Graphics` (via its registered
 /// class global) stamped with the receiver control's `__control_name`, so
@@ -1703,7 +1703,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         ),
         "dotnet.utf8encoding_new" => {
             for _ in 0..argc {
-                chunks[current].emit_op(vybe_bytecode::opcode::Op::DROP, line);
+                chunks[current].emit_op(vybe_runtime::opcode::Op::DROP, line);
             }
             crate::emitter::core::encoding_adapter::emit_encoding_value(
                 chunks, current, "utf-8", line,

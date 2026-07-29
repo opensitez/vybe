@@ -9,8 +9,8 @@
 //! capability is granted; without it those fns are absent and the entries are
 //! simply skipped, but the TypeDefs still register (as before).
 
-use vybe_bytecode::{Method, TypeDef};
-use vybe_bytecode::Framework;
+use vybe_runtime::{Method, TypeDef};
+use vybe_runtime::Framework;
 
 /// The concrete control types — each a subtype of `Control`, each with a
 /// `new_<Name>` constructor. (Several `.NET` non-visual components — `Timer`,

@@ -4,6 +4,7 @@
 //! same as `statements.rs`/`builtins.rs`.
 
 use super::*;
+use vybe_ast::class_normalize::{PlatformBaseSpec, PlatformFieldGui};
 
 fn dotnet_ambient_tree_root(path: &str) -> Option<String> {
     let trimmed = path.trim();
@@ -14,6 +15,30 @@ fn dotnet_ambient_tree_root(path: &str) -> Option<String> {
     lower
         .strip_prefix("system.")
         .map(|tail| format!("dotnet.system.{tail}"))
+}
+
+fn platform_base_spec_from_ctor_spec(spec: crate::primitives::namespaces::CtorSpec) -> PlatformBaseSpec {
+    PlatformBaseSpec {
+        params: spec.params,
+        fields: spec.fields,
+        ancestry: spec.ancestry,
+        control_fn: spec.control_fn,
+        field_gui: spec
+            .field_gui
+            .into_iter()
+            .map(|field| match field {
+                crate::primitives::namespaces::FieldGui::NestOrProp(key) => {
+                    PlatformFieldGui::NestOrProp(key)
+                }
+                crate::primitives::namespaces::FieldGui::Children => PlatformFieldGui::Children,
+                crate::primitives::namespaces::FieldGui::Event(name) => {
+                    PlatformFieldGui::Event(name)
+                }
+                crate::primitives::namespaces::FieldGui::Caption => PlatformFieldGui::Caption,
+            })
+            .collect(),
+        value_equality: spec.value_equality,
+    }
 }
 
 impl Compiler {
@@ -415,9 +440,9 @@ impl Compiler {
             {
                 continue;
             }
-            if let Some(spec) = vybe_bytecode::namespaces::lookup_type_ctor_spec(&scope, &parent) {
+            if let Some(spec) = vybe_runtime::namespaces::lookup_type_ctor_spec(&scope, &parent) {
                 if let Some(nc) = self.normalized_classes.get_mut(&name) {
-                    nc.platform_base = Some(spec);
+                    nc.platform_base = Some(platform_base_spec_from_ctor_spec(spec));
                 }
             }
         }

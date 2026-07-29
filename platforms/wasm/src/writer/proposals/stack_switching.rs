@@ -48,7 +48,7 @@
 //! tag; typed suspend paths use the per-tag entries declared after it
 //! in the tag section.
 
-use vybe_bytecode::Chunk;
+use vybe_runtime::Chunk;
 
 /// Reference-types declares no globals.
 pub fn declare_imports() -> &'static [(&'static str, &'static str)] {

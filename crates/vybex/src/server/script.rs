@@ -18,7 +18,7 @@ use super::response_stream::{BoxBody, build_response, bytes_response};
 use bytes::Bytes;
 use http::Response;
 use indexmap::IndexMap;
-use vybe_bytecode::capabilities::{Capabilities, Capability};
+use vybe_runtime::capabilities::{Capabilities, Capability};
 use vybe_platform_node::http::RequestContext;
 
 const PHP_SESSION_COOKIE_NAME: &str = "PHPSESSID";
@@ -28,7 +28,7 @@ const PHP_SESSION_NEEDS_COOKIE_GLOBAL: &str = "__php_session_needs_cookie";
 const PHP_SESSION_DESTROYED_GLOBAL: &str = "__php_session_destroyed";
 
 static PHP_SESSION_STORE: std::sync::LazyLock<
-    dashmap::DashMap<String, IndexMap<String, vybe_bytecode::Value>>,
+    dashmap::DashMap<String, IndexMap<String, vybe_runtime::Value>>,
 > = std::sync::LazyLock::new(dashmap::DashMap::new);
 
 pub async fn serve(
@@ -114,7 +114,7 @@ pub async fn serve(
 }
 
 fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
-    use vybe_bytecode::VM;
+    use vybe_runtime::VM;
 
     // Install the thread-local context for the duration of this VM run.
     let _guard = vybe_platform_node::http::install_context(Arc::clone(&ctx));
@@ -167,7 +167,7 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
         "wasi:cli/stdout",
         "write-via-stream",
         Box::new(|host_ctx, args| {
-            let stream_val = args.first().cloned().unwrap_or(vybe_bytecode::Value::Null);
+            let stream_val = args.first().cloned().unwrap_or(vybe_runtime::Value::Null);
             let bytes = host_ctx.stream_drain(&stream_val);
             if !bytes.is_empty() {
                 match vybe_platform_node::http::with_context(|c| {
@@ -181,7 +181,7 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
                 }
             }
             let (fut, fut_id) = host_ctx.create_future();
-            host_ctx.resolve_future(fut_id, vybe_bytecode::Value::Null);
+            host_ctx.resolve_future(fut_id, vybe_runtime::Value::Null);
             fut
         }),
     );
@@ -218,11 +218,11 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
 /// but non-PHP scripts running under `--serve` simply won't touch them.
 /// Real request data is always available via `\Vybe\Http\Request\*` host
 /// calls regardless of language.
-fn inject_superglobals(vm: &mut vybe_bytecode::VM, ctx: &Arc<RequestContext>) {
+fn inject_superglobals(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
     use indexmap::IndexMap;
     use std::sync::{Arc as StdArc, Mutex as StdMutex};
-    use vybe_bytecode::Value;
-    use vybe_bytecode::value::{Object, ObjectKind};
+    use vybe_runtime::Value;
+    use vybe_runtime::value::{Object, ObjectKind};
 
     let server = make_string_map_value(ctx.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     let env = make_string_map_value(std::env::vars());
@@ -331,12 +331,12 @@ fn inject_superglobals(vm: &mut vybe_bytecode::VM, ctx: &Arc<RequestContext>) {
 }
 
 fn make_map_value(
-    pairs: impl IntoIterator<Item = (String, vybe_bytecode::Value)>,
-) -> vybe_bytecode::Value {
+    pairs: impl IntoIterator<Item = (String, vybe_runtime::Value)>,
+) -> vybe_runtime::Value {
     use indexmap::IndexMap;
     use std::sync::{Arc as StdArc, Mutex as StdMutex};
-    use vybe_bytecode::Value;
-    use vybe_bytecode::value::{Object, ObjectKind};
+    use vybe_runtime::Value;
+    use vybe_runtime::value::{Object, ObjectKind};
 
     let mut im = IndexMap::new();
     for (k, v) in pairs {
@@ -349,24 +349,24 @@ fn make_map_value(
 
 fn make_string_map_value(
     pairs: impl IntoIterator<Item = (String, String)>,
-) -> vybe_bytecode::Value {
+) -> vybe_runtime::Value {
     make_map_value(pairs.into_iter().map(|(k, v)| {
         (
             k,
-            vybe_bytecode::Value::String(std::sync::Arc::from(v.as_str())),
+            vybe_runtime::Value::String(std::sync::Arc::from(v.as_str())),
         )
     }))
 }
 
-fn persist_superglobals(vm: &vybe_bytecode::VM, _ctx: &Arc<RequestContext>) {
+fn persist_superglobals(vm: &vybe_runtime::VM, _ctx: &Arc<RequestContext>) {
     let destroyed = matches!(
         vm.globals.get(PHP_SESSION_DESTROYED_GLOBAL),
-        Some(vybe_bytecode::Value::Bool(true))
+        Some(vybe_runtime::Value::Bool(true))
     );
 
     if destroyed {
         let session_id = match vm.globals.get(PHP_SESSION_ID_GLOBAL) {
-            Some(vybe_bytecode::Value::String(s)) if !s.is_empty() => s.to_string(),
+            Some(vybe_runtime::Value::String(s)) if !s.is_empty() => s.to_string(),
             _ => return,
         };
         PHP_SESSION_STORE.remove(&session_id);
@@ -375,26 +375,26 @@ fn persist_superglobals(vm: &vybe_bytecode::VM, _ctx: &Arc<RequestContext>) {
 
     let started = matches!(
         vm.globals.get(PHP_SESSION_STARTED_GLOBAL),
-        Some(vybe_bytecode::Value::Bool(true))
+        Some(vybe_runtime::Value::Bool(true))
     );
     if !started {
         return;
     }
 
     let session_id = match vm.globals.get(PHP_SESSION_ID_GLOBAL) {
-        Some(vybe_bytecode::Value::String(s)) if !s.is_empty() => s.to_string(),
+        Some(vybe_runtime::Value::String(s)) if !s.is_empty() => s.to_string(),
         _ => return,
     };
 
-    let Some(vybe_bytecode::Value::Object(obj)) = vm.globals.get("$_SESSION") else {
+    let Some(vybe_runtime::Value::Object(obj)) = vm.globals.get("$_SESSION") else {
         return;
     };
     let guard = obj.lock().unwrap();
-    let vybe_bytecode::value::ObjectKind::Map(map) = &guard.kind else {
+    let vybe_runtime::value::ObjectKind::Map(map) = &guard.kind else {
         return;
     };
 
-    let persisted: IndexMap<String, vybe_bytecode::Value> = map
+    let persisted: IndexMap<String, vybe_runtime::Value> = map
         .iter()
         .map(|(key, value)| (format!("{}", key), value.clone()))
         .collect();
@@ -428,8 +428,8 @@ fn parse_cookie_header(header: &str) -> Vec<(String, String)> {
 fn parse_multipart_form(
     body: &[u8],
     content_type: &str,
-) -> (Vec<(String, String)>, Vec<(String, vybe_bytecode::Value)>) {
-    use vybe_bytecode::Value;
+) -> (Vec<(String, String)>, Vec<(String, vybe_runtime::Value)>) {
+    use vybe_runtime::Value;
 
     let Some(boundary) = extract_multipart_boundary(content_type) else {
         return (Vec::new(), Vec::new());
@@ -591,9 +591,9 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
-    use vybe_bytecode::value::ObjectKind;
-    use vybe_bytecode::{HostContext, VM, Value};
-    fn compile_php(src: &str) -> Vec<vybe_bytecode::Chunk> {
+    use vybe_runtime::value::ObjectKind;
+    use vybe_runtime::{HostContext, VM, Value};
+    fn compile_php(src: &str) -> Vec<vybe_runtime::Chunk> {
         let module = vybe_language_php::parse(src).expect("parse php");
         let profile = vybe_compiler::profile::parse_profile(vybe_language_php::profile_source())
             .expect("parse php profile");
@@ -663,7 +663,7 @@ mod tests {
         let mut vm = VM::new();
         let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let out = Arc::clone(&output);
-        crate::cli::register_plugins(&mut vm, &vybe_bytecode::capabilities::Capabilities::all());
+        crate::cli::register_plugins(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
         vm.register_host_fn(
             "wasi:logging/logging",
             "log",
