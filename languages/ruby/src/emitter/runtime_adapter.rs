@@ -6835,7 +6835,22 @@ fn emit_ruby_const_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     if slots.len() >= 2 {
         chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
+        call_import(chunks, current, "ecma:object", "hasOwn", 2, line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
         collections::emit_get(chunks, current, line);
+        chunks[current].emit_else(line);
+        vybe_compiler::compiler::dynamic_symbols::emit_receiver_missing_symbol_get(
+            chunks,
+            current,
+            slots[0],
+            slots[1],
+            "const_missing",
+            false,
+            line,
+        );
+        chunks[current].emit_end(line);
     } else {
         chunks[current].emit_op(Op::NULL, line);
     }

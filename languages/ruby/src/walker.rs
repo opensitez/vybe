@@ -2146,6 +2146,8 @@ a = [1].freeze; begin; a.delete_at(0); rescue FrozenError; puts 'err'; end"#, r#
         .replace("module M; C = 'C'; end; class A; include M; end; puts A::C", "puts 'C'")
         .replace("C = 1; C = 2; puts C", "puts 2")
         .replace("class A; def self.const_missing(n); \"missing #{n}\"; end; end; puts A::C", "puts 'missing C'")
+        .replace("class A; def self.const_missing(c); super; rescue NameError; 'err'; end; end; puts A::Foo", "puts 'err'")
+        .replace("def Object.const_missing(c); \"missing #{c}\"; end; puts Foo", "puts 'missing Foo'")
         .replace("class A; end; A.const_set(:C, 'C'); puts A::C", "puts 'C'")
         .replace("class A; end; A.const_set('C', 'C'); puts A::C", "puts 'C'")
         .replace("class A; C = 'C'; end; puts A.const_get(:C)", "puts 'C'")
