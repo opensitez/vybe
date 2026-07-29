@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use vybe_bytecode::value::{Object, ObjectKind, Value};
 use vybe_bytecode::{Chunk, Op, VM};
 use vybe_bytecode::capabilities::Capabilities;
-use vybe_compiler::compiler::platforms::register_platforms;
+use vybe_compiler::primitives::platforms::register_platforms;
 
 // ── Test scaffolding ──────────────────────────────────────────────
 

@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::compiler::instructions::core_wasm;
+use vybe_compiler::primitives::instructions::core_wasm;
 
 use vybe_bytecode::opcode::Op;
 
@@ -94,7 +94,7 @@ fn emit_get_type(chunk: &mut Chunk, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
     chunk.emit_string_const("object", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     let exception_key = chunk.add_constant(Value::String(Arc::from("__exception_type")));
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -104,7 +104,7 @@ fn emit_get_type(chunk: &mut Chunk, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
     chunk.emit_string_const("", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, exception_key, line);
@@ -147,13 +147,13 @@ fn emit_to_byte(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_dup(line);
     chunk.emit_string_const("Arithmetic operation resulted in an overflow.", line);
-    vybe_compiler::compiler::errors::emit_exception_new_finalize(chunk, "OverflowException", line);
-    vybe_compiler::compiler::errors::emit_stamp_exception_ancestors(
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "OverflowException", line);
+    vybe_compiler::primitives::errors::emit_stamp_exception_ancestors(
         chunk,
         "OverflowException",
         line,
     );
-    vybe_compiler::compiler::errors::emit_throw(chunk, line);
+    vybe_compiler::primitives::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -539,7 +539,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.enum_is_defined" => {
             chunks[current].emit_op(Op::DROP, line);
             chunks[current].emit_op(Op::DROP, line);
-            vybe_compiler::compiler::instructions::core_wasm::bool_const(
+            vybe_compiler::primitives::instructions::core_wasm::bool_const(
                 &mut chunks[current],
                 line,
                 true,
@@ -548,7 +548,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 
         // ── .NET LINQ-to-XML adapter ────────────────────────────────
         // Tree operations compose `web:dom-parser`; XName operations delegate
-        // to `vybe_compiler::compiler::xml` inside the adapter.
+        // to `vybe_compiler::primitives::xml` inside the adapter.
         "dotnet.xml_xelement_new" => {
             crate::emitter::core::xml_linq_adapter::emit_xelement_new(chunks, current, argc, line)
         }
@@ -999,7 +999,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // Both keep their `ecma:set` / `ecma:map` backing (so membership,
         // mutation and set-algebra reuse the host ops); only the ordered reads
         // are adapted through the shared sorted core in
-        // `vybe_compiler::compiler::sorted_collection`, which is also Java's TreeSet/TreeMap
+        // `vybe_compiler::primitives::sorted_collection`, which is also Java's TreeSet/TreeMap
         // engine. A SortedSet spreads to a sorted array for Min/Max/GetViewBetween
         // and ElementsSorted; a SortedDictionary sorts its key/value/entry views.
         "dotnet.sorted_set_min" => {
@@ -1019,17 +1019,17 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             )
         }
         "dotnet.sorted_map_keys" => {
-            vybe_compiler::compiler::sorted_collection::emit_sorted_map_key_set(
+            vybe_compiler::primitives::sorted_collection::emit_sorted_map_key_set(
                 chunks, current, line,
             )
         }
         "dotnet.sorted_map_values" => {
-            vybe_compiler::compiler::sorted_collection::emit_sorted_map_values(
+            vybe_compiler::primitives::sorted_collection::emit_sorted_map_values(
                 chunks, current, line,
             )
         }
         "dotnet.sorted_map_entries" => {
-            vybe_compiler::compiler::sorted_collection::emit_sorted_map_entries(
+            vybe_compiler::primitives::sorted_collection::emit_sorted_map_entries(
                 chunks, current, line,
             )
         }
@@ -1840,7 +1840,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.object_reference_equals" => {
             chunks[current].emit_op(Op::REF_EQ, line);
-            vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
+            vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
         }
         "dotnet.gc_noop" => {
             crate::emitter::core::gc_adapter::emit_gc_noop(chunks, current, argc, line)
@@ -2426,17 +2426,17 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
             chunk.emit_dup(line);
             chunk.emit_string_const("The given key was not present in the dictionary.", line);
-            vybe_compiler::compiler::errors::emit_exception_new_finalize(
+            vybe_compiler::primitives::errors::emit_exception_new_finalize(
                 chunk,
                 "KeyNotFoundException",
                 line,
             );
-            vybe_compiler::compiler::errors::emit_stamp_exception_ancestors(
+            vybe_compiler::primitives::errors::emit_stamp_exception_ancestors(
                 chunk,
                 "KeyNotFoundException",
                 line,
             );
-            vybe_compiler::compiler::errors::emit_throw(chunk, line);
+            vybe_compiler::primitives::errors::emit_throw(chunk, line);
             chunk.emit_end(line);
         }
         "dotnet.dict_get_value_or_default" => {
@@ -2506,16 +2506,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.concurrent_queue_try_dequeue" => {
             chunks[current].emit_op(Op::DROP, line);
-            vybe_compiler::compiler::collections::emit_shift(chunks, current, line);
+            vybe_compiler::primitives::collections::emit_shift(chunks, current, line);
         }
         "dotnet.concurrent_stack_try_pop" => {
             chunks[current].emit_op(Op::DROP, line);
-            vybe_compiler::compiler::collections::emit_pop(chunks, current, line);
+            vybe_compiler::primitives::collections::emit_pop(chunks, current, line);
         }
         "dotnet.concurrent_queue_try_peek" => {
             chunks[current].emit_op(Op::DROP, line);
             chunks[current].emit_i32_const(0, line);
-            vybe_compiler::compiler::collections::emit_get(chunks, current, line);
+            vybe_compiler::primitives::collections::emit_get(chunks, current, line);
         }
         "dotnet.concurrent_stack_try_peek" => {
             chunks[current].emit_op(Op::DROP, line);
@@ -2523,10 +2523,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks[current].emit_op_u16(Op::LOCAL_SET, recv, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-            vybe_compiler::compiler::collections::emit_len(chunks, current, line);
+            vybe_compiler::primitives::collections::emit_len(chunks, current, line);
             chunks[current].emit_i32_const(1, line);
             chunks[current].emit_op(Op::I32_SUB, line);
-            vybe_compiler::compiler::collections::emit_get(chunks, current, line);
+            vybe_compiler::primitives::collections::emit_get(chunks, current, line);
         }
         "dotnet.choose" => emit_choose(&mut chunks[current], argc, line),
         "dotnet.string_compare" => {
@@ -2711,7 +2711,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks[current].emit_call(idx, 1, line);
         }
         "dotnet.system.math.clamp" => {
-            vybe_compiler::compiler::math::emit_clamp(&mut chunks[current], line)
+            vybe_compiler::primitives::math::emit_clamp(&mut chunks[current], line)
         }
         _ => return false,
     }

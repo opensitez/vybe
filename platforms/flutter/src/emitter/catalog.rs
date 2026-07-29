@@ -5,7 +5,7 @@
 //! the dotnet WinForms and plib VCL adapters use) — no Flutter-specific host
 //! functions. The catalog is pure DATA: resolution logic lives in the shared
 //! namespace resolver; construction/field-capture/`is`-checks ride the shared
-//! class machinery (`vybe_compiler::compiler::classes`).
+//! class machinery (`vybe_compiler::primitives::classes`).
 //!
 //! The actual widget entries live in per-category adapter modules under
 //! [`crate::emitter::widgets`] (`layout`, `material`, `inputs`, `scrolling`,

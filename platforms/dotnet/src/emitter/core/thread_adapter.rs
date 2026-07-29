@@ -10,8 +10,8 @@
 use std::sync::Arc;
 
 use vybe_bytecode::{opcode::Op, Chunk, Value};
-use vybe_compiler::compiler::collections;
-use vybe_compiler::compiler::instructions::core_wasm;
+use vybe_compiler::primitives::collections;
+use vybe_compiler::primitives::instructions::core_wasm;
 
 const CANCELLED_KEY: &str = "__dotnet_cancelled";
 const CANCEL_AT_MS_KEY: &str = "__dotnet_cancel_at_ms";
@@ -23,7 +23,7 @@ const EXCEPTION_KEY: &str = "exception";
 const REGISTRATIONS_KEY: &str = "__dotnet_cancellation_registrations";
 const SOURCE_TYPE: &str = "CancellationTokenSource";
 
-// Thread.Sleep bytecode lives in vybe_compiler::compiler::threading::emit_thread_sleep
+// Thread.Sleep bytecode lives in vybe_compiler::primitives::threading::emit_thread_sleep
 // (pure WASI, platform-neutral).
 
 fn call_import(
@@ -62,7 +62,7 @@ fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
 
 fn emit_task_wait_method_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut method =
-        vybe_compiler::compiler::functions::create_function_chunk("__dotnet_task_wait_method", 1);
+        vybe_compiler::primitives::functions::create_function_chunk("__dotnet_task_wait_method", 1);
     method.emit_op_u16(Op::LOCAL_GET, 0, line);
     let mut method_chunks = vec![method];
     emit_task_wait(&mut method_chunks, 0, line);
@@ -156,17 +156,17 @@ fn emit_fire_cancellation_registrations(chunks: &mut [Chunk], current: usize, li
     chunks[current].emit_if(line);
     chunks[current].emit_op(Op::NULL, line);
     chunks[current].emit_else(line);
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, regs_slot, line);
     collections::emit_array_length(&mut chunks[current], line);
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op(Op::I32_GT_S, line);
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, regs_slot, line);
     collections::emit_pop(chunks, current, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
     chunks[current].emit_op(Op::DROP, line);
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     chunks[current].emit_op(Op::NULL, line);
     chunks[current].emit_end(line);
 }
@@ -198,7 +198,7 @@ pub fn emit_cancellation_token_cancel_after(chunks: &mut [Chunk], current: usize
     chunks[current].emit_op_u16(Op::LOCAL_GET, cts_slot, line);
     emit_now_ms(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, ms_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
     struct_set_drop(&mut chunks[current], CANCEL_AT_MS_KEY, line);
     chunks[current].emit_op(Op::NULL, line);
 }
@@ -243,7 +243,7 @@ pub fn emit_cancellation_token_linked_source(
         chunks[current].emit_op_u16(Op::LOCAL_GET, first_token + u16::from(offset), line);
         chunks[current].emit_op_u16(Op::REF_FUNC, callback_idx as u16, line);
         chunks[current].emit(1, line);
-        vybe_compiler::compiler::functions::emit_closure_upvalue(
+        vybe_compiler::primitives::functions::emit_closure_upvalue(
             &mut chunks[current],
             true,
             source_slot,
@@ -256,7 +256,7 @@ pub fn emit_cancellation_token_linked_source(
 }
 
 fn emit_linked_token_cancel_callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
-    let mut callback = vybe_compiler::compiler::functions::create_function_chunk(
+    let mut callback = vybe_compiler::primitives::functions::create_function_chunk(
         "__dotnet_linked_token_cancel",
         0,
     );
@@ -311,7 +311,7 @@ pub fn emit_cancellation_token_can_be_canceled(chunks: &mut [Chunk], current: us
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, token_slot, line);
     struct_get(&mut chunks[current], "CanBeCanceled", line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_end(line);
 }
 
@@ -331,7 +331,7 @@ pub fn emit_cancellation_token_is_requested(chunks: &mut [Chunk], current: usize
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, token_slot, line);
     struct_get(&mut chunks[current], CANCELLED_KEY, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_bool_const(true, line);
     chunks[current].emit_else(line);
@@ -344,8 +344,8 @@ pub fn emit_cancellation_token_is_requested(chunks: &mut [Chunk], current: usize
     chunks[current].emit_else(line);
     emit_now_ms(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, deadline_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
@@ -354,7 +354,7 @@ pub fn emit_cancellation_token_is_requested(chunks: &mut [Chunk], current: usize
 /// Stack: [token] -> [null] or throws OperationCanceledException.
 pub fn emit_cancellation_token_throw_if_requested(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_cancellation_token_is_requested(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     emit_throw_task_cancelled(chunks, current, line);
     chunks[current].emit_else(line);
@@ -364,19 +364,19 @@ pub fn emit_cancellation_token_throw_if_requested(chunks: &mut [Chunk], current:
 
 fn emit_throw_task_cancelled(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_operation_cancelled_exception(chunks, current, line);
-    vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
 }
 
 fn emit_operation_cancelled_exception(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_string_const("The operation was canceled.", line);
-    vybe_compiler::compiler::errors::emit_exception_new_finalize(
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
         &mut chunks[current],
         "OperationCanceledException",
         line,
     );
-    vybe_compiler::compiler::errors::emit_stamp_exception_ancestors(
+    vybe_compiler::primitives::errors::emit_stamp_exception_ancestors(
         &mut chunks[current],
         "OperationCanceledException",
         line,
@@ -415,7 +415,7 @@ fn emit_cancelled_task_object_with_members(chunks: &mut Vec<Chunk>, current: usi
 
 fn emit_task_delay_timer_callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut callback =
-        vybe_compiler::compiler::functions::create_function_chunk("__dotnet_task_delay_timer", 0);
+        vybe_compiler::primitives::functions::create_function_chunk("__dotnet_task_delay_timer", 0);
     callback.local_count = 3;
     callback.capture_base = 0;
     callback.capture_count = 3;
@@ -423,7 +423,7 @@ fn emit_task_delay_timer_callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     callback.emit_op_u16(Op::LOCAL_GET, 0, line);
     let mut callback_chunks = vec![callback];
     emit_cancellation_token_is_requested(&mut callback_chunks, 0, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut callback_chunks[0], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut callback_chunks[0], line);
     callback_chunks[0].emit_if(line);
     callback_chunks[0].emit_op_u16(Op::LOCAL_GET, 2, line);
     emit_operation_cancelled_exception(&mut callback_chunks, 0, line);
@@ -464,7 +464,7 @@ pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, token_slot, line);
     emit_cancellation_token_is_requested(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     emit_cancelled_task_object_with_members(chunks, current, line);
     chunks[current].emit_else(line);
@@ -484,19 +484,19 @@ pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     let callback_idx = emit_task_delay_timer_callback(chunks, line);
     chunks[current].emit_op_u16(Op::REF_FUNC, callback_idx as u16, line);
     chunks[current].emit(3, line);
-    vybe_compiler::compiler::functions::emit_closure_upvalue(
+    vybe_compiler::primitives::functions::emit_closure_upvalue(
         &mut chunks[current],
         true,
         token_slot,
         line,
     );
-    vybe_compiler::compiler::functions::emit_closure_upvalue(
+    vybe_compiler::primitives::functions::emit_closure_upvalue(
         &mut chunks[current],
         true,
         resolve_slot,
         line,
     );
-    vybe_compiler::compiler::functions::emit_closure_upvalue(
+    vybe_compiler::primitives::functions::emit_closure_upvalue(
         &mut chunks[current],
         true,
         reject_slot,
@@ -541,8 +541,8 @@ pub fn emit_task_is_canceled(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, task_slot, line);
     struct_get(&mut chunks[current], "status", line);
     chunks[current].emit_string_const("Canceled", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_bool_const(true, line);
     chunks[current].emit_else(line);
@@ -569,9 +569,9 @@ pub fn emit_task_result(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_task_is_completed(chunks: &mut [Chunk], current: usize, line: u32) {
     struct_get(&mut chunks[current], "__state", line);
     chunks[current].emit_string_const("pending", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 /// `task.Wait()` — join a spawned task and surface failures as .NET
@@ -597,7 +597,7 @@ fn emit_pack_task_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
         call_import(chunks, current, "ecma:array", "isArray", 1, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if_value(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
         chunks[current].emit_else(line);
@@ -654,6 +654,6 @@ pub fn emit_task_continue_with(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_SET, ante_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, ante_slot, line);
-    vybe_compiler::compiler::functions::emit_call(&mut chunks[current], 1, line);
+    vybe_compiler::primitives::functions::emit_call(&mut chunks[current], 1, line);
     call_import(chunks, current, "ecma:promise", "resolve", 1, line);
 }

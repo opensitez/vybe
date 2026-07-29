@@ -114,11 +114,11 @@ fn class_to_component_class(class: &DotnetClass) -> ClassType {
             PropertyDef::new(*prop)
                 .with_setter(HostTarget::new(
                     "vybe:gui",
-                    vybe_compiler::compiler::gui::HOST_FN_SET_PROPERTY,
+                    vybe_compiler::primitives::gui::HOST_FN_SET_PROPERTY,
                 ))
                 .with_getter(HostTarget::new(
                     "vybe:gui",
-                    vybe_compiler::compiler::gui::HOST_FN_GET_PROPERTY,
+                    vybe_compiler::primitives::gui::HOST_FN_GET_PROPERTY,
                 )),
         );
     }

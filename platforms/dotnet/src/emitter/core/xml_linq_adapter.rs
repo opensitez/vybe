@@ -1,6 +1,6 @@
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
-use vybe_compiler::compiler::{collections, loops};
+use vybe_compiler::primitives::{collections, loops};
 
 const ATTR_KIND: &str = "XAttribute";
 const KIND_KEY: &str = "__dotnet_xml_kind";
@@ -67,7 +67,7 @@ fn add_xname_dotnet_aliases(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, name_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, name_slot, line);
-    vybe_compiler::compiler::xml::emit_local(chunks, current, 1, line);
+    vybe_compiler::primitives::xml::emit_local(chunks, current, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, name_slot, line);
     chunks[current].emit_string_const("LocalName", line);
@@ -76,7 +76,7 @@ fn add_xname_dotnet_aliases(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, name_slot, line);
-    vybe_compiler::compiler::xml::emit_namespace(chunks, current, 1, line);
+    vybe_compiler::primitives::xml::emit_namespace(chunks, current, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, name_slot, line);
     chunks[current].emit_string_const("NamespaceName", line);
@@ -194,8 +194,8 @@ fn append_xelement_content(
     chunks[current].emit_op_u16(Op::LOCAL_SET, type_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_slot, line);
     chunks[current].emit_string_const("object", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, content_slot, line);
@@ -203,8 +203,8 @@ fn append_xelement_content(
     chunks[current].emit_op_u16(Op::LOCAL_SET, kind_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, kind_slot, line);
     chunks[current].emit_string_const(ATTR_KIND, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, content_slot, line);
@@ -259,7 +259,7 @@ pub fn emit_xdocument_root(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_xelement_name(chunks: &mut [Chunk], current: usize, line: u32) {
-    vybe_compiler::compiler::xml::emit_node_name(chunks, current, 1, line);
+    vybe_compiler::primitives::xml::emit_node_name(chunks, current, 1, line);
     add_xname_dotnet_aliases(chunks, current, line);
 }
 

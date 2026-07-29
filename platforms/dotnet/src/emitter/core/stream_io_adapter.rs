@@ -26,9 +26,9 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::compiler::functions::create_function_chunk;
-use vybe_compiler::compiler::instructions::{core_wasm, host};
-use vybe_compiler::compiler::object::emit_bind_method_with_slot;
+use vybe_compiler::primitives::functions::create_function_chunk;
+use vybe_compiler::primitives::instructions::{core_wasm, host};
+use vybe_compiler::primitives::object::emit_bind_method_with_slot;
 
 const TYPE_KEY: &str = "__type";
 const CONTENT_KEY: &str = "__content";
@@ -61,12 +61,12 @@ fn emit_throw_object_disposed(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("Cannot read from a closed TextReader.", line);
-    vybe_compiler::compiler::errors::emit_exception_new_finalize(
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
         chunk,
         "ObjectDisposedException",
         line,
     );
-    vybe_compiler::compiler::errors::emit_throw(chunk, line);
+    vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
 fn emit_throw_if_disposed(chunk: &mut Chunk, reader_slot: u16, line: u32) {
@@ -261,8 +261,8 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     // if pos >= len: result stays null → exit
     chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
 
     // end = pos
@@ -274,15 +274,15 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     let (scan_loop, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line); // exit scan_block
 
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
     host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
     chunk.emit_i32_const(10, line); // '\n'
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(1, line); // newline → exit scan_block
 
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
@@ -308,8 +308,8 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     chunk.emit_op(Op::I32_SUB, line);
     host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
     chunk.emit_i32_const(13, line); // '\r'
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
     chunk.emit_i32_const(1, line);
@@ -400,9 +400,9 @@ pub fn emit_stream_reader_at_end(chunks: &mut [Chunk], current: usize, line: u32
     chunk.emit_op_u16(Op::STRUCT_GET, content_key, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     // pos < len → DYN_NOT → at-end
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
 /// `new StreamWriter(path)` — initialise `__path` + empty `__buf`.
@@ -564,7 +564,7 @@ pub fn emit_stream_writer_write(chunks: &mut [Chunk], current: usize, line: u32)
     super::console_adapter::emit_dotnet_stringify(chunk, right_slot, right_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, new_buf_slot, line);
     emit_set_writer_buffer(chunk, writer_slot, new_buf_slot, line);
     chunk.emit_op(Op::NULL, line);
@@ -588,8 +588,8 @@ pub fn emit_stream_writer_write_3(chunks: &mut [Chunk], current: usize, line: u3
     chunk.emit_op_u16(Op::LOCAL_GET, a0_slot, line);
     host::emit(chunk, "ecma:value", "typeof", 1, line);
     push_const(chunk, Value::String(Arc::from("string")), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, a0_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, a1_slot, line);
@@ -601,7 +601,7 @@ pub fn emit_stream_writer_write_3(chunks: &mut [Chunk], current: usize, line: u3
     chunks[current].emit_op_u16(Op::LOCAL_GET, a1_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, a1_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, a2_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
     host::emit(&mut chunks[current], "ecma:array", "slice", 3, line);
     push_const(&mut chunks[current], Value::String(Arc::from("")), line);
     host::emit(&mut chunks[current], "ecma:array", "join", 2, line);
@@ -641,9 +641,9 @@ pub fn emit_stream_writer_write_line(chunks: &mut [Chunk], current: usize, line:
     super::console_adapter::emit_dotnet_stringify(chunk, nl_slot, nl_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, nl_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, new_buf_slot, line);
     emit_set_writer_buffer(chunk, writer_slot, new_buf_slot, line);
     chunk.emit_op(Op::NULL, line);
@@ -857,10 +857,10 @@ pub fn emit_stream_close(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);
     push_const(chunk, Value::String(Arc::from(WRITER_TYPE)), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
 
     let skip_flush = chunk.emit_block(line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);

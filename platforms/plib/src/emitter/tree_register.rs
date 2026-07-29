@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::sync::Once;
 
-use vybe_compiler::compiler::gui;
+use vybe_compiler::primitives::gui;
 use vybe_bytecode::namespaces::{self, CtorSpec, FieldGui, NamespaceNode, Subtree};
 
 /// The `is`/`inherits` ancestry of a GCL class — self first, then its parent

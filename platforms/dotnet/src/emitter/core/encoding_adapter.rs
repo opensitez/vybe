@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::compiler::instructions::core_wasm;
-use vybe_compiler::compiler::instructions::host;
+use vybe_compiler::primitives::instructions::core_wasm;
+use vybe_compiler::primitives::instructions::host;
 
 const TYPE_KEY: &str = "__type";
 const ENCODING_KEY: &str = "__encoding";
@@ -23,7 +23,7 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 
 fn emit_set_string_field(chunk: &mut Chunk, key: &str, value: &str, line: u32) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
-    vybe_compiler::compiler::instructions::core_wasm::dup(chunk, line);
+    vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from(value)), line);
     chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
     chunk.emit_op(Op::DROP, line);
@@ -52,12 +52,12 @@ pub fn emit_encoding_value(chunks: &mut [Chunk], current: usize, encoding: &str,
     emit_set_string_field(chunk, "HeaderName", web_name, line);
     emit_set_string_field(chunk, "headername", web_name, line);
     let read_only_idx = chunk.add_constant(Value::String(Arc::from("IsReadOnly")));
-    vybe_compiler::compiler::instructions::core_wasm::dup(chunk, line);
+    vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_op_u16(Op::STRUCT_SET, read_only_idx, line);
     chunk.emit_op(Op::DROP, line);
     let read_only_lower_idx = chunk.add_constant(Value::String(Arc::from("isreadonly")));
-    vybe_compiler::compiler::instructions::core_wasm::dup(chunk, line);
+    vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_op_u16(Op::STRUCT_SET, read_only_lower_idx, line);
     chunk.emit_op(Op::DROP, line);
@@ -140,7 +140,7 @@ fn emit_char_array_to_string(chunks: &mut [Chunk], current: usize, value_slot: u
     let i_slot = reserve_slot(chunk);
     let elem_slot = reserve_slot(chunk);
 
-    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, units_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[current].emit_op(Op::ARRAY_LENGTH, line);
@@ -148,11 +148,11 @@ fn emit_char_array_to_string(chunks: &mut [Chunk], current: usize, value_slot: u
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
 
-    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -164,14 +164,14 @@ fn emit_char_array_to_string(chunks: &mut [Chunk], current: usize, value_slot: u
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, char_code_idx, line);
     chunks[current].emit(2, line);
-    vybe_compiler::compiler::collections::emit_push(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, units_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
@@ -213,7 +213,7 @@ pub fn emit_encoding_get_bytes(
         Value::String(Arc::from("utf32")),
         line,
     );
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     emit_utf32_text_to_bytes(chunks, current, value_slot, line);
     chunks[current].emit_else(line);
@@ -223,7 +223,7 @@ pub fn emit_encoding_get_bytes(
         Value::String(Arc::from("us-ascii:throw")),
         line,
     );
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     push_const(
@@ -241,12 +241,12 @@ pub fn emit_encoding_get_bytes(
     chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Unable to encode character.", line);
-    vybe_compiler::compiler::errors::emit_exception_new_finalize(
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
         &mut chunks[current],
         "EncoderFallbackException",
         line,
     );
-    vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_end(line);
     push_const(
         &mut chunks[current],
@@ -293,7 +293,7 @@ pub fn emit_encoding_get_string(
         Value::String(Arc::from("utf16le")),
         line,
     );
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     emit_utf16_bytes_to_string(chunks, current, bytes_slot, false, 2, line);
     chunks[current].emit_else(line);
@@ -304,7 +304,7 @@ pub fn emit_encoding_get_string(
         Value::String(Arc::from("utf32")),
         line,
     );
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     emit_utf16_bytes_to_string(chunks, current, bytes_slot, false, 4, line);
     chunks[current].emit_else(line);
@@ -315,7 +315,7 @@ pub fn emit_encoding_get_string(
         Value::String(Arc::from("utf-8:throw")),
         line,
     );
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if(line);
     emit_throw_on_invalid_utf8_bytes(chunks, current, bytes_slot, line);
     push_const(
@@ -348,11 +348,11 @@ fn emit_throw_on_invalid_utf8_bytes(
     core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
 
-    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -363,19 +363,19 @@ fn emit_throw_on_invalid_utf8_bytes(
     chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Unable to decode bytes.", line);
-    vybe_compiler::compiler::errors::emit_exception_new_finalize(
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
         &mut chunks[current],
         "DecoderFallbackException",
         line,
     );
-    vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
 }
 
 fn emit_utf16_bytes_to_string(
@@ -391,7 +391,7 @@ fn emit_utf16_bytes_to_string(
     let len_slot = reserve_slot(chunk);
     let i_slot = reserve_slot(chunk);
 
-    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, units_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
     chunks[current].emit_op(Op::ARRAY_LENGTH, line);
@@ -399,11 +399,11 @@ fn emit_utf16_bytes_to_string(
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
 
-    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
 
     let (first_offset, second_offset) = if big_endian { (1, 0) } else { (0, 1) };
     chunks[current].emit_op_u16(Op::LOCAL_GET, units_slot, line);
@@ -424,14 +424,14 @@ fn emit_utf16_bytes_to_string(
     core_wasm::i32_const(&mut chunks[current], line, 256);
     chunks[current].emit_op(Op::I32_MUL, line);
     chunks[current].emit_op(Op::I32_ADD, line);
-    vybe_compiler::compiler::collections::emit_push(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, stride);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
 
     let from_chars_idx = chunks[current].add_import("wasm:js-string", "fromCharCodeArray");
     chunks[current].emit_op_u16(Op::LOCAL_GET, units_slot, line);
@@ -462,7 +462,7 @@ fn emit_utf16be_get_bytes(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let i_slot = reserve_slot(chunk);
     let code_slot = reserve_slot(chunk);
 
-    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, len_idx, line);
@@ -471,11 +471,11 @@ fn emit_utf16be_get_bytes(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
 
-    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -489,21 +489,21 @@ fn emit_utf16be_get_bytes(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunks[current].emit_op(Op::I32_SHR_U, line);
     core_wasm::i32_const(&mut chunks[current], line, 255);
     chunks[current].emit_op(Op::I32_AND, line);
-    vybe_compiler::compiler::collections::emit_push(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, code_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 255);
     chunks[current].emit_op(Op::I32_AND, line);
-    vybe_compiler::compiler::collections::emit_push(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
 }
@@ -526,7 +526,7 @@ fn emit_utf32_text_to_bytes(chunks: &mut [Chunk], current: usize, text_slot: u16
     let i_slot = reserve_slot(chunk);
     let code_slot = reserve_slot(chunk);
 
-    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
     chunks[current].emit_op_u16(Op::CALL_IMPORT, len_idx, line);
@@ -535,11 +535,11 @@ fn emit_utf32_text_to_bytes(chunks: &mut [Chunk], current: usize, text_slot: u16
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
 
-    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -555,7 +555,7 @@ fn emit_utf32_text_to_bytes(chunks: &mut [Chunk], current: usize, text_slot: u16
         }
         core_wasm::i32_const(&mut chunks[current], line, 255);
         chunks[current].emit_op(Op::I32_AND, line);
-        vybe_compiler::compiler::collections::emit_push(chunks, current, line);
+        vybe_compiler::primitives::collections::emit_push(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
     }
 
@@ -563,7 +563,7 @@ fn emit_utf32_text_to_bytes(chunks: &mut [Chunk], current: usize, text_slot: u16
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
 }
@@ -577,7 +577,7 @@ pub fn emit_encoding_get_preamble(chunks: &mut [Chunk], current: usize, argc: u8
     for _ in 0..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
-    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
 }
 
 pub fn emit_encoding_utf8_get_preamble(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -587,7 +587,7 @@ pub fn emit_encoding_utf8_get_preamble(chunks: &mut [Chunk], current: usize, arg
     core_wasm::i32_const(&mut chunks[current], line, 239);
     core_wasm::i32_const(&mut chunks[current], line, 187);
     core_wasm::i32_const(&mut chunks[current], line, 191);
-    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 3, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 3, line);
 }
 
 pub fn emit_encoding_get_max_byte_count(
@@ -606,7 +606,7 @@ pub fn emit_encoding_get_max_byte_count(
         chunk.emit_op_u16(Op::LOCAL_SET, recv_slot, line);
         emit_encoding_name_from_receiver(chunk, recv_slot, "utf-8", line);
         push_const(chunk, Value::String(Arc::from("utf16le")), line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if_value(line);
         push_const(chunk, Value::I32(2), line);
         chunk.emit_else(line);
@@ -686,18 +686,18 @@ pub fn emit_encoding_get_chars(chunks: &mut [Chunk], current: usize, argc: u8, l
     core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
 
-    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
     chunks[current].emit_op(Op::I32_LT_S, line);
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, chars_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, char_index_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op(Op::I32_ADD, line);
     let one_slot = reserve_slot(&mut chunks[current]);
-    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, one_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, one_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
@@ -705,7 +705,7 @@ pub fn emit_encoding_get_chars(chunks: &mut [Chunk], current: usize, argc: u8, l
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op(Op::ARRAY_GET, line);
-    vybe_compiler::compiler::collections::emit_push(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     let from_chars_idx = chunks[current].add_import("wasm:js-string", "fromCharCodeArray");
     chunks[current].emit_op_u16(Op::LOCAL_GET, one_slot, line);
@@ -719,7 +719,7 @@ pub fn emit_encoding_get_chars(chunks: &mut [Chunk], current: usize, argc: u8, l
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
 }
@@ -749,7 +749,7 @@ pub fn emit_encoding_convert(chunks: &mut [Chunk], current: usize, line: u32) {
         Value::String(Arc::from("utf16le")),
         line,
     );
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if(line);
     emit_utf16_bytes_to_string(chunks, current, bytes_slot, false, 2, line);
     chunks[current].emit_else(line);
@@ -765,7 +765,7 @@ pub fn emit_encoding_convert(chunks: &mut [Chunk], current: usize, line: u32) {
         Value::String(Arc::from("utf32")),
         line,
     );
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
     emit_encoding_utf32_get_bytes(chunks, current, 1, line);
@@ -789,14 +789,14 @@ pub fn emit_encoding_get_encoding(chunks: &mut [Chunk], current: usize, argc: u8
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
     push_const(chunk, Value::String(Arc::from("65001")), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::String(Arc::from("utf-8")), line);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
     push_const(chunk, Value::String(Arc::from("utf8")), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::String(Arc::from("utf-8")), line);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
@@ -804,14 +804,14 @@ pub fn emit_encoding_get_encoding(chunks: &mut [Chunk], current: usize, argc: u8
     if argc == 3 {
         chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
         push_const(chunk, Value::String(Arc::from("us-ascii")), line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
         push_const(chunk, Value::String(Arc::from("us-ascii:throw")), line);
         chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
         chunk.emit_end(line);
         chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
         push_const(chunk, Value::String(Arc::from("utf-8")), line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
         push_const(chunk, Value::String(Arc::from("utf-8:throw")), line);
         chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
@@ -826,7 +826,7 @@ pub fn emit_encoding_get_encoding(chunks: &mut [Chunk], current: usize, argc: u8
     let header_key = chunk.add_constant(Value::String(Arc::from("HeaderName")));
     let header_lower_key = chunk.add_constant(Value::String(Arc::from("headername")));
     let readonly_key = chunk.add_constant(Value::String(Arc::from("IsReadOnly")));
-    vybe_compiler::compiler::instructions::core_wasm::dup(chunk, line);
+    vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Encoding")), line);
     chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
     chunk.emit_op(Op::DROP, line);
@@ -837,12 +837,12 @@ pub fn emit_encoding_get_encoding(chunks: &mut [Chunk], current: usize, argc: u8
         header_key,
         header_lower_key,
     ] {
-        vybe_compiler::compiler::instructions::core_wasm::dup(chunk, line);
+        vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
         chunk.emit_op_u16(Op::STRUCT_SET, key, line);
         chunk.emit_op(Op::DROP, line);
     }
-    vybe_compiler::compiler::instructions::core_wasm::dup(chunk, line);
+    vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_op_u16(Op::STRUCT_SET, readonly_key, line);
     chunk.emit_op(Op::DROP, line);
@@ -856,7 +856,7 @@ pub fn emit_encoding_equals(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, recv_slot, line);
     emit_encoding_name_from_receiver(chunk, recv_slot, "utf8", line);
     emit_encoding_name_from_receiver(chunk, other_slot, "utf8", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
 }
 
 pub fn emit_object_equals(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -881,18 +881,18 @@ pub fn emit_object_equals(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    vybe_compiler::compiler::object::emit_equals(chunk, line);
+    vybe_compiler::primitives::object::emit_equals(chunk, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_enc_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    vybe_compiler::compiler::object::emit_equals(chunk, line);
+    vybe_compiler::primitives::object::emit_equals(chunk, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_enc_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_enc_slot, line);
-    vybe_compiler::compiler::object::emit_equals(chunk, line);
+    vybe_compiler::primitives::object::emit_equals(chunk, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
 }

@@ -6,7 +6,7 @@
 
 use vybe_bytecode::VM;
 use vybe_bytecode::capabilities::Capabilities;
-use vybe_compiler::compiler::platforms::register_platforms;
+use vybe_compiler::primitives::platforms::register_platforms;
 
 fn registered() -> VM {
     let mut vm = VM::new();

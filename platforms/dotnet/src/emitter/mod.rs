@@ -495,8 +495,8 @@ impl DotnetSurface {
                     property.getter.as_ref()
                 };
                 return target.map(|target| {
-                    let keyed = target.name == vybe_compiler::compiler::gui::HOST_FN_GET_PROPERTY
-                        || target.name == vybe_compiler::compiler::gui::HOST_FN_SET_PROPERTY;
+                    let keyed = target.name == vybe_compiler::primitives::gui::HOST_FN_GET_PROPERTY
+                        || target.name == vybe_compiler::primitives::gui::HOST_FN_SET_PROPERTY;
                     InstancePropertyTarget::Host {
                         module: target.module.clone(),
                         func: target.name.clone(),
@@ -1439,7 +1439,7 @@ mod tests {
             .imports
             .iter()
             .any(|imp| imp.interface == "vybe:gui"
-                && imp.name == vybe_compiler::compiler::gui::HOST_FN_SET_PROPERTY));
+                && imp.name == vybe_compiler::primitives::gui::HOST_FN_SET_PROPERTY));
         assert!(descriptor
             .imports
             .iter()
@@ -1483,7 +1483,7 @@ mod tests {
             .imports
             .iter()
             .any(|imp| imp.interface == "vybe:gui"
-                && imp.name == vybe_compiler::compiler::gui::HOST_FN_RUN_APPLICATION));
+                && imp.name == vybe_compiler::primitives::gui::HOST_FN_RUN_APPLICATION));
     }
 
     #[test]
@@ -1505,7 +1505,7 @@ mod tests {
             .imports
             .iter()
             .any(|imp| imp.interface == "vybe:gui"
-                && imp.name == vybe_compiler::compiler::gui::HOST_FN_RUN_APPLICATION));
+                && imp.name == vybe_compiler::primitives::gui::HOST_FN_RUN_APPLICATION));
         assert!(!descriptor
             .exports
             .iter()

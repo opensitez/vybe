@@ -8,9 +8,9 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::compiler::functions::create_function_chunk;
-use vybe_compiler::compiler::instructions::core_wasm;
-use vybe_compiler::compiler::object::emit_bind_method_with_slot;
+use vybe_compiler::primitives::functions::create_function_chunk;
+use vybe_compiler::primitives::instructions::core_wasm;
+use vybe_compiler::primitives::object::emit_bind_method_with_slot;
 
 const TYPE_KEY: &str = "__type";
 const VALUE_KEY: &str = "__value";
@@ -37,8 +37,8 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 
 fn emit_throw_guid_format_exception(chunk: &mut Chunk, line: u32) {
     chunk.emit_string_const(FORMAT_EXCEPTION_MSG, line);
-    vybe_compiler::compiler::errors::emit_exception_new_finalize(chunk, "FormatException", line);
-    vybe_compiler::compiler::errors::emit_throw(chunk, line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "FormatException", line);
+    vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
 fn bind_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, this_slot: u16, line: u32) {
@@ -329,8 +329,8 @@ pub fn emit_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
         chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
         push_const(chunk, Value::String(Arc::from("N")), line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
         push_const(chunk, Value::String(Arc::from("-")), line);

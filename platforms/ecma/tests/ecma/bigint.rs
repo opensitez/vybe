@@ -8,7 +8,7 @@
 use vybe_bytecode::value::Value;
 use vybe_bytecode::{Chunk, Op, VM};
 use vybe_bytecode::capabilities::Capabilities;
-use vybe_compiler::compiler::platforms::register_platforms;
+use vybe_compiler::primitives::platforms::register_platforms;
 
 fn invoke(name: &str, args: Vec<Value>) -> Value {
     let mut chunk = Chunk::new("<ecma-bigint-test>");

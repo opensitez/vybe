@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 use vybe_bytecode::{Chunk, Op, VM, Value};
-use vybe_compiler::compiler::platforms::register_platforms_all;
+use vybe_compiler::primitives::platforms::register_platforms_all;
 
 fn call(module: &str, name: &str, args: Vec<Value>) -> Value {
     let mut chunk = Chunk::new("<test>");

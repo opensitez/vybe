@@ -164,8 +164,8 @@ pub fn register_namespace_tree() {
 /// property NAME as an argument, so those bind it; a dedicated per-property
 /// host function (`Environment.NewLine` → `node:os.EOL`) does not.
 fn accessor_node(target: &vybe_bytecode::component_model::HostTarget, prop: &str) -> NamespaceNode {
-    if target.name == vybe_compiler::compiler::gui::HOST_FN_GET_PROPERTY
-        || target.name == vybe_compiler::compiler::gui::HOST_FN_SET_PROPERTY
+    if target.name == vybe_compiler::primitives::gui::HOST_FN_GET_PROPERTY
+        || target.name == vybe_compiler::primitives::gui::HOST_FN_SET_PROPERTY
     {
         namespaces::host_fn_keyed(&target.module, &target.name, prop)
     } else {
@@ -274,7 +274,7 @@ mod resolve_gap_tests {
 
     /// These assert what this file is responsible for — that the entries are
     /// REGISTERED — rather than resolving through them. Resolution moved to
-    /// `vybe_compiler::compiler::namespaces`, and a platform must not depend on
+    /// `vybe_compiler::primitives::namespaces`, and a platform must not depend on
     /// the compiler; that dependency direction is the whole point of the
     /// plugin seam.
     fn registered_leaf(path: &[&str]) -> Option<NamespaceNode> {

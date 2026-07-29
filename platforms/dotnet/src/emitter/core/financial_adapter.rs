@@ -70,7 +70,7 @@ fn emit_local_abs_lt(chunk: &mut Chunk, slot: u16, limit: f64, line: u32) {
     lget(chunk, slot, line);
     chunk.emit_op(Op::F64_ABS, line);
     push_f64(chunk, limit, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
 }
 
 fn init_slots_3(chunk: &mut Chunk, line: u32) -> [u16; 3] {
@@ -404,7 +404,7 @@ fn emit_ipmt_formula(
         let chunk = &mut chunks[current];
         lget(chunk, typ, line);
         push_f64(chunk, 0.0, line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
     }
 
@@ -440,7 +440,7 @@ fn emit_ipmt_formula(
         let chunk = &mut chunks[current];
         lget(chunk, per, line);
         push_f64(chunk, 1.0, line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
         push_f64(chunk, 0.0, line);
         chunk.emit_else(line);
@@ -700,7 +700,7 @@ pub fn emit_vb_rate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let chunk = &mut chunks[current];
         lget(chunk, iter_slot, line);
         push_f64(chunk, MAX_RATE_ITERATIONS, line);
-        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_br_if(1, line);
     }
@@ -712,7 +712,7 @@ pub fn emit_vb_rate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lget(chunk, f_slot, line);
         chunk.emit_op(Op::F64_ABS, line);
         push_f64(chunk, SOLVER_EPSILON, line);
-        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
         chunk.emit_br_if(1, line);
     }
 
@@ -736,7 +736,7 @@ pub fn emit_vb_rate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lget(chunk, deriv_slot, line);
         chunk.emit_op(Op::F64_ABS, line);
         push_f64(chunk, RATE_EPSILON, line);
-        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
         chunk.emit_br_if(1, line);
     }
 

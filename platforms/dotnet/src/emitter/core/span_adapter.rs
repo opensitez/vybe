@@ -14,7 +14,7 @@
 use super::array_adapter;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::Chunk;
-use vybe_compiler::compiler::instructions::core_wasm;
+use vybe_compiler::primitives::instructions::core_wasm;
 
 fn alloc_locals(chunk: &mut Chunk, n: u16) -> u16 {
     chunk.alloc_scratch(n)
@@ -31,7 +31,7 @@ fn alloc_locals(chunk: &mut Chunk, n: u16) -> u16 {
 /// Stack on entry: `[array]` or `[array, start, length]` ; exit: `[array]`
 pub fn emit_span_ctor(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc == 3 {
-        vybe_compiler::compiler::collections::emit_get_range(chunks, current, line);
+        vybe_compiler::primitives::collections::emit_get_range(chunks, current, line);
     }
     // argc == 1 (or anything else): the array is already the result — leave it.
 }
@@ -44,10 +44,10 @@ pub fn emit_span_ctor(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 ///
 /// Stack on entry: `[arr]` ; Stack on exit: `[bool]`
 pub fn emit_span_is_empty(chunks: &mut [Chunk], current: usize, line: u32) {
-    vybe_compiler::compiler::collections::emit_len(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_len(chunks, current, line);
     let chunk = &mut chunks[current];
     core_wasm::f64_const(chunk, line, 0.0);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     core_wasm::bool_const(chunk, line, true);
     chunk.emit_else(line);
@@ -70,7 +70,7 @@ pub fn emit_span_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     core_wasm::f64_const(&mut chunks[current], line, 0.0);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    vybe_compiler::compiler::collections::emit_len(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_len(chunks, current, line);
     array_adapter::emit_array_clear(chunks, current, line);
 }
 
@@ -82,7 +82,7 @@ fn emit_copy_into(chunks: &mut [Chunk], current: usize, src_slot: u16, dst_slot:
     chunks[current].emit_op_u16(Op::LOCAL_GET, dst_slot, line);
     core_wasm::f64_const(&mut chunks[current], line, 0.0);
     chunks[current].emit_op_u16(Op::LOCAL_GET, src_slot, line);
-    vybe_compiler::compiler::collections::emit_set_range(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_set_range(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 }
 
@@ -113,11 +113,11 @@ pub fn emit_span_try_copy_to(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // dst.Length >= src.Length
     chunks[current].emit_op_u16(Op::LOCAL_GET, dst_slot, line);
-    vybe_compiler::compiler::collections::emit_len(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, src_slot, line);
-    vybe_compiler::compiler::collections::emit_len(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::collections::emit_len(chunks, current, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
 
     chunks[current].emit_if(line);
     emit_copy_into(chunks, current, src_slot, dst_slot, line);
@@ -149,7 +149,7 @@ fn emit_span_trim(chunks: &mut [Chunk], current: usize, from_start: bool, line: 
         core_wasm::f64_const(&mut chunks[current], line, 0.0);
     } else {
         chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-        vybe_compiler::compiler::collections::emit_len(chunks, current, line);
+        vybe_compiler::primitives::collections::emit_len(chunks, current, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, cursor_slot, line);
 
@@ -160,14 +160,14 @@ fn emit_span_trim(chunks: &mut [Chunk], current: usize, from_start: bool, line: 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cursor_slot, line);
     if from_start {
         chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-        vybe_compiler::compiler::collections::emit_len(chunks, current, line);
-        vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
+        vybe_compiler::primitives::collections::emit_len(chunks, current, line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
     } else {
         core_wasm::f64_const(&mut chunks[current], line, 0.0);
-        vybe_compiler::compiler::ops::emit_dyn_gt(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
     // probe = arr[from_start ? cursor : cursor - 1]
@@ -175,16 +175,16 @@ fn emit_span_trim(chunks: &mut [Chunk], current: usize, from_start: bool, line: 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cursor_slot, line);
     if !from_start {
         core_wasm::f64_const(&mut chunks[current], line, -1.0);
-        vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
     }
-    vybe_compiler::compiler::collections::emit_get(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, probe_slot, line);
 
     // Stop at the first element that isn't the trimmed value.
     chunks[current].emit_op_u16(Op::LOCAL_GET, probe_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, val_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_ne(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_ne(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
     // TrimStart walks the cursor up, TrimEnd walks it down.
@@ -194,7 +194,7 @@ fn emit_span_trim(chunks: &mut [Chunk], current: usize, from_start: bool, line: 
         line,
         if from_start { 1.0 } else { -1.0 },
     );
-    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, cursor_slot, line);
 
     chunks[current].emit_br(0, line);
@@ -212,12 +212,12 @@ fn emit_span_trim(chunks: &mut [Chunk], current: usize, from_start: bool, line: 
     if from_start {
         chunks[current].emit_op_u16(Op::LOCAL_GET, cursor_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-        vybe_compiler::compiler::collections::emit_len(chunks, current, line);
+        vybe_compiler::primitives::collections::emit_len(chunks, current, line);
     } else {
         core_wasm::f64_const(&mut chunks[current], line, 0.0);
         chunks[current].emit_op_u16(Op::LOCAL_GET, cursor_slot, line);
     }
-    vybe_compiler::compiler::collections::emit_slice(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_slice(chunks, current, line);
 }
 
 /// `span.TrimStart(value)` — drop leading elements equal to `value`.
@@ -254,18 +254,18 @@ pub fn emit_span_mismatch(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, found_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
-    vybe_compiler::compiler::collections::emit_len(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, a_len_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
-    vybe_compiler::compiler::collections::emit_len(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, b_len_slot, line);
 
     // Scanning stops at the shorter length; that index is also the answer
     // when everything before it matched but the lengths differ.
     chunks[current].emit_op_u16(Op::LOCAL_GET, a_len_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, b_len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, a_len_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -283,19 +283,19 @@ pub fn emit_span_mismatch(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    vybe_compiler::compiler::collections::emit_get(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
-    vybe_compiler::compiler::collections::emit_get(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_ne(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
+    vybe_compiler::primitives::ops::emit_dyn_ne(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -306,7 +306,7 @@ pub fn emit_span_mismatch(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     core_wasm::f64_const(&mut chunks[current], line, 1.0);
-    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
 
     chunks[current].emit_br(0, line);
@@ -321,13 +321,13 @@ pub fn emit_span_mismatch(chunks: &mut [Chunk], current: usize, line: u32) {
     // a real mismatch at index i must not be overwritten by the -1 path just
     // because the two spans happen to be the same length.
     chunks[current].emit_op_u16(Op::LOCAL_GET, found_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, a_len_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, b_len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     core_wasm::f64_const(&mut chunks[current], line, -1.0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);

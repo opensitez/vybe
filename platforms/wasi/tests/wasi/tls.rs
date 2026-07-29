@@ -1,6 +1,6 @@
 use vybe_bytecode::VM;
 use vybe_bytecode::capabilities::Capabilities;
-use vybe_compiler::compiler::platforms::register_platforms;
+use vybe_compiler::primitives::platforms::register_platforms;
 
 fn has_import(module: &str, name: &str) -> bool {
     let mut vm = VM::new();

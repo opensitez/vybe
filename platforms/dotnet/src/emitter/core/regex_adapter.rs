@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use vybe_compiler::compiler::instructions::core_wasm;
+use vybe_compiler::primitives::instructions::core_wasm;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -98,8 +98,8 @@ fn emit_dotnet_match_collection_shape(
 
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
@@ -123,7 +123,7 @@ fn emit_dotnet_match_collection_shape(
 
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_i32_const(1, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_br(0, line);
     chunk.patch_loop(loop_p);
@@ -159,7 +159,7 @@ fn emit_group_object_from_value_slot(chunk: &mut Chunk, value_slot: u16, line: u
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, success_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
@@ -167,7 +167,7 @@ fn emit_group_object_from_value_slot(chunk: &mut Chunk, value_slot: u16, line: u
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, dotnet_success_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, group_slot, line);
@@ -237,7 +237,7 @@ fn emit_dotnet_match_properties(chunk: &mut Chunk, result_slot: u16, obj_slot: u
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, dotnet_success_key, line);
     chunk.emit_op(Op::DROP, line);
 }
@@ -297,8 +297,8 @@ fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot:
     let (loop_p, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -316,7 +316,7 @@ fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot:
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_i32_const(1, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_br(0, line);
     chunk.patch_loop(loop_p);
@@ -345,8 +345,8 @@ fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot:
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, keys_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line);
     chunk.emit_op_u16(Op::LOCAL_GET, keys_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -371,7 +371,7 @@ fn emit_dotnet_match_groups_shape(chunk: &mut Chunk, result_slot: u16, obj_slot:
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_i32_const(1, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
     chunk.emit_br(0, line);
     chunk.patch_loop(loop_p);
@@ -447,17 +447,17 @@ pub fn emit_regex_is_match(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, self_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, timeout_key, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("The regex operation timed out.", line);
-    vybe_compiler::compiler::errors::emit_exception_new_finalize(
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
         chunk,
         "RegexMatchTimeoutException",
         line,
     );
-    vybe_compiler::compiler::errors::emit_throw(chunk, line);
+    vybe_compiler::primitives::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, pattern_key, line);
@@ -634,7 +634,7 @@ pub fn emit_regex_match(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, success_key, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -692,7 +692,7 @@ pub fn emit_regex_static_match(chunks: &mut [Chunk], current: usize, argc: u8, l
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_op_u16(Op::STRUCT_SET, success_key, line);
     chunk.emit_op(Op::DROP, line);
 

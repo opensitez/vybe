@@ -20,7 +20,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::compiler::instructions::core_wasm;
+use vybe_compiler::primitives::instructions::core_wasm;
 
 /// Emit `CONST <idx>` for a literal value — `Chunk` doesn't expose
 /// this directly the way the compiler's `emit_const` helper does,
@@ -41,9 +41,9 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 fn emit_host_port_string(chunk: &mut Chunk, host_slot: u16, port_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, host_slot, line);
     push_const(chunk, Value::String(Arc::from(":")), line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, port_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
 }
 
 fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
@@ -172,8 +172,8 @@ pub fn emit_ip_address_to_string(chunks: &mut Vec<Chunk>, current: usize, line: 
     chunk.emit_op_u16(Op::CALL_IMPORT, typeof_idx, line);
     chunk.emit(1, line);
     push_const(chunk, Value::String(Arc::from("string")), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunk.emit_else(line);
@@ -303,9 +303,9 @@ pub fn emit_tcp_listener_new(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     chunk.emit_op(Op::NULL, line);
     push_const(chunk, Value::String(Arc::from("0.0.0.0")), line);
     push_const(chunk, Value::String(Arc::from(":")), line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, port_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     let bind_idx = chunks[current].add_import("wasi:sockets/tcp", "start-bind");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, bind_idx, line);
     chunks[current].emit(3, line);
@@ -411,9 +411,9 @@ pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_op(Op::NULL, line);
     push_const(chunk, Value::String(Arc::from("0.0.0.0")), line);
     push_const(chunk, Value::String(Arc::from(":")), line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, port_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     let bind_idx = chunks[current].add_import("wasi:sockets/udp", "start-bind");
     chunks[current].emit_op_u16(Op::CALL_IMPORT, bind_idx, line);
     chunks[current].emit(3, line);

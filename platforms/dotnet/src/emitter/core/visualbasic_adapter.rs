@@ -1,7 +1,7 @@
 //! Shared Microsoft.VisualBasic runtime helpers for .NET languages.
 
 use std::sync::Arc;
-use vybe_compiler::compiler::instructions::core_wasm;
+use vybe_compiler::primitives::instructions::core_wasm;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -76,7 +76,7 @@ fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32
         let chunk = &mut chunks[current];
         chunk.emit_op(Op::DROP, line);
     }
-    vybe_compiler::compiler::collections::emit_map_new(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_map_new(chunks, current, line);
     {
         let chunk = &mut chunks[current];
         core_wasm::dup(chunk, line);
@@ -359,7 +359,7 @@ pub fn emit_vb_input_value(chunks: &mut [Chunk], current: usize, _argc: u8, line
         let chunk = &mut chunks[current];
         lget(chunk, idx_slot, line);
         lget(chunk, len_slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
     }
     chunks[current].emit_if(line);
     load_next_input_record(chunks, current, handle_slot, values_slot, idx_slot, line);
@@ -525,7 +525,7 @@ pub fn emit_vb_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lget(chunk, path_slot, line);
         chunk.emit_op_u16(Op::CALL_IMPORT, exists, line);
         chunk.emit(1, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     }
 
     chunks[current].emit_if(line);
@@ -705,14 +705,14 @@ pub fn emit_vb_eof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
         let chunk = &mut chunks[current];
         lget(chunk, rows_slot, line);
     }
-    vybe_compiler::compiler::collections::emit_len(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_len(chunks, current, line);
     {
         let chunk = &mut chunks[current];
         lset(chunk, len_slot, line);
         lget(chunk, next_slot, line);
         lget(chunk, len_slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-        vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+        vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     }
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);

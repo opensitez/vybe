@@ -16,7 +16,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::compiler::instructions::core_wasm;
+use vybe_compiler::primitives::instructions::core_wasm;
 
 use super::timespan_adapter;
 
@@ -96,13 +96,13 @@ fn emit_named_field_from_obj(chunk: &mut Chunk, obj_slot: u16, field: &str, line
 fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::I32(-1), line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::I32(1), line);
     chunk.emit_else(line);
@@ -123,7 +123,7 @@ fn emit_day_of_week_string(chunk: &mut Chunk, slot: u16, line: u32) {
     ] {
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
         push_const(chunk, Value::I32(index), line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
         push_const(chunk, Value::String(Arc::from(name)), line);
         chunk.emit_br(1, line);
@@ -537,7 +537,7 @@ pub fn emit_datetime_is_leap_year(chunks: &mut [Chunk], current: usize, line: u3
     push_const(chunk, Value::I32(2), line);
     emit_datetime_days_in_month(chunks, current, line);
     push_const(&mut chunks[current], Value::I32(29), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
 }
 
 pub fn emit_datetime_compare(chunks: &mut [Chunk], current: usize, line: u32) {

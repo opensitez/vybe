@@ -1,10 +1,10 @@
 use std::sync::Arc;
-use vybe_compiler::compiler::instructions::core_wasm;
+use vybe_compiler::primitives::instructions::core_wasm;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
-use vybe_compiler::compiler::collections;
+use vybe_compiler::primitives::collections;
 
 const COL_NAMES_KEY: &str = "__col_names";
 const COMMAND_TYPE_KEY: &str = "commandtype";
@@ -121,7 +121,7 @@ fn emit_reader_to_adodb_recordset(
         chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
         core_wasm::i32_const(chunk, line, 0);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         let eof_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, eof_slot, line);
         (count_slot, eof_slot)
@@ -401,7 +401,7 @@ pub fn emit_adodb_recordset_open(chunks: &mut [Chunk], current: usize, _argc: u8
         let slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
         core_wasm::i32_const(chunk, line, 0);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
         slot
     };
@@ -441,7 +441,7 @@ pub fn emit_adodb_recordset_move_next(chunks: &mut [Chunk], current: usize, line
         set_object_local_prop(chunk, rs_slot, POS_KEY, pos_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
         let eof_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, eof_slot, line);
         (len_slot, eof_slot)
@@ -471,7 +471,7 @@ pub fn emit_adodb_recordset_move_first(chunks: &mut [Chunk], current: usize, lin
         chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
         core_wasm::i32_const(chunk, line, 0);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         let eof_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, eof_slot, line);
         eof_slot

@@ -21,7 +21,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::compiler::instructions::{core_wasm, host};
+use vybe_compiler::primitives::instructions::{core_wasm, host};
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
@@ -123,8 +123,8 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     // if i >= len: break
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line);
 
     // ch_code = fmt.charCodeAt(i)
@@ -144,8 +144,8 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let open_block = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, ch_slot, line);
     chunk.emit_i32_const(b'{' as i32, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line); // skip past open-brace handler if not '{'
 
     emit_handle_open_brace(chunk, fmt_slot, i_slot, len_slot, out_slot, args_slot, line);
@@ -158,8 +158,8 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let close_block = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, ch_slot, line);
     chunk.emit_i32_const(b'}' as i32, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
 
     // peek next char; if also '}' append literal '}' and skip 2, else skip 1.
@@ -176,7 +176,7 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     host::emit(chunk, "wasm:js-string", "substring", 3, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
 
     // i = i + 1
@@ -214,8 +214,8 @@ fn emit_handle_open_brace(
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line); // i+1 >= len → not escape
 
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
@@ -224,14 +224,14 @@ fn emit_handle_open_brace(
     chunk.emit_op(Op::I32_ADD, line);
     host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
     chunk.emit_i32_const(b'{' as i32, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line); // not '{{' → not escape
 
     // It IS `{{`: append '{' to out, advance i by 2.
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
     push_const(chunk, Value::String(Arc::from("{")), line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_i32_const(2, line);
@@ -255,8 +255,8 @@ fn emit_handle_open_brace(
     let (scan_loop, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(1, line);
 
     // if fmt[end] == '}': break
@@ -264,7 +264,7 @@ fn emit_handle_open_brace(
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
     host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
     chunk.emit_i32_const(b'}' as i32, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(1, line);
 
     // end += 1
@@ -327,7 +327,7 @@ fn emit_handle_open_brace(
     let no_format_spec = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, colon_slot, line);
     core_wasm::i32_const(chunk, line, 0);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, colon_slot, line);
@@ -342,7 +342,7 @@ fn emit_handle_open_brace(
     let no_width_spec = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, comma_slot, line);
     core_wasm::i32_const(chunk, line, 0);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     chunk.emit_br_if(0, line);
     let width_end_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, inner_len_slot, line);
@@ -350,7 +350,7 @@ fn emit_handle_open_brace(
     let no_colon_after_width = chunk.emit_block(line);
     chunk.emit_op_u16(Op::LOCAL_GET, colon_slot, line);
     core_wasm::i32_const(chunk, line, 0);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     chunk.emit_br_if(0, line);
     chunk.emit_op_u16(Op::LOCAL_GET, colon_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, width_end_slot, line);
@@ -371,7 +371,7 @@ fn emit_handle_open_brace(
     // out = out + format(args[idx], format, width)
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
     emit_dotnet_format_value_call(chunk, args_slot, idx_slot, format_slot, width_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
 
     // i = end + 1 (skip past the closing '}')
@@ -396,8 +396,8 @@ fn emit_handle_close_brace(
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
@@ -406,14 +406,14 @@ fn emit_handle_close_brace(
     chunk.emit_op(Op::I32_ADD, line);
     host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
     chunk.emit_i32_const(b'}' as i32, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
 
     // It IS `}}`: append '}' to out, advance i by 2.
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
     push_const(chunk, Value::String(Arc::from("}")), line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_i32_const(2, line);

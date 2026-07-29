@@ -106,7 +106,7 @@ pub fn namespace_constants() -> &'static [(&'static str, f64)] {
 }
 
 pub fn capitalize_control_name(name: &str) -> String {
-    vybe_compiler::compiler::gui::canonical_control_name(name)
+    vybe_compiler::primitives::gui::canonical_control_name(name)
 }
 
 #[cfg(test)]

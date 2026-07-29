@@ -1,11 +1,11 @@
 use std::sync::Arc;
-use vybe_compiler::compiler::instructions::core_wasm;
+use vybe_compiler::primitives::instructions::core_wasm;
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
 use super::{GclClass, GclMethod, GclMethodTarget};
-use vybe_compiler::compiler::functions::create_function_chunk;
+use vybe_compiler::primitives::functions::create_function_chunk;
 
 #[derive(Debug, Clone, Copy)]
 pub struct AccessorBinding<'a> {

@@ -6,7 +6,7 @@
 
 pub mod builder;
 
-use vybe_compiler::compiler::gui;
+use vybe_compiler::primitives::gui;
 
 #[derive(Debug, Clone, Copy)]
 pub struct GclClass {
