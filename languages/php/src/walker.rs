@@ -135,6 +135,8 @@ thread_local! {
         RefCell::new(std::collections::HashMap::new());
     static FUNC_REGISTRY: RefCell<std::collections::HashMap<String, FuncMeta>> =
         RefCell::new(std::collections::HashMap::new());
+    static NAMESPACE_FUNCTIONS: RefCell<std::collections::HashSet<String>> =
+        RefCell::new(std::collections::HashSet::new());
     static FUNCTION_IMPORT_ALIASES: RefCell<std::collections::HashMap<String, String>> =
         RefCell::new(std::collections::HashMap::new());
     // Declared type names → kind ("class" | "interface" | "trait" | "enum"),
@@ -2812,7 +2814,11 @@ fn php_use_item_to_import(
         match p.as_rule() {
             Rule::kw_function => is_function = true,
             Rule::qualified_name => {
-                path = p.as_str().trim_matches('\\').replace('\\', ".");
+                path = if is_function {
+                    php_normalize_function_ref(p.as_str())
+                } else {
+                    php_normalize_class_ref(p.as_str())
+                };
             }
             Rule::identifier => alias = Some(p.as_str().to_string()),
             _ => {} // kw_function / kw_const / kw_as
@@ -2830,7 +2836,7 @@ fn php_use_item_to_import(
             FUNCTION_IMPORT_ALIASES.with(|aliases| {
                 aliases
                     .borrow_mut()
-                    .insert(bound_name, php_mangle_function_name(&path));
+                    .insert(bound_name, path.clone());
             });
         }
     }
@@ -2933,7 +2939,11 @@ fn php_resolve_class_name(name: &str) -> String {
 }
 
 fn php_normalize_function_ref(raw: &str) -> String {
-    raw.trim_start_matches('\\').replace('\\', ".")
+    raw.trim_start_matches('\\')
+        .split('\\')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 fn php_mangle_function_name(name: &str) -> String {
@@ -3961,6 +3971,9 @@ fn pre_register_php_function_signatures(program: &Pair<Rule>) {
             );
             if let Some(ns) = ns.filter(|ns| !ns.is_empty()) {
                 let fq = format!("{}.{}", ns.replace('\\', "."), name);
+                NAMESPACE_FUNCTIONS.with(|functions| {
+                    functions.borrow_mut().insert(fq.clone());
+                });
                 reg.insert(
                     fq.clone(),
                     FuncMeta {
@@ -4104,6 +4117,7 @@ fn pre_register_php_type_names(program: &Pair<Rule>) {
 pub fn parse(source: &str) -> Result<Module, String> {
     PHP_USE_IMPORTS.with(|v| v.borrow_mut().clear());
     FUNCTION_IMPORT_ALIASES.with(|v| v.borrow_mut().clear());
+    NAMESPACE_FUNCTIONS.with(|v| v.borrow_mut().clear());
     NAMESPACE_STACK.with(|v| v.borrow_mut().clear());
     NAMESPACE_CONSTS.with(|v| v.borrow_mut().clear());
     let trimmed = source.trim_start();
@@ -4185,6 +4199,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
             collect_program_body(program, &mut body, &mut interface_names, &mut trait_names)?;
         }
         Rule::program_pure => {
+            let mut active_namespace: Option<(String, Vec<Statement>)> = None;
+            let flush_namespace =
+                |active: &mut Option<(String, Vec<Statement>)>, body: &mut Vec<Statement>| {
+                    if let Some((name, ns_body)) = active.take() {
+                        body.push(Statement::new(StmtKind::NamespaceDecl {
+                            name,
+                            body: ns_body,
+                        }));
+                    }
+                };
             for pair in program.into_inner() {
                 if matches!(pair.as_rule(), Rule::EOI) {
                     continue;
@@ -4197,6 +4221,28 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 } else {
                     pair
                 };
+                if matches!(pair.as_rule(), Rule::namespace_statement) {
+                    let mut ns_name = String::new();
+                    let mut has_block = false;
+                    for child in pair.clone().into_inner() {
+                        match child.as_rule() {
+                            Rule::qualified_name => ns_name = child.as_str().to_string(),
+                            Rule::block_statement => has_block = true,
+                            _ => {}
+                        }
+                    }
+                    flush_namespace(&mut active_namespace, &mut body);
+                    if has_block {
+                        if let Some(stmt) = walk_statement(pair)? {
+                            body.push(stmt);
+                        }
+                    } else {
+                        let _ = walk_statement(pair)?;
+                        active_namespace =
+                            Some((ns_name.trim_start_matches('\\').to_string(), Vec::new()));
+                    }
+                    continue;
+                }
                 let was_interface = matches!(pair.as_rule(), Rule::interface_declaration);
                 let was_trait = matches!(pair.as_rule(), Rule::trait_declaration);
                 if let Some(stmt) = walk_statement(pair)? {
@@ -4210,9 +4256,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
                             trait_names.insert(name.clone());
                         }
                     }
-                    body.push(stmt);
+                    if let Some((_, ns_body)) = active_namespace.as_mut() {
+                        ns_body.push(stmt);
+                    } else {
+                        body.push(stmt);
+                    }
                 }
             }
+            flush_namespace(&mut active_namespace, &mut body);
         }
         _ => return Err("unexpected PHP parse root".to_string()),
     }
@@ -4466,6 +4517,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
      -> Option<String> {
         if registry.contains_key(tname) {
             return Some(tname.to_string());
+        }
+        let leaf = tname
+            .rsplit('.')
+            .next()
+            .and_then(|last| last.rsplit('\\').next())
+            .unwrap_or(tname);
+        if registry.contains_key(leaf) {
+            return Some(leaf.to_string());
         }
         let dotted = format!(".{tname}");
         let mut matches = registry.keys().filter(|k| k.ends_with(&dotted));
@@ -7009,19 +7068,7 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     body = lower_php_runtime_arg_helpers_in_block(&mut params, body);
 
-    // Un-flattened namespaces (namespaceplan.md PHP phase): a function
-    // declared inside `namespace Util;` gets its fully-qualified dotted
-    // identity (`Util.wrap`) — same-named functions in distinct namespaces
-    // no longer collide. An implicit `use function Util\wrap;` binds the
-    // bare name for in-file references through the same alias mechanism
-    // (`source_type_aliases`) an explicit `use function` takes.
-    let mut name = name;
-    if let Some(ns) = current_namespace().filter(|n| !n.is_empty()) {
-        if !name.contains('.') {
-            let fq = format!("{}.{}", ns.replace('\\', "."), name);
-            name = php_mangle_function_name(&fq);
-        }
-    }
+    let name = name;
 
     let is_generator = body_contains_yield(&body);
     let required = params.iter().filter(|p| p.default.is_none()).count();
@@ -7054,7 +7101,24 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 required_params: required,
                 params: params.clone(),
             },
-        )
+        );
+        if !name.contains('.') {
+            if let Some(ns) = current_namespace().filter(|ns| !ns.is_empty()) {
+                let fq = format!("{}.{}", ns.replace('\\', "."), name);
+                NAMESPACE_FUNCTIONS.with(|functions| {
+                    functions.borrow_mut().insert(fq.clone());
+                });
+                reg.insert(
+                    fq.clone(),
+                    FuncMeta {
+                        name: fq,
+                        param_count: params.len(),
+                        required_params: required,
+                        params: params.clone(),
+                    },
+                );
+            }
+        }
     });
     if !param_attrs.is_empty() {
         FUNCTION_PARAM_ATTRIBUTES.with(|r| {
@@ -7555,23 +7619,10 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    // Un-flattened namespaces (namespaceplan.md PHP phase): a class declared
-    // inside `namespace App\Util;` gets its fully-qualified dotted identity
-    // (`App.Util.User`) — distinct classes in distinct namespaces no longer
-    // collide. An implicit `use App\Util\User;` import binds the bare name
-    // for the rest of the unit, so in-file references (`new User()`) resolve
-    // through the same alias mechanism as an explicit `use`.
-    if let Some(ns) = current_namespace() {
-        if !ns.is_empty() && !name.contains('.') {
-            let fq = format!("{}.{}", ns.replace('\\', "."), name);
-            note_php_use_import(Import {
-                kind: ImportKind::Simple {
-                    path: fq.clone(),
-                    alias: Some(name.clone()),
-                },
-                span: Span::default(),
-            });
-            name = fq;
+    let ast_name = name.clone();
+    if let Some(ns) = current_namespace().filter(|ns| !ns.is_empty()) {
+        if !name.contains('.') {
+            name = format!("{}.{}", ns.replace('\\', "."), name);
         }
     }
 
@@ -7662,7 +7713,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     Ok(StmtKind::ClassDecl {
-        name,
+        name: ast_name,
         parents,
         interfaces,
         members,
@@ -7988,6 +8039,44 @@ fn class_is_registered(name: &str) -> bool {
     CLASS_REGISTRY.with(|r| r.borrow().contains_key(name))
 }
 
+fn php_resolve_registered_class_ref(raw: &str) -> Option<String> {
+    let normalized = php_normalize_class_ref(raw);
+    if class_is_registered(&normalized) {
+        return Some(normalized);
+    }
+    let aliased = php_resolve_class_alias(raw);
+    if aliased != normalized && class_is_registered(&aliased) {
+        return Some(aliased);
+    }
+    let ns = current_namespace()?.replace('\\', ".");
+    if ns.is_empty() {
+        return None;
+    }
+    let stripped = normalized
+        .strip_prefix(&format!("{ns}."))
+        .filter(|s| !s.is_empty())?;
+    if class_is_registered(stripped) {
+        return Some(stripped.to_string());
+    }
+    if stripped.contains('.') {
+        return None;
+    }
+    let suffix = format!(".{stripped}");
+    let mut matches = CLASS_REGISTRY.with(|r| {
+        r.borrow()
+            .keys()
+            .filter(|name| name.ends_with(&suffix))
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+    matches.sort();
+    matches.dedup();
+    match matches.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    }
+}
+
 fn php_use_alias_points_to_class(name: &str) -> bool {
     PHP_USE_IMPORTS.with(|imports| {
         imports.borrow().iter().any(|import| match &import.kind {
@@ -7998,6 +8087,39 @@ fn php_use_alias_points_to_class(name: &str) -> bool {
             _ => false,
         })
     })
+}
+
+fn php_use_alias_target(name: &str) -> Option<String> {
+    PHP_USE_IMPORTS.with(|imports| {
+        imports.borrow().iter().find_map(|import| match &import.kind {
+            ImportKind::Simple { path, alias } => alias
+                .as_deref()
+                .or_else(|| path.rsplit('.').next())
+                .filter(|bound| *bound == name)
+                .map(|_| path.clone()),
+            _ => None,
+        })
+    })
+}
+
+fn php_resolve_trait_ref(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if !trimmed.contains('\\') && !trimmed.contains('.') {
+        if let Some(target) = php_use_alias_target(trimmed) {
+            return target;
+        }
+    }
+    let normalized = php_normalize_class_ref(trimmed);
+    if trimmed.starts_with('\\') || normalized.contains('.') {
+        return normalized;
+    }
+    if let Some(ns) = current_namespace().filter(|ns| !ns.is_empty()) {
+        let qualified = format!("{}.{}", ns.replace('\\', "."), normalized);
+        if class_is_registered(&qualified) {
+            return qualified;
+        }
+    }
+    normalized
 }
 
 fn php_class_may_resolve_later(name: &str) -> bool {
@@ -8112,11 +8234,6 @@ fn php_core_class_is_registered(name: &str) -> bool {
                 | "WeakMap"
                 | "WeakReference"
         )
-}
-
-fn php_bare_name_is_namespaced_class_suffix(name: &str) -> bool {
-    let suffix = format!(".{name}");
-    CLASS_REGISTRY.with(|r| r.borrow().keys().any(|k| k.ends_with(&suffix)))
 }
 
 /// `is_subclass_of($c, $target)` — true iff `target` is a proper ancestor
@@ -9318,7 +9435,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                 let mut adaptation_scope: Vec<String> = Vec::new();
                 for p in pair.into_inner() {
                     match p.as_rule() {
-                        Rule::qualified_name => trait_names.push(p.as_str().to_string()),
+                        Rule::qualified_name => trait_names.push(php_resolve_trait_ref(p.as_str())),
                         Rule::trait_adaptation => {
                             // Two forms:
                             //   trait_method_ref ~ "insteadof" ~ qualified_name+ ~ ";"
@@ -9352,7 +9469,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                                             }
                                         }
                                         if let Some(t) = tname {
-                                            method_trait = t;
+                                            method_trait = php_resolve_trait_ref(&t);
                                         }
                                         method_name = last_method;
                                     }
@@ -9364,7 +9481,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                                             Some(parse_visibility(q.as_str(), Visibility::Public));
                                     }
                                     Rule::qualified_name if !is_alias => {
-                                        hidden_traits.push(q.as_str().to_string());
+                                        hidden_traits.push(php_resolve_trait_ref(q.as_str()));
                                     }
                                     _ => {}
                                 }
@@ -17308,6 +17425,16 @@ fn php_function_is_registered(name: &str) -> bool {
     })
 }
 
+fn php_namespace_function_is_registered(name: &str) -> bool {
+    let normalized = php_normalize_function_ref(name);
+    NAMESPACE_FUNCTIONS.with(|functions| functions.borrow().contains(&normalized))
+}
+
+fn php_bare_name_is_namespaced_function_suffix(name: &str) -> bool {
+    let suffix = format!(".{name}");
+    NAMESPACE_FUNCTIONS.with(|functions| functions.borrow().iter().any(|f| f.ends_with(&suffix)))
+}
+
 fn php_resolve_function_call_callee(callee: Expression) -> Expression {
     let ExprKind::Ident(name) = &callee.kind else {
         return callee;
@@ -17315,22 +17442,16 @@ fn php_resolve_function_call_callee(callee: Expression) -> Expression {
     if name.starts_with('\\') {
         let normalized = php_normalize_function_ref(name);
         if php_function_is_registered(&normalized) {
-            return Expression::with_span(
-                ExprKind::Ident(php_mangle_function_name(&normalized)),
-                callee.span,
-            );
+            return Expression::with_span(ExprKind::Ident(format!("\\{normalized}")), callee.span);
         }
         return Expression::with_span(
-            ExprKind::Ident(name.trim_start_matches('\\').to_string()),
+            ExprKind::Ident(format!("\\{}", name.trim_start_matches('\\'))),
             callee.span,
         );
     }
     if name.contains('.') {
         if php_function_is_registered(name) {
-            return Expression::with_span(
-                ExprKind::Ident(php_mangle_function_name(name)),
-                callee.span,
-            );
+            return Expression::with_span(ExprKind::Ident(name.to_string()), callee.span);
         }
         return callee;
     }
@@ -17345,9 +17466,9 @@ fn php_resolve_function_call_callee(callee: Expression) -> Expression {
     if let Some(fq) = current_namespace()
         .filter(|ns| !ns.is_empty())
         .map(|ns| format!("{}.{}", ns.replace('\\', "."), name))
-        .filter(|fq| php_function_is_registered(fq))
+        .filter(|fq| php_namespace_function_is_registered(fq) || php_function_is_registered(fq))
     {
-        return Expression::with_span(ExprKind::Ident(php_mangle_function_name(&fq)), callee.span);
+        return Expression::with_span(ExprKind::Ident(fq), callee.span);
     }
     callee
 }
@@ -19142,6 +19263,20 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                 ExprKind::Sequence(vec![save, stamp_type, tmp_ident()]),
                 span,
             ));
+        }
+        if let Some(resolved) = php_resolve_registered_class_ref(cn) {
+            if resolved != normalized {
+                return Ok(Expression::with_span(
+                    ExprKind::New {
+                        class: Box::new(Expression::with_span(
+                            ExprKind::Ident(resolved),
+                            span.clone(),
+                        )),
+                        args,
+                    },
+                    span,
+                ));
+            }
         }
     }
     // PHP: `new <interface|trait|enum>()` is a fatal Error. Detect the kind
@@ -25689,15 +25824,14 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
         "bcscale" => ExprKind::Lit(Literal::Null),
         "class_exists" if !args.is_empty() => {
             if let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind {
-                if !name.starts_with('\\')
-                    && !name.contains('\\')
-                    && php_bare_name_is_namespaced_class_suffix(name)
-                {
-                    return Some(ExprKind::Lit(Literal::Bool(false)));
-                }
                 let bare = name.trim_start_matches('\\');
-                let normalized = php_resolve_class_name(bare);
-                if matches!(
+                let normalized = if name.starts_with('\\') || name.contains('\\') {
+                    php_normalize_class_ref(bare)
+                } else {
+                    php_resolve_class_name(bare)
+                };
+                if bare.eq_ignore_ascii_case("stdClass")
+                    || matches!(
                     bare,
                     "NumberFormatter"
                         | "IntlDateFormatter"
@@ -25706,20 +25840,18 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                         | "Normalizer"
                         | "IntlCalendar"
                         | "Transliterator"
-                ) {
+                    )
+                    || class_is_registered(bare)
+                    || class_is_registered(&normalized)
+                {
                     return Some(ExprKind::Lit(Literal::Bool(true)));
                 }
-                return Some(ExprKind::Lit(Literal::Bool(
-                    class_is_registered(bare) || class_is_registered(&normalized),
-                )));
+                return None;
             }
             return None;
         }
         "function_exists" if !args.is_empty() => {
             if let ExprKind::Lit(Literal::Str(name)) = &args[0].value.kind {
-                if name.contains('\\') && !name.starts_with('\\') {
-                    return Some(ExprKind::Lit(Literal::Int(0)));
-                }
                 if matches!(
                     name.as_str(),
                     "intl_get_error_code"
@@ -25730,9 +25862,21 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                 ) {
                     return Some(ExprKind::Lit(Literal::Bool(true)));
                 }
-                return Some(ExprKind::Lit(Literal::Bool(php_function_is_registered(
-                    name,
-                ))));
+                let registered = if !name.starts_with('\\')
+                    && name.contains('\\')
+                    && current_namespace().is_some()
+                {
+                    return Some(ExprKind::Lit(Literal::Int(0)));
+                } else if name.starts_with('\\') || name.contains('\\') {
+                    let normalized = php_normalize_function_ref(name.trim_start_matches('\\'));
+                    php_namespace_function_is_registered(&normalized)
+                        || php_function_is_registered(&normalized)
+                } else if php_bare_name_is_namespaced_function_suffix(name) {
+                    false
+                } else {
+                    php_function_is_registered(name)
+                };
+                return Some(ExprKind::Lit(Literal::Bool(registered)));
             }
             return None;
         }

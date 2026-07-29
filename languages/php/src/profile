@@ -36,6 +36,9 @@ missing_arg_is_undefined = true     # a param default fires only when the arg is
                                     # callback, then retry.
 buffered_iterator_methods = true    # $gen->current()/next()/valid()/send()/
                                     # getReturn(); foreach buffers current value.
+source_function_callable_aliases = true # String callables and dynamic name
+                                        # dispatch resolve declared functions
+                                        # through the common callable alias path.
 self_keyword = "$this"              # PHP variables canonicalize with the $
                                     # sigil (see strip_dollar in walker.rs).
                                     # `$this` IS the scope name; matching
@@ -144,7 +147,7 @@ mb_strtoupper       = { emit = "common:php.strtoupper",      min_args = 1, max_a
 # `mb_substr` walker-rewritten alongside `substr` (Vybe stores strings
 # as Rust UTF-8 — code-point indexing matches mb_substr semantics).
 strrev              = { emit = "common:str_reverse",         min_args = 1, max_args = 1 }
-strrpos             = { emit = "common:str_last_index_of",   min_args = 2, max_args = 3 }
+strrpos             = { emit = "common:php.strrpos",          min_args = 2, max_args = 3 }
 strriios            = { emit = "common:str_last_index_of",   min_args = 2, max_args = 3 }
 strripos            = { emit = "common:php.strripos",         min_args = 2, max_args = 3 }
 strrchr             = { emit = "common:php.strrchr",         min_args = 2, max_args = 2 }
@@ -166,6 +169,8 @@ crc32               = { emit = "common:php.crc32",           min_args = 1, max_a
 ucwords             = { emit = "common:php.ucwords",         min_args = 1, max_args = 2 }
 addslashes          = { emit = "common:php.addslashes",      min_args = 1, max_args = 1 }
 stripslashes        = { emit = "common:php.stripslashes",    min_args = 1, max_args = 1 }
+addcslashes         = { emit = "common:php.addcslashes",     min_args = 2, max_args = 2 }
+stripcslashes       = { emit = "common:php.stripcslashes",   min_args = 1, max_args = 1 }
 str_rot13           = { emit = "common:php.str_rot13",       min_args = 1, max_args = 1 }
 str_split           = { emit = "common:php.str_split",       min_args = 1, max_args = 2 }
 str_pad             = { emit = "common:php.str_pad",         min_args = 2, max_args = 4 }

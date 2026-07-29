@@ -589,6 +589,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.stripslashes" => {
             crate::emitter::string_adapter::emit_stripslashes(chunks, current, argc, line)
         }
+        "php.addcslashes" => {
+            crate::emitter::string_adapter::emit_addcslashes(chunks, current, argc, line)
+        }
+        "php.stripcslashes" => {
+            crate::emitter::string_adapter::emit_stripcslashes(chunks, current, argc, line)
+        }
         "php.str_rot13" => {
             crate::emitter::string_adapter::emit_str_rot13(chunks, current, argc, line)
         }
@@ -685,6 +691,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.strripos" => {
             crate::emitter::string_adapter::emit_strripos(chunks, current, argc, line)
+        }
+        "php.strrpos" => {
+            crate::emitter::string_adapter::emit_strrpos(chunks, current, argc, line)
         }
         "php.strpos" => crate::emitter::string_adapter::emit_strpos(chunks, current, argc, line),
         "php.strtr" => crate::emitter::string_adapter::emit_strtr(chunks, current, argc, line),

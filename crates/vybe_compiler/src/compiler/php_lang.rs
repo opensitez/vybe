@@ -12,6 +12,24 @@ enum BufferedGeneratorStepMode {
 }
 
 impl Compiler {
+    pub(crate) fn php_function_name_lookup_spellings(function_name: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let lowered = function_name.to_ascii_lowercase();
+        names.push(lowered.clone());
+        names.push(format!("\\{lowered}"));
+        names.push(format!("\\\\{lowered}"));
+        if function_name.contains('.') {
+            for php_qualified in [lowered.replace('.', "\\"), lowered.replace('.', "\\\\")] {
+                names.push(php_qualified.clone());
+                names.push(format!("\\{php_qualified}"));
+                names.push(format!("\\\\{php_qualified}"));
+            }
+        }
+        names.sort();
+        names.dedup();
+        names
+    }
+
     fn emit_buffered_generator_set_bool_property(&mut self, obj_slot: u16, key: u16, value: bool) {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_const(Value::Bool(value));
@@ -605,146 +623,6 @@ impl Compiler {
         self.chunk().emit_end(line);
         self.chunk().emit_end(line);
     }
-    pub(crate) fn emit_php_dynamic_function_name_resolution(&mut self, callee_slot: u16) {
-        if !self.is_php_profile() {
-            return;
-        }
-
-        let mut known_functions: Vec<String> = self.defined_functions.iter().cloned().collect();
-        if known_functions.is_empty() {
-            return;
-        }
-        known_functions.sort();
-
-        self.emit_u16(Op::LOCAL_GET, callee_slot);
-        {
-            let l = self.line;
-            crate::compiler::instructions::host::CapabilityContext::get()
-                .functions
-                .emit(&mut self.chunks[self.current], "ecma:value", "typeof", 1, l);
-        };
-        self.emit_string_eq_literal("string");
-        let line = self.line;
-        self.chunk().emit_if(line);
-
-        self.emit_u16(Op::LOCAL_GET, callee_slot);
-        let line = self.line;
-        common::strings::emit_to_lower(self.chunk(), line);
-        let callee_name_slot = self.define_local("__php_string_callee_name");
-        self.emit_u16(Op::LOCAL_SET, callee_name_slot);
-
-        let matched_slot = self.define_local("__php_string_callee_matched");
-        self.emit_const(Value::I32(0));
-        self.emit_u16(Op::LOCAL_SET, matched_slot);
-        for function_name in known_functions {
-            let lowered_name = function_name.to_ascii_lowercase();
-            self.emit_u16(Op::LOCAL_GET, matched_slot);
-            self.emit(Op::I32_EQZ);
-            let line = self.line;
-            self.chunk().emit_if(line);
-            self.emit_raw_string_slot_eq_literal(callee_name_slot, lowered_name.as_str());
-            let line = self.line;
-            self.chunk().emit_if(line);
-
-            let idx = self.str_const(&format!("__php_func${}", function_name));
-            self.emit_u16(Op::GLOBAL_GET, idx);
-            self.emit_u16(Op::LOCAL_SET, callee_slot);
-            self.emit_const(Value::I32(1));
-            self.emit_u16(Op::LOCAL_SET, matched_slot);
-            self.chunk().emit_end(line);
-            self.chunk().emit_end(line);
-        }
-        self.chunk().emit_end(line);
-    }
-
-    /// Resolve a dynamic class-name string (`new $c`, `$cls::method()`) to its
-    /// constructor reference at runtime. Mirrors
-    /// [`Self::emit_php_dynamic_function_name_resolution`]: emit a compile-time
-    /// match chain over the known classes (class names are case-insensitive in
-    /// PHP, so compare lowercased) and, on match, replace the value in
-    /// `class_slot` with the class's constructor ref. A non-string value (an
-    /// already-resolved class object, e.g. `new static`/`new $obj`) is left
-    /// untouched. `ctor_arity` = `Some(n)` resolves to the arity-`n`-specialised
-    /// *constructor* global (for `new $c`); `None` resolves to the *class
-    /// object* global (for `$cls::staticMethod()` — static members live on it).
-    pub(crate) fn emit_php_dynamic_class_name_resolution(
-        &mut self,
-        class_slot: u16,
-        ctor_arity: Option<usize>,
-    ) {
-        if !self.is_php_profile() {
-            return;
-        }
-        let mut known_classes: Vec<String> = self.defined_classes.iter().cloned().collect();
-        if known_classes.is_empty() {
-            return;
-        }
-        known_classes.sort();
-
-        self.emit_u16(Op::LOCAL_GET, class_slot);
-        {
-            let l = self.line;
-            crate::compiler::instructions::host::CapabilityContext::get()
-                .functions
-                .emit(&mut self.chunks[self.current], "ecma:value", "typeof", 1, l);
-        };
-        self.emit_const(Value::String(Arc::from("string")));
-        {
-            let line = self.line;
-            crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
-        };
-        let line = self.line;
-        crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if(line);
-
-        self.emit_u16(Op::LOCAL_GET, class_slot);
-        let line = self.line;
-        common::strings::emit_to_lower(self.chunk(), line);
-        // Class names may carry a leading namespace separator; the ctor globals
-        // are stored under the bare name, so strip it for matching too.
-        let class_name_slot = self.define_local("__php_string_class_name");
-        self.emit_u16(Op::LOCAL_SET, class_name_slot);
-
-        let matched_slot = self.define_local("__php_string_class_matched");
-        self.emit_const(Value::I32(0));
-        self.emit_u16(Op::LOCAL_SET, matched_slot);
-        for class_name in known_classes {
-            let bare = Self::strip_global_namespace_prefix(&class_name).to_string();
-            let lowered_name = bare.to_ascii_lowercase();
-            self.emit_u16(Op::LOCAL_GET, matched_slot);
-            self.emit(Op::I32_EQZ);
-            let line = self.line;
-            self.chunk().emit_if(line);
-            self.emit_u16(Op::LOCAL_GET, class_name_slot);
-            self.emit_const(Value::String(Arc::from(lowered_name.as_str())));
-            {
-                let line = self.line;
-                crate::compiler::ops::emit_dyn_eq(self.chunk(), line);
-            };
-            let line = self.line;
-            crate::compiler::ops::emit_dyn_to_bool(self.chunk(), line);
-            self.chunk().emit_if(line);
-
-            let canon = self.canon(&bare);
-            match ctor_arity {
-                Some(arity) => {
-                    let primary_ctor = format!("{}$arity{}", canon, arity);
-                    self.emit_dynamic_constructor_global_ref(&primary_ctor, Some(&canon), &bare);
-                }
-                None => {
-                    let idx = self.str_const(&canon);
-                    self.emit_u16(Op::GLOBAL_GET, idx);
-                }
-            }
-            self.emit_u16(Op::LOCAL_SET, class_slot);
-            self.emit_const(Value::I32(1));
-            self.emit_u16(Op::LOCAL_SET, matched_slot);
-            self.chunk().emit_end(line);
-            self.chunk().emit_end(line);
-        }
-        self.chunk().emit_end(line);
-    }
-
     pub(crate) fn finish_buffered_generator_method_dispatch(&mut self, result_slot: usize) {
         let line = self.line;
         self.emit_u16(Op::LOCAL_SET, result_slot as u16);
@@ -764,28 +642,6 @@ impl Compiler {
             }
             _ => self.compile_expr(expr),
         }
-    }
-    pub(crate) fn resolve_php_autoload_callback_class_global(
-        &self,
-        class_name: &str,
-    ) -> Option<String> {
-        let resolved_class = self.resolve_source_type_alias(class_name);
-        let canon_class = self.canon(&resolved_class);
-        if self.defined_classes.contains(&canon_class)
-            || self.defined_globals.contains(&canon_class)
-        {
-            return Some(canon_class);
-        }
-        resolved_class.rsplit('.').next().and_then(|short_name| {
-            let short_canon = self.canon(short_name);
-            if self.defined_classes.contains(&short_canon)
-                || self.defined_globals.contains(&short_canon)
-            {
-                Some(short_canon)
-            } else {
-                None
-            }
-        })
     }
     pub(crate) fn is_php_profile(&self) -> bool {
         self.profile.name == "php"

@@ -194,7 +194,7 @@ dynamic_variable = { "$" ~ (simple_variable | "{" ~ expression ~ "}") }
 variable = { dynamic_variable | simple_variable }
 
 // PHP allows backslash-qualified names: \Foo\Bar\Baz, Foo\Bar
-qualified_name = @{ "\\"? ~ identifier ~ ("\\" ~ identifier)* }
+qualified_name = @{ "\\"* ~ identifier ~ ("\\"+ ~ identifier)* }
 
 // PHP 7.4 numeric separators: 1_000_000, 0xFF_FF, etc. The walker
 // strips underscores before parsing.

@@ -1,4 +1,4 @@
-//! PHP autoloading — Rust inline opcode emitters.
+//! PHP dynamic type resolver adapter.
 //!
 //! When a class constructor global is `undefined` at runtime, PHP invokes
 //! the registered `spl_autoload_register` callback (stored in the
@@ -7,35 +7,20 @@
 //! adapters emit that fallback sequence straight into the chunk.
 //!
 //! Mirrors the other `languages/php/emitter` adapters: chunk-based, core
-//! ops only. The shared compiler routes here via the `supports_autoload`
-//! profile flag — no `profile.name == "php"` branch.
+//! ops only. The shared compiler routes here through the language hook and the
+//! shared `dynamic_symbols` recipe owns the bytecode shape.
 
-use std::sync::Arc;
-use vybe_bytecode::opcode::Op;
-use vybe_bytecode::{Chunk, Value};
+use vybe_bytecode::Chunk;
 
-fn alloc_local(chunk: &mut Chunk) -> u16 {
-    chunk.alloc_scratch(1)
+fn php_class_spelling(name: &str) -> String {
+    name.replace('.', "\\")
 }
-fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
-    match &val {
-        Value::F64(v) => chunk.emit_f64_const(*v, line),
-        Value::I32(v) => chunk.emit_i32_const(*v, line),
-        Value::Null => chunk.emit_op(Op::NULL, line),
-        Value::BigInt(v) => chunk.emit_i64_const(v.to_i64_wrapping(), line),
-        Value::String(s) => chunk.emit_string_const(&s, line),
-        Value::Bool(b) => chunk.emit_bool_const(*b, line),
 
-        _ => {
-            unreachable!("push_const: unexpected value type");
-        }
+fn php_resolver() -> vybe_compiler::compiler::dynamic_symbols::RegisteredResolver<'static> {
+    vybe_compiler::compiler::dynamic_symbols::RegisteredResolver {
+        callback_global: "__php_autoload_callback",
+        receiver_global: "__php_autoload_callback_receiver",
     }
-}
-fn push_str(chunk: &mut Chunk, v: &str, line: u32) {
-    push_const(chunk, Value::String(Arc::from(v)), line);
-}
-fn str_idx(chunk: &mut Chunk, v: &str) -> u16 {
-    chunk.add_constant(Value::String(Arc::from(v)))
 }
 
 /// Push a reference to `ctor_global`, autoloading the class first if the
@@ -46,24 +31,14 @@ pub fn emit_constructor_ref_with_autoload(
     autoload_name: &str,
     line: u32,
 ) {
-    let idx = str_idx(chunk, ctor_global);
-    let ctor_slot = alloc_local(chunk);
-    chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, ctor_slot, line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
-    {
-        let undef_test = chunk.add_import("wasm:js-undefined", "test");
-        chunk.emit_call(undef_test, 1, line);
-    }
-    chunk.emit_if(line);
-
-    emit_autoload_invoke(chunk, autoload_name, line);
-
-    chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, ctor_slot, line);
-    chunk.emit_end(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
+    let spelling = php_class_spelling(autoload_name);
+    vybe_compiler::compiler::dynamic_symbols::emit_registered_global_ref(
+        chunk,
+        ctor_global,
+        &spelling,
+        php_resolver(),
+        line,
+    );
 }
 
 /// Like [`emit_constructor_ref_with_autoload`] but resolves a primary
@@ -76,95 +51,13 @@ pub fn emit_dynamic_constructor_ref_with_autoload(
     autoload_name: &str,
     line: u32,
 ) {
-    let ctor_slot = alloc_local(chunk);
-    let primary_idx = str_idx(chunk, primary_ctor_global);
-    chunk.emit_op_u16(Op::GLOBAL_GET, primary_idx, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, ctor_slot, line);
-
-    if let Some(fallback) = fallback_ctor_global {
-        emit_fallback_if_undefined(chunk, ctor_slot, fallback, line);
-    }
-
-    chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
-    {
-        let undef_test = chunk.add_import("wasm:js-undefined", "test");
-        chunk.emit_call(undef_test, 1, line);
-    }
-    chunk.emit_if(line);
-
-    emit_autoload_invoke(chunk, autoload_name, line);
-
-    chunk.emit_op_u16(Op::GLOBAL_GET, primary_idx, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, ctor_slot, line);
-    if let Some(fallback) = fallback_ctor_global {
-        emit_fallback_if_undefined(chunk, ctor_slot, fallback, line);
-    }
-
-    chunk.emit_end(line);
-    chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
-}
-
-/// `if ctor_slot is undefined { ctor_slot = GLOBAL_GET fallback }`.
-fn emit_fallback_if_undefined(chunk: &mut Chunk, ctor_slot: u16, fallback: &str, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
-    {
-        let undef_test = chunk.add_import("wasm:js-undefined", "test");
-        chunk.emit_call(undef_test, 1, line);
-    }
-    chunk.emit_if(line);
-    let fallback_idx = str_idx(chunk, fallback);
-    chunk.emit_op_u16(Op::GLOBAL_GET, fallback_idx, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, ctor_slot, line);
-    chunk.emit_end(line);
-}
-
-/// Invoke the registered autoload callback with `autoload_name` (passing
-/// the receiver as `this` when the callback is a method). No-op when no
-/// callback is registered.
-///
-/// The internal class identity is dotted (`App.Widget` — un-flattened
-/// namespaces); PHP autoload callbacks receive the SPEC spelling with
-/// backslashes (`App\Widget`), so convert at this boundary.
-fn emit_autoload_invoke(chunk: &mut Chunk, autoload_name: &str, line: u32) {
-    let autoload_name = &autoload_name.replace('.', "\\");
-    let autoload_slot = alloc_local(chunk);
-    let autoload_idx = str_idx(chunk, "__php_autoload_callback");
-    chunk.emit_op_u16(Op::GLOBAL_GET, autoload_idx, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, autoload_slot, line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, autoload_slot, line);
-    {
-        let undef_test = chunk.add_import("wasm:js-undefined", "test");
-        chunk.emit_call(undef_test, 1, line);
-    }
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if(line);
-
-    let receiver_slot = alloc_local(chunk);
-    let receiver_idx = str_idx(chunk, "__php_autoload_callback_receiver");
-    chunk.emit_op_u16(Op::GLOBAL_GET, receiver_idx, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    {
-        let undef_test = chunk.add_import("wasm:js-undefined", "test");
-        chunk.emit_call(undef_test, 1, line);
-    }
-    chunk.emit_if(line);
-
-    // Plain function callback: call with just the class name.
-    chunk.emit_op_u16(Op::LOCAL_GET, autoload_slot, line);
-    push_str(chunk, autoload_name, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
-    chunk.emit_op(Op::DROP, line);
-
-    chunk.emit_else(line);
-    // Method callback: call with (receiver, class name).
-    chunk.emit_op_u16(Op::LOCAL_GET, autoload_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    push_str(chunk, autoload_name, line);
-    chunk.emit_op_u8(Op::CALL_REF, 2, line);
-    chunk.emit_op(Op::DROP, line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
+    let spelling = php_class_spelling(autoload_name);
+    vybe_compiler::compiler::dynamic_symbols::emit_registered_dynamic_global_ref(
+        chunk,
+        primary_ctor_global,
+        fallback_ctor_global,
+        &spelling,
+        php_resolver(),
+        line,
+    );
 }
