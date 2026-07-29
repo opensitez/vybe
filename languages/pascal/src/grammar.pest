@@ -212,7 +212,7 @@ interface_member = _{
 
 interface_procedure = { ^"procedure" ~ method_sig_body }
 interface_function = { ^"function" ~ method_sig_body }
-interface_property_decl = { ^"property" ~ property_def }
+interface_property_decl = { ^"property" ~ property_def ~ (^"default" ~ ";")? }
 
 // Array type: `array[lo..hi] of Type`, `array[lo..hi, lo2..hi2] of Type`, or `array of Type`
 array_type = { ^"array" ~ ("[" ~ array_index_spec ~ ("," ~ array_index_spec)* ~ "]")? ~ ^"of" ~ type_ref }
@@ -239,11 +239,13 @@ property_def = {
     property_specifiers* ~ ";"
 }
 
-property_index = { "[" ~ identifier ~ ":" ~ type_ref ~ "]" }
+property_index = { "[" ~ property_index_param ~ ("," ~ property_index_param)* ~ "]" }
+property_index_param = { param_mode? ~ identifier_list ~ ":" ~ type_ref }
 
 property_specifiers = {
     property_read
     | property_write
+    | property_implements
     | property_index_value
     | property_default
     | property_stored
@@ -253,6 +255,7 @@ property_specifiers = {
 property_accessor = { method_name ~ ("." ~ method_name)* }
 property_read = { ^"read" ~ property_accessor }
 property_write = { ^"write" ~ property_accessor }
+property_implements = { ^"implements" ~ type_ref }
 property_index_value = { ^"index" ~ expression }
 property_default = { ^"default" ~ (&";" | expression) }
 property_stored = { ^"stored" ~ expression? }
@@ -318,13 +321,13 @@ method_impl_func = { qualified_type_name ~ "." ~ method_name ~ generic_params? ~
 method_impl_body_proc = { qualified_type_name ~ "." ~ method_name ~ generic_params? ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
 
 // Standalone procedure
-standalone_procedure = { identifier ~ generic_params? ~ param_clause? ~ ";" ~ method_directives ~ (forward_directive | procedure_body) }
+standalone_procedure = { identifier ~ generic_params? ~ param_clause? ~ ";" ~ method_directives ~ (forward_directive | procedure_body)? }
 procedure_body = { decl_section ~ compound_statement ~ ";"? }
 
 // Standalone function — accepts generic type params: `function Max<T>(...)`.
 // Generics are erased at compile time (the dynamic VM doesn't carry type
 // info), so `generic_params` is captured-and-discarded by the walker.
-standalone_function = { identifier ~ generic_params? ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ method_directives ~ (forward_directive | function_body) }
+standalone_function = { identifier ~ generic_params? ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ method_directives ~ (forward_directive | function_body)? }
 function_body = { decl_section ~ compound_statement ~ ";"? }
 
 // Pascal / Delphi generic type parameters: `<T>` or `<T, U>`. Constraints
@@ -345,7 +348,7 @@ param_list = { param ~ (";" ~ param)* }
 
 param = { param_mode? ~ identifier_list ~ ":" ~ type_ref ~ param_default? }
 
-param_mode = { ^"var" | ^"const" | ^"out" }
+param_mode = { ^"constref" | ^"var" | ^"const" | ^"out" }
 
 param_default = { "=" ~ expression }
 
@@ -440,7 +443,7 @@ inline_var_statement = { ^"var" ~ identifier_list ~ ":" ~ type_ref ~ inline_var_
 
 // ── If ─────────────────────────────────────────────────────────────────────────
 
-if_statement = { ^"if" ~ expression ~ ^"then" ~ statement ~ else_clause? }
+if_statement = { ^"if" ~ expression ~ ^"then" ~ statement? ~ else_clause? }
 
 else_clause = { ^"else" ~ statement }
 

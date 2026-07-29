@@ -35,6 +35,16 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         return true;
     }
 
+    if name == "pascal.string_to_guid" || name == "pascal.guid_to_string" {
+        emit_pascal_guid_string(chunks, current, line);
+        return true;
+    }
+
+    if name == "pascal.is_equal_guid" {
+        emit_pascal_guid_eq(chunks, current, line);
+        return true;
+    }
+
     let global = match name {
         "pascal.str_remove_range" => "__vybe_str_remove_range",
         "pascal.str_insert" => "__vybe_str_insert",
@@ -43,6 +53,26 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
     };
     collections::emit_runtime_helper_call(chunks, current, global, argc, line);
     true
+}
+
+fn emit_pascal_guid_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    let string_idx = chunks[current].add_import("ecma:string", "String");
+    let upper_idx = chunks[current].add_import("ecma:string", "toUpperCase");
+    chunks[current].emit_call(string_idx, 1, line);
+    chunks[current].emit_call(upper_idx, 1, line);
+}
+
+fn emit_pascal_guid_eq(chunks: &mut [Chunk], current: usize, line: u32) {
+    let right_slot = chunks[current].alloc_scratch(1);
+    let left_slot = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
+    emit_pascal_guid_string(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    emit_pascal_guid_string(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
 }
 
 fn emit_pascal_file_eof(chunks: &mut [Chunk], current: usize, line: u32) {

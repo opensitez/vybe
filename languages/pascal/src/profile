@@ -116,6 +116,15 @@ concat        = { emit = "intrinsic:str_concat",            min_args = 1, max_ar
 chr           = { emit = "host:ecma:string:fromCharCode",  min_args = 1, max_args = 1 }
 ord           = { emit = "common:pascal.ord",              min_args = 1, max_args = 1 }
 __pascal_set_length = { emit = "common:pascal.set_length", min_args = 1, max_args = 1 }
+__vybe_pascal_set_contains = { emit = "host:ecma:set:has", min_args = 2, max_args = 2 }
+__vybe_pascal_set_include = { emit = "host:ecma:set:add", min_args = 2, max_args = 2 }
+__vybe_pascal_set_exclude = { emit = "host:ecma:set:delete", min_args = 2, max_args = 2 }
+__vybe_pascal_set_union = { emit = "host:ecma:set:union", min_args = 2, max_args = 2 }
+__vybe_pascal_set_intersection = { emit = "host:ecma:set:intersection", min_args = 2, max_args = 2 }
+__vybe_pascal_set_difference = { emit = "host:ecma:set:difference", min_args = 2, max_args = 2 }
+__vybe_pascal_set_symmetric_difference = { emit = "host:ecma:set:symmetricDifference", min_args = 2, max_args = 2 }
+__vybe_pascal_set_subset = { emit = "host:ecma:set:isSubsetOf", min_args = 2, max_args = 2 }
+__vybe_pascal_set_superset = { emit = "host:ecma:set:isSupersetOf", min_args = 2, max_args = 2 }
 __pascal_int_xor = { emit = "common:pascal.int_xor",       min_args = 2, max_args = 2 }
 format        = { emit = "common:sprintf.format",          min_args = 1, max_args = 255 }
 stringreplace = { emit = "common:strings.replace",         min_args = 3, max_args = 4 }
@@ -136,6 +145,9 @@ strtointdef   = { emit = "host:ecma:number:parseInt",     min_args = 1, max_args
 strtofloat    = { emit = "host:ecma:number:parseFloat",   min_args = 1, max_args = 1 }
 booltostr     = { emit = "common:pascal.tostring", min_args = 1, max_args = 1 }
 strtobool     = { emit = "common:dyn_to_bool",             min_args = 1, max_args = 1 }
+stringtoguid  = { emit = "common:pascal.string_to_guid",   min_args = 1, max_args = 1 }
+guidtostring  = { emit = "common:pascal.guid_to_string",   min_args = 1, max_args = 1 }
+isequalguid   = { emit = "common:pascal.is_equal_guid",    min_args = 2, max_args = 2 }
 
 # ── Date/time ───────────────────────────────────────────────────────────────
 
@@ -185,6 +197,7 @@ dispose       = { emit = "noop",                           min_args = 1, max_arg
 # ── Control flow ─────────────────────────────────────────────────────────────
 
 halt          = { emit = "host:wasi:cli:exit",             min_args = 0, max_args = 1 }
+assert        = { emit = "noop",                           min_args = 1, max_args = 2 }
 exit          = { emit = "noop",                           min_args = 0, max_args = 0 }
 
 # ────────────────────────────────────────────────────────────────────────────

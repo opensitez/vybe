@@ -7,9 +7,9 @@
 //!   - `property Foo read GetFoo write SetFoo` → NormalProperty. Walker
 //!     already links property accessors to their accessor methods.
 //!   - `class operator Add(...)` / `class operator Equal(...)` →
-//!     SpecialMethodKind::Add / Eq. Pascal operator overloads arrive
-//!     with names like "Add" / "Subtract" / "Multiply" / "Divide" /
-//!     "Equal" per Delphi convention.
+//!     SpecialMethodKind::Add / Eq. The walker marks these as
+//!     `operator_Add` / `operator_Equal` so role binding stays syntax-driven;
+//!     a plain `procedure Add` is just a user method.
 //!   - `override` / `virtual` / `reintroduce` → flag carries through.
 //!   - Case-insensitive: Pascal method names lowercase to canonical.
 
@@ -19,10 +19,7 @@ use vybe_ast::{
     PropertySetter, Span, Statement, StmtKind,
 };
 use vybe_bytecode::class_normalize::{
-    NormalMembers,
-    build_normal_method,
-    from_method_stmt,
-    types::*,
+    build_normal_method, from_method_stmt, types::*, NormalMembers,
 };
 
 const PASCAL_NO_BASE_CTOR_MARKER: &str = "__pascal_no_base_ctor__";
@@ -1469,7 +1466,7 @@ pub fn normalize_class(
     parents: &[String],
     interfaces: &[String],
     members: &[ClassMember],
-    modifiers: &ClassModifiers,
+    _modifiers: &ClassModifiers,
 ) -> NormalClass {
     let mut out = NormalMembers::default();
     let instance_field_names: HashSet<String> = members
@@ -1518,7 +1515,7 @@ pub fn normalize_class(
                     type_hint: type_hint.clone(),
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
-                    access: Access::Public,
+                    access: Access::from(m.visibility.clone()),
                     readonly: m.is_readonly,
                 };
                 out.push_field(m.is_static, field);
@@ -1533,8 +1530,26 @@ pub fn normalize_class(
                     continue;
                 };
 
-                // Pascal destructor: `destructor Destroy;`. Case-insensitive.
-                let (canonical, special_kind) = crate::protocol::canonical_method(src_name);
+                // Pascal protocol binding is syntax-driven for operators:
+                // `class operator Add` arrives from the walker as
+                // `operator_Add`, while a plain `procedure Add` is just a
+                // user method named Add and must remain callable as `add`
+                // across languages.
+                let operator_name = src_name.strip_prefix("operator_");
+                let protocol_raw_name = operator_name.unwrap_or(src_name);
+                let protocol_source_name = protocol_raw_name
+                    .split_once("__pascal_overload_")
+                    .map_or(protocol_raw_name, |(base, _)| base);
+                let (canonical, mut special_kind) =
+                    crate::protocol::canonical_method(protocol_source_name);
+                if operator_name.is_none()
+                    && !matches!(
+                        special_kind,
+                        Some(SpecialMethodKind::Destructor | SpecialMethodKind::ToString)
+                    )
+                {
+                    special_kind = None;
+                }
                 // `destructor Destroy` — a lifecycle member, not a method. The
                 // spelling is declared in the shared canonical table; the
                 // `inherited` rewrite below is genuine Pascal semantics and
@@ -1545,16 +1560,35 @@ pub fn normalize_class(
                     if let StmtKind::FunctionDecl { body, .. } = &mut stmt.kind {
                         normalize_destructor_inherited_calls(body, !parents.is_empty());
                     }
-                    if let Some(d) =
-                        from_method_stmt(span.clone(), &stmt, &canonical, Access::Public)
-                    {
+                    if let Some(d) = from_method_stmt(
+                        span.clone(),
+                        &stmt,
+                        &canonical,
+                        Access::from(m.visibility.clone()),
+                    ) {
                         out.destructor = Some(d);
                     }
                     continue;
                 }
 
-                let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, Access::Public)
-                else {
+                let mut callable_stmt;
+                let method_stmt =
+                    if operator_name.is_some() && !src_name.contains("__pascal_overload_") {
+                        callable_stmt = (**stmt).clone();
+                        if let StmtKind::FunctionDecl { name, .. } = &mut callable_stmt.kind {
+                            *name = canonical.clone();
+                        }
+                        &callable_stmt
+                    } else {
+                        stmt
+                    };
+
+                let Some(method) = from_method_stmt(
+                    span.clone(),
+                    method_stmt,
+                    &canonical,
+                    Access::from(m.visibility.clone()),
+                ) else {
                     continue;
                 };
                 if let Some(kind) = special_kind {
@@ -1573,9 +1607,12 @@ pub fn normalize_class(
                 out.push_method(m.is_static, method);
             }
             ClassMember::Constructor {
+                name: _constructor_name,
                 params,
                 body,
                 base_args,
+                initializer_target,
+                visibility: _constructor_visibility,
                 ..
             } => {
                 let mut body = body.clone();
@@ -1588,11 +1625,20 @@ pub fn normalize_class(
                     params: params.clone(),
                     body,
                     base_call: match base_args {
-                        Some(args) => BaseCall::Explicit(
-                            args.iter()
+                        Some(args) => {
+                            let args = args
+                                .iter()
                                 .map(|e| vybe_ast::Argument::positional(e.clone()))
-                                .collect(),
-                        ),
+                                .collect();
+                            match initializer_target {
+                                vybe_ast::ConstructorInitializerTarget::This => {
+                                    BaseCall::This(args)
+                                }
+                                vybe_ast::ConstructorInitializerTarget::Base => {
+                                    BaseCall::Explicit(args)
+                                }
+                            }
+                        }
                         // Pascal: `inherited;` or `inherited Create;` is
                         // the explicit call. Walker today emits base_args
                         // = None when absent — mirror with Auto if there's
@@ -1605,6 +1651,12 @@ pub fn normalize_class(
                             }
                         }
                     },
+                    // Pascal's constructor spelling (`Create`, `CreateFoo`,
+                    // `Init`) remains source syntax for construction calls.
+                    // The current shared constructor emitter treats named
+                    // constructors as a different callable surface, so keep
+                    // Pascal variants primary until constructor roles are
+                    // represented as protocol slots.
                     named_name: None,
                 });
             }
@@ -1626,7 +1678,7 @@ pub fn normalize_class(
                         vec![],
                         None,
                         rewrite_property_getter_body(body, &instance_field_names),
-                        Access::Public,
+                        Access::from(m.visibility.clone()),
                         false,
                         false,
                         false,
@@ -1641,7 +1693,7 @@ pub fn normalize_class(
                         vec![s.param.clone()],
                         None,
                         rewrite_property_setter_body(&s.body, &instance_field_names),
-                        Access::Public,
+                        Access::from(m.visibility.clone()),
                         false,
                         false,
                         false,
@@ -1695,8 +1747,14 @@ pub fn normalize_class(
             );
         }
     }
-    rewrite_implicit_self_members_in_methods(&mut out.instance_methods, &implicit_self_member_names);
-    rewrite_implicit_self_members_in_constructors(&mut out.constructors, &implicit_self_member_names);
+    rewrite_implicit_self_members_in_methods(
+        &mut out.instance_methods,
+        &implicit_self_member_names,
+    );
+    rewrite_implicit_self_members_in_constructors(
+        &mut out.constructors,
+        &implicit_self_member_names,
+    );
     let gcl_accessor_property_names = gcl_accessor_property_names(parents);
     if !gcl_accessor_property_names.is_empty() {
         rewrite_gcl_property_accessors_in_methods(
@@ -1749,7 +1807,8 @@ pub fn normalize_class(
             &mut HashSet::new(),
         );
         out.instance_methods.push(auto_init);
-        out.auto_init_methods.push(GCL_FORM_CREATE_AUTOINIT.to_string());
+        out.auto_init_methods
+            .push(GCL_FORM_CREATE_AUTOINIT.to_string());
     }
 
     // Pascal's implicit root: every class descends from TObject, so `is
@@ -1944,6 +2003,7 @@ fn is_pascal_no_base_ctor_marker(stmt: &Statement) -> bool {
 mod tests {
     use super::*;
     use vybe_ast::Modifiers;
+    use vybe_ast::{ConstructorInitializerTarget, Visibility};
 
     fn dummy_span() -> Span {
         Span::default()
@@ -1961,6 +2021,50 @@ mod tests {
             is_generator: false,
             is_sub: false,
         })))
+    }
+
+    fn make_method_with_visibility(src_name: &str, visibility: Visibility) -> ClassMember {
+        let mut modifiers = Modifiers::default();
+        modifiers.visibility = visibility;
+        ClassMember::Method(Box::new(vybe_ast::Statement::new(StmtKind::FunctionDecl {
+            name: src_name.into(),
+            params: vec![],
+            return_type: None,
+            body: vec![],
+            modifiers,
+            handles: vec![],
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+        })))
+    }
+
+    fn make_field_with_visibility(src_name: &str, visibility: Visibility) -> ClassMember {
+        let mut modifiers = Modifiers::default();
+        modifiers.visibility = visibility;
+        ClassMember::Field {
+            name: src_name.into(),
+            type_hint: None,
+            init: None,
+            modifiers,
+            with_events: false,
+            array_bounds: None,
+        }
+    }
+
+    fn make_property_with_visibility(src_name: &str, visibility: Visibility) -> ClassMember {
+        let mut modifiers = Modifiers::default();
+        modifiers.visibility = visibility;
+        ClassMember::Property {
+            name: src_name.into(),
+            type_hint: None,
+            getter: Some(vec![Statement::new(StmtKind::Return(Some(
+                Expression::ident("FValue"),
+            )))]),
+            setter: None,
+            is_auto: false,
+            modifiers,
+        }
     }
 
     #[test]
@@ -1989,7 +2093,7 @@ mod tests {
     }
 
     #[test]
-    fn add_operator_maps_to_canonical_add() {
+    fn plain_add_is_not_protocol_add() {
         let nc = normalize_class(
             dummy_span(),
             "Vec",
@@ -1999,6 +2103,111 @@ mod tests {
             &ClassModifiers::default(),
         );
         assert_eq!(nc.instance_methods[0].canonical_name, "add");
+        assert!(nc.special_methods.is_empty());
+    }
+
+    #[test]
+    fn operator_add_maps_to_protocol_add() {
+        let nc = normalize_class(
+            dummy_span(),
+            "Vec",
+            &[],
+            &[],
+            &[make_method("operator_Add")],
+            &ClassModifiers::default(),
+        );
+        assert_eq!(nc.instance_methods[0].canonical_name, "add");
+        assert_eq!(nc.instance_methods[0].source_name, "add");
         assert_eq!(nc.special_methods[0].kind, SpecialMethodKind::Add);
+        assert_eq!(nc.special_methods[0].canonical_name, "add");
+        assert_eq!(nc.special_methods[0].source_name, "operator_Add");
+    }
+
+    #[test]
+    fn hidden_operator_overload_keeps_callable_binding_and_role_slot() {
+        let nc = normalize_class(
+            dummy_span(),
+            "Vec",
+            &[],
+            &[],
+            &[make_method("operator_Add__pascal_overload_0")],
+            &ClassModifiers::default(),
+        );
+        assert_eq!(nc.instance_methods[0].canonical_name, "add");
+        assert_eq!(
+            nc.instance_methods[0].source_name,
+            "operator_Add__pascal_overload_0"
+        );
+        assert_eq!(nc.special_methods[0].kind, SpecialMethodKind::Add);
+        assert_eq!(nc.special_methods[0].canonical_name, "add");
+        assert_eq!(
+            nc.special_methods[0].source_name,
+            "operator_Add__pascal_overload_0"
+        );
+    }
+
+    #[test]
+    fn constructors_normalize_as_constructors_not_methods() {
+        let nc = normalize_class(
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[ClassMember::Constructor {
+                name: Some("Create".into()),
+                params: vec![],
+                body: vec![],
+                base_args: None,
+                initializer_target: ConstructorInitializerTarget::Base,
+                visibility: Visibility::Public,
+            }],
+            &ClassModifiers::default(),
+        );
+        assert_eq!(nc.constructors.len(), 1);
+        assert!(nc.instance_methods.is_empty());
+        assert!(nc.special_methods.is_empty());
+        assert!(matches!(nc.constructors[0].base_call, BaseCall::None));
+    }
+
+    #[test]
+    fn member_visibility_normalizes_to_shared_access() {
+        let nc = normalize_class(
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[
+                make_field_with_visibility("Secret", Visibility::Private),
+                make_method_with_visibility("Touch", Visibility::Protected),
+                make_property_with_visibility("Value", Visibility::Public),
+            ],
+            &ClassModifiers::default(),
+        );
+        assert_eq!(nc.instance_fields[0].access, Access::Private);
+        assert_eq!(nc.instance_methods[0].access, Access::Protected);
+        assert_eq!(
+            nc.properties[0].getter.as_ref().unwrap().access,
+            Access::Public
+        );
+    }
+
+    #[test]
+    fn constructor_this_initializer_normalizes_to_this_base_call() {
+        let nc = normalize_class(
+            dummy_span(),
+            "Foo",
+            &[],
+            &[],
+            &[ClassMember::Constructor {
+                name: Some("Create".into()),
+                params: vec![],
+                body: vec![],
+                base_args: Some(vec![Expression::new(ExprKind::Lit(Literal::Int(1)))]),
+                initializer_target: ConstructorInitializerTarget::This,
+                visibility: Visibility::Public,
+            }],
+            &ClassModifiers::default(),
+        );
+        assert!(matches!(nc.constructors[0].base_call, BaseCall::This(_)));
     }
 }
