@@ -28,9 +28,7 @@ use vybe_ast::{
     StmtKind, Visibility,
 };
 use vybe_bytecode::class_normalize::{
-    NormalMembers, build_normal_method,
-    from_method_stmt,
-    types::*,
+    NormalMembers, build_normal_method, from_method_stmt, types::*,
 };
 
 pub fn normalize_class(
@@ -76,7 +74,10 @@ pub fn normalize_class(
 
                 // InitializeComponent auto-call: WinForms convention.
                 if src_name == "InitializeComponent"
-                    && !out.auto_init_methods.iter().any(|n| n == "InitializeComponent")
+                    && !out
+                        .auto_init_methods
+                        .iter()
+                        .any(|n| n == "InitializeComponent")
                 {
                     out.auto_init_methods.push(src_name.clone());
                 }
@@ -218,7 +219,6 @@ pub fn normalize_class(
     }
     .with_members(out)
 }
-
 
 #[cfg(test)]
 mod tests {

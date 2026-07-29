@@ -150,7 +150,12 @@ pub fn emit_dart_runtime_type(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_else(line);
     }
 
-    emit_slot_truthy_field(chunk, value_slot, vybe_compiler::compiler::tuples::TUPLE_TAG, line);
+    emit_slot_truthy_field(
+        chunk,
+        value_slot,
+        vybe_compiler::compiler::tuples::TUPLE_TAG,
+        line,
+    );
     chunk.emit_if(line);
     emit_type_descriptor(chunk, "Record", reflection::ReflectKind::Struct, line);
     chunk.emit_else(line);

@@ -43,6 +43,7 @@ use pest::Parser;
 use pest::iterators::Pair;
 use std::collections::{HashMap, HashSet};
 use vybe_ast::*;
+use vybe_compiler::compiler::generics as common_generics;
 
 const DART_USER_ADD_METHOD: &str = "__dart_user_add";
 
@@ -193,11 +194,13 @@ fn dart_rect_method(receiver: &Expression, method: &str, args: &[Argument]) -> O
     ) {
         return None;
     }
-    let edge = |e: &Expression, f: &str| Expression::new(ExprKind::Member {
-        object: Box::new(e.clone()),
-        field: f.to_string(),
-        null_safe: false,
-    });
+    let edge = |e: &Expression, f: &str| {
+        Expression::new(ExprKind::Member {
+            object: Box::new(e.clone()),
+            field: f.to_string(),
+            null_safe: false,
+        })
+    };
     let bin = |op: BinOp, l: Expression, r: Expression| {
         Expression::new(ExprKind::Binary {
             op,
@@ -290,14 +293,8 @@ fn dart_rect_method(receiver: &Expression, method: &str, args: &[Argument]) -> O
             let and = |x: Expression, y: Expression| bin(BinOp::And, x, y);
             Some(
                 and(
-                    and(
-                        bin(BinOp::GtEq, px.clone(), l),
-                        bin(BinOp::Lt, px, r),
-                    ),
-                    and(
-                        bin(BinOp::GtEq, py.clone(), t),
-                        bin(BinOp::Lt, py, b),
-                    ),
+                    and(bin(BinOp::GtEq, px.clone(), l), bin(BinOp::Lt, px, r)),
+                    and(bin(BinOp::GtEq, py.clone(), t), bin(BinOp::Lt, py, b)),
                 )
                 .kind,
             )
@@ -319,14 +316,7 @@ fn dart_rect_method(receiver: &Expression, method: &str, args: &[Argument]) -> O
             ],
             optional: false,
         }),
-        "isEmpty" => Some(
-            bin(
-                BinOp::Or,
-                bin(BinOp::GtEq, l, r),
-                bin(BinOp::GtEq, t, b),
-            )
-            .kind,
-        ),
+        "isEmpty" => Some(bin(BinOp::Or, bin(BinOp::GtEq, l, r), bin(BinOp::GtEq, t, b)).kind),
         _ => None,
     }
 }
@@ -633,10 +623,7 @@ fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Op
                 _ => "FileImage",
             };
             let src = positional.first()?.clone();
-            let image = Expression::new(construct(
-                provider,
-                vec![Argument::positional(src)],
-            ));
+            let image = Expression::new(construct(provider, vec![Argument::positional(src)]));
             let mut fields = vec![named("image", image)];
             fields.extend(args.iter().filter(|a| a.name.is_some()).cloned());
             Some(construct("Image", fields))
@@ -684,7 +671,10 @@ fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Op
                 field: "height".to_string(),
                 null_safe: false,
             });
-            Some(construct("SizedBox", vec![named("width", w), named("height", h)]))
+            Some(construct(
+                "SizedBox",
+                vec![named("width", w), named("height", h)],
+            ))
         }
 
         // `Widget.canUpdate(old, new)` — a STATIC, not a constructor: two
@@ -692,11 +682,13 @@ fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Op
         // the same key.
         ("Widget", "canUpdate") => {
             let (a, b) = (positional.first()?.clone(), positional.get(1)?.clone());
-            let field = |o: &Expression, f: &str| Expression::new(ExprKind::Member {
-                object: Box::new(o.clone()),
-                field: f.to_string(),
-                null_safe: false,
-            });
+            let field = |o: &Expression, f: &str| {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(o.clone()),
+                    field: f.to_string(),
+                    null_safe: false,
+                })
+            };
             let eq = |l: Expression, r: Expression| {
                 Expression::new(ExprKind::Binary {
                     op: BinOp::Eq,
@@ -780,11 +772,13 @@ fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Op
         }
         ("Rect", "fromPoints") => {
             let (a, b) = (positional.first()?.clone(), positional.get(1)?.clone());
-            let m = |o: &Expression, f: &str| Expression::new(ExprKind::Member {
-                object: Box::new(o.clone()),
-                field: f.to_string(),
-                null_safe: false,
-            });
+            let m = |o: &Expression, f: &str| {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(o.clone()),
+                    field: f.to_string(),
+                    null_safe: false,
+                })
+            };
             // The two corners may be given in any order, so the rect is
             // normalised: left/top take the smaller coordinate.
             let pick = |x: Expression, y: Expression, smaller: bool| {
@@ -811,11 +805,13 @@ fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Op
         ("Rect", "fromCircle") => {
             let center = by_name("center")?;
             let radius = by_name("radius")?;
-            let m = |f: &str| Expression::new(ExprKind::Member {
-                object: Box::new(center.clone()),
-                field: f.to_string(),
-                null_safe: false,
-            });
+            let m = |f: &str| {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(center.clone()),
+                    field: f.to_string(),
+                    null_safe: false,
+                })
+            };
             Some(construct(
                 "Rect",
                 rect_fields(
@@ -829,7 +825,10 @@ fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Op
         // `Radius.circular(r)` — equal axes; `.elliptical(x, y)` — explicit.
         ("Radius", "circular") => {
             let r = positional.first()?.clone();
-            Some(construct("Radius", vec![named("x", r.clone()), named("y", r)]))
+            Some(construct(
+                "Radius",
+                vec![named("x", r.clone()), named("y", r)],
+            ))
         }
         ("Radius", "elliptical") => Some(construct(
             "Radius",
@@ -841,11 +840,13 @@ fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Op
         // An RRect carries the rect's box plus a radius per corner.
         ("RRect", "fromRectAndRadius") | ("RRect", "fromRectAndCorners") => {
             let rect = positional.first().cloned().or_else(|| by_name("rect"))?;
-            let m = |f: &str| Expression::new(ExprKind::Member {
-                object: Box::new(rect.clone()),
-                field: f.to_string(),
-                null_safe: false,
-            });
+            let m = |f: &str| {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(rect.clone()),
+                    field: f.to_string(),
+                    null_safe: false,
+                })
+            };
             let uniform = positional.get(1).cloned().or_else(|| by_name("radius"));
             let corner = |name: &str| -> Expression {
                 by_name(name)
@@ -862,11 +863,13 @@ fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Op
                 ("br", "bottomRight"),
             ] {
                 let radius = corner(arg);
-                let axis = |a: &str| Expression::new(ExprKind::Member {
-                    object: Box::new(radius.clone()),
-                    field: a.to_string(),
-                    null_safe: false,
-                });
+                let axis = |a: &str| {
+                    Expression::new(ExprKind::Member {
+                        object: Box::new(radius.clone()),
+                        field: a.to_string(),
+                        null_safe: false,
+                    })
+                };
                 fields.push(named(&format!("{field}RadiusX"), axis("x")));
                 fields.push(named(&format!("{field}RadiusY"), axis("y")));
                 fields.push(named(&format!("{field}Radius"), radius));
@@ -886,11 +889,13 @@ fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Op
         // caps them, `expand` fills, `tightFor` pins only what is given.
         ("BoxConstraints", "tight") => {
             let size = positional.first().cloned().or_else(|| by_name("size"))?;
-            let m = |f: &str| Expression::new(ExprKind::Member {
-                object: Box::new(size.clone()),
-                field: f.to_string(),
-                null_safe: false,
-            });
+            let m = |f: &str| {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(size.clone()),
+                    field: f.to_string(),
+                    null_safe: false,
+                })
+            };
             Some(construct(
                 "BoxConstraints",
                 vec![
@@ -903,11 +908,13 @@ fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Op
         }
         ("BoxConstraints", "loose") => {
             let size = positional.first().cloned().or_else(|| by_name("size"))?;
-            let m = |f: &str| Expression::new(ExprKind::Member {
-                object: Box::new(size.clone()),
-                field: f.to_string(),
-                null_safe: false,
-            });
+            let m = |f: &str| {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(size.clone()),
+                    field: f.to_string(),
+                    null_safe: false,
+                })
+            };
             Some(construct(
                 "BoxConstraints",
                 vec![
@@ -919,11 +926,13 @@ fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Op
             ))
         }
         ("BoxConstraints", "tightFor") | ("BoxConstraints", "expand") => {
-            let infinity = || Expression::new(ExprKind::Member {
-                object: Box::new(Expression::ident("double")),
-                field: "infinity".to_string(),
-                null_safe: false,
-            });
+            let infinity = || {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident("double")),
+                    field: "infinity".to_string(),
+                    null_safe: false,
+                })
+            };
             // `tightFor` leaves an unspecified axis unconstrained; `expand`
             // fills it.
             let unspecified = |e: Option<Expression>, fallback: Expression| e.unwrap_or(fallback);
@@ -968,11 +977,13 @@ fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Op
         // Positioned.fromRect — left/top + width/height from the rect.
         ("Positioned", "fromRect") => {
             let rect = by_name("rect")?;
-            let m = |f: &str| Expression::new(ExprKind::Member {
-                object: Box::new(rect.clone()),
-                field: f.to_string(),
-                null_safe: false,
-            });
+            let m = |f: &str| {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(rect.clone()),
+                    field: f.to_string(),
+                    null_safe: false,
+                })
+            };
             let mut fields = vec![
                 named("left", m("left")),
                 named("top", m("top")),
@@ -987,11 +998,13 @@ fn dart_flutter_named_ctor(type_name: &str, ctor: &str, args: &[Argument]) -> Op
         // Positioned.fromRelativeRect — all four edges from the rect.
         ("Positioned", "fromRelativeRect") => {
             let rect = by_name("rect")?;
-            let m = |f: &str| Expression::new(ExprKind::Member {
-                object: Box::new(rect.clone()),
-                field: f.to_string(),
-                null_safe: false,
-            });
+            let m = |f: &str| {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(rect.clone()),
+                    field: f.to_string(),
+                    null_safe: false,
+                })
+            };
             let mut fields = vec![
                 named("left", m("left")),
                 named("top", m("top")),
@@ -1040,10 +1053,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // `runApp`. Widget-only code (construction, `is`-checks, the TDD suite)
     // never imports it, so it stays out of those programs entirely.
     let source = if source.contains("package:flutter/") && source.contains("runApp") {
-        format!(
-            "{source}\n{}",
-            vybe_platform_flutter::runtime_source()
-        )
+        format!("{source}\n{}", vybe_platform_flutter::runtime_source())
     } else {
         source
     };
@@ -1238,27 +1248,37 @@ fn apply_mixins(body: &mut Vec<Statement>, mixin_names: &std::collections::HashS
         }
     }
 
-    // First pass: collect normalized mixin members keyed by mixin name.
-    let mut mixin_members: std::collections::HashMap<String, Vec<ClassMember>> =
-        std::collections::HashMap::new();
+    // First pass: a bare identifier in a `mixin M on T` body that names a
+    // member of `T` is `this.<member>` — the mixin declares no such member of
+    // its own, so nothing else can resolve it.
+    //
+    // Rewritten IN PLACE. This used to rewrite a CLONE that only the walker's
+    // member-copy consumed; once that copy moved to the shared augmentation
+    // pass the clone became dead, and with it every `on`-supertype reference.
+    // The mixin's own `ClassDecl` is what the shared pass reads now, so the
+    // rewrite has to land there.
+    let mut on_supertype_members: HashMap<String, Vec<String>> = HashMap::new();
     for stmt in body.iter() {
-        if let StmtKind::ClassDecl {
-            name,
-            parents,
-            members,
-            ..
-        } = &stmt.kind
-        {
+        if let StmtKind::ClassDecl { name, parents, .. } = &stmt.kind {
             if mixin_names.contains(name) {
-                let mut normalized = members.clone();
-                let extra_members = collect_instance_member_names_for_types(
-                    parents,
-                    &class_members_by_name,
-                    &class_parents_by_name,
+                on_supertype_members.insert(
+                    name.clone(),
+                    collect_instance_member_names_for_types(
+                        parents,
+                        &class_members_by_name,
+                        &class_parents_by_name,
+                    ),
                 );
+            }
+        }
+    }
+    let declared_mixins: std::collections::HashSet<String> =
+        on_supertype_members.keys().cloned().collect();
+    for stmt in body.iter_mut() {
+        if let StmtKind::ClassDecl { name, members, .. } = &mut stmt.kind {
+            if let Some(extra_members) = on_supertype_members.get(name) {
                 let extra_refs: Vec<&str> = extra_members.iter().map(String::as_str).collect();
-                rewrite_instance_member_idents(&mut normalized, &extra_refs);
-                mixin_members.insert(name.clone(), normalized);
+                rewrite_instance_member_idents(members, &extra_refs);
             }
         }
     }
@@ -1278,7 +1298,7 @@ fn apply_mixins(body: &mut Vec<Statement>, mixin_names: &std::collections::HashS
                 members.iter().filter_map(member_name).collect();
             let mut new_parents = Vec::new();
             for parent in parents.drain(..) {
-                if mixin_members.contains_key(&parent) {
+                if declared_mixins.contains(&parent) {
                     DART_CLASS_MIXINS.with(|m| {
                         m.borrow_mut()
                             .entry(cname.clone())
@@ -1374,10 +1394,7 @@ fn rewrite_user_add_methods(body: &mut Vec<Statement>) {
     // (those type names never appear); user classes are inserted below and win
     // on key collision (insert-after).
     for (owner, field, ty) in vybe_platform_flutter::emitter::field_type_seed() {
-        operator_return_types.insert(
-            (owner.to_string(), field.to_string()),
-            Some(ty.to_string()),
-        );
+        operator_return_types.insert((owner.to_string(), field.to_string()), Some(ty.to_string()));
     }
     let mut iterator_return_classes: HashMap<String, String> = HashMap::new();
     let mut iterator_current_types: HashMap<String, String> = HashMap::new();
@@ -3576,6 +3593,10 @@ fn dart_decl_pattern_bindings(
 // Function declarations
 // ════════════════════════════════════════════════════════════════════════════
 
+fn consume_dart_type_params(pair: Pair<Rule>) {
+    let _ = common_generics::parse_generic_params_hint(pair.as_str());
+}
+
 fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut params = Vec::new();
@@ -3597,7 +3618,7 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     name = p.as_str().to_string();
                 }
             }
-            Rule::type_params => {} // generic params — discard
+            Rule::type_params => consume_dart_type_params(p),
             Rule::param_list => params = walk_params(p)?,
             Rule::async_kw => is_async = true,
             Rule::generator_marker => is_generator = true,
@@ -3907,7 +3928,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     name = p.as_str().to_string();
                 }
             }
-            Rule::type_params => {} // generics — discard
+            Rule::type_params => consume_dart_type_params(p),
             Rule::extends_clause => {
                 if let Some(type_name) = extract_type_name_from_clause(&p) {
                     parents.push(type_name);
@@ -4346,11 +4367,21 @@ fn rewrite_instance_member_idents(members: &mut [ClassMember], extra_members: &[
                 }
             }
             ClassMember::Property {
-                getter: Some(body),
+                getter,
+                setter,
                 modifiers,
                 ..
             } if !modifiers.is_static => {
-                for stmt in body {
+                // A SETTER body needs the same rewrite as a getter's: `set v(n)
+                // { _v = n; }` writes an instance field through a bare name.
+                // Only the getter was covered, which went unnoticed while the
+                // walker still copied mixin members into the using class — the
+                // class-level pass caught the leftovers. It no longer copies.
+                for stmt in getter.iter_mut().flatten().chain(
+                    setter
+                        .iter_mut()
+                        .flat_map(|s: &mut PropertySetter| s.body.iter_mut()),
+                ) {
                     rewrite_static_idents(stmt, "__dart_instance", &instance_members);
                     rewrite_this_to_self_ident(stmt);
                 }
@@ -4499,7 +4530,7 @@ fn walk_mixin_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     name = p.as_str().to_string();
                 }
             }
-            Rule::type_params => {}
+            Rule::type_params => consume_dart_type_params(p),
             Rule::on_clause => {
                 for ta in p.into_inner() {
                     if ta.as_rule() == Rule::type_annotation_list {
@@ -4783,7 +4814,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     body_members.push(member);
                 }
             }
-            Rule::type_params => {}
+            Rule::type_params => consume_dart_type_params(p),
             _ => {}
         }
     }
@@ -5260,7 +5291,7 @@ fn walk_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
                     name = p.as_str().to_string();
                 }
             }
-            Rule::type_params => {}
+            Rule::type_params => consume_dart_type_params(p),
             Rule::param_list => params = walk_params(p)?,
             Rule::async_kw => is_async = true,
             Rule::generator_marker => is_generator = true,
@@ -7534,7 +7565,9 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             record_fields.push((None, walk_expression(first)?));
                         }
                     }
-                    Ok(vybe_compiler::compiler::tuples::build_named_tuple(record_fields))
+                    Ok(vybe_compiler::compiler::tuples::build_named_tuple(
+                        record_fields,
+                    ))
                 } else {
                     let exprs: Vec<Expression> = fields
                         .into_iter()
@@ -10888,14 +10921,8 @@ fn is_kw(r: Rule) -> bool {
 fn extract_type_name(pair: &Pair<Rule>) -> String {
     // Extract the base type name from a type_annotation, stripping generics and nullable
     let s = pair.as_str().trim();
-    // For simple display, strip any <...> and ?
-    if let Some(idx) = s.find('<') {
-        s[..idx].trim().to_string()
-    } else if s.ends_with('?') {
-        s[..s.len() - 1].trim().to_string()
-    } else {
-        s.to_string()
-    }
+    let without_nullable = s.trim_end_matches('?').trim();
+    common_generics::generic_base_name(without_nullable).to_string()
 }
 
 fn extract_type_name_from_clause(pair: &Pair<Rule>) -> Option<String> {

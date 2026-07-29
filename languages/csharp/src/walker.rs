@@ -4,6 +4,7 @@ use super::{CSharpParser, Rule};
 use pest::Parser;
 use pest::iterators::Pair;
 use vybe_ast::*;
+use vybe_compiler::compiler::generics as common_generics;
 use vybe_platform_dotnet::emitter::core::exceptions as dotnet_exceptions;
 use vybe_platform_dotnet::emitter::core::lowering as dotnet_lowering;
 
@@ -1939,7 +1940,9 @@ fn infer_tuple_arity(expr: &Expression, scopes: &[HashMap<String, usize>]) -> Op
     }
 }
 
-use vybe_compiler::compiler::tuples::{named_tuple_arity, positional_read as named_tuple_positional_read};
+use vybe_compiler::compiler::tuples::{
+    named_tuple_arity, positional_read as named_tuple_positional_read,
+};
 
 /// A `var (a, b) = t;` where `t` is a tuple-valued expression lowers to a block
 /// ending in `t.Deconstruct(out a, out b)`. Tuples carry no `Deconstruct`, so
@@ -4786,7 +4789,9 @@ fn classify_expr_stmt(expr: Expression) -> StmtKind {
                                     }));
                                 }
                                 if vybe_compiler::compiler::events::is_known_gui_event_field(field)
-                                    && vybe_compiler::compiler::events::is_event_handler_expr(&right)
+                                    && vybe_compiler::compiler::events::is_event_handler_expr(
+                                        &right,
+                                    )
                                 {
                                     let control = (**object).clone();
                                     let event = field.to_lowercase();
@@ -6374,6 +6379,17 @@ fn walk_var_declarator(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
 
 // ── Class declaration ───────────────────────────────────────────────────────
 
+fn csharp_generic_param_names(raw: &str) -> Vec<String> {
+    common_generics::parse_generic_params_hint(raw)
+        .into_iter()
+        .map(|param| param.name)
+        .collect()
+}
+
+fn csharp_single_generic_param_names(raw: &str) -> Vec<String> {
+    csharp_generic_param_names(&format!("<{}>", raw.trim()))
+}
+
 fn looks_like_csharp_interface_type(type_name: &str) -> bool {
     let leaf = type_name
         .trim()
@@ -6430,7 +6446,7 @@ fn walk_class_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtKi
                 if name.is_empty() {
                     name = p.as_str().to_string();
                 } else {
-                    generic_params.push(p.as_str().to_string());
+                    generic_params.extend(csharp_single_generic_param_names(p.as_str()));
                 }
             }
             Rule::base_list => {
@@ -8391,7 +8407,10 @@ fn build_named_tuple_object_expr(
             )
         })
         .collect();
-    Expression::with_span(vybe_compiler::compiler::tuples::build_named_tuple(fields), span)
+    Expression::with_span(
+        vybe_compiler::compiler::tuples::build_named_tuple(fields),
+        span,
+    )
 }
 
 fn parse_csharp_named_tuple_return_slots(raw_type: &str) -> Option<Vec<Option<String>>> {
@@ -8621,7 +8640,7 @@ fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 if name.is_empty() {
                     name = p.as_str().to_string();
                 } else {
-                    generic_params.push(p.as_str().to_string());
+                    generic_params.extend(csharp_single_generic_param_names(p.as_str()));
                 }
             }
             Rule::param_list => params = walk_params(p)?,
@@ -8982,7 +9001,7 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
                 name = p.as_str().to_string();
             }
             Rule::ident_name => {
-                generic_params.push(p.as_str().to_string());
+                generic_params.extend(csharp_single_generic_param_names(p.as_str()));
             }
             Rule::param_list => {
                 let (parsed_params, param_decorators) = walk_params_with_decorators(p)?;
@@ -12462,41 +12481,7 @@ fn build_csharp_get_length_expr(receiver: Expression, dimension: usize) -> Expre
 }
 
 fn parse_csharp_generic_type_args(raw_type_name: &str) -> Vec<String> {
-    let Some(start) = raw_type_name.find('<') else {
-        return Vec::new();
-    };
-    let Some(end) = raw_type_name.rfind('>') else {
-        return Vec::new();
-    };
-    let inner = &raw_type_name[start + 1..end];
-    let mut args = Vec::new();
-    let mut current = String::new();
-    let mut depth = 0usize;
-    for ch in inner.chars() {
-        match ch {
-            '<' => {
-                depth += 1;
-                current.push(ch);
-            }
-            '>' => {
-                depth = depth.saturating_sub(1);
-                current.push(ch);
-            }
-            ',' if depth == 0 => {
-                let trimmed = current.trim();
-                if !trimmed.is_empty() {
-                    args.push(trimmed.to_string());
-                }
-                current.clear();
-            }
-            _ => current.push(ch),
-        }
-    }
-    let trimmed = current.trim();
-    if !trimmed.is_empty() {
-        args.push(trimmed.to_string());
-    }
-    args
+    common_generics::generic_argument_display_names(raw_type_name)
 }
 
 fn looks_like_csharp_runtime_ctor_type(type_name: &str) -> bool {
@@ -12506,7 +12491,7 @@ fn looks_like_csharp_runtime_ctor_type(type_name: &str) -> bool {
     if trimmed.is_empty() || trimmed.ends_with("[]") {
         return false;
     }
-    let bare = trimmed.split('<').next().unwrap_or(trimmed).trim();
+    let bare = common_generics::generic_base_name(trimmed);
     let leaf = bare.rsplit('.').next().unwrap_or(bare);
     leaf.chars()
         .next()
@@ -12552,12 +12537,8 @@ fn csharp_generic_ctor_bindings(
         .enumerate()
         .filter_map(|(index, type_name)| {
             looks_like_csharp_runtime_ctor_type(&type_name).then(|| {
-                let bare = strip_global_namespace_qualifier(type_name.trim())
-                    .split('<')
-                    .next()
-                    .unwrap_or(type_name.trim())
-                    .trim()
-                    .to_string();
+                let stripped = strip_global_namespace_qualifier(type_name.trim());
+                let bare = common_generics::generic_base_name(&stripped).to_string();
                 (index, build_dotted_expr(&bare))
             })
         })

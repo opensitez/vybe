@@ -93,7 +93,9 @@ fn emit_dart_exception_new(
     let obj_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     for ty in types {
-        vybe_compiler::compiler::reflection::emit_instanceof_chain(chunks, current, obj_slot, ty, line);
+        vybe_compiler::compiler::reflection::emit_instanceof_chain(
+            chunks, current, obj_slot, ty, line,
+        );
     }
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
@@ -377,7 +379,13 @@ pub fn emit_dart_stack_trace(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_string_field(chunk, "message", "StackTrace", line);
     let obj_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
-    vybe_compiler::compiler::reflection::emit_instanceof_chain(chunks, current, obj_slot, "StackTrace", line);
+    vybe_compiler::compiler::reflection::emit_instanceof_chain(
+        chunks,
+        current,
+        obj_slot,
+        "StackTrace",
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
 
@@ -401,8 +409,20 @@ fn emit_dart_format_exception_throw(chunks: &mut [Chunk], current: usize, line: 
     emit_string_field(&mut chunks[current], "name", "FormatException", line);
     let exc_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, exc_slot, line);
-    vybe_compiler::compiler::reflection::emit_instanceof_chain(chunks, current, exc_slot, "FormatException", line);
-    vybe_compiler::compiler::reflection::emit_instanceof_chain(chunks, current, exc_slot, "Exception", line);
+    vybe_compiler::compiler::reflection::emit_instanceof_chain(
+        chunks,
+        current,
+        exc_slot,
+        "FormatException",
+        line,
+    );
+    vybe_compiler::compiler::reflection::emit_instanceof_chain(
+        chunks,
+        current,
+        exc_slot,
+        "Exception",
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, exc_slot, line);
     errors::emit_throw(&mut chunks[current], line);
 }

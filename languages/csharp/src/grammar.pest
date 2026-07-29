@@ -86,7 +86,9 @@ readonly_kw = @{ "readonly" ~ !(ASCII_ALPHANUMERIC | "_") }
 async_kw = @{ "async" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 generic_params = _{ "<" ~ generic_param_list ~ ">" }
-generic_param_list = _{ ident_name ~ ("," ~ ident_name)* }
+generic_param_list = _{ generic_param ~ ("," ~ generic_param)* }
+generic_param = _{ generic_variance? ~ ident_name }
+generic_variance = _{ "in" | "out" }
 
 base_list = { ":" ~ type_name ~ argument_list? ~ ("," ~ type_name)* }
 

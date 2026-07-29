@@ -21,9 +21,7 @@
 
 use vybe_ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind};
 use vybe_bytecode::class_normalize::{
-    NormalMembers, build_normal_method,
-    from_method_stmt,
-    types::*,
+    NormalMembers, build_normal_method, from_method_stmt, types::*,
 };
 
 /// Dart `class X with M` — the language's rules, stated once.
