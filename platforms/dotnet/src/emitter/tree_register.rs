@@ -124,16 +124,16 @@ pub fn register_namespace_tree() {
             // classes are not generic field-capture constructions (no
             // `CtorSpec`) — `new Dictionary()` is a host factory call, so it
             // registers here in the same vocabulary as every other member.
-            let ctor_call = class.constructor.as_ref().and_then(|c| c.backing.as_ref()).map(
-                |backing| {
+            let ctor_call = class
+                .constructor
+                .as_ref()
+                .and_then(|c| c.backing.as_ref())
+                .map(|backing| {
                     Box::new(match backing {
                         ConstructorTarget::Host(t) => namespaces::host_fn(&t.module, &t.name),
-                        ConstructorTarget::Common(emit) => {
-                            NamespaceNode::CommonEmit(emit.clone())
-                        }
+                        ConstructorTarget::Common(emit) => NamespaceNode::CommonEmit(emit.clone()),
                     })
-                },
-            );
+                });
 
             let ty = NamespaceNode::Type {
                 ctor: None,
@@ -175,9 +175,7 @@ fn accessor_node(target: &vybe_bytecode::component_model::HostTarget, prop: &str
 
 /// A class's own properties followed by every inherited one, nearest first, so
 /// an `or_insert` fold gives override-shadows-base.
-fn inherited_properties(
-    class_name: &str,
-) -> Vec<vybe_bytecode::component_model::PropertyDef> {
+fn inherited_properties(class_name: &str) -> Vec<vybe_bytecode::component_model::PropertyDef> {
     let descriptor = crate::emitter::surface().component_descriptor();
     let mut out = Vec::new();
     let mut current = descriptor
@@ -211,7 +209,10 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
     let entries: &[(&str, NamespaceNode)] = &match class_name.to_ascii_lowercase().as_str() {
         "stringbuilder" => vec![
             ("length", rw("dotnet.sb_length", "dotnet.sb_set_length")),
-            ("capacity", rw("dotnet.sb_capacity", "dotnet.sb_set_capacity")),
+            (
+                "capacity",
+                rw("dotnet.sb_capacity", "dotnet.sb_set_capacity"),
+            ),
             ("maxcapacity", ro("dotnet.sb_max_capacity")),
         ],
         "stopwatch" => vec![
@@ -269,7 +270,7 @@ fn console_stderr_writer_node() -> NamespaceNode {
 
 #[cfg(test)]
 mod resolve_gap_tests {
-    use vybe_bytecode::namespaces::{NamespaceNode, registry_read};
+    use vybe_bytecode::namespaces::{registry_read, NamespaceNode};
 
     /// These assert what this file is responsible for — that the entries are
     /// REGISTERED — rather than resolving through them. Resolution moved to
@@ -284,10 +285,7 @@ mod resolve_gap_tests {
                 NamespaceNode::Namespace(children) => children.get(*seg)?.clone(),
                 NamespaceNode::Type {
                     statics, methods, ..
-                } => statics
-                    .get(*seg)
-                    .or_else(|| methods.get(*seg))
-                    .cloned()?,
+                } => statics.get(*seg).or_else(|| methods.get(*seg)).cloned()?,
                 _ => return None,
             };
         }
@@ -331,9 +329,13 @@ mod ctor_parity_tests {
             else {
                 continue;
             };
-            let got = vybe_bytecode::namespaces::lookup_type_ctor_target(&scope, &export.class.name);
+            let got =
+                vybe_bytecode::namespaces::lookup_type_ctor_target(&scope, &export.class.name);
             if got.as_ref() != Some(&want) {
-                gaps.push(format!("{}: want {:?} got {:?}", export.class.name, want, got));
+                gaps.push(format!(
+                    "{}: want {:?} got {:?}",
+                    export.class.name, want, got
+                ));
             }
         }
         assert!(gaps.is_empty(), "{} gaps:\n{}", gaps.len(), gaps.join("\n"));

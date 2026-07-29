@@ -16,8 +16,8 @@
 //! emitters wherever possible so semantics stay aligned with the
 //! rest of the standard library.
 
-use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::Chunk;
 use vybe_compiler::compiler::instructions::core_wasm;
 
 use vybe_compiler::compiler::collections;
@@ -96,6 +96,235 @@ fn emit_import_call(
 
 fn emit_linq_structural_key(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:json", "stringify", 1, line);
+}
+
+fn emit_value_eq_stamp_test(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
+    let result_slot = alloc_locals(&mut chunks[current], 1);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    core_wasm::bool_const(&mut chunks[current], line, false);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    emit_import_call(chunks, current, "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("object", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_string_const("__value_eq", line);
+    collections::emit_get(chunks, current, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    core_wasm::bool_const(&mut chunks[current], line, false);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+fn emit_linq_value_equals_slots(
+    chunks: &mut [Chunk],
+    current: usize,
+    left_slot: u16,
+    right_slot: u16,
+    line: u32,
+) {
+    let left_is_value_slot = alloc_locals(&mut chunks[current], 2);
+    let right_is_value_slot = left_is_value_slot + 1;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    core_wasm::bool_const(&mut chunks[current], line, true);
+    chunks[current].emit_else(line);
+
+    emit_value_eq_stamp_test(chunks, current, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_is_value_slot, line);
+    emit_value_eq_stamp_test(chunks, current, right_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_is_value_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_is_value_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_is_value_slot, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    emit_linq_structural_key(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    emit_linq_structural_key(chunks, current, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    emit_linq_structural_key(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    emit_linq_structural_key(chunks, current, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+}
+
+fn emit_linq_array_contains_value_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    array_slot: u16,
+    needle_slot: u16,
+    line: u32,
+) {
+    let base = alloc_locals(&mut chunks[current], 3);
+    let result_slot = base;
+    let idx_slot = base + 1;
+    let elem_slot = base + 2;
+
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+
+    let state = loops::emit_for_in_start(chunks, current, array_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+    let already_found = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line);
+    emit_linq_value_equals_slots(chunks, current, elem_slot, needle_slot, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(already_found);
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+fn emit_linq_comparer_equals_slots(
+    chunks: &mut [Chunk],
+    current: usize,
+    comparer_slot: u16,
+    left_slot: u16,
+    right_slot: u16,
+    line: u32,
+) {
+    let equals_fn_slot = alloc_locals(&mut chunks[current], 1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
+    chunks[current].emit_string_const("__dotnet_stringcomparer_ordinalignorecase", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    vybe_compiler::compiler::strings::emit_to_lower(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    vybe_compiler::compiler::strings::emit_to_lower(&mut chunks[current], line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    emit_linq_value_equals_slots(chunks, current, left_slot, right_slot, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
+    chunks[current].emit_string_const("equals", line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, equals_fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, equals_fn_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
+    chunks[current].emit_string_const("Equals", line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, equals_fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, equals_fn_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
+    chunks[current].emit_string_const("__vb_iface_iequalitycomparer_equals", line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, equals_fn_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, equals_fn_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    emit_linq_value_equals_slots(chunks, current, left_slot, right_slot, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, equals_fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 3, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_linq_key_with_comparer(
+    chunks: &mut [Chunk],
+    current: usize,
+    comparer_slot: u16,
+    line: u32,
+) {
+    let value_slot = alloc_locals(&mut chunks[current], 2);
+    let hash_fn_slot = value_slot + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
+    chunks[current].emit_string_const("__dotnet_stringcomparer_ordinalignorecase", line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    vybe_compiler::compiler::strings::emit_to_lower(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    emit_linq_structural_key(chunks, current, line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
+    chunks[current].emit_string_const("hash", line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, hash_fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, hash_fn_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
+    chunks[current].emit_string_const("gethashcode", line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, hash_fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, hash_fn_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
+    chunks[current].emit_string_const("GetHashCode", line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, hash_fn_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, hash_fn_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    emit_linq_structural_key(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, hash_fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 fn emit_invalid_operation_exception(
@@ -319,12 +548,11 @@ pub fn emit_linq_first_or_default(chunks: &mut [Chunk], current: usize, line: u3
 /// }
 /// ```
 pub fn emit_linq_distinct(chunks: &mut [Chunk], current: usize, line: u32) {
-    let arr_slot = alloc_locals(&mut chunks[current], 6);
+    let arr_slot = alloc_locals(&mut chunks[current], 5);
     let result_slot = arr_slot + 1;
     let idx_slot = arr_slot + 2;
     let elem_slot = arr_slot + 3;
-    let keys_slot = arr_slot + 4;
-    let elem_key_slot = arr_slot + 5;
+    let duplicate_slot = arr_slot + 4;
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     materialize_receiver_slot(chunks, current, arr_slot, line);
@@ -332,34 +560,22 @@ pub fn emit_linq_distinct(chunks: &mut [Chunk], current: usize, line: u32) {
     // result = []
     collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    collections::emit_array_new(chunks, current, 0, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
 
     let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
     // for_in_start leaves arr[i] on the stack — stash to elem_slot.
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    emit_linq_structural_key(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_key_slot, line);
+    emit_linq_array_contains_value_slot(chunks, current, result_slot, elem_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, duplicate_slot, line);
 
-    // keys.indexOf(structuralKey(elem)) — push elem only if it is NOT already in result.
-    // Structured WASM block matches the pattern used by `emit_filter`.
-    chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_key_slot, line);
-    collections::emit_index_of(chunks, current, line);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    vybe_compiler::compiler::ops::emit_dyn_ge(&mut chunks[current], line);
     let if_block = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, duplicate_slot, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_br_if(0, line); // skip push if duplicate (>= 0)
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line); // discard push's return value
-    chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_key_slot, line);
-    collections::emit_push(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     chunks[current].patch_block(if_block);
 
@@ -372,13 +588,14 @@ pub fn emit_linq_distinct(chunks: &mut [Chunk], current: usize, line: u32) {
 /// walkers; other comparer values fall back to ordinary equality.
 /// Stack: [arr, comparer] → [array].
 pub fn emit_linq_distinct_comparer(chunks: &mut [Chunk], current: usize, line: u32) {
-    let arr_slot = alloc_locals(&mut chunks[current], 7);
+    let arr_slot = alloc_locals(&mut chunks[current], 8);
     let comparer_slot = arr_slot + 1;
     let result_slot = arr_slot + 2;
-    let keys_slot = arr_slot + 3;
-    let idx_slot = arr_slot + 4;
-    let elem_slot = arr_slot + 5;
-    let key_slot = arr_slot + 6;
+    let idx_slot = arr_slot + 3;
+    let elem_slot = arr_slot + 4;
+    let scan_idx_slot = arr_slot + 5;
+    let existing_slot = arr_slot + 6;
+    let duplicate_slot = arr_slot + 7;
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, comparer_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
@@ -386,40 +603,45 @@ pub fn emit_linq_distinct_comparer(chunks: &mut [Chunk], current: usize, line: u
 
     collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    collections::emit_array_new(chunks, current, 0, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
 
     let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, duplicate_slot, line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
-    chunks[current].emit_string_const("__dotnet_stringcomparer_ordinalignorecase", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
-    chunks[current].emit_if_value(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    vybe_compiler::compiler::strings::emit_to_lower(&mut chunks[current], line);
-    chunks[current].emit_else(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
-    collections::emit_index_of(chunks, current, line);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    vybe_compiler::compiler::ops::emit_dyn_ge(&mut chunks[current], line);
-    let if_block = chunks[current].emit_block(line);
+    let scan_state = loops::emit_for_in_start(chunks, current, result_slot, scan_idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, existing_slot, line);
+    let skip_after_duplicate = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, duplicate_slot, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_br_if(0, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
-    collections::emit_push(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
+    emit_linq_comparer_equals_slots(
+        chunks,
+        current,
+        comparer_slot,
+        existing_slot,
+        elem_slot,
+        line,
+    );
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, duplicate_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(skip_after_duplicate);
+    loops::emit_for_in_end(chunks, current, scan_idx_slot, scan_state, line);
+
+    let push_block = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, duplicate_slot, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
-    chunks[current].patch_block(if_block);
+    chunks[current].patch_block(push_block);
 
     loops::emit_for_in_end(chunks, current, idx_slot, state, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
@@ -479,15 +701,70 @@ pub fn emit_linq_distinct_by(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
+/// `arr.DistinctBy(keyFn, comparer)` — first element for each comparer-distinct
+/// projected key.
+/// Stack: [arr, keyFn, comparer] → [array].
+pub fn emit_linq_distinct_by_comparer(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 8);
+    let fn_slot = arr_slot + 1;
+    let comparer_slot = arr_slot + 2;
+    let result_slot = arr_slot + 3;
+    let keys_slot = arr_slot + 4;
+    let idx_slot = arr_slot + 5;
+    let elem_slot = arr_slot + 6;
+    let key_slot = arr_slot + 7;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, comparer_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
+
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    emit_linq_key_with_comparer(chunks, current, comparer_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    collections::emit_index_of(chunks, current, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    vybe_compiler::compiler::ops::emit_dyn_ge(&mut chunks[current], line);
+    let if_block = chunks[current].emit_block(line);
+    chunks[current].emit_br_if(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(if_block);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
 /// `arr.SequenceEqual(other)` — same length and pairwise equal values.
 /// Stack: [arr, other] → [bool].
 pub fn emit_linq_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32) {
-    let left_slot = alloc_locals(&mut chunks[current], 6);
+    let left_slot = alloc_locals(&mut chunks[current], 7);
     let right_slot = left_slot + 1;
     let len_slot = left_slot + 2;
     let idx_slot = left_slot + 3;
     let right_elem_slot = left_slot + 4;
     let result_slot = left_slot + 5;
+    let left_elem_slot = left_slot + 6;
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
@@ -539,7 +816,102 @@ pub fn emit_linq_sequence_equal(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, right_elem_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_elem_slot, line);
+    emit_linq_value_equals_slots(chunks, current, left_elem_slot, right_elem_slot, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    let equal_values = chunks[current].emit_block(line);
+    chunks[current].emit_br_if(0, line);
+
+    core_wasm::bool_const(&mut chunks[current], line, false);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_br(2, line);
+
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(equal_values);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_loop);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(done);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// `arr.SequenceEqual(other, comparer)`.
+/// Stack: [arr, other, comparer] → [bool].
+pub fn emit_linq_sequence_equal_comparer(chunks: &mut [Chunk], current: usize, line: u32) {
+    let left_slot = alloc_locals(&mut chunks[current], 8);
+    let right_slot = left_slot + 1;
+    let comparer_slot = left_slot + 2;
+    let len_slot = left_slot + 3;
+    let idx_slot = left_slot + 4;
+    let right_key_slot = left_slot + 5;
+    let result_slot = left_slot + 6;
+    let left_key_slot = left_slot + 7;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, comparer_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    collections::emit_spread_iterable(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    collections::emit_spread_iterable(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
+
+    core_wasm::bool_const(&mut chunks[current], line, true);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
+    let done = chunks[current].emit_block(line);
+    let lengths_match = chunks[current].emit_block(line);
+    chunks[current].emit_br_if(0, line);
+    core_wasm::bool_const(&mut chunks[current], line, false);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_br(1, line);
+
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(lengths_match);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx_slot, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_loop, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    collections::emit_get(chunks, current, line);
+    emit_linq_key_with_comparer(chunks, current, comparer_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_key_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    collections::emit_get(chunks, current, line);
+    emit_linq_key_with_comparer(chunks, current, comparer_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_key_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_key_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_key_slot, line);
     vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
     let equal_values = chunks[current].emit_block(line);
     chunks[current].emit_br_if(0, line);
@@ -611,7 +983,7 @@ pub fn emit_linq_count_pred(chunks: &mut [Chunk], current: usize, line: u32) {
     let if_block = chunks[current].emit_block(line);
     vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(0, line); // skip increment if false
-    // count++
+                                         // count++
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
     chunks[current].emit_i32_const(1, line);
     vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
@@ -755,16 +1127,75 @@ pub fn emit_linq_any_pred(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
-/// `arr.Contains(x)` — `arr.includes(x)`. Stack: [arr, x] → [bool].
+/// `arr.Contains(x)` — .NET equality over primitive/structural keys.
+/// Stack: [arr, x] → [bool].
 pub fn emit_linq_contains(chunks: &mut [Chunk], current: usize, line: u32) {
-    let arr_slot = alloc_locals(&mut chunks[current], 2);
+    let arr_slot = alloc_locals(&mut chunks[current], 5);
     let x_slot = arr_slot + 1;
+    let result_slot = arr_slot + 2;
+    let idx_slot = arr_slot + 3;
+    let elem_slot = arr_slot + 4;
     chunks[current].emit_op_u16(Op::LOCAL_SET, x_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     materialize_receiver_slot(chunks, current, arr_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+
+    core_wasm::bool_const(&mut chunks[current], line, false);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+
+    let skip_after_true = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line);
+    emit_linq_value_equals_slots(chunks, current, elem_slot, x_slot, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    core_wasm::bool_const(&mut chunks[current], line, true);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(skip_after_true);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// `arr.Contains(x, comparer)`.
+/// Stack: [arr, x, comparer] → [bool].
+pub fn emit_linq_contains_comparer(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = alloc_locals(&mut chunks[current], 6);
+    let x_slot = arr_slot + 1;
+    let comparer_slot = arr_slot + 2;
+    let keys_slot = arr_slot + 3;
+    let idx_slot = arr_slot + 4;
+    let elem_slot = arr_slot + 5;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, comparer_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, x_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
+
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    emit_linq_key_with_comparer(chunks, current, comparer_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, x_slot, line);
-    collections::emit_contains(chunks, current, line);
+    emit_linq_key_with_comparer(chunks, current, comparer_slot, line);
+    collections::emit_index_of(chunks, current, line);
+    chunks[current].emit_i32_const(-1, line);
+    chunks[current].emit_op(Op::I32_NE, line);
+    vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 /// `arr.Reverse()` — a new reversed array (LINQ Reverse is non-mutating).
@@ -832,6 +1263,12 @@ pub fn emit_linq_skip_while(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
+/// `arr.SkipWhile(Function(elem, index) ...)`.
+/// Stack: [arr, pred] → [array].
+pub fn emit_linq_skip_while_indexed(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_linq_skip_take_while_indexed(chunks, current, line, false);
+}
+
 /// `arr.TakeWhile(pred)` — keep leading elements while `pred` holds, stop at
 /// the first failing element. Stack: [arr, pred] → [array]. A `taking` flag is
 /// cleared at the first failing element and suppresses all later pushes.
@@ -877,6 +1314,66 @@ pub fn emit_linq_take_while(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(0, line); // stopped → no push
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(push_block);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// `arr.TakeWhile(Function(elem, index) ...)`.
+/// Stack: [arr, pred] → [array].
+pub fn emit_linq_take_while_indexed(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_linq_skip_take_while_indexed(chunks, current, line, true);
+}
+
+fn emit_linq_skip_take_while_indexed(chunks: &mut [Chunk], current: usize, line: u32, take: bool) {
+    let arr_slot = alloc_locals(&mut chunks[current], 6);
+    let fn_slot = arr_slot + 1;
+    let result_slot = arr_slot + 2;
+    let idx_slot = arr_slot + 3;
+    let elem_slot = arr_slot + 4;
+    let active_slot = arr_slot + 5;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    materialize_receiver_slot(chunks, current, arr_slot, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, active_slot, line);
+
+    let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+
+    let stop_block = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, active_slot, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, active_slot, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(stop_block);
+
+    let push_block = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, active_slot, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    if take {
+        vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
+    }
+    chunks[current].emit_br_if(0, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     collections::emit_push(chunks, current, line);
@@ -1465,17 +1962,102 @@ pub fn emit_linq_union(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_linq_distinct(chunks, current, line);
 }
 
+/// `arr.Union(other, comparer)`.
+/// Stack: [arr, other, comparer] → [array].
+pub fn emit_linq_union_comparer(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = alloc_locals(&mut chunks[current], 3);
+    let comparer_slot = base;
+    let other_slot = base + 1;
+    let left_slot = base + 2;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, comparer_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, other_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, other_slot, line);
+    emit_linq_concat(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
+    emit_linq_distinct_comparer(chunks, current, line);
+}
+
 fn emit_linq_set_filter(chunks: &mut [Chunk], current: usize, line: u32, keep_matches: bool) {
-    let left_slot = alloc_locals(&mut chunks[current], 9);
+    let left_slot = alloc_locals(&mut chunks[current], 7);
     let right_slot = left_slot + 1;
     let result_slot = left_slot + 2;
-    let result_keys_slot = left_slot + 3;
-    let right_keys_slot = left_slot + 4;
-    let idx_slot = left_slot + 5;
-    let elem_slot = left_slot + 6;
-    let elem_key_slot = left_slot + 7;
-    let contains_slot = left_slot + 8;
+    let idx_slot = left_slot + 3;
+    let elem_slot = left_slot + 4;
+    let contains_slot = left_slot + 5;
+    let duplicate_slot = left_slot + 6;
 
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    materialize_receiver_slot(chunks, current, left_slot, line);
+    materialize_receiver_slot(chunks, current, right_slot, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+
+    let state = loops::emit_for_in_start(chunks, current, left_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+
+    emit_linq_array_contains_value_slot(chunks, current, right_slot, elem_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, contains_slot, line);
+
+    let skip = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, contains_slot, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    if !keep_matches {
+        vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
+    }
+    vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line);
+
+    emit_linq_array_contains_value_slot(chunks, current, result_slot, elem_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, duplicate_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, duplicate_slot, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(skip);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+/// `arr.Intersect(other)` — distinct values present in both sequences.
+/// Stack: [arr, other] → [array].
+pub fn emit_linq_intersect(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_linq_set_filter(chunks, current, line, true);
+}
+
+/// `arr.Except(other)` — distinct values present in the receiver but not other.
+/// Stack: [arr, other] → [array].
+pub fn emit_linq_except(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_linq_set_filter(chunks, current, line, false);
+}
+
+fn emit_linq_set_filter_comparer(
+    chunks: &mut [Chunk],
+    current: usize,
+    line: u32,
+    keep_matches: bool,
+) {
+    let left_slot = alloc_locals(&mut chunks[current], 10);
+    let right_slot = left_slot + 1;
+    let comparer_slot = left_slot + 2;
+    let result_slot = left_slot + 3;
+    let result_keys_slot = left_slot + 4;
+    let right_keys_slot = left_slot + 5;
+    let idx_slot = left_slot + 6;
+    let elem_slot = left_slot + 7;
+    let elem_key_slot = left_slot + 8;
+    let contains_slot = left_slot + 9;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, comparer_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
     materialize_receiver_slot(chunks, current, left_slot, line);
@@ -1492,7 +2074,7 @@ fn emit_linq_set_filter(chunks: &mut [Chunk], current: usize, line: u32, keep_ma
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, right_keys_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    emit_linq_structural_key(chunks, current, line);
+    emit_linq_key_with_comparer(chunks, current, comparer_slot, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     loops::emit_for_in_end(chunks, current, idx_slot, right_state, line);
@@ -1501,6 +2083,92 @@ fn emit_linq_set_filter(chunks: &mut [Chunk], current: usize, line: u32, keep_ma
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    emit_linq_key_with_comparer(chunks, current, comparer_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_key_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_keys_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_key_slot, line);
+    collections::emit_contains(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, contains_slot, line);
+
+    let skip = chunks[current].emit_block(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, contains_slot, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    if !keep_matches {
+        vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
+    }
+    vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_keys_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_key_slot, line);
+    collections::emit_contains(chunks, current, line);
+    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(0, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_keys_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_key_slot, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(skip);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+pub fn emit_linq_intersect_comparer(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_linq_set_filter_comparer(chunks, current, line, true);
+}
+
+pub fn emit_linq_except_comparer(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_linq_set_filter_comparer(chunks, current, line, false);
+}
+
+fn emit_linq_set_filter_by(chunks: &mut [Chunk], current: usize, line: u32, keep_matches: bool) {
+    let left_slot = alloc_locals(&mut chunks[current], 10);
+    let keys_slot = left_slot + 1;
+    let key_fn_slot = left_slot + 2;
+    let result_slot = left_slot + 3;
+    let result_keys_slot = left_slot + 4;
+    let right_keys_slot = left_slot + 5;
+    let idx_slot = left_slot + 6;
+    let elem_slot = left_slot + 7;
+    let elem_key_slot = left_slot + 8;
+    let contains_slot = left_slot + 9;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key_fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    materialize_receiver_slot(chunks, current, left_slot, line);
+    materialize_receiver_slot(chunks, current, keys_slot, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_keys_slot, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_keys_slot, line);
+
+    let key_state = loops::emit_for_in_start(chunks, current, keys_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_keys_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    emit_linq_structural_key(chunks, current, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    loops::emit_for_in_end(chunks, current, idx_slot, key_state, line);
+
+    let state = loops::emit_for_in_start(chunks, current, left_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
     emit_linq_structural_key(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_key_slot, line);
 
@@ -1539,16 +2207,27 @@ fn emit_linq_set_filter(chunks: &mut [Chunk], current: usize, line: u32, keep_ma
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
-/// `arr.Intersect(other)` — distinct values present in both sequences.
-/// Stack: [arr, other] → [array].
-pub fn emit_linq_intersect(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_linq_set_filter(chunks, current, line, true);
+pub fn emit_linq_union_by(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = alloc_locals(&mut chunks[current], 3);
+    let key_fn_slot = base;
+    let other_slot = base + 1;
+    let left_slot = base + 2;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key_fn_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, other_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, other_slot, line);
+    emit_linq_concat(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_fn_slot, line);
+    emit_linq_distinct_by(chunks, current, line);
 }
 
-/// `arr.Except(other)` — distinct values present in the receiver but not other.
-/// Stack: [arr, other] → [array].
-pub fn emit_linq_except(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_linq_set_filter(chunks, current, line, false);
+pub fn emit_linq_intersect_by(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_linq_set_filter_by(chunks, current, line, true);
+}
+
+pub fn emit_linq_except_by(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_linq_set_filter_by(chunks, current, line, false);
 }
 
 fn emit_type_name_is_any(

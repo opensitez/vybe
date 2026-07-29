@@ -47,7 +47,9 @@ pub fn map_host_func(module: &str, func: &str) -> Option<String> {
         ("vybe:gui", f) => {
             let canonical = vybe_compiler::compiler::gui::canonical_control_name(f);
             if !canonical.is_empty() && canonical != f {
-                Some(vybe_compiler::compiler::gui::host_fn_new_control(&canonical))
+                Some(vybe_compiler::compiler::gui::host_fn_new_control(
+                    &canonical,
+                ))
             } else {
                 Some(f.to_string())
             }
@@ -62,10 +64,8 @@ mod tests {
 
     #[test]
     fn test_static_method_mappings_exclude_common_application_adapters() {
-        assert!(
-            static_method_mappings()
-                .iter()
-                .all(|mapping| mapping.type_name != "Application")
-        );
+        assert!(static_method_mappings()
+            .iter()
+            .all(|mapping| mapping.type_name != "Application"));
     }
 }

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::compiler::object::emit_bind_method_with_slot;
 use vybe_compiler::compiler::functions::create_function_chunk;
 use vybe_compiler::compiler::instructions::host;
+use vybe_compiler::compiler::object::emit_bind_method_with_slot;
 
 fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
     chunk.emit_string_const(value, line);
@@ -99,8 +99,24 @@ fn bind_uri_methods(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line
         None,
         line,
     );
-    emit_bind_method_with_slot(chunk, obj_slot, "isbaseof", None, is_base_of_idx, None, line);
-    emit_bind_method_with_slot(chunk, obj_slot, "IsBaseOf", None, is_base_of_idx, None, line);
+    emit_bind_method_with_slot(
+        chunk,
+        obj_slot,
+        "isbaseof",
+        None,
+        is_base_of_idx,
+        None,
+        line,
+    );
+    emit_bind_method_with_slot(
+        chunk,
+        obj_slot,
+        "IsBaseOf",
+        None,
+        is_base_of_idx,
+        None,
+        line,
+    );
     emit_bind_method_with_slot(
         chunk,
         obj_slot,
@@ -199,9 +215,20 @@ pub fn emit_uri_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
             chunk.emit_if(line);
             chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
             chunk.emit_dup(line);
-            chunk.emit_string_const("Invalid URI: The format of the URI could not be determined.", line);
-            vybe_compiler::compiler::errors::emit_exception_new_finalize(chunk, "UriFormatException", line);
-            vybe_compiler::compiler::errors::emit_stamp_exception_ancestors(chunk, "UriFormatException", line);
+            chunk.emit_string_const(
+                "Invalid URI: The format of the URI could not be determined.",
+                line,
+            );
+            vybe_compiler::compiler::errors::emit_exception_new_finalize(
+                chunk,
+                "UriFormatException",
+                line,
+            );
+            vybe_compiler::compiler::errors::emit_stamp_exception_ancestors(
+                chunk,
+                "UriFormatException",
+                line,
+            );
             vybe_compiler::compiler::errors::emit_throw(chunk, line);
             chunk.emit_end(line);
             chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);

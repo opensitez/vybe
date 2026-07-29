@@ -29,8 +29,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System.IO",
             ClassType::new("FileStream")
                 .with_constructor(
-                    ConstructorDef::new(1)
-                        .with_backing(HostTarget::new("wasi:filesystem", "readFile")),
+                    ConstructorDef::new(1).with_common_backing("dotnet.file_open_read"),
                 )
                 .with_method(MethodDef::new(
                     "Read",
@@ -43,7 +42,17 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.stream_writer_write".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "WriteByte",
+                    1,
+                    MethodBody::Common("dotnet.file_stream_write_byte".into()),
+                ))
+                .with_method(MethodDef::new(
                     "Close",
+                    0,
+                    MethodBody::Common("dotnet.stream_writer_flush".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Dispose",
                     0,
                     MethodBody::Common("dotnet.stream_writer_flush".into()),
                 )),
@@ -160,6 +169,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.string_reader_read".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "Read",
+                    3,
+                    MethodBody::Common("dotnet.string_reader_read_buffer".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ReadBlock",
+                    3,
+                    MethodBody::Common("dotnet.string_reader_read_buffer".into()),
+                ))
+                .with_method(MethodDef::new(
                     "ReadLine",
                     0,
                     MethodBody::Common("dotnet.stream_reader_read_line".into()),
@@ -200,9 +219,24 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.stream_writer_write".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "Write",
+                    3,
+                    MethodBody::Common("dotnet.stream_writer_write_3".into()),
+                ))
+                .with_method(MethodDef::new(
                     "WriteLine",
                     1,
                     MethodBody::Common("dotnet.stream_writer_write_line".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "WriteLineAsync",
+                    1,
+                    MethodBody::Common("dotnet.stream_writer_write_line_async".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetStringBuilder",
+                    0,
+                    MethodBody::Common("dotnet.string_writer_get_string_builder".into()),
                 ))
                 .with_method(MethodDef::new(
                     "ToString",
@@ -244,6 +278,16 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::HostCall(HostTarget::new("wasi:filesystem", "appendFile")),
                 ))
                 .with_method(MethodDef::static_method(
+                    "ReadAllBytes",
+                    1,
+                    MethodBody::Common("dotnet.file_read_all_bytes".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteAllBytes",
+                    2,
+                    MethodBody::Common("dotnet.file_write_all_bytes".into()),
+                ))
+                .with_method(MethodDef::static_method(
                     "Exists",
                     1,
                     MethodBody::HostCall(HostTarget::new("wasi:filesystem", "exists")),
@@ -272,7 +316,28 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "ReadAllLines",
                     1,
                     MethodBody::Common("dotnet.file_read_all_lines".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "WriteAllLines",
+                    2,
+                    MethodBody::Common("dotnet.file_write_all_lines".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Create",
+                    1,
+                    MethodBody::Common("dotnet.file_create".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "OpenRead",
+                    1,
+                    MethodBody::Common("dotnet.file_open_read".into()),
                 )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System.IO",
+            ClassType::new("FileInfo").with_constructor(
+                ConstructorDef::new(1).with_common_backing("dotnet.file_info_new"),
+            ),
         ),
         DotnetClassExport::new(
             "dotnet.System.IO",
@@ -293,8 +358,18 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::HostCall(HostTarget::new("wasi:filesystem", "remove")),
                 ))
                 .with_method(MethodDef::static_method(
+                    "Move",
+                    2,
+                    MethodBody::HostCall(HostTarget::new("wasi:filesystem", "rename")),
+                ))
+                .with_method(MethodDef::static_method(
                     "GetFiles",
                     1,
+                    MethodBody::Common("dotnet.directory_get_files".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetFiles",
+                    2,
                     MethodBody::Common("dotnet.directory_get_files".into()),
                 ))
                 .with_method(MethodDef::static_method(

@@ -25,7 +25,12 @@ fn state_key(chunk: &mut Chunk) -> u16 {
     chunk.add_constant(Value::String(STATE_KEY.into()))
 }
 
-fn emit_random_unit_from_receiver(chunks: &mut [Chunk], current: usize, receiver_slot: u16, line: u32) {
+fn emit_random_unit_from_receiver(
+    chunks: &mut [Chunk],
+    current: usize,
+    receiver_slot: u16,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     let state_slot = reserve_slot(chunk);
     let key = state_key(chunk);

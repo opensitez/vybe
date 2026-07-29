@@ -161,7 +161,43 @@ pub fn emit_vb_filelen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 }
 
 pub fn emit_vb_freefile(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    push_const(&mut chunks[current], Value::I32(1), line);
+    let next_name = "__vb_next_file_handle";
+    let handle_slot = {
+        let chunk = &mut chunks[current];
+        alloc_local(chunk)
+    };
+
+    {
+        let chunk = &mut chunks[current];
+        gget(chunk, next_name, line);
+        core_wasm::dup(chunk, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+    }
+    chunks[current].emit_if(line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_op(Op::DROP, line);
+        emit_host_call(chunks, current, "ecma:math", "random", 0, line);
+        let chunk = &mut chunks[current];
+        push_const(chunk, Value::F64(1_000_000_000.0), line);
+        chunk.emit_op(Op::F64_MUL, line);
+        chunk.emit_op(Op::I32_TRUNC_F64_U, line);
+        push_const(chunk, Value::I32(1), line);
+        chunk.emit_op(Op::I32_ADD, line);
+    }
+    chunks[current].emit_else(line);
+    chunks[current].emit_end(line);
+
+    {
+        let chunk = &mut chunks[current];
+        core_wasm::dup(chunk, line);
+        lset(chunk, handle_slot, line);
+        lget(chunk, handle_slot, line);
+        push_const(chunk, Value::I32(1), line);
+        chunk.emit_op(Op::I32_ADD, line);
+        gset(chunk, next_name, line);
+        lget(chunk, handle_slot, line);
+    }
 }
 
 pub fn emit_vb_fileopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -205,7 +241,13 @@ pub fn emit_vb_fileopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     }
 
     set_handle_map_null(chunks, current, VB_RECORD_ROWS_BY_HANDLE, handle_slot, line);
-    set_handle_map_null(chunks, current, VB_RECORD_NEXT_INDEX_BY_HANDLE, handle_slot, line);
+    set_handle_map_null(
+        chunks,
+        current,
+        VB_RECORD_NEXT_INDEX_BY_HANDLE,
+        handle_slot,
+        line,
+    );
     push_const(&mut chunks[current], Value::Null, line);
 }
 
@@ -244,7 +286,13 @@ pub fn emit_vb_fileclose(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     }
 
     set_handle_map_null(chunks, current, VB_RECORD_ROWS_BY_HANDLE, handle_slot, line);
-    set_handle_map_null(chunks, current, VB_RECORD_NEXT_INDEX_BY_HANDLE, handle_slot, line);
+    set_handle_map_null(
+        chunks,
+        current,
+        VB_RECORD_NEXT_INDEX_BY_HANDLE,
+        handle_slot,
+        line,
+    );
     push_const(&mut chunks[current], Value::Null, line);
 }
 
@@ -253,7 +301,14 @@ pub fn emit_vb_printline(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 }
 
 pub fn emit_vb_writeline(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_host_call(chunks, current, "wasi:filesystem", "writeFile_handle", argc, line);
+    emit_host_call(
+        chunks,
+        current,
+        "wasi:filesystem",
+        "writeFile_handle",
+        argc,
+        line,
+    );
 }
 
 pub fn emit_vb_lineinput(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -515,7 +570,7 @@ pub fn emit_vb_filedatetime(chunks: &mut [Chunk], current: usize, _argc: u8, lin
         let chunk = &mut chunks[current];
         chunk.emit_op_u16(Op::STRUCT_GET, modified_key, line);
     }
-    super::datetime_adapter::emit_datetime_from_millis(chunks, current, line);
+    crate::emitter::core::datetime_adapter::emit_datetime_from_millis(chunks, current, line);
     chunks[current].emit_end(line);
 }
 
@@ -657,6 +712,7 @@ pub fn emit_vb_eof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
         lget(chunk, next_slot, line);
         lget(chunk, len_slot, line);
         vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
+        vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
     }
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);

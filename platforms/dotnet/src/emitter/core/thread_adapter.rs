@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use vybe_bytecode::{Chunk, Value, opcode::Op};
+use vybe_bytecode::{opcode::Op, Chunk, Value};
 use vybe_compiler::compiler::collections;
 use vybe_compiler::compiler::instructions::core_wasm;
 
@@ -61,7 +61,8 @@ fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
 }
 
 fn emit_task_wait_method_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
-    let mut method = vybe_compiler::compiler::functions::create_function_chunk("__dotnet_task_wait_method", 1);
+    let mut method =
+        vybe_compiler::compiler::functions::create_function_chunk("__dotnet_task_wait_method", 1);
     method.emit_op_u16(Op::LOCAL_GET, 0, line);
     let mut method_chunks = vec![method];
     emit_task_wait(&mut method_chunks, 0, line);
@@ -255,8 +256,10 @@ pub fn emit_cancellation_token_linked_source(
 }
 
 fn emit_linked_token_cancel_callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
-    let mut callback =
-        vybe_compiler::compiler::functions::create_function_chunk("__dotnet_linked_token_cancel", 0);
+    let mut callback = vybe_compiler::compiler::functions::create_function_chunk(
+        "__dotnet_linked_token_cancel",
+        0,
+    );
     callback.local_count = 1;
     callback.capture_base = 0;
     callback.capture_count = 1;
@@ -349,11 +352,7 @@ pub fn emit_cancellation_token_is_requested(chunks: &mut [Chunk], current: usize
 
 /// `token.ThrowIfCancellationRequested()`.
 /// Stack: [token] -> [null] or throws OperationCanceledException.
-pub fn emit_cancellation_token_throw_if_requested(
-    chunks: &mut [Chunk],
-    current: usize,
-    line: u32,
-) {
+pub fn emit_cancellation_token_throw_if_requested(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_cancellation_token_is_requested(chunks, current, line);
     vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
@@ -485,9 +484,24 @@ pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     let callback_idx = emit_task_delay_timer_callback(chunks, line);
     chunks[current].emit_op_u16(Op::REF_FUNC, callback_idx as u16, line);
     chunks[current].emit(3, line);
-    vybe_compiler::compiler::functions::emit_closure_upvalue(&mut chunks[current], true, token_slot, line);
-    vybe_compiler::compiler::functions::emit_closure_upvalue(&mut chunks[current], true, resolve_slot, line);
-    vybe_compiler::compiler::functions::emit_closure_upvalue(&mut chunks[current], true, reject_slot, line);
+    vybe_compiler::compiler::functions::emit_closure_upvalue(
+        &mut chunks[current],
+        true,
+        token_slot,
+        line,
+    );
+    vybe_compiler::compiler::functions::emit_closure_upvalue(
+        &mut chunks[current],
+        true,
+        resolve_slot,
+        line,
+    );
+    vybe_compiler::compiler::functions::emit_closure_upvalue(
+        &mut chunks[current],
+        true,
+        reject_slot,
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     call_import(chunks, current, "web:timers", "setTimeout", 2, line);
     chunks[current].emit_op(Op::DROP, line);

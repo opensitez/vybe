@@ -1,5 +1,5 @@
-use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::Chunk;
 use vybe_compiler::compiler::instructions::host;
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
@@ -93,12 +93,7 @@ fn emit_buffer_to_base64(
     }
 }
 
-fn emit_insert_line_breaks(
-    chunks: &mut [Chunk],
-    current: usize,
-    input_slot: u16,
-    line: u32,
-) {
+fn emit_insert_line_breaks(chunks: &mut [Chunk], current: usize, input_slot: u16, line: u32) {
     let out_slot = reserve_slot(&mut chunks[current]);
     let i_slot = reserve_slot(&mut chunks[current]);
     let len_slot = reserve_slot(&mut chunks[current]);
@@ -161,12 +156,7 @@ fn emit_insert_line_breaks(
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
 }
 
-pub fn emit_convert_to_base64_string(
-    chunks: &mut [Chunk],
-    current: usize,
-    argc: u8,
-    line: u32,
-) {
+pub fn emit_convert_to_base64_string(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let bytes_slot = reserve_slot(&mut chunks[current]);
     let offset_slot = reserve_slot(&mut chunks[current]);
     let length_slot = reserve_slot(&mut chunks[current]);
@@ -222,12 +212,7 @@ pub fn emit_convert_to_base64_string(
     }
 }
 
-pub fn emit_convert_from_base64_string(
-    chunks: &mut [Chunk],
-    current: usize,
-    _argc: u8,
-    line: u32,
-) {
+pub fn emit_convert_from_base64_string(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let text_slot = reserve_slot(chunk);
     let result_slot = reserve_slot(chunk);

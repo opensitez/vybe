@@ -752,7 +752,11 @@ fn emit_throw_dotnet_exception(
     chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const(message, line);
-    vybe_compiler::compiler::errors::emit_exception_new_finalize(&mut chunks[current], exception_name, line);
+    vybe_compiler::compiler::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        exception_name,
+        line,
+    );
     vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
 }
 
@@ -1468,7 +1472,9 @@ pub fn emit_sorted_set_view_between(chunks: &mut [Chunk], current: usize, line: 
     chunks[current].emit_op_u16(Op::LOCAL_GET, low, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, high, line);
     // mode 0 = both bounds; inclusive upper for .NET GetViewBetween.
-    vybe_compiler::compiler::sorted_collection::emit_sorted_set_range_view(chunks, current, 0, true, line);
+    vybe_compiler::compiler::sorted_collection::emit_sorted_set_range_view(
+        chunks, current, 0, true, line,
+    );
     call_import(chunks, current, "ecma:set", "new", 1, line);
 }
 

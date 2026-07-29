@@ -140,7 +140,13 @@ pub fn emit_http_fetch(chunks: &mut [Chunk], current: usize, line: u32) {
     // set-method / set-scheme / set-authority / set-path-with-query
     chunk.emit_op_u16(Op::LOCAL_GET, request, line);
     chunk.emit_string_const("GET", line);
-    call_import(chunk, "wasi:http/types", "[method]request.set-method", 2, line);
+    call_import(
+        chunk,
+        "wasi:http/types",
+        "[method]request.set-method",
+        2,
+        line,
+    );
     chunk.emit_op(Op::DROP, line);
     for (setter, slot) in [
         ("[method]request.set-scheme", scheme),
@@ -166,7 +172,13 @@ pub fn emit_http_fetch(chunks: &mut [Chunk], current: usize, line: u32) {
     // the bytes then come from `wasi:io/streams.input-stream.blocking-read`.
     chunk.emit_op_u16(Op::LOCAL_GET, response, line);
     core_wasm::null(chunk, line); // res: future<result<_, error-code>>
-    call_import(chunk, "wasi:http/types", "[static]response.consume-body", 2, line);
+    call_import(
+        chunk,
+        "wasi:http/types",
+        "[static]response.consume-body",
+        2,
+        line,
+    );
     chunk.emit_i64_const(MAX_BODY_BYTES, line);
     call_import(
         chunk,

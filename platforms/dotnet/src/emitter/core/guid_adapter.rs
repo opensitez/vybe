@@ -8,9 +8,9 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::compiler::object::emit_bind_method_with_slot;
 use vybe_compiler::compiler::functions::create_function_chunk;
 use vybe_compiler::compiler::instructions::core_wasm;
+use vybe_compiler::compiler::object::emit_bind_method_with_slot;
 
 const TYPE_KEY: &str = "__type";
 const VALUE_KEY: &str = "__value";
@@ -335,11 +335,7 @@ pub fn emit_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
         chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
         push_const(chunk, Value::String(Arc::from("-")), line);
         push_const(chunk, Value::String(Arc::from("")), line);
-        chunk.emit_op_u16(
-            Op::CALL_IMPORT,
-            replace_all_idx,
-            line,
-        );
+        chunk.emit_op_u16(Op::CALL_IMPORT, replace_all_idx, line);
         chunk.emit(3, line);
         chunk.emit_else(line);
         chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);

@@ -1,5 +1,5 @@
-use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::Chunk;
 
 fn call_import(
     chunks: &mut [Chunk],

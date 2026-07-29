@@ -245,6 +245,7 @@ ubound  = { emit = "intrinsic:ubound",            min_args = 1, max_args = 1 }
 lbound  = { emit = "intrinsic:lbound",            min_args = 0, max_args = 1 }
 array   = { emit = "common:dotnet.vb_array",       min_args = 0, max_args = 255 }
 erase   = { emit = "intrinsic:erase",              min_args = 1, max_args = 1 }
+"__vb_array_clone" = { emit = "common:collections.clone", min_args = 1, max_args = 1 }
 
 # ── Date/Time functions ──────────────────────────────────────────────────────
 

@@ -1,6 +1,6 @@
 //! Shared WinForms-to-vybe GUI adapter leaves.
 
-use vybe_bytecode::{Chunk, opcode::Op};
+use vybe_bytecode::{opcode::Op, Chunk};
 
 fn emit_gui_call(chunks: &mut [Chunk], current: usize, name: &str, argc: u8, line: u32) {
     let idx = chunks[current].add_import("vybe:gui", name);

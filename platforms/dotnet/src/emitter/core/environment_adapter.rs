@@ -240,7 +240,13 @@ pub fn emit_environment_get_all(chunks: &mut [Chunk], current: usize, argc: u8, 
     host::emit(chunk, "ecma:object", "entries", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, entries_slot, line);
 
-    let state = vybe_compiler::compiler::loops::emit_for_in_start(chunks, current, entries_slot, idx_slot, line);
+    let state = vybe_compiler::compiler::loops::emit_for_in_start(
+        chunks,
+        current,
+        entries_slot,
+        idx_slot,
+        line,
+    );
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, pair_slot, line);
 
@@ -285,7 +291,9 @@ pub fn emit_environment_expand(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit(0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, env_slot, line);
 
-    let state = vybe_compiler::compiler::loops::emit_for_in_start(chunks, current, env_slot, idx_slot, line);
+    let state = vybe_compiler::compiler::loops::emit_for_in_start(
+        chunks, current, env_slot, idx_slot, line,
+    );
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, pair_slot, line);
 
@@ -330,8 +338,13 @@ pub fn emit_environment_expand(chunks: &mut [Chunk], current: usize, line: u32) 
     host::emit(chunk, "ecma:object", "entries", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, override_entries_slot, line);
 
-    let state =
-        vybe_compiler::compiler::loops::emit_for_in_start(chunks, current, override_entries_slot, idx_slot, line);
+    let state = vybe_compiler::compiler::loops::emit_for_in_start(
+        chunks,
+        current,
+        override_entries_slot,
+        idx_slot,
+        line,
+    );
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, pair_slot, line);
 
@@ -368,9 +381,5 @@ pub fn emit_environment_expand(chunks: &mut [Chunk], current: usize, line: u32) 
 }
 
 pub fn emit_environment_target(name: &str, chunks: &mut [Chunk], current: usize, line: u32) {
-    push_const(
-        &mut chunks[current],
-        Value::String(Arc::from(name)),
-        line,
-    );
+    push_const(&mut chunks[current], Value::String(Arc::from(name)), line);
 }

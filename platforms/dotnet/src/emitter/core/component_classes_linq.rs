@@ -87,6 +87,11 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         MethodBody::Common("dotnet.linq_contains".into()),
     ));
     class.methods.push(MethodDef::new(
+        "Contains",
+        2,
+        MethodBody::Common("dotnet.linq_contains_comparer".into()),
+    ));
+    class.methods.push(MethodDef::new(
         "Reverse",
         0,
         MethodBody::Common("dotnet.linq_reverse".into()),
@@ -187,6 +192,11 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         MethodBody::Common("dotnet.linq_distinct_by".into()),
     ));
     class.methods.push(MethodDef::new(
+        "DistinctBy",
+        2,
+        MethodBody::Common("dotnet.linq_distinct_by_comparer".into()),
+    ));
+    class.methods.push(MethodDef::new(
         "GroupBy",
         1,
         MethodBody::Common("dotnet.linq_group_by".into()),
@@ -227,14 +237,44 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         MethodBody::Common("dotnet.linq_union".into()),
     ));
     class.methods.push(MethodDef::new(
+        "Union",
+        2,
+        MethodBody::Common("dotnet.linq_union_comparer".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "UnionBy",
+        2,
+        MethodBody::Common("dotnet.linq_union_by".into()),
+    ));
+    class.methods.push(MethodDef::new(
         "Intersect",
         1,
         MethodBody::Common("dotnet.linq_intersect".into()),
     ));
     class.methods.push(MethodDef::new(
+        "Intersect",
+        2,
+        MethodBody::Common("dotnet.linq_intersect_comparer".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "IntersectBy",
+        2,
+        MethodBody::Common("dotnet.linq_intersect_by".into()),
+    ));
+    class.methods.push(MethodDef::new(
         "Except",
         1,
         MethodBody::Common("dotnet.linq_except".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "Except",
+        2,
+        MethodBody::Common("dotnet.linq_except_comparer".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "ExceptBy",
+        2,
+        MethodBody::Common("dotnet.linq_except_by".into()),
     ));
     class.methods.push(MethodDef::new(
         "Cast",
@@ -358,5 +398,10 @@ fn add_linq_instance_methods(class: &mut ClassType) {
         "SequenceEqual",
         1,
         MethodBody::Common("dotnet.linq_sequence_equal".into()),
+    ));
+    class.methods.push(MethodDef::new(
+        "SequenceEqual",
+        2,
+        MethodBody::Common("dotnet.linq_sequence_equal_comparer".into()),
     ));
 }

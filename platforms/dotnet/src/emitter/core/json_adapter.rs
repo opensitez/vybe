@@ -1,6 +1,6 @@
 //! Shared .NET JSON adapters.
 
-use vybe_bytecode::{Chunk, opcode::Op};
+use vybe_bytecode::{opcode::Op, Chunk};
 
 fn call_import(
     chunks: &mut [Chunk],

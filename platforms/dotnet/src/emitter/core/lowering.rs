@@ -157,6 +157,7 @@ pub fn datetime_field_name(name: &str) -> &'static str {
         "year" => "Year",
         "month" => "Month",
         "day" => "Day",
+        "date" => "Date",
         "hour" => "Hour",
         "minute" => "Minute",
         "second" => "Second",

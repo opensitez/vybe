@@ -22,13 +22,13 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         ),
         DotnetClassExport::with_wrapper(
             "dotnet.System",
-            ClassType::new("Enum").with_parent("ValueType").with_method(
-                MethodDef::static_method(
+            ClassType::new("Enum")
+                .with_parent("ValueType")
+                .with_method(MethodDef::static_method(
                     "IsDefined",
                     2,
                     MethodBody::Common("dotnet.enum_is_defined".into()),
-                ),
-            ),
+                )),
             DotnetClass {
                 name: "Enum",
                 parent: Some("ValueType"),
@@ -385,6 +385,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.array_copy".into()),
                 ))
                 .with_method(MethodDef::static_method(
+                    "ConstrainedCopy",
+                    5,
+                    MethodBody::Common("dotnet.array_copy".into()),
+                ))
+                .with_method(MethodDef::static_method(
                     "Resize",
                     2,
                     MethodBody::Common("dotnet.array_resize".into()),
@@ -400,6 +405,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.array_reverse".into()),
                 ))
                 .with_method(MethodDef::static_method(
+                    "Fill",
+                    2,
+                    MethodBody::Common("dotnet.array_fill".into()),
+                ))
+                .with_method(MethodDef::static_method(
                     "IndexOf",
                     2,
                     MethodBody::Common("dotnet.array_index_of".into()),
@@ -407,12 +417,12 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "LastIndexOf",
                     2,
-                    MethodBody::HostCall(HostTarget::new("ecma:array", "lastIndexOf")),
+                    MethodBody::Common("dotnet.array_last_index_of".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "Empty",
                     0,
-                    MethodBody::Common("collections.new".into()),
+                    MethodBody::Common("dotnet.array_empty".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     // .NET returns the match index, or the bitwise complement of
@@ -431,7 +441,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "CreateInstance",
                     1,
-                    MethodBody::Common("collections.new".into()),
+                    MethodBody::Common("dotnet.array_create_instance".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "Exists",
@@ -451,12 +461,17 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "FindIndex",
                     2,
-                    MethodBody::HostCall(HostTarget::new("ecma:array", "findIndex")),
+                    MethodBody::Common("dotnet.array_find_index".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "FindLastIndex",
                     2,
-                    MethodBody::HostCall(HostTarget::new("ecma:array", "findIndex")),
+                    MethodBody::Common("dotnet.array_find_last_index".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FindLast",
+                    2,
+                    MethodBody::Common("dotnet.array_find_last".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "ForEach",

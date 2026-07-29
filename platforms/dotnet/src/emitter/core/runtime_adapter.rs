@@ -180,7 +180,7 @@ fn emit_tostring_runtime(chunk: &mut Chunk, argc: u8, line: u32) {
 
 /// Runtime `ToString()` type dispatch. Stack: `[obj]` → `[string]`. Mirrors the
 /// retired `zero_arg_tostring` fallback: primitives and objects with no
-/// `tostring` member go through `String()`; an object carrying a `tostring`
+/// `ToString` role go through `String()`; an object carrying the shared role
 /// method calls it; a Guid struct (`__type == "Guid"`) renders its `__value`.
 fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     let obj = chunk.alloc_scratch(1);
@@ -189,7 +189,9 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     let is_primitive = chunk.alloc_scratch(1);
     let func = chunk.alloc_scratch(1);
 
-    let tostring_key = chunk.add_constant(Value::String(Arc::from("tostring")));
+    let tostring_key = chunk.add_constant(Value::String(Arc::from(vybe_ast::protocol_slot_key(
+        vybe_ast::ProtocolSlot::ToString,
+    ))));
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
     let value_key = chunk.add_constant(Value::String(Arc::from("__value")));
     let buf_key = chunk.add_constant(Value::String(Arc::from("__buf")));
@@ -229,7 +231,7 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
     chunk.emit_else(line);
 
-    // Object: look up its `tostring` member.
+    // Object: look up its shared `ToString` role member.
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     chunk.emit_op_u16(Op::STRUCT_GET, tostring_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, func, line);
@@ -263,7 +265,7 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
     chunk.emit_else(line);
-    // Has a `tostring` member: call it with the receiver.
+    // Has a `ToString` role member: call it with the receiver.
     chunk.emit_op_u16(Op::LOCAL_GET, func, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     chunk.emit_op(Op::CALL_REF, line);

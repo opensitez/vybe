@@ -87,12 +87,7 @@ fn emit_store_optional_array_part_as_number(
     chunk.emit_end(line);
 }
 
-fn emit_validate_number_slot(
-    chunk: &mut Chunk,
-    slot: u16,
-    allow_negative: bool,
-    line: u32,
-) {
+fn emit_validate_number_slot(chunk: &mut Chunk, slot: u16, allow_negative: bool, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
@@ -315,13 +310,7 @@ fn emit_version_part(chunk: &mut Chunk, obj_slot: u16, key: &str, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_GET, key_idx, line);
 }
 
-fn emit_append_version_part(
-    chunk: &mut Chunk,
-    obj_slot: u16,
-    out_slot: u16,
-    key: &str,
-    line: u32,
-) {
+fn emit_append_version_part(chunk: &mut Chunk, obj_slot: u16, out_slot: u16, key: &str, line: u32) {
     let to_str_idx = chunk.add_import("ecma:string", "String");
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
     push_const(chunk, Value::String(Arc::from(".")), line);

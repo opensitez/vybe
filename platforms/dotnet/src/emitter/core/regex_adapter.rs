@@ -452,7 +452,11 @@ pub fn emit_regex_is_match(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("The regex operation timed out.", line);
-    vybe_compiler::compiler::errors::emit_exception_new_finalize(chunk, "RegexMatchTimeoutException", line);
+    vybe_compiler::compiler::errors::emit_exception_new_finalize(
+        chunk,
+        "RegexMatchTimeoutException",
+        line,
+    );
     vybe_compiler::compiler::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, self_slot, line);

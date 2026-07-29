@@ -9,8 +9,8 @@
 //! runtime uses, giving true WYSIWYG.
 
 use vybe_ast::*;
-use vybe_platform_vybe::gui_state::GuiState;
 use vybe_platform_dotnet::winforms::control::ControlType;
+use vybe_platform_vybe::gui_state::GuiState;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Load: AST → GuiState

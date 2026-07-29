@@ -98,9 +98,10 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         DotnetClassExport::new(
             "dotnet.System.Threading",
             ClassType::new("CancellationTokenSource")
-                .with_constructor(ConstructorDef::new(0).with_common_backing(
-                    "dotnet.cancellation_token_source_new",
-                ))
+                .with_constructor(
+                    ConstructorDef::new(0)
+                        .with_common_backing("dotnet.cancellation_token_source_new"),
+                )
                 .with_method(MethodDef::new(
                     "Cancel",
                     0,

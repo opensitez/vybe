@@ -27,14 +27,9 @@
 //!     ctor). We populate `auto_init_methods` so the shim preserves
 //!     that semantic when the direct `emit_class` path lands.
 
-use vybe_ast::{
-    ClassMember, ClassModifiers, ExprKind, Literal, PropertySetter, Span, StmtKind,
-};
+use vybe_ast::{ClassMember, ClassModifiers, ExprKind, Literal, PropertySetter, Span, StmtKind};
 use vybe_bytecode::class_normalize::{
-    NormalMembers,
-    build_normal_method,
-    from_method_stmt,
-    types::*,
+    NormalMembers, build_normal_method, from_method_stmt, types::*,
 };
 
 pub fn normalize_class(
@@ -86,7 +81,8 @@ pub fn normalize_class(
                 // `auto_init_methods` profile flag, so populating here is
                 // redundant but forward-compatible.
                 if src_name.eq_ignore_ascii_case("InitializeComponent")
-                    && !out.auto_init_methods
+                    && !out
+                        .auto_init_methods
                         .iter()
                         .any(|n| n.eq_ignore_ascii_case("InitializeComponent"))
                 {
@@ -229,8 +225,8 @@ pub fn normalize_class(
 
     NormalClass {
         is_partial: modifiers.is_partial, // informational; merging already done
-        explicit_self_param: false, // VB: Me is implicit
-        implicit_self_fields: true, // VB: bare field names resolve to Me.field
+        explicit_self_param: false,       // VB: Me is implicit
+        implicit_self_fields: true,       // VB: bare field names resolve to Me.field
         // No first-class destructor: VB `Finalize` is a regular override. No
         // event bindings: the walker already turned `Handles` into AddHandler
         // statements. Both stay at their neutral default.
@@ -264,7 +260,9 @@ fn vb_default_field_init(type_hint: &Option<String>) -> Option<vybe_ast::Express
         return Some(vybe_ast::Expression::new(ExprKind::Lit(Literal::Int(0))));
     }
     if ty.eq_ignore_ascii_case("Boolean") {
-        return Some(vybe_ast::Expression::new(ExprKind::Lit(Literal::Bool(false))));
+        return Some(vybe_ast::Expression::new(ExprKind::Lit(Literal::Bool(
+            false,
+        ))));
     }
     if ty.eq_ignore_ascii_case("Char") {
         return Some(vybe_ast::Expression::new(ExprKind::Lit(Literal::Str(
@@ -273,7 +271,6 @@ fn vb_default_field_init(type_hint: &Option<String>) -> Option<vybe_ast::Express
     }
     None
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -84,7 +84,7 @@ Module M
         Console.WriteLine(File.ReadAllText(source) = File.ReadAllText(destination))
         File.Delete(source)
         File.Delete(destination)
-    End Module
+    End Sub
 End Module
 "#,
     );

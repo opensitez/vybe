@@ -22,10 +22,10 @@ pub use core::dotnet_core_component_descriptor;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use vybe_bytecode::component_model::{
-    InstanceMethodTarget, InstancePropertyTarget, StaticPropertyTarget,
+    ComponentDescriptor, ComponentItemKind, ConstructorTarget, MethodBody,
 };
 use vybe_bytecode::component_model::{
-    ComponentDescriptor, ComponentItemKind, ConstructorTarget, MethodBody,
+    InstanceMethodTarget, InstancePropertyTarget, StaticPropertyTarget,
 };
 pub use winforms::classes;
 pub use winforms::dotnet_winforms_component_descriptor;
@@ -629,6 +629,33 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
             return Some("string".into());
         }
     }
+    if class.eq_ignore_ascii_case("StreamReader") {
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "readline" | "readtoend"
+        ) {
+            return Some("string".into());
+        }
+        if method_name.eq_ignore_ascii_case("EndOfStream") {
+            return Some("Boolean".into());
+        }
+    }
+    if class.eq_ignore_ascii_case("FileStream") && method_name.eq_ignore_ascii_case("Read") {
+        return Some("string".into());
+    }
+    if class.eq_ignore_ascii_case("StringWriter") && method_name.eq_ignore_ascii_case("ToString") {
+        return Some("string".into());
+    }
+    if class.eq_ignore_ascii_case("StringWriter")
+        && method_name.eq_ignore_ascii_case("GetStringBuilder")
+    {
+        return Some("StringBuilder".into());
+    }
+    if class.eq_ignore_ascii_case("StringWriter")
+        && method_name.eq_ignore_ascii_case("WriteLineAsync")
+    {
+        return Some("Task".into());
+    }
     if class.eq_ignore_ascii_case("XElement") {
         if matches!(method_name.to_ascii_lowercase().as_str(), "element") {
             return Some("XElement".into());
@@ -707,6 +734,43 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
     let (base, is_array) = normalize_receiver_type_name(class_name);
     let base_short = base.rsplit('.').next().unwrap_or(&base);
     if is_array || is_enumerable_type_name(base_short) {
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "all" | "any" | "contains" | "sequenceequal"
+        ) {
+            return Some("Boolean".into());
+        }
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "count" | "longcount"
+        ) {
+            return Some("Int32".into());
+        }
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "sum" | "average" | "min" | "max"
+        ) {
+            return Some("Double".into());
+        }
+        if matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "first"
+                | "firstordefault"
+                | "last"
+                | "lastordefault"
+                | "single"
+                | "singleordefault"
+                | "elementat"
+                | "elementatordefault"
+        ) {
+            return Some("Object".into());
+        }
+        if matches!(method_name.to_ascii_lowercase().as_str(), "tolist") {
+            return Some("List".into());
+        }
+        if matches!(method_name.to_ascii_lowercase().as_str(), "toarray") {
+            return Some("Array".into());
+        }
         if matches!(
             method_name.to_ascii_lowercase().as_str(),
             "where"
@@ -1068,8 +1132,15 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     if class.eq_ignore_ascii_case("TimeSpan")
         && matches!(
             method_name.to_ascii_lowercase().as_str(),
-            "fromdays" | "fromhours" | "fromminutes" | "fromseconds" | "frommilliseconds"
-                | "parse" | "zero" | "add" | "subtract"
+            "fromdays"
+                | "fromhours"
+                | "fromminutes"
+                | "fromseconds"
+                | "frommilliseconds"
+                | "parse"
+                | "zero"
+                | "add"
+                | "subtract"
         )
     {
         return Some("TimeSpan");
@@ -1110,6 +1181,40 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     }
     if class.eq_ignore_ascii_case("Convert") && method_name.eq_ignore_ascii_case("ToDateTime") {
         return Some("DateTime");
+    }
+    if class.eq_ignore_ascii_case("File") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "readalltext" => Some("String"),
+            "readalllines" | "readallbytes" => Some("Array"),
+            "create" | "openread" => Some("FileStream"),
+            "exists" => Some("Boolean"),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("Directory") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "getfiles" | "getdirectories" => Some("Array"),
+            "exists" => Some("Boolean"),
+            "getcurrentdirectory" => Some("String"),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("Path") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "combine"
+            | "gettemppath"
+            | "gettempfilename"
+            | "getfilename"
+            | "getfilenamewithoutextension"
+            | "getextension"
+            | "getdirectoryname"
+            | "getfullpath"
+            | "getpathroot"
+            | "changeextension"
+            | "trimendingdirectoryseparator" => Some("String"),
+            "ispathrooted" | "hasextension" | "endsindirectoryseparator" => Some("Boolean"),
+            _ => None,
+        };
     }
     if class.eq_ignore_ascii_case("Uri") {
         return match method_name.to_ascii_lowercase().as_str() {
@@ -1217,8 +1322,9 @@ pub fn instance_property_type(class_name: &str, property_name: &str) -> Option<&
             "hasexited" => Some("Boolean"),
             "id" | "handle" => Some("Int32"),
             "processname" | "priorityclass" => Some("String"),
-            "workingset64" | "peakworkingset64" | "virtualmemorysize64"
-            | "privatememorysize64" => Some("Int64"),
+            "workingset64" | "peakworkingset64" | "virtualmemorysize64" | "privatememorysize64" => {
+                Some("Int64")
+            }
             "starttime" => Some("DateTime"),
             "totalprocessortime" | "userprocessortime" => Some("TimeSpan"),
             "threads" | "modules" | "mainmodule" => Some("Object"),
@@ -1228,8 +1334,9 @@ pub fn instance_property_type(class_name: &str, property_name: &str) -> Option<&
     if class.eq_ignore_ascii_case("TimeSpan") {
         return match property_name.to_ascii_lowercase().as_str() {
             "ticks" => Some("Int64"),
-            "totalmilliseconds" | "totalseconds" | "totalminutes" | "totalhours"
-            | "totaldays" => Some("Double"),
+            "totalmilliseconds" | "totalseconds" | "totalminutes" | "totalhours" | "totaldays" => {
+                Some("Double")
+            }
             "days" | "hours" | "minutes" | "seconds" => Some("Int32"),
             _ => None,
         };
@@ -1312,107 +1419,81 @@ mod tests {
 
         assert_eq!(descriptor.classes.len(), expected_exports.len());
         assert_eq!(descriptor.exports.len(), expected_exports.len());
-        assert!(
-            descriptor
-                .exports
-                .iter()
-                .any(|exp| exp.interface == "dotnet.System.Windows.Forms" && exp.name == "Form")
-        );
-        assert!(
-            descriptor
-                .exports
-                .iter()
-                .any(|exp| exp.interface == "dotnet.System.Drawing" && exp.name == "Graphics")
-        );
-        assert!(
-            descriptor
-                .exports
-                .iter()
-                .any(|exp| exp.interface == "dotnet.System.Text" && exp.name == "StringBuilder")
-        );
-        assert!(
-            descriptor
-                .exports
-                .iter()
-                .any(|exp| exp.interface == "dotnet.System" && exp.name == "Console")
-        );
-        assert!(
-            descriptor
-                .imports
-                .iter()
-                .any(|imp| imp.interface == "vybe:gui"
-                    && imp.name == vybe_compiler::compiler::gui::HOST_FN_SET_PROPERTY)
-        );
-        assert!(
-            descriptor
-                .imports
-                .iter()
-                .any(|imp| imp.interface == "vybe:gui" && imp.name == "new_Form")
-        );
+        assert!(descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System.Windows.Forms" && exp.name == "Form"));
+        assert!(descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System.Drawing" && exp.name == "Graphics"));
+        assert!(descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System.Text" && exp.name == "StringBuilder"));
+        assert!(descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System" && exp.name == "Console"));
+        assert!(descriptor
+            .imports
+            .iter()
+            .any(|imp| imp.interface == "vybe:gui"
+                && imp.name == vybe_compiler::compiler::gui::HOST_FN_SET_PROPERTY));
+        assert!(descriptor
+            .imports
+            .iter()
+            .any(|imp| imp.interface == "vybe:gui" && imp.name == "new_Form"));
         // StringBuilder no longer imports `vybe:types/stringBuilderNew`;
         // the constructor is a Common emit (`dotnet.string_builder_new`)
         // composing existing primitives. Verify the descriptor lists the
         // class export instead.
-        assert!(
-            descriptor
-                .classes
-                .iter()
-                .any(|class| class.name == "StringBuilder")
-        );
+        assert!(descriptor
+            .classes
+            .iter()
+            .any(|class| class.name == "StringBuilder"));
         let console = descriptor
             .classes
             .iter()
             .find(|class| class.name == "Console")
             .expect("Console class export");
-        assert!(
-            console
-                .methods
-                .iter()
-                .any(|method| method.is_static && method.name == "WriteLine")
-        );
+        assert!(console
+            .methods
+            .iter()
+            .any(|method| method.is_static && method.name == "WriteLine"));
     }
 
     #[test]
     fn test_dotnet_core_component_descriptor_excludes_winforms_surface() {
         let descriptor = dotnet_core_component_descriptor();
 
-        assert!(
-            descriptor
-                .exports
-                .iter()
-                .any(|exp| exp.interface == "dotnet.System" && exp.name == "Console")
-        );
-        assert!(
-            descriptor
-                .exports
-                .iter()
-                .any(|exp| exp.interface == "dotnet.System.Text" && exp.name == "StringBuilder")
-        );
-        assert!(
-            !descriptor
-                .exports
-                .iter()
-                .any(|exp| exp.interface == "dotnet.System.Windows.Forms" && exp.name == "Form")
-        );
-        assert!(
-            !descriptor
-                .imports
-                .iter()
-                .any(|imp| imp.interface == "vybe:gui"
-                    && imp.name == vybe_compiler::compiler::gui::HOST_FN_RUN_APPLICATION)
-        );
+        assert!(descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System" && exp.name == "Console"));
+        assert!(descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System.Text" && exp.name == "StringBuilder"));
+        assert!(!descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System.Windows.Forms" && exp.name == "Form"));
+        assert!(!descriptor
+            .imports
+            .iter()
+            .any(|imp| imp.interface == "vybe:gui"
+                && imp.name == vybe_compiler::compiler::gui::HOST_FN_RUN_APPLICATION));
     }
 
     #[test]
     fn test_dotnet_winforms_component_descriptor_contains_framework_surface() {
         let descriptor = dotnet_winforms_component_descriptor();
 
-        assert!(
-            descriptor
-                .exports
-                .iter()
-                .any(|exp| exp.interface == "dotnet.System.Windows.Forms" && exp.name == "Form")
-        );
+        assert!(descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System.Windows.Forms" && exp.name == "Form"));
         assert!(
             descriptor
                 .exports
@@ -1420,19 +1501,15 @@ mod tests {
                 .any(|exp| exp.interface == "dotnet.System.Windows.Forms"
                     && exp.name == "Application")
         );
-        assert!(
-            !descriptor
-                .imports
-                .iter()
-                .any(|imp| imp.interface == "vybe:gui"
-                    && imp.name == vybe_compiler::compiler::gui::HOST_FN_RUN_APPLICATION)
-        );
-        assert!(
-            !descriptor
-                .exports
-                .iter()
-                .any(|exp| exp.interface == "dotnet.System" && exp.name == "Console")
-        );
+        assert!(!descriptor
+            .imports
+            .iter()
+            .any(|imp| imp.interface == "vybe:gui"
+                && imp.name == vybe_compiler::compiler::gui::HOST_FN_RUN_APPLICATION));
+        assert!(!descriptor
+            .exports
+            .iter()
+            .any(|exp| exp.interface == "dotnet.System" && exp.name == "Console"));
     }
 
     #[test]

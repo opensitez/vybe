@@ -186,12 +186,48 @@ fn emit_build_current_process(chunks: &mut Vec<Chunk>, current: usize, line: u32
     set_local_field_from_value(chunk, process_slot, "PeakWorkingSet64", Value::I32(0), line);
     set_local_field_from_value(chunk, process_slot, "peakWorkingSet64", Value::I32(0), line);
     set_local_field_from_value(chunk, process_slot, "peakworkingset64", Value::I32(0), line);
-    set_local_field_from_value(chunk, process_slot, "VirtualMemorySize64", Value::I32(0), line);
-    set_local_field_from_value(chunk, process_slot, "virtualMemorySize64", Value::I32(0), line);
-    set_local_field_from_value(chunk, process_slot, "virtualmemorysize64", Value::I32(0), line);
-    set_local_field_from_value(chunk, process_slot, "PrivateMemorySize64", Value::I32(0), line);
-    set_local_field_from_value(chunk, process_slot, "privateMemorySize64", Value::I32(0), line);
-    set_local_field_from_value(chunk, process_slot, "privatememorysize64", Value::I32(0), line);
+    set_local_field_from_value(
+        chunk,
+        process_slot,
+        "VirtualMemorySize64",
+        Value::I32(0),
+        line,
+    );
+    set_local_field_from_value(
+        chunk,
+        process_slot,
+        "virtualMemorySize64",
+        Value::I32(0),
+        line,
+    );
+    set_local_field_from_value(
+        chunk,
+        process_slot,
+        "virtualmemorysize64",
+        Value::I32(0),
+        line,
+    );
+    set_local_field_from_value(
+        chunk,
+        process_slot,
+        "PrivateMemorySize64",
+        Value::I32(0),
+        line,
+    );
+    set_local_field_from_value(
+        chunk,
+        process_slot,
+        "privateMemorySize64",
+        Value::I32(0),
+        line,
+    );
+    set_local_field_from_value(
+        chunk,
+        process_slot,
+        "privatememorysize64",
+        Value::I32(0),
+        line,
+    );
 
     chunk.emit_op_u16(Op::LOCAL_GET, process_slot, line);
     push_const(chunk, Value::F64(0.0), line);

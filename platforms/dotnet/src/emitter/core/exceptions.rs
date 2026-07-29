@@ -122,7 +122,11 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
     let (params, body) = if needs_param_name {
         match name {
             "ArgumentException" => (
-                vec![mk_param("msg"), mk_param("paramName"), mk_obj_param("inner")],
+                vec![
+                    mk_param("msg"),
+                    mk_param("paramName"),
+                    mk_obj_param("inner"),
+                ],
                 vec![
                     assign("Message", "msg"),
                     assign("ParamName", "paramName"),
@@ -143,7 +147,11 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
                 ],
             ),
             "ArgumentOutOfRangeException" => (
-                vec![mk_param("paramName"), mk_obj_param("actualValue"), mk_param("msg")],
+                vec![
+                    mk_param("paramName"),
+                    mk_obj_param("actualValue"),
+                    mk_param("msg"),
+                ],
                 vec![
                     assign("ParamName", "paramName"),
                     assign("ActualValue", "actualValue"),
@@ -157,7 +165,11 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
         }
     } else {
         let params = if name == "ObjectDisposedException" {
-            vec![mk_param("objectName"), mk_param("msg"), mk_obj_param("inner")]
+            vec![
+                mk_param("objectName"),
+                mk_param("msg"),
+                mk_obj_param("inner"),
+            ]
         } else {
             vec![mk_param("msg"), mk_obj_param("inner")]
         };

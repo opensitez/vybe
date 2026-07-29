@@ -1,5 +1,5 @@
-use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::Chunk;
 use vybe_compiler::compiler::instructions::{core_wasm, host};
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
@@ -734,14 +734,26 @@ pub fn emit_string_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u
             for i in 1..argc {
                 chunks[current].emit_op_u16(Op::LOCAL_GET, arg_base + i as u16, line);
             }
-            vybe_compiler::compiler::collections::emit_array_new(chunks, current, (argc - 1).into(), line);
+            vybe_compiler::compiler::collections::emit_array_new(
+                chunks,
+                current,
+                (argc - 1).into(),
+                line,
+            );
             chunks[current].emit_op_u16(Op::LOCAL_SET, delims_slot, line);
             chunks[current].emit_i32_const(0, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, remove_empty_slot, line);
         }
     }
 
-    emit_string_split_slots(chunks, current, value_slot, delims_slot, remove_empty_slot, line);
+    emit_string_split_slots(
+        chunks,
+        current,
+        value_slot,
+        delims_slot,
+        remove_empty_slot,
+        line,
+    );
 }
 
 pub fn emit_vb_strings_left(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -768,7 +780,13 @@ pub fn emit_vb_strings_right(chunks: &mut [Chunk], current: usize, _argc: u8, li
     chunks[current].emit_op_u16(Op::LOCAL_GET, take_slot, line);
     chunks[current].emit_op(Op::I32_SUB, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, start_slot, line);
-    emit_string_substr_from_slots(&mut chunks[current], value_slot, start_slot, take_slot, line);
+    emit_string_substr_from_slots(
+        &mut chunks[current],
+        value_slot,
+        start_slot,
+        take_slot,
+        line,
+    );
 }
 
 pub fn emit_vb_strings_mid(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -931,7 +949,12 @@ fn emit_string_trim_chars_mode(
     if argc <= 2 {
         chunks[current].emit_op_u16(Op::LOCAL_SET, set_slot, line);
     } else {
-        vybe_compiler::compiler::collections::emit_array_new(chunks, current, (argc - 1).into(), line);
+        vybe_compiler::compiler::collections::emit_array_new(
+            chunks,
+            current,
+            (argc - 1).into(),
+            line,
+        );
         chunks[current].emit_op_u16(Op::LOCAL_SET, set_slot, line);
     }
     let chunk = &mut chunks[current];

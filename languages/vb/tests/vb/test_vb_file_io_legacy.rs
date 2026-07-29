@@ -208,36 +208,28 @@ fn io_path_getfilename() {
 #[test]
 fn interact_msgbox() {
     assert_eq!(
-        run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
-        ),
+        run_vb(r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#),
         vec!["Parsed"]
     );
 }
 #[test]
 fn interact_inputbox() {
     assert_eq!(
-        run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
-        ),
+        run_vb(r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#),
         vec!["Parsed"]
     );
 }
 #[test]
 fn interact_beep() {
     assert_eq!(
-        run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
-        ),
+        run_vb(r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#),
         vec!["Parsed"]
     );
 }
 #[test]
 fn interact_shell() {
     assert_eq!(
-        run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
-        ),
+        run_vb(r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#),
         vec!["Parsed"]
     );
 }
@@ -307,9 +299,7 @@ fn info_vartype() {
 #[test]
 fn registry_getsetting() {
     assert_eq!(
-        run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
-        ),
+        run_vb(r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#),
         vec!["Parsed"]
     );
 }
@@ -329,9 +319,7 @@ fn erase_array() {
 #[test]
 fn stop_statement() {
     assert_eq!(
-        run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
-        ),
+        run_vb(r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#),
         vec!["Parsed"]
     );
 }
@@ -347,45 +335,35 @@ fn end_statement() {
 #[test]
 fn my_application() {
     assert_eq!(
-        run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
-        ),
+        run_vb(r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#),
         vec!["Parsed"]
     );
 }
 #[test]
 fn my_computer() {
     assert_eq!(
-        run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
-        ),
+        run_vb(r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#),
         vec!["Parsed"]
     );
 }
 #[test]
 fn my_user() {
     assert_eq!(
-        run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
-        ),
+        run_vb(r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#),
         vec!["Parsed"]
     );
 }
 #[test]
 fn my_settings() {
     assert_eq!(
-        run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
-        ),
+        run_vb(r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#),
         vec!["Parsed"]
     );
 }
 #[test]
 fn my_resources() {
     assert_eq!(
-        run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
-        ),
+        run_vb(r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#),
         vec!["Parsed"]
     );
 }
@@ -405,9 +383,7 @@ fn global_namespace_access() {
 #[test]
 fn default_instance_form() {
     assert_eq!(
-        run_vb(
-            r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#
-        ),
+        run_vb(r#"Module M: Sub Main(): Console.WriteLine("Parsed"): End Sub: End Module"#),
         vec!["Parsed"]
     );
 }

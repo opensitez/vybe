@@ -8,8 +8,8 @@
 //!
 //! Wired into the C# / VB profiles via `common:dotnet.parse_*`.
 
-use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
+use vybe_bytecode::Chunk;
 use vybe_compiler::compiler::instructions::{core_wasm, host};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {

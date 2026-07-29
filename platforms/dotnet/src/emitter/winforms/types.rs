@@ -115,10 +115,8 @@ mod tests {
 
     #[test]
     fn test_known_type_mappings_include_form() {
-        assert!(
-            known_type_mappings()
-                .iter()
-                .any(|mapping| mapping.name == "form")
-        );
+        assert!(known_type_mappings()
+            .iter()
+            .any(|mapping| mapping.name == "form"));
     }
 }

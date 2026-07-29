@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use vybe_compiler::compiler::instructions::host;
+use vybe_compiler::compiler::instructions::{core_wasm, host};
 
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
@@ -19,6 +19,279 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
+fn set_field_from_slot(chunk: &mut Chunk, obj_slot: u16, name: &str, value_slot: u16, line: u32) {
+    let key = chunk.add_constant(Value::String(Arc::from(name)));
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn set_field_const(chunk: &mut Chunk, obj_slot: u16, name: &str, val: Value, line: u32) {
+    let key = chunk.add_constant(Value::String(Arc::from(name)));
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    push_const(chunk, val, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn set_field_with_stack_value(chunk: &mut Chunk, obj_slot: u16, name: &str, line: u32) {
+    let value_slot = reserve_slot(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    set_field_from_slot(chunk, obj_slot, name, value_slot, line);
+}
+
+fn emit_file_stream_object(
+    chunks: &mut [Chunk],
+    current: usize,
+    path_slot: u16,
+    content_slot: u16,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    let obj_slot = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    set_field_const(
+        chunk,
+        obj_slot,
+        "__type",
+        Value::String(Arc::from("FileStream")),
+        line,
+    );
+    set_field_from_slot(chunk, obj_slot, "__path", path_slot, line);
+    set_field_from_slot(chunk, obj_slot, "__content", content_slot, line);
+    set_field_from_slot(chunk, obj_slot, "__buf", content_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
+    set_field_with_stack_value(chunk, obj_slot, "Length", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+}
+
+pub fn emit_file_write_all_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
+    let write = chunks[current].add_import("node:fs", "writeFileSync");
+    let chunk = &mut chunks[current];
+    let bytes_slot = reserve_slot(chunk);
+    let path_slot = reserve_slot(chunk);
+    let len_slot = reserve_slot(chunk);
+    let i_slot = reserve_slot(chunk);
+    let text_slot = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, bytes_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
+    push_const(chunk, Value::String(Arc::from("")), line);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+    chunk.emit_op(Op::ARRAY_LENGTH, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    core_wasm::i32_const(chunk, line, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, i_slot, line);
+
+    let state = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    host::emit(&mut chunks[current], "wasm:js-string", "fromCharCode", 1, line);
+    host::emit(&mut chunks[current], "ecma:string", "concat", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    loops::emit_loop_end(chunks, current, state, line);
+
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, write, line);
+    chunk.emit(2, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::NULL, line);
+}
+
+pub fn emit_file_read_all_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
+    let read = chunks[current].add_import("node:fs", "readFileSync");
+    let chunk = &mut chunks[current];
+    let path_slot = reserve_slot(chunk);
+    let content_slot = reserve_slot(chunk);
+    let len_slot = reserve_slot(chunk);
+    let i_slot = reserve_slot(chunk);
+    let result_slot = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    push_const(chunk, Value::String(Arc::from("utf8")), line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, read, line);
+    chunk.emit(2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, content_slot, line);
+    host::emit(&mut chunks[current], "wasm:js-string", "length", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+
+    let state = loops::emit_loop_start(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    loops::emit_loop_cond(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, content_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    host::emit(
+        &mut chunks[current],
+        "wasm:js-string",
+        "charCodeAt",
+        2,
+        line,
+    );
+    chunks[current].emit_op(Op::ARRAY_SET, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
+    loops::emit_loop_end(chunks, current, state, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+}
+
+pub fn emit_file_create(chunks: &mut [Chunk], current: usize, line: u32) {
+    let write = chunks[current].add_import("node:fs", "writeFileSync");
+    let chunk = &mut chunks[current];
+    let path_slot = reserve_slot(chunk);
+    let content_slot = reserve_slot(chunk);
+    let obj_slot = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
+    push_const(chunk, Value::String(Arc::from("")), line);
+    chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, write, line);
+    chunk.emit(2, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    set_field_const(
+        chunk,
+        obj_slot,
+        "__type",
+        Value::String(Arc::from("FileStream")),
+        line,
+    );
+    set_field_from_slot(chunk, obj_slot, "__path", path_slot, line);
+    set_field_from_slot(chunk, obj_slot, "__content", content_slot, line);
+    set_field_from_slot(chunk, obj_slot, "__buf", content_slot, line);
+    set_field_const(chunk, obj_slot, "Length", Value::I32(0), line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+}
+
+pub fn emit_file_open_read(chunks: &mut [Chunk], current: usize, line: u32) {
+    let read = chunks[current].add_import("node:fs", "readFileSync");
+    let chunk = &mut chunks[current];
+    let path_slot = reserve_slot(chunk);
+    let content_slot = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    push_const(chunk, Value::String(Arc::from("utf8")), line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, read, line);
+    chunk.emit(2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
+    emit_file_stream_object(chunks, current, path_slot, content_slot, line);
+}
+
+pub fn emit_file_stream_write_byte(chunks: &mut [Chunk], current: usize, line: u32) {
+    let write = chunks[current].add_import("node:fs", "writeFileSync");
+    let chunk = &mut chunks[current];
+    let buf_key = chunk.add_constant(Value::String(Arc::from("__buf")));
+    let path_key = chunk.add_constant(Value::String(Arc::from("__path")));
+    let length_key = chunk.add_constant(Value::String(Arc::from("Length")));
+    let stream_slot = reserve_slot(chunk);
+    let byte_slot = reserve_slot(chunk);
+    let buf_slot = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, byte_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, stream_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, buf_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, byte_slot, line);
+    host::emit(chunk, "wasm:js-string", "fromCharCode", 1, line);
+    host::emit(chunk, "ecma:string", "concat", 2, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, buf_key, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
+    host::emit(chunk, "wasm:js-string", "length", 1, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, length_key, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, path_key, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, write, line);
+    chunk.emit(2, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::NULL, line);
+}
+
+pub fn emit_file_info_new(chunks: &mut [Chunk], current: usize, line: u32) {
+    let extname = chunks[current].add_import("node:path", "extname");
+    let basename = chunks[current].add_import("node:path", "basename");
+    let exists = chunks[current].add_import("wasi:filesystem", "exists");
+    let size = chunks[current].add_import("wasi:filesystem", "fileSize");
+    let chunk = &mut chunks[current];
+    let path_slot = reserve_slot(chunk);
+    let obj_slot = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    set_field_const(
+        chunk,
+        obj_slot,
+        "__type",
+        Value::String(Arc::from("FileInfo")),
+        line,
+    );
+    set_field_from_slot(chunk, obj_slot, "FullName", path_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, basename, line);
+    chunk.emit(1, line);
+    set_field_with_stack_value(chunk, obj_slot, "Name", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, extname, line);
+    chunk.emit(1, line);
+    set_field_with_stack_value(chunk, obj_slot, "Extension", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, exists, line);
+    chunk.emit(1, line);
+    set_field_with_stack_value(chunk, obj_slot, "Exists", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, size, line);
+    chunk.emit(1, line);
+    set_field_with_stack_value(chunk, obj_slot, "Length", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+}
+
 pub fn emit_file_read_all_lines(chunks: &mut [Chunk], current: usize, line: u32) {
     let read_idx = chunks[current].add_import("node:fs", "readFileSync");
     let chunk = &mut chunks[current];
@@ -32,6 +305,29 @@ pub fn emit_file_read_all_lines(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit(2, line);
     push_const(chunk, Value::String(Arc::from("\n")), line);
     host::emit(chunk, "ecma:string", "split", 2, line);
+}
+
+pub fn emit_file_write_all_lines(chunks: &mut [Chunk], current: usize, line: u32) {
+    let write_idx = chunks[current].add_import("node:fs", "writeFileSync");
+    let chunk = &mut chunks[current];
+    let path_slot = reserve_slot(chunk);
+    let lines_slot = reserve_slot(chunk);
+    let text_slot = reserve_slot(chunk);
+
+    chunk.emit_op_u16(Op::LOCAL_SET, lines_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, lines_slot, line);
+    push_const(chunk, Value::String(Arc::from("\n")), line);
+    host::emit(chunk, "ecma:array", "join", 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
+    chunk.emit_op_u16(Op::CALL_IMPORT, write_idx, line);
+    chunk.emit(2, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op(Op::NULL, line);
 }
 
 pub fn emit_path_get_file_name(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -203,11 +499,7 @@ pub fn emit_path_get_relative_path(chunks: &mut [Chunk], current: usize, line: u
     chunk.emit(2, line);
 }
 
-pub fn emit_path_trim_ending_directory_separator(
-    chunks: &mut [Chunk],
-    current: usize,
-    line: u32,
-) {
+pub fn emit_path_trim_ending_directory_separator(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let path_slot = reserve_slot(chunk);
     let result_slot = reserve_slot(chunk);
@@ -237,7 +529,13 @@ pub fn emit_path_trim_ending_directory_separator(
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
-fn emit_directory_entries(chunks: &mut [Chunk], current: usize, line: u32, want_directories: bool) {
+fn emit_directory_entries(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+    want_directories: bool,
+) {
     let list_idx = chunks[current].add_import("wasi:filesystem", "listDir");
     let is_dir_idx = chunks[current].add_import("wasi:filesystem", "isDir");
     let resolve_idx = chunks[current].add_import("node:path", "resolve");
@@ -248,8 +546,16 @@ fn emit_directory_entries(chunks: &mut [Chunk], current: usize, line: u32, want_
     let idx_slot = reserve_slot(chunk);
     let entry_slot = reserve_slot(chunk);
     let full_path_slot = reserve_slot(chunk);
+    let pattern_slot = reserve_slot(chunk);
+    let allowed_slot = reserve_slot(chunk);
     let result_slot = reserve_slot(chunk);
 
+    if argc > 1 {
+        chunk.emit_op_u16(Op::LOCAL_SET, pattern_slot, line);
+    } else {
+        chunk.emit_op(Op::NULL, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, pattern_slot, line);
+    }
     chunk.emit_op_u16(Op::LOCAL_SET, root_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, root_slot, line);
@@ -264,6 +570,8 @@ fn emit_directory_entries(chunks: &mut [Chunk], current: usize, line: u32, want_
     let state = loops::emit_for_in_start(chunks, current, entries_slot, idx_slot, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, entry_slot, line);
+    chunk.emit_bool_const(true, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, allowed_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, root_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
@@ -283,6 +591,34 @@ fn emit_directory_entries(chunks: &mut [Chunk], current: usize, line: u32, want_
     vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
     chunk.emit_br_if(0, line);
 
+    if !want_directories {
+        chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_if(line);
+        chunk.emit_else(line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+        push_const(chunk, Value::String(Arc::from("*")), line);
+        host::emit(chunk, "ecma:string", "startsWith", 2, line);
+        chunk.emit_if(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+        push_const(chunk, Value::F64(1.0), line);
+        host::emit(chunk, "ecma:string", "slice", 2, line);
+        host::emit(chunk, "ecma:string", "endsWith", 2, line);
+        chunk.emit_else(line);
+        chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
+        chunk.emit_op_u16(Op::LOCAL_GET, pattern_slot, line);
+        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_end(line);
+        chunk.emit_op_u16(Op::LOCAL_SET, allowed_slot, line);
+        chunk.emit_end(line);
+
+        chunk.emit_op_u16(Op::LOCAL_GET, allowed_slot, line);
+        vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+        chunk.emit_br_if(0, line);
+    }
+
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, full_path_slot, line);
     collections::emit_push(chunks, current, line);
@@ -296,12 +632,12 @@ fn emit_directory_entries(chunks: &mut [Chunk], current: usize, line: u32, want_
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
-pub fn emit_directory_get_files(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_directory_entries(chunks, current, line, false);
+pub fn emit_directory_get_files(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_directory_entries(chunks, current, argc, line, false);
 }
 
 pub fn emit_directory_get_directories(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_directory_entries(chunks, current, line, true);
+    emit_directory_entries(chunks, current, 1, line, true);
 }
 
 pub fn emit_directory_delete(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

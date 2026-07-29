@@ -100,16 +100,12 @@ mod tests {
 
     #[test]
     fn test_known_type_mappings_merge_core_and_winforms() {
-        assert!(
-            known_type_mappings()
-                .iter()
-                .any(|mapping| mapping.name == "stringbuilder")
-        );
-        assert!(
-            known_type_mappings()
-                .iter()
-                .any(|mapping| mapping.name == "form")
-        );
+        assert!(known_type_mappings()
+            .iter()
+            .any(|mapping| mapping.name == "stringbuilder"));
+        assert!(known_type_mappings()
+            .iter()
+            .any(|mapping| mapping.name == "form"));
     }
 
     #[test]

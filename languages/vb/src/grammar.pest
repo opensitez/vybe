@@ -129,7 +129,8 @@ raiseevent_statement = { ^"RaiseEvent" ~ identifier ~ ("(" ~ argument_list? ~ ")
 yield_statement = { ^"Yield" ~ expression? }
 
 // Array support
-array_bounds = { expression ~ ("," ~ expression)* }
+array_bound = { expression ~ (^"To" ~ expression)? }
+array_bounds = { array_bound ~ ("," ~ array_bound)* }
 array_literal = { "{" ~ NEWLINE* ~ (expression ~ (NEWLINE* ~ "," ~ NEWLINE* ~ expression)*)? ~ NEWLINE* ~ "}" }
 
 // Control flow
@@ -716,7 +717,7 @@ member_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // Keywords
 keyword = _{
-    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Yield" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Xor" | ^"Eqv" | ^"Imp" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"Iterator" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"ParamArray" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Line" | ^"Input" | ^"Write" | ^"Append" | ^"Output" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler" | ^"GoTo" | ^"Static" | ^"Interface" | ^"Structure" | ^"Delegate" | ^"Event" | ^"Resume" | ^"Namespace" | ^"Using" | ^"SyncLock" | ^"Compare")
+    (^"Me" | ^"If" | ^"Then" | ^"Else" | ^"End" | ^"Sub" | ^"Function" | ^"Dim" | ^"ReDim" | ^"Preserve" | ^"Const" | ^"As" | ^"For" | ^"To" | ^"Step" | ^"Next" | ^"While" | ^"Wend" | ^"Do" | ^"Loop" | ^"Until" | ^"Exit" | ^"Return" | ^"Yield" | ^"Call" | ^"True" | ^"False" | ^"Nothing" | ^"Not" | ^"Or" | ^"And" | ^"Xor" | ^"Eqv" | ^"Imp" | ^"Mod" | ^"Module" | ^"Class" | ^"Private" | ^"Public" | ^"ByVal" | ^"ByRef" | ^"Select" | ^"Case" | ^"Try" | ^"Catch" | ^"Finally" | ^"Continue" | ^"New" | ^"When" | ^"Partial" | ^"Friend" | ^"Protected" | ^"Overrides" | ^"Overloads" | ^"Shared" | ^"Iterator" | ^"WithEvents" | ^"Handles" | ^"Imports" | ^"Is" | ^"IsNot" | ^"AndAlso" | ^"OrElse" | ^"Optional" | ^"ParamArray" | ^"MyBase" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"With" | ^"Each" | ^"In" | ^"Enum" | ^"Open" | ^"Close" | ^"Input" | ^"Write" | ^"Append" | ^"Binary" | ^"Random" | ^"RaiseEvent" | ^"TypeOf" | ^"Throw" | ^"AddHandler" | ^"RemoveHandler" | ^"GoTo" | ^"Static" | ^"Interface" | ^"Structure" | ^"Delegate" | ^"Event" | ^"Resume" | ^"Namespace" | ^"Using" | ^"SyncLock" | ^"Compare")
     ~ !(ASCII_ALPHANUMERIC | "_")
 }
 
@@ -725,8 +726,8 @@ call_keyword = @{ ^"Call" ~ !(ASCII_ALPHANUMERIC | "_") }
 // ── LINQ Query Syntax ──
 query_expression = { from_clause ~ NEWLINE* ~ query_body }
 from_clause = { ^"From" ~ identifier ~ (^"As" ~ type_name)? ~ ^"In" ~ expression ~ ("," ~ identifier ~ (^"As" ~ type_name)? ~ ^"In" ~ expression)* }
-query_body = { (query_operator ~ NEWLINE*)* ~ select_or_group_clause }
-query_operator = { group_join_query_clause | join_query_clause | where_clause | order_by_clause | skip_while_clause | take_while_clause | skip_clause | take_clause | let_clause | group_by_query_clause }
+query_body = { (query_operator ~ NEWLINE*)* ~ select_or_group_clause? }
+query_operator = { group_join_query_clause | join_query_clause | where_clause | order_by_clause | skip_while_clause | take_while_clause | skip_clause | take_clause | distinct_clause | let_clause | group_by_query_clause }
 
 where_clause = { ^"Where" ~ expression }
 order_by_clause = { ^"Order" ~ ^"By" ~ ordering ~ ("," ~ ordering)* }
@@ -735,6 +736,7 @@ skip_while_clause = { ^"Skip" ~ ^"While" ~ expression }
 take_while_clause = { ^"Take" ~ ^"While" ~ expression }
 skip_clause = { ^"Skip" ~ expression }
 take_clause = { ^"Take" ~ expression }
+distinct_clause = { ^"Distinct" }
 let_clause = { ^"Let" ~ let_binding ~ ("," ~ let_binding)* }
 let_binding = { identifier ~ "=" ~ expression }
 group_by_query_clause = { ^"Group" ~ ^"By" ~ group_key ~ ("," ~ group_key)* ~ ^"Into" ~ identifier }
