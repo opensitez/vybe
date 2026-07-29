@@ -15,6 +15,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 MethodBody::Common("dotnet.version_parse".into()),
             ))
             .with_method(MethodDef::static_method(
+                "TryParse",
+                2,
+                MethodBody::Common("dotnet.version_try_parse".into()),
+            ))
+            .with_method(MethodDef::static_method(
                 "CompareTo",
                 2,
                 MethodBody::Common("dotnet.version_compare_instance".into()),

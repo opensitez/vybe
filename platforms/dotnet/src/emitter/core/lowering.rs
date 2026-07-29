@@ -280,7 +280,11 @@ pub fn try_parse_desugar(
         value: Box::new(core.clone()),
     });
 
-    if recv.eq_ignore_ascii_case("Guid") || recv.eq_ignore_ascii_case("System.Guid") {
+    if recv.eq_ignore_ascii_case("Guid")
+        || recv.eq_ignore_ascii_case("System.Guid")
+        || recv.eq_ignore_ascii_case("Version")
+        || recv.eq_ignore_ascii_case("System.Version")
+    {
         let success = Expression::new(ExprKind::Binary {
             op: BinOp::NotEq,
             left: Box::new(core.clone()),

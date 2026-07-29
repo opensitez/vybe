@@ -62,6 +62,7 @@ statement = _{
     | dot_compound_assign_statement
     | dot_assign_statement
     | me_assign_statement
+    | mybase_assign_statement
     | compound_assign_statement
     | assign_statement
     | single_line_if_statement
@@ -118,7 +119,7 @@ lset_statement = { ^"LSet" ~ l_value_expression ~ "=" ~ expression }
 rset_statement = { ^"RSet" ~ l_value_expression ~ "=" ~ expression }
 mid_assign_statement = { ^"Mid" ~ "(" ~ l_value_expression ~ "," ~ expression ~ ("," ~ expression)? ~ ")" ~ "=" ~ expression }
 compound_assign_op = { "+=" | "-=" | "*=" | "/=" | "\\=" | "&=" | "^=" | "<<=" | ">>=" }
-l_value_expression = { identifier ~ ( ("." ~ member_identifier) | ("(" ~ argument_list? ~ ")") )* }
+l_value_expression = { (generic_type_reference | identifier) ~ ( ("." ~ member_identifier) | ("(" ~ argument_list? ~ ")") )* }
 compound_assign_statement = { l_value_expression ~ compound_assign_op ~ expression }
 assign_statement = { l_value_expression ~ "=" ~ expression }
 preserve_keyword = { ^"Preserve" }
@@ -148,6 +149,7 @@ single_line_stmt = _{
     | rset_statement
     | dot_assign_statement
     | me_assign_statement
+    | mybase_assign_statement
     | compound_assign_statement
     | assign_statement
     | addhandler_statement
@@ -298,7 +300,8 @@ line_input_statement = { ^"Line" ~ ^"Input" ~ "#" ~ expression ~ "," ~ identifie
 
 // Procedure declarations
 // sub_modifier covers: Public, Private, Protected, Friend, Overrides, Overloads, Shared, etc.
-sub_modifier_keyword = { ^"Overrides" | ^"Overloads" | ^"Shared" | ^"Iterator" | ^"Widening" | ^"Narrowing" | ^"MustOverride" | ^"Overridable" | ^"NotOverridable" | ^"Shadows" }
+virtual_keyword = @{ ^"Virtual" ~ !(ASCII_ALPHANUMERIC | "_") }
+sub_modifier_keyword = { ^"Overrides" | ^"Overloads" | ^"Shared" | ^"Iterator" | ^"Widening" | ^"Narrowing" | ^"MustOverride" | ^"Overridable" | virtual_keyword | ^"NotOverridable" | ^"Shadows" }
 sub_modifier = _{ visibility_modifier | sub_modifier_keyword | partial_keyword | async_kw }
 sub_name = { identifier | member_identifier | ^"New" }
 function_name = { identifier | member_identifier }
@@ -404,8 +407,8 @@ structure_decl = {
     attribute_line* ~ visibility_modifier? ~ ^"Structure" ~ identifier ~ generic_suffix?
     ~ (structure_inline_body | structure_block_body)
 }
-structure_member = _{ auto_property_line | property_decl | operator_decl | sub_decl | function_decl | const_statement_line | custom_event_decl | event_line | field_line | dim_line | enum_decl | NEWLINE | COMMENT }
-structure_inline_clause = _{ implements_statement | auto_property_decl | property_decl | operator_decl | sub_decl | function_decl | const_statement | custom_event_decl | event_decl | field_decl | dim_statement | enum_decl }
+structure_member = _{ class_decl | interface_decl | structure_decl | auto_property_line | property_decl | operator_decl | sub_decl | function_decl | const_statement_line | custom_event_decl | event_line | field_line | dim_line | enum_decl | NEWLINE | COMMENT }
+structure_inline_clause = _{ implements_statement | class_decl | interface_decl | structure_decl | auto_property_decl | property_decl | operator_decl | sub_decl | function_decl | const_statement | custom_event_decl | event_decl | field_decl | dim_statement | enum_decl }
 structure_inline_body = _{ (":" ~ structure_end) | (":" ~ structure_inline_clause ~ (":" ~ structure_inline_clause)* ~ ":" ~ structure_end) }
 structure_block_body = _{ (NEWLINE | EOI) ~ implements_line? ~ (!structure_end ~ structure_member)* ~ structure_end }
 structure_end = { ^"End" ~ ^"Structure" }
@@ -431,8 +434,8 @@ custom_event_accessor = {
 custom_event_accessor_end = _{ ^"End" ~ (^"AddHandler" | ^"RemoveHandler" | ^"RaiseEvent") }
 
 // Delegate declarations
-delegate_sub_decl = { visibility_modifier? ~ ^"Delegate" ~ ^"Sub" ~ identifier ~ "(" ~ param_list? ~ ")" }
-delegate_function_decl = { visibility_modifier? ~ ^"Delegate" ~ ^"Function" ~ identifier ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? }
+delegate_sub_decl = { visibility_modifier? ~ ^"Delegate" ~ ^"Sub" ~ identifier ~ generic_suffix? ~ "(" ~ param_list? ~ ")" }
+delegate_function_decl = { visibility_modifier? ~ ^"Delegate" ~ ^"Function" ~ identifier ~ generic_suffix? ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? }
 delegate_line = _{ (delegate_sub_decl | delegate_function_decl) ~ (NEWLINE | EOI) }
 
 // Enum declarations
@@ -470,6 +473,8 @@ auto_property_modifier = {
     | ^"ReadOnly"
     | ^"Default"
     | ^"Overrides"
+    | ^"Overridable"
+    | ^"NotOverridable"
     | ^"Overloads"
     | ^"Shadows"
     | ^"WithEvents"

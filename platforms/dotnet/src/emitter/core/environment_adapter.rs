@@ -58,7 +58,7 @@ pub fn emit_environment_username(chunks: &mut [Chunk], current: usize, line: u32
     chunk.emit_op_u16(Op::STRUCT_GET, username_key, line);
 }
 
-pub fn emit_environment_version(chunks: &mut [Chunk], current: usize, line: u32) {
+pub fn emit_environment_version(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     for value in [8.0, 0.0, 0.0, 0.0] {
         push_const(chunk, Value::F64(value), line);

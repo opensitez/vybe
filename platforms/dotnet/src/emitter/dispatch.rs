@@ -1106,6 +1106,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.version_parse" => {
             crate::emitter::core::version_adapter::emit_version_parse(chunks, current, line)
         }
+        "dotnet.version_try_parse" => {
+            crate::emitter::core::version_adapter::emit_version_try_parse(chunks, current, line)
+        }
         "dotnet.version_to_string" => {
             crate::emitter::core::version_adapter::emit_version_to_string(
                 chunks, current, argc, line,

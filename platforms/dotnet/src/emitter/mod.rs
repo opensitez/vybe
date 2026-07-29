@@ -856,8 +856,16 @@ pub fn component_descriptor_class_interface(name: &str) -> Option<String> {
 }
 
 pub fn is_component_descriptor_class_in_namespace(name: &str, namespace_prefix: &str) -> bool {
-    component_descriptor_class_interface(name)
-        .is_some_and(|interface| interface.starts_with(namespace_prefix))
+    let short = name.rsplit('.').next().unwrap_or(name);
+    surface().component_descriptor.exports.iter().any(|export| {
+        if !export.interface.starts_with(namespace_prefix) {
+            return false;
+        }
+        let ComponentItemKind::Class(class) = &export.kind else {
+            return false;
+        };
+        class.name.eq_ignore_ascii_case(name) || class.name.eq_ignore_ascii_case(short)
+    })
 }
 
 pub fn component_instance_method_exists(

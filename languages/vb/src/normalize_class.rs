@@ -39,9 +39,9 @@ use vybe_bytecode::class_normalize::{
 
 pub fn normalize_class(
     span: Span,
-    name: &str,
+    _name: &str,
     parents: &[String],
-    interfaces: &[String],
+    _interfaces: &[String],
     members: &[ClassMember],
     modifiers: &ClassModifiers,
 ) -> NormalClass {

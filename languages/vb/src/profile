@@ -85,6 +85,7 @@ async_wraps_body_in_try = true
 "__vb_task_from_result" = { emit = "common:dotnet.task_from_result", min_args = 1, max_args = 1 }
 "__vb_task_when_all" = { emit = "common:dotnet.task_when_all", min_args = 1, max_args = 255 }
 "__vb_task_when_any" = { emit = "common:dotnet.task_when_any", min_args = 1, max_args = 255 }
+"__dotnet_list_add" = { emit = "common:dotnet.list_add", min_args = 2, max_args = 2 }
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
