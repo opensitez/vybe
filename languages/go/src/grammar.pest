@@ -415,6 +415,7 @@ range_primary = {
 
 postfix_op = _{
     selector
+    | generic_instantiation
     | index
     | three_index_slice
     | two_index_slice
@@ -468,6 +469,7 @@ type_conversion = {
 }
 
 selector       = { "." ~ ident_name }
+generic_instantiation = { type_arguments ~ &"(" }
 index          = { "[" ~ expression ~ "]" }
 two_index_slice   = { "[" ~ expression? ~ ":" ~ expression? ~ "]" }
 three_index_slice = { "[" ~ expression? ~ ":" ~ expression ~ ":" ~ expression ~ "]" }

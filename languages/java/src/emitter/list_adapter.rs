@@ -2017,7 +2017,12 @@ pub fn emit_semaphore_acquire(chunks: &mut [Chunk], current: usize, argc: u8, li
     chunks[current].emit_op_u16(Op::LOCAL_SET, queued, line);
     chunks[current].emit_end(line);
     chunks[current].emit_f64_const(5.0, line);
-    vybe_compiler::compiler::threading::emit_sleep(&mut chunks[current], sub_dur_idx, block_idx, line);
+    vybe_compiler::compiler::threading::emit_sleep(
+        &mut chunks[current],
+        sub_dur_idx,
+        block_idx,
+        line,
+    );
     chunks[current].emit_end(line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -2135,7 +2140,12 @@ pub fn emit_java_thread_start_with(chunks: &mut Vec<Chunk>, current: usize, line
     let sub_dur_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
     let block_idx = chunks[0].add_import("wasi:io/poll", "[method]pollable.block");
     chunks[current].emit_f64_const(1.0, line);
-    vybe_compiler::compiler::threading::emit_sleep(&mut chunks[current], sub_dur_idx, block_idx, line);
+    vybe_compiler::compiler::threading::emit_sleep(
+        &mut chunks[current],
+        sub_dur_idx,
+        block_idx,
+        line,
+    );
 
     chunks[current].emit_op(Op::NULL, line);
 }
@@ -2162,7 +2172,12 @@ pub fn emit_java_thread_sleep(chunks: &mut [Chunk], current: usize, line: u32) {
     let block_idx = chunks[0].add_import("wasi:io/poll", "[method]pollable.block");
     chunks[current].emit_f64_const(25.0, line);
     chunks[current].emit_op(Op::F64_MUL, line);
-    vybe_compiler::compiler::threading::emit_sleep(&mut chunks[current], sub_dur_idx, block_idx, line);
+    vybe_compiler::compiler::threading::emit_sleep(
+        &mut chunks[current],
+        sub_dur_idx,
+        block_idx,
+        line,
+    );
     chunks[current].emit_op(Op::NULL, line);
 }
 
@@ -3037,7 +3052,12 @@ pub fn emit_blocking_queue_put(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_br(2, line);
     chunks[current].emit_end(line);
     chunks[current].emit_f64_const(1.0, line);
-    vybe_compiler::compiler::threading::emit_sleep(&mut chunks[current], sub_dur_idx, block_idx, line);
+    vybe_compiler::compiler::threading::emit_sleep(
+        &mut chunks[current],
+        sub_dur_idx,
+        block_idx,
+        line,
+    );
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
     chunks[current].patch_loop(loop_patch);
@@ -3070,7 +3090,12 @@ pub fn emit_blocking_queue_take(chunks: &mut [Chunk], current: usize, line: u32)
     chunks[current].emit_br(2, line);
     chunks[current].emit_end(line);
     chunks[current].emit_f64_const(1.0, line);
-    vybe_compiler::compiler::threading::emit_sleep(&mut chunks[current], sub_dur_idx, block_idx, line);
+    vybe_compiler::compiler::threading::emit_sleep(
+        &mut chunks[current],
+        sub_dur_idx,
+        block_idx,
+        line,
+    );
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
     chunks[current].patch_loop(loop_patch);

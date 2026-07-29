@@ -19,7 +19,7 @@ use vybe_ast::{
     PropertySetter, Span, Statement, StmtKind,
 };
 use vybe_bytecode::class_normalize::{
-    build_normal_method, from_method_stmt, types::*, NormalMembers,
+    NormalMembers, build_normal_method, from_method_stmt, types::*,
 };
 
 const PASCAL_NO_BASE_CTOR_MARKER: &str = "__pascal_no_base_ctor__";

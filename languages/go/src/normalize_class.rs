@@ -31,7 +31,7 @@ fn go_embedding(field_name: &str, field_type: &str) -> Augmentation {
         via_field: Some(field_name.to_string()),
         mode: AugmentationMode::Promote,
         position: AugmentationPosition::AfterOwn,
-        conflict: AugmentationConflict::Error,
+        conflict: AugmentationConflict::Ambiguous,
         super_target: AugmentationSuper::OwnParent,
         adjustments: Vec::new(),
         contributes: AugmentationContributes {

@@ -1465,7 +1465,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             let idx_slot = chunks[current].alloc_scratch(1);
             chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-            vybe_compiler::compiler::loops::emit_foreach(chunks, current, fn_slot, arr_slot, idx_slot, line);
+            vybe_compiler::compiler::loops::emit_foreach(
+                chunks, current, fn_slot, arr_slot, idx_slot, line,
+            );
         }
         "java.queue_poll" => {
             super::list_adapter::emit_poll(chunks, current, false, line);

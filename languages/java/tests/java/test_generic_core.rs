@@ -1,4 +1,76 @@
 use crate::helpers::run_in_main;
+use vybe_ast::{BindingPattern, ClassMember, Statement, StmtKind};
+
+fn java_main_body(source: &str) -> Vec<Statement> {
+    let module = vybe_language_java::parse(source).expect("java parse");
+    for stmt in module.body {
+        let StmtKind::ClassDecl { members, .. } = stmt.kind else {
+            continue;
+        };
+        for member in members {
+            let ClassMember::Method(method) = member else {
+                continue;
+            };
+            let StmtKind::FunctionDecl { name, body, .. } = method.kind else {
+                continue;
+            };
+            if name == "main" {
+                return body;
+            }
+        }
+    }
+    panic!("main method not found");
+}
+
+fn java_var_type_hint(body: &[Statement], name: &str) -> Option<String> {
+    for stmt in body {
+        let StmtKind::VarDecl { declarations, .. } = &stmt.kind else {
+            continue;
+        };
+        for decl in declarations {
+            if matches!(&decl.pattern, BindingPattern::Ident(var) if var == name) {
+                return decl.type_hint.clone();
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn java_generic_type_hint_preserves_type_argument_ast() {
+    let body = java_main_body(
+        r#"
+        class Test {
+            static void main(String[] args) {
+                java.util.List<String> names = java.util.Arrays.asList("a");
+            }
+        }
+        "#,
+    );
+
+    assert_eq!(
+        java_var_type_hint(&body, "names").as_deref(),
+        Some("java.util.List<String>")
+    );
+}
+
+#[test]
+fn java_nested_generic_type_hint_preserves_arguments_ast() {
+    let body = java_main_body(
+        r#"
+        class Test {
+            static void main(String[] args) {
+                java.util.Map<String, java.util.List<Integer>> table = null;
+            }
+        }
+        "#,
+    );
+
+    assert_eq!(
+        java_var_type_hint(&body, "table").as_deref(),
+        Some("java.util.Map<String, java.util.List<Integer>>")
+    );
+}
 
 #[test]
 fn generic_box_stores_integer_payload() {

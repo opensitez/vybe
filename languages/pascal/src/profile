@@ -184,6 +184,7 @@ typename      = { emit = "intrinsic:classname",            min_args = 1, max_arg
 append        = { emit = "host:ecma:array:push",           min_args = 2, max_args = 2 }
 __pascal_array_slice  = { emit = "host:ecma:array:slice",  min_args = 3, max_args = 3 }
 __pascal_array_concat = { emit = "host:ecma:array:concat", min_args = 2, max_args = 2 }
+__pascal_structured_clone = { emit = "host:ecma:structured-clone:clone", min_args = 1, max_args = 1 }
 sort          = { emit = "common:pascal.sort_in_place",   min_args = 1, max_args = 1 }
 reverse       = { emit = "host:ecma:array:reverse",        min_args = 1, max_args = 1 }
 

@@ -13,7 +13,8 @@
 //!   always iterates values.
 //! - **Implicit `super()` in child-class constructors**: injected when
 //!   no explicit `super(...)` is found at the top of the ctor body.
-//! - **Generic type arguments**: erased (Vybe is dynamic).
+//! - **Generic type arguments**: parsed through the shared generics primitive,
+//!   then erased for runtime dispatch while preserved in type hints/metadata.
 //! - **Char literals**: lowered to integer code-point literals.
 //! - **Text blocks** (Java 15+): normalised to plain string literals.
 //! - **Lambda params**: both typed `(T x) -> body` and untyped `x -> body`
@@ -25,6 +26,7 @@ use pest::iterators::Pair;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use vybe_ast::*;
+use vybe_compiler::compiler::generics as common_generics;
 use vybe_compiler::compiler::reflection as common_reflection;
 
 #[derive(Clone, Debug, Default)]
@@ -1243,6 +1245,10 @@ fn java_modifier_static_predicate(method: &str, value: &Expression) -> Option<Ex
 // Class
 // ════════════════════════════════════════════════════════════════════════════
 
+fn consume_java_type_params(pair: Pair<Rule>) {
+    let _ = common_generics::parse_generic_params_hint(pair.as_str());
+}
+
 fn walk_class(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut name = String::new();
     let mut parents: Vec<String> = Vec::new();
@@ -1267,7 +1273,7 @@ fn walk_class(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     for p in inner {
         match p.as_rule() {
-            Rule::type_params => {}
+            Rule::type_params => consume_java_type_params(p),
             Rule::type_ref => {
                 // extends clause: first type_ref
                 if parents.is_empty() {
@@ -1544,18 +1550,18 @@ fn walk_constructor(pair: Pair<Rule>) -> Result<ClassMember, String> {
     let visibility = pm.visibility;
 
     // Java generic constructors write type params before the constructor name:
-    // `<T> Box(T value)`. Type information is erased in this frontend.
+    // `<T> Box(T value)`. They normalize through the shared generics primitive,
+    // then erase at runtime.
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_params) {
-        inner.next();
+        consume_java_type_params(inner.next().unwrap());
     }
 
     // constructor name — same as class, skip
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::ident_name) {
         inner.next();
     }
-    // skip optional type_params
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_params) {
-        inner.next();
+        consume_java_type_params(inner.next().unwrap());
     }
 
     let mut params: Vec<Param> = Vec::new();
@@ -1597,9 +1603,10 @@ fn walk_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
     let modifiers = into_modifiers(pm);
 
     // Java generic methods write type params before the return type:
-    // `static <T> T identity(T x)`. The AST does not need the erased params.
+    // `static <T> T identity(T x)`. They normalize through the shared generics
+    // primitive, then erase at runtime.
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_params) {
-        inner.next();
+        consume_java_type_params(inner.next().unwrap());
     }
 
     // Return type (type_ref)
@@ -1616,9 +1623,8 @@ fn walk_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
         .as_str()
         .to_string();
 
-    // skip type_params
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_params) {
-        inner.next();
+        consume_java_type_params(inner.next().unwrap());
     }
 
     let mut params: Vec<Param> = Vec::new();
@@ -1738,9 +1744,8 @@ fn walk_interface(pair: Pair<Rule>) -> Result<StmtKind, String> {
     JAVA_INTERFACE_NAMES.with(|names| {
         names.borrow_mut().insert(name.clone());
     });
-    // skip type_params
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_params) {
-        inner.next();
+        consume_java_type_params(inner.next().unwrap());
     }
 
     let mut parents: Vec<String> = Vec::new();
@@ -2482,9 +2487,8 @@ fn walk_record(pair: Pair<Rule>) -> Result<StmtKind, String> {
         .ok_or("record: missing name")?
         .as_str()
         .to_string();
-    // skip type_params
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_params) {
-        inner.next();
+        consume_java_type_params(inner.next().unwrap());
     }
 
     let mut component_params: Vec<Param> = Vec::new();
@@ -3860,7 +3864,6 @@ fn java_type_test_expr(subject: &Expression, stamped_name: &str) -> Expression {
             java_binary(BinOp::Or, acc, test)
         })
 }
-
 
 fn rewrite_java_record_accessors_stmt(stmt: &mut Statement, binding: &str, type_name: &str) {
     match &mut stmt.kind {
@@ -14971,7 +14974,6 @@ fn java_type_is_duration(type_name: Option<&str>) -> bool {
     base == "Duration"
 }
 
-
 fn java_type_is_zone_id(type_name: Option<&str>) -> bool {
     let Some(type_name) = type_name else {
         return false;
@@ -15300,15 +15302,12 @@ fn java_bigdecimal_constant_replacement(expr: &Expression) -> Option<Expression>
 }
 
 fn java_type_simple_name(type_name: &str) -> &str {
-    type_name.rsplit('.').next().unwrap_or(type_name)
+    let erased = common_generics::generic_base_name(type_name.trim());
+    erased.rsplit('.').next().unwrap_or(erased)
 }
 
 fn java_type_base_simple_name(type_name: &str) -> &str {
-    java_type_simple_name(type_name)
-        .split('<')
-        .next()
-        .unwrap_or(type_name)
-        .trim()
+    java_type_simple_name(type_name).trim()
 }
 
 fn java_print_arg_needs_tostring(
@@ -17392,13 +17391,8 @@ fn java_overload_mangled_name(name: &str, param_types: &[String]) -> String {
 }
 
 fn java_overload_type_key(type_hint: &str) -> String {
-    let simple = type_hint
-        .trim()
-        .trim_end_matches("[]")
-        .rsplit('.')
-        .next()
-        .unwrap_or(type_hint)
-        .trim();
+    let trimmed = type_hint.trim().trim_end_matches("[]").trim();
+    let simple = java_type_simple_name(trimmed);
     match simple {
         "Integer" => "int".to_string(),
         "Double" => "double".to_string(),
@@ -19330,36 +19324,24 @@ fn extract_ref_name(pair: &Pair<Rule>) -> String {
                     _ => {}
                 }
             }
-            let base = pair
-                .as_str()
-                .split('<')
-                .next()
-                .unwrap_or("Object")
-                .trim()
-                .trim_end_matches("[]")
-                .to_string();
+            let raw = pair.as_str().trim().trim_end_matches("[]").trim();
+            let base = common_generics::parse_type_ref_hint(raw)
+                .map(|ty| common_generics::display_type_ref(&ty))
+                .unwrap_or_else(|| common_generics::generic_base_name(raw).to_string());
             format!("{}{}", base, "[]".repeat(dims))
         }
         Rule::ref_type => {
-            for p in pair.clone().into_inner() {
-                if p.as_rule() == Rule::qualified_name {
-                    return p.as_str().to_string();
-                }
-            }
-            pair.as_str()
-                .split('<')
-                .next()
-                .unwrap_or("Object")
-                .trim()
-                .to_string()
+            let raw = pair.as_str().trim();
+            common_generics::parse_type_ref_hint(raw)
+                .map(|ty| common_generics::display_type_ref(&ty))
+                .unwrap_or_else(|| common_generics::generic_base_name(raw).to_string())
         }
-        _ => pair
-            .as_str()
-            .split('<')
-            .next()
-            .unwrap_or("Object")
-            .trim()
-            .to_string(),
+        _ => {
+            let raw = pair.as_str().trim();
+            common_generics::parse_type_ref_hint(raw)
+                .map(|ty| common_generics::display_type_ref(&ty))
+                .unwrap_or_else(|| common_generics::generic_base_name(raw).to_string())
+        }
     }
 }
 

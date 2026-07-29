@@ -36,6 +36,7 @@ use vybe_ast::*;
 // Channels are normalized into COMMON AST shapes — the walker builds AST,
 // not bytecode. The emit side lives in the compiler.
 use vybe_ast::channels;
+use vybe_compiler::compiler::generics as common_generics;
 use vybe_compiler::compiler::reflection;
 
 // ══════════════════════════════════════════════════════════════════════════════════════════
@@ -5446,6 +5447,8 @@ func __go_errors_as(err error, match func(error) bool, assign func(error)) bool 
 struct GoFunctionSignature {
     params: Vec<Option<String>>,
     return_type: Option<String>,
+    generic_arg_count: usize,
+    generic_param_names: Vec<String>,
 }
 
 #[derive(Clone, Default)]
@@ -5468,6 +5471,7 @@ struct GoNormalizeEnv {
     function_bodies: HashMap<String, Vec<Statement>>,
     flag_bindings: HashMap<String, (String, String)>,
     time_round_half_hour_bindings: HashSet<String>,
+    generic_type_params: HashMap<String, String>,
     return_type: Option<String>,
     panic_value_name: Option<String>,
     has_panic_name: Option<String>,
@@ -5536,6 +5540,7 @@ fn normalize_go_module(mut module: Module) -> Module {
         function_bodies,
         flag_bindings: HashMap::new(),
         time_round_half_hour_bindings: HashSet::new(),
+        generic_type_params: HashMap::new(),
         return_type: None,
         panic_value_name: None,
         has_panic_name: None,
@@ -5637,10 +5642,12 @@ fn collect_go_function_signatures(body: &[Statement]) -> HashMap<String, GoFunct
             } => {
                 signatures.insert(
                     name.clone(),
-                    GoFunctionSignature {
-                        params: params.iter().map(|param| param.type_hint.clone()).collect(),
-                        return_type: return_type.clone(),
-                    },
+                                GoFunctionSignature {
+                                    params: params.iter().map(|param| param.type_hint.clone()).collect(),
+                                    return_type: return_type.clone(),
+                                    generic_arg_count: go_signature_generic_arg_count(params),
+                                    generic_param_names: go_signature_generic_param_names(params),
+                                },
                 );
             }
             StmtKind::StructDecl { members, .. } => {
@@ -5661,6 +5668,8 @@ fn collect_go_function_signatures(body: &[Statement]) -> HashMap<String, GoFunct
                                         .map(|param| param.type_hint.clone())
                                         .collect(),
                                     return_type: return_type.clone(),
+                                    generic_arg_count: go_signature_generic_arg_count(params),
+                                    generic_param_names: go_signature_generic_param_names(params),
                                 },
                             );
                         }
@@ -5671,6 +5680,21 @@ fn collect_go_function_signatures(body: &[Statement]) -> HashMap<String, GoFunct
         }
     }
     signatures
+}
+
+fn go_signature_generic_arg_count(params: &[Param]) -> usize {
+    params
+        .iter()
+        .take_while(|param| param.type_hint.as_deref() == Some("__goTypeArg"))
+        .count()
+}
+
+fn go_signature_generic_param_names(params: &[Param]) -> Vec<String> {
+    params
+        .iter()
+        .take_while(|param| param.type_hint.as_deref() == Some("__goTypeArg"))
+        .filter_map(|param| go_runtime_generic_param_name(&param.name))
+        .collect()
 }
 
 fn collect_go_function_bodies(body: &[Statement]) -> HashMap<String, Vec<Statement>> {
@@ -8322,6 +8346,7 @@ fn normalize_go_statement(
                 function_bodies: env.function_bodies.clone(),
                 flag_bindings: env.flag_bindings.clone(),
                 time_round_half_hour_bindings: env.time_round_half_hour_bindings.clone(),
+                generic_type_params: HashMap::new(),
                 return_type: return_type.clone(),
                 panic_value_name: None,
                 has_panic_name: None,
@@ -8330,6 +8355,13 @@ fn normalize_go_statement(
                 owns_panic_state: false,
             };
             for param in params {
+                if param.type_hint.as_deref() == Some("__goTypeArg") {
+                    if let Some(type_param) = go_runtime_generic_param_name(&param.name) {
+                        fn_env
+                            .generic_type_params
+                            .insert(type_param, param.name.clone());
+                    }
+                }
                 if let Some(type_hint) = param.type_hint.as_ref() {
                     fn_env
                         .value_types
@@ -9134,12 +9166,15 @@ fn normalize_go_expr(
                 };
                 return go_builtin_call(helper, vec![normalized_object]);
             }
-            let next_object = normalize_go_expr(object, env, signatures, state);
+            let mut next_object = normalize_go_expr(object, env, signatures, state);
+            if go_should_auto_deref_struct_member(object, field, env, signatures) {
+                next_object = Expression::new(ExprKind::RefLoad(Box::new(next_object)));
+            }
             let rewritten =
-                go_rewrite_promoted_member_access(next_object, field, *null_safe, env, signatures);
+                go_rewrite_promoted_member_access(next_object.clone(), field, *null_safe, env, signatures);
             rewritten.unwrap_or_else(|| {
                 Expression::new(ExprKind::Member {
-                    object: Box::new(normalize_go_expr(object, env, signatures, state)),
+                    object: Box::new(next_object),
                     field: field.clone(),
                     null_safe: *null_safe,
                 })
@@ -9225,7 +9260,8 @@ fn normalize_go_expr(
                 ExprKind::Ident(name) => signatures.get(name),
                 _ => None,
             };
-            let mut next_args = args
+            let effective_args = go_effective_generic_call_args(args, signature, env, signatures);
+            let mut next_args = effective_args
                 .iter()
                 .enumerate()
                 .map(|(idx, arg)| {
@@ -9401,7 +9437,7 @@ fn normalize_go_expr(
                 if let Some(rewritten) = go_rewrite_sort_call(name, &next_args) {
                     return rewritten;
                 }
-                if let Some(rewritten) = go_rewrite_cmp_call(name, &next_args) {
+                if let Some(rewritten) = go_rewrite_cmp_call(name, &next_args, env, signatures) {
                     return rewritten;
                 }
                 if let Some(rewritten) = go_rewrite_strings_call(name, &next_args) {
@@ -9661,7 +9697,7 @@ fn normalize_go_expr(
                             by_ref: false,
                         }]))
                     };
-                    result = go_member_call(result, "concat", vec![rhs]);
+                    result = go_builtin_call("__go_array_concat", vec![result, rhs]);
                 }
                 return result;
             }
@@ -9914,6 +9950,7 @@ fn normalize_go_expr(
                 function_bodies: env.function_bodies.clone(),
                 flag_bindings: env.flag_bindings.clone(),
                 time_round_half_hour_bindings: env.time_round_half_hour_bindings.clone(),
+                generic_type_params: env.generic_type_params.clone(),
                 return_type: None,
                 panic_value_name: env.panic_value_name.clone(),
                 has_panic_name: env.has_panic_name.clone(),
@@ -9922,6 +9959,13 @@ fn normalize_go_expr(
                 owns_panic_state: false,
             };
             for param in params {
+                if param.type_hint.as_deref() == Some("__goTypeArg") {
+                    if let Some(type_param) = go_runtime_generic_param_name(&param.name) {
+                        lambda_env
+                            .generic_type_params
+                            .insert(type_param, param.name.clone());
+                    }
+                }
                 if let Some(type_hint) = param.type_hint.as_ref() {
                     lambda_env
                         .value_types
@@ -16202,7 +16246,12 @@ fn go_stdlib_type_binding(type_name: &str) -> Option<&'static str> {
 }
 
 /// Rewrite `cmp` package ordering helpers to plain comparisons.
-fn go_rewrite_cmp_call(call_name: &str, args: &[Argument]) -> Option<Expression> {
+fn go_rewrite_cmp_call(
+    call_name: &str,
+    args: &[Argument],
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<Expression> {
     let bin = |op: BinOp, l: Expression, r: Expression| {
         Expression::new(ExprKind::Binary {
             op,
@@ -16210,10 +16259,26 @@ fn go_rewrite_cmp_call(call_name: &str, args: &[Argument]) -> Option<Expression>
             right: Box::new(r),
         })
     };
+    let is_string_cmp = || {
+        [go_arg_value(args, 0), go_arg_value(args, 1)]
+            .iter()
+            .any(|expr| go_expr_type_hint(expr, env, signatures).as_deref() == Some("string"))
+    };
+    let string_compare = |a: Expression, b: Expression| {
+        go_builtin_call("strings.Compare", vec![a, b])
+    };
     match call_name {
         // cmp.Less(a, b) → a < b
+        "cmp.Less" if is_string_cmp() => Some(bin(
+            BinOp::Lt,
+            string_compare(go_arg_value(args, 0), go_arg_value(args, 1)),
+            Expression::int(0),
+        )),
         "cmp.Less" => Some(bin(BinOp::Lt, go_arg_value(args, 0), go_arg_value(args, 1))),
         // cmp.Compare(a, b) → a < b ? -1 : (a > b ? 1 : 0)
+        "cmp.Compare" if is_string_cmp() => {
+            Some(string_compare(go_arg_value(args, 0), go_arg_value(args, 1)))
+        }
         "cmp.Compare" => {
             let a = go_arg_value(args, 0);
             let b = go_arg_value(args, 1);
@@ -17076,6 +17141,21 @@ fn normalize_go_lvalue_expr(
                 },
             )
         }
+        ExprKind::Member {
+            object,
+            field,
+            null_safe,
+        } => {
+            let mut next_object = normalize_go_expr(object, env, signatures, state);
+            if go_should_auto_deref_struct_member(object, field, env, signatures) {
+                next_object = Expression::new(ExprKind::RefLoad(Box::new(next_object)));
+            }
+            Expression::new(ExprKind::Member {
+                object: Box::new(next_object),
+                field: field.clone(),
+                null_safe: *null_safe,
+            })
+        }
         ExprKind::Assign { target, value } => Expression::new(ExprKind::Assign {
             target: Box::new(normalize_go_lvalue_expr(target, env, signatures, state)),
             value: Box::new(normalize_go_expr(value, env, signatures, state)),
@@ -17548,6 +17628,22 @@ fn go_resolve_struct_member_type(
         }
     }
     None
+}
+
+fn go_should_auto_deref_struct_member(
+    object: &Expression,
+    field: &str,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> bool {
+    let Some(type_name) = go_expr_type_hint(object, env, signatures) else {
+        return false;
+    };
+    let trimmed = type_name.trim();
+    let Some(inner) = trimmed.strip_prefix('*').or_else(|| trimmed.strip_prefix('^')) else {
+        return false;
+    };
+    go_resolve_struct_member_type(inner.trim(), field, env, &mut HashSet::new()).is_some()
 }
 
 fn go_rewrite_promoted_member_access(
@@ -18312,10 +18408,12 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut body_stmts = Vec::new();
     let mut return_type: Option<String> = None;
     let mut named_results = Vec::new();
+    let mut generic_params = Vec::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::ident_name => name = inner.as_str().to_string(),
+            Rule::type_params => generic_params = consume_go_type_params(inner),
             Rule::signature => {
                 let sig = walk_signature(inner)?;
                 params = sig.params;
@@ -18328,6 +18426,7 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             _ => {}
         }
     }
+    prepend_go_generic_type_params(&mut params, &generic_params);
 
     for param in named_results.iter().rev() {
         body_stmts.insert(
@@ -18585,19 +18684,32 @@ fn walk_type(pair: Pair<Rule>) -> String {
     if let Some(backing) = go_stdlib_type_binding(pair.as_str()) {
         return backing.to_string();
     }
-    // Erase generic type arguments: a `Name[args]` instantiation becomes the
-    // bare `Name` (Vybe is dynamically typed, so generics are type-erased).
-    let mut inners = pair.clone().into_inner();
-    if let Some(first) = inners.next() {
-        if first.as_rule() == Rule::ident_name {
-            if let Some(second) = inners.next() {
-                if second.as_rule() == Rule::type_arguments {
-                    return first.as_str().to_string();
-                }
-            }
-        }
+    common_generics::erased_type_name(pair.as_str())
+}
+
+fn consume_go_type_params(pair: Pair<Rule>) -> Vec<GenericParam> {
+    common_generics::parse_generic_params_hint(pair.as_str())
+}
+
+fn prepend_go_generic_type_params(params: &mut Vec<Param>, generic_params: &[GenericParam]) {
+    for name in common_generics::runtime_type_arg_param_names(generic_params)
+        .into_iter()
+        .rev()
+    {
+        params.insert(
+            0,
+            Param {
+                name,
+                type_hint: Some("__goTypeArg".to_string()),
+                default: Some(go_runtime_type_arg_expr("any".to_string())),
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: true,
+                is_nullable: false,
+            },
+        );
     }
-    pair.as_str().to_string()
 }
 
 fn walk_block(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
@@ -18935,6 +19047,9 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
                 for spec_inner in inner.into_inner() {
                     match spec_inner.as_rule() {
                         Rule::ident_name => name = spec_inner.as_str().to_string(),
+                        Rule::type_params => {
+                            let _ = consume_go_type_params(spec_inner);
+                        }
                         Rule::type_annotation => {
                             if let Some(type_stmt) =
                                 walk_named_type_annotation(name.clone(), spec_inner.clone())?
@@ -19093,9 +19208,7 @@ fn go_embedded_field_name(type_name: &str) -> Option<String> {
 
 fn go_named_receiver_type(type_name: &str) -> Option<String> {
     let trimmed = type_name.trim().trim_start_matches('*').trim();
-    // Strip generic receiver type parameters: `Cell[T]` → `Cell`. A method
-    // receiver is always a named type, so any `[...]` is a type-param list.
-    let trimmed = trimmed.split('[').next().unwrap_or(trimmed).trim();
+    let trimmed = common_generics::generic_base_name(trimmed);
     if trimmed.is_empty() {
         return None;
     }
@@ -20446,6 +20559,15 @@ fn walk_primary(pair: Pair<Rule>) -> Result<Expression, String> {
                     }
                 }
             }
+            Rule::generic_instantiation => {
+                for g_inner in inner.into_inner() {
+                    if g_inner.as_rule() == Rule::type_arguments {
+                        chain.push(PrimaryChain::GenericInstantiation(
+                            common_generics::generic_argument_display_names(g_inner.as_str()),
+                        ));
+                    }
+                }
+            }
             Rule::index => {
                 for i_inner in inner.into_inner() {
                     if i_inner.as_rule() == Rule::expression {
@@ -20514,8 +20636,13 @@ fn walk_primary(pair: Pair<Rule>) -> Result<Expression, String> {
     }
 
     if let Some(mut result) = base {
+        let mut pending_type_args: Vec<String> = Vec::new();
         for item in chain {
             result = match item {
+                PrimaryChain::GenericInstantiation(type_args) => {
+                    pending_type_args = type_args;
+                    result
+                }
                 PrimaryChain::Member(name) => Expression::new(ExprKind::Member {
                     object: Box::new(result),
                     field: name,
@@ -20561,11 +20688,22 @@ fn walk_primary(pair: Pair<Rule>) -> Result<Expression, String> {
                         optional: false,
                     })
                 }
-                PrimaryChain::Call(args) => Expression::new(ExprKind::Call {
-                    callee: Box::new(result),
-                    args,
-                    optional: false,
-                }),
+                PrimaryChain::Call(args) => {
+                    let mut call_args = Vec::new();
+                    call_args.extend(
+                        pending_type_args
+                            .drain(..)
+                            .map(|type_name| {
+                                Argument::positional(go_runtime_type_arg_expr(type_name))
+                            }),
+                    );
+                    call_args.extend(args);
+                    Expression::new(ExprKind::Call {
+                        callee: Box::new(result),
+                        args: call_args,
+                        optional: false,
+                    })
+                }
                 PrimaryChain::TypeAssert(type_name) => go_type_assert_expr(result, type_name),
             };
         }
@@ -20578,6 +20716,7 @@ fn walk_primary(pair: Pair<Rule>) -> Result<Expression, String> {
 #[derive(Clone)]
 enum PrimaryChain {
     Member(String),
+    GenericInstantiation(Vec<String>),
     Index(Expression),
     Slice {
         start: Option<Expression>,
@@ -20860,17 +20999,7 @@ fn go_literal_type_name(pair: Pair<Rule>) -> String {
     if let Some(backing) = go_stdlib_type_binding(pair.as_str()) {
         return backing.to_string();
     }
-    let mut inners = pair.clone().into_inner();
-    if let Some(first) = inners.next() {
-        if first.as_rule() == Rule::ident_name {
-            if let Some(second) = inners.next() {
-                if second.as_rule() == Rule::type_arguments {
-                    return first.as_str().to_string();
-                }
-            }
-        }
-    }
-    pair.as_str().to_string()
+    common_generics::erased_type_name(pair.as_str())
 }
 
 fn go_composite_literal_index_key(expr: &Expression) -> Option<usize> {
@@ -21028,6 +21157,9 @@ fn go_zero_value_expr(type_name: &str) -> Expression {
 }
 
 fn go_zero_value_for_type(type_name: &str, env: &GoNormalizeEnv) -> Expression {
+    if let Some(runtime_param) = env.generic_type_params.get(type_name.trim()) {
+        return go_zero_value_from_type_token(Expression::ident(runtime_param));
+    }
     if let Some(mapped) = go_stdlib_type_binding(type_name) {
         return go_zero_value_for_type(mapped, env);
     }
@@ -21042,6 +21174,12 @@ fn go_zero_value_for_type(type_name: &str, env: &GoNormalizeEnv) -> Expression {
         });
     }
     go_zero_value_expr(type_name)
+}
+
+fn go_runtime_generic_param_name(runtime_name: &str) -> Option<String> {
+    runtime_name
+        .strip_prefix("__generic_typearg_")
+        .map(str::to_string)
 }
 
 fn go_map_value_type(type_name: &str) -> Option<String> {
@@ -21306,6 +21444,194 @@ fn go_type_arg_expr(type_name: String) -> Expression {
         expr: Box::new(Expression::null()),
         type_name,
     })
+}
+
+fn go_runtime_type_arg_expr(type_name: String) -> Expression {
+    Expression::string(&type_name)
+}
+
+fn go_zero_value_from_type_token(token: Expression) -> Expression {
+    let mut result = Expression::null();
+    for type_name in ["float32", "float64"] {
+        result = Expression::new(ExprKind::Ternary {
+            cond: Box::new(go_type_token_eq(&token, type_name)),
+            then: Box::new(Expression::new(ExprKind::Lit(Literal::Float(0.0)))),
+            else_: Box::new(result),
+        });
+    }
+    for type_name in [
+        "int",
+        "int8",
+        "int16",
+        "int32",
+        "int64",
+        "uint",
+        "uint8",
+        "uint16",
+        "uint32",
+        "uint64",
+        "uintptr",
+        "byte",
+        "rune",
+    ] {
+        result = Expression::new(ExprKind::Ternary {
+            cond: Box::new(go_type_token_eq(&token, type_name)),
+            then: Box::new(Expression::int(0)),
+            else_: Box::new(result),
+        });
+    }
+    result = Expression::new(ExprKind::Ternary {
+        cond: Box::new(go_type_token_eq(&token, "string")),
+        then: Box::new(Expression::string("")),
+        else_: Box::new(result),
+    });
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(go_type_token_eq(&token, "bool")),
+        then: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(false)))),
+        else_: Box::new(result),
+    })
+}
+
+fn go_type_token_eq(token: &Expression, type_name: &str) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(token.clone()),
+        right: Box::new(Expression::string(type_name)),
+    })
+}
+
+fn go_effective_generic_call_args(
+    args: &[Argument],
+    signature: Option<&GoFunctionSignature>,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Vec<Argument> {
+    let Some(signature) = signature else {
+        return args.to_vec();
+    };
+    let generic_arg_count = signature.generic_arg_count;
+    if generic_arg_count == 0 {
+        return args.to_vec();
+    }
+    if args
+        .iter()
+        .take(generic_arg_count)
+        .filter_map(|arg| go_type_arg_name_from_expr(&arg.value))
+        .count()
+        == generic_arg_count
+    {
+        return args.to_vec();
+    }
+
+    let mut out = Vec::with_capacity(generic_arg_count + args.len());
+    for type_param in signature.generic_param_names.iter().take(generic_arg_count) {
+        let inferred = go_infer_generic_call_type_arg(type_param, args, signature, env, signatures)
+            .unwrap_or_else(|| "any".into());
+        out.push(Argument::positional(go_runtime_type_arg_expr(inferred)));
+    }
+    while out.len() < generic_arg_count {
+        out.push(Argument::positional(go_runtime_type_arg_expr("any".to_string())));
+    }
+    out.extend(args.iter().cloned());
+    out
+}
+
+fn go_infer_generic_call_type_arg(
+    type_param: &str,
+    args: &[Argument],
+    signature: &GoFunctionSignature,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Option<String> {
+    for (idx, arg) in args.iter().enumerate() {
+        let formal = signature
+            .params
+            .get(signature.generic_arg_count + idx)
+            .and_then(|hint| hint.as_deref())?;
+        let actual = go_expr_type_hint(&arg.value, env, signatures)?;
+        if let Some(inferred) = go_infer_generic_type_arg_from_types(type_param, formal, &actual) {
+            return Some(inferred);
+        }
+    }
+    None
+}
+
+fn go_infer_generic_type_arg_from_types(
+    type_param: &str,
+    formal_type: &str,
+    actual_type: &str,
+) -> Option<String> {
+    let formal = formal_type.trim();
+    let actual = actual_type.trim();
+    if formal == type_param {
+        return Some(actual.to_string());
+    }
+    if let Some(formal_inner) = formal.strip_prefix("[]") {
+        if formal_inner.trim() == type_param {
+            return actual
+                .strip_prefix("[]")
+                .map(str::trim)
+                .filter(|inner| !inner.is_empty())
+                .map(str::to_string);
+        }
+    }
+    if let Some(formal_inner) = formal.strip_prefix('*') {
+        if formal_inner.trim() == type_param {
+            return actual
+                .strip_prefix('*')
+                .map(str::trim)
+                .filter(|inner| !inner.is_empty())
+                .map(str::to_string);
+        }
+    }
+    if let (Some((formal_key, formal_value)), Some((actual_key, actual_value))) =
+        (go_map_key_value_types(formal), go_map_key_value_types(actual))
+    {
+        if formal_key.trim() == type_param {
+            return Some(actual_key);
+        }
+        if formal_value.trim() == type_param {
+            return Some(actual_value);
+        }
+    }
+    None
+}
+
+fn go_map_key_value_types(type_name: &str) -> Option<(String, String)> {
+    let trimmed = type_name.trim();
+    if !trimmed.starts_with("map[") {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    for (idx, ch) in trimmed.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let key = trimmed.get(4..idx)?.trim();
+                    let value = trimmed.get(idx + 1..)?.trim();
+                    if !key.is_empty() && !value.is_empty() {
+                        return Some((key.to_string(), value.to_string()));
+                    }
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn go_type_arg_name_from_expr(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(type_name)) => Some(type_name.clone()),
+        ExprKind::Cast { expr, type_name } if matches!(expr.kind, ExprKind::Lit(Literal::Null)) => {
+            Some(type_name.clone())
+        }
+        _ => None,
+    }
 }
 
 fn go_type_assert_expr(expr: Expression, type_name: String) -> Expression {

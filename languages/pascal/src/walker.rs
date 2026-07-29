@@ -1,7 +1,8 @@
 use super::{PascalParser, Rule};
-use pest::iterators::Pair;
 use pest::Parser;
+use pest::iterators::Pair;
 use vybe_ast::*;
+use vybe_compiler::compiler::generics as common_generics;
 use vybe_compiler::compiler::reflection as common_reflection;
 
 const PASCAL_HELPER_TARGET_PREFIX: &str = "__pascal_helper_target__:";
@@ -16,6 +17,7 @@ struct PascalPreludeNeeds {
     tobject: bool,
     tinterfacedobject: bool,
     collections: bool,
+    tbits: bool,
 }
 
 pub fn parse(source: &str) -> Result<Module, String> {
@@ -169,6 +171,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 }
             }
         }
+        if prelude_needs.tbits && !existing_classes.contains("tbits") {
+            for stmt in cached_pascal_tbits_class()? {
+                prelude.push(stmt);
+            }
+        }
         for stmt in prelude.into_iter().rev() {
             body.insert(0, stmt);
         }
@@ -273,6 +280,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
 
     let bool_class_methods = collect_pascal_bool_class_methods(&body);
+    let float_class_members = collect_pascal_float_class_members(&body);
     for stmt in body.iter_mut() {
         rewrite_pascal_writeln_bool_class_calls_stmt(stmt, &bool_class_methods);
     }
@@ -328,6 +336,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let indexed_properties = collect_pascal_indexed_properties(&body);
     if !indexed_properties.is_empty() {
         rewrite_pascal_indexed_properties(&mut body, &indexed_properties);
+        let mut env = std::collections::HashMap::new();
+        rewrite_pascal_writeln_bool_instance_members_body(&mut body, &bool_class_methods, &mut env);
+        let mut env = std::collections::HashMap::new();
+        rewrite_pascal_writeln_float_instance_members_body(
+            &mut body,
+            &float_class_members,
+            &mut env,
+        );
     }
     rewrite_pascal_collection_for_in(&mut body);
     synthesize_pascal_inherited_constructors(&mut body);
@@ -362,6 +378,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let record_array_types = collect_record_array_types(&body, &struct_names);
     let early_enum_type_counts = collect_enum_type_counts(&body);
     normalize_pascal_enum_indexed_array_decls(&mut body, &early_enum_type_counts);
+    let subrange_aliases = collect_pascal_subrange_aliases(&body);
+    if !subrange_aliases.is_empty() {
+        normalize_pascal_subrange_indexed_array_decls(&mut body, &subrange_aliases);
+    }
     default_init_record_array_fields(&mut body, &struct_names, &explicit_ctor_record_names);
     for stmt in body.iter_mut() {
         default_init_struct_locals_stmt(stmt, &struct_names, &explicit_ctor_record_names);
@@ -381,7 +401,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
     let struct_fields = collect_struct_fields(&body);
     lower_struct_copy_assignments(&mut body, &struct_fields);
-    lower_pascal_array_value_semantics(&mut body);
+    lower_pascal_small_set_move(&mut body);
+    lower_pascal_array_value_semantics(&mut body, &array_type_aliases);
     default_init_const_bounded_arrays(&mut body);
     rewrite_pascal_fixed_array_bounds(&mut body);
     flatten_pascal_multidim_fixed_array_type_hints(&mut body);
@@ -1016,7 +1037,8 @@ fn collect_pascal_dynamic_array_types_stmt(
     match &stmt.kind {
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
-                let (BindingPattern::Ident(name), Some(type_hint)) = (&decl.pattern, &decl.type_hint)
+                let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, &decl.type_hint)
                 else {
                     continue;
                 };
@@ -1069,7 +1091,9 @@ fn collect_pascal_dynamic_array_types_stmt(
             }
             collect_pascal_dynamic_array_types_body(body, aliases, out);
         }
-        StmtKind::DoWhile { body, .. } => collect_pascal_dynamic_array_types_body(body, aliases, out),
+        StmtKind::DoWhile { body, .. } => {
+            collect_pascal_dynamic_array_types_body(body, aliases, out)
+        }
         StmtKind::Try {
             body,
             catches,
@@ -1128,9 +1152,33 @@ fn resolve_pascal_array_type_hint(
     aliases: &std::collections::HashMap<String, String>,
 ) -> Option<String> {
     if is_pascal_array_type_hint(type_hint) {
-        return Some(type_hint.to_string());
+        return Some(resolve_pascal_array_element_aliases(type_hint, aliases));
     }
-    aliases.get(&bare_type_name(type_hint).to_lowercase()).cloned()
+    aliases
+        .get(&bare_type_name(type_hint).to_lowercase())
+        .map(|hint| resolve_pascal_array_element_aliases(hint, aliases))
+}
+
+fn resolve_pascal_array_element_aliases(
+    type_hint: &str,
+    aliases: &std::collections::HashMap<String, String>,
+) -> String {
+    let trimmed = type_hint.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let Some(idx) = lower.find(" of ") else {
+        return trimmed.to_string();
+    };
+    let head = &trimmed[..idx + " of ".len()];
+    let element = trimmed[idx + " of ".len()..].trim();
+    let resolved_element = if is_pascal_array_type_hint(element) {
+        resolve_pascal_array_element_aliases(element, aliases)
+    } else {
+        aliases
+            .get(&bare_type_name(element).to_lowercase())
+            .map(|hint| resolve_pascal_array_element_aliases(hint, aliases))
+            .unwrap_or_else(|| element.to_string())
+    };
+    format!("{}{}", head, resolved_element)
 }
 
 fn assign_result_expr(value: Expression) -> Statement {
@@ -6773,8 +6821,14 @@ fn pascal_indexed_property_chain(
         return None;
     }
     indices.reverse();
-    let (receiver, prop) =
-        pascal_indexed_property_target(base, properties, var_types, current_class, true)?;
+    let (receiver, prop) = pascal_indexed_property_target_for_index(
+        base,
+        indices.first()?,
+        properties,
+        var_types,
+        current_class,
+        true,
+    )?;
     Some((receiver, prop, indices))
 }
 
@@ -6855,8 +6909,14 @@ fn pascal_indexed_property_getter_call(
     var_types: &std::collections::HashMap<String, String>,
     current_class: Option<&str>,
 ) -> Option<Expression> {
-    let (receiver, prop) =
-        pascal_indexed_property_target(object, properties, var_types, current_class, true)?;
+    let (receiver, prop) = pascal_indexed_property_target_for_index(
+        object,
+        &index,
+        properties,
+        var_types,
+        current_class,
+        true,
+    )?;
     let getter = prop.getter.as_ref()?;
     Some(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
@@ -6894,8 +6954,14 @@ fn pascal_indexed_property_setter_call(
     let ExprKind::Index { object, index, .. } = &target.kind else {
         return None;
     };
-    let (receiver, prop) =
-        pascal_indexed_property_target(object, properties, var_types, current_class, true)?;
+    let (receiver, prop) = pascal_indexed_property_target_for_index(
+        object,
+        index,
+        properties,
+        var_types,
+        current_class,
+        true,
+    )?;
     let setter = prop.setter.as_ref()?;
     Some(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
@@ -6911,8 +6977,9 @@ fn pascal_indexed_property_setter_call(
     }))
 }
 
-fn pascal_indexed_property_target(
+fn pascal_indexed_property_target_for_index(
     object: &Expression,
+    index: &Expression,
     properties: &PascalIndexedPropertyMap,
     var_types: &std::collections::HashMap<String, String>,
     current_class: Option<&str>,
@@ -6925,49 +6992,94 @@ fn pascal_indexed_property_target(
             ..
         } => {
             let class_name = pascal_expr_class_name(receiver, var_types, current_class)?;
-            let prop = properties
+            let candidates: Vec<_> = properties
                 .get(&class_name)?
                 .iter()
-                .find(|prop| prop.name.eq_ignore_ascii_case(field))?
-                .clone();
+                .filter(|prop| prop.name.eq_ignore_ascii_case(field))
+                .cloned()
+                .collect();
+            let prop = choose_pascal_indexed_property(candidates, index)?;
             Some(((**receiver).clone(), prop))
         }
         ExprKind::Ident(name) => {
             if let Some(class_name) = current_class {
-                if let Some(prop) = properties
+                let candidates: Vec<_> = properties
                     .get(class_name)
-                    .and_then(|props| {
-                        props
-                            .iter()
-                            .find(|prop| prop.name.eq_ignore_ascii_case(name))
-                    })
+                    .into_iter()
+                    .flat_map(|props| props.iter())
+                    .filter(|prop| prop.name.eq_ignore_ascii_case(name))
                     .cloned()
-                {
+                    .collect();
+                if let Some(prop) = choose_pascal_indexed_property(candidates, index) {
                     return Some((Expression::new(ExprKind::This), prop));
                 }
             }
             if allow_default {
                 let class_name = pascal_expr_class_name(object, var_types, current_class)?;
-                let prop = properties
+                let candidates: Vec<_> = properties
                     .get(&class_name)?
                     .iter()
-                    .find(|prop| prop.is_default)?
-                    .clone();
+                    .filter(|prop| prop.is_default)
+                    .cloned()
+                    .collect();
+                let prop = choose_pascal_indexed_property(candidates, index)?;
                 return Some((object.clone(), prop));
             }
             None
         }
         _ if allow_default => {
             let class_name = pascal_expr_class_name(object, var_types, current_class)?;
-            let prop = properties
+            let candidates: Vec<_> = properties
                 .get(&class_name)?
                 .iter()
-                .find(|prop| prop.is_default)?
-                .clone();
+                .filter(|prop| prop.is_default)
+                .cloned()
+                .collect();
+            let prop = choose_pascal_indexed_property(candidates, index)?;
             Some((object.clone(), prop))
         }
         _ => None,
     }
+}
+
+fn choose_pascal_indexed_property(
+    candidates: Vec<PascalIndexedPropertyInfo>,
+    index: &Expression,
+) -> Option<PascalIndexedPropertyInfo> {
+    if candidates.len() <= 1 {
+        return candidates.into_iter().next();
+    }
+    let wants_string = matches!(&index.kind, ExprKind::Lit(Literal::Str(_)));
+    let wants_numeric = matches!(
+        &index.kind,
+        ExprKind::Lit(Literal::Int(_) | Literal::Float(_))
+    );
+    if wants_string {
+        if let Some(prop) = candidates.iter().find(|prop| {
+            pascal_indexed_property_accessor_mentions(prop, &["name", "key", "str", "text"])
+        }) {
+            return Some(prop.clone());
+        }
+    }
+    if wants_numeric {
+        if let Some(prop) = candidates
+            .iter()
+            .find(|prop| pascal_indexed_property_accessor_mentions(prop, &["idx", "index", "item"]))
+        {
+            return Some(prop.clone());
+        }
+    }
+    candidates.into_iter().next()
+}
+
+fn pascal_indexed_property_accessor_mentions(
+    prop: &PascalIndexedPropertyInfo,
+    needles: &[&str],
+) -> bool {
+    prop.getter.iter().chain(prop.setter.iter()).any(|name| {
+        let lower = name.to_ascii_lowercase();
+        needles.iter().any(|needle| lower.contains(needle))
+    })
 }
 
 fn pascal_expr_class_name(
@@ -7306,6 +7418,17 @@ fn pascal_multidim_setlength_replacement(
             init,
         )]);
     }
+    if args.len() == 2 {
+        if let Some(init) =
+            pascal_setlength_fixed_array_element_default(&args[0].value, array_types)
+        {
+            return Some(vec![pascal_resize_nested_array_stmt(
+                args[0].value.clone(),
+                args[1].value.clone(),
+                Some(init),
+            )]);
+        }
+    }
     if args.len() < 3 {
         return None;
     }
@@ -7473,6 +7596,23 @@ fn pascal_setlength_default_for_target(
         .flatten()
 }
 
+fn pascal_setlength_fixed_array_element_default(
+    target: &Expression,
+    array_types: &std::collections::HashMap<String, String>,
+) -> Option<Expression> {
+    let name = pascal_index_root_name(target)?;
+    let type_hint = array_types.get(&name.to_lowercase())?;
+    let element_type = pascal_array_immediate_element_type(type_hint)?;
+    if !element_type
+        .trim_start()
+        .get(..6)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("array["))
+    {
+        return None;
+    }
+    default_array_init_for_type(&element_type)
+}
+
 fn pascal_setlength_default_for_root(
     root: &Expression,
     array_types: &std::collections::HashMap<String, String>,
@@ -7561,9 +7701,10 @@ fn pascal_default_expr_for_type(
         "string" | "ansistring" | "unicodestring" | "widestring" | "char" => {
             Some(Expression::string(""))
         }
-        "integer" | "int" | "longint" | "word" | "byte" | "smallint" | "shortint"
-        | "cardinal" | "int64" | "qword" | "real" | "double" | "single" | "extended"
-        | "currency" => Some(Expression::int(0)),
+        "integer" | "int" | "longint" | "word" | "byte" | "smallint" | "shortint" | "cardinal"
+        | "int64" | "qword" | "real" | "double" | "single" | "extended" | "currency" => {
+            Some(Expression::int(0))
+        }
         _ => None,
     }
 }
@@ -9913,8 +10054,79 @@ fn build_struct_copy_statements(
     stmts
 }
 
-fn lower_pascal_array_value_semantics(body: &mut [Statement]) {
+fn lower_pascal_small_set_move(body: &mut [Statement]) {
     let mut env = std::collections::HashMap::new();
+    lower_pascal_small_set_move_block(body, &mut env);
+}
+
+fn lower_pascal_small_set_move_block(
+    body: &mut [Statement],
+    env: &mut std::collections::HashMap<String, i64>,
+) {
+    for stmt in body {
+        lower_pascal_small_set_move_stmt(stmt, env);
+    }
+}
+
+fn lower_pascal_small_set_move_stmt(
+    stmt: &mut Statement,
+    env: &mut std::collections::HashMap<String, i64>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Assign { targets, value } if targets.len() == 1 => {
+            if let Some(name) = pascal_expr_ident_name(&targets[0]) {
+                if let Some(mask) = pascal_small_set_byte_mask(value) {
+                    env.insert(name.to_lowercase(), mask);
+                }
+            }
+        }
+        StmtKind::Expr(expr) => {
+            if let Some((target, value)) =
+                pascal_move_small_set_byte_assignment_from_masks(expr, env)
+            {
+                stmt.kind = StmtKind::Assign {
+                    targets: vec![target],
+                    value,
+                };
+            }
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            let mut scoped = env.clone();
+            lower_pascal_small_set_move_block(body, &mut scoped);
+        }
+        StmtKind::FunctionDecl { body, .. } => {
+            let mut scoped = std::collections::HashMap::new();
+            lower_pascal_small_set_move_block(body, &mut scoped);
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            lower_pascal_small_set_move_block(then_body, &mut env.clone());
+            for (_, body) in elifs {
+                lower_pascal_small_set_move_block(body, &mut env.clone());
+            }
+            if let Some(body) = else_body {
+                lower_pascal_small_set_move_block(body, &mut env.clone());
+            }
+        }
+        StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. }
+        | StmtKind::While { body, .. }
+        | StmtKind::DoWhile { body, .. } => {
+            lower_pascal_small_set_move_block(body, &mut env.clone());
+        }
+        _ => {}
+    }
+}
+
+fn lower_pascal_array_value_semantics(
+    body: &mut [Statement],
+    array_type_aliases: &std::collections::HashMap<String, String>,
+) {
+    let mut env = array_type_aliases.clone();
     lower_pascal_array_value_semantics_block(body, &mut env);
 }
 
@@ -9948,9 +10160,17 @@ fn lower_pascal_array_value_semantics_stmt(
         }
         StmtKind::Assign { targets, value } if targets.len() == 1 => {
             lower_pascal_array_value_semantics_expr(value, env);
+            if let Some(name) = pascal_expr_ident_name(&targets[0]) {
+                if let Some(mask) = pascal_small_set_byte_mask(value) {
+                    env.insert(
+                        format!("__pascal_setmask:{}", name.to_lowercase()),
+                        mask.to_string(),
+                    );
+                }
+            }
             if pascal_expr_is_array_like(value, env) && pascal_expr_is_array_like(&targets[0], env)
             {
-                *value = pascal_array_clone_expr(value.clone());
+                *value = pascal_array_assignment_value_expr(value.clone(), value, env);
             }
             lower_pascal_array_value_semantics_expr(&mut targets[0], env);
         }
@@ -9960,7 +10180,25 @@ fn lower_pascal_array_value_semantics_stmt(
             }
             lower_pascal_array_value_semantics_expr(value, env);
         }
-        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+        StmtKind::Expr(expr) => {
+            if let Some((target, value)) = pascal_fillchar_index_assignment(expr) {
+                stmt.kind = StmtKind::Assign {
+                    targets: vec![target],
+                    value,
+                };
+                lower_pascal_array_value_semantics_stmt(stmt, env);
+            } else if pascal_fillchar_zero_var(expr) {
+                stmt.kind = StmtKind::Empty;
+            } else if let Some((target, value)) = pascal_move_small_set_byte_assignment(expr, env) {
+                stmt.kind = StmtKind::Assign {
+                    targets: vec![target],
+                    value,
+                };
+            } else {
+                lower_pascal_array_value_semantics_expr(expr, env);
+            }
+        }
+        StmtKind::Return(Some(expr)) => {
             lower_pascal_array_value_semantics_expr(expr, env);
         }
         StmtKind::Return(None) | StmtKind::Empty => {}
@@ -10127,7 +10365,20 @@ fn lower_pascal_array_value_semantics_expr(
                 lower_pascal_array_value_semantics_expr(&mut arg.value, env);
             }
             if let ExprKind::Ident(name) = &callee.kind {
-                if name.eq_ignore_ascii_case("copy") && args.len() >= 2 {
+                if name.eq_ignore_ascii_case("fillchar") && args.len() >= 3 {
+                    let target = args[0].value.clone();
+                    if matches!(target.kind, ExprKind::Index { .. }) {
+                        *expr = Expression::new(ExprKind::Assign {
+                            target: Box::new(target),
+                            value: Box::new(args[2].value.clone()),
+                        });
+                    }
+                } else if name.eq_ignore_ascii_case("copy") && args.len() == 1 {
+                    let source = args[0].value.clone();
+                    if pascal_expr_is_array_like(&source, env) {
+                        *expr = pascal_array_clone_for_expr(source.clone(), &source, env);
+                    }
+                } else if name.eq_ignore_ascii_case("copy") && args.len() >= 2 {
                     let source = args[0].value.clone();
                     if pascal_expr_is_array_like(&source, env) {
                         let start = args[1].value.clone();
@@ -10171,7 +10422,7 @@ fn lower_pascal_array_value_semantics_expr(
         ExprKind::Assign { target, value } => {
             lower_pascal_array_value_semantics_expr(value, env);
             if pascal_expr_is_array_like(value, env) && pascal_expr_is_array_like(target, env) {
-                **value = pascal_array_clone_expr((**value).clone());
+                **value = pascal_array_assignment_value_expr((**value).clone(), value, env);
             }
             lower_pascal_array_value_semantics_expr(target, env);
         }
@@ -10218,7 +10469,8 @@ fn pascal_expr_is_array_like(
         ExprKind::Array(_) => true,
         ExprKind::Ident(name) => env
             .get(&name.to_lowercase())
-            .is_some_and(|hint| is_pascal_array_type_hint(hint)),
+            .map(|hint| resolve_pascal_type_alias_in_env(hint, env))
+            .is_some_and(|hint| is_pascal_array_type_hint(&hint)),
         ExprKind::Call { callee, .. } => matches!(
             &callee.kind,
             ExprKind::Ident(name)
@@ -10227,6 +10479,171 @@ fn pascal_expr_is_array_like(
         ),
         _ => false,
     }
+}
+
+fn pascal_fillchar_index_assignment(expr: &Expression) -> Option<(Expression, Expression)> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("fillchar")) {
+        return None;
+    }
+    if args.len() < 3 || !matches!(args[0].value.kind, ExprKind::Index { .. }) {
+        return None;
+    }
+    Some((args[0].value.clone(), args[2].value.clone()))
+}
+
+fn pascal_fillchar_zero_var(expr: &Expression) -> bool {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return false;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("fillchar")) {
+        return false;
+    }
+    args.len() >= 3
+        && matches!(args[0].value.kind, ExprKind::Ident(_))
+        && const_int_expr(&args[2].value) == Some(0)
+}
+
+fn pascal_move_small_set_byte_assignment(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> Option<(Expression, Expression)> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("move")) {
+        return None;
+    }
+    if args.len() < 3 || const_int_expr(&args[2].value) != Some(1) {
+        return None;
+    }
+    let source = pascal_expr_ident_name(&args[0].value)?;
+    let mask = env
+        .get(&format!("__pascal_setmask:{}", source.to_lowercase()))?
+        .parse::<i64>()
+        .ok()?;
+    Some((args[1].value.clone(), Expression::int(mask)))
+}
+
+fn pascal_move_small_set_byte_assignment_from_masks(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, i64>,
+) -> Option<(Expression, Expression)> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("move")) {
+        return None;
+    }
+    if args.len() < 3 || const_int_expr(&args[2].value) != Some(1) {
+        return None;
+    }
+    let source = pascal_expr_ident_name(&args[0].value)?;
+    let mask = *env.get(&source.to_lowercase())?;
+    Some((args[1].value.clone(), Expression::int(mask)))
+}
+
+fn pascal_small_set_byte_mask(expr: &Expression) -> Option<i64> {
+    let ExprKind::Set(items) = &expr.kind else {
+        return None;
+    };
+    let mut mask = 0i64;
+    for item in items {
+        let bit = const_int_expr(item)?;
+        if !(0..=7).contains(&bit) {
+            return None;
+        }
+        mask |= 1i64 << bit;
+    }
+    Some(mask)
+}
+
+fn pascal_array_clone_for_expr(
+    source: Expression,
+    typed_expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> Expression {
+    if pascal_expr_array_type_depth(typed_expr, env) > 1 {
+        pascal_array_deep_clone_expr(source)
+    } else {
+        pascal_array_clone_expr(source)
+    }
+}
+
+fn pascal_array_assignment_value_expr(
+    source: Expression,
+    typed_expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> Expression {
+    if pascal_expr_is_dynamic_array(typed_expr, env) {
+        source
+    } else {
+        pascal_array_clone_expr(source)
+    }
+}
+
+fn pascal_expr_is_dynamic_array(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> bool {
+    pascal_expr_array_type_hint(expr, env).is_some_and(|hint| {
+        hint.trim_start()
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("array of"))
+    })
+}
+
+fn pascal_expr_array_type_depth(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> usize {
+    pascal_expr_array_type_hint(expr, env)
+        .map(|hint| pascal_array_type_depth(&hint))
+        .unwrap_or(0)
+}
+
+fn pascal_expr_array_type_hint(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => env
+            .get(&name.to_lowercase())
+            .map(|hint| resolve_pascal_type_alias_in_env(hint, env)),
+        ExprKind::Index { object, .. } => pascal_expr_array_type_hint(object, env)
+            .and_then(|hint| pascal_array_element_type(&hint)),
+        _ => None,
+    }
+}
+
+fn pascal_array_type_depth(type_hint: &str) -> usize {
+    let mut depth = 0;
+    let mut current = type_hint.trim();
+    while current
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("array"))
+    {
+        depth += 1;
+        let lower = current.to_ascii_lowercase();
+        if lower.starts_with("array of") {
+            current = current[8..].trim();
+            continue;
+        }
+        let Some(end_bracket) = current.find(']') else {
+            break;
+        };
+        let rest = current[end_bracket + 1..].trim_start();
+        if !rest
+            .get(..2)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("of"))
+        {
+            break;
+        }
+        current = rest[2..].trim();
+    }
+    depth
 }
 
 fn pascal_expr_is_pascal_integer_like(
@@ -10809,6 +11226,10 @@ fn pascal_array_clone_expr(source: Expression) -> Expression {
     )
 }
 
+fn pascal_array_deep_clone_expr(source: Expression) -> Expression {
+    pascal_call("__pascal_structured_clone", vec![source])
+}
+
 fn pascal_array_concat_expr(left: Expression, right: Expression) -> Expression {
     pascal_call("__pascal_array_concat", vec![left, right])
 }
@@ -10822,6 +11243,7 @@ struct PascalFixedArrayEnv {
     vars: std::collections::HashMap<String, Vec<(i64, i64)>>,
     var_types: std::collections::HashMap<String, String>,
     fields: std::collections::HashMap<(String, String), Vec<(i64, i64)>>,
+    function_params: std::collections::HashMap<String, Vec<Option<String>>>,
 }
 
 fn rewrite_pascal_fixed_array_bounds(body: &mut [Statement]) {
@@ -10873,7 +11295,13 @@ fn rewrite_pascal_fixed_array_bounds_stmt(stmt: &mut Statement, env: &mut Pascal
             let mut scoped = env.clone();
             rewrite_pascal_fixed_array_bounds_block(inner, &mut scoped);
         }
-        StmtKind::FunctionDecl { params, body, .. } => {
+        StmtKind::FunctionDecl {
+            name, params, body, ..
+        } => {
+            env.function_params.insert(
+                name.to_lowercase(),
+                params.iter().map(|param| param.type_hint.clone()).collect(),
+            );
             let mut scoped = env.clone();
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
@@ -11036,6 +11464,30 @@ fn rewrite_pascal_fixed_array_bounds_expr(expr: &mut Expression, env: &PascalFix
             rewrite_pascal_fixed_array_bounds_expr(callee, env);
             for arg in args.iter_mut() {
                 rewrite_pascal_fixed_array_bounds_expr(&mut arg.value, env);
+            }
+            if let ExprKind::Ident(call_name) = &callee.kind {
+                if let Some(param_types) = env.function_params.get(&call_name.to_lowercase()) {
+                    for (idx, arg) in args.iter_mut().enumerate() {
+                        let Some(Some(param_type)) = param_types.get(idx) else {
+                            continue;
+                        };
+                        if pascal_array_type_depth(param_type) < 2
+                            || !param_type
+                                .trim_start()
+                                .get(..8)
+                                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("array of"))
+                        {
+                            continue;
+                        }
+                        let Some(bounds) = pascal_bounds_for_expr(&arg.value, env) else {
+                            continue;
+                        };
+                        if bounds.len() >= 2 {
+                            arg.value =
+                                pascal_fixed_array_nested_value_expr(arg.value.clone(), &bounds);
+                        }
+                    }
+                }
             }
             let ExprKind::Ident(name) = &callee.kind else {
                 return;
@@ -11221,6 +11673,50 @@ fn pascal_bounds_for_expr(expr: &Expression, env: &PascalFixedArrayEnv) -> Optio
     }
 }
 
+fn pascal_fixed_array_nested_value_expr(base: Expression, bounds: &[(i64, i64)]) -> Expression {
+    pascal_fixed_array_nested_value_expr_at(base, bounds, 0, 0)
+}
+
+fn pascal_fixed_array_nested_value_expr_at(
+    base: Expression,
+    bounds: &[(i64, i64)],
+    dim: usize,
+    offset: i64,
+) -> Expression {
+    if dim >= bounds.len() {
+        return pascal_index_expr(base, Expression::int(offset));
+    }
+    let Some((lo, hi)) = bounds.get(dim).copied() else {
+        return Expression::null();
+    };
+    let stride = pascal_fixed_array_stride(bounds, dim + 1);
+    let elements = (lo..=hi)
+        .map(|value| {
+            let adjusted = value - lo;
+            ArrayElement {
+                key: None,
+                value: pascal_fixed_array_nested_value_expr_at(
+                    base.clone(),
+                    bounds,
+                    dim + 1,
+                    offset + adjusted * stride,
+                ),
+                spread: false,
+                by_ref: false,
+            }
+        })
+        .collect();
+    Expression::new(ExprKind::Array(elements))
+}
+
+fn pascal_fixed_array_stride(bounds: &[(i64, i64)], start_dim: usize) -> i64 {
+    bounds
+        .iter()
+        .skip(start_dim)
+        .map(|(lo, hi)| hi - lo + 1)
+        .product()
+}
+
 fn seed_pascal_fixed_array_self_fields(env: &mut PascalFixedArrayEnv, class_name: Option<&str>) {
     let Some(class_name) = class_name else {
         return;
@@ -11274,6 +11770,19 @@ fn pascal_const_array_bounds(type_hint: &str) -> Option<Vec<(i64, i64)>> {
         let lo = lo.trim().parse::<i64>().ok()?;
         let hi = hi.trim().parse::<i64>().ok()?;
         out.push((lo, hi));
+    }
+    let after = trimmed["array[".len() + close + 1..].trim_start();
+    if after
+        .get(..2)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("of"))
+    {
+        let element_type = after[2..].trim_start();
+        if element_type
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("array["))
+        {
+            out.extend(pascal_const_array_bounds(element_type)?);
+        }
     }
     (!out.is_empty()).then_some(out)
 }
@@ -11850,6 +12359,7 @@ fn default_init_enum_indexed_arrays(
 #[derive(Clone, Debug)]
 struct PascalVarArrayMeta {
     bounds: Vec<(i64, i64)>,
+    element_type: Option<String>,
 }
 
 fn lower_pascal_vararray(body: &mut Vec<Statement>) {
@@ -11886,7 +12396,8 @@ fn lower_pascal_vararray_stmt(
             if let Some(target_name) = targets.first().and_then(pascal_vararray_ident_name) {
                 if let Some(meta) = assigned_vararray_meta {
                     env.insert(target_name.to_lowercase(), meta);
-                } else if !matches!(&value.kind, ExprKind::Ident(name) if env.contains_key(&name.to_lowercase())) {
+                } else if !matches!(&value.kind, ExprKind::Ident(name) if env.contains_key(&name.to_lowercase()))
+                {
                     env.remove(&target_name.to_lowercase());
                 }
             }
@@ -12109,6 +12620,15 @@ fn lower_pascal_vararray_expr(
             for arg in args.iter_mut() {
                 lower_pascal_vararray_expr(&mut arg.value, env);
             }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("WriteLn"))
+            {
+                for arg in args.iter_mut() {
+                    if pascal_vararray_expr_is_boolean_index(&arg.value, env) {
+                        arg.value = pascal_bool_display_expr(arg.value.clone());
+                    }
+                }
+                return;
+            }
             if let ExprKind::Ident(name) = &callee.kind {
                 if let Some(rewritten) = lower_pascal_vararray_call_expr(name, args, env) {
                     *expr = rewritten;
@@ -12170,7 +12690,9 @@ fn lower_pascal_vararray_call_expr(
     env: &std::collections::HashMap<String, PascalVarArrayMeta>,
 ) -> Option<Expression> {
     if name.eq_ignore_ascii_case("VarArrayCreate") {
-        let bounds = args.first().and_then(|arg| pascal_vararray_bounds(&arg.value))?;
+        let bounds = args
+            .first()
+            .and_then(|arg| pascal_vararray_bounds(&arg.value))?;
         let init = args
             .get(1)
             .map(|arg| pascal_vararray_default_expr(&arg.value))
@@ -12233,11 +12755,13 @@ fn lower_pascal_vararray_call_expr(
     if name.eq_ignore_ascii_case("VarIsArray") {
         let arg = args.first()?;
         if let Some(var_name) = pascal_vararray_ident_name(&arg.value) {
-            return Some(Expression::string(if env.contains_key(&var_name.to_lowercase()) {
-                "True"
-            } else {
-                "False"
-            }));
+            return Some(Expression::string(
+                if env.contains_key(&var_name.to_lowercase()) {
+                    "True"
+                } else {
+                    "False"
+                },
+            ));
         }
         return Some(call_expr("ref_is_array", vec![arg.value.clone()]));
     }
@@ -12286,6 +12810,21 @@ fn pascal_vararray_expr_mentions_env(
     }
 }
 
+fn pascal_vararray_expr_is_boolean_index(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, PascalVarArrayMeta>,
+) -> bool {
+    let ExprKind::Index { object, .. } = &expr.kind else {
+        return false;
+    };
+    let Some(name) = pascal_vararray_ident_name(object) else {
+        return false;
+    };
+    env.get(&name.to_lowercase())
+        .and_then(|meta| meta.element_type.as_deref())
+        .is_some_and(|ty| ty.eq_ignore_ascii_case("varBoolean"))
+}
+
 fn pascal_vararray_ident_name(expr: &Expression) -> Option<&str> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(name),
@@ -12295,25 +12834,28 @@ fn pascal_vararray_ident_name(expr: &Expression) -> Option<&str> {
 
 fn pascal_vararray_meta_from_expr(expr: &Expression) -> Option<PascalVarArrayMeta> {
     match &expr.kind {
-        ExprKind::Call { callee, args, .. }
-            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("VarArrayCreate")) =>
-        {
+        ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("VarArrayCreate")) => {
             Some(PascalVarArrayMeta {
                 bounds: pascal_vararray_bounds(&args.first()?.value)?,
+                element_type: args
+                    .get(1)
+                    .and_then(|arg| pascal_expr_ident_name(&arg.value))
+                    .map(|name| name.to_ascii_lowercase()),
             })
         }
-        ExprKind::Call { callee, args, .. }
-            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("VarArrayOf")) =>
+        ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("VarArrayOf")) =>
         {
             let ExprKind::Array(elements) = &args.first()?.value.kind else {
                 return None;
             };
             Some(PascalVarArrayMeta {
                 bounds: vec![(0, elements.len() as i64 - 1)],
+                element_type: None,
             })
         }
         ExprKind::Array(elements) => Some(PascalVarArrayMeta {
             bounds: vec![(0, elements.len() as i64 - 1)],
+            element_type: None,
         }),
         _ => None,
     }
@@ -12338,7 +12880,10 @@ fn pascal_vararray_bounds(expr: &Expression) -> Option<Vec<(i64, i64)>> {
 fn pascal_vararray_const_int(expr: &Expression) -> Option<i64> {
     match &expr.kind {
         ExprKind::Lit(Literal::Int(value)) => Some(*value),
-        ExprKind::Unary { op: UnaryOp::Neg, expr } => pascal_vararray_const_int(expr).map(|v| -v),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        } => pascal_vararray_const_int(expr).map(|v| -v),
         _ => const_int_expr(expr),
     }
 }
@@ -12403,6 +12948,13 @@ fn normalize_pascal_enum_indexed_array_decls(
             StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
                 normalize_pascal_enum_indexed_array_decls(body, enum_type_counts);
             }
+            StmtKind::ClassDecl { members, .. }
+            | StmtKind::StructDecl { members, .. }
+            | StmtKind::ModuleDecl { members, .. } => {
+                for member in members {
+                    normalize_pascal_enum_indexed_array_member(member, enum_type_counts);
+                }
+            }
             StmtKind::If {
                 then_body,
                 elifs,
@@ -12428,6 +12980,158 @@ fn normalize_pascal_enum_indexed_array_decls(
     }
 }
 
+fn normalize_pascal_enum_indexed_array_member(
+    member: &mut ClassMember,
+    enum_type_counts: &std::collections::HashMap<String, usize>,
+) {
+    match member {
+        ClassMember::Field {
+            type_hint,
+            init,
+            array_bounds,
+            ..
+        } => {
+            if let Some((normalized_type_hint, count)) = type_hint
+                .as_deref()
+                .and_then(|hint| normalize_pascal_enum_array_type_hint(hint, enum_type_counts))
+            {
+                *type_hint = Some(normalized_type_hint);
+                *array_bounds = Some(vec![Expression::int(0), Expression::int(count as i64 - 1)]);
+                if init.as_ref().is_none_or(
+                    |expr| matches!(&expr.kind, ExprKind::Array(elements) if elements.is_empty()),
+                ) {
+                    *init = Some(
+                        default_array_init_for_type(type_hint.as_deref().unwrap_or(""))
+                            .unwrap_or_else(|| null_array_initializer(count)),
+                    );
+                }
+            }
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            normalize_pascal_enum_indexed_array_decls(std::slice::from_mut(stmt), enum_type_counts);
+        }
+        ClassMember::Constructor { body, .. } => {
+            normalize_pascal_enum_indexed_array_decls(body, enum_type_counts);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                normalize_pascal_enum_indexed_array_decls(getter, enum_type_counts);
+            }
+            if let Some(setter) = setter {
+                normalize_pascal_enum_indexed_array_decls(&mut setter.body, enum_type_counts);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_pascal_subrange_indexed_array_decls(
+    body: &mut [Statement],
+    aliases: &std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    let Some(type_hint) = decl.type_hint.as_deref() else {
+                        continue;
+                    };
+                    let Some((normalized_type_hint, count)) =
+                        normalize_pascal_subrange_array_type_hint(type_hint, aliases)
+                    else {
+                        continue;
+                    };
+                    decl.type_hint = Some(normalized_type_hint);
+                    decl.array_bounds =
+                        Some(vec![Expression::int(0), Expression::int(count as i64 - 1)]);
+                    if decl.init.is_none() {
+                        decl.init = Some(
+                            default_array_init_for_type(decl.type_hint.as_deref().unwrap_or(""))
+                                .unwrap_or_else(|| null_array_initializer(count)),
+                        );
+                    }
+                }
+            }
+            StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+                normalize_pascal_subrange_indexed_array_decls(body, aliases);
+            }
+            StmtKind::ClassDecl { members, .. }
+            | StmtKind::StructDecl { members, .. }
+            | StmtKind::ModuleDecl { members, .. } => {
+                for member in members {
+                    normalize_pascal_subrange_indexed_array_member(member, aliases);
+                }
+            }
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                normalize_pascal_subrange_indexed_array_decls(then_body, aliases);
+                for (_, body) in elifs {
+                    normalize_pascal_subrange_indexed_array_decls(body, aliases);
+                }
+                if let Some(body) = else_body {
+                    normalize_pascal_subrange_indexed_array_decls(body, aliases);
+                }
+            }
+            StmtKind::For { body, .. }
+            | StmtKind::ForIn { body, .. }
+            | StmtKind::While { body, .. }
+            | StmtKind::DoWhile { body, .. } => {
+                normalize_pascal_subrange_indexed_array_decls(body, aliases);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn normalize_pascal_subrange_indexed_array_member(
+    member: &mut ClassMember,
+    aliases: &std::collections::HashMap<String, String>,
+) {
+    match member {
+        ClassMember::Field {
+            type_hint,
+            init,
+            array_bounds,
+            ..
+        } => {
+            if let Some((normalized_type_hint, count)) = type_hint
+                .as_deref()
+                .and_then(|hint| normalize_pascal_subrange_array_type_hint(hint, aliases))
+            {
+                *type_hint = Some(normalized_type_hint);
+                *array_bounds = Some(vec![Expression::int(0), Expression::int(count as i64 - 1)]);
+                if init.as_ref().is_none_or(
+                    |expr| matches!(&expr.kind, ExprKind::Array(elements) if elements.is_empty()),
+                ) {
+                    *init = Some(
+                        default_array_init_for_type(type_hint.as_deref().unwrap_or(""))
+                            .unwrap_or_else(|| null_array_initializer(count)),
+                    );
+                }
+            }
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            normalize_pascal_subrange_indexed_array_decls(std::slice::from_mut(stmt), aliases);
+        }
+        ClassMember::Constructor { body, .. } => {
+            normalize_pascal_subrange_indexed_array_decls(body, aliases);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                normalize_pascal_subrange_indexed_array_decls(getter, aliases);
+            }
+            if let Some(setter) = setter {
+                normalize_pascal_subrange_indexed_array_decls(&mut setter.body, aliases);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn default_init_enum_indexed_arrays_stmt(
     stmt: &mut Statement,
     enum_type_counts: &std::collections::HashMap<String, usize>,
@@ -12439,10 +13143,8 @@ fn default_init_enum_indexed_arrays_stmt(
                     |init| matches!(&init.kind, ExprKind::Array(elements) if elements.is_empty()),
                 ) || decl.init.is_none()
                 {
-                    if let Some((normalized_type_hint, count)) = decl
-                        .type_hint
-                        .as_deref()
-                        .and_then(|hint| {
+                    if let Some((normalized_type_hint, count)) =
+                        decl.type_hint.as_deref().and_then(|hint| {
                             normalize_pascal_enum_array_type_hint(hint, enum_type_counts)
                         })
                     {
@@ -12559,6 +13261,53 @@ fn normalize_pascal_enum_array_type_hint(
     }
 
     replaced_enum.then(|| {
+        (
+            format!("array[{}] of {}", normalized_dims.join(","), element_type),
+            total,
+        )
+    })
+}
+
+fn normalize_pascal_subrange_array_type_hint(
+    type_hint: &str,
+    aliases: &std::collections::HashMap<String, String>,
+) -> Option<(String, usize)> {
+    let trimmed = type_hint.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let rest = lower.strip_prefix("array[")?;
+    let close = rest.find(']')?;
+    let bounds = &trimmed["array[".len().."array[".len() + close];
+    let element_type = pascal_array_element_type(trimmed)?;
+    let mut replaced_subrange = false;
+    let mut total = 1usize;
+    let mut normalized_dims = Vec::new();
+
+    for dim in bounds.split(',') {
+        let dim = dim.trim();
+        if let Some((lo, hi)) = dim.split_once("..") {
+            let lo = lo.trim().parse::<i64>().ok()?;
+            let hi = hi.trim().parse::<i64>().ok()?;
+            if hi < lo {
+                return None;
+            }
+            total = total.checked_mul((hi - lo + 1) as usize)?;
+            normalized_dims.push(format!("{}..{}", lo, hi));
+            continue;
+        }
+
+        let (lo, hi) = pascal_const_subrange_bounds(dim, aliases)?;
+        let (PascalSubrangeBound::Int(lo), PascalSubrangeBound::Int(hi)) = (lo, hi) else {
+            return None;
+        };
+        if hi < lo {
+            return None;
+        }
+        replaced_subrange = true;
+        total = total.checked_mul((hi - lo + 1) as usize)?;
+        normalized_dims.push(format!("{}..{}", lo, hi));
+    }
+
+    replaced_subrange.then(|| {
         (
             format!("array[{}] of {}", normalized_dims.join(","), element_type),
             total,
@@ -14748,6 +15497,7 @@ fn pascal_prelude_needs(
             source,
             &["TList", "TObjectList", "TComparer", "TEqualityComparer"],
         );
+    let tbits = pascal_source_mentions_any_ident(source, &["TBits"]);
 
     PascalPreludeNeeds {
         exceptions,
@@ -14755,6 +15505,7 @@ fn pascal_prelude_needs(
         tobject,
         tinterfacedobject,
         collections,
+        tbits,
     }
 }
 
@@ -15538,6 +16289,91 @@ fn cached_pascal_collection_classes() -> Result<Vec<Statement>, String> {
     CACHE
         .get_or_init(synthesize_pascal_collection_classes)
         .clone()
+}
+
+fn synthesize_pascal_tbits_class() -> Result<Vec<Statement>, String> {
+    let src = r#"
+program __PascalTBitsPrelude;
+type
+  TBits = class
+  public
+    FSize: Integer;
+    FBits: array of Boolean;
+    constructor Create;
+    procedure Free;
+    procedure SetSize(value: Integer);
+    function GetBit(index: Integer): Boolean;
+    procedure SetBit(index: Integer; value: Boolean);
+    function GetOpenBit: Integer;
+    procedure Clear;
+    property Size: Integer read FSize write SetSize;
+    property Bits[index: Integer]: Boolean read GetBit write SetBit; default;
+    property OpenBit: Integer read GetOpenBit;
+  end;
+
+constructor TBits.Create;
+begin
+  FSize := 0;
+  SetLength(FBits, 0);
+end;
+
+procedure TBits.Free; begin end;
+
+procedure TBits.SetSize(value: Integer);
+begin
+  FSize := value;
+  SetLength(FBits, value);
+end;
+
+function TBits.GetBit(index: Integer): Boolean;
+begin
+  if (index < 0) or (index >= Length(FBits)) then Result := False
+  else Result := FBits[index];
+end;
+
+procedure TBits.SetBit(index: Integer; value: Boolean);
+begin
+  if index >= Length(FBits) then SetLength(FBits, index + 1);
+  if index >= FSize then FSize := index + 1;
+  FBits[index] := value;
+end;
+
+function TBits.GetOpenBit: Integer;
+var i: Integer;
+begin
+  Result := FSize;
+  for i := 0 to FSize - 1 do
+    if not GetBit(i) then begin Result := i; Exit; end;
+end;
+
+procedure TBits.Clear;
+var i: Integer;
+begin
+  for i := 0 to FSize - 1 do FBits[i] := False;
+end;
+
+begin end.
+"#;
+    let pairs = PascalParser::parse(Rule::program, src)
+        .map_err(|e| format!("Pascal TBits prelude parse error: {}", e))?;
+    let mut body = Vec::new();
+    for pair in pairs {
+        if pair.as_rule() != Rule::program {
+            continue;
+        }
+        for inner in pair.into_inner() {
+            if inner.as_rule() == Rule::decl_section {
+                walk_decl_section(inner, &mut body)?;
+            }
+        }
+    }
+    merge_separated_methods(&mut body);
+    Ok(body)
+}
+
+fn cached_pascal_tbits_class() -> Result<Vec<Statement>, String> {
+    static CACHE: std::sync::OnceLock<Result<Vec<Statement>, String>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(synthesize_pascal_tbits_class).clone()
 }
 
 fn rewrite_pascal_safe_idiv_stmt(stmt: &mut Statement) -> bool {
@@ -16545,40 +17381,25 @@ fn parse_pascal_type_args(chars: &[char], start: usize) -> Option<(Vec<String>, 
         return None;
     }
     let mut depth = 0i32;
-    let mut current = String::new();
-    let mut args = Vec::new();
     let mut i = start;
     while i < chars.len() {
         let ch = chars[i];
         match ch {
             '<' => {
                 depth += 1;
-                if depth > 1 {
-                    current.push(ch);
-                }
             }
             '>' => {
                 depth -= 1;
                 if depth == 0 {
-                    let arg = current.trim();
-                    if !arg.is_empty() {
-                        args.push(arg.to_string());
-                    }
+                    let text: String = chars[start..=i].iter().collect();
+                    let args = common_generics::generic_argument_display_names(&text);
                     return Some((args, i + 1));
                 }
                 if depth < 0 {
                     return None;
                 }
-                current.push(ch);
             }
-            ',' if depth == 1 => {
-                let arg = current.trim();
-                if !arg.is_empty() {
-                    args.push(arg.to_string());
-                }
-                current.clear();
-            }
-            _ => current.push(ch),
+            _ => {}
         }
         i += 1;
     }
@@ -17554,6 +18375,79 @@ fn collect_pascal_bool_class_methods(
     out
 }
 
+fn collect_pascal_float_class_members(
+    body: &[Statement],
+) -> std::collections::HashSet<(String, String)> {
+    let mut out = std::collections::HashSet::new();
+    let mut parents: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for stmt in body {
+        let (name, members) = match &stmt.kind {
+            StmtKind::ClassDecl {
+                name,
+                parents: class_parents,
+                members,
+                ..
+            } => {
+                parents.insert(
+                    name.to_lowercase(),
+                    class_parents
+                        .iter()
+                        .map(|parent| parent.to_lowercase())
+                        .collect(),
+                );
+                (name, members)
+            }
+            StmtKind::StructDecl { name, members, .. } => (name, members),
+            _ => continue,
+        };
+        for member in members {
+            match member {
+                ClassMember::Method(method) => {
+                    let StmtKind::FunctionDecl {
+                        name: method_name,
+                        return_type,
+                        ..
+                    } = &method.kind
+                    else {
+                        continue;
+                    };
+                    if return_type
+                        .as_deref()
+                        .is_some_and(pascal_type_hint_is_float)
+                    {
+                        out.insert((name.to_lowercase(), method_name.to_lowercase()));
+                    }
+                }
+                ClassMember::Field {
+                    name: field_name,
+                    type_hint,
+                    ..
+                }
+                | ClassMember::Property {
+                    name: field_name,
+                    type_hint,
+                    ..
+                } => {
+                    if type_hint.as_deref().is_some_and(pascal_type_hint_is_float) {
+                        out.insert((name.to_lowercase(), field_name.to_lowercase()));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    propagate_inherited_static_members(&parents, &mut out);
+    out
+}
+
+fn pascal_type_hint_is_float(type_hint: &str) -> bool {
+    matches!(
+        bare_type_name(type_hint).to_ascii_lowercase().as_str(),
+        "real" | "double" | "single" | "extended" | "currency"
+    )
+}
+
 fn rewrite_pascal_writeln_bool_class_calls_stmt(
     stmt: &mut Statement,
     bool_methods: &std::collections::HashSet<(String, String)>,
@@ -18125,6 +19019,7 @@ fn rewrite_pascal_writeln_bool_instance_members_expr(
             {
                 for arg in args {
                     if pascal_expr_is_bool_instance_member(&arg.value, bool_members, env)
+                        || pascal_expr_is_bool_array_index(&arg.value, env)
                         || pascal_expr_is_bool_operator_call(&arg.value)
                         || pascal_expr_is_bool_procedural_call(&arg.value, env)
                         || pascal_expr_is_any_comparison(&arg.value)
@@ -18224,6 +19119,318 @@ fn pascal_expr_is_bool_instance_member(
     class_name.is_some_and(|class_name| {
         bool_members.contains(&(class_name.to_lowercase(), field.to_lowercase()))
     })
+}
+
+fn pascal_expr_is_bool_array_index(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> bool {
+    if !matches!(&expr.kind, ExprKind::Index { .. }) {
+        return false;
+    }
+    let Some(root) = pascal_index_root_expr(expr) else {
+        return false;
+    };
+    let Some(name) = pascal_index_root_name(root) else {
+        return false;
+    };
+    let Some(type_hint) = env.get(&name.to_lowercase()) else {
+        return false;
+    };
+    let type_hint = resolve_pascal_type_alias_in_env(type_hint, env);
+    let leaf = pascal_dynamic_array_leaf_type(&type_hint)
+        .or_else(|| pascal_array_element_type(&type_hint))
+        .unwrap_or_else(|| type_hint.clone());
+    bare_type_name(&leaf).eq_ignore_ascii_case("Boolean")
+}
+
+fn resolve_pascal_type_alias_in_env(
+    type_hint: &str,
+    env: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut current = type_hint.to_string();
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        let key = bare_type_name(&current).to_lowercase();
+        if !seen.insert(key.clone()) {
+            return current;
+        }
+        let Some(next) = env.get(&key) else {
+            return current;
+        };
+        current = next.clone();
+    }
+}
+
+fn rewrite_pascal_writeln_float_instance_members_body(
+    body: &mut [Statement],
+    float_members: &std::collections::HashSet<(String, String)>,
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        rewrite_pascal_writeln_float_instance_members_stmt(stmt, float_members, env);
+    }
+}
+
+fn rewrite_pascal_writeln_float_instance_members_stmt(
+    stmt: &mut Statement,
+    float_members: &std::collections::HashSet<(String, String)>,
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations.iter_mut() {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_writeln_float_instance_members_expr(init, float_members, env);
+                }
+                if let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, &decl.type_hint)
+                {
+                    env.insert(
+                        name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_writeln_float_instance_members_expr(target, float_members, env);
+            }
+            rewrite_pascal_writeln_float_instance_members_expr(value, float_members, env);
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_writeln_float_instance_members_expr(expr, float_members, env);
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = env.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            rewrite_pascal_writeln_float_instance_members_body(body, float_members, &mut scoped);
+        }
+        StmtKind::ClassDecl { name, members, .. } | StmtKind::StructDecl { name, members, .. } => {
+            for member in members {
+                let mut scoped = env.clone();
+                scoped.insert("self".to_string(), name.to_lowercase());
+                rewrite_pascal_writeln_float_instance_members_member(
+                    member,
+                    float_members,
+                    &mut scoped,
+                );
+            }
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            let mut scoped = env.clone();
+            rewrite_pascal_writeln_float_instance_members_body(body, float_members, &mut scoped);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_writeln_float_instance_members_expr(cond, float_members, env);
+            rewrite_pascal_writeln_float_instance_members_body(
+                then_body,
+                float_members,
+                &mut env.clone(),
+            );
+            for (cond, body) in elifs {
+                rewrite_pascal_writeln_float_instance_members_expr(cond, float_members, env);
+                rewrite_pascal_writeln_float_instance_members_body(
+                    body,
+                    float_members,
+                    &mut env.clone(),
+                );
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_writeln_float_instance_members_body(
+                    body,
+                    float_members,
+                    &mut env.clone(),
+                );
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped = env.clone();
+            if let Some(init) = init {
+                rewrite_pascal_writeln_float_instance_members_stmt(
+                    init,
+                    float_members,
+                    &mut scoped,
+                );
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_writeln_float_instance_members_expr(
+                    cond,
+                    float_members,
+                    &mut scoped,
+                );
+            }
+            if let Some(update) = update {
+                rewrite_pascal_writeln_float_instance_members_expr(
+                    update,
+                    float_members,
+                    &mut scoped,
+                );
+            }
+            rewrite_pascal_writeln_float_instance_members_body(body, float_members, &mut scoped);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_writeln_float_instance_members_member(
+    member: &mut ClassMember,
+    float_members: &std::collections::HashSet<(String, String)>,
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_writeln_float_instance_members_stmt(stmt, float_members, env)
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            let mut scoped = env.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            rewrite_pascal_writeln_float_instance_members_body(body, float_members, &mut scoped);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_pascal_writeln_float_instance_members_body(
+                    getter,
+                    float_members,
+                    &mut env.clone(),
+                );
+            }
+            if let Some(setter) = setter {
+                rewrite_pascal_writeln_float_instance_members_body(
+                    &mut setter.body,
+                    float_members,
+                    &mut env.clone(),
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_writeln_float_instance_members_expr(
+    expr: &mut Expression,
+    float_members: &std::collections::HashSet<(String, String)>,
+    env: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_pascal_writeln_float_instance_members_expr(
+                    &mut arg.value,
+                    float_members,
+                    env,
+                );
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("WriteLn"))
+            {
+                for arg in args {
+                    if pascal_expr_is_float_instance_expr(&arg.value, float_members, env) {
+                        arg.value = call_expr(
+                            "Format",
+                            vec![Expression::string("%.12g"), arg.value.clone()],
+                        );
+                    }
+                }
+                return;
+            }
+            rewrite_pascal_writeln_float_instance_members_expr(callee, float_members, env);
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_pascal_writeln_float_instance_members_expr(object, float_members, env);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_writeln_float_instance_members_expr(object, float_members, env);
+            rewrite_pascal_writeln_float_instance_members_expr(index, float_members, env);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_writeln_float_instance_members_expr(left, float_members, env);
+            rewrite_pascal_writeln_float_instance_members_expr(right, float_members, env);
+        }
+        ExprKind::Unary { expr, .. } => {
+            rewrite_pascal_writeln_float_instance_members_expr(expr, float_members, env)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_writeln_float_instance_members_expr(cond, float_members, env);
+            rewrite_pascal_writeln_float_instance_members_expr(then, float_members, env);
+            rewrite_pascal_writeln_float_instance_members_expr(else_, float_members, env);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_writeln_float_instance_members_expr(class, float_members, env);
+            for arg in args {
+                rewrite_pascal_writeln_float_instance_members_expr(
+                    &mut arg.value,
+                    float_members,
+                    env,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pascal_expr_is_float_instance_expr(
+    expr: &Expression,
+    float_members: &std::collections::HashSet<(String, String)>,
+    env: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Float(_)) => true,
+        ExprKind::Binary { left, right, .. } => {
+            pascal_expr_is_float_instance_expr(left, float_members, env)
+                || pascal_expr_is_float_instance_expr(right, float_members, env)
+        }
+        ExprKind::Call { callee, .. } => {
+            let ExprKind::Member { object, field, .. } = &callee.kind else {
+                return false;
+            };
+            let class_name = match &object.kind {
+                ExprKind::This => env.get("self"),
+                ExprKind::Ident(name) if name.eq_ignore_ascii_case("Self") => env.get("self"),
+                ExprKind::Ident(name) => env.get(&name.to_lowercase()),
+                _ => None,
+            };
+            class_name.is_some_and(|class_name| {
+                float_members.contains(&(class_name.to_lowercase(), field.to_lowercase()))
+            })
+        }
+        ExprKind::Member { object, field, .. } => {
+            let class_name = match &object.kind {
+                ExprKind::This => env.get("self"),
+                ExprKind::Ident(name) if name.eq_ignore_ascii_case("Self") => env.get("self"),
+                ExprKind::Ident(name) => env.get(&name.to_lowercase()),
+                _ => None,
+            };
+            class_name.is_some_and(|class_name| {
+                float_members.contains(&(class_name.to_lowercase(), field.to_lowercase()))
+            })
+        }
+        _ => false,
+    }
 }
 
 fn propagate_inherited_static_members(

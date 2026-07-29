@@ -77,6 +77,7 @@ materialize_bool_results = true
 "__go_str_from_code_point" = { emit = "host:wasm:js-string:fromCodePoint", min_args = 1, max_args = 1 }
 "__go_str_code_point_at"   = { emit = "host:wasm:js-string:codePointAt",   min_args = 2, max_args = 2 }
 "__go_array_from"          = { emit = "host:ecma:array:from",              min_args = 1, max_args = 1 }
+"__go_array_concat"        = { emit = "host:ecma:array:concat",            min_args = 2, max_args = 2 }
 "__go_is_string"           = { emit = "host:wasm:js-string:test",          min_args = 1, max_args = 1 }
 
 # encoding/binary fixed-width byte order helpers. Go owns the API shape;

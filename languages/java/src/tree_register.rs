@@ -70,7 +70,12 @@ const fn t(
     ancestry: &'static [&'static str],
     intrinsic: Option<&'static str>,
 ) -> JavaType {
-    JavaType { name, package, ancestry, intrinsic }
+    JavaType {
+        name,
+        package,
+        ancestry,
+        intrinsic,
+    }
 }
 
 /// The Java types whose IDENTITY the runtime must answer for.
@@ -88,16 +93,72 @@ const fn t(
 /// platform class that was never materialised.
 pub(crate) const JAVA_TYPES: &[JavaType] = &[
     // ── Intrinsic-backed: no object to stamp, so identity is a kind test ──
-    t("String", "lang", &["String", "CharSequence", "Comparable", "Serializable", "Object"], Some("string")),
-    t("Character", "lang", &["Character", "Comparable", "Serializable", "Object"], Some("string")),
-    t("Class", "lang", &["Class", "Serializable", "Object"], Some("string")),
-    t("Integer", "lang", &["Integer", "Number", "Comparable", "Serializable", "Object"], Some("number")),
-    t("Long", "lang", &["Long", "Number", "Comparable", "Serializable", "Object"], Some("number")),
-    t("Short", "lang", &["Short", "Number", "Comparable", "Serializable", "Object"], Some("number")),
-    t("Byte", "lang", &["Byte", "Number", "Comparable", "Serializable", "Object"], Some("number")),
-    t("Double", "lang", &["Double", "Number", "Comparable", "Serializable", "Object"], Some("number")),
-    t("Float", "lang", &["Float", "Number", "Comparable", "Serializable", "Object"], Some("number")),
-    t("Boolean", "lang", &["Boolean", "Comparable", "Serializable", "Object"], Some("boolean")),
+    t(
+        "String",
+        "lang",
+        &[
+            "String",
+            "CharSequence",
+            "Comparable",
+            "Serializable",
+            "Object",
+        ],
+        Some("string"),
+    ),
+    t(
+        "Character",
+        "lang",
+        &["Character", "Comparable", "Serializable", "Object"],
+        Some("string"),
+    ),
+    t(
+        "Class",
+        "lang",
+        &["Class", "Serializable", "Object"],
+        Some("string"),
+    ),
+    t(
+        "Integer",
+        "lang",
+        &["Integer", "Number", "Comparable", "Serializable", "Object"],
+        Some("number"),
+    ),
+    t(
+        "Long",
+        "lang",
+        &["Long", "Number", "Comparable", "Serializable", "Object"],
+        Some("number"),
+    ),
+    t(
+        "Short",
+        "lang",
+        &["Short", "Number", "Comparable", "Serializable", "Object"],
+        Some("number"),
+    ),
+    t(
+        "Byte",
+        "lang",
+        &["Byte", "Number", "Comparable", "Serializable", "Object"],
+        Some("number"),
+    ),
+    t(
+        "Double",
+        "lang",
+        &["Double", "Number", "Comparable", "Serializable", "Object"],
+        Some("number"),
+    ),
+    t(
+        "Float",
+        "lang",
+        &["Float", "Number", "Comparable", "Serializable", "Object"],
+        Some("number"),
+    ),
+    t(
+        "Boolean",
+        "lang",
+        &["Boolean", "Comparable", "Serializable", "Object"],
+        Some("boolean"),
+    ),
     // The root: its own ancestry is just itself, so it contributes `"object"`
     // to `Object.class.isInstance(…)` without leaking that kind into every
     // interface query. Java's `new Object()` is a bare map at runtime.
@@ -106,39 +167,111 @@ pub(crate) const JAVA_TYPES: &[JavaType] = &[
     t(
         "ArrayList",
         "util",
-        &["ArrayList", "List", "Collection", "Iterable", "Cloneable", "Object"],
+        &[
+            "ArrayList",
+            "List",
+            "Collection",
+            "Iterable",
+            "Cloneable",
+            "Object",
+        ],
         None,
     ),
     t(
         "LinkedList",
         "util",
-        &["LinkedList", "Deque", "Queue", "List", "Collection", "Iterable", "Cloneable", "Object"],
+        &[
+            "LinkedList",
+            "Deque",
+            "Queue",
+            "List",
+            "Collection",
+            "Iterable",
+            "Cloneable",
+            "Object",
+        ],
         None,
     ),
     t(
         "ArrayDeque",
         "util",
-        &["ArrayDeque", "Deque", "Queue", "Collection", "Iterable", "Cloneable", "Object"],
+        &[
+            "ArrayDeque",
+            "Deque",
+            "Queue",
+            "Collection",
+            "Iterable",
+            "Cloneable",
+            "Object",
+        ],
         None,
     ),
-    t("Vector", "util", &["Vector", "List", "Collection", "Iterable", "Cloneable", "Object"], None),
+    t(
+        "Vector",
+        "util",
+        &[
+            "Vector",
+            "List",
+            "Collection",
+            "Iterable",
+            "Cloneable",
+            "Object",
+        ],
+        None,
+    ),
     t(
         "Stack",
         "util",
-        &["Stack", "Vector", "List", "Collection", "Iterable", "Cloneable", "Object"],
+        &[
+            "Stack",
+            "Vector",
+            "List",
+            "Collection",
+            "Iterable",
+            "Cloneable",
+            "Object",
+        ],
         None,
     ),
-    t("HashSet", "util", &["HashSet", "Set", "Collection", "Iterable", "Cloneable", "Object"], None),
+    t(
+        "HashSet",
+        "util",
+        &[
+            "HashSet",
+            "Set",
+            "Collection",
+            "Iterable",
+            "Cloneable",
+            "Object",
+        ],
+        None,
+    ),
     t(
         "LinkedHashSet",
         "util",
-        &["LinkedHashSet", "HashSet", "Set", "Collection", "Iterable", "Cloneable", "Object"],
+        &[
+            "LinkedHashSet",
+            "HashSet",
+            "Set",
+            "Collection",
+            "Iterable",
+            "Cloneable",
+            "Object",
+        ],
         None,
     ),
     t(
         "TreeSet",
         "util",
-        &["TreeSet", "NavigableSet", "SortedSet", "Set", "Collection", "Iterable", "Object"],
+        &[
+            "TreeSet",
+            "NavigableSet",
+            "SortedSet",
+            "Set",
+            "Collection",
+            "Iterable",
+            "Object",
+        ],
         None,
     ),
     t(
@@ -147,10 +280,30 @@ pub(crate) const JAVA_TYPES: &[JavaType] = &[
         &["PriorityQueue", "Queue", "Collection", "Iterable", "Object"],
         None,
     ),
-    t("HashMap", "util", &["HashMap", "Map", "Cloneable", "Object"], None),
-    t("LinkedHashMap", "util", &["LinkedHashMap", "HashMap", "Map", "Cloneable", "Object"], None),
-    t("TreeMap", "util", &["TreeMap", "NavigableMap", "SortedMap", "Map", "Object"], None),
-    t("StringBuilder", "lang", &["StringBuilder", "CharSequence", "Appendable", "Object"], None),
+    t(
+        "HashMap",
+        "util",
+        &["HashMap", "Map", "Cloneable", "Object"],
+        None,
+    ),
+    t(
+        "LinkedHashMap",
+        "util",
+        &["LinkedHashMap", "HashMap", "Map", "Cloneable", "Object"],
+        None,
+    ),
+    t(
+        "TreeMap",
+        "util",
+        &["TreeMap", "NavigableMap", "SortedMap", "Map", "Object"],
+        None,
+    ),
+    t(
+        "StringBuilder",
+        "lang",
+        &["StringBuilder", "CharSequence", "Appendable", "Object"],
+        None,
+    ),
     // The one Throwable the profile constructs as a plain map rather than
     // through `ecma:error`. A user class that EXTENDS a built-in exception
     // already gets its chain stamped by the walker; this is the direct
@@ -158,7 +311,13 @@ pub(crate) const JAVA_TYPES: &[JavaType] = &[
     t(
         "OutOfMemoryError",
         "lang",
-        &["OutOfMemoryError", "VirtualMachineError", "Error", "Throwable", "Object"],
+        &[
+            "OutOfMemoryError",
+            "VirtualMachineError",
+            "Error",
+            "Throwable",
+            "Object",
+        ],
         None,
     ),
 ];
