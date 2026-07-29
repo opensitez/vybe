@@ -193,3 +193,16 @@ console.log(errors.join("|"));
 "#;
     assert_eq!(run_js(src), vec!["clz32"]);
 }
+
+#[test]
+fn test_js_math_trunc_symbol_operand_throws_typeerror() {
+    let src = r#"
+try {
+    Math.trunc(Symbol("val"));
+} catch (e) {
+    console.log(e.name);
+}
+"#;
+    assert_eq!(run_js(src), vec!["TypeError"]);
+}
+

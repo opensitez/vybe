@@ -331,3 +331,25 @@ console.log(log.join(","));
 "#;
     assert_eq!(run_js(src), vec!["Try0,Finally0"]);
 }
+
+#[test]
+fn test_js_async_finally_throw_overrides_resolve() {
+    let src = r#"
+(async () => {
+    async function fn() {
+        try {
+            return "ok";
+        } finally {
+            throw new Error("async_finally_err");
+        }
+    }
+    try {
+        await fn();
+    } catch(e) {
+        console.log(e.message);
+    }
+})();
+"#;
+    assert_eq!(run_js(src), vec!["async_finally_err"]);
+}
+

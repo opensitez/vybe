@@ -1090,3 +1090,42 @@ console.log(out.join("|"));
         vec!["body-1|finally-1|finally-2|body-3|finally-3"]
     );
 }
+
+
+#[test]
+fn test_js_control_flow_switch_body_shared_lexical_scope_redeclaration_error() {
+    let src = r#"
+try {
+    eval("switch (1) { case 1: let x = 10; break; case 2: let x = 20; break; }");
+} catch (e) {
+    console.log("Switch Single Lexical Scope SyntaxError");
+}
+"#;
+    assert_eq!(run_js(src), vec!["Switch Single Lexical Scope SyntaxError"]);
+}
+
+#[test]
+fn test_js_control_flow_do_while_condition_side_effects() {
+    let src = r#"
+let bodyCount = 0;
+let condCount = 0;
+do {
+    bodyCount++;
+} while ((condCount += 5) < 15);
+console.log(`${bodyCount}|${condCount}`);
+"#;
+    assert_eq!(run_js(src), vec!["3|15"]);
+}
+
+#[test]
+fn do_while_executes_at_least_once_when_false() {
+    let src = r#"
+let count = 0;
+do {
+    count++;
+} while (false);
+console.log(count);
+"#;
+    assert_eq!(run_js(src), vec!["1"]);
+}
+

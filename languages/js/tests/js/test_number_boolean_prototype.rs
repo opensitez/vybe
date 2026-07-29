@@ -439,4 +439,10 @@ crate::js_cases! {
         ["false"]
     };
 
+    boolean_tostring_on_non_boolean_throws_typeerror => {
+        r#"try{Boolean.prototype.toString.call(123);}catch(e){console.log(e instanceof TypeError);}"#,
+        ["true"]
+    };
+
 }
+

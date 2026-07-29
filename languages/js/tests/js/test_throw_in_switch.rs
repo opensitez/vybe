@@ -110,4 +110,10 @@ crate::js_cases! {
         r#"let o=[];try{switch(0){case 0:throw new TypeError("bad op");default:o.push("d");}}catch(e){o.push(e.name+":"+e.message);}console.log(o.join(","));"#,
         ["TypeError:bad op"]
     };
+
+    switch_case_expression_throw_during_eval => {
+        r#"let o=[]; function bad() { throw new Error("case_eval"); } try { switch(1) { case bad(): o.push("a"); break; } } catch(e) { o.push(e.message); } console.log(o.join(","));"#,
+        ["case_eval"]
+    };
 }
+

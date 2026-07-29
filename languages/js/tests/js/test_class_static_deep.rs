@@ -179,3 +179,27 @@ console.log(Secret.get());
         vec!["42"]
     );
 }
+
+#[test]
+fn test_intermixed_static_fields_and_static_blocks_execution_order() {
+    assert_eq!(
+        run_js(
+            r#"
+const log = [];
+class C {
+    static a = (log.push("fieldA"), 1);
+    static {
+        log.push("block1");
+    }
+    static b = (log.push("fieldB"), 2);
+    static {
+        log.push("block2");
+    }
+}
+console.log(log.join(","));
+"#
+        ),
+        vec!["fieldA,block1,fieldB,block2"]
+    );
+}
+

@@ -320,3 +320,23 @@ svc.fetch(42).then(r => console.log(r.data));
         vec!["result:42"]
     );
 }
+
+#[test]
+fn async_try_catch_thrown_object() {
+    assert_eq!(
+        run_js(
+            r#"
+async function f() {
+    try {
+        throw { code: 500 };
+    } catch (e) {
+        return e.code;
+    }
+}
+f().then(v => console.log(v));
+"#
+        ),
+        vec!["500"]
+    );
+}
+

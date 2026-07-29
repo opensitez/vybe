@@ -323,3 +323,20 @@ try {
 "#;
     assert_eq!(run_js(src), vec!["Duplicate Private Field SyntaxError"]);
 }
+
+#[test]
+fn test_js_class_private_field_prefix_postfix_increment() {
+    let src = r#"
+class Counter {
+    #x = 10;
+    inc() {
+        const pre = ++this.#x;
+        const post = this.#x++;
+        return `${pre}:${post}:${this.#x}`;
+    }
+}
+console.log(new Counter().inc());
+"#;
+    assert_eq!(run_js(src), vec!["11:11:12"]);
+}
+

@@ -242,3 +242,12 @@ console.log(String.raw(fakeStrings, 100));
 "#;
     assert_eq!(run_js(src), vec!["A100B"]);
 }
+
+#[test]
+fn test_js_string_raw_empty_template_literal() {
+    let src = r#"
+console.log(String.raw`` === "");
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

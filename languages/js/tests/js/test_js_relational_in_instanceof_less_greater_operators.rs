@@ -345,3 +345,38 @@ console.log(`${0 in { 0: "zero", 1: "one" }}:${2 in { 0: "zero", 1: "one" }}`);
 fn test_js_instanceof_boolean_rhs_returns_false() {
     assert_eq!(run_js("console.log(({}) instanceof true);"), vec!["false"]);
 }
+
+#[test]
+fn test_js_relational_evaluation_order_left_to_right_side_effects() {
+    let src = r#"
+const log = [];
+const left = {
+    [Symbol.toPrimitive]() {
+        log.push("L");
+        return 10;
+    }
+};
+const right = {
+    [Symbol.toPrimitive]() {
+        log.push("R");
+        return 5;
+    }
+};
+console.log((left > right) + "|" + log.join(","));
+"#;
+    assert_eq!(run_js(src), vec!["true|L,R"]);
+}
+
+#[test]
+fn test_js_in_operator_proxy_has_trap() {
+    let src = r#"
+const p = new Proxy({}, {
+    has(target, prop) {
+        return prop === "secret";
+    }
+});
+console.log(`${"secret" in p}:${"other" in p}`);
+"#;
+    assert_eq!(run_js(src), vec!["true:false"]);
+}
+

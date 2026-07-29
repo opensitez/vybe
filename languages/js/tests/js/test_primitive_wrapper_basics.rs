@@ -197,4 +197,14 @@ console.log(new String("a") == new String("a"));
 "#,
         ["false"]
     };
+
+    primitive_expando_property_assignment_ignored => {
+        r#"
+const s = "hi";
+s.foo = 123;
+console.log(s.foo === undefined);
+"#,
+        ["true"]
+    };
 }
+

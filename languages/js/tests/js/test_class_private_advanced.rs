@@ -785,3 +785,50 @@ console.log(result);
         vec!["SELECT * FROM users WHERE age > 18 AND active = true LIMIT 10"]
     );
 }
+
+#[test]
+fn test_private_field_access_on_other_object_throws_typeerror() {
+    assert_eq!(
+        run_js(
+            r#"
+class Secret {
+    #code = 1234;
+    readOther(obj) {
+        return obj.#code;
+    }
+}
+const s = new Secret();
+try {
+    s.readOther({});
+} catch (e) {
+    console.log(e.name);
+}
+"#
+        ),
+        vec!["TypeError"]
+    );
+}
+
+#[test]
+fn test_private_field_access_on_null_throws_typeerror() {
+    assert_eq!(
+        run_js(
+            r#"
+class Secret {
+    #code = 1234;
+    readNull(obj) {
+        return obj.#code;
+    }
+}
+const s = new Secret();
+try {
+    s.readNull(null);
+} catch (e) {
+    console.log(e.name);
+}
+"#
+        ),
+        vec!["TypeError"]
+    );
+}
+

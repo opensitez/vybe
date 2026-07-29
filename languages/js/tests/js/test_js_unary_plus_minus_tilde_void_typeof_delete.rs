@@ -245,3 +245,24 @@ console.log(delete globalThis.noSuchProperty);
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
+
+#[test]
+fn test_js_typeof_tdz_variable_throws_referenceerror() {
+    let src = r#"
+try {
+    eval("typeof a; let a = 10;");
+} catch (e) {
+    console.log(e.name);
+}
+"#;
+    assert_eq!(run_js(src), vec!["ReferenceError"]);
+}
+
+#[test]
+fn test_js_unary_minus_bigint_zero_is_zero() {
+    let src = r#"
+console.log((-0n === 0n) + "|" + Object.is(-0n, 0n));
+"#;
+    assert_eq!(run_js(src), vec!["true|true"]);
+}
+

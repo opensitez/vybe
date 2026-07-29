@@ -515,3 +515,16 @@ console.log(false < 1);
         vec!["true", "false", "true", "true"]
     );
 }
+
+#[test]
+fn comparison_with_undefined_is_always_false() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log([undefined > 0, undefined < 0, undefined == 0].join("|"));
+"#
+        ),
+        vec!["false|false|false"]
+    );
+}
+

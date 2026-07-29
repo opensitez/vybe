@@ -308,3 +308,21 @@ console.log(`${Object.is(new Number(7), 7)}:${Object.is(new String("x"), "x")}:$
 "#;
     assert_eq!(run_js(src), vec!["false:false:false"]);
 }
+
+#[test]
+fn test_js_object_is_bigint_comparisons() {
+    let src = r#"
+console.log(`${Object.is(100n, 100n)}:${Object.is(100n, 100)}:${Object.is(0n, -0n)}`);
+"#;
+    assert_eq!(run_js(src), vec!["true:false:true"]);
+}
+
+#[test]
+fn test_js_same_value_zero_typed_array_includes() {
+    let src = r#"
+const floats = new Float64Array([+0, NaN]);
+console.log(`${floats.includes(-0)}:${floats.includes(NaN)}`);
+"#;
+    assert_eq!(run_js(src), vec!["true:true"]);
+}
+

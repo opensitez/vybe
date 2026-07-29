@@ -334,3 +334,52 @@ console.log(out.join("|"));
 "#;
     assert_eq!(run_js(src), vec!["A|B"]);
 }
+
+#[test]
+fn test_js_switch_case_fallthrough_crosses_default() {
+    let src = r#"
+const log = [];
+switch (1) {
+    case 1: log.push("c1");
+    default: log.push("def");
+    case 2: log.push("c2"); break;
+}
+console.log(log.join(","));
+"#;
+    assert_eq!(run_js(src), vec!["c1,def,c2"]);
+}
+
+#[test]
+fn test_js_switch_break_inside_try_executes_finally() {
+    let src = r#"
+const log = [];
+switch (1) {
+    case 1:
+        try {
+            log.push("try");
+            break;
+        } finally {
+            log.push("finally");
+        }
+    case 2:
+        log.push("c2");
+        break;
+}
+console.log(log.join(","));
+"#;
+    assert_eq!(run_js(src), vec!["try,finally"]);
+}
+
+#[test]
+fn test_js_switch_zeros_match() {
+    let src = r#"
+let res = "";
+switch(-0) {
+    case +0: res = "matched"; break;
+}
+console.log(res);
+"#;
+    assert_eq!(run_js(src), vec!["matched"]);
+}
+
+

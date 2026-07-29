@@ -610,3 +610,38 @@ console.log(c.readLabel());
         vec!["base", "base"]
     );
 }
+
+#[test]
+fn test_super_property_assignment_targets_receiver_this() {
+    let src = r#"
+class Base {}
+class Child extends Base {
+    setProp(v) {
+        super.x = v;
+    }
+}
+const c = new Child();
+c.setProp(42);
+console.log(c.x + "|" + ("x" in Base.prototype));
+"#;
+    assert_eq!(run_js(src), vec!["42|false"]);
+}
+
+#[test]
+fn test_static_super_method_call_with_modified_arguments() {
+    let src = r#"
+class Base {
+    static greet(name) {
+        return "Hello " + name;
+    }
+}
+class Child extends Base {
+    static greet(name) {
+        return super.greet(name.toUpperCase());
+    }
+}
+console.log(Child.greet("world"));
+"#;
+    assert_eq!(run_js(src), vec!["Hello WORLD"]);
+}
+

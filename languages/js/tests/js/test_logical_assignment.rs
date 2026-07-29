@@ -283,3 +283,34 @@ console.log(compute_count);
         vec!["3", "6"],
     );
 }
+
+#[test]
+fn test_logical_assignment_in_for_loop_update() {
+    assert_eq!(
+        run_js(
+            r#"
+let state = null;
+let log = [];
+for (let i = 0; i < 3; i++, state ??= i) {
+    log.push(String(state));
+}
+console.log(log.join(","));
+"#
+        ),
+        vec!["null,0,0"]
+    );
+}
+
+#[test]
+fn test_logical_assignment_out_of_bounds_array_element() {
+    assert_eq!(
+        run_js(
+            r#"
+const arr = [];
+arr[2] ??= "sparse";
+console.log(arr.length + "|" + arr[2]);
+"#
+        ),
+        vec!["3|sparse"]
+    );
+}

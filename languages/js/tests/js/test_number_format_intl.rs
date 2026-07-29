@@ -145,3 +145,17 @@ console.log(s.includes(","));
         vec!["true"]
     );
 }
+
+#[test]
+fn test_number_format_formattoparts_is_function() {
+    assert_eq!(
+        run_js(
+            r#"
+const fmt = new Intl.NumberFormat("en");
+console.log(typeof fmt.formatToParts === "function");
+"#
+        ),
+        vec!["true"]
+    );
+}
+

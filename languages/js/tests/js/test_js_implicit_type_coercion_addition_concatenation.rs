@@ -267,3 +267,12 @@ console.log([1, 2] - 1);
         vec!["1", "1", "-1", "-1", "NaN"]
     );
 }
+
+#[test]
+fn test_js_subtraction_non_numeric_string_returns_nan() {
+    let src = r#"
+console.log("foo" - 1);
+"#;
+    assert_eq!(run_js(src), vec!["NaN"]);
+}
+

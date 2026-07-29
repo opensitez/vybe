@@ -318,3 +318,50 @@ console.log(res.join(","));
 "#;
     assert_eq!(run_js(src), vec!["A1,A2"]);
 }
+
+#[test]
+fn test_js_labeled_switch_statement_break() {
+    let src = r#"
+const log = [];
+lblSwitch: switch (1) {
+    case 1:
+        log.push("c1");
+        break lblSwitch;
+        log.push("unreachable");
+}
+console.log(log.join(","));
+"#;
+    assert_eq!(run_js(src), vec!["c1"]);
+}
+
+#[test]
+fn test_js_multiple_labels_outer_vs_inner_break() {
+    let src = r#"
+const log = [];
+outer: inner: for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) {
+        if (i === 1) break outer;
+        if (j === 1) break inner;
+        log.push(`${i}:${j}`);
+    }
+}
+console.log(log.join("|"));
+"#;
+    assert_eq!(run_js(src), vec!["0:0|1:0"]);
+}
+
+#[test]
+fn test_js_labeled_for_of_loop_break() {
+    let src = r#"
+const arr = [1, 2, 3];
+const res = [];
+outer: for (const x of arr) {
+    if (x === 2) break outer;
+    res.push(x);
+}
+console.log(res.join(","));
+"#;
+    assert_eq!(run_js(src), vec!["1"]);
+}
+
+

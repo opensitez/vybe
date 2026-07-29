@@ -256,3 +256,15 @@ console.log(i1.tpl === i2.tpl);
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
+
+#[test]
+fn test_js_tagged_template_raw_array_length_matches_strings_length() {
+    let src = r#"
+function tag(strings) {
+    return strings.length === strings.raw.length;
+}
+console.log(tag`A${1}B${2}C`);
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

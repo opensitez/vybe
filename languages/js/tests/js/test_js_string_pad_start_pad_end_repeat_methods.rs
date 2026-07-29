@@ -196,3 +196,12 @@ console.log(`${dStart.writable}:${dStart.configurable}:${dRepeat.writable}:${dRe
 "#;
     assert_eq!(run_js(src), vec!["true:true:true:true"]);
 }
+
+#[test]
+fn test_js_string_repeat_nan_count_returns_empty_string() {
+    let src = r#"
+console.log("abc".repeat(NaN) === "");
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

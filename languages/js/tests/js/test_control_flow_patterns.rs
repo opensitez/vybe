@@ -349,3 +349,15 @@ console.log(seen.join(","));
         vec!["1,3"]
     );
 }
+
+#[test]
+fn for_of_array_iterator_manual() {
+    let src = r#"
+const it = [10, 20][Symbol.iterator]();
+const res = [];
+for (const x of it) res.push(x);
+console.log(res.join(","));
+"#;
+    assert_eq!(run_js(src), vec!["10,20"]);
+}
+

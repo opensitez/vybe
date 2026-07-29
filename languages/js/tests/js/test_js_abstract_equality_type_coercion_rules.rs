@@ -410,3 +410,31 @@ console.log(`${value == 1}:${value == "1"}`);
 "#;
     assert_eq!(run_js(src), vec!["true:true"]);
 }
+
+#[test]
+fn test_js_abstract_equality_toprimitive_returning_object_throws_typeerror() {
+    let src = r#"
+const obj = {
+    [Symbol.toPrimitive]() {
+        return {};
+    }
+};
+try {
+    console.log(obj == 1);
+} catch (e) {
+    console.log(e.name);
+}
+"#;
+    assert_eq!(run_js(src), vec!["TypeError"]);
+}
+
+#[test]
+fn test_js_abstract_equality_different_symbols_with_same_description_are_not_equal() {
+    let src = r#"
+const s1 = Symbol("desc");
+const s2 = Symbol("desc");
+console.log(`${s1 == s2}:${s1 === s2}`);
+"#;
+    assert_eq!(run_js(src), vec!["false:false"]);
+}
+

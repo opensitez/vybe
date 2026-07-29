@@ -364,3 +364,16 @@ console.log(Math.PI.toFixed(5));
         vec!["3.14159"]
     );
 }
+
+#[test]
+fn test_math_logarithmic_and_square_root_constants() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log([Math.LN2 > 0, Math.LN10 > 0, Math.SQRT2 > 1, Math.SQRT1_2 < 1].every(Boolean));
+"#
+        ),
+        vec!["true"]
+    );
+}
+

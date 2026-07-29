@@ -208,3 +208,17 @@ console.log(eval("10, 20, 30;"));
 "#;
     assert_eq!(run_js(src), vec!["30"]);
 }
+
+#[test]
+fn test_js_comma_operator_exception_aborts_subsequent_operands() {
+    let src = r#"
+let step = 0;
+try {
+    const res = (step = 1, (() => { throw new Error("abort"); })(), step = 2);
+} catch (e) {
+    console.log(e.message + "|step=" + step);
+}
+"#;
+    assert_eq!(run_js(src), vec!["abort|step=1"]);
+}
+

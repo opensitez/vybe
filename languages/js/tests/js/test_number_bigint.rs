@@ -381,3 +381,16 @@ console.log((8).toString(8));
         vec!["ff", "1010", "10"]
     );
 }
+
+#[test]
+fn test_bigint_exponentiation_operator() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(2n ** 10n);
+"#
+        ),
+        vec!["1024n"]
+    );
+}
+

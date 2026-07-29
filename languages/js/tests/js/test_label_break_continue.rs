@@ -228,3 +228,21 @@ console.log(x);
         vec!["10"]
     );
 }
+
+#[test]
+fn labeled_break_nested_blocks() {
+    let src = r#"
+let res = "none";
+outer: {
+    inner: {
+        res = "inner";
+        break outer;
+        res = "after";
+    }
+    res = "outer";
+}
+console.log(res);
+"#;
+    assert_eq!(run_js(src), vec!["inner"]);
+}
+

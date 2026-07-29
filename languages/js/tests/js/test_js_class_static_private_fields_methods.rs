@@ -319,3 +319,19 @@ console.log(Metadata.getName());
 "#;
     assert_eq!(run_js(src), vec!["#internalMethod"]);
 }
+
+#[test]
+fn test_js_class_static_private_brand_check_subclass_returns_false() {
+    let src = r#"
+class Parent {
+    static #brand = true;
+    static isParent(target) {
+        return #brand in target;
+    }
+}
+class Child extends Parent {}
+console.log(Parent.isParent(Parent) + "|" + Parent.isParent(Child));
+"#;
+    assert_eq!(run_js(src), vec!["true|false"]);
+}
+

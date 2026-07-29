@@ -234,3 +234,25 @@ console.log(Factory.count);
         vec!["1", "1", "1"]
     );
 }
+
+#[test]
+fn test_decorated_prototype_readonly_method_throws_in_strict_mode() {
+    assert_eq!(
+        run_js(
+            r#"
+"use strict";
+class Target {
+    action() { return "ok"; }
+}
+Object.defineProperty(Target.prototype, "action", { writable: false });
+const t = new Target();
+try {
+    t.action = () => "changed";
+} catch (e) {
+    console.log(e.name);
+}
+"#
+        ),
+        vec!["TypeError"]
+    );
+}

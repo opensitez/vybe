@@ -206,4 +206,14 @@ console.log(e.name);
 "#,
         ["EvalError"]
     };
+
+    error_tostring_with_empty_name_uses_message_only => {
+        r#"
+const e = new Error("boom");
+e.name = "";
+console.log(e.toString());
+"#,
+        ["boom"]
+    };
 }
+

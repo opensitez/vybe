@@ -198,3 +198,17 @@ console.log(1_0 * 1_0);
         vec!["3000", "100"]
     );
 }
+
+#[test]
+fn bigint_binary_separator() {
+    assert_eq!(
+        run_js(
+            r#"
+const n = 0b1010_0101n;
+console.log(n);
+"#
+        ),
+        vec!["165n"]
+    );
+}
+

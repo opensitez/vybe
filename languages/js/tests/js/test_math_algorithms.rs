@@ -266,3 +266,17 @@ console.log(isqrt(0));
         vec!["4", "4", "10", "0"]
     );
 }
+
+#[test]
+fn vector_normalization_hypot() {
+    assert_eq!(
+        run_js(
+            r#"
+const norm = (x, y) => { const len = Math.hypot(x, y); return [x / len, y / len]; };
+console.log(norm(3, 4).join(","));
+"#
+        ),
+        vec!["0.6,0.8"]
+    );
+}
+

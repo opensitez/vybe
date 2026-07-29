@@ -160,4 +160,10 @@ try {
 "#,
         ["true"]
     };
+
+    bigint_number_ten_conversion => {
+        r#"console.log(BigInt(10).toString());"#,
+        ["10"]
+    };
 }
+

@@ -227,3 +227,12 @@ try {
 "#;
     assert_eq!(run_js(src), vec!["TypeError|isType=true"]);
 }
+
+#[test]
+fn test_js_error_prototype_parent_is_object_prototype() {
+    let src = r#"
+console.log(Object.getPrototypeOf(Error.prototype) === Object.prototype);
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

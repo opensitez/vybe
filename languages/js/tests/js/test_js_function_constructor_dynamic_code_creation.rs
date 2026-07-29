@@ -203,3 +203,12 @@ console.log((fnEval(4) === fnConst(4)) + "|" + (fnEval.name !== fnConst.name));
 "#;
     assert_eq!(run_js(src), vec!["true|true"]);
 }
+
+#[test]
+fn test_js_function_prototype_parent_is_object_prototype() {
+    let src = r#"
+console.log(Object.getPrototypeOf(Function.prototype) === Object.prototype);
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

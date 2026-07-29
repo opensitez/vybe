@@ -201,3 +201,16 @@ try {
 "#;
     assert_eq!(run_js(src), vec!["asIntN Non-BigInt Target TypeError"]);
 }
+
+#[test]
+fn test_js_bigint_bitwise_shift_assignment_operators() {
+    let src = r#"
+let x = 1n;
+x <<= 4n;
+console.log(x.toString());
+x >>= 2n;
+console.log(x.toString());
+"#;
+    assert_eq!(run_js(src), vec!["16", "4"]);
+}
+

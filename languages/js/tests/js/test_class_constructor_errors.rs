@@ -208,4 +208,15 @@ crate::js_cases! {
         r#"class A{constructor(){this.chain=new.target.name;}} class B extends A{constructor(){super();}} class C extends B{constructor(){super();}} const c=new C();console.log(c.chain);"#,
         ["C"]
     };
+
+    derived_constructor_returns_object_without_super_call => {
+        r#"class Base{} class Derived extends Base{constructor(){return {override:true};}} const d=new Derived();console.log(d.override);"#,
+        ["true"]
+    };
+
+    class_instance_custom_tostringtag_brand => {
+        r#"class Custom{[Symbol.toStringTag]="MyCustomClass";} console.log(Object.prototype.toString.call(new Custom()));"#,
+        ["[object MyCustomClass]"]
+    };
 }
+

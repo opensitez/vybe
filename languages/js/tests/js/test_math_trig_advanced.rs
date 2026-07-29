@@ -297,3 +297,16 @@ console.log(isNaN(Math.min(1, NaN)));
         vec!["true", "true"]
     );
 }
+
+#[test]
+fn math_atanh_boundary_infinity() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(`${Math.atanh(1)}:${Math.atanh(-1)}`);
+"#
+        ),
+        vec!["Infinity:-Infinity"]
+    );
+}
+

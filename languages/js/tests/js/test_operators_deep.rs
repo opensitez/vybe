@@ -726,3 +726,12 @@ console.log(-false);
 "#;
     assert_eq!(run_js(src), vec!["1", "0", "-42", "0", "0"]);
 }
+
+#[test]
+fn test_bigint_relational_comparison_with_infinity() {
+    let src = r#"
+console.log(`${100n < Infinity}:${-100n > -Infinity}:${100n > -Infinity}`);
+"#;
+    assert_eq!(run_js(src), vec!["true:true:true"]);
+}
+

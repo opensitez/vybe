@@ -750,3 +750,42 @@ console.log(Child.childCount);
         vec!["2", "5"]
     );
 }
+
+#[test]
+fn test_extracted_class_method_bound_with_bind() {
+    assert_eq!(
+        run_js(
+            r#"
+class Counter {
+    constructor() { this.value = 42; }
+    get() { return this.value; }
+}
+const c = new Counter();
+const boundGet = c.get.bind(c);
+console.log(boundGet());
+"#
+        ),
+        vec!["42"]
+    );
+}
+
+#[test]
+fn test_generator_class_method() {
+    assert_eq!(
+        run_js(
+            r#"
+class Collection {
+    * values() {
+        yield 1;
+        yield 2;
+        yield 3;
+    }
+}
+const items = [...new Collection().values()];
+console.log(items.join(","));
+"#
+        ),
+        vec!["1,2,3"]
+    );
+}
+

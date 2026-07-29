@@ -805,4 +805,8 @@ crate::js_cases! {
         ["1,gf,e:after"]
     };
 
+    async_promise_all_catch_returns_fallback => {
+        r#"async function main() { const res = await Promise.all([Promise.resolve(1), Promise.reject("err")]).catch(() => "fallback"); console.log(res); } main();"#,
+        ["fallback"]
+    };
 }

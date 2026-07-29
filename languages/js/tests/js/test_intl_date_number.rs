@@ -159,3 +159,17 @@ console.log(sorted.length);
         vec!["apple", "4"]
     );
 }
+
+#[test]
+fn intl_date_format_epoch_number() {
+    assert_eq!(
+        run_js(
+            r#"
+const fmt = new Intl.DateTimeFormat("en", { timeZone: "UTC" });
+console.log(fmt.format(0).includes("1970"));
+"#
+        ),
+        vec!["true"]
+    );
+}
+

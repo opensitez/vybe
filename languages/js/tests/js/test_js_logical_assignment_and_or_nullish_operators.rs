@@ -326,3 +326,28 @@ console.log(keyEval);
         vec!["final", "6"]
     );
 }
+
+#[test]
+fn test_js_logical_assignment_null_property_access_throws_typeerror() {
+    let src = r#"
+try {
+    null.x ??= 10;
+} catch (e) {
+    console.log(e.name);
+}
+"#;
+    assert_eq!(run_js(src), vec!["TypeError"]);
+}
+
+#[test]
+fn test_js_logical_assignment_destructuring_defaults() {
+    let src = r#"
+const { a = 1, b = 2 } = { a: 0, b: undefined };
+let x = a, y = b;
+x ||= 10;
+y ??= 20;
+console.log(`${x}:${y}`);
+"#;
+    assert_eq!(run_js(src), vec!["10:2"]);
+}
+

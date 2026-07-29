@@ -240,4 +240,10 @@ crate::js_cases! {
         r#"console.log(parseInt("0x10"));"#,
         ["16"]
     };
+
+    parseint_binary_prefix_without_radix_stops => {
+        r#"console.log(parseInt("0b1010"));"#,
+        ["0"]
+    };
 }
+

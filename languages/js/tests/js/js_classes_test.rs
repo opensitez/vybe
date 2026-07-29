@@ -245,3 +245,46 @@ fn test_class_inheritance_super_call() {
     "#;
     assert_eq!(run_js_one(code), "base:alpha:admin");
 }
+
+#[test]
+fn test_class_constructor_explicit_object_return() {
+    let code = r#"
+        class Custom {
+            constructor() {
+                return { custom: true };
+            }
+        }
+        const obj = new Custom();
+        console.log(obj.custom);
+    "#;
+    assert_eq!(run_js_one(code), "true");
+}
+
+#[test]
+fn test_class_constructor_primitive_return_ignored() {
+    let code = r#"
+        class Prim {
+            constructor() {
+                this.val = 42;
+                return 123;
+            }
+        }
+        const obj = new Prim();
+        console.log(obj.val);
+    "#;
+    assert_eq!(run_js_one(code), "42");
+}
+
+#[test]
+fn test_class_constructor_call_without_new_throws_typeerror() {
+    let code = r#"
+        class C {}
+        try {
+            C();
+        } catch (e) {
+            console.log(e.name);
+        }
+    "#;
+    assert_eq!(run_js_one(code), "TypeError");
+}
+

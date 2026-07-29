@@ -197,3 +197,15 @@ console.log(str.endsWith("\n"));
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
+
+#[test]
+fn test_js_template_literal_invalid_hex_escape_in_tagged_cooked_undefined() {
+    let src = r#"
+function tag(strings) {
+    return strings[0] === undefined;
+}
+console.log(tag`\xZZ`);
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

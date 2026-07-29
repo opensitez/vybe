@@ -702,3 +702,27 @@ console.log(log.join(","));
         vec!["try-0,finally-1,try-1,finally-2,try-2,finally-3"]
     );
 }
+
+#[test]
+fn test_js_for_of_destructuring_defaults_in_loop_header() {
+    let src = r#"
+const out = [];
+for (const [a = 10, b = 20] of [[0, undefined], [null, 5]]) {
+    out.push(`${a}:${b}`);
+}
+console.log(out.join("|"));
+"#;
+    assert_eq!(run_js(src), vec!["0:20|null:5"]);
+}
+
+#[test]
+fn test_js_for_of_map_destructuring() {
+    let src = r#"
+const m = new Map([["k1", "v1"]]);
+const out = [];
+for (const [k, v] of m) out.push(`${k}=${v}`);
+console.log(out.join(","));
+"#;
+    assert_eq!(run_js(src), vec!["k1=v1"]);
+}
+

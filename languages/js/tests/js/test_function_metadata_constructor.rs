@@ -176,4 +176,13 @@ console.log(fn());
 "#,
         ["true"]
     };
+
+    function_bind_name_prefixes_bound => {
+        r#"
+function target() {}
+console.log(target.bind(null).name);
+"#,
+        ["bound target"]
+    };
 }
+

@@ -400,3 +400,12 @@ capture`a\nb${1}x${2}y`;
         vec!["3", "3", "a\nb", "x", "y", "true"]
     );
 }
+
+#[test]
+fn test_js_template_literal_array_spread_interpolation() {
+    let src = r#"
+const arr = [1, 2];
+console.log(`Result: ${[0, ...arr, 3].join(",")}`);
+"#;
+    assert_eq!(run_js(src), vec!["Result: 0,1,2,3"]);
+}

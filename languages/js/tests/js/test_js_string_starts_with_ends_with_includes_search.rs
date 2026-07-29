@@ -225,3 +225,12 @@ console.log(`${"abc".startsWith("a", 10)}:${"abc".endsWith("a", 1)}:${"abc".incl
 "#;
     assert_eq!(run_js(src), vec!["false:true:false:true:true"]);
 }
+
+#[test]
+fn test_js_string_starts_with_nan_position_treats_as_zero() {
+    let src = r#"
+console.log("abc".startsWith("a", NaN));
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

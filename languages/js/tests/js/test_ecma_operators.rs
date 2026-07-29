@@ -843,13 +843,55 @@ console.log(obj._x);
 
 #[test]
 fn delete_literal_expression_is_true() {
-    assert_eq!(
-        run_js(
-            r#"
+    let out = run_js(
+        r#"
 console.log(delete 123);
 console.log(delete "x");
 "#
-        ),
-        vec!["true", "true"]
     );
+    assert_eq!(out, vec!["true", "true"]);
 }
+
+#[test]
+fn typeof_bigint_and_symbol() {
+    let out = run_js(
+        r#"
+console.log(typeof 100n);
+console.log(typeof Symbol("id"));
+"#,
+    );
+    assert_eq!(out, vec!["bigint", "symbol"]);
+}
+
+#[test]
+fn prefix_and_postfix_increment_on_accessor_property() {
+    let out = run_js(
+        r#"
+const obj = {
+    _val: 10,
+    get val() { return this._val; },
+    set val(v) { this._val = v; }
+};
+console.log(++obj.val);
+console.log(obj.val);
+console.log(obj.val++);
+console.log(obj.val);
+"#,
+    );
+    assert_eq!(out, vec!["11", "11", "11", "12"]);
+}
+
+#[test]
+fn nullish_assignment_short_circuit_eval() {
+    let out = run_js(
+        r#"
+let sideEffect = false;
+let val = "initial";
+val ??= (sideEffect = true, "fallback");
+console.log(val);
+console.log(sideEffect);
+"#,
+    );
+    assert_eq!(out, vec!["initial", "false"]);
+}
+

@@ -200,3 +200,16 @@ console.log(res.join(","));
 "#;
     assert_eq!(run_js(src), vec!["1,99,3"]);
 }
+
+#[test]
+fn test_js_bigint64array_from_number_array_throws_typeerror() {
+    let src = r#"
+try {
+    BigInt64Array.from([1, 2]);
+} catch (e) {
+    console.log(e.name);
+}
+"#;
+    assert_eq!(run_js(src), vec!["TypeError"]);
+}
+

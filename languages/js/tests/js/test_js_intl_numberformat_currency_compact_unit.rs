@@ -195,3 +195,13 @@ console.log(formatter.format(-100));
 "#;
     assert_eq!(run_js(src), vec!["($100.00)"]);
 }
+
+#[test]
+fn test_js_intl_numberformat_engineering_notation() {
+    let src = r#"
+const formatter = new Intl.NumberFormat("en-US", { notation: "engineering" });
+console.log(formatter.format(12345).includes("E"));
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

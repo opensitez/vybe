@@ -171,3 +171,16 @@ try {
 "#;
     assert_eq!(run_js(src), vec!["hypot Symbol TypeError"]);
 }
+
+#[test]
+fn test_js_math_cbrt_symbol_throws_typeerror() {
+    let src = r#"
+try {
+    Math.cbrt(Symbol("x"));
+} catch (e) {
+    console.log(e.name);
+}
+"#;
+    assert_eq!(run_js(src), vec!["TypeError"]);
+}
+

@@ -217,3 +217,25 @@ console.log(String(bad));
         vec!["valueOf boom", "ok"]
     );
 }
+
+#[test]
+fn test_toprimitive_returning_object_throws_typeerror() {
+    assert_eq!(
+        run_js(
+            r#"
+const bad = {
+    [Symbol.toPrimitive]() {
+        return {};
+    }
+};
+try {
+    +bad;
+} catch (e) {
+    console.log(e.name);
+}
+"#
+        ),
+        vec!["TypeError"]
+    );
+}
+

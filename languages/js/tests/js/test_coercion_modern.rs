@@ -603,3 +603,16 @@ console.log(0 === -0);
         &["false", "true"]
     );
 }
+
+#[test]
+fn test_boolean_coercion_primitive_object_wrappers_always_truthy() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(Boolean(new Boolean(false)) + "|" + Boolean(new Number(0)) + "|" + Boolean(new String("")));
+"#
+        ),
+        &["true|true|true"]
+    );
+}
+

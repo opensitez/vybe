@@ -204,3 +204,16 @@ console.log(str);
 "#;
     assert_eq!(run_js(src), vec!["HELLO"]);
 }
+
+#[test]
+fn test_js_string_from_code_point_non_integer_throws_rangeerror() {
+    let src = r#"
+try {
+    String.fromCodePoint(3.14);
+} catch (e) {
+    console.log(e.name);
+}
+"#;
+    assert_eq!(run_js(src), vec!["RangeError"]);
+}
+

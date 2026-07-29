@@ -267,3 +267,30 @@ console.log(result);
         vec!["false"]
     );
 }
+
+#[test]
+fn test_ternary_operator_precedence_with_binary_math() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log((1 + 2 ? 3 : 4 * 5) + "|" + (0 ? 3 : 4 * 5));
+"#
+        ),
+        vec!["3|20"]
+    );
+}
+
+#[test]
+fn test_void_operator_on_function_invocation() {
+    assert_eq!(
+        run_js(
+            r#"
+let side = 0;
+const fn = () => (side = 42);
+console.log((void fn() === undefined) + "|Side=" + side);
+"#
+        ),
+        vec!["true|Side=42"]
+    );
+}
+

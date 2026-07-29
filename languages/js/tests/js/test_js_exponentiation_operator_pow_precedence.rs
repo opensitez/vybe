@@ -186,3 +186,43 @@ try {
         vec!["Mixed BigInt Number Exponentiation TypeError"]
     );
 }
+
+#[test]
+fn test_js_exponentiation_zero_and_negative_zero_sign_preservation() {
+    let src = r#"
+console.log(`${0 ** -1}:${(-0) ** -1}:${(-0) ** -2}:${Object.is((-0) ** 3, -0)}:${Object.is((-0) ** 2, 0)}`);
+"#;
+    assert_eq!(run_js(src), vec!["Infinity:-Infinity:Infinity:true:true"]);
+}
+
+#[test]
+fn test_js_exponentiation_infinity_and_fractional_base_boundaries() {
+    let src = r#"
+console.log(`${(-2) ** Infinity}:${(0.5) ** Infinity}:${(-0.5) ** Infinity}:${(-1) ** Infinity}`);
+"#;
+    assert_eq!(run_js(src), vec!["Infinity:0:0:NaN"]);
+}
+
+#[test]
+fn test_js_exponentiation_assignment_on_accessor_property() {
+    let src = r#"
+const obj = {
+    _val: 2,
+    get val() { return this._val; },
+    set val(v) { this._val = v; }
+};
+obj.val **= 3;
+console.log(`${obj.val}:${obj._val}`);
+"#;
+    assert_eq!(run_js(src), vec!["8:8"]);
+}
+
+#[test]
+fn test_js_exponentiation_bigint_zero_exponent_and_large_powers() {
+    let src = r#"
+console.log(`${(0n ** 0n).toString()}:${(5n ** 0n).toString()}:${(2n ** 64n).toString()}`);
+"#;
+    assert_eq!(run_js(src), vec!["1:1:18446744073709551616"]);
+}
+
+

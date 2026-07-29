@@ -225,3 +225,12 @@ console.log(new Secret().getCode());
 "#;
     assert_eq!(run_js(src), vec!["Priv_Secret_99"]);
 }
+
+#[test]
+fn test_js_nested_template_literal_in_iife_expression() {
+    let src = r#"
+console.log((() => `IIFE_${`Value_${123}`}`)());
+"#;
+    assert_eq!(run_js(src), vec!["IIFE_Value_123"]);
+}
+

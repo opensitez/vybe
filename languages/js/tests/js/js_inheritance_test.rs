@@ -495,3 +495,39 @@ fn test_25_default_param_values() {
     assert_eq!(out[0], "localhost 8080");
     assert_eq!(out[1], "example.com 3000");
 }
+
+#[test]
+fn test_derived_constructor_accessing_this_before_super_throws_referenceerror() {
+    let code = r#"
+        class Base {}
+        class Derived extends Base {
+            constructor() {
+                this.x = 1;
+                super();
+            }
+        }
+        try {
+            new Derived();
+        } catch (e) {
+            console.log(e.name);
+        }
+    "#;
+    assert_eq!(run_js_one(code), "ReferenceError");
+}
+
+#[test]
+fn test_derived_constructor_missing_super_call_throws_referenceerror() {
+    let code = r#"
+        class Base {}
+        class Derived extends Base {
+            constructor() {}
+        }
+        try {
+            new Derived();
+        } catch (e) {
+            console.log(e.name);
+        }
+    "#;
+    assert_eq!(run_js_one(code), "ReferenceError");
+}
+

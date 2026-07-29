@@ -191,3 +191,33 @@ fn variadic_function_alias_packs_rest() {
     );
     assert_eq!(out, "head:a,b,c");
 }
+
+#[test]
+fn variadic_arrow_function_survives_method_call() {
+    let out = run_one(
+        r#"
+        const fn = (prefix, ...parts) => {
+            const u = prefix.toUpperCase();
+            return u + ":" + parts.join(",");
+        };
+        console.log(fn("head", "a", "b"));
+    "#,
+    );
+    assert_eq!(out, "HEAD:a,b");
+}
+
+#[test]
+fn variadic_args_with_default_parameter_survives_method_call() {
+    let out = run_one(
+        r#"
+        function f(first = "default", ...rest) {
+            const u = first.toUpperCase();
+            return [u, rest.length, rest[0]];
+        }
+        const r = f("hello", "X", "Y");
+        console.log(r[0], r[1], r[2]);
+    "#,
+    );
+    assert_eq!(out, "HELLO 2 X");
+}
+

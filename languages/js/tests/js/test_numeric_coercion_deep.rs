@@ -192,3 +192,16 @@ console.log(2**32 + 1 | 0); // wraps around int32
         vec!["3", "-3", "1"]
     );
 }
+
+#[test]
+fn unary_minus_coerces() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log([-"42", -true, -null, -undefined].join("|"));
+"#
+        ),
+        vec!["-42|-1|0|NaN"]
+    );
+}
+

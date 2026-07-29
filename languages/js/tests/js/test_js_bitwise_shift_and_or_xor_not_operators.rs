@@ -196,3 +196,24 @@ console.log((10.99 << 1) + "|" + (-10.99 >> 1));
 "#;
     assert_eq!(run_js(src), vec!["20|-5"]);
 }
+
+#[test]
+fn test_js_bitwise_bigint_negative_shift_amount_throws_rangeerror() {
+    let src = r#"
+try {
+    const res = 1n << -1n;
+} catch (e) {
+    console.log(e.name);
+}
+"#;
+    assert_eq!(run_js(src), vec!["RangeError"]);
+}
+
+#[test]
+fn test_js_bitwise_not_on_negative_zero() {
+    let src = r#"
+console.log(~(-0));
+"#;
+    assert_eq!(run_js(src), vec!["-1"]);
+}
+

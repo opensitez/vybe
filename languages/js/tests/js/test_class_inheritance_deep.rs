@@ -441,3 +441,26 @@ console.log(`${child.mode}|${Object.hasOwn(child, "mode")}|${child.mode === "fie
         vec!["field-mode|true|true"]
     );
 }
+
+#[test]
+fn test_static_super_method_preserves_dynamic_this_receiver() {
+    assert_eq!(
+        run_js(
+            r#"
+class Base {
+    static getName() {
+        return this.name;
+    }
+}
+class Derived extends Base {
+    static getName() {
+        return super.getName() + "Suffix";
+    }
+}
+console.log(Derived.getName());
+"#
+        ),
+        vec!["DerivedSuffix"]
+    );
+}
+

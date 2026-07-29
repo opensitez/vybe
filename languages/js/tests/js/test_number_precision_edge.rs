@@ -294,3 +294,16 @@ console.log(parseInt("  42  "));
         vec!["42"]
     );
 }
+
+#[test]
+fn test_number_parse_float_infinity() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(Number.parseFloat("Infinity"));
+"#
+        ),
+        vec!["Infinity"]
+    );
+}
+

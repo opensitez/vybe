@@ -178,3 +178,20 @@ console.log(EventLogger.getLog().join(","));
         vec!["start,process,end"]
     );
 }
+
+#[test]
+fn test_private_static_method_in_static_getter() {
+    assert_eq!(
+        run_js(
+            r#"
+class Secret {
+    static #compute() { return "staticSecret"; }
+    static get secret() { return Secret.#compute(); }
+}
+console.log(Secret.secret);
+"#
+        ),
+        vec!["staticSecret"]
+    );
+}
+

@@ -403,3 +403,21 @@ fn test_js_for_await_of_continue_does_not_call_return() {
 "#;
     assert_eq!(run_js(src), vec!["1,3", "0"]);
 }
+
+#[test]
+fn test_js_for_await_of_async_generator_yields_rejected_promise() {
+    let src = r#"
+(async () => {
+    async function* gen() {
+        yield Promise.reject("GenReject");
+    }
+    try {
+        for await (const x of gen()) {}
+    } catch(e) {
+        console.log(e);
+    }
+})();
+"#;
+    assert_eq!(run_js(src), vec!["GenReject"]);
+}
+

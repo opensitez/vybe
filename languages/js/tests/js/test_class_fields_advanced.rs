@@ -397,3 +397,26 @@ console.log(c.instanceRole);
         vec!["instance-parent", "parent", "child", "instance-parent"]
     );
 }
+
+#[test]
+fn test_derived_field_initializers_run_after_super_returns() {
+    assert_eq!(
+        run_js(
+            r#"
+let baseSeen = "uninitialized";
+class Base {
+    constructor() {
+        baseSeen = String(this.derivedField);
+    }
+}
+class Derived extends Base {
+    derivedField = "initialized";
+}
+const d = new Derived();
+console.log(`${baseSeen}|${d.derivedField}`);
+"#
+        ),
+        vec!["undefined|initialized"]
+    );
+}
+

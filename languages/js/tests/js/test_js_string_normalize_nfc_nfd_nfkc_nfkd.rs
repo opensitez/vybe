@@ -195,3 +195,13 @@ console.log(String.prototype.normalize.name);
 "#;
     assert_eq!(run_js(src), vec!["normalize"]);
 }
+
+#[test]
+fn test_js_string_normalize_form_argument_coercion() {
+    let src = r#"
+const formObj = { toString: () => "NFC" };
+console.log("\u0041\u030A".normalize(formObj) === "Å");
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

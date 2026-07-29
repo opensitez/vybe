@@ -370,3 +370,22 @@ console.log([...new Derived().stream()].join(","));
 "#;
     assert_eq!(run_js(src), vec!["1,2,3"]);
 }
+
+#[test]
+fn test_js_class_getter_only_assignment_throws_in_strict_mode() {
+    let src = r#"
+"use strict";
+class Base {
+    get val() { return 10; }
+}
+class Derived extends Base {}
+const d = new Derived();
+try {
+    d.val = 20;
+} catch (e) {
+    console.log(e.name);
+}
+"#;
+    assert_eq!(run_js(src), vec!["TypeError"]);
+}
+

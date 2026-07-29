@@ -99,4 +99,16 @@ console.log(new Left().hasBrand(new Right()));
 "#,
         ["false"]
     };
+
+    new_target_custom_via_reflect_construct => {
+        r#"
+function Base() {
+  console.log(new.target === Sub);
 }
+function Sub() {}
+Reflect.construct(Base, [], Sub);
+"#,
+        ["true"]
+    };
+}
+

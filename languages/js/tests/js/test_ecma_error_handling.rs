@@ -299,3 +299,18 @@ console.log(test());
     );
     assert_eq!(out, vec!["catch", "finally", "done"]);
 }
+
+#[test]
+fn throw_boolean() {
+    let out = run_js(
+        r#"
+try {
+    throw true;
+} catch (e) {
+    console.log(e);
+}
+"#,
+    );
+    assert_eq!(out, vec!["true"]);
+}
+

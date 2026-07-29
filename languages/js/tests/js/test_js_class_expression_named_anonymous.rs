@@ -279,3 +279,15 @@ console.log(typeof Expr);
 "#;
     assert_eq!(run_js(src), vec!["function"]);
 }
+
+#[test]
+fn test_js_class_expression_in_default_parameter_value() {
+    let src = r#"
+function make(ClassRef = class { getVal() { return "defaultVal"; } }) {
+    return new ClassRef().getVal();
+}
+console.log(make());
+"#;
+    assert_eq!(run_js(src), vec!["defaultVal"]);
+}
+

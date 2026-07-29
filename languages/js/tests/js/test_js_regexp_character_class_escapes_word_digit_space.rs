@@ -186,3 +186,13 @@ console.log(str.replace(/\d/g, "#") + "|" + str.replace(/\D/g, "*"));
 "##;
     assert_eq!(run_js(src), vec!["###abc|123***"]);
 }
+
+#[test]
+fn test_js_regexp_constructor_digit_escape_string() {
+    let src = r#"
+const re = new RegExp("\\d+");
+console.log(re.test("123"));
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

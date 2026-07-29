@@ -216,3 +216,29 @@ console.log((1)?.toString() + "|" + (0?.toString() === undefined));
 "#;
     assert_eq!(run_js(src), vec!["1|false"]);
 }
+
+#[test]
+fn test_js_optional_chaining_call_on_non_function_throws_typeerror() {
+    let src = r#"
+const obj = { fn: 123 };
+try {
+    obj.fn?.();
+} catch (e) {
+    console.log(e.name);
+}
+"#;
+    assert_eq!(run_js(src), vec!["TypeError"]);
+}
+
+#[test]
+fn test_js_optional_chaining_method_call_retains_receiver_this() {
+    let src = r#"
+const obj = {
+    val: 42,
+    getVal() { return this.val; }
+};
+console.log(obj?.getVal());
+"#;
+    assert_eq!(run_js(src), vec!["42"]);
+}
+

@@ -237,3 +237,16 @@ console.log(r1 === r2);
         vec!["true", "true"]
     );
 }
+
+#[test]
+fn test_math_sign_negative_zero_preservation() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(Object.is(Math.sign(-0), -0));
+"#
+        ),
+        vec!["true"]
+    );
+}
+

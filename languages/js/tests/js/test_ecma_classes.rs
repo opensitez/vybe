@@ -459,3 +459,18 @@ console.log(Object.getPrototypeOf(Derived) === Base);
     );
     assert_eq!(out, vec!["base/derived", "true"]);
 }
+
+#[test]
+fn test_class_async_method() {
+    let out = run_js(
+        r#"
+class API {
+    async fetchData() {
+        return "asyncData";
+    }
+}
+new API().fetchData().then(console.log);
+"#
+    );
+    assert_eq!(out, vec!["asyncData"]);
+}

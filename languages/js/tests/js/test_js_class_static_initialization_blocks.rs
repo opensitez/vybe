@@ -315,3 +315,19 @@ console.log(Registry.getVal());
 "#;
     assert_eq!(run_js(src), vec!["RegisteredSymbolValue"]);
 }
+
+#[test]
+fn test_js_class_static_block_access_private_static_via_this() {
+    let src = r#"
+class Secret {
+    static #token = "abc";
+    static exposed;
+    static {
+        this.exposed = this.#token;
+    }
+}
+console.log(Secret.exposed);
+"#;
+    assert_eq!(run_js(src), vec!["abc"]);
+}
+

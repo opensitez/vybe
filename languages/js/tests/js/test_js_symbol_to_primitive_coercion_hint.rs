@@ -273,3 +273,13 @@ console.log(typeof Symbol.toPrimitive === "symbol");
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
+
+#[test]
+fn test_js_symbol_to_primitive_returning_undefined_coerces_to_nan() {
+    let src = r#"
+const obj = { [Symbol.toPrimitive]() { return undefined; } };
+console.log(Number.isNaN(+obj));
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

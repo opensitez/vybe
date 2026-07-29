@@ -268,3 +268,16 @@ console.log(String(s) + "|" + s.toString());
 "#;
     assert_eq!(run_js(src), vec!["Symbol(desc)|Symbol(desc)"]);
 }
+
+#[test]
+fn test_js_bigint_constructor_symbol_throws_typeerror() {
+    let src = r#"
+try {
+    BigInt(Symbol("foo"));
+} catch (e) {
+    console.log(e.name);
+}
+"#;
+    assert_eq!(run_js(src), vec!["TypeError"]);
+}
+

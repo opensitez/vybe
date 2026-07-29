@@ -168,3 +168,16 @@ console.log(~~null);
         vec!["3", "-3", "42", "0"]
     );
 }
+
+#[test]
+fn test_infinity_division_returns_nan() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(Infinity / Infinity);
+"#
+        ),
+        vec!["NaN"]
+    );
+}
+

@@ -176,3 +176,22 @@ console.log(p.greet());
         vec!["[LOG] Hi, I'm Bob"]
     );
 }
+
+#[test]
+fn test_mixin_overriding_static_method_with_super() {
+    assert_eq!(
+        run_js(
+            r#"
+const StaticLogger = Base => class extends Base {
+    static log(msg) { return "[STATIC] " + msg; }
+};
+class BaseLogger {}
+class AppLogger extends StaticLogger(BaseLogger) {}
+console.log(AppLogger.log("Ready"));
+"#
+        ),
+        vec!["[STATIC] Ready"]
+    );
+}
+
+

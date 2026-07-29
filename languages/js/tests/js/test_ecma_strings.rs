@@ -396,3 +396,16 @@ console.log(parsed.c);
     );
     assert_eq!(out, vec!["1", "hello", "true"]);
 }
+
+#[test]
+fn test_string_replace_all() {
+    let out = run_js(r#"console.log("foo-bar-foo".replaceAll("foo", "baz"));"#);
+    assert_eq!(out, vec!["baz-bar-baz"]);
+}
+
+#[test]
+fn test_string_code_point_at() {
+    let out = run_js(r#"console.log("A".codePointAt(0));"#);
+    assert_eq!(out, vec!["65"]);
+}
+

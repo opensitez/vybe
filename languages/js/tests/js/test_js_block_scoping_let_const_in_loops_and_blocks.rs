@@ -272,3 +272,13 @@ console.log("globalLetVar" in globalThis); // Top-level let does NOT create prop
 "#;
     assert_eq!(run_js(src), vec!["false"]);
 }
+
+#[test]
+fn test_js_global_var_creates_globalthis_property() {
+    let src = r#"
+var globalVarProp = "myVar";
+console.log(globalThis.globalVarProp === "myVar");
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

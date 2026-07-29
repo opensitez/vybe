@@ -164,3 +164,12 @@ console.log(`${Number.parseFloat("  123.456xyz")}:${Number.parseFloat("abc123")}
 "#;
     assert_eq!(run_js(src), vec!["123.456:NaN"]);
 }
+
+#[test]
+fn test_js_number_issafeinteger_bigint_argument() {
+    let src = r#"
+console.log(Number.isSafeInteger(100n));
+"#;
+    assert_eq!(run_js(src), vec!["false"]);
+}
+

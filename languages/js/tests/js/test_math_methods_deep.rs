@@ -188,3 +188,16 @@ console.log(17 % -5);
         vec!["2", "-2", "2"]
     );
 }
+
+#[test]
+fn math_pow_zero_negative_exponent() {
+    assert_eq!(
+        run_js(
+            r#"
+console.log(Math.pow(0, -1));
+"#
+        ),
+        vec!["Infinity"]
+    );
+}
+

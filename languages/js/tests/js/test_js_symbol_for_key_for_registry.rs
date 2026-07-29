@@ -221,3 +221,13 @@ console.log(keys.length + "|" + (keys[1] === s));
 "#;
     assert_eq!(run_js(src), vec!["2|true"]);
 }
+
+#[test]
+fn test_js_symbol_keyfor_empty_string_key() {
+    let src = r#"
+const s = Symbol.for("");
+console.log(Symbol.keyFor(s) === "");
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

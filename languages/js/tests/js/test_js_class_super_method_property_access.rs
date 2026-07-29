@@ -384,3 +384,21 @@ console.log(new Sub().greet());
 "#;
     assert_eq!(run_js(src), vec!["Hello CustomReceiver"]);
 }
+
+#[test]
+fn test_js_class_super_computed_property_lookup_in_constructor() {
+    let src = r#"
+class Base {
+    static greet() { return "hi"; }
+}
+class Sub extends Base {
+    constructor() {
+        super();
+        this.msg = super["constructor"].greet();
+    }
+}
+console.log(new Sub().msg);
+"#;
+    assert_eq!(run_js(src), vec!["hi"]);
+}
+

@@ -186,3 +186,16 @@ console.log(fixed + "|len=" + fixed.length);
 "#;
     assert_eq!(run_js(src), vec!["|len=3"]);
 }
+
+#[test]
+fn test_js_string_to_well_formed_undefined_this_throws_typeerror() {
+    let src = r#"
+try {
+    String.prototype.toWellFormed.call(undefined);
+} catch (e) {
+    console.log(e.name);
+}
+"#;
+    assert_eq!(run_js(src), vec!["TypeError"]);
+}
+

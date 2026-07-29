@@ -341,3 +341,22 @@ try {
 "#;
     assert_eq!(run_js(src), vec!["Duplicate Private Method SyntaxError"]);
 }
+
+#[test]
+fn test_js_class_static_private_getter_setter_pair() {
+    let src = r#"
+class System {
+    static #val = 0;
+    static get #secret() { return System.#val; }
+    static set #secret(v) { System.#val = v; }
+
+    static update(v) {
+        System.#secret = v;
+        return System.#secret;
+    }
+}
+console.log(System.update(42));
+"#;
+    assert_eq!(run_js(src), vec!["42"]);
+}
+

@@ -236,4 +236,10 @@ crate::js_cases! {
         r#"const r=new Uint8Array([1,2,3]).filter(x=>x>1); console.log(Array.isArray(r));console.log(r.length);"#,
         ["true", "2"]
     };
+
+    float64array_bytes_per_element => {
+        r#"console.log(Float64Array.BYTES_PER_ELEMENT);"#,
+        ["8"]
+    };
 }
+

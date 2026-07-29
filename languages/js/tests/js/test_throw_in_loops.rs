@@ -143,4 +143,8 @@ crate::js_cases! {
         ["0,f0,post,1,f1,post,f2"]
     };
 
+    for_of_iterator_next_throws => {
+        r#"let o=[]; try { const bad = { [Symbol.iterator]() { return { next() { throw new Error("next_err"); } }; } }; for (const x of bad) {} } catch(e) { o.push(e.message); } console.log(o.join(","));"#,
+        ["next_err"]
+    };
 }

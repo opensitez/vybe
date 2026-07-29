@@ -299,3 +299,18 @@ console.log(Box.check(nullProto));
 "#;
     assert_eq!(run_js(src), vec!["false"]);
 }
+
+#[test]
+fn test_js_private_in_operator_private_setter_brand_check() {
+    let src = r#"
+class User {
+    set #secret(v) {}
+    static hasSetter(o) {
+        return #secret in o;
+    }
+}
+console.log(User.hasSetter(new User()) + "|" + User.hasSetter({}));
+"#;
+    assert_eq!(run_js(src), vec!["true|false"]);
+}
+

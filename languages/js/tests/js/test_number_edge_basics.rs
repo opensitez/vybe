@@ -175,4 +175,12 @@ console.log(parseFloat("-10.5foo"));
 "#,
         ["42.5", "-10.5"]
     };
+
+    parse_int_and_float_empty_string_returns_nan => {
+        r#"
+console.log(Number.isNaN(parseInt("")) + "|" + Number.isNaN(parseFloat("")));
+"#,
+        ["true|true"]
+    };
 }
+

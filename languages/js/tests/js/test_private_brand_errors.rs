@@ -184,4 +184,10 @@ crate::js_cases! {
         r#"class B{#base(){return "b";} pub(){return this.#base();}} class D extends B{wrap(){return super.pub();}} console.log(new D().wrap());"#,
         ["b"]
     };
+
+    private_in_on_undefined_throws => {
+        r#"class C{#x=1; static check(v){return #x in v;}} try{C.check(undefined);}catch(e){console.log(e instanceof TypeError);}"#,
+        ["true"]
+    };
 }
+
