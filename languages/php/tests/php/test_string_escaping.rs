@@ -137,7 +137,7 @@ echo $decoded === '"x"' ? 'quoted' : 'plain';
 $value = addcslashes('a b', ' a');
 echo $value;
 "#,
-        ["a\\ b"]
+        ["\\a\\ b"]
     };
 
     strip_tags_removes_all_without_allowed => {
@@ -182,7 +182,7 @@ $raw = addcslashes("line\none", "\\n");
 $back = stripcslashes($raw);
 echo $back === "line\none" ? 'roundtrip' : 'broken';
 "#,
-        ["roundtrip"]
+        ["broken"]
     };
 
     html_entity_decode_preserves_double_quotes_when_ent_noquotes => {

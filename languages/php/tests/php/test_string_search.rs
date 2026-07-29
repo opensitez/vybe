@@ -180,7 +180,7 @@ echo var_export(strpos('abc', 'z'), true);
         r#"<?php
 echo strrpos('ababa', 'ba', -4);
 "#,
-        ["3"]
+        ["1"]
     };
 
     str_starts_with_empty_needle_is_true => {

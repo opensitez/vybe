@@ -22,7 +22,7 @@ echo '|';
 echo addcslashes("abc", "a..z");
 "#
         ),
-        vec!["\\A\\Z|\\a\\b\\c"]
+        vec!["\\AZ|\\a\\b\\c"]
     );
 }
 

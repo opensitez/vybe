@@ -8,7 +8,7 @@ fn test_strcspn_negative_offset() {
 echo strcspn('hello world', 'o', -6), "\n";
 "#
         ),
-        vec!["1"]
+        vec!["2"]
     );
 }
 

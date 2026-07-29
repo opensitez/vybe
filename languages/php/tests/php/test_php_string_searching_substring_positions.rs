@@ -49,7 +49,7 @@ $var = "ABCDEFGH:/MNODOP/";
 echo substr_replace($var, "bob", 3, 4) . " | " . substr_replace($var, "INSERT_", 0, 0);
 "#,
     );
-    assert_eq!(out, vec!["ABCbob:/MNODOP/ | INSERT_ABCDEFGH:/MNODOP/"]);
+    assert_eq!(out, vec!["ABCbobH:/MNODOP/ | INSERT_ABCDEFGH:/MNODOP/"]);
 }
 
 #[test]
@@ -125,7 +125,7 @@ echo "|";
 echo strstr("hello", "", true) === false ? "empty-before-false" : "empty-before-ok";
 "#,
     );
-    assert_eq!(out, vec!["missing|empty-before-false"]);
+    assert_eq!(out, vec!["missing|empty-before-ok"]);
 }
 
 #[test]
@@ -149,7 +149,7 @@ echo "|";
 echo strripos("fooABCabc", "ABC", 0);
 "#,
     );
-    assert_eq!(out, vec!["false|3"]);
+    assert_eq!(out, vec!["false|6"]);
 }
 
 #[test]
@@ -161,7 +161,7 @@ echo "|";
 echo strpbrk("hello", "xol");
 "#,
     );
-    assert_eq!(out, vec!["false|lo"]);
+    assert_eq!(out, vec!["false|llo"]);
 }
 
 #[test]

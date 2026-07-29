@@ -225,7 +225,7 @@ $joined = implode('|', $items);
 echo count($items) . '|' . substr($joined, 0, 12);
 "#,
     );
-    assert_eq!(out, vec!["5|a|b||c||"]);
+    assert_eq!(out, vec!["6|a|b||c||"]);
 }
 
 #[test]

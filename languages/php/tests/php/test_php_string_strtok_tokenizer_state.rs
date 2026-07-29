@@ -43,6 +43,6 @@ echo strtok(",", "x"), "\n";
 echo strtok("", ",") === false ? 'reset' : 'not_reset';
 "#
         ),
-        vec!["b|reset"]
+        vec![",", "reset"]
     );
 }

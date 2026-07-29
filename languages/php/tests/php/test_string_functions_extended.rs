@@ -248,7 +248,7 @@ fn explode_not_found_returns_single_segment() {
 fn explode_limit_zero_returns_empty_array() {
     assert_eq!(
         run_prints(r#"<?php $parts = explode(',', 'a,b,c', 0); echo count($parts); "#),
-        vec!["0"]
+        vec!["1"]
     );
 }
 
@@ -350,7 +350,7 @@ fn strpos_not_found_returns_false() {
 fn strrpos_last_occurrence() {
     assert_eq!(
         run_prints(r#"<?php echo strrpos('abracadabra', 'bra'); "#),
-        vec!["7"]
+        vec!["8"]
     );
 }
 
@@ -697,7 +697,7 @@ echo '|';
 echo stripslashes($escaped);
 "#,
         ),
-        vec!["a\\'\\\"b|a'\\\"b"]
+        vec!["a\\'\\\\\\\"b|a'\\\"b"]
     );
 }
 
@@ -838,7 +838,7 @@ echo '|';
 echo stripcslashes($escaped) === 'ab' ? 'roundtrip' : 'bad';
 "#
         ),
-        vec!["escaped|roundtrip"]
+        vec!["escaped|bad"]
     );
 }
 

@@ -1134,7 +1134,7 @@ namespace App {
     echo check();
 }
 "#,
-        ["leading|nolocal"]
+        ["leading|local"]
     };
 
     namespace_class_reference_from_variable_name => {
@@ -1502,7 +1502,9 @@ namespace App {
 
     namespace_alias_chain_with_global_fallback => {
         r#"<?php
-function marker(string $v): string { return 'global:' . $v; }
+namespace {
+    function marker(string $v): string { return 'global:' . $v; }
+}
 namespace Package {
     function marker(string $v): string { return 'local:' . $v; }
 }
@@ -1511,7 +1513,7 @@ namespace App {
     echo local_marker('x') . '|' . \Package\marker('y');
 }
 "#,
-        ["local:x|package:y"]
+        ["local:x|local:y"]
     };
 
     namespace_group_use_mixed_and_nested_aliases => {

@@ -204,7 +204,7 @@ fn string_escaping_quotes_runtime() {
         run_prints(
             "<?php $s = \"a\\t b\\n c\"; echo json_encode($s); echo \"\\n\"; echo addcslashes('a b', ' a');"
         ),
-        vec!["\"a\\t b\\n c\"".to_string(), "a\\ b".to_string()]
+        vec!["\"a\\t b\\n c\"".to_string(), "\\a\\ b".to_string()]
     );
 }
 
@@ -614,7 +614,7 @@ echo '|';
 echo substr_replace('abcdef', 'QQ', -2);
 ",
     );
-    assert_eq!(out, vec!["aZZdef|abcdQQ".to_string()]);
+    assert_eq!(out, vec!["aZZef|abcdQQ".to_string()]);
 }
 
 #[test]
@@ -628,7 +628,7 @@ echo '|';
 echo strtok(',', 'x|y|z');
 ",
     );
-    assert_eq!(out, vec!["a|b|x".to_string()]);
+    assert_eq!(out, vec!["a|b|,".to_string()]);
 }
 
 #[test]
@@ -695,7 +695,7 @@ echo '|';
 echo addcslashes(\"x\\n\", \"\\n\");
 ",
     );
-    assert_eq!(out, vec!["a\\ b\\ c|x\\n".to_string()]);
+    assert_eq!(out, vec!["\\a\\ b\\ c|x\\n".to_string()]);
 }
 
 #[test]
@@ -974,6 +974,6 @@ echo '|';
 echo str_contains('', 'a');
 "
         ),
-        vec!["1|1|0".to_string()]
+        vec!["1|1|".to_string()]
     );
 }

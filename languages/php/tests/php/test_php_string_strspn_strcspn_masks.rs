@@ -80,6 +80,6 @@ fn test_strcspn_negative_offset() {
 echo strcspn('a1b2c3', '123', -4), "\n";
 "#
         ),
-        vec!["0"]
+        vec!["1"]
     );
 }
