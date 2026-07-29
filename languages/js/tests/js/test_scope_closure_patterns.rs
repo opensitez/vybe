@@ -222,3 +222,20 @@ console.log(gen.next().value);
         vec!["0", "1", "2", "0", "1"]
     );
 }
+
+#[test]
+fn closure_captures_default_parameter() {
+    assert_eq!(
+        run_js(
+            r#"
+function f(x = 10, g = () => x) {
+    return g();
+}
+console.log(f());
+console.log(f(20));
+"#
+        ),
+        vec!["10", "20"]
+    );
+}
+

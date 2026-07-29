@@ -206,3 +206,29 @@ main();
         vec!["done"]
     );
 }
+
+#[test]
+fn async_batch_processing_pattern() {
+    assert_eq!(
+        run_js(
+            r#"
+async function batchProcess(arr, size, fn) {
+    const res = [];
+    for (let i = 0; i < arr.length; i += size) {
+        const batch = arr.slice(i, i + size);
+        const batchRes = await Promise.all(batch.map(fn));
+        res.push(...batchRes);
+    }
+    return res;
+}
+async function main() {
+    const out = await batchProcess([1, 2, 3, 4, 5], 2, async x => x * 10);
+    console.log(out.join(","));
+}
+main();
+"#
+        ),
+        vec!["10,20,30,40,50"]
+    );
+}
+

@@ -175,3 +175,20 @@ console.log(b[0]);
         vec!["1", "7", "7", "undefined"]
     );
 }
+
+#[test]
+fn array_from_this_arg_context() {
+    assert_eq!(
+        run_js(
+            r#"
+const ctx = { scale: 3 };
+const arr = Array.from([1, 2, 3], function(x) {
+    return x * this.scale;
+}, ctx);
+console.log(arr.join(","));
+"#
+        ),
+        vec!["3,6,9"]
+    );
+}
+

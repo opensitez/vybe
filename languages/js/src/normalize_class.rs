@@ -27,7 +27,7 @@
 //!
 //! This module is wired up additively — it produces a `NormalClass`
 //! but nothing consumes it yet. The JS compile path still goes through
-//! the legacy `compile_class` orchestration in `crate::compiler::classes`.
+//! the legacy `compile_class` orchestration in `crate::primitives::classes`.
 //! Phase 2b flips the switch.
 
 use vybe_ast::{

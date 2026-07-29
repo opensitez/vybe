@@ -16,8 +16,8 @@ fn php_class_spelling(name: &str) -> String {
     name.replace('.', "\\")
 }
 
-fn php_resolver() -> vybe_compiler::compiler::dynamic_symbols::RegisteredResolver<'static> {
-    vybe_compiler::compiler::dynamic_symbols::RegisteredResolver {
+fn php_resolver() -> vybe_compiler::primitives::dynamic_symbols::RegisteredResolver<'static> {
+    vybe_compiler::primitives::dynamic_symbols::RegisteredResolver {
         callback_global: "__php_autoload_callback",
         receiver_global: "__php_autoload_callback_receiver",
     }
@@ -32,7 +32,7 @@ pub fn emit_constructor_ref_with_autoload(
     line: u32,
 ) {
     let spelling = php_class_spelling(autoload_name);
-    vybe_compiler::compiler::dynamic_symbols::emit_registered_global_ref(
+    vybe_compiler::primitives::dynamic_symbols::emit_registered_global_ref(
         chunk,
         ctor_global,
         &spelling,
@@ -52,7 +52,7 @@ pub fn emit_dynamic_constructor_ref_with_autoload(
     line: u32,
 ) {
     let spelling = php_class_spelling(autoload_name);
-    vybe_compiler::compiler::dynamic_symbols::emit_registered_dynamic_global_ref(
+    vybe_compiler::primitives::dynamic_symbols::emit_registered_dynamic_global_ref(
         chunk,
         primary_ctor_global,
         fallback_ctor_global,

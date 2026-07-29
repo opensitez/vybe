@@ -8,7 +8,7 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
-use vybe_compiler::compiler::{collections, ops, tuples};
+use vybe_compiler::primitives::{collections, ops, tuples};
 
 const DEG_PER_RAD: f64 = 57.295_779_513_082_32; // 180 / π
 const RAD_PER_DEG: f64 = 0.017_453_292_519_943_295; // π / 180

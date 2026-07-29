@@ -1,6 +1,6 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_compiler::compiler::instructions::core_wasm;
+use vybe_compiler::primitives::instructions::core_wasm;
 
 use super::support::stash_args;
 
@@ -10,7 +10,7 @@ pub fn emit_round_away_from_zero(chunks: &mut [Chunk], current: usize, line: u32
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     core_wasm::f64_const(&mut chunks[current], line, 0.0);
-    vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[current].emit_op(Op::F64_FLOOR, line);

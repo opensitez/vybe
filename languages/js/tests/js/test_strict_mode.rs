@@ -260,3 +260,24 @@ console.log(f());
         vec!["true"]
     );
 }
+
+#[test]
+fn strict_mode_arguments_callee_throws_typeerror() {
+    assert_eq!(
+        run_js(
+            r#"
+"use strict";
+function f() {
+    try {
+        return arguments.callee;
+    } catch (e) {
+        return e instanceof TypeError ? "typeerror" : "error";
+    }
+}
+console.log(f());
+"#
+        ),
+        vec!["typeerror"]
+    );
+}
+

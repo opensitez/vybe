@@ -69,14 +69,14 @@ pub fn run_vb(src: &str) -> Vec<String> {
 
     let profile = load_vb_profile();
 
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("VB compile failed");
 
     let mut vm = VM::new();
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     let output = register_output_capture(&mut vm);
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("VB run failed");
     finalize_lines(&output)
 }
@@ -85,14 +85,14 @@ pub fn run_vb(src: &str) -> Vec<String> {
 pub fn run_vb_vm(src: &str) -> (VM, Arc<Mutex<Vec<String>>>) {
     let module = vybe_language_vb::parse(src).expect("VB parse failed");
     let profile = load_vb_profile();
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("VB compile failed");
 
     let mut vm = VM::new();
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     let output = register_output_capture(&mut vm);
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("VB run failed");
     // Split accumulated fragments into lines in place so callers inspecting the
     // shared buffer see one entry per printed line, as before.
@@ -106,14 +106,14 @@ pub fn run_vb_vm(src: &str) -> (VM, Arc<Mutex<Vec<String>>>) {
 pub fn run_vb_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<String>>>) {
     let module = vybe_language_vb::parse(src).expect("VB parse failed");
     let profile = load_vb_profile();
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("VB compile failed");
 
     let mut vm = VM::new();
     let gui = vybe_platform_vybe::init_platforms_with_gui(&mut vm);
     let output = register_output_capture(&mut vm);
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("VB run failed");
     let lines = finalize_lines(&output);
     *output.lock().unwrap() = lines;
@@ -155,7 +155,7 @@ pub fn run_vb_gui_capture_msgbox(
 ) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<(String, String)>>>) {
     let module = vybe_language_vb::parse(src).expect("VB parse failed");
     let profile = load_vb_profile();
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("VB compile failed");
 
@@ -179,7 +179,7 @@ pub fn run_vb_gui_capture_msgbox(
         }),
     );
 
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("VB run failed");
     (vm, gui, msgboxes)
 }

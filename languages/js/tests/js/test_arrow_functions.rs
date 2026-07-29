@@ -165,4 +165,10 @@ crate::js_cases! {
         r#"try{ eval("const d2p = (a, a) => a;"); console.log("ok"); }catch(e){ console.log(e instanceof SyntaxError); }"#,
         ["true"]
     };
+
+    arrow_expression_body_undefined_vs_empty_block => {
+        r#"const f1 = () => undefined; const f2 = () => {}; console.log(f1() === undefined && f2() === undefined);"#,
+        ["true"]
+    };
 }
+

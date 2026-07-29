@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::compiler::reflection;
+use vybe_compiler::primitives::reflection;
 
 fn sconst(c: &mut Chunk, s: &str) -> u16 {
     c.add_constant(Value::String(Arc::from(s)))
@@ -94,7 +94,7 @@ fn build_implements_interface(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_call(indexof_i, 2, line);
     // indexOf returns -1 if not found; >= 0 means found
     c.emit_f64_const(0.0, line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(&mut c, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(&mut c, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
     chunks.push(c);
@@ -110,7 +110,7 @@ fn build_get_methods(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     // if filter == 1 → __methods_public, else → __methods
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_f64_const(1.0, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut c, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut c, line);
     c.emit_if_value(line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::STRUCT_GET, pub_k, line);
@@ -132,7 +132,7 @@ fn build_get_properties(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let pub_k = sconst(&mut c, "__fields_public");
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_f64_const(1.0, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut c, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut c, line);
     c.emit_if_value(line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::STRUCT_GET, pub_k, line);
@@ -395,19 +395,19 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
     let _pub_str = sconst(chunk, "public");
     chunk.emit_op_u16(Op::LOCAL_GET, vis_slot, line);
     chunk.emit_string_const("public", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, is_pub_slot, line);
 
     let _prot_str = sconst(chunk, "protected");
     chunk.emit_op_u16(Op::LOCAL_GET, vis_slot, line);
     chunk.emit_string_const("protected", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, is_prot_slot, line);
 
     let _priv_str = sconst(chunk, "private");
     chunk.emit_op_u16(Op::LOCAL_GET, vis_slot, line);
     chunk.emit_string_const("private", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, is_priv_slot, line);
 
     finish(

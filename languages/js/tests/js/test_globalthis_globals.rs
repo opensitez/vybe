@@ -158,3 +158,17 @@ console.log(decodeURIComponent(enc));
         vec!["hello%20world", "hello world"]
     );
 }
+
+#[test]
+fn globalthis_undefined_is_read_only() {
+    assert_eq!(
+        run_js(
+            r#"
+const desc = Object.getOwnPropertyDescriptor(globalThis, "undefined");
+console.log(desc.writable);
+"#
+        ),
+        vec!["false"]
+    );
+}
+

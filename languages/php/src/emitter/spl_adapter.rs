@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
-use vybe_compiler::compiler::heap;
+use vybe_compiler::primitives::heap;
 
 fn sconst(c: &mut Chunk, s: &str) -> u16 {
     c.add_constant(Value::String(Arc::from(s)))
@@ -44,8 +44,8 @@ fn emit_empty_guard(chunks: &mut Vec<Chunk>, idx: usize, msg: &str, line: u32) {
         c.emit_op_u16(Op::LOCAL_GET, 0, line);
         c.emit_op(Op::ARRAY_LENGTH, line);
         c.emit_f64_const(0.0, line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(c, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(c, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(c, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
         c.emit_if(line);
     }
     super::type_guard::emit_throw_const(chunks, idx, "RuntimeException", msg, line);
@@ -109,7 +109,7 @@ fn build_is_empty_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op(Op::ARRAY_LENGTH, line);
     c.emit_f64_const(0.0, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut c, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut c, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
     chunks.push(c);
@@ -496,8 +496,8 @@ fn build_map_rewind_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(c, entries_slot, line);
         c.emit_op(Op::ARRAY_LENGTH, line);
         c.emit_f64_const(0.0, line);
-        vybe_compiler::compiler::ops::emit_dyn_gt(c, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(c, line);
+        vybe_compiler::primitives::ops::emit_dyn_gt(c, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
         c.emit_if_value(line);
         lget(c, entries_slot, line);
         c.emit_f64_const(0.0, line);
@@ -544,14 +544,14 @@ fn build_map_add_all_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_f64_const(0.0, line);
         lset(c, index_slot, line);
     }
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     {
         let c = &mut chunks[current];
         lget(c, index_slot, line);
         lget(c, len_slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_lt(c, line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
     }
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     {
         let c = &mut chunks[current];
         lget(c, entries_slot, line);
@@ -574,10 +574,10 @@ fn build_map_add_all_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_op(Op::DROP, line);
         lget(c, index_slot, line);
         c.emit_f64_const(1.0, line);
-        vybe_compiler::compiler::ops::emit_dyn_add(c, line);
+        vybe_compiler::primitives::ops::emit_dyn_add(c, line);
         lset(c, index_slot, line);
     }
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     chunks[current].emit_op(Op::NULL, line);
     chunks[current].emit_op(Op::RETURN, line);
     current
@@ -610,14 +610,14 @@ fn build_map_remove_all_method(chunks: &mut Vec<Chunk>, keep_matches: bool, line
         c.emit_f64_const(0.0, line);
         lset(c, index_slot, line);
     }
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     {
         let c = &mut chunks[current];
         lget(c, index_slot, line);
         lget(c, len_slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_lt(c, line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
     }
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     {
         let c = &mut chunks[current];
         lget(c, entries_slot, line);
@@ -633,7 +633,7 @@ fn build_map_remove_all_method(chunks: &mut Vec<Chunk>, keep_matches: bool, line
         let has_i = c.add_import("ecma:map".to_string(), "has".to_string());
         c.emit_call(has_i, 2, line);
         if keep_matches {
-            vybe_compiler::compiler::ops::emit_dyn_not(c, line);
+            vybe_compiler::primitives::ops::emit_dyn_not(c, line);
         }
         c.emit_if(line);
         lget(c, 0, line);
@@ -644,10 +644,10 @@ fn build_map_remove_all_method(chunks: &mut Vec<Chunk>, keep_matches: bool, line
         c.emit_end(line);
         lget(c, index_slot, line);
         c.emit_f64_const(1.0, line);
-        vybe_compiler::compiler::ops::emit_dyn_add(c, line);
+        vybe_compiler::primitives::ops::emit_dyn_add(c, line);
         lset(c, index_slot, line);
     }
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     chunks[current].emit_op(Op::NULL, line);
     chunks[current].emit_op(Op::RETURN, line);
     current

@@ -254,3 +254,17 @@ console.log(test());
 "#;
     assert_eq!(run_js(src), vec!["GlobalVal"]);
 }
+
+#[test]
+fn test_js_eval_reflect_apply_is_indirect() {
+    let src = r#"
+var g = "GlobalReflect";
+function test() {
+    var g = "LocalReflect";
+    return Reflect.apply(eval, null, ["g"]);
+}
+console.log(test());
+"#;
+    assert_eq!(run_js(src), vec!["GlobalReflect"]);
+}
+

@@ -266,3 +266,16 @@ console.log(fnInWith());
 "#;
     assert_eq!(run_js(src), vec!["FuncInWith"]);
 }
+
+#[test]
+fn with_target_expression_evaluated_once() {
+    let src = r#"
+let count = 0;
+function getObj() { count++; return { a: 1 }; }
+with (getObj()) {
+    console.log(a + count);
+}
+"#;
+    assert_eq!(run_js(src), vec!["2"]);
+}
+

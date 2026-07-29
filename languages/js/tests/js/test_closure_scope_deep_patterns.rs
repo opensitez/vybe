@@ -225,3 +225,20 @@ console.log(callCount);
         vec!["3", "3", "7", "2"]
     );
 }
+
+#[test]
+fn closure_captures_outer_arguments() {
+    assert_eq!(
+        run_js(
+            r#"
+function outer() {
+    return () => arguments[0] + arguments[1];
+}
+const f = outer(10, 20);
+console.log(f());
+"#
+        ),
+        vec!["30"]
+    );
+}
+

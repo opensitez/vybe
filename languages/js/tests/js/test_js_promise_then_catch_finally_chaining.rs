@@ -223,3 +223,14 @@ p.then(total => console.log(total));
 "#;
     assert_eq!(run_js(src), vec!["15"]);
 }
+
+#[test]
+fn test_js_promise_catch_throwing_rejects_chain() {
+    let src = r#"
+Promise.reject("init")
+    .catch(() => { throw new Error("catch_throw"); })
+    .catch(err => console.log(err.message));
+"#;
+    assert_eq!(run_js(src), vec!["catch_throw"]);
+}
+

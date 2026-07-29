@@ -265,4 +265,10 @@ crate::js_cases! {
         r#"console.log([NaN].indexOf(NaN));"#,
         ["-1"]
     };
+
+    array_indexof_from_index_beyond_length => {
+        r#"console.log([1,2,3].indexOf(1, 10));"#,
+        ["-1"]
+    };
 }
+

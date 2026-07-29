@@ -238,3 +238,20 @@ main();
         vec!["100"]
     );
 }
+
+#[test]
+fn promise_all_settled_empty_array_resolves_empty() {
+    assert_eq!(
+        run_js(
+            r#"
+async function main() {
+    const res = await Promise.allSettled([]);
+    console.log(Array.isArray(res) + "|" + res.length);
+}
+main();
+"#
+        ),
+        vec!["true|0"]
+    );
+}
+

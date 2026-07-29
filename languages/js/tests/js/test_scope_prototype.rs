@@ -807,3 +807,19 @@ console.log(proxy["value"]);
         &["prop:name", "prop:value"]
     );
 }
+
+#[test]
+fn test_scope_prototype_reflect_ownkeys_symbol() {
+    assert_eq!(
+        run_js(
+            r#"
+const sym = Symbol("s");
+const obj = { a: 1, [sym]: 2 };
+const keys = Reflect.ownKeys(obj);
+console.log(keys.length + "|" + (keys[1] === sym));
+"#
+        ),
+        &["2|true"]
+    );
+}
+

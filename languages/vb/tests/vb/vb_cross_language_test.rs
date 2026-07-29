@@ -9,7 +9,7 @@ fn setup_vm() -> (VM, Arc<Mutex<Vec<String>>>) {
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     vm.register_host_fn(
         "wasi:logging/logging",
         "log",
@@ -21,7 +21,7 @@ fn setup_vm() -> (VM, Arc<Mutex<Vec<String>>>) {
             },
         ),
     );
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     (vm, output)
 }
 
@@ -45,7 +45,7 @@ fn js_class_used_from_vb_is_not_supported_yet() {
     "#;
     let js_module = vybe_language_js::parse(js_code).expect("JS parse failed");
     let js_profile = load_js_profile();
-    let js_chunks = vybe_compiler::compiler::Compiler::with_profile(js_profile)
+    let js_chunks = vybe_compiler::primitives::Compiler::with_profile(js_profile)
         .compile(&js_module)
         .expect("JS compile failed");
     vm.run(js_chunks).expect("JS runtime error");
@@ -66,7 +66,7 @@ Console.WriteLine(c.get())
 "#;
     let vb_module = vybe_language_vb::parse(vb_code).expect("VB parse failed");
     let vb_profile = super::helpers::load_vb_profile();
-    let vb_chunks = vybe_compiler::compiler::Compiler::with_profile(vb_profile)
+    let vb_chunks = vybe_compiler::primitives::Compiler::with_profile(vb_profile)
         .compile(&vb_module)
         .expect("VB compile failed");
     let err = vm.run(vb_chunks).expect_err(
@@ -97,7 +97,7 @@ End Class
 "#;
     let vb_module = vybe_language_vb::parse(vb_code).expect("VB parse failed");
     let vb_profile = super::helpers::load_vb_profile();
-    let vb_chunks = vybe_compiler::compiler::Compiler::with_profile(vb_profile)
+    let vb_chunks = vybe_compiler::primitives::Compiler::with_profile(vb_profile)
         .compile(&vb_module)
         .expect("VB compile failed");
     vm.run(vb_chunks).expect("VB runtime error");
@@ -115,7 +115,7 @@ End Class
     "#;
     let js_module = vybe_language_js::parse(js_code).expect("JS parse failed");
     let js_profile = load_js_profile();
-    let js_chunks = vybe_compiler::compiler::Compiler::with_profile(js_profile)
+    let js_chunks = vybe_compiler::primitives::Compiler::with_profile(js_profile)
         .compile(&js_module)
         .expect("JS compile failed");
     let err = vm.run(js_chunks).expect_err(
@@ -137,7 +137,7 @@ fn shared_global_between_languages() {
     let js_code = "function getvalue() { return 42; }";
     let js_module = vybe_language_js::parse(js_code).expect("parse");
     let js_profile = load_js_profile();
-    let js_chunks = vybe_compiler::compiler::Compiler::with_profile(js_profile)
+    let js_chunks = vybe_compiler::primitives::Compiler::with_profile(js_profile)
         .compile(&js_module)
         .expect("compile");
     vm.run(js_chunks).expect("run");
@@ -146,7 +146,7 @@ fn shared_global_between_languages() {
     let vb_code = "Console.WriteLine(getvalue())";
     let vb_module = vybe_language_vb::parse(vb_code).expect("parse");
     let vb_profile = super::helpers::load_vb_profile();
-    let vb_chunks = vybe_compiler::compiler::Compiler::with_profile(vb_profile)
+    let vb_chunks = vybe_compiler::primitives::Compiler::with_profile(vb_profile)
         .compile(&vb_module)
         .expect("compile");
     vm.run(vb_chunks).expect("run");
@@ -163,7 +163,7 @@ fn js_function_called_from_vb() {
     let js_code = "function double(x) { return x * 2; }";
     let js_module = vybe_language_js::parse(js_code).expect("parse");
     let js_profile = load_js_profile();
-    let js_chunks = vybe_compiler::compiler::Compiler::with_profile(js_profile)
+    let js_chunks = vybe_compiler::primitives::Compiler::with_profile(js_profile)
         .compile(&js_module)
         .expect("compile");
     vm.run(js_chunks).expect("run");
@@ -172,7 +172,7 @@ fn js_function_called_from_vb() {
     let vb_code = "Console.WriteLine(double(21))";
     let vb_module = vybe_language_vb::parse(vb_code).expect("parse");
     let vb_profile = super::helpers::load_vb_profile();
-    let vb_chunks = vybe_compiler::compiler::Compiler::with_profile(vb_profile)
+    let vb_chunks = vybe_compiler::primitives::Compiler::with_profile(vb_profile)
         .compile(&vb_module)
         .expect("compile");
     vm.run(vb_chunks).expect("run");

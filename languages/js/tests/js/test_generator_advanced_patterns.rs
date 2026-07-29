@@ -195,3 +195,27 @@ console.log(zipped.map(([a, b]) => a + b).join(","));
         vec!["1a,2b,3c"]
     );
 }
+
+#[test]
+fn generator_return_executes_finally_block() {
+    assert_eq!(
+        run_js(
+            r#"
+function* gen() {
+    try {
+        yield 1;
+        yield 2;
+    } finally {
+        console.log("finally");
+    }
+}
+const g = gen();
+g.next();
+const r = g.return("done");
+console.log(r.value + "|" + r.done);
+"#
+        ),
+        vec!["finally", "done|true"]
+    );
+}
+

@@ -245,3 +245,18 @@ console.log(typeof evalFunc); // In strict mode eval, functions declared inside 
 "#;
     assert_eq!(run_js(src), vec!["undefined"]);
 }
+
+#[test]
+fn test_js_function_declaration_block_shadows_outer_let_strict() {
+    let src = r#"
+"use strict";
+let f = "outer";
+{
+    function f() { return "inner"; }
+    console.log(f());
+}
+console.log(f);
+"#;
+    assert_eq!(run_js(src), vec!["inner", "outer"]);
+}
+

@@ -239,3 +239,29 @@ main();
         vec!["3"]
     );
 }
+
+#[test]
+fn async_generator_yield_star_captures_return_value() {
+    assert_eq!(
+        run_js(
+            r#"
+async function* sub() {
+    yield 1;
+    return "ret";
+}
+async function* mainGen() {
+    const r = yield* sub();
+    yield r;
+}
+async function main() {
+    const res = [];
+    for await (const v of mainGen()) res.push(v);
+    console.log(res.join(","));
+}
+main();
+"#
+        ),
+        vec!["1,ret"]
+    );
+}
+

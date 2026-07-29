@@ -286,3 +286,18 @@ console.log(result);
         vec!["rethrown:TypeError"]
     );
 }
+
+#[test]
+fn aggregate_error_call_without_new_returns_instance() {
+    assert_eq!(
+        run_js(
+            r#"
+const e = AggregateError([new Error("a")], "msg");
+console.log(e instanceof AggregateError);
+console.log(e.message);
+"#
+        ),
+        vec!["true", "msg"]
+    );
+}
+

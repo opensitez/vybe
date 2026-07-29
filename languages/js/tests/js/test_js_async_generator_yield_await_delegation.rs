@@ -359,3 +359,27 @@ async function* badDelegate() {
 "#;
     assert_eq!(run_js(src), vec!["Delegation Non-Iterable TypeError"]);
 }
+
+#[test]
+fn test_js_async_generator_yield_star_delegated_throw_caught_in_outer() {
+    let src = r#"
+async function* inner() {
+    yield 1;
+    throw new Error("inner_err");
+}
+async function* outer() {
+    try {
+        yield* inner();
+    } catch (e) {
+        yield "caught:" + e.message;
+    }
+}
+(async () => {
+    const items = [];
+    for await (const x of outer()) items.push(x);
+    console.log(items.join(","));
+})();
+"#;
+    assert_eq!(run_js(src), vec!["1,caught:inner_err"]);
+}
+

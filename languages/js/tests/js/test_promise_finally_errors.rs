@@ -752,4 +752,8 @@ crate::js_cases! {
         ["f,b"]
     };
 
+    finally_return_delayed_promise_resolving_value => {
+        r#"Promise.resolve(10).finally(()=>new Promise(res=>res(20))).then(v=>console.log(v));"#,
+        ["10"]
+    };
 }

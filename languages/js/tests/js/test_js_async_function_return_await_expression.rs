@@ -252,3 +252,15 @@ testPrecedence().then(res => console.log(res));
 "#;
     assert_eq!(run_js(src), vec!["15"]);
 }
+
+#[test]
+fn test_js_async_function_return_promise_unwraps() {
+    let src = r#"
+async function getNested() {
+    return Promise.resolve(99);
+}
+getNested().then(res => console.log(res));
+"#;
+    assert_eq!(run_js(src), vec!["99"]);
+}
+

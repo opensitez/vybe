@@ -303,4 +303,10 @@ console.log(new Sentinel() instanceof Sentinel);
         r#"function sized(a, b) {} sized.apply(null, [1, 2]); console.log(sized.length);"#,
         ["2"]
     };
+
+    getter_setter_function_name_prefixes => {
+        r#"const obj = { get prop() {}, set prop(v) {} }; const desc = Object.getOwnPropertyDescriptor(obj, "prop"); console.log(desc.get.name + "|" + desc.set.name);"#,
+        ["get prop|set prop"]
+    };
 }
+

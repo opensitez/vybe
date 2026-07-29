@@ -256,3 +256,21 @@ try {
         vec!["42", "number"]
     );
 }
+
+#[test]
+fn throw_primitive_bigint() {
+    assert_eq!(
+        run_js(
+            r#"
+try {
+    throw 9007199254740991n;
+} catch (b) {
+    console.log(typeof b);
+    console.log(b);
+}
+"#
+        ),
+        vec!["bigint", "9007199254740991"]
+    );
+}
+

@@ -20,7 +20,7 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
-use vybe_compiler::compiler::{ops, strings};
+use vybe_compiler::primitives::{ops, strings};
 
 fn call_import(
     chunks: &mut [Chunk],
@@ -309,7 +309,7 @@ pub fn emit_walk(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, dirs, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, files, line);
-    vybe_compiler::compiler::tuples::emit_tuple(chunks, current, 3, line);
+    vybe_compiler::primitives::tuples::emit_tuple(chunks, current, 3, line);
     call_import(chunks, current, "ecma:array", "push", 2, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -467,7 +467,7 @@ pub fn emit_copytree(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_GET, work, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
-    vybe_compiler::compiler::tuples::emit_tuple(chunks, current, 2, line);
+    vybe_compiler::primitives::tuples::emit_tuple(chunks, current, 2, line);
     call_import(chunks, current, "ecma:array", "push", 2, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -533,7 +533,7 @@ pub fn emit_copytree(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_GET, work, line);
     emit_join(chunks, current, s_dir, nm, line);
     emit_join(chunks, current, d_dir, nm, line);
-    vybe_compiler::compiler::tuples::emit_tuple(chunks, current, 2, line);
+    vybe_compiler::primitives::tuples::emit_tuple(chunks, current, 2, line);
     call_import(chunks, current, "ecma:array", "push", 2, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_else(line);
@@ -730,5 +730,5 @@ pub fn emit_exc_info(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         let k = chunks[current].add_constant(vybe_bytecode::Value::Null);
         chunks[current].emit_op_u16(Op::CONST, k, line);
     }
-    vybe_compiler::compiler::tuples::emit_tuple(chunks, current, 3, line);
+    vybe_compiler::primitives::tuples::emit_tuple(chunks, current, 3, line);
 }

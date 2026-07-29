@@ -122,7 +122,7 @@ class_member = {
 
 // `public static T operator +(T a, T b) { ... }` — operator overloads.
 // Walker lowers to a static method named `op_Addition` / `op_Equality`
-// per ECMA-335 — the call-site dispatch (compiler/calls.rs) maps the
+// per ECMA-335 — the call-site dispatch (primitives/calls.rs) maps the
 // binary `a + b` form back via the same canonical name when both
 // operands are class instances.
 operator_declaration = {

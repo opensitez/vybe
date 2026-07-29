@@ -207,4 +207,12 @@ console.log(it.next().done);
 "#,
         ["true"]
     };
+
+    map_symbol_iterator_is_entries_iterator => {
+        r#"
+console.log(Map.prototype[Symbol.iterator] === Map.prototype.entries);
+"#,
+        ["true"]
+    };
 }
+

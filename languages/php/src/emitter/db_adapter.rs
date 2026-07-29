@@ -74,7 +74,7 @@ fn emit_select_column_count_from_sql_slot(chunk: &mut Chunk, sql_slot: u16, line
         let idx = chunk.add_import("ecma:string", "startsWith");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, lower_slot, line);
     push_str(chunk, ",", line);
@@ -82,7 +82,7 @@ fn emit_select_column_count_from_sql_slot(chunk: &mut Chunk, sql_slot: u16, line
         let idx = chunk.add_import("ecma:string", "split");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::collections::emit_array_length(chunk, line);
+    vybe_compiler::primitives::collections::emit_array_length(chunk, line);
     chunk.emit_else(line);
     chunk.emit_f64_const(0.0, line);
     chunk.emit_end(line);
@@ -94,7 +94,7 @@ fn emit_select_column_count_from_sql_slot(chunk: &mut Chunk, sql_slot: u16, line
 fn emit_stmt_label_from_type(chunk: &mut Chunk, line: u32) {
     // stack: [conn.__type]
     push_str(chunk, "mysqli", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "mysqli_stmt", line);
     chunk.emit_else(line);
@@ -188,7 +188,7 @@ pub fn emit_db_prepare(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
         let idx = chunk.add_import("ecma:string", "split");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::collections::emit_array_length(chunk, line);
+    vybe_compiler::primitives::collections::emit_array_length(chunk, line);
     chunk.emit_f64_const(1.0, line);
     chunk.emit_op(Op::F64_SUB, line);
     struct_set_key(chunk, "param_count", line);

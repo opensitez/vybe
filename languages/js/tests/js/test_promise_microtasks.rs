@@ -327,3 +327,19 @@ Promise.allSettled([
         vec!["fulfilled:ok", "rejected:err", "fulfilled:ok2"]
     );
 }
+
+#[test]
+fn promise_executor_multiple_resolves_ignored() {
+    assert_eq!(
+        run_js(
+            r#"
+new Promise(resolve => {
+    resolve(1);
+    resolve(2);
+}).then(v => console.log(v));
+"#
+        ),
+        vec!["1"]
+    );
+}
+

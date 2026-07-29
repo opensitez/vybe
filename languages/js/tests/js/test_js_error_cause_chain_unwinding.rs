@@ -290,3 +290,13 @@ try {
 "#;
     assert_eq!(run_js(src), vec!["CauseGetterError"]);
 }
+
+#[test]
+fn test_js_error_cause_explicit_undefined_options() {
+    let src = r#"
+const err = new Error("Msg", { cause: undefined });
+console.log(Object.hasOwn(err, "cause"));
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

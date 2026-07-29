@@ -34,7 +34,7 @@ pub enum Expect {
 /// The PHP `Throwable` ancestry for a built-in exception, most-derived first.
 /// `Error` and `Exception` are **sibling** branches of `Throwable` (unlike JS,
 /// where `Error` is the universal base), and `TypeError`/`ValueError` extend
-/// `Error`. The catch-matcher (`compiler/mod.rs`) matches a caught type against
+/// `Error`. The catch-matcher (`primitives/mod.rs`) matches a caught type against
 /// the exception's `__types` array, so stamping the full chain is what lets
 /// `catch (\Error)` catch a thrown `TypeError` — mirroring the chain that user
 /// `throw new TypeError()` gets from class emission.
@@ -86,20 +86,20 @@ pub fn emit_throw_const(
     chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
     chunk.emit_dup(line);
     chunk.emit_string_const(msg, line);
-    vybe_compiler::compiler::errors::emit_exception_new_finalize(chunk, exc_name, line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, exc_name, line);
     // Park the instance in a local so the shared chain-stamper can push each
     // ancestor name into its `__types` array, then reload and throw.
     let this_slot = chunk.local_count;
     chunk.local_count += 1;
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
     for name in php_exception_chain(exc_name) {
-        vybe_compiler::compiler::reflection::emit_instanceof_chain(
+        vybe_compiler::primitives::reflection::emit_instanceof_chain(
             chunks, current, this_slot, name, line,
         );
     }
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    vybe_compiler::compiler::errors::emit_throw(chunk, line);
+    vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
 /// Push `is_collection(slot)` as an i32 bool — true when the value is a PHP
@@ -111,12 +111,12 @@ pub fn emit_throw_const(
 /// wrongly rejecting either array shape.
 fn push_is_collection(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    vybe_compiler::compiler::instructions::recipes::is_object(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::instructions::recipes::is_object(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     let idx = chunk.add_import("ecma:array", "isArray");
     chunk.emit_call(idx, 1, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_OR, line);
 }
 

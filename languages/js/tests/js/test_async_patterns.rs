@@ -335,3 +335,18 @@ main();
         &["test"]
     );
 }
+
+#[test]
+fn promise_any_aggregate_error_errors_array() {
+    assert_eq!(
+        run_js(
+            r#"
+Promise.any([Promise.reject("e1"), Promise.reject("e2")]).catch(err => {
+    console.log(err.errors.join(","));
+});
+"#
+        ),
+        &["e1,e2"]
+    );
+}
+

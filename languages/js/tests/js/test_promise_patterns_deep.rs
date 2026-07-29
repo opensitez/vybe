@@ -206,3 +206,20 @@ main();
         vec!["true"]
     );
 }
+
+#[test]
+fn promise_finally_returning_delayed_promise() {
+    assert_eq!(
+        run_js(
+            r#"
+async function main() {
+    const res = await Promise.resolve("done").finally(() => new Promise(r => setTimeout(r, 10)));
+    console.log(res);
+}
+main();
+"#
+        ),
+        vec!["done"]
+    );
+}
+

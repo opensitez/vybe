@@ -419,3 +419,18 @@ Promise.allSettled([]).then(v => console.log(v.length));
         vec!["0"]
     );
 }
+
+#[test]
+fn promise_finally_throw_rejects_returned_promise() {
+    assert_eq!(
+        run_js(
+            r#"
+Promise.resolve("ok")
+    .finally(() => { throw new Error("finally_error"); })
+    .catch(e => console.log(e.message));
+"#
+        ),
+        vec!["finally_error"]
+    );
+}
+

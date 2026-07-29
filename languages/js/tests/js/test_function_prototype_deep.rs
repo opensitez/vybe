@@ -342,4 +342,10 @@ crate::js_cases! {
         r#"class Box { constructor() { this.v = 1; } read() { return this.v; } } const b = new Box(); const read = b.read.bind(b); console.log(read());"#,
         ["1"]
     };
+
+    function_prototype_length_and_name_defaults => {
+        r#"console.log(Function.prototype.length + "|" + Function.prototype.name);"#,
+        ["0|"]
+    };
 }
+

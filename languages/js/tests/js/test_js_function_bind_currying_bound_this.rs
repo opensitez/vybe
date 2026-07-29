@@ -242,3 +242,14 @@ try {
 "#;
     assert_eq!(run_js(src), vec!["bind Non-Function TypeError"]);
 }
+
+#[test]
+fn test_js_bind_getter_method_borrow() {
+    let src = r#"
+const obj = { get val() { return this._v; } };
+const getter = Object.getOwnPropertyDescriptor(obj, "val").get.bind({ _v: 42 });
+console.log(getter());
+"#;
+    assert_eq!(run_js(src), vec!["42"]);
+}
+

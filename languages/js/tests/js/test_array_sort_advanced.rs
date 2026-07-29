@@ -296,3 +296,18 @@ console.log(data[3].key + data[3].order);
         vec!["a1", "a3", "b0", "b2"]
     );
 }
+
+#[test]
+fn sort_comparator_returning_nan_treated_as_zero() {
+    assert_eq!(
+        run_js(
+            r#"
+const arr = [3, 1, 2];
+arr.sort(() => NaN);
+console.log(arr.join(","));
+"#
+        ),
+        vec!["3,1,2"]
+    );
+}
+

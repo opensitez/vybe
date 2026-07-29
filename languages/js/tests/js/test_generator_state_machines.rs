@@ -167,3 +167,27 @@ console.log(evts.map(e => e.value).join(","));
         vec!["positive,negative,zero,positive", "1,-2,0,3"]
     );
 }
+
+#[test]
+fn generator_state_machine_early_break_cleanup() {
+    assert_eq!(
+        run_js(
+            r#"
+function* stateMachine() {
+    try {
+        yield "state1";
+        yield "state2";
+    } finally {
+        console.log("cleaned_up");
+    }
+}
+for (const s of stateMachine()) {
+    console.log(s);
+    break;
+}
+"#
+        ),
+        vec!["state1", "cleaned_up"]
+    );
+}
+

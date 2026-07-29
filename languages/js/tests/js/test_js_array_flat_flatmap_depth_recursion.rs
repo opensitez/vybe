@@ -213,3 +213,14 @@ console.log(res.join(",") + "|isCustom=" + (res instanceof CustomArray));
 "#;
     assert_eq!(run_js(src), vec!["2,4|isCustom=true"]);
 }
+
+#[test]
+fn test_js_array_flatmap_skips_input_sparse_holes() {
+    let src = r#"
+const arr = [1, , 3];
+const res = arr.flatMap(x => [x, x * 2]);
+console.log(res.join(","));
+"#;
+    assert_eq!(run_js(src), vec!["1,2,3,6"]);
+}
+

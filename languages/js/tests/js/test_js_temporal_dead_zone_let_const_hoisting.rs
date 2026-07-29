@@ -254,3 +254,16 @@ try {
         vec!["Function Expression Hoisted as Undefined TypeError"]
     );
 }
+
+#[test]
+fn test_js_tdz_class_heritage_extends_self_throws() {
+    let src = r#"
+try {
+    eval("class Sub extends Sub {}");
+} catch (e) {
+    console.log(e instanceof ReferenceError);
+}
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

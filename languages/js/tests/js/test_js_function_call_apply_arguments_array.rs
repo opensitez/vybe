@@ -241,3 +241,16 @@ try {
 "#;
     assert_eq!(run_js(src), vec!["call Non-Function TypeError"]);
 }
+
+#[test]
+fn test_js_arguments_object_destructuring_parameter_breaks_aliasing() {
+    let src = r#"
+function fn({ a }) {
+    a = 99;
+    return arguments[0].a;
+}
+console.log(fn({ a: 5 }));
+"#;
+    assert_eq!(run_js(src), vec!["5"]);
+}
+

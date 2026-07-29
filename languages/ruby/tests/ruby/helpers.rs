@@ -11,7 +11,7 @@ pub fn run_ruby(src: &str) -> Vec<String> {
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     vm.register_host_fn(
         "wasi:logging/logging",
         "log",
@@ -21,7 +21,7 @@ pub fn run_ruby(src: &str) -> Vec<String> {
             Value::Null
         }),
     );
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     let language = vybe_compiler::languages::find_by_name("ruby").expect("ruby language not found");
     let mut runtime = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm);
     runtime
@@ -46,7 +46,7 @@ pub fn compile_ok(src: &str) {
     let module = vybe_language_ruby::parse(src).expect("Ruby parse failed");
     let profile = vybe_compiler::profile::parse_profile(vybe_language_ruby::profile_source())
         .expect("Failed to parse Ruby profile");
-    let _chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let _chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("Ruby compile failed");
 }

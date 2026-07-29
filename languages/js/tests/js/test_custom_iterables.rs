@@ -151,3 +151,27 @@ console.log(perms[0].join(","));
         vec!["6", "1,2,3"]
     );
 }
+
+#[test]
+fn custom_iterator_done_without_value_defaults_undefined() {
+    assert_eq!(
+        run_js(
+            r#"
+const iterable = {
+    [Symbol.iterator]() {
+        let count = 0;
+        return {
+            next() {
+                return count++ === 0 ? { value: "a", done: false } : { done: true };
+            }
+        };
+    }
+};
+const [a, b] = iterable;
+console.log(a + "|" + b);
+"#
+        ),
+        vec!["a|undefined"]
+    );
+}
+

@@ -101,4 +101,10 @@ crate::js_cases! {
         r#"function f(){try{throw 0;}catch{try{return "c";}finally{return "cf";}}finally{return "ff";}}console.log(f());"#,
         ["ff"]
     };
+
+    finally_mutation_primitive_returns_captured_value => {
+        r#"function f() { let x = 1; try { return x; } finally { x = 2; } } console.log(f());"#,
+        ["1"]
+    };
 }
+

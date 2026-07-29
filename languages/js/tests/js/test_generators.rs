@@ -403,3 +403,21 @@ console.log(arr.join(","));
         &["5,4,3,2,1"]
     );
 }
+
+#[test]
+fn generator_next_on_exhausted_generator_returns_done_true() {
+    assert_eq!(
+        run_js(
+            r#"
+function* g() { yield 1; }
+const gen = g();
+gen.next();
+gen.next();
+const r = gen.next();
+console.log(r.value === undefined && r.done === true);
+"#
+        ),
+        &["true"]
+    );
+}
+

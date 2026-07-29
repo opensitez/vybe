@@ -7,7 +7,7 @@
 //! plus the others as drop-in replacements.
 //!
 //! `compile_ok(src)` runs `vybe_language_php::parse` → walker →
-//! `vybe_compiler::compiler::Compiler::with_profile` and asserts the result is
+//! `vybe_compiler::primitives::Compiler::with_profile` and asserts the result is
 //! Ok. Any parse error, walker error, or compile error fails the test
 //! with the underlying message.
 
@@ -123,7 +123,7 @@ fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     }
     let module = vybe_language_php::parse(src)?;
     let profile = php_profile();
-    vybe_compiler::compiler::Compiler::with_profile(profile).compile(&module)
+    vybe_compiler::primitives::Compiler::with_profile(profile).compile(&module)
 }
 
 fn php_profile() -> vybe_compiler::profile::LanguageProfile {
@@ -161,7 +161,7 @@ pub fn compile(src: &str) -> Vec<vybe_bytecode::Chunk> {
 pub fn run(src: &str) -> Value {
     let chunks = compile(src);
     let mut vm = VM::new();
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     vm.run(chunks).expect("run failed")
 }
 
@@ -190,9 +190,9 @@ pub fn run_prints_dynamic(src: &str, virtual_path: &str) -> Vec<String> {
     }
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     register_output_capture(&mut vm, &output);
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
 
     let language = vybe_compiler::languages::find_by_name("php").expect("php language not found");
     let mut runtime = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm);

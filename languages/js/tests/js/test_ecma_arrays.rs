@@ -606,3 +606,14 @@ console.log(arr[2]);
     );
     assert_eq!(out, vec!["3", "undefined", "x"]);
 }
+
+#[test]
+fn slice_end_beyond_length_clamps_to_length() {
+    let out = run_js(
+        r#"
+const arr = [1, 2, 3];
+console.log(arr.slice(1, 10).join(","));
+"#,
+    );
+    assert_eq!(out, vec!["2,3"]);
+}

@@ -307,3 +307,21 @@ console.log(sum.apply(null, [1, 2, 3]));
         vec!["6"]
     );
 }
+
+#[test]
+fn function_constructor_returns_explicit_object() {
+    assert_eq!(
+        run_js(
+            r#"
+function Person() {
+    this.name = "Alice";
+    return { name: "Bob" };
+}
+const p = new Person();
+console.log(p.name);
+"#
+        ),
+        vec!["Bob"]
+    );
+}
+

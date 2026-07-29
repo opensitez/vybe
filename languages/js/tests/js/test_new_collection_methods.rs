@@ -122,4 +122,10 @@ console.log(new Set([1, 2]).isDisjointFrom(new Set([2, 3])));
         r#"const a = new Set([1, 2]); console.log(a.isDisjointFrom(a));"#,
         ["false"]
     };
+
+    map_groupby_callback_arguments_index_and_source => {
+        r#"const out = []; Map.groupBy(["a", "b"], (val, idx) => { out.push(idx + ":" + val); return idx; }); console.log(out.join(","));"#,
+        ["0:a,1:b"]
+    };
 }
+

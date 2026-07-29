@@ -265,3 +265,18 @@ main();
         &["60"]
     );
 }
+
+#[test]
+fn promise_constructor_throw_rejects_promise() {
+    assert_eq!(
+        run_js(
+            r#"
+new Promise(() => {
+    throw new Error("executor_throw");
+}).catch(e => console.log(e.message));
+"#
+        ),
+        &["executor_throw"]
+    );
+}
+

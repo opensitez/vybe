@@ -214,3 +214,14 @@ strictFn();
 "#;
     assert_eq!(run_js(src), vec!["Strict Caller TypeError"]);
 }
+
+#[test]
+fn test_js_class_static_method_name_descriptor() {
+    let src = r#"
+class C { static m() {} }
+const desc = Object.getOwnPropertyDescriptor(C.m, "name");
+console.log(`${desc.writable}:${desc.enumerable}:${desc.configurable}`);
+"#;
+    assert_eq!(run_js(src), vec!["false:false:true"]);
+}
+

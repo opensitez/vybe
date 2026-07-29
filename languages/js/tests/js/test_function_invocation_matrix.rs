@@ -978,3 +978,17 @@ console.log(One.name);
         ["bound Pair"]
     );
 }
+
+#[test]
+fn nested_function_apply_call_dispatch() {
+    case!(
+        r#"
+function f(a, b) {
+    return a + b;
+}
+console.log(Function.prototype.apply.call(f, null, [10, 20]));
+"#,
+        ["30"]
+    );
+}
+

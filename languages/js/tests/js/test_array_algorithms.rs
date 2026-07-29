@@ -332,3 +332,26 @@ console.log(zipped[2].join(","));
         vec!["1,a", "3,c"]
     );
 }
+
+#[test]
+fn iterative_flat_deep_arrays() {
+    assert_eq!(
+        run_js(
+            r#"
+function flatDeep(arr) {
+    const stack = [...arr];
+    const res = [];
+    while (stack.length) {
+        const next = stack.pop();
+        if (Array.isArray(next)) stack.push(...next);
+        else res.push(next);
+    }
+    return res.reverse();
+}
+console.log(flatDeep([1, [2, [3, [4]]]]).join(","));
+"#
+        ),
+        vec!["1,2,3,4"]
+    );
+}
+

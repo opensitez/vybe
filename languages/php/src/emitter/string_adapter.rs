@@ -45,7 +45,7 @@ fn coerce_to_str(chunk: &mut Chunk, line: u32) {
     lset(chunk, v_slot, line);
     push_str(chunk, "", line);
     lget(chunk, v_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
 }
 
 fn call_import(
@@ -97,7 +97,7 @@ pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line
     chunk.emit_call(test_bool_echo, 1, line);
     chunk.emit_if(line);
     lget(chunk, v_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "1", line);
     chunk.emit_else(line);
@@ -119,8 +119,8 @@ pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line
     // NaN?  (v !== v)
     lget(chunk, v_slot, line);
     lget(chunk, v_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if_value(line);
     push_str(chunk, "NAN", line);
@@ -128,16 +128,16 @@ pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line
     // +Infinity?
     lget(chunk, v_slot, line);
     push_const(chunk, Value::F64(f64::INFINITY), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "INF", line);
     chunk.emit_else(line);
     // -Infinity?
     lget(chunk, v_slot, line);
     push_const(chunk, Value::F64(f64::NEG_INFINITY), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "-INF", line);
     chunk.emit_else(line);
@@ -163,12 +163,12 @@ pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line
     lget(chunk, v_slot, line);
     let is_int_echo = chunk.add_import("ecma:number", "isInteger");
     chunk.emit_call(is_int_echo, 1, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     // integer-valued number: plain "" + v
     push_str(chunk, "", line);
     lget(chunk, v_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_else(line);
     // fractional float: "" + parseFloat(toPrecision(v, 14))
     push_str(chunk, "", line);
@@ -178,13 +178,13 @@ pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line
     chunk.emit_call(to_prec_echo, 2, line);
     let parse_f_echo = chunk.add_import("ecma:number", "parseFloat");
     chunk.emit_call(parse_f_echo, 1, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_end(line);
     chunk.emit_else(line);
     // non-number: "" + v
     push_str(chunk, "", line);
     lget(chunk, v_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_end(line);
     // Close: i64, -INF, INF, NaN, bigint, boolean, null — seven if_value blocks.
     chunk.emit_end(line);
@@ -219,7 +219,7 @@ pub fn emit_var_dump_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, 
     chunk.emit_call(test_bool_vd, 1, line);
     chunk.emit_if(line);
     lget(chunk, v_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "bool(true)", line);
     chunk.emit_else(line);
@@ -233,14 +233,14 @@ pub fn emit_var_dump_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, 
     push_str(chunk, "int(", line);
     lget(chunk, v_slot, line);
     chunk.emit_call(bigint_to_string, 1, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     push_str(chunk, ")", line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_else(line);
 
     push_str(chunk, "", line);
     lget(chunk, v_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
 
     chunk.emit_end(line);
     chunk.emit_end(line);
@@ -267,7 +267,7 @@ pub fn emit_base64_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     lset(chunk, s_slot, line);
 
     lget(chunk, strict_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
 
     push_const(chunk, Value::I32(1), line);
@@ -282,13 +282,13 @@ pub fn emit_base64_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     lset(chunk, len_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
     chunk.emit_op(Op::I32_LT_S, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, s_slot, line);
@@ -338,7 +338,7 @@ pub fn emit_base64_decode(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunk.emit_op(Op::I32_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, valid_slot, line);
@@ -397,13 +397,13 @@ pub fn emit_ucwords(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lset(chunk, len_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, s_slot, line);
@@ -423,25 +423,25 @@ pub fn emit_ucwords(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, delims_slot, line);
     chunk.emit_op(Op::NULL, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
 
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(32.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_else(line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(9.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(13.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
     chunk.emit_else(line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_end(line);
@@ -455,19 +455,19 @@ pub fn emit_ucwords(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_call(idx, 2, line);
     }
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
     chunk.emit_end(line);
     lset(chunk, is_delim_slot, line);
 
     lget(chunk, cap_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, is_delim_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, out_slot, line);
     lget(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_else(line);
     lget(chunk, out_slot, line);
@@ -476,13 +476,13 @@ pub fn emit_ucwords(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let idx = chunk.add_import("ecma:string", "toUpperCase");
         chunk.emit_call(idx, 1, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_end(line);
     chunk.emit_else(line);
     lget(chunk, out_slot, line);
     lget(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_end(line);
 
@@ -494,7 +494,7 @@ pub fn emit_ucwords(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, out_slot, line);
@@ -532,13 +532,13 @@ pub fn emit_str_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     lset(chunk, n_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, i_slot, line);
@@ -547,8 +547,8 @@ pub fn emit_str_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     lset(chunk, end_slot, line);
     lget(chunk, end_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, n_slot, line);
     lset(chunk, end_slot, line);
@@ -570,7 +570,7 @@ pub fn emit_str_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     lget(chunk, end_slot, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, out_slot, line);
@@ -615,8 +615,8 @@ pub fn emit_str_pad(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, str_len_slot, line);
     lget(chunk, target_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, s_slot, line);
     chunk.emit_else(line);
@@ -627,16 +627,16 @@ pub fn emit_str_pad(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunk.emit_call(idx, 1, line);
     }
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, s_slot, line);
     chunk.emit_else(line);
 
     lget(chunk, mode_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, s_slot, line);
     lget(chunk, target_slot, line);
@@ -647,8 +647,8 @@ pub fn emit_str_pad(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     lget(chunk, mode_slot, line);
     push_const(chunk, Value::F64(2.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, target_slot, line);
     lget(chunk, str_len_slot, line);
@@ -716,7 +716,7 @@ pub fn emit_substr_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 
     // if has_length: slice = hay.substring(offset, offset+length) else: slice = hay.substring(offset)
     lget(chunk, has_length_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, hay_slot, line);
     lget(chunk, offset_slot, line);
@@ -749,8 +749,8 @@ pub fn emit_substr_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         chunk.emit_call(idx, 1, line);
     }
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_else(line);
@@ -761,7 +761,7 @@ pub fn emit_substr_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     lset(chunk, pos_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     // compute idx
     lget(chunk, slice_slot, line);
@@ -784,9 +784,9 @@ pub fn emit_substr_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     // condition: idx >= 0
     lget(chunk, idx_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, count_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -803,7 +803,7 @@ pub fn emit_substr_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, pos_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, count_slot, line);
@@ -864,16 +864,16 @@ fn emit_strstr_impl(
     // if idx < 0: return false; else return before ? hay[0..idx] : hay[idx..]
     lget(chunk, idx_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_else(line);
     // idx >= 0
     lget(chunk, before_slot, line);
     push_const(chunk, Value::Bool(true), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, hay_slot, line);
     push_const(chunk, Value::F64(0.0), line);
@@ -1121,13 +1121,13 @@ pub fn emit_bin2hex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     lset(chunk, len_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, s_slot, line);
@@ -1147,7 +1147,7 @@ pub fn emit_bin2hex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     lset(chunk, hi_slot, line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(16.0), line);
-    vybe_compiler::compiler::math::emit_c_fmod(chunk, line);
+    vybe_compiler::primitives::math::emit_c_fmod(chunk, line);
     lset(chunk, lo_slot, line);
 
     // out += table.charAt(hi) + table.charAt(lo)
@@ -1158,14 +1158,14 @@ pub fn emit_bin2hex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
         let idx = chunk.add_import("ecma:string", "charAt");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     push_str(chunk, table, line);
     lget(chunk, lo_slot, line);
     {
         let idx = chunk.add_import("ecma:string", "charAt");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
 
     // i++
@@ -1174,7 +1174,7 @@ pub fn emit_bin2hex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, out_slot, line);
@@ -1208,16 +1208,16 @@ pub fn emit_hex2bin(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     lset(chunk, len_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     // condition: i + 1 < len
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     lget(chunk, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     let table = "0123456789abcdef";
@@ -1251,16 +1251,16 @@ pub fn emit_hex2bin(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     // if hi<0 || lo<0: return false
     lget(chunk, hi_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_op(Op::RETURN, line);
     chunk.emit_end(line);
     lget(chunk, lo_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_op(Op::RETURN, line);
@@ -1277,7 +1277,7 @@ pub fn emit_hex2bin(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
         let idx = chunk.add_import("wasm:js-string", "fromCharCode");
         chunk.emit_call(idx, 1, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
 
     // i += 2
@@ -1286,7 +1286,7 @@ pub fn emit_hex2bin(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, out_slot, line);
@@ -1322,8 +1322,8 @@ pub fn emit_chunk_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     // if length < 1: false; else: process
     lget(chunk, length_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_else(line);
@@ -1340,13 +1340,13 @@ pub fn emit_chunk_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     lset(chunk, total_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, total_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // out += s.substring(i, i+length) + end
@@ -1360,9 +1360,9 @@ pub fn emit_chunk_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         let idx = chunk.add_import("wasm:js-string", "substring");
         chunk.emit_call(idx, 3, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lget(chunk, end_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
 
     lget(chunk, i_slot, line);
@@ -1370,7 +1370,7 @@ pub fn emit_chunk_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, out_slot, line);
@@ -1417,8 +1417,8 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     // PHP 8: `number_format` decimals must be >= 0, else ValueError.
     lget(chunk, decimals_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     let _ = chunk;
     crate::emitter::type_guard::emit_throw_const(
@@ -1433,7 +1433,7 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 
     // n = +num (numeric coerce)
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, n_slot, line);
 
     // sign = ""; if n < 0: sign = "-"; n = -n
@@ -1441,8 +1441,8 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     lset(chunk, sign_slot, line);
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_str(chunk, "-", line);
     lset(chunk, sign_slot, line);
@@ -1493,8 +1493,8 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     // if dot_idx < 0: int_part = fixed; frac_part = ""
     lget(chunk, dot_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, fixed_slot, line);
     lset(chunk, int_part_slot, line);
@@ -1538,33 +1538,33 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     lset(chunk, i_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // if i > 0: if (len - i) % 3 == 0: out += thousep
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, len_slot, line);
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::F64_SUB, line);
     push_const(chunk, Value::F64(3.0), line);
-    vybe_compiler::compiler::math::emit_c_fmod(chunk, line);
+    vybe_compiler::primitives::math::emit_c_fmod(chunk, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, out_slot, line);
     lget(chunk, thousep_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_end(line); // end inner if
     chunk.emit_end(line); // end outer if
@@ -1577,7 +1577,7 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
         let idx = chunk.add_import("ecma:string", "charAt");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
 
     // i++
@@ -1586,7 +1586,7 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     // if frac_part.length > 0: out += decsep + frac_part
@@ -1596,21 +1596,21 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
         chunk.emit_call(idx, 1, line);
     }
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, out_slot, line);
     lget(chunk, decsep_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lget(chunk, frac_part_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_end(line);
 
     // sign + out
     lget(chunk, sign_slot, line);
     lget(chunk, out_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
 }
 
 // ── substr_replace ─────────────────────────────────────────────────
@@ -1647,8 +1647,8 @@ pub fn emit_substr_replace(chunks: &mut [Chunk], current: usize, argc: u8, line:
     // s = start < 0 ? max(len + start, 0) : min(start, len)
     lget(chunk, start_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line); // if start < 0
     // negative: max(len + start, 0)
     lget(chunk, len_slot, line);
@@ -1658,8 +1658,8 @@ pub fn emit_substr_replace(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lset(chunk, neg_slot, line);
     lget(chunk, neg_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line); // if neg < 0: use 0 else neg
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_else(line);
@@ -1669,8 +1669,8 @@ pub fn emit_substr_replace(chunks: &mut [Chunk], current: usize, argc: u8, line:
     // positive: min(start, len)
     lget(chunk, start_slot, line);
     lget(chunk, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line); // if start > len: use len else start
     lget(chunk, len_slot, line);
     chunk.emit_else(line);
@@ -1681,13 +1681,13 @@ pub fn emit_substr_replace(chunks: &mut [Chunk], current: usize, argc: u8, line:
 
     // l = has_length ? clamp(length, len - s) : len - s
     lget(chunk, has_length_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line); // if has_length
     // Has length: if length < 0: l = max(len + length - s, 0) else l = min(length, len - s)
     lget(chunk, length_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line); // if length < 0
     // negative length: max(len + length - s, 0)
     lget(chunk, len_slot, line);
@@ -1699,8 +1699,8 @@ pub fn emit_substr_replace(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lset(chunk, neg_l_slot, line);
     lget(chunk, neg_l_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line); // if neg_l < 0: use 0
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_else(line);
@@ -1716,8 +1716,8 @@ pub fn emit_substr_replace(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lset(chunk, rem_slot, line);
     lget(chunk, length_slot, line);
     lget(chunk, rem_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line); // if length > rem: use rem
     lget(chunk, rem_slot, line);
     chunk.emit_else(line);
@@ -1744,7 +1744,7 @@ pub fn emit_substr_replace(chunks: &mut [Chunk], current: usize, argc: u8, line:
         chunk.emit_call(idx, 3, line);
     }
     lget(chunk, repl_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lget(chunk, str_slot, line);
     lget(chunk, s_slot, line);
     lget(chunk, l_slot, line);
@@ -1754,7 +1754,7 @@ pub fn emit_substr_replace(chunks: &mut [Chunk], current: usize, argc: u8, line:
         let idx = chunk.add_import("wasm:js-string", "substring");
         chunk.emit_call(idx, 3, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
 }
 
 // ── str_word_count ─────────────────────────────────────────────────
@@ -1791,13 +1791,13 @@ pub fn emit_str_word_count(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lset(chunk, len_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, s_slot, line);
@@ -1817,8 +1817,8 @@ pub fn emit_str_word_count(chunks: &mut [Chunk], current: usize, argc: u8, line:
     ] {
         lget(chunk, code_slot, line);
         push_const(chunk, Value::F64(*code_val), line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         push_const(chunk, Value::Bool(true), line);
         lset(chunk, is_sep_slot, line);
@@ -1826,15 +1826,15 @@ pub fn emit_str_word_count(chunks: &mut [Chunk], current: usize, argc: u8, line:
     }
     // if is_sep: in_word = false; else if !in_word: count++; in_word = true
     lget(chunk, is_sep_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::Bool(false), line);
     lset(chunk, in_word_slot, line);
     chunk.emit_else(line);
     // not separator
     lget(chunk, in_word_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_if(line);
     lget(chunk, count_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -1851,7 +1851,7 @@ pub fn emit_str_word_count(chunks: &mut [Chunk], current: usize, argc: u8, line:
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, count_slot, line);
@@ -1912,8 +1912,8 @@ pub fn emit_str_ireplace(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     // if srch_len === 0: return subj; else do the replacement loop
     lget(chunk, srch_len_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, subj_slot, line);
     chunk.emit_else(line);
@@ -1926,7 +1926,7 @@ pub fn emit_str_ireplace(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
 
     // loop: idx = lower.substring(pos).indexOf(srch_lower); break if idx < 0
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, lower_slot, line);
     lget(chunk, pos_slot, line);
@@ -1948,9 +1948,9 @@ pub fn emit_str_ireplace(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     // condition: idx >= 0
     lget(chunk, idx_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // out += subj.substring(pos, pos + idx) + repl
@@ -1964,9 +1964,9 @@ pub fn emit_str_ireplace(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
         let idx = chunk.add_import("wasm:js-string", "substring");
         chunk.emit_call(idx, 3, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lget(chunk, repl_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
 
     // pos = pos + idx + srch_len
@@ -1978,7 +1978,7 @@ pub fn emit_str_ireplace(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
     lset(chunk, pos_slot, line);
 
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     // out += subj.substring(pos)
@@ -1994,7 +1994,7 @@ pub fn emit_str_ireplace(chunks: &mut [Chunk], current: usize, _argc: u8, line: 
         let idx = chunk.add_import("wasm:js-string", "substring");
         chunk.emit_call(idx, 3, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_end(line); // end if (nonempty srch)
 }
 
@@ -2021,7 +2021,7 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     // Coerce subj to string.
     push_str(chunk, "", line);
     lget(chunk, subj_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, subj_slot, line);
 
     // is_array_search = Array.isArray(srch)
@@ -2030,7 +2030,7 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
     let chunk = &mut chunks[current];
     // ecma:array.isArray returns I32(0|1); structured if: array path if true, scalar path if false.
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line); // if is_array: array path; else: scalar path
 
     // ── Array path ──
@@ -2042,7 +2042,7 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     chunks[current].emit_op_u16(Op::LOCAL_GET, repl_slot, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
     let chunk = &mut chunks[current];
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::Bool(true), line);
     lset(chunk, is_array_repl_slot, line);
@@ -2060,13 +2060,13 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     lset(chunk, n_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // needle = "" + srch[i]
@@ -2074,7 +2074,7 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     lget(chunk, srch_slot, line);
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, needle_slot, line);
 
     // if needle.length > 0: do replacement (else skip)
@@ -2084,26 +2084,26 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
         chunk.emit_call(idx, 1, line);
     }
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_if(line);
 
     // rep = is_array_repl ? (i < repl.length ? "" + repl[i] : "") : "" + repl
     lget(chunk, is_array_repl_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     // array repl path
     lget(chunk, i_slot, line);
     lget(chunk, repl_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "", line);
     lget(chunk, repl_slot, line);
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_else(line);
     push_str(chunk, "", line);
     chunk.emit_end(line);
@@ -2111,7 +2111,7 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     // scalar repl path
     push_str(chunk, "", line);
     lget(chunk, repl_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_end(line);
     lset(chunk, rep_slot, line);
 
@@ -2133,7 +2133,7 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, subj_slot, line);
@@ -2144,10 +2144,10 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     lget(chunk, subj_slot, line);
     push_str(chunk, "", line);
     lget(chunk, srch_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     push_str(chunk, "", line);
     lget(chunk, repl_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     {
         let idx = chunk.add_import("ecma:string", "replaceAll");
         chunk.emit_call(idx, 3, line);
@@ -2224,13 +2224,13 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     let current_slot = alloc_local(chunk);
 
     let _ = chunk;
-    let outer_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let outer_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, li_slot, line);
     lget(chunk, nlines_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // line = lines[li]
@@ -2246,8 +2246,8 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         chunk.emit_call(idx, 1, line);
     }
     lget(chunk, width_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     // needs wrapping: words = line.split(" ")
@@ -2269,13 +2269,13 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     lset(chunk, wi_slot, line);
 
     let _ = chunk;
-    let inner_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let inner_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, wi_slot, line);
     lget(chunk, nwords_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // word = words[wi]
@@ -2291,8 +2291,8 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         chunk.emit_call(idx, 1, line);
     }
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, word_slot, line);
     lset(chunk, current_slot, line);
@@ -2312,15 +2312,15 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     }
     chunk.emit_op(Op::F64_ADD, line);
     lget(chunk, width_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     // if fits: append; else: push current and start new
     chunk.emit_if(line);
     lget(chunk, current_slot, line);
     push_str(chunk, " ", line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lget(chunk, word_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, current_slot, line);
     chunk.emit_else(line);
     lget(chunk, out_slot, line);
@@ -2340,18 +2340,18 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, wi_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, inner_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, inner_state, line);
     let chunk = &mut chunks[current];
 
     // if cut && current.length > width: emit chunks, then remaining
     lget(chunk, cut_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     let cut_i_slot = alloc_local(chunk);
     // while current.length > width: push current[0..width], current = current[width..]
     let _ = chunk;
-    let cut_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let cut_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, current_slot, line);
     {
@@ -2359,9 +2359,9 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         chunk.emit_call(idx, 1, line);
     }
     lget(chunk, width_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     // chunk = current[0..width]
     lget(chunk, current_slot, line);
@@ -2387,7 +2387,7 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     let _ = chunk;
     call_import(chunks, current, "ecma:array", "push", 2, line);
     chunks[current].emit_op(Op::DROP, line);
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, cut_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, cut_state, line);
     let chunk = &mut chunks[current];
     chunk.emit_end(line); // end if cut
 
@@ -2398,8 +2398,8 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         chunk.emit_call(idx, 1, line);
     }
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, out_slot, line);
     lget(chunk, current_slot, line);
@@ -2424,7 +2424,7 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, li_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, outer_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, outer_state, line);
     let chunk = &mut chunks[current];
 
     // out.join(br)
@@ -2456,7 +2456,7 @@ pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     coerce_to_str(chunk, line);
     lset(chunk, s_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::collections::emit_array_new(chunks, current, 0, line);
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
     let chunk = &mut chunks[current];
     lset(chunk, out_slot, line);
     push_str(chunk, "", line);
@@ -2473,13 +2473,13 @@ pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     lset(chunk, n_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // c = s.charAt(i)
@@ -2493,21 +2493,21 @@ pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 
     // if in_q: handle in-quote state; else: handle normal state
     lget(chunk, in_q_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // in quote
     lget(chunk, c_slot, line);
     push_str(chunk, "\"", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // c == '"': check if next is also '"'
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
@@ -2518,13 +2518,13 @@ pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         chunk.emit_call(idx, 2, line);
     }
     push_str(chunk, "\"", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // doubled quote — append " and skip next
     lget(chunk, cur_slot, line);
     push_str(chunk, "\"", line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, cur_slot, line);
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -2544,15 +2544,15 @@ pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     // append c to cur
     lget(chunk, cur_slot, line);
     lget(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, cur_slot, line);
     chunk.emit_end(line); // end c=='"' check
     chunk.emit_else(line); // not in quote
     // not in quote: check c == '"'
     lget(chunk, c_slot, line);
     push_str(chunk, "\"", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::Bool(true), line);
     lset(chunk, in_q_slot, line);
@@ -2560,8 +2560,8 @@ pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     // c != '"': check c == ','
     lget(chunk, c_slot, line);
     push_str(chunk, ",", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // push current and reset
     lget(chunk, out_slot, line);
@@ -2576,7 +2576,7 @@ pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     // append c
     lget(chunk, cur_slot, line);
     lget(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, cur_slot, line);
     chunk.emit_end(line); // end c==',' check
     chunk.emit_end(line); // end c=='"' check (not-in-quote)
@@ -2588,7 +2588,7 @@ pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     // Push final field.
@@ -2634,8 +2634,8 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
         chunk.emit_call(idx, 1, line);
     }
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "", line);
     chunk.emit_else(line);
@@ -2676,13 +2676,13 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
 
     // while i < n && out.length < 4
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     // compound condition: i < n AND out.length < 4
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, out_slot, line);
     {
@@ -2690,12 +2690,12 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
         chunk.emit_call(idx, 1, line);
     }
     push_const(chunk, Value::F64(4.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     chunk.emit_else(line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_end(line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // c = s.charAt(i); code = s.charCodeAt(i); digit = lookup
@@ -2720,8 +2720,8 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     // else: last = "0" (vowels reset last)
     lget(chunk, digit_slot, line);
     push_str(chunk, "0", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // digit == "0": reset last
     push_str(chunk, "0", line);
@@ -2730,14 +2730,14 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     // digit != "0": check if same as last; if not same: append
     lget(chunk, digit_slot, line);
     lget(chunk, last_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_if(line);
     // different non-zero: append
     lget(chunk, out_slot, line);
     lget(chunk, digit_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     lget(chunk, digit_slot, line);
     lset(chunk, last_slot, line);
@@ -2750,12 +2750,12 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     // pad out with "0" until length 4
     let _ = chunk;
-    let pad_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let pad_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
     {
@@ -2763,16 +2763,16 @@ pub fn emit_soundex(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
         chunk.emit_call(idx, 1, line);
     }
     push_const(chunk, Value::F64(4.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
     push_str(chunk, "0", line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, pad_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, pad_state, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, out_slot, line);
@@ -2807,8 +2807,8 @@ fn emit_soundex_digit(
         for &cc in *codes {
             lget(chunk, code_slot, line);
             push_const(chunk, Value::F64(cc as f64), line);
-            vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-            vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+            vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+            vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
             chunk.emit_if(line);
             push_str(chunk, digit, line);
             lset(chunk, digit_slot, line);
@@ -2859,15 +2859,15 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, j_slot, line);
     let _ = chunk;
-    let init_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let init_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, j_slot, line);
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, prev_slot, line);
     lget(chunk, j_slot, line);
@@ -2880,22 +2880,22 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, j_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, init_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, init_state, line);
 
     // curr = new array of n+1 zeros
     chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, curr_slot, line);
     push_const(&mut chunks[current], Value::F64(0.0), line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, j_slot, line);
-    let init2_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let init2_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, j_slot, line);
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, curr_slot, line);
     push_const(chunk, Value::F64(0.0), line);
@@ -2908,20 +2908,20 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, j_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, init2_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, init2_state, line);
 
     // Outer loop: for i in 1..=m
     push_const(&mut chunks[current], Value::F64(1.0), line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    let outer_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let outer_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, m_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // curr[0] = i
@@ -2934,15 +2934,15 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
 
     push_const(&mut chunks[current], Value::F64(1.0), line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, j_slot, line);
-    let inner_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let inner_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, j_slot, line);
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // cost = (a[i-1] == b[j-1]) ? 0 : 1
@@ -2962,8 +2962,8 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
         let idx = chunk.add_import("ecma:string", "charAt");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_else(line);
@@ -2992,8 +2992,8 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     // tmp = min(tmp, v)
     lget(chunk, v_slot, line);
     lget(chunk, tmp_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, v_slot, line);
     lset(chunk, tmp_slot, line);
@@ -3012,8 +3012,8 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     // tmp = min(tmp, v)
     lget(chunk, v_slot, line);
     lget(chunk, tmp_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, v_slot, line);
     lset(chunk, tmp_slot, line);
@@ -3034,7 +3034,7 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, j_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, inner_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, inner_state, line);
     let chunk = &mut chunks[current];
 
     // swap prev <-> curr
@@ -3051,7 +3051,7 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, outer_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, outer_state, line);
     let chunk = &mut chunks[current];
 
     // Result: prev[n]
@@ -3103,15 +3103,15 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, j_slot, line);
     let _ = chunk;
-    let init_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let init_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, j_slot, line);
     lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, used_slot, line);
     push_const(chunk, Value::Bool(false), line);
@@ -3124,35 +3124,35 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, j_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, init_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, init_state, line);
 
     push_const(&mut chunks[current], Value::F64(0.0), line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_slot, line);
-    let outer_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let outer_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, m_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
 
     push_const(&mut chunks[current], Value::F64(0.0), line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, j_slot, line);
-    let inner_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let inner_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, j_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // if !used[j] && a[i] == b[j]: mark used, count, break inner
     lget(chunk, used_slot, line);
     lget(chunk, j_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_if(line); // if !used[j]
 
     lget(chunk, a_slot, line);
@@ -3167,8 +3167,8 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         let idx = chunk.add_import("ecma:string", "charAt");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line); // if a[i]==b[j]
 
     lget(chunk, used_slot, line);
@@ -3194,7 +3194,7 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, j_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, inner_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, inner_state, line);
 
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
@@ -3202,7 +3202,7 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, outer_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, outer_state, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, total_slot, line);
@@ -3219,7 +3219,7 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     // Optional max-phonemes arg (TOS). PHP: 0 means "no limit".
     let limit_slot = alloc_local(chunk);
     if argc >= 2 {
-        vybe_compiler::compiler::convert::emit_to_int(chunk, line);
+        vybe_compiler::primitives::convert::emit_to_int(chunk, line);
         lset(chunk, limit_slot, line);
     }
     let s_slot = alloc_local(chunk);
@@ -3247,13 +3247,13 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     lset(chunk, n_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, s_slot, line);
@@ -3274,13 +3274,13 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     // First letter always kept; subsequent: skip vowels/H/W/Y, keep consonants
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // first: append c
     lget(chunk, out_slot, line);
     lget(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_else(line);
 
@@ -3292,8 +3292,8 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     for &cc in &[65u32, 69, 73, 79, 85, 72, 87, 89] {
         lget(chunk, code_slot, line);
         push_const(chunk, Value::F64(cc as f64), line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         push_const(chunk, Value::Bool(true), line);
         lset(chunk, is_vowel_slot, line);
@@ -3301,25 +3301,25 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     }
     // if !is_vowel: append if code in A-Z range
     lget(chunk, is_vowel_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_if(line);
     // not a vowel: append if 65 <= code <= 90
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(65.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line); // >= 65
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(90.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line); // <= 90
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_if(line);
     lget(chunk, out_slot, line);
     lget(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_end(line); // end range check
     chunk.emit_end(line); // end not_vowel if
@@ -3331,20 +3331,20 @@ pub fn emit_metaphone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     // Apply the max-phonemes limit (only when > 0; PHP treats 0 as no limit).
     if argc >= 2 {
         lget(chunk, limit_slot, line);
         push_const(chunk, Value::F64(0.0), line);
-        vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         lget(chunk, out_slot, line);
         push_const(chunk, Value::F64(0.0), line);
         lget(chunk, limit_slot, line);
-        vybe_compiler::compiler::strings::emit_substring(chunk, line);
+        vybe_compiler::primitives::strings::emit_substring(chunk, line);
         chunk.emit_else(line);
         lget(chunk, out_slot, line);
         chunk.emit_end(line);
@@ -3395,13 +3395,13 @@ pub fn emit_preg_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     ];
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // c = s.charAt(i); code = s.charCodeAt(i)
@@ -3427,8 +3427,8 @@ pub fn emit_preg_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     for &m in metas {
         lget(chunk, code_slot, line);
         push_const(chunk, Value::F64(m as f64), line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         push_const(chunk, Value::Bool(true), line);
         lset(chunk, is_meta_slot, line);
@@ -3441,8 +3441,8 @@ pub fn emit_preg_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         chunk.emit_call(idx, 1, line);
     }
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, delim_slot, line);
     lget(chunk, c_slot, line);
@@ -3451,8 +3451,8 @@ pub fn emit_preg_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         chunk.emit_call(idx, 2, line);
     }
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_const(chunk, Value::Bool(true), line);
     lset(chunk, is_meta_slot, line);
@@ -3461,18 +3461,18 @@ pub fn emit_preg_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 
     // if is_meta: append "\" + c; else: append c
     lget(chunk, is_meta_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, out_slot, line);
     push_str(chunk, "\\", line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lget(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_else(line);
     lget(chunk, out_slot, line);
     lget(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_end(line);
 
@@ -3482,7 +3482,7 @@ pub fn emit_preg_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, out_slot, line);
@@ -3566,11 +3566,11 @@ fn emit_trim_impl(
 
     if left {
         // while start < end && chars.indexOf(s.charAt(start)) >= 0: start++
-        let lstate = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+        let lstate = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
         lget(&mut chunks[current], start_slot, line);
         lget(&mut chunks[current], end_slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
-        vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+        vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
         lget(&mut chunks[current], chars_slot, line);
         lget(&mut chunks[current], s_slot, line);
         lget(&mut chunks[current], start_slot, line);
@@ -3583,21 +3583,21 @@ fn emit_trim_impl(
             chunks[current].emit_call(idx, 2, line);
         }
         push_const(&mut chunks[current], Value::F64(0.0), line);
-        vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
         chunks[current].emit_br_if(lstate.break_depth(0) as u32, line);
         lget(&mut chunks[current], start_slot, line);
         push_const(&mut chunks[current], Value::F64(1.0), line);
         chunks[current].emit_op(Op::F64_ADD, line);
         lset(&mut chunks[current], start_slot, line);
-        vybe_compiler::compiler::loops::emit_loop_end(chunks, current, lstate, line);
+        vybe_compiler::primitives::loops::emit_loop_end(chunks, current, lstate, line);
     }
     if right {
         // while end > start && chars.indexOf(s.charAt(end-1)) >= 0: end--
-        let rstate = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+        let rstate = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
         lget(&mut chunks[current], end_slot, line);
         lget(&mut chunks[current], start_slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_gt(&mut chunks[current], line);
-        vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+        vybe_compiler::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
+        vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
         lget(&mut chunks[current], chars_slot, line);
         lget(&mut chunks[current], s_slot, line);
         lget(&mut chunks[current], end_slot, line);
@@ -3612,13 +3612,13 @@ fn emit_trim_impl(
             chunks[current].emit_call(idx, 2, line);
         }
         push_const(&mut chunks[current], Value::F64(0.0), line);
-        vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
         chunks[current].emit_br_if(rstate.break_depth(0) as u32, line);
         lget(&mut chunks[current], end_slot, line);
         push_const(&mut chunks[current], Value::F64(1.0), line);
         chunks[current].emit_op(Op::F64_SUB, line);
         lset(&mut chunks[current], end_slot, line);
-        vybe_compiler::compiler::loops::emit_loop_end(chunks, current, rstate, line);
+        vybe_compiler::primitives::loops::emit_loop_end(chunks, current, rstate, line);
     }
 
     // s.substring(start, end)
@@ -3697,15 +3697,15 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
             let c = &mut chunks[current];
             lget(c, limit_slot, line);
             push_const(c, Value::F64(1.0), line);
-            vybe_compiler::compiler::ops::emit_dyn_gt(c, line);
-            vybe_compiler::compiler::ops::emit_dyn_to_bool(c, line);
+            vybe_compiler::primitives::ops::emit_dyn_gt(c, line);
+            vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
             c.emit_if(line);
 
             lget(c, result_slot, line);
             c.emit_op(Op::ARRAY_LENGTH, line);
             lget(c, limit_slot, line);
-            vybe_compiler::compiler::ops::emit_dyn_gt(c, line);
-            vybe_compiler::compiler::ops::emit_dyn_to_bool(c, line);
+            vybe_compiler::primitives::ops::emit_dyn_gt(c, line);
+            vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
             c.emit_if(line);
 
             push_const(c, Value::F64(0.0), line);
@@ -3715,17 +3715,17 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         }
 
         // Exec loop to find (limit-1)th match position
-        let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+        let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
         {
             let c = &mut chunks[current];
             lget(c, count_slot, line);
             lget(c, limit_slot, line);
             push_const(c, Value::F64(1.0), line);
             c.emit_op(Op::F64_SUB, line);
-            vybe_compiler::compiler::ops::emit_dyn_lt(c, line);
-            vybe_compiler::compiler::ops::emit_dyn_to_bool(c, line);
+            vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
+            vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
         }
-        vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+        vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
         {
             let c = &mut chunks[current];
             lget(c, pat_slot, line);
@@ -3773,7 +3773,7 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
             c.emit_op(Op::F64_ADD, line);
             lset(c, count_slot, line);
         }
-        vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+        vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
 
         // Build new result array
         {
@@ -3785,17 +3785,17 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         }
 
         // Copy first limit-1 elements
-        let loop2 = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+        let loop2 = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
         {
             let c = &mut chunks[current];
             lget(c, i_slot, line);
             lget(c, limit_slot, line);
             push_const(c, Value::F64(1.0), line);
             c.emit_op(Op::F64_SUB, line);
-            vybe_compiler::compiler::ops::emit_dyn_lt(c, line);
-            vybe_compiler::compiler::ops::emit_dyn_to_bool(c, line);
+            vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
+            vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
         }
-        vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+        vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
         {
             let c = &mut chunks[current];
             lget(c, new_result_slot, line);
@@ -3812,7 +3812,7 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
             c.emit_op(Op::F64_ADD, line);
             lset(c, i_slot, line);
         }
-        vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop2, line);
+        vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop2, line);
 
         // Append remainder
         {
@@ -3845,9 +3845,9 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         push_const(c, Value::F64(1.0), line);
         c.emit_op(Op::I32_AND, line);
         push_const(c, Value::F64(0.0), line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(c, line);
-        vybe_compiler::compiler::ops::emit_dyn_not(c, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(c, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(c, line);
+        vybe_compiler::primitives::ops::emit_dyn_not(c, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
         c.emit_if(line);
         let a = alloc_local(c);
         let b = alloc_local(c);
@@ -3862,14 +3862,14 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         lset(c, a, line);
         (a, b, d, e)
     };
-    let ne_loop = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let ne_loop = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     {
         let c = &mut chunks[current];
         lget(c, ne_i, line);
         lget(c, ne_len, line);
-        vybe_compiler::compiler::ops::emit_dyn_lt(c, line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
     }
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     {
         let c = &mut chunks[current];
         lget(c, result_slot, line);
@@ -3878,8 +3878,8 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         lset(c, ne_elem, line);
         lget(c, ne_elem, line);
         push_str(c, "", line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(c, line);
-        vybe_compiler::compiler::ops::emit_dyn_not(c, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(c, line);
+        vybe_compiler::primitives::ops::emit_dyn_not(c, line);
         c.emit_if(line);
         lget(c, ne_out, line);
         lget(c, ne_elem, line);
@@ -3891,10 +3891,10 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         c.emit_end(line);
         lget(c, ne_i, line);
         push_const(c, Value::F64(1.0), line);
-        vybe_compiler::compiler::ops::emit_dyn_add(c, line);
+        vybe_compiler::primitives::ops::emit_dyn_add(c, line);
         lset(c, ne_i, line);
     }
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, ne_loop, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, ne_loop, line);
     {
         let c = &mut chunks[current];
         lget(c, ne_out, line);
@@ -3942,8 +3942,8 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     // regexes and repair the full-match column after pivoting.
     lget(chunk, pat_slot, line);
     push_str(chunk, "/\\d+(?=px)/", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line); // if pat == "/\\d+(?=px)/"
     push_str(chunk, "/(\\d+)px/", line);
     lset(chunk, pat_slot, line);
@@ -3953,8 +3953,8 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
 
     lget(chunk, pat_slot, line);
     push_str(chunk, "/(?<=\\$)\\d+/", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line); // if pat == "/(?<=\\$)\\d+/"
     push_str(chunk, "/\\$(\\d+)/", line);
     lset(chunk, pat_slot, line);
@@ -3964,8 +3964,8 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
 
     lget(chunk, pat_slot, line);
     push_str(chunk, "/\\b(?!foo)\\w+\\d+/", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line); // if pat == "/\\b(?!foo)\\w+\\d+/"
     push_str(chunk, "/\\b\\w+\\d+/", line);
     lset(chunk, pat_slot, line);
@@ -3991,8 +3991,8 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     // group_count = raw_len > 0 ? raw[0].length : 1
     lget(chunk, raw_len_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, raw_slot, line);
     push_const(chunk, Value::F64(0.0), line);
@@ -4011,13 +4011,13 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, j_slot, line);
     let _ = chunk;
-    let outer_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let outer_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, j_slot, line);
     lget(chunk, group_count_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // group_arr = []
@@ -4028,13 +4028,13 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    let inner_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let inner_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, raw_len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, raw_slot, line);
@@ -4051,7 +4051,7 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     lset(chunk, val_slot, line);
     lget(chunk, val_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "", line);
     chunk.emit_else(line);
@@ -4067,7 +4067,7 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, inner_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, inner_state, line);
     let chunk = &mut chunks[current];
 
     // result.push(group_arr)
@@ -4083,7 +4083,7 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, j_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, outer_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, outer_state, line);
     let chunk = &mut chunks[current];
 
     // Build a Map view of `result` so PHP `$matches['name']` can resolve
@@ -4102,13 +4102,13 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, j_slot, line);
     let _ = chunk;
-    let copy_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let copy_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, j_slot, line);
     lget(chunk, group_count_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, result_map_slot, line);
     lget(chunk, j_slot, line);
@@ -4121,14 +4121,14 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, j_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, copy_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, copy_state, line);
     let chunk = &mut chunks[current];
 
     // Discover named groups via a single exec call (only if there are matches).
     lget(chunk, raw_len_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     lget(chunk, pat_slot, line);
@@ -4142,8 +4142,8 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     // if exec is not null: process named groups
     lget(chunk, exec_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     let groups_key = chunk.add_constant(Value::String(Arc::from("groups")));
@@ -4155,8 +4155,8 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     // if groups is not null: copy named entries
     lget(chunk, groups_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     let names_slot = alloc_local(chunk);
@@ -4176,13 +4176,13 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     lset(chunk, nm_i_slot, line);
 
     let _ = chunk;
-    let nm_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let nm_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, nm_i_slot, line);
     lget(chunk, nm_count_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // key = names[i]
@@ -4205,7 +4205,7 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, nm_i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, nm_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, nm_state, line);
     let chunk = &mut chunks[current];
 
     chunk.emit_end(line); // end groups not-null if
@@ -4216,13 +4216,13 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     // a capture-based equivalent.
     lget(chunk, rewrite_kind_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, group_count_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, result_map_slot, line);
     push_const(chunk, Value::F64(0.0), line);
@@ -4236,8 +4236,8 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     // Filter out the excluded prefix for the negative-lookahead case.
     lget(chunk, rewrite_kind_slot, line);
     push_const(chunk, Value::F64(2.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line); // if rewrite_kind == 2
     let full_matches_slot = alloc_local(chunk);
     let filtered_slot = alloc_local(chunk);
@@ -4258,13 +4258,13 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     lset(chunk, filter_n_slot, line);
 
     let _ = chunk;
-    let filter_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let filter_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, filter_i_slot, line);
     lget(chunk, filter_n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, full_matches_slot, line);
     lget(chunk, filter_i_slot, line);
@@ -4277,7 +4277,7 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
         let idx = chunk.add_import("ecma:string", "startsWith");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_if(line);
     lget(chunk, filtered_slot, line);
     lget(chunk, filter_val_slot, line);
@@ -4291,7 +4291,7 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, filter_i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, filter_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, filter_state, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, result_map_slot, line);
@@ -4335,7 +4335,7 @@ pub fn emit_preg_match_groups(chunks: &mut [Chunk], current: usize, _argc: u8, l
     // if null: return ecma:map.new(); else: build out map
     lget(chunk, result_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     let _ = chunk;
     call_import(chunks, current, "ecma:map", "new", 0, line);
@@ -4355,13 +4355,13 @@ pub fn emit_preg_match_groups(chunks: &mut [Chunk], current: usize, _argc: u8, l
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     lset(chunk, n_slot, line);
     let _ = chunk;
-    let num_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let num_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
     lget(chunk, i_slot, line);
@@ -4374,7 +4374,7 @@ pub fn emit_preg_match_groups(chunks: &mut [Chunk], current: usize, _argc: u8, l
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, num_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, num_state, line);
     let chunk = &mut chunks[current];
 
     // groups = result.groups
@@ -4386,8 +4386,8 @@ pub fn emit_preg_match_groups(chunks: &mut [Chunk], current: usize, _argc: u8, l
     // if groups is non-null: copy each named entry
     lget(chunk, groups_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, groups_slot, line);
     let _ = chunk;
@@ -4401,13 +4401,13 @@ pub fn emit_preg_match_groups(chunks: &mut [Chunk], current: usize, _argc: u8, l
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     lset(chunk, n_slot, line);
     let _ = chunk;
-    let nm_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let nm_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, names_slot, line);
     lget(chunk, i_slot, line);
@@ -4424,7 +4424,7 @@ pub fn emit_preg_match_groups(chunks: &mut [Chunk], current: usize, _argc: u8, l
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, nm_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, nm_state, line);
     let chunk = &mut chunks[current];
     chunk.emit_end(line); // end groups not-null if
 
@@ -4505,13 +4505,13 @@ pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u
 
     // while i < n
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // m = raw[i]
@@ -4584,7 +4584,7 @@ pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     // result += subj.substring(last_end, subj_len)
@@ -4717,15 +4717,15 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     lset(chunk, len_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     {
         let chunk = &mut chunks[current];
         lget(chunk, i_slot, line);
         lget(chunk, len_slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     }
     let _ = &mut chunks[current];
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     {
         let chunk = &mut chunks[current];
 
@@ -4757,7 +4757,7 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         chunk.emit_op(Op::F64_ADD, line);
         lset(chunk, i_slot, line);
     }
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     // Check for __clone method on the copy.
@@ -4925,13 +4925,13 @@ pub fn emit_crc32(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     lset(chunk, len_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // h = h * 33 + charCode(s, i)
@@ -4947,7 +4947,7 @@ pub fn emit_crc32(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunk.emit_op(Op::F64_ADD, line);
     // keep in 32-bit range via fmod 4294967296
     push_const(chunk, Value::F64(4294967296.0), line);
-    vybe_compiler::compiler::math::emit_c_fmod(chunk, line);
+    vybe_compiler::primitives::math::emit_c_fmod(chunk, line);
     lset(chunk, h_slot, line);
 
     lget(chunk, i_slot, line);
@@ -4955,13 +4955,13 @@ pub fn emit_crc32(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
     // Convert to signed 32-bit: if h >= 2^31, subtract 2^32
     lget(chunk, h_slot, line);
     push_const(chunk, Value::F64(2147483648.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, h_slot, line);
     push_const(chunk, Value::F64(4294967296.0), line);
@@ -5021,13 +5021,13 @@ pub fn emit_addcslashes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     lset(chunk, n_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
@@ -5044,24 +5044,24 @@ pub fn emit_addcslashes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     let index_of = chunk.add_import("ecma:string", "indexOf");
     chunk.emit_call(index_of, 2, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     lget(chunk, charlist_slot, line);
     push_str(chunk, "a..z", line);
     let index_of = chunk.add_import("ecma:string", "indexOf");
     chunk.emit_call(index_of, 2, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(97.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(122.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::I32_OR, line);
     lget(chunk, charlist_slot, line);
@@ -5069,17 +5069,17 @@ pub fn emit_addcslashes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     let index_of = chunk.add_import("ecma:string", "indexOf");
     chunk.emit_call(index_of, 2, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(65.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(90.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::I32_OR, line);
     lget(chunk, charlist_slot, line);
@@ -5087,46 +5087,46 @@ pub fn emit_addcslashes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     let index_of = chunk.add_import("ecma:string", "indexOf");
     chunk.emit_call(index_of, 2, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(48.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(57.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_if_value(line);
     lget(chunk, out_slot, line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(10.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "\\n", line);
     chunk.emit_else(line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(9.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_str(chunk, "\\t", line);
     chunk.emit_else(line);
     push_str(chunk, "\\", line);
     lget(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_else(line);
     lget(chunk, out_slot, line);
     lget(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_end(line);
     lget(chunk, i_slot, line);
@@ -5134,7 +5134,7 @@ pub fn emit_addcslashes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
 }
@@ -5157,8 +5157,8 @@ fn emit_rot13_range(chunk: &mut Chunk, code_slot: u16, base: f64, tmp_slot: u16,
     // if tmp >= 26: tmp -= 26
     lget(chunk, tmp_slot, line);
     push_const(chunk, Value::F64(26.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, tmp_slot, line);
     push_const(chunk, Value::F64(26.0), line);
@@ -5194,13 +5194,13 @@ pub fn emit_str_rot13(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     lset(chunk, len_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, s_slot, line);
@@ -5214,14 +5214,14 @@ pub fn emit_str_rot13(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     // if code >= 65 (possibly a letter)
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(65.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     //   if code <= 90 → uppercase A-Z
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(90.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     emit_rot13_range(chunk, code_slot, 65.0, tmp_slot, line);
     lset(chunk, rot_slot, line);
@@ -5229,14 +5229,14 @@ pub fn emit_str_rot13(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     //   else if code >= 97 → check lowercase a-z
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(97.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     //     if code <= 122 → lowercase a-z
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(122.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     emit_rot13_range(chunk, code_slot, 97.0, tmp_slot, line);
     lset(chunk, rot_slot, line);
@@ -5261,7 +5261,7 @@ pub fn emit_str_rot13(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
         let idx = chunk.add_import("wasm:js-string", "fromCharCode");
         chunk.emit_call(idx, 1, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
 
     lget(chunk, i_slot, line);
@@ -5269,7 +5269,7 @@ pub fn emit_str_rot13(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
 }
@@ -5285,7 +5285,7 @@ pub fn emit_nl2br(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         coerce_to_str(chunk, line);
         // if is_xhtml (truthy): replace with <br />\n; else: <br>\n
         lget(chunk, xhtml_slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if_value(line);
         push_str(chunk, "\n", line);
         push_str(chunk, "<br />\n", line);
@@ -5522,13 +5522,13 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     lset(chunk, n_slot, line);
 
     let _ = chunk;
-    let outer = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let outer = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // if s.charCodeAt(i) == '<' (60)
@@ -5539,8 +5539,8 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         chunk.emit_call(idx, 2, line);
     }
     push_const(chunk, Value::F64(60.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     // j = s.indexOf('>', i)
@@ -5556,8 +5556,8 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     // if j < 0: append the rest and finish; else process the tag.
     lget(chunk, j_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // out += s.substring(i, n); i = n
     lget(chunk, out_slot, line);
@@ -5568,7 +5568,7 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         let idx = chunk.add_import("ecma:string", "substring");
         chunk.emit_call(idx, 3, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     lget(chunk, n_slot, line);
     lset(chunk, i_slot, line);
@@ -5586,8 +5586,8 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         chunk.emit_call(idx, 2, line);
     }
     push_const(chunk, Value::F64(47.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, k_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -5599,13 +5599,13 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     push_str(chunk, "", line);
     lset(chunk, name_slot, line);
     let _ = chunk;
-    let inner = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let inner = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, k_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, s_slot, line);
     lget(chunk, k_slot, line);
@@ -5618,33 +5618,33 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     // digit
     lget(chunk, cc_slot, line);
     push_const(chunk, Value::F64(48.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     lget(chunk, cc_slot, line);
     push_const(chunk, Value::F64(57.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     // upper
     lget(chunk, cc_slot, line);
     push_const(chunk, Value::F64(65.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     lget(chunk, cc_slot, line);
     push_const(chunk, Value::F64(90.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::I32_OR, line);
     // lower
     lget(chunk, cc_slot, line);
     push_const(chunk, Value::F64(97.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     lget(chunk, cc_slot, line);
     push_const(chunk, Value::F64(122.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_if_value(line);
@@ -5656,7 +5656,7 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         let idx = chunk.add_import("ecma:string", "charAt");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, name_slot, line);
     lget(chunk, k_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -5668,7 +5668,7 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     lset(chunk, k_slot, line);
     chunk.emit_end(line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, inner, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, inner, line);
     let chunk = &mut chunks[current];
 
     // keep = allowed.indexOf("<" + name.toLowerCase() + ">") >= 0
@@ -5679,16 +5679,16 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         let idx = chunk.add_import("ecma:string", "toLowerCase");
         chunk.emit_call(idx, 1, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     push_str(chunk, ">", line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     {
         let idx = chunk.add_import("ecma:string", "indexOf");
         chunk.emit_call(idx, 2, line);
     }
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // keep the whole tag: out += s.substring(i, j+1)
     lget(chunk, out_slot, line);
@@ -5701,7 +5701,7 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         let idx = chunk.add_import("ecma:string", "substring");
         chunk.emit_call(idx, 3, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_end(line);
     // i = j + 1
@@ -5720,7 +5720,7 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         let idx = chunk.add_import("ecma:string", "charAt");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -5728,7 +5728,7 @@ pub fn emit_strip_tags(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     lset(chunk, i_slot, line);
     chunk.emit_end(line); // end if '<'
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, outer, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, outer, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
 }
@@ -5764,8 +5764,8 @@ pub fn emit_strrchr(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     // if pos < 0: false; else: hay.substring(pos)
     lget(chunk, pos_slot, line);
     push_const(chunk, Value::I32(0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_else(line);
@@ -5822,8 +5822,8 @@ pub fn emit_explode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // if limit == 0: PHP returns [string].
     lget(chunk, limit_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, str_slot, line);
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
@@ -5832,8 +5832,8 @@ pub fn emit_explode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // if limit < 0: return arr.slice(0, max(len + limit, 0)).
     lget(chunk, limit_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, len_slot, line);
     lget(chunk, limit_slot, line);
@@ -5841,8 +5841,8 @@ pub fn emit_explode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lset(chunk, end_slot, line);
     lget(chunk, end_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     chunk.emit_else(line);
@@ -5857,14 +5857,14 @@ pub fn emit_explode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // if limit > 0 AND arr.length > limit: build limited array
     lget(chunk, limit_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
 
     lget(chunk, len_slot, line);
     lget(chunk, limit_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
 
     // head = arr.slice(0, limit-1)
@@ -5960,7 +5960,7 @@ pub fn emit_php_uniqid(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 
     if let Some(me_slot) = more_entropy_slot {
         lget(chunk, me_slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         lget(chunk, result_slot, line);
         push_str(chunk, ".00000000", line);
@@ -5993,8 +5993,8 @@ pub fn emit_preg_replace_limited(chunks: &mut [Chunk], current: usize, _argc: u8
     // if limit == -1 or limit < 0: replaceAll; else: replace (first match)
     lget(chunk, limit_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, str_slot, line);
     lget(chunk, pat_slot, line);
@@ -6028,7 +6028,7 @@ fn emit_strrpos_impl(
     let idx_slot = alloc_local(chunk);
 
     if argc >= 3 {
-        vybe_compiler::compiler::convert::emit_to_int(chunk, line);
+        vybe_compiler::primitives::convert::emit_to_int(chunk, line);
         lset(chunk, offset_slot, line);
     }
     coerce_to_str(chunk, line);
@@ -6059,8 +6059,8 @@ fn emit_strrpos_impl(
 
     lget(chunk, offset_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, n_slot, line);
     lget(chunk, offset_slot, line);
@@ -6070,16 +6070,16 @@ fn emit_strrpos_impl(
     lset(chunk, end_slot, line);
     lget(chunk, end_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, end_slot, line);
     chunk.emit_else(line);
     lget(chunk, end_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, n_slot, line);
     lset(chunk, end_slot, line);
@@ -6112,8 +6112,8 @@ fn emit_strrpos_impl(
 
     lget(chunk, idx_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, idx_slot, line);
     lget(chunk, base_slot, line);
@@ -6154,8 +6154,8 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
     // For mode 1: return words array; mode 2: build pos→word object
     lget(chunk, mode_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
 
     // mode 1: return array of words
@@ -6180,13 +6180,13 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     lset(chunk, out_slot, line);
     let _ = chunk;
-    let ls1 = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let ls1 = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, arr_slot, line);
     lget(chunk, i_slot, line);
@@ -6199,8 +6199,8 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
         chunk.emit_call(idx, 1, line);
     }
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     let _ = chunk;
     if argc >= 3 {
@@ -6222,13 +6222,13 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
         push_const(chunk, Value::F64(0.0), line);
         lset(chunk, part_i_slot, line);
         let _ = chunk;
-        let part_loop = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+        let part_loop = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
         let chunk = &mut chunks[current];
         lget(chunk, part_i_slot, line);
         lget(chunk, part_len_slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
         let _ = chunk;
-        vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+        vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
         let chunk = &mut chunks[current];
         lget(chunk, parts_slot, line);
         lget(chunk, part_i_slot, line);
@@ -6240,8 +6240,8 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
             chunk.emit_call(idx, 1, line);
         }
         push_const(chunk, Value::F64(0.0), line);
-        vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         lget(chunk, out_slot, line);
         lget(chunk, part_slot, line);
@@ -6255,7 +6255,7 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
         chunk.emit_op(Op::F64_ADD, line);
         lset(chunk, part_i_slot, line);
         let _ = chunk;
-        vybe_compiler::compiler::loops::emit_loop_end(chunks, current, part_loop, line);
+        vybe_compiler::primitives::loops::emit_loop_end(chunks, current, part_loop, line);
     } else {
         let chunk = &mut chunks[current];
         lget(chunk, out_slot, line);
@@ -6271,7 +6271,7 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, ls1, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, ls1, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
 
@@ -6279,8 +6279,8 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
 
     lget(chunk, mode_slot, line);
     push_const(chunk, Value::F64(2.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
 
     // mode 2: return position→word object (map)
@@ -6314,20 +6314,20 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
     lset(chunk, obj_slot, line);
 
     let _ = chunk;
-    let ls2 = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let ls2 = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, pos_slot, line);
     lget(chunk, slen_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // get char code (or sentinel if pos == slen)
     lget(chunk, pos_slot, line);
     lget(chunk, slen_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, s_slot, line);
     lget(chunk, pos_slot, line);
@@ -6345,17 +6345,17 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
     // is_sep: code <= 32 (whitespace)
     lget(chunk, code_slot2, line);
     push_const(chunk, Value::F64(32.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     let is_sep2_slot = alloc_local(chunk);
     lset(chunk, is_sep2_slot, line);
 
     lget(chunk, is_sep2_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // separator: if in_word, save word at wstart
     lget(chunk, in_word2_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // save: obj[wstart] = s.substring(wstart, pos)
     lget(chunk, s_slot, line);
@@ -6378,8 +6378,8 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
     chunk.emit_end(line);
     chunk.emit_else(line); // not separator
     lget(chunk, in_word2_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
     chunk.emit_if(line);
     lget(chunk, pos_slot, line);
     lset(chunk, wstart_slot, line);
@@ -6393,7 +6393,7 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, pos_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, ls2, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, ls2, line);
     let chunk = &mut chunks[current];
     lget(chunk, obj_slot, line);
 
@@ -6420,13 +6420,13 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, cnt2, line);
     let _ = chunk;
-    let ls3 = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let ls3 = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i2, line);
     lget(chunk, len2, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, arr2, line);
     lget(chunk, i2, line);
@@ -6438,8 +6438,8 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
         chunk.emit_call(idx, 1, line);
     }
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, cnt2, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -6451,7 +6451,7 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i2, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, ls3, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, ls3, line);
     let chunk = &mut chunks[current];
     lget(chunk, cnt2, line);
     chunk.emit_end(line); // end mode==2
@@ -6483,11 +6483,11 @@ pub fn emit_var_export(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunk.emit_call(test_bool, 1u8, line); // returns i32 1 if boolean
     // Also check: val evaluated as bool is false
     lget(chunk, val_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_AND, line); // both: is boolean AND falsy
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_str(chunk, "false", line);
     lset(chunk, repr_slot, line);
@@ -6495,7 +6495,7 @@ pub fn emit_var_export(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     // Check null
     lget(chunk, val_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_str(chunk, "NULL", line);
     lset(chunk, repr_slot, line);
@@ -6504,10 +6504,10 @@ pub fn emit_var_export(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     lget(chunk, val_slot, line);
     chunk.emit_call(test_bool, 1u8, line);
     lget(chunk, val_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_str(chunk, "true", line);
     lset(chunk, repr_slot, line);
@@ -6517,7 +6517,7 @@ pub fn emit_var_export(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     let chunk = &mut chunks[current];
     lget(chunk, val_slot, line);
     chunk.emit_call(test_str, 1u8, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     push_str(chunk, "'", line);
     lget(chunk, val_slot, line);
@@ -6533,9 +6533,9 @@ pub fn emit_var_export(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         let idx = chunk.add_import("ecma:string", "replaceAll");
         chunk.emit_call(idx, 3, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     push_str(chunk, "'", line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, repr_slot, line);
     chunk.emit_else(line);
     // numbers and other scalars: coerce to string
@@ -6549,7 +6549,7 @@ pub fn emit_var_export(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 
     // if return: push repr; else: log repr and push null
     lget(chunk, ret_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, repr_slot, line);
     chunk.emit_else(line);
@@ -6560,7 +6560,7 @@ pub fn emit_var_export(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     let rd_slot = alloc_local(&mut chunks[current]);
     let wr_slot = alloc_local(&mut chunks[current]);
     let chunk = &mut chunks[current];
-    vybe_compiler::compiler::io::emit_write_stdout_with_imports(
+    vybe_compiler::primitives::io::emit_write_stdout_with_imports(
         chunk,
         write_idx,
         rd_slot,
@@ -6651,13 +6651,13 @@ pub fn emit_strpbrk(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     }
     lset(chunk, clen_slot, line);
     let _ = chunk;
-    let outer = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let outer = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
@@ -6669,13 +6669,13 @@ pub fn emit_strpbrk(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, j_slot, line);
     let _ = chunk;
-    let inner = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let inner = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, j_slot, line);
     lget(chunk, clen_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, chars_slot, line);
     lget(chunk, j_slot, line);
@@ -6684,8 +6684,8 @@ pub fn emit_strpbrk(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
         chunk.emit_call(idx, 2, line);
     }
     lget(chunk, code_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, i_slot, line);
     lset(chunk, found_slot, line);
@@ -6699,19 +6699,19 @@ pub fn emit_strpbrk(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, j_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, inner, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, inner, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, outer, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, outer, line);
     let chunk = &mut chunks[current];
     lget(chunk, found_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, s_slot, line);
     lget(chunk, found_slot, line);
@@ -6758,8 +6758,8 @@ pub fn emit_substr_compare(chunks: &mut [Chunk], current: usize, argc: u8, line:
     // Normalize negative offset
     lget(chunk, off_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, main_len_slot, line);
     lget(chunk, off_slot, line);
@@ -6769,8 +6769,8 @@ pub fn emit_substr_compare(chunks: &mut [Chunk], current: usize, argc: u8, line:
     // Use str length as default len
     lget(chunk, len_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, str_slot, line);
     {
@@ -6802,7 +6802,7 @@ pub fn emit_substr_compare(chunks: &mut [Chunk], current: usize, argc: u8, line:
     let sub2_slot = alloc_local(chunk);
     lset(chunk, sub2_slot, line);
     lget(chunk, ci_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, sub1_slot, line);
     {
@@ -6850,8 +6850,8 @@ pub fn emit_preg_grep(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     lset(chunk, pat_slot, line);
     lget(chunk, flags_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     lset(chunk, invert_slot, line);
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     lset(chunk, out_slot, line);
@@ -6861,13 +6861,13 @@ pub fn emit_preg_grep(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     lset(chunk, len_slot, line);
     let _ = chunk;
-    let ls = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let ls = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, arr_slot, line);
     lget(chunk, i_slot, line);
@@ -6880,14 +6880,14 @@ pub fn emit_preg_grep(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     call_import(chunks, current, "ecma:regexp", "exec", 2, line);
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::NULL, line);
-    vybe_compiler::compiler::ops::emit_dyn_ne(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ne(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     lset(chunk, matched_slot, line);
     // if matched != invert: include
     lget(chunk, matched_slot, line);
     lget(chunk, invert_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_ne(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ne(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, out_slot, line);
     lget(chunk, elem_slot, line);
@@ -6901,7 +6901,7 @@ pub fn emit_preg_grep(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, ls, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, ls, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
 }
@@ -6979,7 +6979,7 @@ pub fn emit_fnmatch(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     call_import(chunks, current, "ecma:regexp", "exec", 2, line);
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::NULL, line);
-    vybe_compiler::compiler::ops::emit_dyn_ne(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ne(chunk, line);
 }
 
 // ── strtok ────────────────────────────────────────────────────────────────
@@ -7034,13 +7034,13 @@ fn emit_strtok_scan(
     lset(chunk, n_slot, line);
 
     let _ = chunk;
-    let skip_loop = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let skip_loop = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, delim_slot, line);
     lget(chunk, s_slot, line);
@@ -7050,21 +7050,21 @@ fn emit_strtok_scan(
     let index_of = chunk.add_import("ecma:string", "indexOf");
     chunk.emit_call(index_of, 2, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_br_if(skip_loop.break_depth(0) as u32, line);
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, skip_loop, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, skip_loop, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, n_slot, line);
     chunk.emit_op_u16(Op::GLOBAL_SET, 1, line);
@@ -7073,13 +7073,13 @@ fn emit_strtok_scan(
     lget(chunk, i_slot, line);
     lset(chunk, token_start_slot, line);
     let _ = chunk;
-    let token_loop = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let token_loop = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, delim_slot, line);
     lget(chunk, s_slot, line);
@@ -7089,20 +7089,20 @@ fn emit_strtok_scan(
     let index_of = chunk.add_import("ecma:string", "indexOf");
     chunk.emit_call(index_of, 2, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_br_if(token_loop.break_depth(0) as u32, line);
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, token_loop, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, token_loop, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -7130,8 +7130,8 @@ pub fn emit_mb_convert_case(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     // mode: 0=UPPER, 1=LOWER, 2=TITLE
     lget(chunk, mode_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, s_slot, line);
     {
@@ -7141,8 +7141,8 @@ pub fn emit_mb_convert_case(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     chunk.emit_else(line);
     lget(chunk, mode_slot, line);
     push_const(chunk, Value::F64(1.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, s_slot, line);
     {
@@ -7175,13 +7175,13 @@ pub fn emit_mb_convert_case(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
     lset(chunk, out_slot, line);
     let _ = chunk;
-    let ws = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let ws = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, wi_slot, line);
     lget(chunk, nw_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, words_slot, line);
     lget(chunk, wi_slot, line);
@@ -7221,7 +7221,7 @@ pub fn emit_mb_convert_case(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, wi_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, ws, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, ws, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
     push_str(chunk, " ", line);
@@ -7255,13 +7255,13 @@ pub fn emit_mb_strwidth(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     lset(chunk, n_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, s_slot, line);
@@ -7273,36 +7273,36 @@ pub fn emit_mb_strwidth(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     lget(chunk, width_slot, line);
     lget(chunk, cp_slot, line);
     push_const(chunk, Value::F64(0x3040 as f64), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     lget(chunk, cp_slot, line);
     push_const(chunk, Value::F64(0x9fff as f64), line);
-    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(2.0), line);
     chunk.emit_else(line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_end(line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, width_slot, line);
 
     lget(chunk, i_slot, line);
     lget(chunk, cp_slot, line);
     push_const(chunk, Value::F64(65535.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(2.0), line);
     chunk.emit_else(line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_end(line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, i_slot, line);
 
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
     lget(chunk, width_slot, line);
 }
@@ -7343,7 +7343,7 @@ pub fn emit_mb_setting(
 
 // ── strpos / mb_strpos ─────────────────────────────────────────────
 //
-// Relocated out of the shared compiler's intrinsic table (`compiler/mod.rs`
+// Relocated out of the shared compiler's intrinsic table (`primitives/mod.rs`
 // `"php_strpos"`) — PHP-specific runtime semantics belong in the PHP
 // emitter. Returns the code-unit index of the first `needle` occurrence
 // (>= `offset`), or PHP's `false` on a miss. `ecma:string.indexOf` is
@@ -7358,7 +7358,7 @@ pub fn emit_strpos(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     // Stack (bottom→top): haystack, needle, [offset]. Pop in reverse.
     if argc >= 3 {
-        vybe_compiler::compiler::convert::emit_to_int(chunk, line);
+        vybe_compiler::primitives::convert::emit_to_int(chunk, line);
         lset(chunk, offset_slot, line);
     }
     coerce_to_str(chunk, line);
@@ -7376,8 +7376,8 @@ pub fn emit_strpos(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lset(chunk, haystack_len_slot, line);
     lget(chunk, offset_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, haystack_len_slot, line);
     lget(chunk, offset_slot, line);
@@ -7385,8 +7385,8 @@ pub fn emit_strpos(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lset(chunk, offset_slot, line);
     lget(chunk, offset_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, offset_slot, line);
@@ -7397,16 +7397,16 @@ pub fn emit_strpos(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lget(chunk, haystack_slot, line);
     lget(chunk, offset_slot, line);
     lget(chunk, haystack_len_slot, line);
-    vybe_compiler::compiler::strings::emit_substring(chunk, line);
+    vybe_compiler::primitives::strings::emit_substring(chunk, line);
     lget(chunk, needle_slot, line);
-    vybe_compiler::compiler::strings::emit_index_of(chunk, line);
+    vybe_compiler::primitives::strings::emit_index_of(chunk, line);
     lset(chunk, idx_slot, line);
 
     // idx >= 0 ? idx + offset : false
     lget(chunk, idx_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, idx_slot, line);
     lget(chunk, offset_slot, line);
@@ -7418,7 +7418,7 @@ pub fn emit_strpos(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
 // ── strtr ──────────────────────────────────────────────────────────
 //
-// Relocated out of the shared compiler's intrinsic table (`compiler/mod.rs`
+// Relocated out of the shared compiler's intrinsic table (`primitives/mod.rs`
 // `"strtr"`). Two forms:
 //   strtr($s, $from, $to)  — per-position single-char translation
 //   strtr($s, $map)        — associative replacement (longest key first;
@@ -7461,13 +7461,13 @@ fn emit_strtr3(chunks: &mut [Chunk], current: usize, line: u32) {
     lset(chunk, i_slot, line);
 
     let _ = chunk;
-    let st = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let st = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, flen_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // fc = from.charAt(i)
@@ -7501,7 +7501,7 @@ fn emit_strtr3(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, st, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, st, line);
     let chunk = &mut chunks[current];
     lget(chunk, str_slot, line);
 }
@@ -7521,12 +7521,12 @@ fn emit_strtr_map(chunks: &mut [Chunk], current: usize, line: u32) {
 
     lget(chunk, map_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::collections::emit_iter_entries(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_iter_entries(chunks, current, line);
     let chunk = &mut chunks[current];
     lset(chunk, entries_slot, line);
 
     let _ = chunk;
-    let state = vybe_compiler::compiler::loops::emit_for_in_start(
+    let state = vybe_compiler::primitives::loops::emit_for_in_start(
         chunks,
         current,
         entries_slot,
@@ -7542,18 +7542,18 @@ fn emit_strtr_map(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(chunk, entries_slot, line);
     lget(chunk, idx_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::collections::emit_get(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
     let chunk = &mut chunks[current];
     lset(chunk, pair_slot, line);
     lget(chunk, pair_slot, line);
     push_const(chunk, Value::I32(0), line);
     let _ = chunk;
-    vybe_compiler::compiler::collections::emit_get(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, pair_slot, line);
     push_const(chunk, Value::I32(1), line);
     let _ = chunk;
-    vybe_compiler::compiler::collections::emit_get(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
     let chunk = &mut chunks[current];
     {
         let idx = chunk.add_import("ecma:string", "replaceAll");
@@ -7561,7 +7561,7 @@ fn emit_strtr_map(chunks: &mut [Chunk], current: usize, line: u32) {
     }
     lset(chunk, str_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+    vybe_compiler::primitives::loops::emit_for_in_end(chunks, current, idx_slot, state, line);
     let chunk = &mut chunks[current];
     lget(chunk, str_slot, line);
 }
@@ -7597,13 +7597,13 @@ pub fn emit_quotemeta(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     let metas: &[u32] = &[46, 92, 43, 42, 63, 91, 94, 93, 36, 40, 41];
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, s_slot, line);
@@ -7626,26 +7626,26 @@ pub fn emit_quotemeta(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     for &m in metas {
         lget(chunk, code_slot, line);
         push_const(chunk, Value::F64(m as f64), line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         push_const(chunk, Value::Bool(true), line);
         lset(chunk, is_meta_slot, line);
         chunk.emit_end(line);
     }
     lget(chunk, is_meta_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, out_slot, line);
     push_str(chunk, "\\", line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lget(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_else(line);
     lget(chunk, out_slot, line);
     lget(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_end(line);
 
@@ -7654,7 +7654,7 @@ pub fn emit_quotemeta(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
 }
@@ -7703,8 +7703,8 @@ fn emit_str_span(chunks: &mut [Chunk], current: usize, argc: u8, reject: bool, l
     // negative offset counts from the end; negative length trims from the end.
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, n_slot, line);
     lget(chunk, i_slot, line);
@@ -7715,16 +7715,16 @@ fn emit_str_span(chunks: &mut [Chunk], current: usize, argc: u8, reject: bool, l
     // If the normalized offset is outside the subject, scan an empty window.
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, n_slot, line);
     lset(chunk, i_slot, line);
     chunk.emit_end(line);
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, n_slot, line);
     lset(chunk, i_slot, line);
@@ -7735,8 +7735,8 @@ fn emit_str_span(chunks: &mut [Chunk], current: usize, argc: u8, reject: bool, l
     if argc >= 4 {
         lget(chunk, len_arg_slot, line);
         push_const(chunk, Value::F64(0.0), line);
-        vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         lget(chunk, i_slot, line);
         lget(chunk, len_arg_slot, line);
@@ -7751,16 +7751,16 @@ fn emit_str_span(chunks: &mut [Chunk], current: usize, argc: u8, reject: bool, l
 
         lget(chunk, end_slot, line);
         lget(chunk, i_slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         lget(chunk, i_slot, line);
         lset(chunk, end_slot, line);
         chunk.emit_end(line);
         lget(chunk, end_slot, line);
         lget(chunk, n_slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         lget(chunk, n_slot, line);
         lset(chunk, end_slot, line);
@@ -7768,13 +7768,13 @@ fn emit_str_span(chunks: &mut [Chunk], current: usize, argc: u8, reject: bool, l
     }
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, end_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // c = subject.charAt(i); in_mask = mask.indexOf(c) >= 0
@@ -7792,8 +7792,8 @@ fn emit_str_span(chunks: &mut [Chunk], current: usize, argc: u8, reject: bool, l
         chunk.emit_call(idx, 2, line);
     }
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     // `matches` = keep going: strspn → char in mask; strcspn → char NOT in mask.
     if reject {
         chunk.emit_op(Op::I32_EQZ, line);
@@ -7814,7 +7814,7 @@ fn emit_str_span(chunks: &mut [Chunk], current: usize, argc: u8, reject: bool, l
     lset(chunk, i_slot, line);
     chunk.emit_end(line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
     lget(chunk, count_slot, line);
 }
@@ -7867,18 +7867,18 @@ fn emit_str_incdec(chunks: &mut [Chunk], current: usize, inc: bool, line: u32) {
     let step = if inc { 1.0 } else { -1.0 };
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // if carry: compute new char; else: keep original
     lget(chunk, carry_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     // code = s.charCodeAt(i)
     lget(chunk, s_slot, line);
@@ -7899,8 +7899,8 @@ fn emit_str_incdec(chunks: &mut [Chunk], current: usize, inc: bool, line: u32) {
     for &(trigger, wrapped) in wraps {
         lget(chunk, code_slot, line);
         push_const(chunk, Value::F64(trigger), line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         push_const(chunk, Value::F64(wrapped), line);
         lset(chunk, newcode_slot, line);
@@ -7924,7 +7924,7 @@ fn emit_str_incdec(chunks: &mut [Chunk], current: usize, inc: bool, line: u32) {
     chunk.emit_end(line);
     // out = newch + out
     lget(chunk, out_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     // i--
     lget(chunk, i_slot, line);
@@ -7932,14 +7932,14 @@ fn emit_str_incdec(chunks: &mut [Chunk], current: usize, inc: bool, line: u32) {
     chunk.emit_op(Op::F64_SUB, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
 
     // Final carry → prepend a fresh leading char (increment only; PHP
     // str_decrement on underflow throws, which the tests don't exercise).
     if inc {
         lget(chunk, carry_slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         // class of first char decides the prepended digit/letter
         lget(chunk, s_slot, line);
@@ -7955,8 +7955,8 @@ fn emit_str_incdec(chunks: &mut [Chunk], current: usize, inc: bool, line: u32) {
         // digit? code <= 57
         lget(chunk, code_slot, line);
         push_const(chunk, Value::F64(57.0), line);
-        vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         push_const(chunk, Value::F64(49.0), line);
         lset(chunk, newcode_slot, line);
@@ -7964,13 +7964,13 @@ fn emit_str_incdec(chunks: &mut [Chunk], current: usize, inc: bool, line: u32) {
         // uppercase? code >= 65 && code <= 90
         lget(chunk, code_slot, line);
         push_const(chunk, Value::F64(65.0), line);
-        vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         lget(chunk, code_slot, line);
         push_const(chunk, Value::F64(90.0), line);
-        vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
         push_const(chunk, Value::F64(65.0), line);
         lset(chunk, newcode_slot, line);
@@ -7982,7 +7982,7 @@ fn emit_str_incdec(chunks: &mut [Chunk], current: usize, inc: bool, line: u32) {
             chunk.emit_call(idx, 1, line);
         }
         lget(chunk, out_slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
         lset(chunk, out_slot, line);
         chunk.emit_end(line);
     }
@@ -8028,13 +8028,13 @@ pub fn emit_strlen(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     lset(chunk, n_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // cp = s.codePointAt(i)
@@ -8049,22 +8049,22 @@ pub fn emit_strlen(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     // bytes += cp<0x80?1 : cp<0x800?2 : cp<0x10000?3 : 4
     lget(chunk, cp_slot, line);
     push_const(chunk, Value::F64(128.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_else(line);
     lget(chunk, cp_slot, line);
     push_const(chunk, Value::F64(2048.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(2.0), line);
     chunk.emit_else(line);
     lget(chunk, cp_slot, line);
     push_const(chunk, Value::F64(65536.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(3.0), line);
     chunk.emit_else(line);
@@ -8073,24 +8073,24 @@ pub fn emit_strlen(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunk.emit_end(line);
     chunk.emit_end(line);
     lget(chunk, bytes_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, bytes_slot, line);
 
     // i += cp > 0xFFFF ? 2 : 1  (astral codepoints span two UTF-16 units)
     lget(chunk, cp_slot, line);
     push_const(chunk, Value::F64(65535.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(2.0), line);
     chunk.emit_else(line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_end(line);
     lget(chunk, i_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
     lget(chunk, bytes_slot, line);
 }
@@ -8116,7 +8116,7 @@ pub fn emit_count_chars(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 
     // Stack (bottom→top): s, [mode]. Pop mode (TOS) then s.
     if argc >= 2 {
-        vybe_compiler::compiler::convert::emit_to_int(chunk, line);
+        vybe_compiler::primitives::convert::emit_to_int(chunk, line);
         lset(chunk, mode_slot, line);
     }
     coerce_to_str(chunk, line);
@@ -8140,13 +8140,13 @@ pub fn emit_count_chars(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     lset(chunk, n_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, s_slot, line);
@@ -8167,8 +8167,8 @@ pub fn emit_count_chars(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     // key = (mode == 3) ? ch : code
     lget(chunk, mode_slot, line);
     push_const(chunk, Value::F64(3.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, ch_slot, line);
     chunk.emit_else(line);
@@ -8183,7 +8183,7 @@ pub fn emit_count_chars(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         let idx = chunk.add_import("ecma:map", "has");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, result_slot, line);
     lget(chunk, key_slot, line);
@@ -8213,7 +8213,7 @@ pub fn emit_count_chars(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
     lget(chunk, result_slot, line);
 }
@@ -8249,13 +8249,13 @@ pub fn emit_quoted_printable_encode(chunks: &mut [Chunk], current: usize, _argc:
     lset(chunk, n_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, s_slot, line);
@@ -8269,21 +8269,21 @@ pub fn emit_quoted_printable_encode(chunks: &mut [Chunk], current: usize, _argc:
     // need = code==61 | code>126 | (code<32 & code!=9)
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(61.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(126.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_OR, line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(32.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(9.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::I32_OR, line);
@@ -8292,18 +8292,18 @@ pub fn emit_quoted_printable_encode(chunks: &mut [Chunk], current: usize, _argc:
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(16.0), line);
     chunk.emit_op(Op::F64_DIV, line);
-    vybe_compiler::compiler::math::emit_floor(chunk, line);
+    vybe_compiler::primitives::math::emit_floor(chunk, line);
     lset(chunk, hi_slot, line);
     lget(chunk, out_slot, line);
     push_str(chunk, "=", line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lget(chunk, hex_slot, line);
     lget(chunk, hi_slot, line);
     {
         let idx = chunk.add_import("ecma:string", "charAt");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lget(chunk, hex_slot, line);
     // lo = code - hi*16
     lget(chunk, code_slot, line);
@@ -8315,7 +8315,7 @@ pub fn emit_quoted_printable_encode(chunks: &mut [Chunk], current: usize, _argc:
         let idx = chunk.add_import("ecma:string", "charAt");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_else(line);
     lget(chunk, out_slot, line);
@@ -8325,7 +8325,7 @@ pub fn emit_quoted_printable_encode(chunks: &mut [Chunk], current: usize, _argc:
         let idx = chunk.add_import("ecma:string", "charAt");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     chunk.emit_end(line);
 
@@ -8334,7 +8334,7 @@ pub fn emit_quoted_printable_encode(chunks: &mut [Chunk], current: usize, _argc:
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
 }
@@ -8344,8 +8344,8 @@ fn emit_hexval(chunk: &mut Chunk, code_slot: u16, line: u32) {
     // 48-57 → -48 ; 65-70 → -55 ; 97-102 → -87 (upper/lower A-F)
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(57.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_le(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_le(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(48.0), line);
@@ -8353,8 +8353,8 @@ fn emit_hexval(chunk: &mut Chunk, code_slot: u16, line: u32) {
     chunk.emit_else(line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(97.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(87.0), line);
@@ -8392,13 +8392,13 @@ pub fn emit_quoted_printable_decode(chunks: &mut [Chunk], current: usize, _argc:
     lset(chunk, n_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     lget(chunk, s_slot, line);
@@ -8412,8 +8412,8 @@ pub fn emit_quoted_printable_decode(chunks: &mut [Chunk], current: usize, _argc:
     // if code == '=' (61)
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(61.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // c1 = charCodeAt(i+1)
     lget(chunk, s_slot, line);
@@ -8428,12 +8428,12 @@ pub fn emit_quoted_printable_decode(chunks: &mut [Chunk], current: usize, _argc:
     // soft break? c1==13 | c1==10
     lget(chunk, c1_slot, line);
     push_const(chunk, Value::F64(13.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     lget(chunk, c1_slot, line);
     push_const(chunk, Value::F64(10.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_if(line);
     // soft break: skip '=' + CR (+ LF if CRLF). i += (c1==13 ? 2 : 1) ... plus the '='
@@ -8445,8 +8445,8 @@ pub fn emit_quoted_printable_decode(chunks: &mut [Chunk], current: usize, _argc:
     // if c1==13: also skip the following LF
     lget(chunk, c1_slot, line);
     push_const(chunk, Value::F64(13.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -8476,7 +8476,7 @@ pub fn emit_quoted_printable_decode(chunks: &mut [Chunk], current: usize, _argc:
         let idx = chunk.add_import("wasm:js-string", "fromCharCode");
         chunk.emit_call(idx, 1, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(3.0), line);
@@ -8492,7 +8492,7 @@ pub fn emit_quoted_printable_decode(chunks: &mut [Chunk], current: usize, _argc:
         let idx = chunk.add_import("ecma:string", "charAt");
         chunk.emit_call(idx, 2, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -8500,7 +8500,7 @@ pub fn emit_quoted_printable_decode(chunks: &mut [Chunk], current: usize, _argc:
     lset(chunk, i_slot, line);
     chunk.emit_end(line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
 }
@@ -8516,8 +8516,8 @@ pub fn emit_quoted_printable_decode(chunks: &mut [Chunk], current: usize, _argc:
 fn emit_uu_enc(chunk: &mut Chunk, c_slot: u16, line: u32) {
     lget(chunk, c_slot, line);
     push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(96.0), line);
     chunk.emit_else(line);
@@ -8535,8 +8535,8 @@ fn emit_uu_enc(chunk: &mut Chunk, c_slot: u16, line: u32) {
 fn emit_uu_dec(chunk: &mut Chunk, code_slot: u16, line: u32) {
     lget(chunk, code_slot, line);
     push_const(chunk, Value::F64(96.0), line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_else(line);
@@ -8551,7 +8551,7 @@ fn emit_floordiv(chunk: &mut Chunk, slot: u16, div: f64, line: u32) {
     lget(chunk, slot, line);
     push_const(chunk, Value::F64(div), line);
     chunk.emit_op(Op::F64_DIV, line);
-    vybe_compiler::compiler::math::emit_floor(chunk, line);
+    vybe_compiler::primitives::math::emit_floor(chunk, line);
 }
 
 /// Push `slot mod m` onto the stack (m a power used in uuencode).
@@ -8595,13 +8595,13 @@ pub fn emit_convert_uuencode(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lset(chunk, i_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, i_slot, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // b0 = charCodeAt(i)
@@ -8617,8 +8617,8 @@ pub fn emit_convert_uuencode(chunks: &mut [Chunk], current: usize, _argc: u8, li
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
@@ -8637,8 +8637,8 @@ pub fn emit_convert_uuencode(chunks: &mut [Chunk], current: usize, _argc: u8, li
     push_const(chunk, Value::F64(2.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     lget(chunk, n_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, s_slot, line);
     lget(chunk, i_slot, line);
@@ -8658,7 +8658,7 @@ pub fn emit_convert_uuencode(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lset(chunk, c_slot, line);
     lget(chunk, out_slot, line);
     emit_uu_enc(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     // c1 = (b0 mod 4)*16 + floor(b1/16)
     emit_modn(chunk, b0_slot, 4.0, line);
@@ -8669,7 +8669,7 @@ pub fn emit_convert_uuencode(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lset(chunk, c_slot, line);
     lget(chunk, out_slot, line);
     emit_uu_enc(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     // c2 = (b1 mod 16)*4 + floor(b2/64)
     emit_modn(chunk, b1_slot, 16.0, line);
@@ -8680,14 +8680,14 @@ pub fn emit_convert_uuencode(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lset(chunk, c_slot, line);
     lget(chunk, out_slot, line);
     emit_uu_enc(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     // c3 = b2 mod 64
     emit_modn(chunk, b2_slot, 64.0, line);
     lset(chunk, c_slot, line);
     lget(chunk, out_slot, line);
     emit_uu_enc(chunk, c_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
 
     lget(chunk, i_slot, line);
@@ -8695,11 +8695,11 @@ pub fn emit_convert_uuencode(chunks: &mut [Chunk], current: usize, _argc: u8, li
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, i_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
     push_str(chunk, "\n", line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
 }
 
 pub fn emit_convert_uudecode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -8735,13 +8735,13 @@ pub fn emit_convert_uudecode(chunks: &mut [Chunk], current: usize, _argc: u8, li
     lset(chunk, done_slot, line);
 
     let _ = chunk;
-    let loop_state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     lget(chunk, done_slot, line);
     lget(chunk, count_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_cond(chunks, current, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
     // decode c0..c3 from four chars at pos
@@ -8772,7 +8772,7 @@ pub fn emit_convert_uudecode(chunks: &mut [Chunk], current: usize, _argc: u8, li
         let idx = chunk.add_import("wasm:js-string", "fromCharCode");
         chunk.emit_call(idx, 1, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     lget(chunk, done_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -8782,8 +8782,8 @@ pub fn emit_convert_uudecode(chunks: &mut [Chunk], current: usize, _argc: u8, li
     // if done < count: emit b1
     lget(chunk, done_slot, line);
     lget(chunk, count_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // b1 = (c1 mod 16)*16 + floor(c2/4)
     emit_modn(chunk, c1, 16.0, line);
@@ -8798,7 +8798,7 @@ pub fn emit_convert_uudecode(chunks: &mut [Chunk], current: usize, _argc: u8, li
         let idx = chunk.add_import("wasm:js-string", "fromCharCode");
         chunk.emit_call(idx, 1, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     lget(chunk, done_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -8809,8 +8809,8 @@ pub fn emit_convert_uudecode(chunks: &mut [Chunk], current: usize, _argc: u8, li
     // if done < count: emit b2
     lget(chunk, done_slot, line);
     lget(chunk, count_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     // b2 = (c2 mod 4)*64 + c3
     emit_modn(chunk, c2, 4.0, line);
@@ -8825,7 +8825,7 @@ pub fn emit_convert_uudecode(chunks: &mut [Chunk], current: usize, _argc: u8, li
         let idx = chunk.add_import("wasm:js-string", "fromCharCode");
         chunk.emit_call(idx, 1, line);
     }
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     lset(chunk, out_slot, line);
     lget(chunk, done_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -8838,7 +8838,7 @@ pub fn emit_convert_uudecode(chunks: &mut [Chunk], current: usize, _argc: u8, li
     chunk.emit_op(Op::F64_ADD, line);
     lset(chunk, pos_slot, line);
     let _ = chunk;
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, loop_state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     let chunk = &mut chunks[current];
     lget(chunk, out_slot, line);
 }

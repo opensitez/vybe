@@ -50,4 +50,13 @@ console.log([...arr[0]()].length);"#,
 }"#,
         ["shadow-ok"]
     };
+
+    const_array_local_shadows_host_constructor => {
+        r#"{
+  const Array = 42;
+  console.log(Array);
+}"#,
+        ["42"]
+    };
 }
+

@@ -692,4 +692,8 @@ crate::js_cases! {
         ["AbortError"]
     };
 
+    then_throw_symbol_primitive_caught => {
+        r#"const s = Symbol("err_sym"); Promise.resolve().then(() => { throw s; }).catch(e => console.log(e === s));"#,
+        ["true"]
+    };
 }

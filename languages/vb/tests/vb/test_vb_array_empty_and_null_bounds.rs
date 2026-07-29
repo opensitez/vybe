@@ -314,7 +314,7 @@ Module Program
     Sub Main()
         Dim words As String() = {"A", "B", "C"}
         Array.Clear(words, 0, words.Length)
-        Console.WriteLine(words(0) Is Nothing & "," & words(1) Is Nothing & "," & words(2) Is Nothing)
+        Console.WriteLine((words(0) Is Nothing) & "," & (words(1) Is Nothing) & "," & (words(2) Is Nothing))
     End Sub
 End Module
 "#;

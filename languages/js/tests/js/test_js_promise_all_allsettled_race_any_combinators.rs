@@ -212,3 +212,13 @@ Promise.resolve().then(() => console.log("Race Empty Still Pending: " + executed
 "#;
     assert_eq!(run_js(src), vec!["Race Empty Still Pending: false"]);
 }
+
+#[test]
+fn promise_all_subclass_returns_subclass_instance() {
+    let src = r#"
+class CustomPromise extends Promise {}
+CustomPromise.all([CustomPromise.resolve(1)]).then(res => console.log(Array.isArray(res)));
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

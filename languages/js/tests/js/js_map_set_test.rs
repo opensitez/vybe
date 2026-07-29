@@ -342,3 +342,18 @@ fn class_map_field() {
         "localhost"
     );
 }
+
+#[test]
+fn map_key_negative_zero_same_as_positive_zero() {
+    assert_eq!(
+        run_one(
+            r#"
+        let m = new Map();
+        m.set(-0, "zero");
+        console.log(m.get(+0), m.has(+0));
+    "#
+        ),
+        "zero true"
+    );
+}
+

@@ -22,7 +22,7 @@ End Module
 "#,
     );
 
-    assert_eq!(out, vec!["2", "3", "110"]);
+    assert_eq!(out, vec!["2", "3", "90"]);
 }
 
 #[test]

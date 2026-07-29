@@ -247,3 +247,12 @@ console.log(err.name + "|" + err.message + "|isSuppressed=" + (err instanceof Su
         vec!["ResourceError|CustomResourceError|isSuppressed=true"]
     );
 }
+
+#[test]
+fn test_js_suppressed_error_prototype_parent_is_error_prototype() {
+    let src = r#"
+console.log(Object.getPrototypeOf(SuppressedError.prototype) === Error.prototype);
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

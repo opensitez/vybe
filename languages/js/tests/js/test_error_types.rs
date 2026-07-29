@@ -299,3 +299,20 @@ try {
         &["from middle: from inner"]
     );
 }
+
+#[test]
+fn throw_null_value() {
+    assert_eq!(
+        run_js(
+            r#"
+try {
+    throw null;
+} catch (e) {
+    console.log(e === null);
+}
+"#
+        ),
+        &["true"]
+    );
+}
+

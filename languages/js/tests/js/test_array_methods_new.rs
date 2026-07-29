@@ -321,3 +321,21 @@ console.log(result.join(","));
         vec!["1,2,3,99"]
     );
 }
+
+#[test]
+fn with_out_of_bounds_index_throws_rangeerror() {
+    assert_eq!(
+        run_js(
+            r#"
+try {
+    [1, 2, 3].with(10, 99);
+    console.log("no error");
+} catch (e) {
+    console.log(e instanceof RangeError);
+}
+"#
+        ),
+        vec!["true"]
+    );
+}
+

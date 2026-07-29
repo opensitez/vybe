@@ -242,3 +242,26 @@ main();
         vec!["done"]
     );
 }
+
+#[test]
+fn async_function_returns_rejected_promise_handled_in_catch() {
+    assert_eq!(
+        run_js(
+            r#"
+async function fail() {
+    return Promise.reject(new Error("rejected_return"));
+}
+async function main() {
+    try {
+        await fail();
+    } catch (e) {
+        console.log(e.message);
+    }
+}
+main();
+"#
+        ),
+        vec!["rejected_return"]
+    );
+}
+

@@ -341,7 +341,7 @@ fn delegate_spec_delegate_combine_compiles_without_overflow() {
 End Module"#).expect("VB parse failed");
 
     let profile = load_vb_profile();
-    let _chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let _chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("VB compile failed");
 }
@@ -358,7 +358,7 @@ End Module"#,
     .expect("VB parse failed");
 
     let profile = load_vb_profile();
-    let _chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let _chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("VB compile failed");
 }
@@ -376,7 +376,7 @@ End Module"#,
     .expect("VB parse failed");
 
     let profile = load_vb_profile();
-    let _chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let _chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("VB compile failed");
 }

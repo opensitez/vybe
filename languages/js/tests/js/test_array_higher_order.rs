@@ -220,3 +220,18 @@ console.log(doubled.join("|"));
         vec!["4", "false true false", "|4||8"]
     );
 }
+
+#[test]
+fn array_map_groupby_primitive_keys() {
+    assert_eq!(
+        run_js(
+            r#"
+const nums = [1, 2, 3, 4, 5];
+const grouped = Map.groupBy(nums, x => x % 2 === 0 ? "even" : "odd");
+console.log(grouped.get("even").join(",") + "|" + grouped.get("odd").join(","));
+"#
+        ),
+        vec!["2,4|1,3,5"]
+    );
+}
+

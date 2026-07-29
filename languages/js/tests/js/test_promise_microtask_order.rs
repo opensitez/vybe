@@ -200,4 +200,10 @@ crate::js_cases! {
         r#"Promise.any([Promise.reject("a"),Promise.reject("b")]).catch(e=>console.log(e instanceof AggregateError));"#,
         ["true"]
     };
+
+    queue_microtask_vs_promise_then_fifo_ordering => {
+        r#"const o = []; queueMicrotask(() => o.push("q")); Promise.resolve().then(() => o.push("p")); Promise.resolve().then(() => console.log(o.join(",")));"#,
+        ["q,p"]
+    };
 }
+

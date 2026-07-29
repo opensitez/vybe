@@ -36,8 +36,8 @@ use vybe_ast::*;
 // Channels are normalized into COMMON AST shapes — the walker builds AST,
 // not bytecode. The emit side lives in the compiler.
 use vybe_ast::channels;
-use vybe_compiler::compiler::generics as common_generics;
-use vybe_compiler::compiler::reflection;
+use vybe_compiler::primitives::generics as common_generics;
+use vybe_compiler::primitives::reflection;
 
 // ══════════════════════════════════════════════════════════════════════════════════════════
 // Entry point

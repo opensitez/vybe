@@ -225,3 +225,16 @@ Promise.reject(new CustomAppError("App Crash"))
 "#;
     assert_eq!(run_js(src), vec!["CustomAppError:App Crash"]);
 }
+
+#[test]
+fn promise_executor_non_callable_throws_typeerror() {
+    let src = r#"
+try {
+    new Promise(12345);
+} catch (e) {
+    console.log(e instanceof TypeError);
+}
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

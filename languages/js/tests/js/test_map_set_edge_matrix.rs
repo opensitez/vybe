@@ -325,4 +325,18 @@ console.log(m.get(1));
 "#,
         ["2", "string", "number"]
     };
+
+    map_foreach_mutation_during_iteration => {
+        r#"
+const m = new Map([["a", 1]]);
+const out = [];
+m.forEach((v, k) => {
+    out.push(k);
+    if (k === "a") m.set("b", 2);
+});
+console.log(out.join(","));
+"#,
+        ["a,b"]
+    };
 }
+

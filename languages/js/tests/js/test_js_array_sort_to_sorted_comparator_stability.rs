@@ -226,3 +226,14 @@ console.log(ca.join(",") + "|isCustom=" + (ca instanceof CustomArray));
 "#;
     assert_eq!(run_js(src), vec!["1,2,3|isCustom=true"]);
 }
+
+#[test]
+fn test_js_array_sort_fractional_comparator_values() {
+    let src = r#"
+const nums = [3, 1, 2];
+nums.sort((a, b) => a > b ? 0.5 : -0.5);
+console.log(nums.join(","));
+"#;
+    assert_eq!(run_js(src), vec!["1,2,3"]);
+}
+

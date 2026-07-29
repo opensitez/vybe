@@ -210,4 +210,10 @@ crate::js_cases! {
         r#"console.log(new Map().delete("x"));"#,
         ["false"]
     };
+
+    set_symbol_iterator_is_values_iterator => {
+        r#"console.log(Set.prototype[Symbol.iterator] === Set.prototype.values);"#,
+        ["true"]
+    };
 }
+

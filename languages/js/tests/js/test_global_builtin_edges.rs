@@ -63,4 +63,13 @@ console.log(unescape("hello%20world"));
 "#,
         ["hello world"]
     };
+
+    global_isnan_vs_number_isnan => {
+        r#"
+console.log(isNaN("foo"));
+console.log(Number.isNaN("foo"));
+"#,
+        ["true", "false"]
+    };
 }
+

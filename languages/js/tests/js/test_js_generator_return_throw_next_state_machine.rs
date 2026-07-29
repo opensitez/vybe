@@ -278,3 +278,15 @@ try {
 "#;
     assert_eq!(run_js(src), vec!["UnstartedThrow|done=true"]);
 }
+
+#[test]
+fn test_js_generator_return_unstarted_generator() {
+    let src = r#"
+function* gen() { yield 1; }
+const g = gen();
+const r = g.return("early");
+console.log(`${r.value}:${r.done}:${g.next().done}`);
+"#;
+    assert_eq!(run_js(src), vec!["early:true:true"]);
+}
+

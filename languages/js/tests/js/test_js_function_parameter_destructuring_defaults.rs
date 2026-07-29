@@ -238,3 +238,15 @@ testArgs({ a: 1, b: 2 });
 "#;
     assert_eq!(run_js(src), vec!["1|2"]);
 }
+
+#[test]
+fn test_js_parameter_destructuring_array_from_string() {
+    let src = r#"
+function f([a, b, c]) {
+    return `${a}-${b}-${c}`;
+}
+console.log(f("XYZ"));
+"#;
+    assert_eq!(run_js(src), vec!["X-Y-Z"]);
+}
+

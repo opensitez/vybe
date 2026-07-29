@@ -257,3 +257,20 @@ console.log(typeof e);
         vec!["test", "undefined"]
     );
 }
+
+#[test]
+fn tdz_destructuring_default_param_later_binding() {
+    assert_eq!(
+        run_js(
+            r#"
+try {
+    eval("function f({ a = b, b = 1 }) {} f({});");
+} catch (e) {
+    console.log(e instanceof ReferenceError);
+}
+"#
+        ),
+        vec!["true"]
+    );
+}
+

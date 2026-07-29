@@ -300,3 +300,19 @@ console.log(vals.join(","));
         vec!["10,20,30"]
     );
 }
+
+#[test]
+fn for_of_visits_sparse_holes_as_undefined() {
+    assert_eq!(
+        run_js(
+            r#"
+const arr = [1, , 3];
+const res = [];
+for (const x of arr) res.push(String(x));
+console.log(res.join(","));
+"#
+        ),
+        vec!["1,undefined,3"]
+    );
+}
+

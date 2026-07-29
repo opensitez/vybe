@@ -8,8 +8,8 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_compiler::compiler::instructions::core_wasm;
-use vybe_compiler::compiler::ops;
+use vybe_compiler::primitives::instructions::core_wasm;
+use vybe_compiler::primitives::ops;
 
 /// Python float display. Stack: `[num]` → `[string]`.
 pub fn emit_float_repr(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {

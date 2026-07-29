@@ -208,3 +208,15 @@ console.log(sliced.join(",") + "|slicedIsCustom=" + (sliced instanceof CustomArr
 "#;
     assert_eq!(run_js(src), vec!["2,3|slicedIsCustom=true"]);
 }
+
+#[test]
+fn test_js_array_tospliced_species_returns_base_array() {
+    let src = r#"
+class CustomArray extends Array {}
+const ca = new CustomArray(1, 2, 3);
+const spliced = ca.toSpliced(0, 1);
+console.log(spliced.join(",") + "|isCustom=" + (spliced instanceof CustomArray));
+"#;
+    assert_eq!(run_js(src), vec!["2,3|isCustom=false"]);
+}
+

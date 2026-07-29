@@ -197,3 +197,17 @@ console.log(e.name);
         vec!["true", "true", "EvalError"]
     );
 }
+
+#[test]
+fn aggregate_error_is_array() {
+    assert_eq!(
+        run_js(
+            r#"
+const agg = new AggregateError([new Error("a")], "msg");
+console.log(Array.isArray(agg.errors));
+"#
+        ),
+        vec!["true"]
+    );
+}
+

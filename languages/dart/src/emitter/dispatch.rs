@@ -188,7 +188,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // sorted core (same engine as Java TreeSet / .NET SortedSet). The
         // tagged-array set backing is unchanged; only `.add` sorts.
         "dart.sorted_set_add" => {
-            vybe_compiler::compiler::sorted_collection::emit_sorted_add(chunks, current, line)
+            vybe_compiler::primitives::sorted_collection::emit_sorted_add(chunks, current, line)
         }
         "dart.set_from" => {
             crate::emitter::string_adapter::emit_dart_set_from(chunks, current, line)

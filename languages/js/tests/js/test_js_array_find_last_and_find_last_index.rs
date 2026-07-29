@@ -229,3 +229,14 @@ console.log(idx);
 "#;
     assert_eq!(run_js(src), vec!["0"]);
 }
+
+#[test]
+fn test_js_array_find_last_index_this_arg_binding() {
+    let src = r#"
+const ctx = { val: 20 };
+const idx = [10, 20, 30].findLastIndex(function(x) { return x === this.val; }, ctx);
+console.log(idx);
+"#;
+    assert_eq!(run_js(src), vec!["1"]);
+}
+

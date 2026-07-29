@@ -19,7 +19,7 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
-use vybe_compiler::compiler::{ops, strings};
+use vybe_compiler::primitives::{ops, strings};
 
 fn call_import(
     chunks: &mut [Chunk],
@@ -406,7 +406,7 @@ pub fn emit_mkstemp(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_f64_const(3.0, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
-    vybe_compiler::compiler::tuples::emit_tuple(chunks, current, 2, line);
+    vybe_compiler::primitives::tuples::emit_tuple(chunks, current, 2, line);
 }
 
 /// `os.path.samefile(a, b)` — the shim has no inode, so compare resolved paths.

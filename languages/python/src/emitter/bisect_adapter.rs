@@ -6,7 +6,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_compiler::compiler::instructions::core_wasm;
+use vybe_compiler::primitives::instructions::core_wasm;
 
 /// Which end of a run of equal values the insertion point lands on.
 #[derive(Clone, Copy, PartialEq)]
@@ -32,12 +32,12 @@ fn emit_search(
 ) {
     let mid = chunks[current].alloc_scratch(1);
 
-    let state = vybe_compiler::compiler::loops::emit_loop_start(chunks, current, line);
+    let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, lo, line);
     chunk.emit_op_u16(Op::LOCAL_GET, hi, line);
     chunk.emit_op(Op::I32_LT_S, line);
-    vybe_compiler::compiler::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
+    vybe_compiler::primitives::loops::emit_loop_cond(std::slice::from_mut(chunk), 0, line);
 
     // mid = (lo + hi) / 2
     chunk.emit_op_u16(Op::LOCAL_GET, lo, line);
@@ -54,8 +54,8 @@ fn emit_search(
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     match side {
-        Side::Left => vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line),
-        Side::Right => vybe_compiler::compiler::ops::emit_dyn_le(chunk, line),
+        Side::Left => vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line),
+        Side::Right => vybe_compiler::primitives::ops::emit_dyn_le(chunk, line),
     }
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, mid, line);
@@ -67,7 +67,7 @@ fn emit_search(
     chunk.emit_op_u16(Op::LOCAL_SET, hi, line);
     chunk.emit_end(line);
 
-    vybe_compiler::compiler::loops::emit_loop_end(chunks, current, state, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, lo, line);
 }
 
@@ -95,7 +95,7 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> (u16
     }
     if argc < 4 {
         chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
-        vybe_compiler::compiler::collections::emit_len(chunks, current, line);
+        vybe_compiler::primitives::collections::emit_len(chunks, current, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, hi, line);
     }
     (a, x, lo, hi)

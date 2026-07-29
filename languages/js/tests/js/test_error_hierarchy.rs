@@ -295,3 +295,17 @@ console.log(new TypeError().toString());
         vec!["Error", "TypeError"]
     );
 }
+
+#[test]
+fn error_constructor_property_points_to_error() {
+    assert_eq!(
+        run_js(
+            r#"
+const e = new Error("x");
+console.log(e.constructor === Error);
+"#
+        ),
+        vec!["true"]
+    );
+}
+

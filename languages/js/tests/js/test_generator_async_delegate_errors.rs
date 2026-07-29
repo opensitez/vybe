@@ -150,4 +150,16 @@ crate::js_cases! {
         r#"function* inner(){yield 1;throw new Error("x");yield 2;} function* outer(){try{yield* inner();}catch(e){yield "c";}} console.log([...outer()].join(","));"#,
         ["1,c"]
     };
+
+    async_generator_throw_method_resumes => {
+        r#"async function* g() { try { yield 1; } catch (e) { yield "caught:" + e; } } (async () => { const gen = g(); await gen.next(); const r = await gen.throw("err"); console.log(r.value); })();"#,
+        ["caught:err"]
+    };
+
+    async_generator_return_method_resolves_value => {
+        r#"(async () => { async function* g() { yield 1; yield 2; } const gen = g(); await gen.next(); const r = await gen.return("custom_ret"); console.log(r.value + "|" + r.done); })();"#,
+        ["custom_ret|true"]
+    };
 }
+
+

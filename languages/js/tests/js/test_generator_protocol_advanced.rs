@@ -335,3 +335,24 @@ console.log([...walk(tree)].join(","));
         vec!["1,2,4,3"]
     );
 }
+
+#[test]
+fn generator_throw_on_completed_generator_throws_reason() {
+    assert_eq!(
+        run_js(
+            r#"
+function* gen() { yield 1; }
+const g = gen();
+g.next();
+g.next();
+try {
+    g.throw("custom_err");
+} catch (e) {
+    console.log(e);
+}
+"#
+        ),
+        vec!["custom_err"]
+    );
+}
+

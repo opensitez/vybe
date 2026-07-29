@@ -43,7 +43,7 @@ use pest::Parser;
 use pest::iterators::Pair;
 use std::collections::{HashMap, HashSet};
 use vybe_ast::*;
-use vybe_compiler::compiler::generics as common_generics;
+use vybe_compiler::primitives::generics as common_generics;
 
 const DART_USER_ADD_METHOD: &str = "__dart_user_add";
 
@@ -1306,7 +1306,7 @@ fn apply_mixins(body: &mut Vec<Statement>, mixin_names: &std::collections::HashS
                             .push(parent.clone())
                     });
                     // MEMBER COPYING REMOVED — the shared augmentation pass
-                    // (`compiler/class_augmentation.rs`) folds these now, from
+                    // (`primitives/class_augmentation.rs`) folds these now, from
                     // the `Augmentation` records `dart/normalize_class.rs`
                     // declares. Only the parent-stripping below is still the
                     // walker's job: a mixin is not a superclass.
@@ -7538,7 +7538,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         // canonical named-tuple shape (array-backed + by-name key).
                         let name = field_children[0].as_str().to_string();
                         let value = walk_expression(field_children.into_iter().nth(1).unwrap())?;
-                        return Ok(vybe_compiler::compiler::tuples::build_named_tuple(vec![(
+                        return Ok(vybe_compiler::primitives::tuples::build_named_tuple(vec![(
                             Some(name),
                             value,
                         )]));
@@ -7565,7 +7565,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             record_fields.push((None, walk_expression(first)?));
                         }
                     }
-                    Ok(vybe_compiler::compiler::tuples::build_named_tuple(
+                    Ok(vybe_compiler::primitives::tuples::build_named_tuple(
                         record_fields,
                     ))
                 } else {

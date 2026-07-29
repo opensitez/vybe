@@ -192,3 +192,25 @@ main();
         vec!["r1,r3"]
     );
 }
+
+#[test]
+fn async_then_throw_handled_in_catch() {
+    assert_eq!(
+        run_js(
+            r#"
+async function main() {
+    try {
+        await Promise.resolve().then(() => {
+            throw new Error("then_err");
+        });
+    } catch (e) {
+        console.log(e.message);
+    }
+}
+main();
+"#
+        ),
+        vec!["then_err"]
+    );
+}
+

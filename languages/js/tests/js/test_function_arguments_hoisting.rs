@@ -195,3 +195,18 @@ console.log(count);
         vec!["0", "1"]
     );
 }
+
+#[test]
+fn default_param_evaluated_when_passed_undefined() {
+    assert_eq!(
+        run_js(
+            r#"
+function f(x = "default") { return x; }
+console.log(f(undefined));
+console.log(f(null));
+"#
+        ),
+        vec!["default", "null"]
+    );
+}
+

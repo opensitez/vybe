@@ -24,7 +24,7 @@ pub fn run_csharp(src: &str) -> Vec<String> {
     let profile = vybe_compiler::profile::parse_profile(vybe_language_csharp::profile_source())
         .expect("Failed to parse C# profile");
 
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("C# compile failed");
 
@@ -51,7 +51,7 @@ pub fn run_csharp(src: &str) -> Vec<String> {
     // - `wasi:logging/logging.log` — line-oriented; still used by
     //   `__debug_dump` and any residual log call, newline implied.
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     let out = output.clone();
     vm.register_host_fn(
         "wasi:logging/logging",
@@ -78,7 +78,7 @@ pub fn run_csharp(src: &str) -> Vec<String> {
             Value::Null
         }),
     );
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("C# run failed");
     // Concatenate all fragments, then split into lines so each printed line
     // becomes one captured entry. Strip only the final empty artifact of a
@@ -111,7 +111,7 @@ pub fn compile_csharp_to_wasm(src: &str) -> Vec<u8> {
     let module = vybe_language_csharp::parse(src).expect("C# parse failed");
     let profile = vybe_compiler::profile::parse_profile(vybe_language_csharp::profile_source())
         .expect("Failed to parse C# profile");
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("C# compile failed");
     vybe_platform_wasm::write_wasm(&chunks)

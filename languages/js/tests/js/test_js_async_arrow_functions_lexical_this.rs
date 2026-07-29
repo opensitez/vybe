@@ -245,3 +245,13 @@ console.log(myAsyncFunc.name);
 "#;
     assert_eq!(run_js(src), vec!["myAsyncFunc"]);
 }
+
+#[test]
+fn test_js_async_arrow_function_length_property() {
+    let src = r#"
+const fn = async (a, b = 1, c) => {};
+console.log(fn.length);
+"#;
+    assert_eq!(run_js(src), vec!["1"]);
+}
+

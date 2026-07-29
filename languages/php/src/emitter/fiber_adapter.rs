@@ -47,7 +47,7 @@ pub fn emit_php_fiber_suspend(chunks: &mut [Chunk], current: usize, argc: u8, li
         chunk.emit_op(Op::NULL, line);
     }
     let tag = 0;
-    vybe_compiler::compiler::generators::emit_suspend_tagged(chunk, tag, line);
+    vybe_compiler::primitives::generators::emit_suspend_tagged(chunk, tag, line);
 }
 
 /// `$fiber->start($v)` — start the fiber with `$v` as the initial
@@ -106,7 +106,7 @@ pub fn emit_php_fiber_start(chunks: &mut [Chunk], current: usize, argc: u8, line
     lget(chunk, value_slot, line);
     let tag = 0;
     let resume_ip = chunk.code.len();
-    vybe_compiler::compiler::generators::emit_resume_tagged(chunk, tag, line);
+    vybe_compiler::primitives::generators::emit_resume_tagged(chunk, tag, line);
 
     // Completion arm: RESUME fell through because the fiber returned.
     chunk.emit_op_u16(Op::LOCAL_TEE, ret_slot, line); // [ret]
@@ -200,7 +200,7 @@ pub fn emit_php_fiber_throw(chunks: &mut [Chunk], current: usize, argc: u8, line
     lget(chunk, fiber_slot, line);
     lget(chunk, exn_slot, line);
     let tag = 0;
-    vybe_compiler::compiler::generators::emit_resume_throw_tagged(chunk, tag, line);
+    vybe_compiler::primitives::generators::emit_resume_throw_tagged(chunk, tag, line);
     let ret_slot = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_TEE, ret_slot, line);
     chunk.emit_op(Op::NULL, line);

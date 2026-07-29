@@ -231,3 +231,14 @@ console.log(idx);
 "#;
     assert_eq!(run_js(src), vec!["2"]);
 }
+
+#[test]
+fn test_js_array_findlast_this_argument_binding() {
+    let src = r#"
+const ctx = { cap: 30 };
+const nums = [10, 20, 40, 25];
+console.log(nums.findLast(function(x) { return x < this.cap; }, ctx));
+"#;
+    assert_eq!(run_js(src), vec!["25"]);
+}
+

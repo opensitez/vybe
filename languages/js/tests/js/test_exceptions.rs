@@ -124,4 +124,18 @@ console.log(log.join(","));
 "#,
         ["try0,fin0,fin1,try2,fin2"]
     };
+
+    throw_function_is_caught_and_callable => {
+        r#"
+let res = "";
+try {
+    throw function() { return "called"; };
+} catch (e) {
+    res = e();
 }
+console.log(res);
+"#,
+        ["called"]
+    };
+}
+

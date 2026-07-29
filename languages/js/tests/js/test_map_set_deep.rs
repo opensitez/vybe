@@ -322,3 +322,20 @@ console.log(s.has(1));
         vec!["0", "false"]
     );
 }
+
+#[test]
+fn map_foreach_this_arg_binding_context() {
+    assert_eq!(
+        run_js(
+            r#"
+const ctx = { factor: 10 };
+const m = new Map([["a", 2]]);
+m.forEach(function(v, k) {
+    console.log(k + ":" + (v * this.factor));
+}, ctx);
+"#
+        ),
+        vec!["a:20"]
+    );
+}
+

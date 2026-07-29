@@ -416,3 +416,27 @@ main();
         vec!["60"]
     );
 }
+
+#[test]
+fn async_generator_throw_before_first_next() {
+    assert_eq!(
+        run_js(
+            r#"
+async function* gen() {
+    yield 1;
+}
+async function main() {
+    const g = gen();
+    try {
+        await g.throw(new Error("early_throw"));
+    } catch (e) {
+        console.log(e.message);
+    }
+}
+main();
+"#
+        ),
+        vec!["early_throw"]
+    );
+}
+

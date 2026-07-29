@@ -48,7 +48,7 @@ class_multiple_inheritance = true
 # Route `return a, b` / `a, b = f()` through WASM multi-value — a
 # uniform-tuple-return function gets chunk.result_arity = N set and
 # callers destructure straight off the stack instead of materialising
-# a heap tuple. See compiler/mod.rs `collect_multi_return_functions`.
+# a heap tuple. See primitives/mod.rs `collect_multi_return_functions`.
 multi_value_tuple_returns = true
 # Reading a method off an instance yields a fresh bound-method object (distinct
 # per instance, own receiver) — CPython descriptor semantics: `C().f is C().f`

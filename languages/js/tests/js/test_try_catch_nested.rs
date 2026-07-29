@@ -490,4 +490,12 @@ console.log(o.join(","));"#,
         ["ok,f"]
     };
 
+    nested_catch_parameter_shadowing => {
+        r#"let o=[];
+try{throw "outer";}
+catch(e){try{throw "inner";}catch(e){o.push("in:"+e);}o.push("out:"+e);}
+console.log(o.join(","));"#,
+        ["in:inner,out:outer"]
+    };
+
 }

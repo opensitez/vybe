@@ -387,7 +387,7 @@ boolval             = { emit = "host:ecma:boolean:Boolean",    min_args = 1, max
 # `is_int`/`is_integer`/`is_long`, `is_finite`, `is_nan`, `is_infinite`
 # are walker-rewritten to JS-shaped AST (`typeof x === "string"`,
 # `Number.isInteger(x)`, `Math.abs(x) === Infinity`, etc.) so the
-# compiler/emitter never sees a PHP-specific predicate name.
+# primitives/emitter never sees a PHP-specific predicate name.
 #
 # The remaining bindings cover predicates whose semantics don't match
 # a single ECMA helper cleanly:

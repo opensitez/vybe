@@ -228,3 +228,12 @@ Promise.reject("Fail")
 "#;
     assert_eq!(run_js(src), vec!["Recovered: FallbackValue"]);
 }
+
+#[test]
+fn promise_rejection_with_undefined_reason() {
+    let src = r#"
+Promise.reject(undefined).catch(reason => console.log(reason === undefined));
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

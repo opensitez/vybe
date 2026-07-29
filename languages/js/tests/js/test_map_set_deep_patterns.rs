@@ -223,3 +223,17 @@ console.log(_private.has(p));
         vec!["Alice", "30", "31", "true"]
     );
 }
+
+#[test]
+fn set_clear_returns_undefined_spec() {
+    assert_eq!(
+        run_js(
+            r#"
+const s = new Set([1, 2]);
+console.log(s.clear() === undefined);
+"#
+        ),
+        vec!["true"]
+    );
+}
+

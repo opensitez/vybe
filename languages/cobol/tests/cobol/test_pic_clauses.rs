@@ -63,7 +63,7 @@ fn test_pic_signed_display() {
     DISPLAY WS-NEG.
 "#,
     ));
-    // Display format of signed numbers can vary depending on compiler/locale, but compile and basic display should work
+    // Display format of signed numbers can vary depending on primitives/locale, but compile and basic display should work
     assert!(output.len() >= 2);
 }
 

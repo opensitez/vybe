@@ -179,3 +179,19 @@ console.log([...s].join(","));
         vec!["c,a,b", "true", "c,b"]
     );
 }
+
+#[test]
+fn map_nan_key_deduplication() {
+    assert_eq!(
+        run_js(
+            r#"
+const m = new Map();
+m.set(NaN, "val1");
+m.set(NaN, "val2");
+console.log(m.size + "|" + m.get(NaN));
+"#
+        ),
+        vec!["1|val2"]
+    );
+}
+

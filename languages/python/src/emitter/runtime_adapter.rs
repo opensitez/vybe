@@ -6,7 +6,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_compiler::compiler::{collections, reflection, target::Target};
+use vybe_compiler::primitives::{collections, reflection, target::Target};
 
 /// Python value-equality fallback for `==`/`!=` when no user `__eq__` is found.
 /// Plain containers (lists/tuples/dicts — objects with no `__type` class stamp)
@@ -39,7 +39,7 @@ pub fn emit_py_value_eq(chunk: &mut Chunk, line: u32) {
         chunk.emit_op_u16(Op::STRUCT_GET, size_key, line);
         chunk.emit_op_u16(Op::LOCAL_GET, b, line);
         chunk.emit_op_u16(Op::STRUCT_GET, size_key, line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line); // sizes equal
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line); // sizes equal
         let sub = chunk.add_import("ecma:set", "isSubsetOf");
         chunk.emit_op_u16(Op::LOCAL_GET, a, line);
         chunk.emit_op_u16(Op::LOCAL_GET, b, line);
@@ -56,7 +56,7 @@ pub fn emit_py_value_eq(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, a, line);
     chunk.emit_call(typeof_fn, 1, line);
     chunk.emit_string_const("object", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line); // i32: 1 if object
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line); // i32: 1 if object
     chunk.emit_op_u16(Op::LOCAL_GET, a, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line); // i32: 1 if not null
@@ -88,7 +88,7 @@ pub fn emit_py_value_eq(chunk: &mut Chunk, line: u32) {
     // identity / primitive equality
     chunk.emit_op_u16(Op::LOCAL_GET, a, line);
     chunk.emit_op_u16(Op::LOCAL_GET, b, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_end(line);
     chunk.emit_end(line); // close the set-equality outer if
 }
@@ -140,11 +140,11 @@ pub fn emit_print(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) 
         chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
         part_count += 1;
 
-        vybe_compiler::compiler::strings::emit_concat(chunk, part_count, line);
+        vybe_compiler::primitives::strings::emit_concat(chunk, part_count, line);
         chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     }
 
-    vybe_compiler::compiler::io::emit_write_stdout_with_imports(
+    vybe_compiler::primitives::io::emit_write_stdout_with_imports(
         chunk,
         write_idx,
         rd_slot,
@@ -178,7 +178,7 @@ pub fn emit_pyadd(chunks: &mut [Chunk], current: usize, line: u32) {
         b_slot,
         DtOp::Add,
         "__add__",
-        vybe_compiler::compiler::ops::emit_dyn_add,
+        vybe_compiler::primitives::ops::emit_dyn_add,
         line,
     );
     chunk.emit_end(line);
@@ -223,7 +223,7 @@ pub fn emit_pyneg(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk,
         a_slot,
         "__neg__",
-        vybe_compiler::compiler::ops::emit_dyn_neg,
+        vybe_compiler::primitives::ops::emit_dyn_neg,
         line,
     );
     chunk.emit_end(line);
@@ -237,7 +237,7 @@ pub fn emit_pylt(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks,
         current,
         "__lt__",
-        vybe_compiler::compiler::ops::emit_dyn_lt,
+        vybe_compiler::primitives::ops::emit_dyn_lt,
         line,
     );
 }
@@ -246,7 +246,7 @@ pub fn emit_pygt(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks,
         current,
         "__gt__",
-        vybe_compiler::compiler::ops::emit_dyn_gt,
+        vybe_compiler::primitives::ops::emit_dyn_gt,
         line,
     );
 }
@@ -255,7 +255,7 @@ pub fn emit_pyle(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks,
         current,
         "__le__",
-        vybe_compiler::compiler::ops::emit_dyn_le,
+        vybe_compiler::primitives::ops::emit_dyn_le,
         line,
     );
 }
@@ -264,7 +264,7 @@ pub fn emit_pyge(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks,
         current,
         "__ge__",
-        vybe_compiler::compiler::ops::emit_dyn_ge,
+        vybe_compiler::primitives::ops::emit_dyn_ge,
         line,
     );
 }
@@ -309,14 +309,14 @@ fn emit_relational(
     chunk.emit_end(line);
     chunk.emit_end(line);
     // The comparison ops yield an i32; Python's `bool` is a real value.
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
 fn emit_is_array(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     let idx = chunk.add_import("ecma:array", "isArray");
     chunk.emit_call(idx, 1, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
 }
 
 /// Lexicographic sequence ordering (CPython's list/tuple comparison): walk to
@@ -377,7 +377,7 @@ fn emit_seq_relational(chunk: &mut Chunk, a_slot: u16, b_slot: u16, dunder: &str
     };
     elem(chunk, a_slot, i, line);
     elem(chunk, b_slot, i, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line); // 1 when they differ
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
@@ -396,10 +396,10 @@ fn emit_seq_relational(chunk: &mut Chunk, a_slot: u16, b_slot: u16, dunder: &str
 
     // Differing element decides; otherwise the lengths do.
     let cmp: fn(&mut Chunk, u32) = match dunder {
-        "__lt__" => vybe_compiler::compiler::ops::emit_dyn_lt,
-        "__gt__" => vybe_compiler::compiler::ops::emit_dyn_gt,
-        "__le__" => vybe_compiler::compiler::ops::emit_dyn_le,
-        _ => vybe_compiler::compiler::ops::emit_dyn_ge,
+        "__lt__" => vybe_compiler::primitives::ops::emit_dyn_lt,
+        "__gt__" => vybe_compiler::primitives::ops::emit_dyn_gt,
+        "__le__" => vybe_compiler::primitives::ops::emit_dyn_le,
+        _ => vybe_compiler::primitives::ops::emit_dyn_ge,
     };
     chunk.emit_op_u16(Op::LOCAL_GET, diff, line);
     chunk.emit_i32_const(-1, line);
@@ -441,7 +441,7 @@ fn emit_set_relational(chunk: &mut Chunk, a_slot: u16, b_slot: u16, dunder: &str
         chunk.emit_op_u16(Op::STRUCT_GET, size_key, line);
         chunk.emit_op_u16(Op::LOCAL_GET, b_slot, line);
         chunk.emit_op_u16(Op::STRUCT_GET, size_key, line);
-        vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line); // 1 if sizes equal
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line); // 1 if sizes equal
         chunk.emit_op(Op::I32_EQZ, line); // 1 if sizes differ
         chunk.emit_op(Op::I32_AND, line);
     }
@@ -462,7 +462,7 @@ fn emit_unary_dunder_or(
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_call(typeof_fn, 1, line);
     chunk.emit_string_const("object", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, key, line);
@@ -504,7 +504,7 @@ fn emit_object_binop_or(
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
     chunk.emit_call(typeof_fn, 1, line);
     chunk.emit_string_const("object", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line); // i32: 1 if object
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line); // i32: 1 if object
     chunk.emit_if_value(line);
     // object: dispatch to the dunder if present, else fallback
     chunk.emit_op_u16(Op::LOCAL_GET, a_slot, line);
@@ -665,7 +665,7 @@ fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
     chunk.emit_if_value(line);
     // string / number → plain string form
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
-    vybe_compiler::compiler::strings::emit_to_string(chunk, line);
+    vybe_compiler::primitives::strings::emit_to_string(chunk, line);
     chunk.emit_else(line);
     // Error-like (own "message" AND own "stack") → Python `str(exc)` /
     // `print(exc)` is the message, not a struct dump. The flag avoids a false
@@ -834,17 +834,17 @@ fn emit_f64_div(chunk: &mut Chunk, line: u32) {
 /// Numeric `//` fallback: `F64_DIV` then floor (Python-profile `BinOp::FloorDiv`).
 fn emit_py_floordiv(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_DIV, line);
-    vybe_compiler::compiler::math::emit_floor(chunk, line);
+    vybe_compiler::primitives::math::emit_floor(chunk, line);
 }
 
 /// Numeric `%` fallback: Python floored modulo (Python-profile `BinOp::Mod`).
 fn emit_py_mod(chunk: &mut Chunk, line: u32) {
-    vybe_compiler::compiler::math::emit_python_floor_mod(chunk, line);
+    vybe_compiler::primitives::math::emit_python_floor_mod(chunk, line);
 }
 
 /// Numeric `**` fallback (Python-profile `BinOp::Pow`).
 fn emit_py_pow(chunk: &mut Chunk, line: u32) {
-    vybe_compiler::compiler::math::emit_pow(chunk, line);
+    vybe_compiler::primitives::math::emit_pow(chunk, line);
 }
 
 /// `issubclass(sub, base)` — true when `base` is in `sub.__mro__` (the ancestor
@@ -861,7 +861,7 @@ pub fn emit_issubclass(chunks: &mut [Chunk], current: usize, line: u32) {
     reflection::emit_get_property_in_chunk(&mut chunks[current], line);
     // base in mro  (collections::emit_contains: [array, value] → bool)
     chunks[current].emit_op_u16(Op::LOCAL_GET, base_slot, line);
-    vybe_compiler::compiler::collections::emit_contains(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_contains(chunks, current, line);
 }
 
 /// Python `vars(obj)` → the object's namespace dict. Builds a fresh dict from
@@ -1017,12 +1017,12 @@ fn emit_is_set(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_call(typeof_fn, 1, line);
     chunk.emit_string_const("object", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line); // i32: 1 if object
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line); // i32: 1 if object
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);
     chunk.emit_string_const("Set", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line); // i32: 1 if __type == "Set"
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line); // i32: 1 if __type == "Set"
     chunk.emit_else(line);
     chunk.emit_i32_const(0, line);
     chunk.emit_end(line);
@@ -1041,20 +1041,20 @@ fn emit_hash_guarded(chunks: &mut [Chunk], current: usize, line: u32) {
     let is_array = chunk.add_import("ecma:array", "isArray");
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_call(is_array, 1, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line); // i32: 1 if list
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line); // i32: 1 if list
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_if(line);
     {
         chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
-        vybe_compiler::compiler::instructions::core_wasm::dup(chunk, line);
+        vybe_compiler::primitives::instructions::core_wasm::dup(chunk, line);
         chunk.emit_string_const("unhashable type", line);
-        vybe_compiler::compiler::errors::emit_exception_new_finalize(chunk, "TypeError", line);
-        vybe_compiler::compiler::errors::emit_throw(chunk, line);
+        vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "TypeError", line);
+        vybe_compiler::primitives::errors::emit_throw(chunk, line);
     }
     chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    vybe_compiler::compiler::collections::emit_runtime_helper_call(chunks, current, "__vybe_hash", 1, line);
+    vybe_compiler::primitives::collections::emit_runtime_helper_call(chunks, current, "__vybe_hash", 1, line);
 }
 
 /// `a - b`. Python overloads `-` on sets to mean set difference (`{1,2,3} -
@@ -1124,7 +1124,7 @@ pub fn emit_pymod(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         // a single argument. Keyed on the tuple tag alone — an `isArray` guard
         // here misfires on an unboxed numeric operand.
         chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
-        vybe_compiler::compiler::tuples::emit_is_tuple(chunks, current, line);
+        vybe_compiler::primitives::tuples::emit_is_tuple(chunks, current, line);
         chunks[current].emit_if_value(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line); // tuple → spread
         chunks[current].emit_else(line);
@@ -1132,7 +1132,7 @@ pub fn emit_pymod(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
         chunks[current].emit_end(line);
         // stack: [fmt, args] → formatted string
-        vybe_compiler::compiler::sprintf::emit_sprintf_from_array(chunks, current, line);
+        vybe_compiler::primitives::sprintf::emit_sprintf_from_array(chunks, current, line);
     }
     chunks[current].emit_else(line);
     {
@@ -1226,7 +1226,7 @@ pub fn emit_py_fmt_sci(chunks: &mut [Chunk], current: usize, line: u32) {
     c.emit_string_const("e", line);
     c.emit_op_u16(Op::LOCAL_GET, expsign, line);
     c.emit_op_u16(Op::LOCAL_GET, padded, line);
-    vybe_compiler::compiler::strings::emit_concat(c, 4, line);
+    vybe_compiler::primitives::strings::emit_concat(c, 4, line);
 }
 
 /// `__py_fmt_group(str_value)` → insert `,` thousands separators into the
@@ -1287,7 +1287,7 @@ pub fn emit_py_fmt_group(chunks: &mut [Chunk], current: usize, line: u32) {
     c.emit_op_u16(Op::LOCAL_GET, sign_is, line);
     let includes = c.add_import("ecma:string", "includes");
     c.emit_call(includes, 2, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(c, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
     c.emit_op_u16(Op::LOCAL_GET, sign_is, line);
     c.emit_call(length, 1, line); // 1 if a real char, 0 if empty ("" not a sign)
     c.emit_op(Op::I32_AND, line);
@@ -1347,7 +1347,7 @@ pub fn emit_py_fmt_group(chunks: &mut [Chunk], current: usize, line: u32) {
     c.emit_if(line);
     c.emit_op_u16(Op::LOCAL_GET, out, line);
     c.emit_string_const(",", line);
-    vybe_compiler::compiler::strings::emit_str_concat(c, line);
+    vybe_compiler::primitives::strings::emit_str_concat(c, line);
     c.emit_op_u16(Op::LOCAL_SET, out, line);
     c.emit_end(line);
     // out += digits.charAt(i)
@@ -1355,7 +1355,7 @@ pub fn emit_py_fmt_group(chunks: &mut [Chunk], current: usize, line: u32) {
     c.emit_op_u16(Op::LOCAL_GET, digits, line);
     c.emit_op_u16(Op::LOCAL_GET, i, line);
     c.emit_call(charat, 2, line);
-    vybe_compiler::compiler::strings::emit_str_concat(c, line);
+    vybe_compiler::primitives::strings::emit_str_concat(c, line);
     c.emit_op_u16(Op::LOCAL_SET, out, line);
     // i++
     c.emit_op_u16(Op::LOCAL_GET, i, line);
@@ -1372,7 +1372,7 @@ pub fn emit_py_fmt_group(chunks: &mut [Chunk], current: usize, line: u32) {
     c.emit_op_u16(Op::LOCAL_GET, sign, line);
     c.emit_op_u16(Op::LOCAL_GET, out, line);
     c.emit_op_u16(Op::LOCAL_GET, frac, line);
-    vybe_compiler::compiler::strings::emit_concat(c, 3, line);
+    vybe_compiler::primitives::strings::emit_concat(c, 3, line);
 }
 
 /// Shared body for the pure-arithmetic dunders: stash `[a, b]`, then dispatch to
@@ -1497,7 +1497,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
         chunk.emit_string_const("", line);
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-        vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
         return true;
     }
     // `zip(a, b, …)` → array of tuples, stopping at the SHORTEST input (Python
@@ -1511,28 +1511,28 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
     }
     // `random.choice(seq)` → one uniformly-random element. Shared op.
     if name == "python.random_choice" {
-        vybe_compiler::compiler::random::emit_sample(chunks, current, argc, line);
+        vybe_compiler::primitives::random::emit_sample(chunks, current, argc, line);
         return true;
     }
     // `random.shuffle(seq)` → in-place Fisher-Yates. Shared op.
     if name == "python.random_shuffle" {
-        vybe_compiler::compiler::random::emit_shuffle(chunks, current, argc, line);
+        vybe_compiler::primitives::random::emit_shuffle(chunks, current, argc, line);
         return true;
     }
     // `random.random()` → seedable uniform float in [0, 1).
     if name == "python.random" {
-        vybe_compiler::compiler::random::emit_next_unit(chunks, current, line);
+        vybe_compiler::primitives::random::emit_next_unit(chunks, current, line);
         return true;
     }
     // `random.randint(a, b)` → seedable int in [a, b] (inclusive).
     if name == "python.randint" {
-        vybe_compiler::compiler::random::emit_rand_int_inclusive(chunks, current, line);
+        vybe_compiler::primitives::random::emit_rand_int_inclusive(chunks, current, line);
         return true;
     }
     // `random.sample(population, k)` → k unique elements (seedable partial
     // Fisher-Yates on a copy).
     if name == "python.random_sample" {
-        vybe_compiler::compiler::random::emit_sample_k(chunks, current, line);
+        vybe_compiler::primitives::random::emit_sample_k(chunks, current, line);
         return true;
     }
     // `random.seed(n)` — seed the global PRNG; `seed()` seeds from entropy.
@@ -1541,7 +1541,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         if argc == 0 {
             let r = chunks[current].add_import("ecma:math", "random");
             chunks[current].emit_call(r, 0, line);
-            vybe_compiler::compiler::instructions::core_wasm::f64_const(
+            vybe_compiler::primitives::instructions::core_wasm::f64_const(
                 &mut chunks[current],
                 line,
                 1073741824.0,
@@ -1549,34 +1549,34 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             chunks[current].emit_op(Op::F64_MUL, line);
             chunks[current].emit_op(Op::I32_FROM_F64, line);
         }
-        vybe_compiler::compiler::random::emit_seed(chunks, current, line);
+        vybe_compiler::primitives::random::emit_seed(chunks, current, line);
         chunks[current].emit_op(Op::NULL, line);
         return true;
     }
     // `isinstance(obj, "Class")` → shared `classes::emit_instanceof`.
     if name == "python.instanceof" {
-        vybe_compiler::compiler::reflection::emit_instanceof(chunks, current, line);
+        vybe_compiler::primitives::reflection::emit_instanceof(chunks, current, line);
         return true;
     }
     // `a is b` → object identity: reference equality for objects, value
     // identity for interned primitives (`emit_js_strict_eq` does exactly this —
     // REF_EQ on the object/cross-type branch, typed value compare otherwise).
     if name == "python.is_identity" {
-        vybe_compiler::compiler::ops::emit_js_strict_eq(&mut chunks[current], line);
-        vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_js_strict_eq(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
         return true;
     }
     if name == "python.is_not_identity" {
-        vybe_compiler::compiler::ops::emit_js_strict_eq(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_js_strict_eq(&mut chunks[current], line);
         chunks[current].emit_op(Op::I32_EQZ, line);
-        vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
         return true;
     }
     // `callable(x)` → shared reflection callable probe as a real Bool.
     if name == "python.callable" {
         reflection::emit_is_callable(chunks, current, line);
-        vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
-        vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
         return true;
     }
     // Regex adapters. Source calls are pattern-first — `re.findall(pat, s)`,
@@ -1631,8 +1631,8 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
 /// Leverages the shared `loops::emit_for_in_*` scaffold. Stack `[pat, subject]`
 /// → `[list]`.
 fn emit_python_findall(chunks: &mut [Chunk], current: usize, line: u32) {
-    use vybe_compiler::compiler::instructions::core_wasm::i32_const;
-    use vybe_compiler::compiler::{collections, loops, ops};
+    use vybe_compiler::primitives::instructions::core_wasm::i32_const;
+    use vybe_compiler::primitives::{collections, loops, ops};
 
     let (pat, subj, arr, result, idx, m, len, flat) = {
         let c = &mut chunks[current];

@@ -2,8 +2,8 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_compiler::compiler::instructions::host;
-use vybe_compiler::compiler::{reflection, strings};
+use vybe_compiler::primitives::instructions::host;
+use vybe_compiler::primitives::{reflection, strings};
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -17,8 +17,8 @@ fn emit_is_string(chunk: &mut Chunk, slot: u16, line: u32) {
     get(chunk, slot, line);
     reflection::emit_typeof_in_chunk(chunk, line);
     chunk.emit_string_const("string", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
 }
 
 /// Java `Class.getName()`.
@@ -75,15 +75,15 @@ pub fn emit_class_simple_name(chunks: &mut [Chunk], current: usize, line: u32) {
 
     get(chunk, dollar, line);
     get(chunk, dot, line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     get(chunk, dollar, line);
     chunk.emit_else(line);
     get(chunk, dot, line);
     chunk.emit_end(line);
     chunk.emit_i32_const(1, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     set(chunk, start, line);
 
     get(chunk, name, line);
@@ -111,24 +111,24 @@ pub fn emit_object_get_class(chunks: &mut [Chunk], current: usize, line: u32) {
 
     get(chunk, tag, line);
     chunk.emit_string_const("string", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_string_const("String", line);
     chunk.emit_else(line);
 
     get(chunk, tag, line);
     chunk.emit_string_const("number", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_string_const("Integer", line);
     chunk.emit_else(line);
 
     get(chunk, tag, line);
     chunk.emit_string_const("boolean", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_string_const("Boolean", line);
     chunk.emit_else(line);

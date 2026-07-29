@@ -435,3 +435,15 @@ console.log(answer.name);
     );
     assert_eq!(out, vec!["greet", "answer"]);
 }
+
+#[test]
+fn function_length_leading_default_is_zero() {
+    let out = run_js(
+        r#"
+function f(a = 1, b, c) {}
+console.log(f.length);
+"#,
+    );
+    assert_eq!(out, vec!["0"]);
+}
+

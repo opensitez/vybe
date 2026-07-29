@@ -16,7 +16,7 @@ def my_decorator(func):
     return wrapper
 
 @my_decorator
-fn test():
+def test():
     print("inside")
 
 test()
@@ -203,11 +203,11 @@ fn test_py_classmethod_and_staticmethod_decorators() {
     let src = r#"
 class Utility:
     @staticmethod
-    fn add(a, b):
+    def add(a, b):
         return a + b
 
     @classmethod
-    fn get_class_name(cls):
+    def get_class_name(cls):
         return cls.__name__
 
 print(Utility.add(3, 4))

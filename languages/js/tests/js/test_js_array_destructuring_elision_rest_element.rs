@@ -213,3 +213,13 @@ console.log(`${a},${b}`);
 "#;
     assert_eq!(run_js(src), vec!["1,2"]);
 }
+
+#[test]
+fn test_js_array_destructuring_nested_rest() {
+    let src = r#"
+const [a, [b, ...subRest]] = [1, [2, 3, 4]];
+console.log(a + "|" + b + "|" + subRest.join(","));
+"#;
+    assert_eq!(run_js(src), vec!["1|2|3,4"]);
+}
+

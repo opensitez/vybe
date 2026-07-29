@@ -333,3 +333,19 @@ level1();
 "#;
     assert_eq!(run_js(src), vec!["Unwound Stack: DeepError"]);
 }
+
+#[test]
+fn test_js_async_finally_rejecting_promise_overrides_try_rejection() {
+    let src = r#"
+async function fn() {
+    try {
+        return Promise.reject("try_rej");
+    } finally {
+        return Promise.reject("fin_rej");
+    }
+}
+fn().catch(e => console.log(e));
+"#;
+    assert_eq!(run_js(src), vec!["fin_rej"]);
+}
+

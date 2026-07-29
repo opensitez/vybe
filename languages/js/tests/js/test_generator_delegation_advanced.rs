@@ -207,3 +207,19 @@ main();
         vec!["3", "1,2,3", "7"]
     );
 }
+
+#[test]
+fn yield_star_three_level_delegation_return_cascade() {
+    assert_eq!(
+        run_js(
+            r#"
+function* g1() { yield 1; return "r1"; }
+function* g2() { const r = yield* g1(); yield r; return "r2"; }
+function* g3() { const r = yield* g2(); yield r; }
+console.log([...g3()].join(","));
+"#
+        ),
+        vec!["1,r1,r2"]
+    );
+}
+

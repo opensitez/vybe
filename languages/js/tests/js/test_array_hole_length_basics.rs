@@ -285,4 +285,13 @@ console.log(Object.keys(arr).join(","));
 "#,
         ["4", "a,,x,y", "0,2,3"]
     };
+
+    sparse_array_flat_removes_holes => {
+        r#"
+const arr = [1, , 3, , 5];
+console.log(arr.flat().length + "|" + arr.flat().join(","));
+"#,
+        ["3|1,3,5"]
+    };
 }
+

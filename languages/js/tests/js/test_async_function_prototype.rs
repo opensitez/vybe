@@ -332,4 +332,10 @@ crate::js_cases! {
         r#"async function f() {} console.log(Function.prototype.isPrototypeOf(f));"#,
         ["true"]
     };
+
+    async_function_prototype_tostringtag => {
+        r#"console.log(AsyncFunction.prototype[Symbol.toStringTag]);"#,
+        ["AsyncFunction"]
+    };
 }
+

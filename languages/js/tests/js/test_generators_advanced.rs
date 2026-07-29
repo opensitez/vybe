@@ -565,3 +565,25 @@ console.log([...range(0, 10, 2)].join(","));
         vec!["0,2,4,6,8"]
     );
 }
+
+#[test]
+fn async_generator_method_in_object_literal() {
+    assert_eq!(
+        run_js(
+            r#"
+const obj = {
+    async *gen() {
+        yield await Promise.resolve("async_val");
+    }
+};
+(async () => {
+    const a = [];
+    for await (const v of obj.gen()) a.push(v);
+    console.log(a.join(","));
+})();
+"#
+        ),
+        vec!["async_val"]
+    );
+}
+

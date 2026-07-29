@@ -313,7 +313,7 @@ fn calling_value_import_reports_not_callable_runtime_error() {
     use vybe_bytecode::VM;
 
     let mut vm = VM::new();
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     vybe_compiler::adapters::register_all(&mut vm).expect("adapters");
 
     let module = vybe_language_js::parse(
@@ -327,7 +327,7 @@ version();
         vybe_compiler::profile::parse_profile(vybe_language_js::profile_source()).expect("profile");
     let module_exports = vybe_compiler::bundle::flatten_module_exports(&vm.modules);
     let value_exports = vybe_compiler::bundle::flatten_module_value_exports(&vm.modules);
-    let result = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let result = vybe_compiler::primitives::Compiler::with_profile(profile)
         .with_module_exports(module_exports)
         .with_module_value_exports(value_exports)
         .compile_with_imports(&module)
@@ -354,7 +354,7 @@ fn validator_accepts_resolvable_imports() {
     // Validator should return an empty unresolved list.
     use vybe_bytecode::VM;
     let mut vm = VM::new();
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     vybe_compiler::adapters::register_all(&mut vm).expect("adapters");
 
     let module = vybe_language_js::parse(
@@ -368,7 +368,7 @@ log("hi");
         vybe_compiler::profile::parse_profile(vybe_language_js::profile_source()).expect("profile");
     let module_exports = vybe_compiler::bundle::flatten_module_exports(&vm.modules);
     let value_exports = vybe_compiler::bundle::flatten_module_value_exports(&vm.modules);
-    let result = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let result = vybe_compiler::primitives::Compiler::with_profile(profile)
         .with_module_exports(module_exports)
         .with_module_value_exports(value_exports)
         .compile_with_imports(&module)
@@ -391,7 +391,7 @@ fn validator_flags_unknown_export() {
     // at link time, not at VM setup.
     use vybe_bytecode::VM;
     let mut vm = VM::new();
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     vybe_compiler::adapters::register_all(&mut vm).expect("adapters");
 
     let module = vybe_language_js::parse(
@@ -405,7 +405,7 @@ definitelyNotAThing();
         vybe_compiler::profile::parse_profile(vybe_language_js::profile_source()).expect("profile");
     let module_exports = vybe_compiler::bundle::flatten_module_exports(&vm.modules);
     let value_exports = vybe_compiler::bundle::flatten_module_value_exports(&vm.modules);
-    let result = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let result = vybe_compiler::primitives::Compiler::with_profile(profile)
         .with_module_exports(module_exports)
         .with_module_value_exports(value_exports)
         .compile_with_imports(&module)

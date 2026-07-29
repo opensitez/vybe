@@ -43,7 +43,7 @@ pub fn compile_ok(src: &str) {
         vybe_language_wast::parse(src).unwrap_or_else(|e| panic!("WAST parse failed:\n{}", e));
     let profile = vybe_compiler::profile::parse_profile(vybe_language_wast::profile_source())
         .expect("Failed to parse WAST profile");
-    vybe_compiler::compiler::Compiler::with_profile(profile)
+    vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .unwrap_or_else(|e| panic!("WAST compile failed:\n{}", e));
 }
@@ -61,7 +61,7 @@ pub fn run_wast_result(src: &str) -> Result<Vec<String>, String> {
         vybe_language_wast::parse(src).unwrap_or_else(|e| panic!("WAST parse failed:\n{}", e));
     let profile = vybe_compiler::profile::parse_profile(vybe_language_wast::profile_source())
         .expect("Failed to parse WAST profile");
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .unwrap_or_else(|e| panic!("WAST compile failed:\n{}", e));
 
@@ -72,7 +72,7 @@ pub fn run_wast_result(src: &str) -> Result<Vec<String>, String> {
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     let out_cloned = out.clone();
     vm.register_host_fn(
         "wasi:logging/logging",
@@ -176,7 +176,7 @@ pub fn run_wast_result(src: &str) -> Result<Vec<String>, String> {
             Value::Null
         }),
     );
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).map_err(|e| e.to_string())?;
     let result = output.lock().unwrap().clone();
     // Surface assertion failures as an error so result-checking tests fail loudly.

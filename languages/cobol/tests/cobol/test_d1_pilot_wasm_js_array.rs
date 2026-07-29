@@ -3,7 +3,7 @@
 //! imports end-to-end.
 //!
 //! The intercept lives at
-//! `crates/vybex/src/compiler.rs::try_compile_builtin` and fires
+//! `crates/vybex/src/primitives.rs::try_compile_builtin` and fires
 //! whenever a compiler sees a call expression with callee
 //! `Ident("Array")` and two positional args. COBOL's OCCURS walker
 //! produces this shape at the top-level (there's an unrelated name-
@@ -74,7 +74,7 @@ fn compile_array_call(count: Expression, init: Expression) -> Vec<(String, Strin
     };
     let profile = vybe_compiler::profile::parse_profile(vybe_language_cobol::profile_source())
         .expect("parse profile");
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile");
 
@@ -245,12 +245,12 @@ fn array_call_end_to_end_runtime_produces_array_of_length_n() {
     };
     let profile = vybe_compiler::profile::parse_profile(vybe_language_cobol::profile_source())
         .expect("parse profile");
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile");
 
     let mut vm = VM::new();
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     // Running this chunk produces an Array and stores it in a global.
     // The call itself is the last value on the stack of chunk 0 before
     // the GLOBAL_SET; running to completion is sufficient to prove the

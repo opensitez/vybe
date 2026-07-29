@@ -228,3 +228,20 @@ console.log(doubled.join(","));
 "#;
     assert_eq!(run_js(src), vec!["2,4,6"]);
 }
+
+#[test]
+fn test_js_arrow_function_lexical_this_derived_constructor_after_super() {
+    let src = r#"
+class Base { constructor() { this.x = 10; } }
+class Derived extends Base {
+    constructor() {
+        super();
+        const getX = () => this.x;
+        this.res = getX();
+    }
+}
+console.log(new Derived().res);
+"#;
+    assert_eq!(run_js(src), vec!["10"]);
+}
+

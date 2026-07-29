@@ -217,3 +217,15 @@ console.log(res.join(",") + "|arrLength=" + arr.length);
 "#;
     assert_eq!(run_js(src), vec!["10,20|arrLength=3"]);
 }
+
+#[test]
+fn test_js_array_filter_this_arg_binding() {
+    let src = r#"
+const ctx = { limit: 10 };
+const nums = [5, 15, 8, 20];
+const res = nums.filter(function(x) { return x > this.limit; }, ctx);
+console.log(res.join(","));
+"#;
+    assert_eq!(run_js(src), vec!["15,20"]);
+}
+

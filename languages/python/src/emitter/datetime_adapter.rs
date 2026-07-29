@@ -21,7 +21,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_compiler::compiler::instructions::core_wasm;
+use vybe_compiler::primitives::instructions::core_wasm;
 
 pub const TYPE_KEY: &str = "__type";
 pub const TIME_KEY: &str = "__time";
@@ -620,7 +620,7 @@ pub fn emit_cal_isleap(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     chunk.emit_op(Op::I32_OR, line);
     // Python's `isleap` returns a real `bool`, so lift the i32 the same way
     // the comparison operators do under `materialize_bool_results`.
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
 /// Days in month `m` of year `y`. Day 0 of the next month is the last day
@@ -650,7 +650,7 @@ pub fn emit_cal_monthrange(chunks: &mut [Chunk], current: usize, _argc: u8, line
     emit_days_in_month(&mut chunks[current], y, m, line);
 
     // Python's monthrange returns a real tuple — built the one canonical way.
-    vybe_compiler::compiler::tuples::emit_tuple(chunks, current, 2, line);
+    vybe_compiler::primitives::tuples::emit_tuple(chunks, current, 2, line);
 }
 
 /// The arithmetic this adapter implements for its own values.
@@ -668,7 +668,7 @@ fn emit_has_key(chunk: &mut Chunk, slot: u16, key: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_call(typeof_fn, 1, line);
     chunk.emit_string_const("object", line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     struct_get(chunk, key, line);
@@ -908,7 +908,7 @@ fn emit_is_type(chunk: &mut Chunk, obj: u16, tag: &str, line: u32) {
     chunk.emit_string_const(tag, line);
     let eq = chunk.add_import("wasm:js-string", "equals");
     chunk.emit_call(eq, 2, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
 }
 
 /// `HH:MM:SS` from the value in `obj`. Stack: `[]` → `[string]`.

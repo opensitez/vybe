@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{Rule, VbParser};
 use vybe_ast::*;
-use vybe_compiler::compiler::generics as common_generics;
+use vybe_compiler::primitives::generics as common_generics;
 use vybe_platform_dotnet::emitter::core::exceptions as dotnet_exceptions;
 use vybe_platform_dotnet::emitter::core::lowering as dotnet_vb;
 
@@ -93,6 +93,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     rewrite_vb_import_aliases(&mut module);
     normalize_vb_xml_surface(&mut module, xml_namespaces);
     normalize_vb_legacy_file_io(&mut module);
+    normalize_vb_is_concat_precedence(&mut module);
     normalize_vb_visualbasic_strings_calls(&mut module);
     normalize_vb_callbyname_calls(&mut module);
     normalize_vb_extension_method_calls(&mut module);
@@ -110,9 +111,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
     normalize_vb_array_paren_indexes(&mut module);
     normalize_vb_custom_collection_for_each(&mut module);
     normalize_vb_default_indexer_calls(&mut module);
+    normalize_vb_dotnet_collection_calls(&mut module);
     normalize_vb_stringbuilder_member_access(&mut module);
     normalize_vb_operator_calls(&mut module);
     normalize_vb_bitwise_logic(&mut module);
+    normalize_vb_is_concat_precedence(&mut module);
     if option_compare_text {
         normalize_vb_option_compare_text(&mut module);
     }
@@ -7273,6 +7276,21 @@ fn vb_like_pattern_to_regex(pattern: &str) -> String {
 }
 
 fn maybe_rewrite_vb_binary(op: BinOp, left: Expression, right: Expression) -> Expression {
+    if matches!(op, BinOp::Is | BinOp::IsNot) {
+        if let ExprKind::Binary {
+            op: BinOp::Concat,
+            left: concat_left,
+            right: concat_right,
+        } = right.kind
+        {
+            return maybe_rewrite_vb_binary(
+                BinOp::Concat,
+                maybe_rewrite_vb_binary(op, left, *concat_left),
+                *concat_right,
+            );
+        }
+    }
+
     let (left, right) = if op == BinOp::Concat {
         (
             vb_stringify_bool_for_concat(left, &HashMap::new()),
@@ -11022,11 +11040,103 @@ fn vb_filled_array_expr(length: Expression, default_value: Expression) -> Expres
 }
 
 fn vb_multidim_array_expr(bounds: &[Expression], default_value: Expression) -> Expression {
-    let mut value = default_value;
-    for bound in bounds.iter().rev() {
-        value = vb_filled_array_expr(vb_array_length_from_upper_bound(bound.clone()), value);
+    let Some((first, rest)) = bounds.split_first() else {
+        return default_value;
+    };
+    if rest.is_empty() {
+        return vb_filled_array_expr(vb_array_length_from_upper_bound(first.clone()), default_value);
     }
-    value
+
+    let length = vb_array_length_from_upper_bound(first.clone());
+    let array_expr = call_expr(
+        Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident("Array")),
+            field: "CreateInstance".to_string(),
+            null_safe: false,
+        }),
+        vec![
+            Argument::positional(Expression::null()),
+            Argument::positional(length.clone()),
+        ],
+    );
+    let row_expr = vb_multidim_array_expr(rest, default_value);
+    let mut body = vec![
+        Statement::with_span(
+            StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident("__arr".into()),
+                    type_hint: None,
+                    init: Some(array_expr),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Var,
+            },
+            Span::default(),
+        ),
+        Statement::with_span(
+            StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident("__i".into()),
+                    type_hint: None,
+                    init: Some(Expression::int(0)),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Var,
+            },
+            Span::default(),
+        ),
+    ];
+    body.push(Statement::with_span(
+        StmtKind::While {
+            cond: Expression::new(ExprKind::Binary {
+                op: BinOp::Lt,
+                left: Box::new(Expression::ident("__i")),
+                right: Box::new(length),
+            }),
+            body: vec![
+                Statement::with_span(
+                    StmtKind::Assign {
+                        targets: vec![Expression::new(ExprKind::Index {
+                            object: Box::new(Expression::ident("__arr")),
+                            index: Box::new(Expression::ident("__i")),
+                            null_safe: false,
+                        })],
+                        value: row_expr,
+                    },
+                    Span::default(),
+                ),
+                Statement::with_span(
+                    StmtKind::Assign {
+                        targets: vec![Expression::ident("__i")],
+                        value: Expression::new(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(Expression::ident("__i")),
+                            right: Box::new(Expression::int(1)),
+                        }),
+                    },
+                    Span::default(),
+                ),
+            ],
+            else_body: None,
+        },
+        Span::default(),
+    ));
+    body.push(Statement::with_span(
+        StmtKind::Return(Some(Expression::ident("__arr"))),
+        Span::default(),
+    ));
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: vec![],
+            body: LambdaBody::Block(body),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: vec![],
+        optional: false,
+    })
 }
 
 fn vb_expr_has_decimal(expr: &Expression) -> bool {
@@ -11913,6 +12023,15 @@ fn normalize_vb_dotnet_collection_statement(
     stmt: &mut Statement,
     locals: &mut HashMap<String, String>,
 ) {
+    if let Some(replacement) = vb_rewrite_rectangular_array_copy_statement(stmt, locals) {
+        *stmt = replacement;
+        return;
+    }
+    if let Some(replacement) = vb_rewrite_array_sort_statement(stmt, locals) {
+        *stmt = replacement;
+        return;
+    }
+
     match &mut stmt.kind {
         StmtKind::Expr(expr) => {
             normalize_vb_dotnet_collection_expr(expr, locals);
@@ -11926,8 +12045,75 @@ fn normalize_vb_dotnet_collection_statement(
                     normalize_vb_dotnet_collection_expr(init, locals);
                 }
                 if let BindingPattern::Ident(name) = &decl.pattern {
+                    if let Some((bounds, default_value)) = decl
+                        .init
+                        .as_ref()
+                        .and_then(|init| vb_array_create_instance_bounds(init, locals))
+                    {
+                        let upper_bounds = bounds
+                            .iter()
+                            .cloned()
+                            .map(|length| Expression::new(ExprKind::Binary {
+                                op: BinOp::Sub,
+                                left: Box::new(length),
+                                right: Box::new(Expression::int(1)),
+                            }))
+                            .collect::<Vec<_>>();
+                        record_vb_array_bounds_metadata(locals, name, &upper_bounds);
+                        if let Some(init) = &mut decl.init {
+                            *init = if upper_bounds.len() == 1 {
+                                vb_filled_array_expr(bounds[0].clone(), default_value)
+                            } else {
+                                vb_multidim_array_expr(&upper_bounds, default_value)
+                            };
+                        }
+                    }
                     if let Some(bounds) = decl.array_bounds.as_ref() {
                         record_vb_array_bounds_metadata(locals, name, bounds);
+                    }
+                    if let Some(type_rank) = decl
+                        .type_hint
+                        .as_deref()
+                        .and_then(vb_rank_from_rectangular_array_type)
+                    {
+                        if let Some(bounds) =
+                            decl.init.as_ref().and_then(vb_nested_array_literal_bounds)
+                        {
+                            record_vb_array_bounds_metadata(locals, name, &bounds);
+                        } else {
+                            locals.insert(
+                                format!("$array_rank:{}", name.to_ascii_lowercase()),
+                                type_rank.to_string(),
+                            );
+                        }
+                    }
+                    if let Some(lengths) = decl.init.as_ref().and_then(vb_literal_int_array) {
+                        locals.insert(
+                            format!("$array_literal_ints:{}", name.to_ascii_lowercase()),
+                            lengths
+                                .into_iter()
+                                .map(|value| value.to_string())
+                                .collect::<Vec<_>>()
+                                .join(","),
+                        );
+                    }
+                    if decl.array_bounds.is_some()
+                        || decl
+                            .type_hint
+                            .as_deref()
+                            .and_then(vb_rank_from_rectangular_array_type)
+                            .is_some()
+                    {
+                        let mut local_type = decl
+                            .type_hint
+                            .clone()
+                            .unwrap_or_else(|| "Array".to_string());
+                        if let Some(base_type) = vb_rectangular_array_element_type(&local_type) {
+                            local_type = format!("{base_type}()");
+                        } else if !local_type.trim().ends_with("()") {
+                            local_type.push_str("()");
+                        }
+                        locals.insert(name.to_ascii_lowercase(), local_type);
                     }
                     if let Some(type_name) = decl
                         .type_hint
@@ -12093,6 +12279,14 @@ fn normalize_vb_dotnet_collection_statement(
         StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
             normalize_vb_dotnet_collection_statements(body, &mut locals.clone());
         }
+        StmtKind::ReDim { array, bounds, .. } => {
+            for bound in &mut *bounds {
+                normalize_vb_dotnet_collection_expr(bound, locals);
+            }
+            if !bounds.is_empty() {
+                record_vb_array_bounds_metadata(locals, array, bounds);
+            }
+        }
         _ => {}
     }
 }
@@ -12144,6 +12338,706 @@ fn normalize_vb_dotnet_collection_member(
     }
 }
 
+fn vb_array_create_instance_bounds(
+    expr: &Expression,
+    locals: &HashMap<String, String>,
+) -> Option<(Vec<Expression>, Expression)> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if !field.eq_ignore_ascii_case("CreateInstance")
+        || !dotted_expr_name(object).is_some_and(|name| {
+            name.eq_ignore_ascii_case("Array") || name.eq_ignore_ascii_case("System.Array")
+        })
+        || args.len() < 2
+    {
+        return None;
+    }
+    let default_value = args
+        .first()
+        .and_then(|arg| vb_gettype_expr_type_name(&arg.value))
+        .map(|ty| vb_default_value_for_type(&ty))
+        .unwrap_or_else(Expression::null);
+    let lengths = if args.len() == 2 {
+        vb_literal_int_array(&args[1].value).or_else(|| {
+            let ExprKind::Ident(name) = &args[1].value.kind else {
+                return None;
+            };
+            locals
+                .get(&format!("$array_literal_ints:{}", name.to_ascii_lowercase()))
+                .map(|text| {
+                    text.split(',')
+                        .filter_map(|part| part.parse::<i64>().ok())
+                        .collect::<Vec<_>>()
+                })
+        })?
+    } else {
+        args.iter()
+            .skip(1)
+            .map(|arg| vb_literal_i64(&arg.value))
+            .collect::<Option<Vec<_>>>()?
+    };
+    if lengths.is_empty() {
+        return None;
+    }
+    Some((
+        lengths.into_iter().map(Expression::int).collect(),
+        default_value,
+    ))
+}
+
+fn vb_literal_int_array(expr: &Expression) -> Option<Vec<i64>> {
+    let ExprKind::Array(items) = &expr.kind else {
+        return None;
+    };
+    items
+        .iter()
+        .map(|item| vb_literal_i64(&item.value))
+        .collect::<Option<Vec<_>>>()
+}
+
+fn vb_rank_from_rectangular_array_type(type_name: &str) -> Option<usize> {
+    let trimmed = type_name.trim();
+    let open = trimmed.rfind('(')?;
+    let close = trimmed.rfind(')')?;
+    if close != trimmed.len() - 1 || close <= open {
+        return None;
+    }
+    let rank_text = trimmed[open + 1..close].trim();
+    if rank_text.is_empty() || !rank_text.chars().all(|ch| ch == ',') {
+        return None;
+    }
+    Some(rank_text.chars().count() + 1)
+}
+
+fn vb_rectangular_array_element_type(type_name: &str) -> Option<String> {
+    let trimmed = type_name.trim();
+    let open = trimmed.rfind('(')?;
+    let close = trimmed.rfind(')')?;
+    if close != trimmed.len() - 1 || close <= open {
+        return None;
+    }
+    let rank_text = trimmed[open + 1..close].trim();
+    if rank_text.is_empty() || !rank_text.chars().all(|ch| ch == ',') {
+        return None;
+    }
+    Some(vb_canonical_type_name(trimmed[..open].trim()))
+}
+
+fn vb_nested_array_literal_bounds(expr: &Expression) -> Option<Vec<Expression>> {
+    let lengths = vb_nested_array_literal_lengths(expr)?;
+    Some(
+        lengths
+            .into_iter()
+            .map(|length| Expression::int(length - 1))
+            .collect(),
+    )
+}
+
+fn vb_nested_array_literal_lengths(expr: &Expression) -> Option<Vec<i64>> {
+    let ExprKind::Array(items) = &expr.kind else {
+        return None;
+    };
+    if items.is_empty() {
+        return None;
+    }
+    let mut lengths = vec![items.len() as i64];
+    let first_child = &items.first()?.value;
+    if matches!(first_child.kind, ExprKind::Array(_)) {
+        let child_lengths = vb_nested_array_literal_lengths(first_child)?;
+        lengths.extend(child_lengths);
+    }
+    Some(lengths)
+}
+
+fn vb_gettype_expr_type_name(expr: &Expression) -> Option<String> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("GetType"))
+        || args.len() != 1
+    {
+        return None;
+    }
+    dotted_expr_name(&args[0].value).or_else(|| match &args[0].value.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        _ => None,
+    })
+}
+
+fn vb_rewrite_rectangular_array_copy_statement(
+    stmt: &Statement,
+    locals: &HashMap<String, String>,
+) -> Option<Statement> {
+    let StmtKind::Expr(expr) = &stmt.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if !field.eq_ignore_ascii_case("Copy")
+        || !dotted_expr_name(object).is_some_and(|name| {
+            name.eq_ignore_ascii_case("Array") || name.eq_ignore_ascii_case("System.Array")
+        })
+        || args.len() < 3
+    {
+        return None;
+    }
+    let ExprKind::Ident(source_name) = &args[0].value.kind else {
+        return None;
+    };
+    let ExprKind::Ident(dest_name) = &args[1].value.kind else {
+        return None;
+    };
+    let source_key = source_name.to_ascii_lowercase();
+    let dest_key = dest_name.to_ascii_lowercase();
+    let rank = locals
+        .get(&format!("$array_rank:{source_key}"))
+        .and_then(|value| value.parse::<usize>().ok())?;
+    if rank != 2
+        || locals
+            .get(&format!("$array_rank:{dest_key}"))
+            .and_then(|value| value.parse::<usize>().ok())
+            != Some(rank)
+    {
+        return None;
+    }
+    let rows = locals
+        .get(&format!("$array_length:{source_key}:0"))
+        .and_then(|value| value.parse::<i64>().ok())?;
+    let cols = locals
+        .get(&format!("$array_length:{source_key}:1"))
+        .and_then(|value| value.parse::<i64>().ok())?;
+    Some(vb_rectangular_array_copy_block(
+        source_name,
+        dest_name,
+        rows,
+        cols,
+    ))
+}
+
+fn vb_rewrite_array_sort_statement(
+    stmt: &Statement,
+    locals: &HashMap<String, String>,
+) -> Option<Statement> {
+    let StmtKind::Expr(expr) = &stmt.kind else {
+        return None;
+    };
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if !field.eq_ignore_ascii_case("Sort")
+        || !dotted_expr_name(object).is_some_and(|name| {
+            name.eq_ignore_ascii_case("Array") || name.eq_ignore_ascii_case("System.Array")
+        })
+        || args.is_empty()
+    {
+        return None;
+    }
+    let ExprKind::Ident(array_name) = &args[0].value.kind else {
+        return None;
+    };
+    let key = array_name.to_ascii_lowercase();
+    let element_type = locals
+        .get(&format!("$element:{key}"))
+        .cloned()
+        .or_else(|| locals.get(&key).map(|ty| vb_array_element_type_name(ty)));
+
+    match args.len() {
+        1 if element_type
+            .as_deref()
+            .is_some_and(vb_array_sort_needs_compare_to) =>
+        {
+            Some(vb_array_sort_block(
+                array_name,
+                None,
+                Expression::int(0),
+                Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(array_name)),
+                    field: "Length".into(),
+                    null_safe: false,
+                }),
+                Some(VbSortComparer::CompareTo),
+            ))
+        }
+        2 => {
+            if let ExprKind::Ident(items_name) = &args[1].value.kind {
+                if vb_local_is_array_like(items_name, 1, locals) {
+                    return Some(vb_array_sort_block(
+                        array_name,
+                        Some(items_name),
+                        Expression::int(0),
+                        Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(array_name)),
+                            field: "Length".into(),
+                            null_safe: false,
+                        }),
+                        None,
+                    ));
+                }
+            }
+            Some(vb_array_sort_block(
+                array_name,
+                None,
+                Expression::int(0),
+                Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(array_name)),
+                    field: "Length".into(),
+                    null_safe: false,
+                }),
+                Some(VbSortComparer::Expression(args[1].value.clone())),
+            ))
+        }
+        3 => Some(vb_array_sort_block(
+            array_name,
+            None,
+            args[1].value.clone(),
+            args[2].value.clone(),
+            None,
+        )),
+        4 => {
+            let ExprKind::Ident(items_name) = &args[1].value.kind else {
+                return None;
+            };
+            Some(vb_array_sort_block(
+                array_name,
+                Some(items_name),
+                args[2].value.clone(),
+                args[3].value.clone(),
+                None,
+            ))
+        }
+        _ => None,
+    }
+}
+
+enum VbSortComparer {
+    Expression(Expression),
+    CompareTo,
+}
+
+fn vb_array_sort_needs_compare_to(type_name: &str) -> bool {
+    !matches!(
+        vb_canonical_type_name(type_name).as_str(),
+        "Boolean"
+            | "Char"
+            | "String"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "Byte"
+            | "SByte"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "Single"
+            | "Double"
+            | "Decimal"
+            | "Object"
+    )
+}
+
+fn vb_array_sort_block(
+    array_name: &str,
+    items_name: Option<&str>,
+    start: Expression,
+    count: Expression,
+    comparer: Option<VbSortComparer>,
+) -> Statement {
+    let i_name = "__vb_sort_i";
+    let j_name = "__vb_sort_j";
+    let end_name = "__vb_sort_end";
+    let key_name = "__vb_sort_key";
+    let item_name = "__vb_sort_item";
+    let j_plus_one = || Expression::new(ExprKind::Binary {
+        op: BinOp::Add,
+        left: Box::new(Expression::ident(j_name)),
+        right: Box::new(Expression::int(1)),
+    });
+    let arr_at = |index: Expression| Expression::new(ExprKind::Index {
+        object: Box::new(Expression::ident(array_name)),
+        index: Box::new(index),
+        null_safe: false,
+    });
+    let item_at = |index: Expression| {
+        items_name.map(|name| Expression::new(ExprKind::Index {
+            object: Box::new(Expression::ident(name)),
+            index: Box::new(index),
+            null_safe: false,
+        }))
+    };
+
+    let mut shift_body = vec![
+        Statement::with_span(
+            StmtKind::Assign {
+                targets: vec![arr_at(j_plus_one())],
+                value: arr_at(Expression::ident(j_name)),
+            },
+            Span::default(),
+        ),
+    ];
+    if let Some(target) = item_at(j_plus_one()) {
+        shift_body.push(Statement::with_span(
+            StmtKind::Assign {
+                targets: vec![target],
+                value: item_at(Expression::ident(j_name)).unwrap(),
+            },
+            Span::default(),
+        ));
+    }
+    shift_body.push(Statement::with_span(
+        StmtKind::Assign {
+            targets: vec![Expression::ident(j_name)],
+            value: Expression::new(ExprKind::Binary {
+                op: BinOp::Sub,
+                left: Box::new(Expression::ident(j_name)),
+                right: Box::new(Expression::int(1)),
+            }),
+        },
+        Span::default(),
+    ));
+
+    let mut outer_body = vec![
+        Statement::with_span(
+            StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(key_name.into()),
+                    type_hint: None,
+                    init: Some(arr_at(Expression::ident(i_name))),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Var,
+            },
+            Span::default(),
+        ),
+        Statement::with_span(
+            StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(j_name.into()),
+                    type_hint: None,
+                    init: Some(Expression::new(ExprKind::Binary {
+                        op: BinOp::Sub,
+                        left: Box::new(Expression::ident(i_name)),
+                        right: Box::new(Expression::int(1)),
+                    })),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Var,
+            },
+            Span::default(),
+        ),
+    ];
+    if let Some(item_expr) = item_at(Expression::ident(i_name)) {
+        outer_body.insert(
+            1,
+            Statement::with_span(
+                StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(item_name.into()),
+                        type_hint: None,
+                        init: Some(item_expr),
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Var,
+                },
+                Span::default(),
+            ),
+        );
+    }
+    outer_body.push(Statement::with_span(
+        StmtKind::While {
+            cond: Expression::new(ExprKind::Binary {
+                op: BinOp::And,
+                left: Box::new(Expression::new(ExprKind::Binary {
+                    op: BinOp::GtEq,
+                    left: Box::new(Expression::ident(j_name)),
+                    right: Box::new(start.clone()),
+                })),
+                right: Box::new(vb_array_sort_greater_than(
+                    arr_at(Expression::ident(j_name)),
+                    Expression::ident(key_name),
+                    comparer.as_ref(),
+                )),
+            }),
+            body: shift_body,
+            else_body: None,
+        },
+        Span::default(),
+    ));
+    outer_body.push(Statement::with_span(
+        StmtKind::Assign {
+            targets: vec![arr_at(j_plus_one())],
+            value: Expression::ident(key_name),
+        },
+        Span::default(),
+    ));
+    if let Some(target) = item_at(j_plus_one()) {
+        outer_body.push(Statement::with_span(
+            StmtKind::Assign {
+                targets: vec![target],
+                value: Expression::ident(item_name),
+            },
+            Span::default(),
+        ));
+    }
+    outer_body.push(Statement::with_span(
+        StmtKind::Assign {
+            targets: vec![Expression::ident(i_name)],
+            value: Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(Expression::ident(i_name)),
+                right: Box::new(Expression::int(1)),
+            }),
+        },
+        Span::default(),
+    ));
+
+    Statement::with_span(
+        StmtKind::Block(vec![
+            Statement::with_span(
+                StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(end_name.into()),
+                        type_hint: None,
+                        init: Some(Expression::new(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(start.clone()),
+                            right: Box::new(count),
+                        })),
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Var,
+                },
+                Span::default(),
+            ),
+            Statement::with_span(
+                StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(i_name.into()),
+                        type_hint: None,
+                        init: Some(Expression::new(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(start),
+                            right: Box::new(Expression::int(1)),
+                        })),
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Var,
+                },
+                Span::default(),
+            ),
+            Statement::with_span(
+                StmtKind::While {
+                    cond: Expression::new(ExprKind::Binary {
+                        op: BinOp::Lt,
+                        left: Box::new(Expression::ident(i_name)),
+                        right: Box::new(Expression::ident(end_name)),
+                    }),
+                    body: outer_body,
+                    else_body: None,
+                },
+                Span::default(),
+            ),
+        ]),
+        Span::default(),
+    )
+}
+
+fn vb_array_sort_greater_than(
+    left: Expression,
+    right: Expression,
+    comparer: Option<&VbSortComparer>,
+) -> Expression {
+    let compare_result = match comparer {
+        Some(VbSortComparer::CompareTo) => call_expr(
+            Expression::new(ExprKind::Member {
+                object: Box::new(left),
+                field: "CompareTo".into(),
+                null_safe: false,
+            }),
+            vec![Argument::positional(right)],
+        ),
+        Some(VbSortComparer::Expression(expr))
+            if dotted_expr_name(expr).is_some_and(|name| {
+                name.eq_ignore_ascii_case("StringComparer.OrdinalIgnoreCase")
+                    || name.eq_ignore_ascii_case("System.StringComparer.OrdinalIgnoreCase")
+            }) =>
+        {
+            call_expr(
+                Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident("String")),
+                    field: "Compare".into(),
+                    null_safe: false,
+                }),
+                vec![
+                    Argument::positional(left),
+                    Argument::positional(right),
+                    Argument::positional(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident("StringComparison")),
+                        field: "OrdinalIgnoreCase".into(),
+                        null_safe: false,
+                    })),
+                ],
+            )
+        }
+        Some(VbSortComparer::Expression(expr)) if matches!(expr.kind, ExprKind::Lambda { .. }) => {
+            call_expr(
+                expr.clone(),
+                vec![Argument::positional(left), Argument::positional(right)],
+            )
+        }
+        Some(VbSortComparer::Expression(expr)) => call_expr(
+            Expression::new(ExprKind::Member {
+                object: Box::new(expr.clone()),
+                field: "Compare".into(),
+                null_safe: false,
+            }),
+            vec![Argument::positional(left), Argument::positional(right)],
+        ),
+        None => {
+            return Expression::new(ExprKind::Binary {
+                op: BinOp::Gt,
+                left: Box::new(left),
+                right: Box::new(right),
+            });
+        }
+    };
+    Expression::new(ExprKind::Binary {
+        op: BinOp::Gt,
+        left: Box::new(compare_result),
+        right: Box::new(Expression::int(0)),
+    })
+}
+
+fn vb_rectangular_array_copy_block(
+    source_name: &str,
+    dest_name: &str,
+    rows: i64,
+    cols: i64,
+) -> Statement {
+    let row_name = "__vb_array_copy_i";
+    let col_name = "__vb_array_copy_j";
+    let source_cell = Expression::new(ExprKind::Index {
+        object: Box::new(Expression::new(ExprKind::Index {
+            object: Box::new(Expression::ident(source_name)),
+            index: Box::new(Expression::ident(row_name)),
+            null_safe: false,
+        })),
+        index: Box::new(Expression::ident(col_name)),
+        null_safe: false,
+    });
+    let dest_cell = Expression::new(ExprKind::Index {
+        object: Box::new(Expression::new(ExprKind::Index {
+            object: Box::new(Expression::ident(dest_name)),
+            index: Box::new(Expression::ident(row_name)),
+            null_safe: false,
+        })),
+        index: Box::new(Expression::ident(col_name)),
+        null_safe: false,
+    });
+    let col_loop = Statement::with_span(
+        StmtKind::While {
+            cond: Expression::new(ExprKind::Binary {
+                op: BinOp::Lt,
+                left: Box::new(Expression::ident(col_name)),
+                right: Box::new(Expression::int(cols)),
+            }),
+            body: vec![
+                Statement::with_span(
+                    StmtKind::Assign {
+                        targets: vec![dest_cell],
+                        value: source_cell,
+                    },
+                    Span::default(),
+                ),
+                Statement::with_span(
+                    StmtKind::Assign {
+                        targets: vec![Expression::ident(col_name)],
+                        value: Expression::new(ExprKind::Binary {
+                            op: BinOp::Add,
+                            left: Box::new(Expression::ident(col_name)),
+                            right: Box::new(Expression::int(1)),
+                        }),
+                    },
+                    Span::default(),
+                ),
+            ],
+            else_body: None,
+        },
+        Span::default(),
+    );
+    Statement::with_span(
+        StmtKind::Block(vec![
+            Statement::with_span(
+                StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(row_name.into()),
+                        type_hint: None,
+                        init: Some(Expression::int(0)),
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Var,
+                },
+                Span::default(),
+            ),
+            Statement::with_span(
+                StmtKind::While {
+                    cond: Expression::new(ExprKind::Binary {
+                        op: BinOp::Lt,
+                        left: Box::new(Expression::ident(row_name)),
+                        right: Box::new(Expression::int(rows)),
+                    }),
+                    body: vec![
+                        Statement::with_span(
+                            StmtKind::VarDecl {
+                                declarations: vec![VarDeclarator {
+                                    pattern: BindingPattern::Ident(col_name.into()),
+                                    type_hint: None,
+                                    init: Some(Expression::int(0)),
+                                    array_bounds: None,
+                                    with_events: false,
+                                }],
+                                kind: VarDeclKind::Var,
+                            },
+                            Span::default(),
+                        ),
+                        col_loop,
+                        Statement::with_span(
+                            StmtKind::Assign {
+                                targets: vec![Expression::ident(row_name)],
+                                value: Expression::new(ExprKind::Binary {
+                                    op: BinOp::Add,
+                                    left: Box::new(Expression::ident(row_name)),
+                                    right: Box::new(Expression::int(1)),
+                                }),
+                            },
+                            Span::default(),
+                        ),
+                    ],
+                    else_body: None,
+                },
+                Span::default(),
+            ),
+        ]),
+        Span::default(),
+    )
+}
+
 fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<String, String>) {
     match &mut expr.kind {
         ExprKind::Call { callee, args, .. } => {
@@ -12171,6 +13065,23 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                     break;
                 };
                 *callee = new_callee;
+            }
+
+            if let ExprKind::Call {
+                callee: inner_callee,
+                args: inner_args,
+                ..
+            } = &callee.kind
+            {
+                if let ExprKind::Member { field, .. } = &inner_callee.kind {
+                    if field.eq_ignore_ascii_case("GetValue") && !args.is_empty() {
+                        let mut combined = inner_args.clone();
+                        combined.extend(args.clone());
+                        *expr = call_expr((**inner_callee).clone(), combined);
+                        normalize_vb_dotnet_collection_expr(expr, locals);
+                        return;
+                    }
+                }
             }
 
             if !args.is_empty() {
@@ -12286,12 +13197,20 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                     }
                 }
                 if field.eq_ignore_ascii_case("GetValue") && !args.is_empty() {
-                    *expr = vb_array_index_chain((**object).clone(), args);
+                    if let ExprKind::Ident(name) = &object.kind {
+                        *expr = vb_array_index_chain_for_local(name, args, locals);
+                    } else {
+                        *expr = vb_array_index_chain((**object).clone(), args);
+                    }
                     return;
                 }
                 if field.eq_ignore_ascii_case("SetValue") && args.len() >= 2 {
                     let value = args[0].value.clone();
-                    let target = vb_array_index_chain((**object).clone(), &args[1..]);
+                    let target = if let ExprKind::Ident(name) = &object.kind {
+                        vb_array_index_chain_for_local(name, &args[1..], locals)
+                    } else {
+                        vb_array_index_chain((**object).clone(), &args[1..])
+                    };
                     *expr = Expression::new(ExprKind::Assign {
                         target: Box::new(target),
                         value: Box::new(value),
@@ -12507,6 +13426,15 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
         ExprKind::Index { object, index, .. } => {
             normalize_vb_dotnet_collection_expr(object, locals);
             normalize_vb_dotnet_collection_expr(index, locals);
+            let candidate = Expression::new(ExprKind::Index {
+                object: object.clone(),
+                index: index.clone(),
+                null_safe: false,
+            });
+            if let Some(rewritten) = vb_rewrite_array_index_expr(&candidate, locals) {
+                *expr = rewritten;
+                return;
+            }
             *index = Box::new(vb_normalize_dictionary_key(
                 object,
                 (**index).clone(),
@@ -12699,6 +13627,7 @@ fn vb_array_index_chain_for_local(
             .get(&format!("$array_lower:{key}:{dim}"))
             .and_then(|value| value.parse::<i64>().ok())
             .filter(|value| *value != 0)
+            .filter(|lower| !vb_index_already_subtracts_lower(&index, *lower))
         {
             index = Expression::new(ExprKind::Binary {
                 op: BinOp::Sub,
@@ -12713,6 +13642,226 @@ fn vb_array_index_chain_for_local(
         });
     }
     object
+}
+
+fn vb_index_already_subtracts_lower(expr: &Expression, lower: i64) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Binary { op: BinOp::Sub, right, .. }
+            if vb_literal_i64(right).is_some_and(|value| value == lower)
+    )
+}
+
+fn vb_rewrite_array_index_expr(
+    expr: &Expression,
+    locals: &HashMap<String, String>,
+) -> Option<Expression> {
+    let mut indices = Vec::new();
+    let root = vb_collect_array_index_root(expr, &mut indices)?;
+    if !vb_local_is_array_like(&root, indices.len(), locals) {
+        return None;
+    }
+    let args = indices
+        .into_iter()
+        .map(Argument::positional)
+        .collect::<Vec<_>>();
+    Some(vb_array_index_chain_for_local(&root, &args, locals))
+}
+
+fn vb_collect_array_index_root(expr: &Expression, indices: &mut Vec<Expression>) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::Index { object, index, .. } => {
+            let root = vb_collect_array_index_root(object, indices)?;
+            indices.push((**index).clone());
+            Some(root)
+        }
+        ExprKind::Call { callee, args, .. } => {
+            let root = vb_collect_array_index_root(callee, indices)?;
+            for arg in args {
+                indices.push(arg.value.clone());
+            }
+            Some(root)
+        }
+        _ => None,
+    }
+}
+
+fn vb_index_chain_parts(expr: &Expression) -> Option<(String, Vec<Expression>)> {
+    let mut indices = Vec::new();
+    let root = vb_collect_array_index_root(expr, &mut indices)?;
+    Some((root, indices))
+}
+
+fn normalize_vb_is_concat_precedence(module: &mut Module) {
+    normalize_vb_is_concat_precedence_statements(&mut module.body);
+}
+
+fn normalize_vb_is_concat_precedence_statements(body: &mut [Statement]) {
+    for stmt in body {
+        normalize_vb_is_concat_precedence_statement(stmt);
+    }
+}
+
+fn normalize_vb_is_concat_precedence_statement(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            normalize_vb_is_concat_precedence_expr(expr);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    normalize_vb_is_concat_precedence_expr(init);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                normalize_vb_is_concat_precedence_expr(target);
+            }
+            normalize_vb_is_concat_precedence_expr(value);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            normalize_vb_is_concat_precedence_expr(target);
+            normalize_vb_is_concat_precedence_expr(value);
+        }
+        StmtKind::FunctionDecl { body, .. } => normalize_vb_is_concat_precedence_statements(body),
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                match member {
+                    ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                        normalize_vb_is_concat_precedence_statement(stmt)
+                    }
+                    ClassMember::Constructor { body, .. } => {
+                        normalize_vb_is_concat_precedence_statements(body)
+                    }
+                    ClassMember::Property { getter, setter, .. } => {
+                        if let Some(getter) = getter {
+                            normalize_vb_is_concat_precedence_statements(getter);
+                        }
+                        if let Some(setter) = setter {
+                            normalize_vb_is_concat_precedence_statements(&mut setter.body);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            normalize_vb_is_concat_precedence_expr(cond);
+            normalize_vb_is_concat_precedence_statements(then_body);
+            for (cond, body) in elifs {
+                normalize_vb_is_concat_precedence_expr(cond);
+                normalize_vb_is_concat_precedence_statements(body);
+            }
+            if let Some(body) = else_body {
+                normalize_vb_is_concat_precedence_statements(body);
+            }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            normalize_vb_is_concat_precedence_expr(cond);
+            normalize_vb_is_concat_precedence_statements(body);
+            if let Some(body) = else_body {
+                normalize_vb_is_concat_precedence_statements(body);
+            }
+        }
+        StmtKind::For { init, cond, update, body } => {
+            if let Some(init) = init {
+                normalize_vb_is_concat_precedence_statement(init);
+            }
+            if let Some(cond) = cond {
+                normalize_vb_is_concat_precedence_expr(cond);
+            }
+            if let Some(update) = update {
+                normalize_vb_is_concat_precedence_expr(update);
+            }
+            normalize_vb_is_concat_precedence_statements(body);
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            normalize_vb_is_concat_precedence_expr(iter);
+            normalize_vb_is_concat_precedence_statements(body);
+            if let Some(body) = else_body {
+                normalize_vb_is_concat_precedence_statements(body);
+            }
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            normalize_vb_is_concat_precedence_statements(body);
+        }
+        _ => {}
+    }
+}
+
+fn normalize_vb_is_concat_precedence_expr(expr: &mut Expression) {
+    match &mut expr.kind {
+        ExprKind::Binary { left, right, .. } => {
+            normalize_vb_is_concat_precedence_expr(left);
+            normalize_vb_is_concat_precedence_expr(right);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            normalize_vb_is_concat_precedence_expr(callee);
+            for arg in args {
+                normalize_vb_is_concat_precedence_expr(&mut arg.value);
+            }
+        }
+        ExprKind::Member { object, .. } => normalize_vb_is_concat_precedence_expr(object),
+        ExprKind::Index { object, index, .. } => {
+            normalize_vb_is_concat_precedence_expr(object);
+            normalize_vb_is_concat_precedence_expr(index);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                normalize_vb_is_concat_precedence_expr(&mut item.value);
+            }
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            normalize_vb_is_concat_precedence_expr(cond);
+            normalize_vb_is_concat_precedence_expr(then);
+            normalize_vb_is_concat_precedence_expr(else_);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::RefLoad(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::TypeOf(expr) => normalize_vb_is_concat_precedence_expr(expr),
+        _ => {}
+    }
+
+    let ExprKind::Binary { op, left, right } = &mut expr.kind else {
+        return;
+    };
+    if !matches!(op, BinOp::Is | BinOp::IsNot) {
+        return;
+    }
+    let ExprKind::Binary {
+        op: BinOp::Concat,
+        left: concat_left,
+        right: concat_right,
+    } = &mut right.kind
+    else {
+        return;
+    };
+    let rewritten_left = Expression::new(ExprKind::Binary {
+        op: *op,
+        left: left.clone(),
+        right: concat_left.clone(),
+    });
+    *expr = Expression::new(ExprKind::Binary {
+        op: BinOp::Concat,
+        left: Box::new(rewritten_left),
+        right: concat_right.clone(),
+    });
+    normalize_vb_is_concat_precedence_expr(expr);
 }
 
 fn vb_system_array_member(member: &str) -> Expression {
@@ -13328,10 +14477,11 @@ fn rewrite_vb_default_indexer_statement(
                 }
                 if let BindingPattern::Ident(name) = &decl.pattern {
                     if let Some(type_hint) = &decl.type_hint {
-                        locals.insert(
-                            name.to_ascii_lowercase(),
-                            vb_default_indexer_local_type(type_hint),
-                        );
+                        let mut local_type = vb_default_indexer_local_type(type_hint);
+                        if decl.array_bounds.is_some() && !local_type.trim().ends_with("()") {
+                            local_type.push_str("()");
+                        }
+                        locals.insert(name.to_ascii_lowercase(), local_type);
                     } else if let Some(init) = &decl.init {
                         if let Some(type_name) = vb_infer_expr_type(init, locals) {
                             locals.insert(name.to_ascii_lowercase(), type_name);
@@ -14060,6 +15210,27 @@ fn rewrite_vb_default_indexer_expr(
             rewrite_vb_default_indexer_expr(else_, default_indexer_types, locals);
         }
         ExprKind::Index { object, index, .. } => {
+            let original = Expression::new(ExprKind::Index {
+                object: object.clone(),
+                index: index.clone(),
+                null_safe: false,
+            });
+            if let Some((root, indices)) = vb_index_chain_parts(&original) {
+                if let Some(type_name) = locals.get(&root.to_ascii_lowercase()) {
+                    let base_type = dotnet_vb::collection_base_type_name(type_name);
+                    if type_name.trim().ends_with("()") || base_type.eq_ignore_ascii_case("Array") {
+                        *expr = call_expr(
+                            Expression::new(ExprKind::Member {
+                                object: Box::new(Expression::ident(&root)),
+                                field: "GetValue".to_string(),
+                                null_safe: false,
+                            }),
+                            indices.into_iter().map(Argument::positional).collect(),
+                        );
+                        return;
+                    }
+                }
+            }
             rewrite_vb_default_indexer_expr(object, default_indexer_types, locals);
             rewrite_vb_default_indexer_expr(index, default_indexer_types, locals);
             if let Some(name) = dotted_expr_name(object) {
@@ -18095,7 +19266,7 @@ fn inject_implicit_mybase_new(members: &mut Vec<ClassMember>, class_name: &str, 
 
 fn vb_dotnet_descriptor_parent_skips_mybase_new(parent_name: &str) -> bool {
     vybe_platform_dotnet::emitter::is_component_descriptor_class(parent_name)
-        && vybe_compiler::compiler::gui::canonical_control_name(parent_name).is_empty()
+        && vybe_compiler::primitives::gui::canonical_control_name(parent_name).is_empty()
 }
 
 fn normalize_vb_withevents_assignments(members: &mut Vec<ClassMember>) {
@@ -18351,7 +19522,7 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
                 null_safe: false,
             });
             new_stmts.push(Statement::new(
-                vybe_compiler::compiler::events::add_handler_stmt(control, event, handler),
+                vybe_compiler::primitives::events::add_handler_stmt(control, event, handler),
             ));
         }
     }
@@ -20687,11 +21858,7 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
 
         let right_pair = inner.next().unwrap();
         let right = parse_expression(right_pair)?;
-        left = Expression::new(ExprKind::Binary {
-            op,
-            left: Box::new(left),
-            right: Box::new(right),
-        });
+        left = maybe_rewrite_vb_binary(op, left, right);
     }
 
     Ok(left)
@@ -21137,11 +22304,7 @@ fn parse_binary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
 
         let right_pair = inner.next().unwrap();
         let right = parse_expression(right_pair)?;
-        left = Expression::new(ExprKind::Binary {
-            op,
-            left: Box::new(left),
-            right: Box::new(right),
-        });
+        left = maybe_rewrite_vb_binary(op, left, right);
     }
 
     Ok(left)
@@ -21256,6 +22419,22 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                     index: Box::new(arguments[0].value.clone()),
                     null_safe: false,
                 }));
+            }
+            if !arguments.is_empty() {
+                if let ExprKind::Call {
+                    callee,
+                    args,
+                    optional,
+                } = &expr.kind
+                {
+                    let mut combined = args.clone();
+                    combined.extend(arguments);
+                    return Ok(Expression::new(ExprKind::Call {
+                        callee: callee.clone(),
+                        args: combined,
+                        optional: *optional,
+                    }));
+                }
             }
             if let ExprKind::Ident(name) = &expr.kind {
                 if let Some(rewritten) = canonicalize_call(name, &arguments) {

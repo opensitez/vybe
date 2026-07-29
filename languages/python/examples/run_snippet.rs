@@ -12,7 +12,7 @@ fn main() {
     vybe_language_python::register();
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
 
     let out = output.clone();
     vm.register_host_fn(
@@ -44,7 +44,7 @@ fn main() {
             Value::Null
         }),
     );
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
 
     let language = vybe_compiler::languages::find_by_name("python").expect("python language");
     let mut runtime = vybe_compiler::dynamic::RuntimeCompilerService::new(&mut vm);

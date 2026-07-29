@@ -10,7 +10,7 @@
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
 
-use vybe_compiler::compiler::{collections, ops, strings};
+use vybe_compiler::primitives::{collections, ops, strings};
 
 fn call_import(
     chunks: &mut [Chunk],

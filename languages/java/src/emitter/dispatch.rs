@@ -9,8 +9,8 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_compiler::compiler::instructions::{core_wasm, host};
-use vybe_compiler::compiler::{collections, strings};
+use vybe_compiler::primitives::instructions::{core_wasm, host};
+use vybe_compiler::primitives::{collections, strings};
 
 fn emit_stdout_text(chunk: &mut Chunk, line: u32) {
     let text_slot = chunk.alloc_scratch(1);
@@ -116,12 +116,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
         }
         "java.printf" => {
-            vybe_compiler::compiler::sprintf::emit_sprintf(chunks, current, argc, line);
+            vybe_compiler::primitives::sprintf::emit_sprintf(chunks, current, argc, line);
             emit_stdout_text(&mut chunks[current], line);
             emit_print_stream_sentinel(&mut chunks[current], line);
         }
         "java.printf_array" => {
-            vybe_compiler::compiler::sprintf::emit_sprintf_from_array(chunks, current, line);
+            vybe_compiler::primitives::sprintf::emit_sprintf_from_array(chunks, current, line);
             emit_stdout_text(&mut chunks[current], line);
             emit_print_stream_sentinel(&mut chunks[current], line);
         }
@@ -179,28 +179,28 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             // Polymorphic: works on String, List, Map.
             core_wasm::dup(&mut chunks[current], line);
             host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
-            vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+            vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
             chunks[current].emit_if(line);
             strings::emit_length(&mut chunks[current], line);
             chunks[current].emit_else(line);
             collections::emit_len(chunks, current, line);
             chunks[current].emit_end(line);
             core_wasm::i32_const(&mut chunks[current], line, 0);
-            vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
-            vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
+            vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+            vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
         }
         "java.str_is_blank" => {
             strings::emit_trim(&mut chunks[current], line);
             strings::emit_length(&mut chunks[current], line);
             core_wasm::i32_const(&mut chunks[current], line, 0);
-            vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
-            vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
+            vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+            vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
         }
         "java.is_empty" => {
             collections::emit_len(chunks, current, line);
             core_wasm::i32_const(&mut chunks[current], line, 0);
-            vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
-            vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
+            vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+            vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
         }
         "java.size" => {
             super::list_adapter::emit_size(chunks, current, line);
@@ -376,7 +376,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.is_infinite" => {
             host::emit(&mut chunks[current], "ecma:number", "isFinite", 1, line);
-            vybe_compiler::compiler::ops::emit_dyn_not(&mut chunks[current], line);
+            vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
         }
         "java.signum" => {
             host::emit(&mut chunks[current], "ecma:math", "sign", 1, line);
@@ -452,16 +452,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks[current].emit_op_u16(Op::LOCAL_SET, a_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
-            vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
-            vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+            vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+            vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
             chunks[current].emit_if(line);
             chunks[current].emit_i32_const(-1, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
             chunks[current].emit_else(line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
-            vybe_compiler::compiler::ops::emit_dyn_gt(&mut chunks[current], line);
-            vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+            vybe_compiler::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
+            vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
             chunks[current].emit_if(line);
             chunks[current].emit_i32_const(1, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -1465,7 +1465,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             let idx_slot = chunks[current].alloc_scratch(1);
             chunks[current].emit_op_u16(Op::LOCAL_SET, fn_slot, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
-            vybe_compiler::compiler::loops::emit_foreach(
+            vybe_compiler::primitives::loops::emit_foreach(
                 chunks, current, fn_slot, arr_slot, idx_slot, line,
             );
         }
@@ -1631,7 +1631,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             host::emit(&mut chunks[current], "ecma:map", "size", 1, line);
             core_wasm::i32_const(&mut chunks[current], line, 0);
             chunks[current].emit_op(Op::I32_EQ, line);
-            vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
+            vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
         }
         "java.map_equals" => {
             super::list_adapter::emit_map_equals(chunks, current, line);
@@ -1893,13 +1893,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 
         // ── Object utilities ──────────────────────────────────────────────
         "java.equals" => {
-            vybe_compiler::compiler::object::emit_equals(&mut chunks[current], line);
+            vybe_compiler::primitives::object::emit_equals(&mut chunks[current], line);
         }
         "java.objects_equals" => {
-            vybe_compiler::compiler::object::emit_equals(&mut chunks[current], line);
+            vybe_compiler::primitives::object::emit_equals(&mut chunks[current], line);
         }
         "java.hash_code" => {
-            vybe_compiler::compiler::object::emit_hash_code(&mut chunks[current], line);
+            vybe_compiler::primitives::object::emit_hash_code(&mut chunks[current], line);
         }
         "java.require_non_null" => {
             if argc > 1 {
@@ -1907,10 +1907,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             }
         }
         "java.is_null" => {
-            vybe_compiler::compiler::object::emit_is_null(&mut chunks[current], line);
+            vybe_compiler::primitives::object::emit_is_null(&mut chunks[current], line);
         }
         "java.non_null" => {
-            vybe_compiler::compiler::object::emit_non_null(&mut chunks[current], line);
+            vybe_compiler::primitives::object::emit_non_null(&mut chunks[current], line);
         }
 
         _ => return false,

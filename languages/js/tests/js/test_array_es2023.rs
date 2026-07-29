@@ -566,3 +566,18 @@ console.log(result.join(","));
         vec!["0,a,1,b,2,c"]
     );
 }
+
+#[test]
+fn array_es2023_with_negative_index_support() {
+    assert_eq!(
+        run_js(
+            r#"
+const arr = [10, 20, 30];
+const updated = arr.with(-1, 99);
+console.log(arr.join(",") + "|" + updated.join(","));
+"#
+        ),
+        vec!["10,20,30|10,20,99"]
+    );
+}
+

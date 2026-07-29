@@ -327,3 +327,22 @@ console.log([...result].sort((a,b)=>a-b).join(","));
         vec!["2,3"]
     );
 }
+
+#[test]
+fn set_operation_accepts_custom_set_like_object() {
+    assert_eq!(
+        run_js(
+            r#"
+const a = new Set([1, 2, 3]);
+const custom = {
+    size: 2,
+    has(v) { return v === 2 || v === 3; },
+    keys() { return [2, 3][Symbol.iterator](); }
+};
+console.log([...a.intersection(custom)].join(","));
+"#
+        ),
+        vec!["2,3"]
+    );
+}
+

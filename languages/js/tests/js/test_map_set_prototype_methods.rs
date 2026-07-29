@@ -437,4 +437,8 @@ crate::js_cases! {
         ["2"]
     };
 
+    map_symbol_tostringtag_is_map => {
+        r#"console.log(Map.prototype[Symbol.toStringTag]);"#,
+        ["Map"]
+    };
 }

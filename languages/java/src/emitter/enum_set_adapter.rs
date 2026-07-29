@@ -2,7 +2,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_compiler::compiler::{
+use vybe_compiler::primitives::{
     collections,
     instructions::{core_wasm, host},
 };
@@ -69,7 +69,7 @@ fn push_name_if_absent(
     line: u32,
 ) {
     emit_contains_name(chunks, current, set_slot, name_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], set_slot, line);
@@ -162,8 +162,8 @@ pub fn emit_complement_of(chunks: &mut [Chunk], current: usize, line: u32) {
     let (_loop, _) = chunks[current].emit_loop_s(line);
     get(&mut chunks[current], i, line);
     get(&mut chunks[current], len, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     get(&mut chunks[current], names, line);
@@ -171,7 +171,7 @@ pub fn emit_complement_of(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_get(chunks, current, line);
     set(&mut chunks[current], name, line);
     emit_contains_name(chunks, current, source, name, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], out, line);
@@ -181,7 +181,7 @@ pub fn emit_complement_of(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
     get(&mut chunks[current], i, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
     set(&mut chunks[current], i, line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -207,8 +207,8 @@ pub fn emit_range(chunks: &mut [Chunk], current: usize, line: u32) {
     let (_loop, _) = chunks[current].emit_loop_s(line);
     get(&mut chunks[current], i, line);
     get(&mut chunks[current], end, line);
-    vybe_compiler::compiler::ops::emit_dyn_gt(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
     get(&mut chunks[current], out, line);
     get(&mut chunks[current], names, line);
@@ -218,7 +218,7 @@ pub fn emit_range(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     get(&mut chunks[current], i, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
     set(&mut chunks[current], i, line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -235,7 +235,7 @@ pub fn emit_add(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_name_for_value(chunks, current, set_slot, value, line);
     set(&mut chunks[current], name, line);
     emit_contains_name(chunks, current, set_slot, name, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_bool_const(false, line);
     chunks[current].emit_else(line);
@@ -267,8 +267,8 @@ pub fn emit_add_all(chunks: &mut [Chunk], current: usize, line: u32) {
     let (_loop, _) = chunks[current].emit_loop_s(line);
     get(&mut chunks[current], i, line);
     get(&mut chunks[current], len, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     get(&mut chunks[current], source, line);
@@ -276,7 +276,7 @@ pub fn emit_add_all(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_get(chunks, current, line);
     set(&mut chunks[current], name, line);
     emit_contains_name(chunks, current, target, name, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], target, line);
@@ -288,7 +288,7 @@ pub fn emit_add_all(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
     get(&mut chunks[current], i, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
     set(&mut chunks[current], i, line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -327,8 +327,8 @@ pub fn emit_contains_all(chunks: &mut [Chunk], current: usize, line: u32) {
     let (_loop, _) = chunks[current].emit_loop_s(line);
     get(&mut chunks[current], i, line);
     get(&mut chunks[current], len, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     get(&mut chunks[current], source, line);
@@ -336,7 +336,7 @@ pub fn emit_contains_all(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_get(chunks, current, line);
     set(&mut chunks[current], name, line);
     emit_contains_name(chunks, current, target, name, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_bool_const(false, line);
@@ -346,7 +346,7 @@ pub fn emit_contains_all(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
     get(&mut chunks[current], i, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
-    vybe_compiler::compiler::ops::emit_dyn_add(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
     set(&mut chunks[current], i, line);
     chunks[current].emit_br(0, line);
     chunks[current].emit_end(line);
@@ -363,8 +363,8 @@ pub fn emit_equals(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_len(chunks, current, line);
     get(&mut chunks[current], other, line);
     collections::emit_len(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     get(&mut chunks[current], set_slot, line);
     get(&mut chunks[current], other, line);

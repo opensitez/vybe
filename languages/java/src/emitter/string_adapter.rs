@@ -5,8 +5,8 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_compiler::compiler::collections;
-use vybe_compiler::compiler::instructions::host;
+use vybe_compiler::primitives::collections;
+use vybe_compiler::primitives::instructions::host;
 
 pub fn emit_index_of(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     host::emit(&mut chunks[current], "ecma:string", "indexOf", argc, line);
@@ -54,7 +54,7 @@ pub fn emit_concat(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_value_of(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
     emit_value_of(chunks, current, line);
-    vybe_compiler::compiler::strings::emit_str_concat(&mut chunks[current], line);
+    vybe_compiler::primitives::strings::emit_str_concat(&mut chunks[current], line);
 }
 
 pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -99,7 +99,7 @@ pub fn emit_trunc_cast(chunks: &mut [Chunk], current: usize, line: u32) {
     );
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    vybe_compiler::compiler::math::emit_trunc(&mut chunks[current], line);
+    vybe_compiler::primitives::math::emit_trunc(&mut chunks[current], line);
     chunks[current].emit_end(line);
 }
 
@@ -113,8 +113,8 @@ pub fn emit_compare_ignore_case(chunks: &mut [Chunk], current: usize, line: u32)
 pub fn emit_equals_ignore_case(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     lower_pair(chunk, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
 pub fn emit_hash_code(chunks: &mut [Chunk], current: usize, line: u32) {

@@ -153,3 +153,17 @@ main();
     );
     assert_eq!(out, vec!["1", "2", "3"]);
 }
+
+#[test]
+fn async_function_throw_returns_rejected_promise() {
+    let out = run_js(
+        r#"
+async function err() {
+    throw "boom";
+}
+err().catch(e => console.log(e));
+"#,
+    );
+    assert_eq!(out, vec!["boom"]);
+}
+

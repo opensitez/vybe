@@ -217,3 +217,15 @@ try {
 "#;
     assert_eq!(run_js(src), vec!["toSorted Comparator TypeError"]);
 }
+
+#[test]
+fn test_js_array_toreversed_species_returns_base_array() {
+    let src = r#"
+class CustomArray extends Array {}
+const ca = new CustomArray(1, 2, 3);
+const rev = ca.toReversed();
+console.log(rev.join(",") + "|isCustom=" + (rev instanceof CustomArray));
+"#;
+    assert_eq!(run_js(src), vec!["3,2,1|isCustom=false"]);
+}
+

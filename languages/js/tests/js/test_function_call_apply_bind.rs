@@ -163,3 +163,18 @@ console.log(p instanceof Point);
         vec!["1", "2", "true"]
     );
 }
+
+#[test]
+fn test_function_call_apply_bind_name_prefix() {
+    assert_eq!(
+        run_js(
+            r#"
+function orig() {}
+const b = orig.bind(null);
+console.log(b.name);
+"#
+        ),
+        vec!["bound orig"]
+    );
+}
+

@@ -5,8 +5,8 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_compiler::compiler::collections;
-use vybe_compiler::compiler::strings;
+use vybe_compiler::primitives::collections;
+use vybe_compiler::primitives::strings;
 
 pub fn emit_empty(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_bool_const(false, line);
@@ -64,7 +64,7 @@ pub fn emit_or_else(chunks: &mut [Chunk], current: usize, call_supplier: bool, l
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
     emit_is_present(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     emit_value_from_slot(chunks, current, optional_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -87,7 +87,7 @@ pub fn emit_if_present(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
     emit_is_present(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, consumer_slot, line);
     emit_value_from_slot(chunks, current, optional_slot, line);
@@ -99,9 +99,9 @@ pub fn emit_if_present(chunks: &mut [Chunk], current: usize, line: u32) {
 
 pub fn emit_is_empty(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_is_present(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 
 pub fn emit_filter(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -113,12 +113,12 @@ pub fn emit_filter(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
     emit_is_present(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, predicate_slot, line);
     emit_value_from_slot(chunks, current, optional_slot, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -143,7 +143,7 @@ pub fn emit_map(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
     emit_is_present(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, mapper_slot, line);
     emit_value_from_slot(chunks, current, optional_slot, line);
@@ -167,7 +167,7 @@ pub fn emit_flat_map(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
     emit_is_present(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, mapper_slot, line);
     emit_value_from_slot(chunks, current, optional_slot, line);
@@ -191,7 +191,7 @@ pub fn emit_if_present_or_else(chunks: &mut [Chunk], current: usize, line: u32) 
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
     emit_is_present(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, consumer_slot, line);
     emit_value_from_slot(chunks, current, optional_slot, line);
@@ -214,7 +214,7 @@ pub fn emit_or(chunks: &mut [Chunk], current: usize, call_supplier: bool, line: 
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
     emit_is_present(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -236,7 +236,7 @@ pub fn emit_stream(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
     emit_is_present(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     emit_value_from_slot(chunks, current, optional_slot, line);
     collections::emit_array_new(chunks, current, 1, line);
@@ -260,21 +260,21 @@ pub fn emit_equals(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_is_present(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, other_slot, line);
     emit_is_present(chunks, current, line);
-    vybe_compiler::compiler::object::emit_equals(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::object::emit_equals(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
     emit_is_present(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     emit_tag_from_slot(chunks, current, optional_slot, line);
     emit_tag_from_slot(chunks, current, other_slot, line);
-    vybe_compiler::compiler::object::emit_equals(&mut chunks[current], line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::object::emit_equals(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     emit_value_from_slot(chunks, current, optional_slot, line);
     emit_value_from_slot(chunks, current, other_slot, line);
-    vybe_compiler::compiler::object::emit_equals(&mut chunks[current], line);
+    vybe_compiler::primitives::object::emit_equals(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_else(line);
     chunks[current].emit_bool_const(false, line);
@@ -299,7 +299,7 @@ pub fn emit_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
     emit_is_present(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_string_const("Optional[", line);
     emit_value_from_slot(chunks, current, optional_slot, line);
@@ -331,7 +331,7 @@ pub fn emit_or_else_throw(chunks: &mut [Chunk], current: usize, has_supplier: bo
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
     emit_is_present(chunks, current, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     emit_value_from_slot(chunks, current, optional_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -343,13 +343,13 @@ pub fn emit_or_else_throw(chunks: &mut [Chunk], current: usize, has_supplier: bo
         chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
         chunks[current].emit_dup(line);
         chunks[current].emit_string_const("", line);
-        vybe_compiler::compiler::errors::emit_exception_new_finalize(
+        vybe_compiler::primitives::errors::emit_exception_new_finalize(
             &mut chunks[current],
             "java.util.NoSuchElementException",
             line,
         );
     }
-    vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line);
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);

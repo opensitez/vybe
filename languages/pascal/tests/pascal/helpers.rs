@@ -18,7 +18,7 @@ pub fn run_pascal(src: &str) -> Vec<String> {
 
     let profile = load_pascal_profile();
 
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("Pascal compile failed");
 
@@ -26,7 +26,7 @@ pub fn run_pascal(src: &str) -> Vec<String> {
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let stdout_buffer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let out = output.clone();
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     vm.register_host_fn(
         "wasi:logging/logging",
         "log",
@@ -69,7 +69,7 @@ pub fn run_pascal(src: &str) -> Vec<String> {
             Value::Null
         }),
     );
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("Pascal run failed");
     let residual = stdout_buffer.lock().unwrap().clone();
     if !residual.is_empty() {
@@ -120,7 +120,7 @@ pub fn run_pascal_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<Str
     }
     let module = vybe_language_pascal::parse(src).expect("Pascal parse failed");
     let profile = load_pascal_profile();
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("Pascal compile failed");
 
@@ -137,7 +137,7 @@ pub fn run_pascal_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<Str
             Value::Null
         }),
     );
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("Pascal run failed");
     (vm, gui, output)
 }
@@ -149,7 +149,7 @@ pub fn run_pascal_gui_capture_msgbox(
 ) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<(String, String)>>>) {
     let module = vybe_language_pascal::parse(src).expect("Pascal parse failed");
     let profile = load_pascal_profile();
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("Pascal compile failed");
 
@@ -173,7 +173,7 @@ pub fn run_pascal_gui_capture_msgbox(
         }),
     );
 
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("Pascal run failed");
     (vm, gui, msgboxes)
 }

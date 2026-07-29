@@ -253,3 +253,20 @@ console.log(fns.map(f => f()).join(","));
         vec!["10,20,30"]
     );
 }
+
+#[test]
+fn for_in_const_binding_per_iteration() {
+    assert_eq!(
+        run_js(
+            r#"
+const fns = [];
+for (const k in { a: 1, b: 2 }) {
+    fns.push(() => k);
+}
+console.log(fns.map(f => f()).join(","));
+"#
+        ),
+        vec!["a,b"]
+    );
+}
+

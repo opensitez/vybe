@@ -571,4 +571,10 @@ crate::js_cases! {
         r#"const fns = [async function* g() { yield 1; }]; console.log(Object.getPrototypeOf(fns[0]) === AsyncGeneratorFunction.prototype);"#,
         ["true"]
     };
+
+    async_generator_function_dynamic_constructor => {
+        r#"const AsyncGenFn = Object.getPrototypeOf(async function*(){}).constructor; const f = new AsyncGenFn("a", "yield a * 2;"); console.log(f instanceof AsyncGenFn);"#,
+        ["true"]
+    };
 }
+

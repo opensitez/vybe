@@ -568,3 +568,20 @@ console.log(obj[key]);
         vec!["secret"]
     );
 }
+
+#[test]
+fn function_declaration_shadows_global() {
+    assert_eq!(
+        run_js(
+            r#"
+function f() {
+    function Math() { return "custom"; }
+    return Math();
+}
+console.log(f());
+"#
+        ),
+        vec!["custom"]
+    );
+}
+

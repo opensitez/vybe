@@ -100,4 +100,13 @@ console.log((await iterator.next()).value);
 "#,
         ["left", "right"]
     };
+
+    asynciterator_from_wraps_sync_iterable => {
+        r#"
+const asyncIter = AsyncIterator.from([10, 20]);
+console.log((await asyncIter.next()).value + "|" + (await asyncIter.next()).value);
+"#,
+        ["10|20"]
+    };
 }
+

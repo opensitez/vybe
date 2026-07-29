@@ -8,7 +8,7 @@
 //!
 //! Mirrors the inline-emit shape of the other `languages/php/emitter`
 //! adapters: writes WASM opcodes straight into the chunk, composing only
-//! core ops + `vybe_compiler::compiler::ops` dynamic helpers. The shared compiler
+//! core ops + `vybe_compiler::primitives::ops` dynamic helpers. The shared compiler
 //! routes here via the `string_aware_relational` profile flag — no
 //! `profile.name == "php"` branch.
 
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use vybe_bytecode::opcode::Op;
 use vybe_bytecode::{Chunk, Value};
 
-use vybe_compiler::compiler::ops::{emit_dyn_eq, emit_dyn_to_bool};
+use vybe_compiler::primitives::ops::{emit_dyn_eq, emit_dyn_to_bool};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -103,12 +103,12 @@ pub fn emit_php_loose_eq(chunks: &mut [Chunk], current: usize, _argc: u8, negate
     lget(chunk, a_num_slot, line);
     lget(chunk, b_num_slot, line);
     chunk.emit_op(Op::F64_EQ, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
     lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
     chunk.emit_call(str_eq, 2, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_end(line);
 
     chunk.emit_else(line);
@@ -120,12 +120,12 @@ pub fn emit_php_loose_eq(chunks: &mut [Chunk], current: usize, _argc: u8, negate
     lget(chunk, b_slot, line);
     chunk.emit_call(to_f64, 1, line);
     chunk.emit_op(Op::F64_EQ, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
     lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
     emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
 
@@ -141,25 +141,25 @@ pub fn emit_php_loose_eq(chunks: &mut [Chunk], current: usize, _argc: u8, negate
     lget(chunk, b_slot, line);
     chunk.emit_call(parse_float, 1, line);
     chunk.emit_op(Op::F64_EQ, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_else(line);
     lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
     emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_end(line);
     chunk.emit_else(line);
     lget(chunk, a_slot, line);
     lget(chunk, b_slot, line);
     emit_dyn_eq(chunk, line);
-    vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
 
     if negate {
         emit_dyn_to_bool(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
-        vybe_compiler::compiler::ops::emit_i32_to_bool(chunk, line);
+        vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
     }
 }
 

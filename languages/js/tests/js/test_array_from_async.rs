@@ -228,3 +228,18 @@ Array.fromAsync(asyncIterable).then(arr => console.log(arr.join(",")));
         vec!["100,200,300"]
     );
 }
+
+#[test]
+fn from_async_map_this_arg() {
+    assert_eq!(
+        run_js(
+            r#"
+const ctx = { multiplier: 5 };
+Array.fromAsync([1, 2, 3], function(x) {
+    return x * this.multiplier;
+}, ctx).then(arr => console.log(arr.join(",")));
+"#
+        ),
+        vec!["5,10,15"]
+    );
+}

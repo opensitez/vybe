@@ -441,4 +441,8 @@ crate::js_cases! {
         ["3", "true"]
     };
 
+    sort_holes_and_undefined_moved_to_end => {
+        r#"const a = [3, , undefined, 1]; a.sort(); console.log(a[0] + "," + a[1] + "|" + (2 in a) + "|" + (3 in a));"#,
+        ["1,3|true|false"]
+    };
 }

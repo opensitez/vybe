@@ -337,3 +337,22 @@ async function* outer() {
 "#;
     assert_eq!(run_js(src), vec!["StreamError"]);
 }
+
+#[test]
+fn test_js_async_generator_throw_on_completed_generator_rethrows() {
+    let src = r#"
+async function* gen() { yield 1; }
+(async () => {
+    const ag = gen();
+    await ag.next();
+    await ag.next();
+    try {
+        await ag.throw(new Error("post_done_throw"));
+    } catch (e) {
+        console.log(e.message);
+    }
+})();
+"#;
+    assert_eq!(run_js(src), vec!["post_done_throw"]);
+}
+

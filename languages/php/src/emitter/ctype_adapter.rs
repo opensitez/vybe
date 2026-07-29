@@ -35,7 +35,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     chunk.emit_op_u16(Op::LOCAL_SET, v_slot, line);
     chunk.emit_string_const("", line);
     chunk.emit_op_u16(Op::LOCAL_GET, v_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_add(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, s_slot, line);
 
     // len = s.length
@@ -51,7 +51,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     // if len === 0: result = false; break.
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunk.emit_f64_const(0.0, line);
-    vybe_compiler::compiler::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     chunk.emit_bool_const(false, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
@@ -69,7 +69,7 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
     let (loop_patch, _) = chunk.emit_loop_s(line);
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_br_if(1, line);
 
@@ -90,14 +90,14 @@ fn emit_check(chunks: &mut [Chunk], current: usize, ranges: &[Range], line: u32)
         // code >= lo  ≡  !(code < lo)
         chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
         chunk.emit_f64_const(rng.lo as f64, line);
-        vybe_compiler::compiler::ops::emit_dyn_lt(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
         chunk.emit_if(line);
         // code <= hi  ≡  !(code > hi)
         chunk.emit_op_u16(Op::LOCAL_GET, code_slot, line);
         chunk.emit_f64_const(rng.hi as f64, line);
-        vybe_compiler::compiler::ops::emit_dyn_gt(chunk, line);
-        vybe_compiler::compiler::ops::emit_dyn_not(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+        vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
         chunk.emit_if(line);
         chunk.emit_bool_const(true, line);
         chunk.emit_op_u16(Op::LOCAL_SET, matched_slot, line);

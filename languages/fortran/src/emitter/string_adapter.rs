@@ -9,7 +9,7 @@
 //! - `adjustr(s)` — symmetric.
 
 use vybe_bytecode::Chunk;
-use vybe_compiler::compiler::instructions::host;
+use vybe_compiler::primitives::instructions::host;
 
 /// Fortran `len_trim(s)` — length of string after stripping trailing
 /// blanks. Composes `ecma:string.trimEnd` + `wasm:js-string.length`.

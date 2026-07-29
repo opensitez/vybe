@@ -263,3 +263,16 @@ console.log(e.stack.includes("BaseErr: BaseMsg"));
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
+
+#[test]
+fn test_js_error_capture_stack_trace_null_target_throws_typeerror() {
+    let src = r#"
+try {
+    Error.captureStackTrace(null);
+} catch (e) {
+    console.log(e instanceof TypeError);
+}
+"#;
+    assert_eq!(run_js(src), vec!["true"]);
+}
+

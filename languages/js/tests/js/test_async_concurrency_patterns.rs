@@ -240,3 +240,18 @@ main();
         vec!["12", "22"]
     );
 }
+
+#[test]
+fn promise_with_resolvers_static_method() {
+    assert_eq!(
+        run_js(
+            r#"
+const { promise, resolve, reject } = Promise.withResolvers();
+resolve(99);
+promise.then(v => console.log(v));
+"#
+        ),
+        vec!["99"]
+    );
+}
+

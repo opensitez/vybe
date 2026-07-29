@@ -9,7 +9,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_compiler::compiler::tuples;
+use vybe_compiler::primitives::tuples;
 
 fn lget(c: &mut Chunk, s: u16, line: u32) {
     c.emit_op_u16(Op::LOCAL_GET, s, line);

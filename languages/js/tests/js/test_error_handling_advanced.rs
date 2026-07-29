@@ -245,3 +245,23 @@ console.log(safeParse("bad").ok);
         vec!["true", "false"]
     );
 }
+
+#[test]
+fn generator_return_method_closes() {
+    assert_eq!(
+        run_js(
+            r#"
+function* gen() {
+    yield 1;
+    yield 2;
+}
+const g = gen();
+console.log(g.next().value);
+console.log(g.return("closed").value);
+console.log(g.next().done);
+"#
+        ),
+        vec!["1", "closed", "true"]
+    );
+}
+

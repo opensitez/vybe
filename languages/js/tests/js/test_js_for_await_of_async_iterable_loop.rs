@@ -421,3 +421,25 @@ fn test_js_for_await_of_async_generator_yields_rejected_promise() {
     assert_eq!(run_js(src), vec!["GenReject"]);
 }
 
+#[test]
+fn for_await_of_prefers_symbol_async_iterator_over_sync() {
+    let src = r#"
+const dual = {
+    [Symbol.iterator]() {
+        return { next() { return { value: "sync", done: false }; } };
+    },
+    [Symbol.asyncIterator]() {
+        return { async next() { return { value: "async", done: false }; } };
+    }
+};
+(async () => {
+    for await (const x of dual) {
+        console.log(x);
+        break;
+    }
+})();
+"#;
+    assert_eq!(run_js(src), vec!["async"]);
+}
+
+

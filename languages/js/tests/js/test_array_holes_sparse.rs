@@ -209,3 +209,18 @@ console.log(copied.join(","));
         vec!["5", "true", "1,,,,3"]
     );
 }
+
+#[test]
+fn slice_preserves_sparse_holes() {
+    assert_eq!(
+        run_js(
+            r#"
+const arr = [1, , 3];
+const sliced = arr.slice(0, 3);
+console.log(1 in sliced);
+"#
+        ),
+        vec!["false"]
+    );
+}
+

@@ -72,15 +72,15 @@ pub fn run_js(src: &str) -> Vec<String> {
     let profile = vybe_compiler::profile::parse_profile(vybe_language_js::profile_source())
         .expect("Failed to parse JS profile");
 
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("JS compile failed");
 
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     register_output_capture(&mut vm, &output);
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vybe_compiler::dynamic::run_with_js_dynamic_runtime(
         &mut vm,
         vybe_bytecode::capabilities::Capabilities::all(),
@@ -107,14 +107,14 @@ pub fn run_js_with_imports(src: &str) -> Vec<String> {
 
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     register_output_capture(&mut vm, &output);
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vybe_compiler::adapters::register_all(&mut vm).expect("adapter registration failed");
 
     let module_exports = vybe_compiler::bundle::flatten_module_exports(&vm.modules);
     let value_exports = vybe_compiler::bundle::flatten_module_value_exports(&vm.modules);
-    let result = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let result = vybe_compiler::primitives::Compiler::with_profile(profile)
         .with_module_exports(module_exports)
         .with_module_value_exports(value_exports)
         .compile_with_imports(&module)
@@ -142,15 +142,15 @@ pub fn run_js_vm(src: &str) -> (VM, Arc<Mutex<Vec<String>>>) {
     let module = vybe_language_js::parse(src).expect("JS parse failed");
     let profile = vybe_compiler::profile::parse_profile(vybe_language_js::profile_source())
         .expect("Failed to parse JS profile");
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("JS compile failed");
 
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     register_output_capture(&mut vm, &output);
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vybe_compiler::dynamic::run_with_js_dynamic_runtime(
         &mut vm,
         vybe_bytecode::capabilities::Capabilities::all(),

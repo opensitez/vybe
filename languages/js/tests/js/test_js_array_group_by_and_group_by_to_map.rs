@@ -225,3 +225,16 @@ try {
 "#;
     assert_eq!(run_js(src), vec!["Object.groupBy Non-Iterable TypeError"]);
 }
+
+#[test]
+fn test_js_map_groupby_non_iterable_source_throws_typeerror() {
+    let src = r#"
+try {
+    Map.groupBy(null, () => "group");
+} catch (e) {
+    console.log("Map.groupBy Non-Iterable TypeError");
+}
+"#;
+    assert_eq!(run_js(src), vec!["Map.groupBy Non-Iterable TypeError"]);
+}
+

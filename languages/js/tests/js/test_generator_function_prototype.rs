@@ -560,4 +560,10 @@ crate::js_cases! {
         r#"const fns = [function* g() { yield 1; }]; console.log(Object.getPrototypeOf(fns[0]) === GeneratorFunction.prototype);"#,
         ["true"]
     };
+
+    generator_function_prototype_symbol_tostringtag => {
+        r#"console.log(GeneratorFunction.prototype[Symbol.toStringTag]);"#,
+        ["GeneratorFunction"]
+    };
 }
+

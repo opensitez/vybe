@@ -2,7 +2,7 @@
 
 use vybe_bytecode::Chunk;
 use vybe_bytecode::opcode::Op;
-use vybe_compiler::compiler::instructions::host;
+use vybe_compiler::primitives::instructions::host;
 
 pub fn emit_helper(
     name: &str,
@@ -16,12 +16,12 @@ pub fn emit_helper(
         "go.fmt_print" => emit_fmt_joined(chunks, current, argc, line, ""),
         "go.fmt_printf" => emit_fmt_printf(chunks, current, argc, line),
         "go.fmt_sprint" => emit_fmt_sprint(chunks, current, argc, line),
-        "go.panic" => vybe_compiler::compiler::errors::emit_throw(&mut chunks[current], line),
+        "go.panic" => vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line),
         // fmt.Sprintf / __go_sprintf — format to a string (no output). Same
         // runtime formatter as Printf but leaves the result on the stack
         // instead of logging it.
         "go.fmt_sprintf" => {
-            vybe_compiler::compiler::sprintf::emit_sprintf(chunks, current, argc, line);
+            vybe_compiler::primitives::sprintf::emit_sprintf(chunks, current, argc, line);
         }
         "go.regex_split_pat_first" => {
             // `regexp.Split(str, pat)` (Go source is pattern-first) → ecma
@@ -85,7 +85,7 @@ fn emit_fmt_joined(chunks: &mut [Chunk], current: usize, argc: u8, line: u32, se
 }
 
 fn emit_fmt_printf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
-    vybe_compiler::compiler::sprintf::emit_sprintf(chunks, current, argc, line);
+    vybe_compiler::primitives::sprintf::emit_sprintf(chunks, current, argc, line);
     emit_log(chunks, current, line);
 }
 
@@ -95,7 +95,7 @@ fn emit_formatted_local(chunks: &mut [Chunk], current: usize, slot: u16, line: u
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     let is_array = chunks[current].add_import("ecma:array", "isArray");
     chunks[current].emit_call(is_array, 1, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     {
         // then: "[" + join(v, " ") + "]"
@@ -116,7 +116,7 @@ fn emit_formatted_local(chunks: &mut [Chunk], current: usize, slot: u16, line: u
         // normalizer records it as `ProtocolSlot::ToString`, so this reaches it
         // without the walker having to infer the receiver's type first (which
         // is why `go_stringer_call_expr` only ever fired at some call sites).
-        vybe_compiler::compiler::expressions::emit_rich_to_string(
+        vybe_compiler::primitives::expressions::emit_rich_to_string(
             &mut chunks[current],
             slot,
             line,

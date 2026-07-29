@@ -249,3 +249,17 @@ console.log(typeof COMPLETELY_UNDECLARED_VARIABLE);
         vec!["undefined"]
     );
 }
+
+#[test]
+fn function_call_without_new() {
+    assert_eq!(
+        run_js(
+            r#"
+const f = Function("a", "b", "return a + b");
+console.log(f(2, 3));
+"#
+        ),
+        vec!["5"]
+    );
+}
+
