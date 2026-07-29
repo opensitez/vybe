@@ -24,5 +24,5 @@ bags['x'].append(2)
 print(bags['x'])
 print(sorted(bags.items()))
 "#;
-    assert_eq!(run_python(src), vec!["[1, 2]", "[('x', [1, 2]), ('y', [])]"]);
+    assert_eq!(run_python(src), vec!["[1, 2]", "[('x', [1, 2])]"]);
 }

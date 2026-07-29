@@ -489,6 +489,13 @@ open            = { emit = "common:python.file_open",        min_args = 1, max_a
 
 # `wasi:filesystem` (the flat shim) has no cwd — the process working directory
 # is a process concept, not a filesystem one, so it comes from node:process.
+# `collections` constructors — the same dotted-builtin data every other stdlib
+# module has (`os.*`, `math.*`, `json.*`). Without these the names exist only as
+# namespace-tree leaves and never resolve at a call site.
+"collections.Counter"     = { emit = "common:python.counter_new",     min_args = 0, max_args = 1 }
+"collections.defaultdict" = { emit = "common:python.defaultdict_new", min_args = 0, max_args = 2 }
+"collections.deque"       = { emit = "host:ecma:array:from",          min_args = 0, max_args = 2 }
+"collections.OrderedDict" = { emit = "host:ecma:object:create",       min_args = 0, max_args = 1 }
 "os.getcwd"         = { emit = "host:wasi:cli/environment:initial-cwd", min_args = 0, max_args = 0 }
 "os.getpid"         = { emit = "host:node:process:pid",               min_args = 0, max_args = 0 }
 # shutil — the wasi shim already does the heavy lifting: `mkdir` is
@@ -574,7 +581,10 @@ open            = { emit = "common:python.file_open",        min_args = 1, max_a
 
 # ── json module ──────────────────────────────────────────────────────────────
 
-"json.dumps"     = { emit = "host:ecma:json:stringify",       min_args = 1, max_args = 3 }
+# Target the ADAPTER, not the raw ECMA fn: a Python dict is a Map, which
+# `JSON.stringify` renders as `{}`. The adapter normalizes first, so the target
+# is self-sufficient and a bound name behaves like `json.dumps(...)`.
+"json.dumps"     = { emit = "common:python.json_dumps",       min_args = 1, max_args = 6 }
 "json.loads"     = { emit = "host:ecma:json:parse",           min_args = 1, max_args = 1 }
 # Walker reshapes `json.dumps(obj, cls=…, sort_keys=…, indent=…, …)` into this
 # fixed positional form so the adapter gets Python semantics (encoder hook +
@@ -679,7 +689,7 @@ format_map      = { emit = "common:python.format_map",              min_args = 1
 
 # List instance methods
 append          = { emit = "common:collections.push",         min_args = 1, max_args = 1 }
-appendleft      = { emit = "common:collections.unshift",      min_args = 1, max_args = 1 }
+appendleft      = { emit = "host:ecma:array:unshift",         min_args = 1, max_args = 1 }
 popleft         = { emit = "common:collections.shift",        min_args = 0, max_args = 0 }
 extendleft      = { emit = "common:python.deque_extendleft",  min_args = 1, max_args = 1 }
 rotate          = { emit = "common:python.deque_rotate",      min_args = 0, max_args = 1 }
@@ -812,6 +822,11 @@ kind = "package-root"
 prefix = "wasm"
 module_root = "wasm:"
 
+# `math` → `ecma:math`. This binds every name ECMA spells the same way
+# (`hypot`, `atan2`, `log2`, …) with no per-name row. Names where the
+# spellings differ (`pi` vs `PI`) or that are profile builtins (`sqrt` →
+# `opcode:f64_sqrt`) are handled earlier, at walk time, by the named-import
+# rewrite in the walker — so both mechanisms cover their own half.
 [[esm_default]]
 kind = "namespace"
 alias = "math"
@@ -832,11 +847,12 @@ kind = "namespace"
 alias = "json"
 module = "ecma:json"
 
-# json module export surface (namespaceplan.md mount-with-rename): Python's
-# names differ from the canonical ECMA export names, so `from json import
-# dumps` binds `dumps` → ecma:json.stringify through the standard ESM
-# Named-import path.
-
+# mount-with-rename (namespaceplan.md §"Source-name ≠ canonical-name"): Python
+# spells these differently from the ECMA exports a named import would otherwise
+# look for. NOTE these bind the RAW ecma fn, so `from json import dumps` does
+# not get the Map-aware adapter the dotted form uses — see
+# `project_python_file_io_and_os` memory. Removing them unbinds the name
+# entirely (the tree is not consulted for named imports yet), which is worse.
 [[esm_default]]
 kind = "module-export"
 module = "json"
@@ -850,6 +866,11 @@ module = "json"
 name = "loads"
 target_module = "ecma:json"
 target_name = "parse"
+
+# json module export surface (namespaceplan.md mount-with-rename): Python's
+# names differ from the canonical ECMA export names, so `from json import
+# dumps` binds `dumps` → ecma:json.stringify through the standard ESM
+# Named-import path.
 
 # Python `re` module → `ecma:regexp` (the spec-aligned ECMA-262 §22
 # RegExp surface). Pattern-first language idioms (`re.search(pat, s)`)

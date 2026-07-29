@@ -205,16 +205,37 @@ fn preprocess_indentation(source: &str) -> String {
 pub fn parse(source: &str) -> Result<Module, String> {
     PY_IMPORTED_MODULES.with(|m| m.borrow_mut().clear());
     PY_FROM_IMPORTED_MODULES.with(|m| m.borrow_mut().clear());
+    PY_FLOAT_RETURNING_IMPORTS.with(|m| m.borrow_mut().clear());
     PY_SYS_MODULES_BOUND.with(|b| b.set(false));
+    PY_DYNAMIC_MODULE_VARS.with(|m| m.borrow_mut().clear());
+    PY_DYNAMIC_MODULE_REGISTRY.with(|m| m.borrow_mut().clear());
+    PY_DYNAMIC_MODULE_ATTRS.with(|m| m.borrow_mut().clear());
+    PY_DYNAMIC_MODULE_ALL.with(|m| m.borrow_mut().clear());
+    PY_STRING_CONSTS.with(|m| m.borrow_mut().clear());
+    PY_MAPPING_PROXY_VARS.with(|m| m.borrow_mut().clear());
+    PY_SIMPLE_NAMESPACE_VARS.with(|m| m.borrow_mut().clear());
     PY_DEFINED_CLASSES.with(|m| m.borrow_mut().clear());
     PY_DEFINED_FUNCTIONS.with(|m| m.borrow_mut().clear());
     PY_CALLABLE_CLASSES.with(|m| m.borrow_mut().clear());
+    PY_CLASSES_WITH_INIT.with(|m| m.borrow_mut().clear());
     PY_CLASS_PARENTS.with(|m| m.borrow_mut().clear());
     PY_CLASS_ATTRS.with(|m| m.borrow_mut().clear());
+    PY_CLASS_DATA_ATTRS.with(|m| m.borrow_mut().clear());
+    PY_INSTANCE_CLASSES.with(|m| m.borrow_mut().clear());
+    PY_INSTANCE_ATTRS.with(|m| m.borrow_mut().clear());
+    PY_ASSIGN_TARGET_DEPTH.with(|d| d.set(0));
     PY_NAMEDTUPLE_DEFS.with(|m| m.borrow_mut().clear());
     PY_NAMEDTUPLE_INSTANCES.with(|m| m.borrow_mut().clear());
     PY_SQL_VARS.with(|m| m.borrow_mut().clear());
     PY_RE_VARS.with(|m| m.borrow_mut().clear());
+    PY_COUNTER_VARS.with(|m| m.borrow_mut().clear());
+    PY_DEFAULTDICT_VARS.with(|m| m.borrow_mut().clear());
+    PY_DEQUE_MAXLEN_VARS.with(|m| m.borrow_mut().clear());
+    PY_CHAINMAP_VARS.with(|m| m.borrow_mut().clear());
+    PY_ITERATOR_VARS.with(|m| m.borrow_mut().clear());
+    PY_GENERATOR_FUNCS.with(|m| m.borrow_mut().clear());
+    PY_GENERATOR_VARS.with(|m| m.borrow_mut().clear());
+    PY_USERLIST_VARS.with(|m| m.borrow_mut().clear());
     let preprocessed = preprocess_indentation(source);
     let pairs = PythonParser::parse(Rule::program, &preprocessed)
         .map_err(|e| format!("Parse error: {}", e))?;
@@ -355,6 +376,23 @@ pub fn parse(source: &str) -> Result<Module, String> {
         prelude.append(&mut body);
         body = prelude;
     }
+    if source.contains("collections") {
+        let mut prelude = parse_collections_prelude();
+        prelude.append(&mut body);
+        body = prelude;
+    }
+    if source.contains("types") {
+        let mut prelude = parse_python_prelude(TYPES_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
+    body.insert(
+        0,
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident("__doc__")],
+            value: Expression::new(ExprKind::Lit(Literal::Null)),
+        }),
+    );
     Ok(Module {
         name: "main".into(),
         language: Lang::Python,
@@ -413,6 +451,35 @@ fn parse_python_prelude(src: &str) -> Vec<Statement> {
             }
         }
     }
+    body
+}
+
+fn parse_collections_prelude() -> Vec<Statement> {
+    let counters = PY_COUNTER_VARS.with(|m| {
+        let snapshot = m.borrow().clone();
+        m.borrow_mut().clear();
+        snapshot
+    });
+    let defaultdicts = PY_DEFAULTDICT_VARS.with(|m| {
+        let snapshot = m.borrow().clone();
+        m.borrow_mut().clear();
+        snapshot
+    });
+    let deques = PY_DEQUE_MAXLEN_VARS.with(|m| {
+        let snapshot = m.borrow().clone();
+        m.borrow_mut().clear();
+        snapshot
+    });
+    let chainmaps = PY_CHAINMAP_VARS.with(|m| {
+        let snapshot = m.borrow().clone();
+        m.borrow_mut().clear();
+        snapshot
+    });
+    let body = parse_python_prelude(COLLECTIONS_PRELUDE);
+    PY_COUNTER_VARS.with(|m| *m.borrow_mut() = counters);
+    PY_DEFAULTDICT_VARS.with(|m| *m.borrow_mut() = defaultdicts);
+    PY_DEQUE_MAXLEN_VARS.with(|m| *m.borrow_mut() = deques);
+    PY_CHAINMAP_VARS.with(|m| *m.borrow_mut() = chainmaps);
     body
 }
 
@@ -1756,6 +1823,432 @@ def __string_capwords(s, sep=None):
     return joiner.join(out)
 "#;
 
+const COLLECTIONS_PRELUDE: &str = r#"
+def __py_counter_new(iterable=None, kws=None):
+    c = {}
+    if iterable is not None:
+        if isinstance(iterable, dict):
+            for k in iterable:
+                c[k] = iterable[k]
+        elif isinstance(iterable, str):
+            chars = list(iterable)
+            for k in chars:
+                c[k] = __py_counter_get(c, k) + 1
+        else:
+            for k in iterable:
+                c[k] = __py_counter_get(c, k) + 1
+    if kws is not None:
+        for k in kws:
+            c[k] = kws[k]
+    return c
+
+def __py_counter_get(c, k):
+    for existing in c:
+        if existing == k or str(existing) == str(k):
+            return c[existing]
+    return 0
+
+def __py_counter_iadd(c, k, delta):
+    for existing in c:
+        if existing == k or str(existing) == str(k):
+            c[existing] = c[existing] + delta
+            return None
+    c[k] = delta
+    return None
+
+def __py_counter_most_common(c, n=None):
+    items = list(c.items())
+    out = []
+    if n is None:
+        limit = len(items)
+    else:
+        limit = n
+    used = []
+    while len(out) < limit and len(out) < len(items):
+        best = None
+        best_i = -1
+        i = 0
+        while i < len(items):
+            if i not in used:
+                p = items[i]
+                if best is None or p[1] > best[1]:
+                    best = p
+                    best_i = i
+            i += 1
+        if best_i < 0:
+            break
+        used[len(used)] = best_i
+        out[len(out)] = (best[0], best[1])
+    return out
+
+def __py_counter_update(c, other):
+    for p in other.items():
+        __py_counter_iadd(c, p[0], p[1])
+    return None
+
+def __py_counter_subtract(c, other):
+    for p in other.items():
+        __py_counter_iadd(c, p[0], -p[1])
+    return None
+
+def __py_counter_merge(c, other, sign):
+    out = {}
+    for k in c:
+        out[k] = c[k]
+    for p in other.items():
+        __py_counter_iadd(out, p[0], sign * p[1])
+    return out
+
+def __py_counter_len(c):
+    total = 0
+    for k in c:
+        total += 1
+    return total
+
+def __py_counter_repr(c):
+    return "Counter(" + repr(c) + ")"
+
+def __py_counter_dict(c):
+    return c
+
+def __py_counter_elements(c):
+    out = []
+    for k in c:
+        i = 0
+        while i < c[k]:
+            out[len(out)] = k
+            i += 1
+    return out
+
+def __py_counter_total(c):
+    total = 0
+    for k in c:
+        total += c[k]
+    return total
+
+def __py_counter_fromkeys(keys, v=None):
+    c = {}
+    for k in keys:
+        c[k] = v
+    return c
+
+def __py_counter_op(a, b, op):
+    out = {}
+    for k in a:
+        av = __py_counter_get(a, k)
+        bv = __py_counter_get(b, k)
+        if op == "+":
+            v = av + bv
+        elif op == "-":
+            v = av - bv
+        elif op == "&":
+            if av < bv:
+                v = av
+            else:
+                v = bv
+        else:
+            if av > bv:
+                v = av
+            else:
+                v = bv
+        if v > 0:
+            out[k] = v
+    for k in b:
+        if __py_counter_get(out, k) == 0 and __py_counter_get(a, k) == 0:
+            bv = __py_counter_get(b, k)
+            if op == "+" or op == "|":
+                if bv > 0:
+                    out[k] = bv
+    return out
+
+def __py_default_factory_value(f):
+    if f == "int":
+        return 0
+    if f == "list":
+        return []
+    if f == "set":
+        return set()
+    if f == "dict":
+        return {}
+    if f is int:
+        return 0
+    if f is list:
+        return []
+    if f is set:
+        return set()
+    if f is dict:
+        return {}
+    return f()
+
+def __py_defaultdict(factory=None, initial=None):
+    d = {}
+    if initial is not None:
+        for k in initial:
+            d[k] = initial[k]
+    return d
+
+def __py_defaultdict_get(d, factory, k):
+    for existing in d:
+        if existing == k:
+            return d[existing]
+    d[k] = __py_default_factory_value(factory)
+    return d[k]
+
+def __py_defaultdict_append(d, factory, k, value):
+    arr = __py_defaultdict_get(d, factory, k)
+    arr[len(arr)] = value
+    return None
+
+def __py_defaultdict_add(d, factory, k, value):
+    s = __py_defaultdict_get(d, factory, k)
+    s.add(value)
+    return None
+
+def __py_defaultdict_iadd(d, factory, k, value):
+    d[k] = __py_defaultdict_get(d, factory, k) + value
+    return None
+
+def __py_deque(iterable=None, maxlen=None):
+    if iterable is None:
+        d = []
+    else:
+        d = list(iterable)
+    if maxlen is not None:
+        while len(d) > maxlen:
+            d.pop(0)
+    return d
+
+def __py_deque_append(d, value, maxlen=None):
+    d[len(d)] = value
+    if maxlen is not None:
+        while len(d) > maxlen:
+            __py_deque_drop_left(d)
+    return None
+
+def __py_deque_appendleft(d, value, maxlen=None):
+    i = len(d)
+    while i > 0:
+        d[i] = d[i - 1]
+        i -= 1
+    d[0] = value
+    if maxlen is not None:
+        while len(d) > maxlen:
+            del d[len(d) - 1]
+    return None
+
+def __py_deque_extend(d, values, maxlen=None):
+    for v in values:
+        __py_deque_append(d, v, maxlen)
+    return None
+
+def __py_deque_extendleft(d, values, maxlen=None):
+    for v in values:
+        __py_deque_appendleft(d, v, maxlen)
+    return None
+
+def __py_deque_drop_left(d):
+    i = 0
+    while i + 1 < len(d):
+        d[i] = d[i + 1]
+        i += 1
+    if len(d) > 0:
+        del d[len(d) - 1]
+    return None
+
+def __py_deque_remove(d, value):
+    i = 0
+    found = False
+    while i < len(d):
+        if not found and d[i] == value:
+            found = True
+        if found and i + 1 < len(d):
+            d[i] = d[i + 1]
+        i += 1
+    if found and len(d) > 0:
+        del d[len(d) - 1]
+    return None
+
+def __py_chainmap_new(*maps):
+    return {"maps": list(maps)}
+
+def __py_chainmap_get(cm, key):
+    for m in cm["maps"]:
+        if key in m:
+            return m[key]
+    return None
+
+def __py_chainmap_set(cm, key, value):
+    cm["maps"][0][key] = value
+    return None
+
+def __py_chainmap_new_child(cm, child=None):
+    if child is None:
+        child = {}
+    maps = [child]
+    for m in cm["maps"]:
+        maps[len(maps)] = m
+    return {"maps": maps}
+
+def __py_chainmap_parents(cm):
+    maps = []
+    i = 1
+    while i < len(cm["maps"]):
+        maps[len(maps)] = cm["maps"][i]
+        i += 1
+    return {"maps": maps}
+
+def __py_chainmap_maps(cm):
+    return cm["maps"]
+
+def __py_userdict(initial=None):
+    d = {}
+    if initial is not None:
+        for k in initial:
+            d[k] = initial[k]
+    return d
+
+def __py_userlist(initial=None):
+    if initial is None:
+        return []
+    return initial
+
+def __py_userstring(value=""):
+    return str(value)
+
+def __py_ordereddict_move_to_end(d, key, last=True):
+    if key not in d:
+        return None
+    moved = d[key]
+    keys = list(d.keys())
+    vals = []
+    i = 0
+    while i < len(keys):
+        vals[len(vals)] = d[keys[i]]
+        i += 1
+    for k in keys:
+        del d[k]
+    if last:
+        i = 0
+        while i < len(keys):
+            if keys[i] != key:
+                d[keys[i]] = vals[i]
+            i += 1
+        d[key] = moved
+    else:
+        d[key] = moved
+        i = 0
+        while i < len(keys):
+            if keys[i] != key:
+                d[keys[i]] = vals[i]
+            i += 1
+    return None
+
+class UserDict:
+    def __init__(self, initial=None):
+        self.data = {}
+        if initial is not None:
+            for k in initial:
+                self.data[k] = initial[k]
+    def __getitem__(self, k):
+        return self.data[k]
+    def __setitem__(self, k, v):
+        self.data[k] = v
+    def __repr__(self):
+        return repr(self.data)
+
+class UserList:
+    def __init__(self, initial=None):
+        if initial is None:
+            self.data = []
+        else:
+            self.data = list(initial)
+    def append(self, v):
+        self.data[len(self.data)] = v
+    def extend(self, values):
+        for v in values:
+            self.data[len(self.data)] = v
+    def __repr__(self):
+        return repr(self.data)
+
+class UserString:
+    def __init__(self, value=""):
+        self.data = str(value)
+    def __str__(self):
+        return self.data
+    def __repr__(self):
+        return self.data
+    def upper(self):
+        return self.data.upper()
+"#;
+
+const TYPES_PRELUDE: &str = r#"
+class SimpleNamespace:
+    def __init__(self, **kwargs):
+        for k in kwargs:
+            setattr(self, k, kwargs[k])
+    def __repr__(self):
+        parts = []
+        for k in self:
+            if not k.startswith("__"):
+                parts.append(k + "=" + repr(self[k]))
+        return "namespace(" + ", ".join(parts) + ")"
+    def __eq__(self, other):
+        return self.__dict__ == other.__dict__
+
+def __py_simple_namespace_repr(ns):
+    parts = []
+    for k in ns:
+        parts.append(k + "=" + repr(ns[k]))
+    return "namespace(" + ", ".join(parts) + ")"
+
+class MappingProxyType:
+    def __init__(self, data):
+        self._data = data
+    def __getitem__(self, key):
+        return self._data[key]
+    def __setitem__(self, key, value):
+        raise TypeError("mappingproxy is read-only")
+    def __contains__(self, key):
+        return key in self._data
+    def __len__(self):
+        return len(self._data)
+    def keys(self):
+        return self._data.keys()
+    def values(self):
+        return self._data.values()
+    def items(self):
+        return self._data.items()
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+    def copy(self):
+        return MappingProxyType(self._data.copy())
+
+FunctionType = "FunctionType"
+LambdaType = FunctionType
+GeneratorType = "GeneratorType"
+CoroutineType = "CoroutineType"
+
+def MethodType(func, obj):
+    return lambda *args: func(obj, *args)
+
+def DynamicClassAttribute(func):
+    return property(func)
+
+def resolve_bases(bases):
+    return bases
+
+def new_class(name, bases=(), kwds=None, exec_body=None):
+    ns = {}
+    if exec_body is not None:
+        exec_body(ns)
+    def ctor():
+        obj = {}
+        for k in ns:
+            obj[k] = ns[k]
+        return obj
+    return ctor
+"#;
+
 const BYTES_REPR_PRELUDE: &str = r#"
 def __vybe_bytes_repr(a):
     bs = chr(92)
@@ -1801,12 +2294,16 @@ fn walk_stmt_into(
             let import = walk_import(pair)?;
             if let ImportKind::Simple { path, alias } = &import.kind {
                 let root = path.split('.').next().unwrap_or(path).to_string();
+                let bound = alias.clone().unwrap_or_else(|| root.clone());
+                if let Some(stmts) = dynamic_module_import_stmts(path, &bound) {
+                    body.extend(stmts);
+                    return Ok(());
+                }
                 if !py_known_module(&root) {
                     body.push(py_import_error_stmt(&format!("No module named '{root}'")));
                     return Ok(());
                 }
                 body.extend(py_module_rename_stmts(&root));
-                let bound = alias.clone().unwrap_or_else(|| root.clone());
                 if root == "sys" && !PY_SYS_MODULES_BOUND.with(|b| b.get()) {
                     PY_SYS_MODULES_BOUND.with(|b| b.set(true));
                     let props: Vec<ObjectProperty> = PY_IMPORTED_MODULES.with(|m| {
@@ -1862,6 +2359,9 @@ fn walk_stmt_into(
                 if path == "io" {
                     return Ok(());
                 }
+                if path == "types" {
+                    return Ok(());
+                }
                 let root = path.split('.').next().unwrap_or(path).to_string();
                 if *level == 0 && !path.is_empty() && !py_known_module(&root) {
                     body.push(py_import_error_stmt(&format!("No module named '{root}'")));
@@ -1887,30 +2387,25 @@ fn walk_stmt_into(
                     }
                 }
                 if path == "collections" {
-                    // `deque` IS a JS array under the hood (same as list) —
-                    // bind the ctor to a list copy; append/pop are already
-                    // array emits, appendleft/popleft map to unshift/shift.
+                    // Bind Python-only collection constructors to the small
+                    // normalization helpers above; deque remains an array, and
+                    // dict-like collections remain ordinary dicts/maps.
                     for n in names {
-                        if n.name == "deque" {
+                        let helper = match n.name.as_str() {
+                            "Counter" => Some("__py_counter_new"),
+                            "defaultdict" => Some("__py_defaultdict"),
+                            "deque" => Some("__py_deque"),
+                            "ChainMap" => Some("__py_chainmap_new"),
+                            "UserDict" => Some("__py_userdict"),
+                            "UserList" => Some("__py_userlist"),
+                            "UserString" => Some("__py_userstring"),
+                            _ => None,
+                        };
+                        if let Some(helper) = helper {
                             let local = n.alias.as_ref().unwrap_or(&n.name).clone();
                             body.push(Statement::new(StmtKind::Assign {
                                 targets: vec![Expression::new(ExprKind::Ident(local))],
-                                value: Expression::new(ExprKind::Lambda {
-                                    params: vec![lambda_param("__it")],
-                                    body: LambdaBody::Expr(Box::new(Expression::new(
-                                        ExprKind::Call {
-                                            callee: Box::new(Expression::new(ExprKind::Ident(
-                                                "list".into(),
-                                            ))),
-                                            args: vec![Argument::positional(Expression::new(
-                                                ExprKind::Ident("__it".into()),
-                                            ))],
-                                            optional: false,
-                                        },
-                                    ))),
-                                    is_async: false,
-                                    captures: vec![],
-                                }),
+                                value: Expression::ident(helper),
                             }));
                         }
                     }
@@ -1927,6 +2422,13 @@ fn walk_stmt_into(
                             }));
                         }
                     }
+                    return Ok(());
+                }
+
+            }
+            if let ImportKind::Wildcard { path, .. } = &import.kind {
+                if let Some(stmts) = dynamic_module_star_import_stmts(path) {
+                    body.extend(stmts);
                     return Ok(());
                 }
             }
@@ -2274,6 +2776,9 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             let import = walk_import(pair)?;
             if let ImportKind::Simple { path, .. } = &import.kind {
                 let root = path.split('.').next().unwrap_or(path);
+                if dynamic_module_registry_var(path).is_some() {
+                    return Ok(Statement::new(StmtKind::Empty));
+                }
                 if !py_known_module(root) {
                     return Ok(py_import_error_stmt(&format!("No module named '{root}'")));
                 }
@@ -2285,6 +2790,9 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             if let ImportKind::Named { path, names, level } = &import.kind {
                 let root = path.split('.').next().unwrap_or(path);
                 if *level == 0 && !path.is_empty() && path != "__future__" {
+                    if dynamic_module_registry_var(path).is_some() {
+                        return Ok(Statement::new(StmtKind::Empty));
+                    }
                     if !py_known_module(root) {
                         return Ok(py_import_error_stmt(&format!("No module named '{root}'")));
                     }
@@ -2431,6 +2939,9 @@ fn walk_func_def(
     // generators and was semantically eager).
     let has_yield = body_has_yield(&body);
     note_defined_function(&name);
+    if has_yield {
+        note_generator_func(&name);
+    }
 
     Ok(StmtKind::FunctionDecl {
         name,
@@ -2566,6 +3077,23 @@ fn py_add(a: Expression, b: Expression) -> Expression {
     call_ident("__pyadd__", vec![a, b])
 }
 
+fn py_counter_binary(op: BinOp, left: &Expression, right: &Expression) -> Option<Expression> {
+    if !is_counter_expr(left) || !is_counter_expr(right) {
+        return None;
+    }
+    let op_name = match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        _ => return None,
+    };
+    Some(call_ident(
+        "__py_counter_op",
+        vec![left.clone(), right.clone(), Expression::string(op_name)],
+    ))
+}
+
 fn other_attr(field: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::new(ExprKind::Ident("other".into()))),
@@ -2697,6 +3225,136 @@ fn fn_decl(name: &str, params: Vec<Param>, body: Vec<Statement>) -> Statement {
     })
 }
 
+fn is_python_private_name(name: &str) -> bool {
+    name.starts_with("__") && !name.ends_with("__")
+}
+
+fn python_mangle_private_name(class_name: &str, name: &str) -> String {
+    if is_python_private_name(name) {
+        format!("_{}{}", class_name.trim_start_matches('_'), name)
+    } else {
+        name.to_string()
+    }
+}
+
+fn mangle_private_members_in_expr(class_name: &str, expr: &mut Expression) {
+    match &mut expr.kind {
+        ExprKind::Member { object, field, .. } => {
+            mangle_private_members_in_expr(class_name, object);
+            *field = python_mangle_private_name(class_name, field);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            mangle_private_members_in_expr(class_name, callee);
+            for arg in args {
+                mangle_private_members_in_expr(class_name, &mut arg.value);
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            mangle_private_members_in_expr(class_name, left);
+            mangle_private_members_in_expr(class_name, right);
+        }
+        ExprKind::Unary { expr, .. } => mangle_private_members_in_expr(class_name, expr),
+        ExprKind::Ternary { cond, then, else_ } => {
+            mangle_private_members_in_expr(class_name, cond);
+            mangle_private_members_in_expr(class_name, then);
+            mangle_private_members_in_expr(class_name, else_);
+        }
+        ExprKind::Index { object, index, .. } => {
+            mangle_private_members_in_expr(class_name, object);
+            mangle_private_members_in_expr(class_name, index);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                if let Some(key) = &mut item.key {
+                    mangle_private_members_in_expr(class_name, key);
+                }
+                mangle_private_members_in_expr(class_name, &mut item.value);
+            }
+        }
+        ExprKind::Tuple(items) => {
+            for item in items {
+                mangle_private_members_in_expr(class_name, item);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value } | ObjectProperty::Computed { key, value } => {
+                        mangle_private_members_in_expr(class_name, key);
+                        mangle_private_members_in_expr(class_name, value);
+                    }
+                    ObjectProperty::Spread(value) => mangle_private_members_in_expr(class_name, value),
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Lambda { body, .. } => match body {
+            LambdaBody::Expr(expr) => mangle_private_members_in_expr(class_name, expr),
+            LambdaBody::Block(stmts) => mangle_private_members_in_stmts(class_name, stmts),
+        },
+        _ => {}
+    }
+}
+
+fn mangle_private_members_in_stmts(class_name: &str, stmts: &mut [Statement]) {
+    for stmt in stmts {
+        match &mut stmt.kind {
+            StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+                mangle_private_members_in_stmts(class_name, body);
+            }
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
+                mangle_private_members_in_expr(class_name, cond);
+                mangle_private_members_in_stmts(class_name, then_body);
+                for (elif_cond, elif_body) in elifs {
+                    mangle_private_members_in_expr(class_name, elif_cond);
+                    mangle_private_members_in_stmts(class_name, elif_body);
+                }
+                if let Some(body) = else_body {
+                    mangle_private_members_in_stmts(class_name, body);
+                }
+            }
+            StmtKind::While { cond, body, .. } => {
+                mangle_private_members_in_expr(class_name, cond);
+                mangle_private_members_in_stmts(class_name, body);
+            }
+            StmtKind::ForIn {
+                iter,
+                body,
+                else_body,
+                ..
+            } => {
+                mangle_private_members_in_expr(class_name, iter);
+                mangle_private_members_in_stmts(class_name, body);
+                if let Some(body) = else_body {
+                    mangle_private_members_in_stmts(class_name, body);
+                }
+            }
+            StmtKind::Return(Some(expr)) | StmtKind::Expr(expr) => {
+                mangle_private_members_in_expr(class_name, expr);
+            }
+            StmtKind::Assign { targets, value } => {
+                for target in targets {
+                    mangle_private_members_in_expr(class_name, target);
+                }
+                mangle_private_members_in_expr(class_name, value);
+            }
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let Some(init) = &mut decl.init {
+                        mangle_private_members_in_expr(class_name, init);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Append the `__init__` a `@dataclass` generates: one positional parameter
 /// per annotated field, in declaration order, carrying that field's default,
 /// with a body that assigns each onto `self`.
@@ -2726,6 +3384,49 @@ fn synthesize_dataclass_members(class_name: &str, body: &mut Vec<Statement>) {
     }
     if !has_method(body, "__eq__") {
         body.push(dataclass_eq(class_name, &fields));
+    }
+}
+
+fn synthesize_python_class_defaults(class_name: &str, body: &mut Vec<Statement>) {
+    if !has_method(body, "__repr__") {
+        body.push(fn_decl(
+            "__repr__",
+            vec![plain_param("self", None)],
+            vec![Statement::new(StmtKind::Return(Some(Expression::string(&format!(
+                "<{} object>",
+                class_name
+            )))))],
+        ));
+    }
+    if !has_method(body, "__eq__") {
+        body.push(fn_decl(
+            "__eq__",
+            vec![plain_param("self", None), plain_param("other", None)],
+            vec![Statement::new(StmtKind::Return(Some(Expression::new(
+                ExprKind::Binary {
+                    op: BinOp::StrictEq,
+                    left: Box::new(Expression::ident("self")),
+                    right: Box::new(Expression::ident("other")),
+                },
+            ))))],
+        ));
+    }
+    if !has_method(body, "__hash__") {
+        body.push(fn_decl(
+            "__hash__",
+            vec![plain_param("self", None)],
+            vec![Statement::new(StmtKind::Throw {
+                expr: Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("TypeError")),
+                    args: vec![Argument::positional(Expression::string(&format!(
+                        "unhashable type: '{}'",
+                        class_name
+                    )))],
+                    optional: false,
+                })),
+                cause: None,
+            })],
+        ));
     }
 }
 
@@ -2772,16 +3473,32 @@ fn walk_class_def(pair: Pair<Rule>, decorators: Vec<Expression>) -> Result<StmtK
             StmtKind::FunctionDecl { name, .. } if name == "__call__"
         )
     });
+    let has_init_method = body_stmts.iter().any(|stmt| {
+        matches!(
+            &stmt.kind,
+            StmtKind::FunctionDecl { name, .. } if name == "__init__"
+        )
+    });
     let mut attrs = std::collections::HashSet::new();
+    let mut data_attrs = std::collections::HashSet::new();
     for stmt in &body_stmts {
         match &stmt.kind {
             StmtKind::FunctionDecl { name, .. } => {
                 attrs.insert(name.clone());
             }
+            StmtKind::VarDecl { declarations, .. } => {
+                for d in declarations {
+                    if let BindingPattern::Ident(attr) = &d.pattern {
+                        attrs.insert(attr.clone());
+                        data_attrs.insert(attr.clone());
+                    }
+                }
+            }
             StmtKind::Assign { targets, .. } => {
                 for target in targets {
                     if let ExprKind::Ident(attr) = &target.kind {
                         attrs.insert(attr.clone());
+                        data_attrs.insert(attr.clone());
                     }
                 }
             }
@@ -2789,8 +3506,12 @@ fn walk_class_def(pair: Pair<Rule>, decorators: Vec<Expression>) -> Result<StmtK
         }
     }
     note_class_attrs(&name, attrs);
+    note_class_data_attrs(&name, data_attrs);
     if has_call_method {
         note_callable_class(&name);
+    }
+    if has_init_method {
+        note_class_with_init(&name);
     }
 
     // `@dataclass` — synthesize the members CPython's decorator generates at
@@ -2801,9 +3522,11 @@ fn walk_class_def(pair: Pair<Rule>, decorators: Vec<Expression>) -> Result<StmtK
     if decorators.iter().any(is_dataclass_decorator) {
         synthesize_dataclass_members(&name, &mut body_stmts);
     }
+    synthesize_python_class_defaults(&name, &mut body_stmts);
+    mangle_private_members_in_stmts(&name, &mut body_stmts);
 
     // Convert body statements into ClassMembers
-    let members = stmts_to_class_members(body_stmts);
+    let members = stmts_to_class_members(&name, body_stmts);
 
     Ok(StmtKind::ClassDecl {
         name,
@@ -2815,7 +3538,7 @@ fn walk_class_def(pair: Pair<Rule>, decorators: Vec<Expression>) -> Result<StmtK
     })
 }
 
-fn stmts_to_class_members(stmts: Vec<Statement>) -> Vec<ClassMember> {
+fn stmts_to_class_members(class_name: &str, stmts: Vec<Statement>) -> Vec<ClassMember> {
     let mut members: Vec<ClassMember> = Vec::new();
     // Track Property member index by name so @x.setter can find the getter.
     let mut property_indices: std::collections::HashMap<String, usize> =
@@ -2906,6 +3629,10 @@ fn stmts_to_class_members(stmts: Vec<Statement>) -> Vec<ClassMember> {
                     .decorators
                     .iter()
                     .any(|d| matches!(&d.kind, ExprKind::Ident(n) if n == "staticmethod"));
+                let has_classmethod = modifiers
+                    .decorators
+                    .iter()
+                    .any(|d| matches!(&d.kind, ExprKind::Ident(n) if n == "classmethod"));
                 // For @staticmethod, prepend a dummy "self" so that
                 // explicit_self_param's skip(1) removes the dummy, keeping
                 // the real params intact. Without this, skip(1) would drop
@@ -2924,11 +3651,31 @@ fn stmts_to_class_members(stmts: Vec<Statement>) -> Vec<ClassMember> {
                     let mut p = vec![dummy];
                     p.extend_from_slice(params);
                     p
+                } else if has_classmethod {
+                    let dummy = Param {
+                        name: "self".to_string(),
+                        type_hint: None,
+                        default: None,
+                        pass_by: PassBy::Value,
+                        is_rest: false,
+                        is_kwargs: false,
+                        is_optional: false,
+                        is_nullable: false,
+                    };
+                    let mut p = vec![dummy];
+                    if let Some(cls) = params.first() {
+                        let mut cls = cls.clone();
+                        cls.default = Some(Expression::new(ExprKind::Ident(class_name.to_string())));
+                        cls.is_optional = true;
+                        p.push(cls);
+                        p.extend_from_slice(&params[1..]);
+                    }
+                    p
                 } else {
                     params.clone()
                 };
                 let is_static =
-                    has_staticmethod || final_params.first().map_or(true, |p| p.name != "self");
+                    has_staticmethod || has_classmethod || final_params.first().map_or(true, |p| p.name != "self");
                 let mut mods = modifiers.clone();
                 mods.is_static = is_static;
                 members.push(ClassMember::Method(Box::new(Statement::new(
@@ -2981,6 +3728,9 @@ fn stmts_to_class_members(stmts: Vec<Statement>) -> Vec<ClassMember> {
                         });
                     }
                 }
+            }
+            StmtKind::ClassDecl { .. } => {
+                members.push(ClassMember::NestedType(Box::new(stmt)));
             }
             StmtKind::Empty => {} // pass
             _ => {
@@ -4075,13 +4825,45 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
         .iter()
         .position(|p| p.as_rule() == Rule::aug_assign_op);
     if let Some(_pos) = aug_pos {
-        let target = walk_expr_list_or_single(inner.remove(0))?;
+        let target = with_assignment_target(|| walk_expr_list_or_single(inner.remove(0)))?;
         let op_str = inner.remove(0).as_str(); // aug_assign_op
         let value = if inner.len() == 1 {
             walk_expr_list_or_single(inner.remove(0))?
         } else {
             walk_remaining_as_expr(&mut inner)?
         };
+        if let ExprKind::Index {
+            object,
+            index,
+            null_safe: _,
+        } = &target.kind
+            && let ExprKind::Ident(var) = &object.kind
+        {
+            if let Some(factory) = defaultdict_factory(var) {
+                if op_str == "+=" {
+                    return Ok(StmtKind::Expr(call_ident(
+                        "__py_defaultdict_iadd",
+                        vec![Expression::ident(var), factory, *index.clone(), value],
+                    )));
+                }
+            }
+            if is_counter_expr(object) {
+                if op_str == "+=" || op_str == "-=" {
+                    let delta = if op_str == "-=" {
+                        Expression::new(ExprKind::Unary {
+                            op: UnaryOp::Neg,
+                            expr: Box::new(value),
+                        })
+                    } else {
+                        value
+                    };
+                    return Ok(StmtKind::Expr(call_ident(
+                        "__py_counter_iadd",
+                        vec![Expression::ident(var), *index.clone(), delta],
+                    )));
+                }
+            }
+        }
         // `+=` / `*=` use Python's dynamic add/mul (list concat/repeat, string
         // ops), so lower to `target = __pyadd__(target, value)` — the numeric
         // CompoundAssign path coerces operands to f64 and traps on lists.
@@ -4091,10 +4873,15 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
             } else {
                 "__pymul__"
             };
+            let read_target = if let ExprKind::Index { object, index, .. } = &target.kind {
+                collection_index_read(object, index).unwrap_or_else(|| target.clone())
+            } else {
+                target.clone()
+            };
             let combined = Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Ident(helper.into()))),
                 args: vec![
-                    Argument::positional(target.clone()),
+                    Argument::positional(read_target),
                     Argument::positional(value),
                 ],
                 optional: false,
@@ -4154,8 +4941,9 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // The grammar captures: expression_list ~ ("=" ~ expression_list)+
     // So we may have multiple expression_list separated by = signs
     if inner.len() == 1 {
-        let expr = walk_expr_list_or_single(inner.remove(0))?;
-        return Ok(StmtKind::Expr(expr));
+        let raw_expr = walk_expr_list_or_single(inner.remove(0))?;
+        let expr = counter_method_expr(&raw_expr).unwrap_or_else(|| desugar_member_reads(raw_expr));
+        return Ok(counter_update_stmt_block(&expr).unwrap_or(StmtKind::Expr(expr)));
     }
 
     // Multiple items => chained assignment (`a = b = c`) or an annotated
@@ -4163,15 +4951,25 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
     // collected: it is a TYPE, not an assignment target. Treating it as one
     // made `x: int = 5` compile as `x = int = 5`, rebinding the name `int`.
     let mut annotation: Option<String> = None;
-    let mut all_exprs = Vec::new();
+    let mut expr_items = Vec::new();
     for p in inner {
         if p.as_rule() == Rule::type_annotation {
             annotation = Some(p.as_str().trim().to_string());
             continue;
         }
         if is_expression_rule(p.as_rule()) || p.as_rule() == Rule::expression_list {
-            all_exprs.push(walk_expr_list_or_single(p)?);
+            expr_items.push(p);
         }
+    }
+    let expr_count = expr_items.len();
+    let mut all_exprs = Vec::new();
+    for (idx, p) in expr_items.into_iter().enumerate() {
+        let expr = if idx + 1 < expr_count {
+            with_assignment_target(|| walk_expr_list_or_single(p))?
+        } else {
+            walk_expr_list_or_single(p)?
+        };
+        all_exprs.push(expr);
     }
 
     // A bare annotation with no value (`x: int`) binds nothing at runtime in
@@ -4211,6 +5009,9 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     if all_exprs.len() >= 2 {
         let mut value = all_exprs.pop().unwrap();
+        if matches!(value.kind, ExprKind::Binary { .. }) {
+            value = desugar_member_reads(value);
+        }
         // `Name = namedtuple('Type', 'f1 f2', defaults=[...])`: register the
         // definition so `Name(args)` lowers to a shared named tuple, and bind
         // `Name` to a type object exposing `_fields`/`__typename`.
@@ -4238,6 +5039,58 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
         // local as a module alias so member access substitutes the root.
         if all_exprs.len() == 1 {
             if let ExprKind::Ident(target_name) = &all_exprs[0].kind {
+                if let Some(ns_obj) = simple_namespace_ctor_object(&value) {
+                    value = ns_obj;
+                    note_simple_namespace_var(target_name);
+                }
+                if let ExprKind::Call { callee, args, .. } = &value.kind {
+                    if matches!(&callee.kind, ExprKind::Ident(n)
+                        if n == "__py_counter_new" || n == "Counter" || n == "__py_counter_op")
+                    {
+                        note_counter_var(target_name);
+                    }
+                    if matches!(&callee.kind, ExprKind::Ident(n) if n == "__py_defaultdict") {
+                        let factory = args
+                            .first()
+                            .map(|a| a.value.clone())
+                            .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+                        note_defaultdict_var(target_name, factory);
+                    }
+                    if matches!(&callee.kind, ExprKind::Ident(n) if n == "__py_deque") {
+                        let maxlen = args
+                            .get(1)
+                            .map(|a| a.value.clone())
+                            .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+                        note_deque_maxlen_var(target_name, maxlen);
+                    }
+                    if matches!(&callee.kind, ExprKind::Ident(n) if n == "__py_chainmap_new" || n == "__py_chainmap_new_child") {
+                        note_chainmap_var(target_name);
+                    }
+                    if matches!(&callee.kind, ExprKind::Ident(n) if n == "iter" || n == "__py_iter_array__") {
+                        note_iterator_var(target_name);
+                    }
+                    if matches!(&callee.kind, ExprKind::Ident(n) if n == "__py_userlist" || n == "UserList") {
+                        note_userlist_var(target_name);
+                    }
+                    if let ExprKind::Ident(n) = &callee.kind
+                        && is_generator_func(n)
+                    {
+                        note_generator_var(target_name);
+                    }
+                }
+                if let ExprKind::New { class, .. } = &value.kind
+                    && let ExprKind::Ident(class_name) = &class.kind
+                {
+                    note_instance_class(target_name, class_name);
+                }
+                if let Some(source) = mapping_proxy_ctor_arg(&value) {
+                    note_mapping_proxy_var(target_name, source);
+                }
+                if let ExprKind::Lit(Literal::Str(s)) = &value.kind {
+                    note_string_const(target_name, s);
+                } else {
+                    clear_string_const(target_name);
+                }
                 match &value.kind {
                     ExprKind::Ident(value_name)
                         if is_imported_module(value_name) && !is_imported_module(target_name) =>
@@ -4257,12 +5110,72 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         }
                     }
                 }
+                if let Some(module_name) = object_string_property(&value, "__name__") {
+                    note_dynamic_module_var(target_name, &module_name);
+                }
+            }
+        }
+        if all_exprs.len() == 1 {
+            if let Some((module, attr)) = dynamic_module_attr_target(&all_exprs[0]) {
+                note_dynamic_module_attr(&module, &attr, value.clone());
+            }
+            if let ExprKind::Index { object, index, .. } = &all_exprs[0].kind {
+                let sys_modules_target = match &object.kind {
+                    ExprKind::Ident(n) => n == "__py_sys_modules",
+                    ExprKind::Member {
+                        object: inner,
+                        field,
+                        ..
+                    } => matches!(&inner.kind, ExprKind::Ident(n) if n == "sys")
+                        && field == "modules",
+                    _ => false,
+                };
+                if sys_modules_target
+                    && let ExprKind::Lit(Literal::Str(module_name)) = &index.kind
+                    && let ExprKind::Ident(var_name) = &value.kind
+                {
+                    note_dynamic_module_registry(module_name, var_name);
+                }
+                if let (ExprKind::Lit(Literal::Str(module_name)), ExprKind::Ident(var_name)) =
+                    (&index.kind, &value.kind)
+                {
+                    if dynamic_module_for_var(var_name).as_deref() == Some(module_name.as_ref()) {
+                        note_dynamic_module_registry(module_name, var_name);
+                    }
+                }
             }
         }
         // Track sqlite handles: `conn = sqlite3.connect(...)` / `cur = conn.cursor()`
         // so later `.execute()`/`.close()` on them route to the `__sql_*` builtins.
         for t in &all_exprs {
             note_sql_var_if_producer(t, &value);
+            if let ExprKind::Member { object, field, .. } = &t.kind
+                && let ExprKind::Ident(var) = &object.kind
+            {
+                note_instance_attr(var, field);
+            }
+            if let ExprKind::Index { object, index, .. } = &t.kind
+                && let ExprKind::Ident(var) = &object.kind
+                && let ExprKind::Lit(Literal::Str(field)) = &index.kind
+            {
+                note_instance_attr(var, field);
+            }
+        }
+        for t in &all_exprs {
+            if let ExprKind::Index { object, .. } = &t.kind
+                && let ExprKind::Ident(name) = &object.kind
+                && mapping_proxy_source(name).is_some()
+            {
+                return Ok(StmtKind::Throw {
+                    expr: Some(Expression::new(ExprKind::New {
+                        class: Box::new(Expression::ident("TypeError")),
+                        args: vec![Argument::positional(Expression::string(
+                            "mappingproxy is read-only",
+                        ))],
+                    })),
+                    cause: None,
+                });
+            }
         }
         // Convert Tuple targets to Destructure for tuple unpacking (x, y = ...)
         let targets: Vec<Expression> = all_exprs
@@ -4271,6 +5184,16 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 if let ExprKind::Tuple(elems) = &t.kind {
                     let patterns = elems.iter().map(expr_to_array_pattern_elem).collect();
                     Expression::new(ExprKind::Destructure(DestructurePattern::Array(patterns)))
+                } else if let ExprKind::Member { object, field, .. } = &t.kind {
+                    if let ExprKind::Ident(var) = &object.kind
+                        && instance_class(var)
+                            .as_deref()
+                            .is_some_and(|class_name| class_has_data_attr(class_name, field))
+                    {
+                        python_instance_index(var, field)
+                    } else {
+                        t
+                    }
                 } else {
                     t
                 }
@@ -4297,11 +5220,84 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 Statement::new(StmtKind::Assign { targets, value }),
             ]));
         }
+        if targets.len() == 1
+            && let ExprKind::Index { object, index, .. } = &targets[0].kind
+            && let ExprKind::Ident(var) = &object.kind
+            && is_chainmap_var(var)
+        {
+            return Ok(StmtKind::Expr(call_ident(
+                "__py_chainmap_set",
+                vec![Expression::ident(var), *index.clone(), value],
+            )));
+        }
         Ok(StmtKind::Assign { targets, value })
     } else if all_exprs.len() == 1 {
-        Ok(StmtKind::Expr(all_exprs.remove(0)))
+        let expr = all_exprs.remove(0);
+        if let Some(block) = counter_update_stmt_block(&expr) {
+            Ok(block)
+        } else {
+            Ok(StmtKind::Expr(expr))
+        }
     } else {
         Ok(StmtKind::Empty)
+    }
+}
+
+fn counter_update_stmt_block(expr: &Expression) -> Option<StmtKind> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    let sign = match name.as_str() {
+        "__py_counter_update" => 1,
+        "__py_counter_subtract" => -1,
+        _ => return None,
+    };
+    if args.len() != 2 {
+        return None;
+    }
+    let ExprKind::Ident(var) = &args[0].value.kind else {
+        return None;
+    };
+    Some(StmtKind::Assign {
+        targets: vec![Expression::ident(var)],
+        value: call_ident(
+            "__py_counter_merge",
+            vec![
+                Expression::ident(var),
+                args[1].value.clone(),
+                Expression::int(sign),
+            ],
+        ),
+    })
+}
+
+fn counter_method_expr(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let ExprKind::Ident(var) = &object.kind else {
+        return None;
+    };
+    if !is_counter_expr(object) || args.len() != 1 {
+        return None;
+    }
+    let other = desugar_member_reads(args[0].value.clone());
+    match field.as_str() {
+        "update" => Some(call_ident(
+            "__py_counter_update",
+            vec![Expression::ident(var), other],
+        )),
+        "subtract" => Some(call_ident(
+            "__py_counter_subtract",
+            vec![Expression::ident(var), other],
+        )),
+        _ => None,
     }
 }
 
@@ -4401,6 +5397,10 @@ fn walk_import_from(pair: Pair<Rule>) -> Result<Import, String> {
     }
 
     note_from_imported_module(&module);
+    for name in &names {
+        let local = name.alias.as_ref().unwrap_or(&name.name);
+        note_float_returning_import(&module, &name.name, local);
+    }
 
     if is_wildcard {
         Ok(Import {
@@ -4777,6 +5777,11 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             left: Box::new(call_ident("__vybe_bytes_decode", vec![left])),
                             right: Box::new(call_ident("__vybe_bytes_decode", vec![right])),
                         });
+                    } else if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq)
+                        && py_fresh_class_lacks_richcompare(&left, op)
+                        && py_fresh_class_lacks_richcompare(&right, op)
+                    {
+                        left = Expression::bool(false);
                     } else if let Some(helper) = py_relational_helper(op) {
                         // `<`/`>`/`<=`/`>=` route through a helper so an
                         // object operand can be ordered (`date > date`, a user
@@ -4900,10 +5905,12 @@ fn walk_binary_chain(
         if is_expression_rule(item.as_rule()) {
             let right = walk_expression(item)?;
             let op = op_fn("");
-            left = Expression::new(ExprKind::Binary {
-                op,
-                left: Box::new(left),
-                right: Box::new(right),
+            left = py_counter_binary(op, &left, &right).unwrap_or_else(|| {
+                Expression::new(ExprKind::Binary {
+                    op,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                })
             });
         }
     }
@@ -4927,16 +5934,21 @@ fn walk_python_additive(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> 
                 if op_str == "+" || op_str == "-" {
                     // `+`/`-` route through __pyadd__/__pysub__ so a user
                     // `__add__`/`__sub__` on an object operand is dispatched.
-                    let helper = if op_str == "+" {
-                        "__pyadd__"
+                    let op = if op_str == "+" { BinOp::Add } else { BinOp::Sub };
+                    if let Some(rewritten) = py_counter_binary(op, &left, &right) {
+                        left = rewritten;
                     } else {
-                        "__pysub__"
-                    };
-                    left = Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::new(ExprKind::Ident(helper.into()))),
-                        args: vec![Argument::positional(left), Argument::positional(right)],
-                        optional: false,
-                    });
+                        let helper = if op_str == "+" {
+                            "__pyadd__"
+                        } else {
+                            "__pysub__"
+                        };
+                        left = Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Ident(helper.into()))),
+                            args: vec![Argument::positional(left), Argument::positional(right)],
+                            optional: false,
+                        });
+                    }
                 } else {
                     let op = parse_binop(op_str);
                     left = Expression::new(ExprKind::Binary {
@@ -5058,6 +6070,22 @@ thread_local! {
     /// treat it as a live namespace it never bound.
     static PY_FROM_IMPORTED_MODULES: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+    static PY_FLOAT_RETURNING_IMPORTS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static PY_DYNAMIC_MODULE_VARS: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static PY_DYNAMIC_MODULE_REGISTRY: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static PY_DYNAMIC_MODULE_ATTRS: std::cell::RefCell<std::collections::HashMap<String, Vec<(String, Expression)>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static PY_DYNAMIC_MODULE_ALL: std::cell::RefCell<std::collections::HashMap<String, Vec<String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static PY_STRING_CONSTS: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static PY_MAPPING_PROXY_VARS: std::cell::RefCell<std::collections::HashMap<String, Expression>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static PY_SIMPLE_NAMESPACE_VARS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
 thread_local! {
@@ -5081,6 +6109,138 @@ thread_local! {
     /// methods route to the `__re_*` builtins with the compiled pattern.
     static PY_RE_VARS: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+thread_local! {
+    static PY_COUNTER_VARS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static PY_DEFAULTDICT_VARS: std::cell::RefCell<std::collections::HashMap<String, Expression>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static PY_DEQUE_MAXLEN_VARS: std::cell::RefCell<std::collections::HashMap<String, Expression>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static PY_CHAINMAP_VARS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static PY_ITERATOR_VARS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static PY_GENERATOR_FUNCS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static PY_GENERATOR_VARS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static PY_USERLIST_VARS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+fn note_counter_var(name: &str) {
+    PY_COUNTER_VARS.with(|m| {
+        m.borrow_mut().insert(name.to_string());
+    });
+}
+
+fn is_counter_expr(e: &Expression) -> bool {
+    match &e.kind {
+        ExprKind::Ident(name) => PY_COUNTER_VARS.with(|m| m.borrow().contains(name)),
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(n)
+                if n == "__py_counter_new" || n == "Counter" || n == "__py_counter_op")
+        }
+        _ => false,
+    }
+}
+
+fn note_defaultdict_var(name: &str, factory: Expression) {
+    let factory = match &factory.kind {
+        ExprKind::Ident(n) if matches!(n.as_str(), "int" | "list" | "set" | "dict") => {
+            Expression::string(n)
+        }
+        _ => factory,
+    };
+    PY_DEFAULTDICT_VARS.with(|m| {
+        m.borrow_mut().insert(name.to_string(), factory);
+    });
+}
+
+fn defaultdict_factory(name: &str) -> Option<Expression> {
+    PY_DEFAULTDICT_VARS.with(|m| m.borrow().get(name).cloned())
+}
+
+fn note_deque_maxlen_var(name: &str, maxlen: Expression) {
+    PY_DEQUE_MAXLEN_VARS.with(|m| {
+        m.borrow_mut().insert(name.to_string(), maxlen);
+    });
+}
+
+fn deque_maxlen(name: &str) -> Option<Expression> {
+    PY_DEQUE_MAXLEN_VARS.with(|m| m.borrow().get(name).cloned())
+}
+
+fn note_chainmap_var(name: &str) {
+    PY_CHAINMAP_VARS.with(|m| {
+        m.borrow_mut().insert(name.to_string());
+    });
+}
+
+fn is_chainmap_var(name: &str) -> bool {
+    PY_CHAINMAP_VARS.with(|m| m.borrow().contains(name))
+}
+
+fn note_iterator_var(name: &str) {
+    PY_ITERATOR_VARS.with(|m| {
+        m.borrow_mut().insert(name.to_string());
+    });
+}
+
+fn is_iterator_var(name: &str) -> bool {
+    PY_ITERATOR_VARS.with(|m| m.borrow().contains(name))
+}
+
+fn note_generator_func(name: &str) {
+    PY_GENERATOR_FUNCS.with(|m| {
+        m.borrow_mut().insert(name.to_string());
+    });
+}
+
+fn is_generator_func(name: &str) -> bool {
+    PY_GENERATOR_FUNCS.with(|m| m.borrow().contains(name))
+}
+
+fn note_generator_var(name: &str) {
+    PY_GENERATOR_VARS.with(|m| {
+        m.borrow_mut().insert(name.to_string());
+    });
+}
+
+fn is_generator_var(name: &str) -> bool {
+    PY_GENERATOR_VARS.with(|m| m.borrow().contains(name))
+}
+
+fn note_userlist_var(name: &str) {
+    PY_USERLIST_VARS.with(|m| {
+        m.borrow_mut().insert(name.to_string());
+    });
+}
+
+fn is_userlist_var(name: &str) -> bool {
+    PY_USERLIST_VARS.with(|m| m.borrow().contains(name))
+}
+
+fn collection_index_read(object: &Expression, index: &Expression) -> Option<Expression> {
+    let ExprKind::Ident(name) = &object.kind else {
+        return None;
+    };
+    let idx = desugar_member_reads(index.clone());
+    if is_counter_expr(object) {
+        return Some(call_ident("__py_counter_get", vec![Expression::ident(name), idx]));
+    }
+    if let Some(factory) = defaultdict_factory(name) {
+        return Some(call_ident(
+            "__py_defaultdict_get",
+            vec![Expression::ident(name), factory, idx],
+        ));
+    }
+    if is_chainmap_var(name) {
+        return Some(call_ident("__py_chainmap_get", vec![Expression::ident(name), idx]));
+    }
+    None
 }
 
 fn is_re_var(name: &str) -> bool {
@@ -5524,6 +6684,13 @@ fn py_isinstance_runtime_check(value: &Expression, type_name: &str) -> Option<Ex
             right: Box::new(r),
         })
     };
+    let or = |l: Expression, r: Expression| {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::Or,
+            left: Box::new(l),
+            right: Box::new(r),
+        })
+    };
 
     // A dict is EITHER Map-backed (`dict_literals_as_map = true`, the default
     // for literals) OR a legacy struct carrying a `__keys` array. Probing only
@@ -5553,6 +6720,8 @@ fn py_isinstance_runtime_check(value: &Expression, type_name: &str) -> Option<Ex
 
     Some(match type_name {
         "str" => typeof_check("string"),
+        "FunctionType" | "LambdaType" => typeof_check("function"),
+        "GeneratorType" | "CoroutineType" => Expression::bool(true),
         "bool" => typeof_check("boolean"),
         "float" => typeof_check("number"),
         // int includes bool — Python's bool IS an int subtype.
@@ -5574,6 +6743,46 @@ fn py_isinstance_runtime_check(value: &Expression, type_name: &str) -> Option<Ex
             }),
         )),
         "dict" => as_bool(dict_check()),
+        "Sized" | "Iterable" => as_bool(or(
+            or(ref_test("array"), typeof_check("string")),
+            or(ref_test("Map"), ref_test("Set")),
+        )),
+        "Mapping" | "MutableMapping" => as_bool(dict_check()),
+        "Sequence" => as_bool(or(ref_test("array"), typeof_check("string"))),
+        "MutableSequence" => as_bool(and(
+            ref_test("array"),
+            Expression::new(ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(member("__tuple")),
+            }),
+        )),
+        "Callable" => typeof_check("function"),
+        "Iterator" => {
+            if let ExprKind::Ident(name) = &value.kind
+                && (is_iterator_var(name) || is_generator_var(name))
+            {
+                Expression::bool(true)
+            } else {
+                as_bool(Expression::new(ExprKind::Binary {
+                    op: BinOp::StrictNotEq,
+                    left: Box::new(member("next")),
+                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
+                }))
+            }
+        }
+        "Generator" => {
+            if let ExprKind::Ident(name) = &value.kind
+                && is_generator_var(name)
+            {
+                Expression::bool(true)
+            } else {
+                as_bool(Expression::new(ExprKind::Binary {
+                    op: BinOp::StrictNotEq,
+                    left: Box::new(member("next")),
+                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
+                }))
+            }
+        }
         // A frozenset is a Set carrying the `__frozenset` tag (the same tag
         // `repr` reads to print `frozenset({…})`), so a bare `instanceof
         // frozenset` never matches.
@@ -5690,6 +6899,23 @@ fn is_from_imported_module(name: &str) -> bool {
     PY_FROM_IMPORTED_MODULES.with(|m| m.borrow().contains(name))
 }
 
+fn note_float_returning_import(module: &str, imported: &str, local: &str) {
+    let is_float = match module {
+        "math" => FLOAT_MATH_FNS.contains(&imported),
+        "statistics" => FLOAT_STATISTICS_FNS.contains(&imported),
+        _ => false,
+    };
+    if is_float {
+        PY_FLOAT_RETURNING_IMPORTS.with(|m| {
+            m.borrow_mut().insert(local.to_string());
+        });
+    }
+}
+
+fn is_float_returning_import(name: &str) -> bool {
+    PY_FLOAT_RETURNING_IMPORTS.with(|m| m.borrow().contains(name))
+}
+
 fn note_imported_module(name: &str) {
     // Track both the full dotted path's first segment and any alias so that a
     // bare `mod.CONST` read is left as namespace access, not turned into a
@@ -5738,6 +6964,399 @@ fn note_module_alias(alias: &str, module: &str) {
 
 fn resolve_module_alias(name: &str) -> Option<String> {
     PY_MODULE_ALIASES.with(|m| m.borrow().get(name).cloned())
+}
+
+fn object_string_property(e: &Expression, key: &str) -> Option<String> {
+    let ExprKind::Object(props) = &e.kind else {
+        return None;
+    };
+    props.iter().find_map(|prop| {
+        let ObjectProperty::KeyValue { key: k, value } = prop else {
+            return None;
+        };
+        let ExprKind::Lit(Literal::Str(s)) = &k.kind else {
+            return None;
+        };
+        if s.to_string() != key {
+            return None;
+        }
+        match &value.kind {
+            ExprKind::Lit(Literal::Str(s)) => Some(s.to_string()),
+            _ => None,
+        }
+    })
+}
+
+fn note_dynamic_module_var(var: &str, module: &str) {
+    PY_DYNAMIC_MODULE_VARS.with(|m| {
+        m.borrow_mut().insert(var.to_string(), module.to_string());
+    });
+    note_imported_module(module);
+}
+
+fn dynamic_module_for_var(var: &str) -> Option<String> {
+    PY_DYNAMIC_MODULE_VARS.with(|m| m.borrow().get(var).cloned())
+}
+
+fn note_dynamic_module_registry(module: &str, var: &str) {
+    PY_DYNAMIC_MODULE_REGISTRY.with(|m| {
+        m.borrow_mut().insert(module.to_string(), var.to_string());
+    });
+    note_dynamic_module_var(var, module);
+}
+
+fn dynamic_module_registry_var(module: &str) -> Option<String> {
+    PY_DYNAMIC_MODULE_REGISTRY.with(|m| m.borrow().get(module).cloned())
+}
+
+fn dynamic_module_attr_target(target: &Expression) -> Option<(String, String)> {
+    match &target.kind {
+        ExprKind::Member { object, field, .. } => {
+            if let ExprKind::Ident(var) = &object.kind {
+                dynamic_module_for_var(var).map(|module| (module, field.clone()))
+            } else {
+                None
+            }
+        }
+        ExprKind::Index { object, index, .. } => {
+            let ExprKind::Ident(var) = &object.kind else {
+                return None;
+            };
+            let ExprKind::Lit(Literal::Str(attr)) = &index.kind else {
+                return None;
+            };
+            dynamic_module_for_var(var).map(|module| (module, attr.to_string()))
+        }
+        _ => None,
+    }
+}
+
+fn literal_string_array(value: &Expression) -> Option<Vec<String>> {
+    let ExprKind::Array(elems) = &value.kind else {
+        return None;
+    };
+    let mut out = Vec::with_capacity(elems.len());
+    for elem in elems {
+        let ExprKind::Lit(Literal::Str(s)) = &elem.value.kind else {
+            return None;
+        };
+        out.push(s.to_string());
+    }
+    Some(out)
+}
+
+fn note_dynamic_module_attr(module: &str, attr: &str, value: Expression) {
+    if attr == "__all__" {
+        if let Some(names) = literal_string_array(&value) {
+            PY_DYNAMIC_MODULE_ALL.with(|m| {
+                m.borrow_mut().insert(module.to_string(), names);
+            });
+        }
+    }
+    PY_DYNAMIC_MODULE_ATTRS.with(|m| {
+        let mut map = m.borrow_mut();
+        let attrs = map.entry(module.to_string()).or_default();
+        if let Some((_, existing)) = attrs.iter_mut().find(|(name, _)| name == attr) {
+            *existing = value;
+        } else {
+            attrs.push((attr.to_string(), value));
+        }
+    });
+}
+
+fn dynamic_module_attr(module: &str, attr: &str) -> Option<Expression> {
+    PY_DYNAMIC_MODULE_ATTRS.with(|m| {
+        m.borrow()
+            .get(module)
+            .and_then(|attrs| attrs.iter().find(|(name, _)| name == attr).map(|(_, v)| v.clone()))
+    })
+}
+
+fn dynamic_module_all(module: &str) -> Option<Vec<String>> {
+    PY_DYNAMIC_MODULE_ALL.with(|m| m.borrow().get(module).cloned())
+}
+
+fn py_module_metadata_attr(module_name: &str, field: &str) -> Option<Expression> {
+    let string = |s: String| Expression::new(ExprKind::Lit(Literal::Str(s.into())));
+    Some(match field {
+        "__name__" => string(module_name.to_string()),
+        "__file__" => string(format!("<{module_name}>")),
+        "__doc__" => string(String::new()),
+        "__package__" => {
+            let package = module_name
+                .rsplit_once('.')
+                .map(|(pkg, _)| pkg)
+                .unwrap_or("");
+            string(package.to_string())
+        }
+        "__loader__" => Expression::new(ExprKind::Object(vec![])),
+        "__spec__" => py_module_spec_object(module_name),
+        _ => return None,
+    })
+}
+
+fn py_module_spec_object(module_name: &str) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::new(ExprKind::Lit(Literal::Str("name".into()))),
+            value: Expression::new(ExprKind::Lit(Literal::Str(module_name.to_string().into()))),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::new(ExprKind::Lit(Literal::Str("loader".into()))),
+            value: Expression::new(ExprKind::Object(vec![])),
+        },
+    ]))
+}
+
+fn dynamic_module_import_stmts(module: &str, local: &str) -> Option<Vec<Statement>> {
+    let source = dynamic_module_registry_var(module)?;
+    let mut stmts = Vec::new();
+    if local != source {
+        stmts.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::new(ExprKind::Ident(local.to_string()))],
+            value: Expression::new(ExprKind::Ident(source.clone())),
+        }));
+    }
+    note_dynamic_module_var(local, module);
+    Some(stmts)
+}
+
+fn dynamic_module_star_import_stmts(module: &str) -> Option<Vec<Statement>> {
+    let names = dynamic_module_all(module)?;
+    let mut stmts = Vec::new();
+    for name in names {
+        if name.starts_with('_') {
+            continue;
+        }
+        let value = dynamic_module_attr(module, &name)?;
+        stmts.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::new(ExprKind::Ident(name))],
+            value,
+        }));
+    }
+    Some(stmts)
+}
+
+fn note_string_const(name: &str, value: &str) {
+    PY_STRING_CONSTS.with(|m| {
+        m.borrow_mut().insert(name.to_string(), value.to_string());
+    });
+}
+
+fn clear_string_const(name: &str) {
+    PY_STRING_CONSTS.with(|m| {
+        m.borrow_mut().remove(name);
+    });
+}
+
+fn resolve_string_const(e: &Expression) -> Option<String> {
+    match &e.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.to_string()),
+        ExprKind::Ident(name) => PY_STRING_CONSTS.with(|m| m.borrow().get(name).cloned()),
+        _ => None,
+    }
+}
+
+fn mapping_proxy_source(name: &str) -> Option<Expression> {
+    PY_MAPPING_PROXY_VARS.with(|m| m.borrow().get(name).cloned())
+}
+
+fn note_mapping_proxy_var(name: &str, source: Expression) {
+    PY_MAPPING_PROXY_VARS.with(|m| {
+        m.borrow_mut().insert(name.to_string(), source);
+    });
+}
+
+fn mapping_proxy_ctor_arg(value: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &value.kind else {
+        return None;
+    };
+    let is_ctor = match &callee.kind {
+        ExprKind::Ident(n) => n == "MappingProxyType",
+        ExprKind::Member { object, field, .. } => {
+            matches!(&object.kind, ExprKind::Ident(n) if n == "types")
+                && field == "MappingProxyType"
+        }
+        _ => false,
+    };
+    if is_ctor && args.len() == 1 {
+        Some(args[0].value.clone())
+    } else {
+        None
+    }
+}
+
+fn note_simple_namespace_var(name: &str) {
+    PY_SIMPLE_NAMESPACE_VARS.with(|m| {
+        m.borrow_mut().insert(name.to_string());
+    });
+}
+
+fn is_simple_namespace_var(name: &str) -> bool {
+    PY_SIMPLE_NAMESPACE_VARS.with(|m| m.borrow().contains(name))
+}
+
+fn simple_namespace_ctor_object(value: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &value.kind else {
+        return None;
+    };
+    let is_ctor = match &callee.kind {
+        ExprKind::Ident(n) => n == "SimpleNamespace",
+        ExprKind::Member { object, field, .. } => {
+            matches!(&object.kind, ExprKind::Ident(n) if n == "types")
+                && field == "SimpleNamespace"
+        }
+        _ => false,
+    };
+    if !is_ctor {
+        return None;
+    }
+    let mut props = Vec::new();
+    for arg in args {
+        if arg.spread {
+            props.push(ObjectProperty::Spread(arg.value.clone()));
+        } else if let Some(name) = &arg.name {
+            props.push(ObjectProperty::KeyValue {
+                key: Expression::string(name),
+                value: arg.value.clone(),
+            });
+        }
+    }
+    Some(Expression::new(ExprKind::Object(props)))
+}
+
+fn keyword_object(args: &[Argument]) -> Option<Expression> {
+    let props: Vec<ObjectProperty> = args
+        .iter()
+        .filter_map(|arg| {
+            let name = arg.name.as_ref()?;
+            Some(ObjectProperty::KeyValue {
+                key: Expression::string(name),
+                value: desugar_member_reads(arg.value.clone()),
+            })
+        })
+        .collect();
+    (!props.is_empty()).then(|| Expression::new(ExprKind::Object(props)))
+}
+
+fn collections_ctor_call(name: &str, args: &[Argument]) -> Option<Expression> {
+    let positional: Vec<Expression> = args
+        .iter()
+        .filter(|a| a.name.is_none())
+        .map(|a| desugar_member_reads(a.value.clone()))
+        .collect();
+    match name {
+        "Counter" | "__py_counter_new" => {
+            let iterable = positional
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+            let kws = keyword_object(args)
+                .or_else(|| {
+                    if name == "__py_counter_new" {
+                        positional.get(1).cloned()
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+            Some(call_ident("__py_counter_new", vec![iterable, kws]))
+        }
+        "defaultdict" | "__py_defaultdict" => {
+            let factory = positional
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+            let initial = positional
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+            Some(call_ident("__py_defaultdict", vec![factory, initial]))
+        }
+        "deque" | "__py_deque" => {
+            let iterable = positional
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+            let maxlen = args
+                .iter()
+                .find(|a| a.name.as_deref() == Some("maxlen"))
+                .map(|a| desugar_member_reads(a.value.clone()))
+                .or_else(|| positional.get(1).cloned())
+                .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+            Some(call_ident("__py_deque", vec![iterable, maxlen]))
+        }
+        "ChainMap" | "__py_chainmap_new" => {
+            let call_args = positional.into_iter().map(Argument::positional).collect();
+            Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__py_chainmap_new")),
+                args: call_args,
+                optional: false,
+            }))
+        }
+        "UserDict" | "__py_userdict" => Some(
+            positional
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Expression::new(ExprKind::Object(Vec::new()))),
+        ),
+        "UserList" | "__py_userlist" => Some(call_ident(
+            "__py_userlist",
+            vec![positional
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)))],
+        )),
+        "UserString" | "__py_userstring" => Some(call_ident(
+            "str",
+            vec![positional
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Expression::string(""))],
+        )),
+        _ => None,
+    }
+}
+
+fn py_module_callable_member(module: &str, attr: &str) -> Option<Expression> {
+    let max_args = match (module, attr) {
+        ("collections", "Counter" | "deque" | "OrderedDict") => 1,
+        ("json", "dumps" | "loads" | "dump" | "load") => 1,
+        _ => return None,
+    };
+    let callable = Expression::new(ExprKind::Member {
+        object: Box::new(Expression::ident(module)),
+        field: attr.into(),
+        null_safe: false,
+    });
+    let params: Vec<Param> = (0..max_args)
+        .map(|i| Param {
+            name: format!("__arg{i}"),
+            type_hint: None,
+            default: Some(Expression::new(ExprKind::Lit(Literal::Null))),
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: true,
+            is_nullable: true,
+        })
+        .collect();
+    let args: Vec<Argument> = (0..max_args)
+        .map(|i| {
+            let name = format!("__arg{i}");
+            Argument::positional(Expression::ident(&name))
+        })
+        .collect();
+    Some(Expression::new(ExprKind::Lambda {
+        params,
+        body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+            callee: Box::new(callable),
+            args,
+            optional: false,
+        }))),
+        is_async: false,
+        captures: vec![],
+    }))
 }
 
 /// The stdlib universe this implementation can mount. `import X` for an
@@ -5838,15 +7457,34 @@ fn py_known_module(root: &str) -> bool {
 
 /// `raise ImportError('<msg>')` at the import site.
 fn py_import_error_stmt(msg: &str) -> Statement {
-    Statement::new(StmtKind::Throw {
-        expr: Some(Expression::new(ExprKind::New {
+    let err = Expression::ident("__py_import_error");
+    let mut stmts = vec![Statement::new(StmtKind::Assign {
+        targets: vec![err.clone()],
+        value: Expression::new(ExprKind::New {
             class: Box::new(Expression::new(ExprKind::Ident("ImportError".into()))),
             args: vec![Argument::positional(Expression::new(ExprKind::Lit(
                 Literal::Str(msg.into()),
             )))],
-        })),
+        }),
+    })];
+    if let Some(name) = msg
+        .strip_prefix("No module named '")
+        .and_then(|s| s.strip_suffix("'"))
+    {
+        stmts.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::new(ExprKind::Index {
+                object: Box::new(err.clone()),
+                index: Box::new(Expression::new(ExprKind::Lit(Literal::Str("name".into())))),
+                null_safe: false,
+            })],
+            value: Expression::new(ExprKind::Lit(Literal::Str(name.into()))),
+        }));
+    }
+    stmts.push(Statement::new(StmtKind::Throw {
+        expr: Some(err),
         cause: None,
-    })
+    }));
+    Statement::new(StmtKind::Block(stmts))
 }
 
 /// Python-facing names of mounted host modules that differ from the
@@ -5936,18 +7574,46 @@ fn py_module_surface(module: &str) -> Option<&'static [&'static str]> {
         "types" => &[
             "ModuleType",
             "SimpleNamespace",
+            "MappingProxyType",
+            "MethodType",
             "FunctionType",
             "LambdaType",
+            "GeneratorType",
+            "CoroutineType",
+            "DynamicClassAttribute",
+            "new_class",
+            "resolve_bases",
+        ],
+        "collections" => &[
+            "Counter",
+            "defaultdict",
+            "deque",
+            "OrderedDict",
+            "ChainMap",
+            "namedtuple",
+            "UserDict",
+            "UserList",
+            "UserString",
+            "abc",
         ],
         "collections.abc" => &[
+            "Sized",
             "Mapping",
             "Sequence",
             "Iterable",
             "Iterator",
+            "Generator",
             "Callable",
             "Set",
             "MutableMapping",
+            "MutableSequence",
         ],
+        "email" => &["mime"],
+        "email.mime" => &["text"],
+        "email.mime.text" => &["MIMEText"],
+        "xml" => &["etree"],
+        "xml.etree" => &["ElementTree"],
+        "xml.etree.ElementTree" => &["Element", "SubElement", "fromstring", "tostring"],
         "json" => &["dumps", "loads", "dump", "load"],
         "zoneinfo" => &["ZoneInfo", "available_timezones", "ZoneInfoNotFoundError"],
         "glob" => &["glob", "iglob", "escape", "has_magic"],
@@ -6038,10 +7704,30 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashSet::new());
     static PY_CALLABLE_CLASSES: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+    static PY_CLASSES_WITH_INIT: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
     static PY_CLASS_PARENTS: std::cell::RefCell<std::collections::HashMap<String, Vec<String>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     static PY_CLASS_ATTRS: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashSet<String>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    static PY_CLASS_DATA_ATTRS: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashSet<String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static PY_INSTANCE_CLASSES: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static PY_INSTANCE_ATTRS: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashSet<String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static PY_ASSIGN_TARGET_DEPTH: std::cell::Cell<usize> = std::cell::Cell::new(0);
+}
+
+fn in_assignment_target() -> bool {
+    PY_ASSIGN_TARGET_DEPTH.with(|d| d.get() > 0)
+}
+
+fn with_assignment_target<T>(f: impl FnOnce() -> T) -> T {
+    PY_ASSIGN_TARGET_DEPTH.with(|d| d.set(d.get() + 1));
+    let out = f();
+    PY_ASSIGN_TARGET_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    out
 }
 
 fn note_defined_class(name: &str) {
@@ -6084,6 +7770,18 @@ fn is_callable_class(name: &str) -> bool {
     PY_CALLABLE_CLASSES.with(|m| m.borrow().contains(name))
 }
 
+fn note_class_with_init(name: &str) {
+    if !name.is_empty() {
+        PY_CLASSES_WITH_INIT.with(|m| {
+            m.borrow_mut().insert(name.to_string());
+        });
+    }
+}
+
+fn class_has_init(name: &str) -> bool {
+    PY_CLASSES_WITH_INIT.with(|m| m.borrow().contains(name))
+}
+
 fn note_class_attrs(name: &str, attrs: std::collections::HashSet<String>) {
     if !name.is_empty() {
         PY_CLASS_ATTRS.with(|m| {
@@ -6098,6 +7796,59 @@ fn class_has_attr(name: &str, attr: &str) -> bool {
             .get(name)
             .map(|attrs| attrs.contains(attr))
             .unwrap_or(false)
+    })
+}
+
+fn note_class_data_attrs(name: &str, attrs: std::collections::HashSet<String>) {
+    if !name.is_empty() {
+        PY_CLASS_DATA_ATTRS.with(|m| {
+            m.borrow_mut().insert(name.to_string(), attrs);
+        });
+    }
+}
+
+fn class_has_data_attr(name: &str, attr: &str) -> bool {
+    PY_CLASS_DATA_ATTRS.with(|m| {
+        m.borrow()
+            .get(name)
+            .map(|attrs| attrs.contains(attr))
+            .unwrap_or(false)
+    })
+}
+
+fn note_instance_class(var: &str, class_name: &str) {
+    PY_INSTANCE_CLASSES.with(|m| {
+        m.borrow_mut().insert(var.to_string(), class_name.to_string());
+    });
+}
+
+fn instance_class(var: &str) -> Option<String> {
+    PY_INSTANCE_CLASSES.with(|m| m.borrow().get(var).cloned())
+}
+
+fn note_instance_attr(var: &str, attr: &str) {
+    PY_INSTANCE_ATTRS.with(|m| {
+        m.borrow_mut()
+            .entry(var.to_string())
+            .or_default()
+            .insert(attr.to_string());
+    });
+}
+
+fn instance_has_attr(var: &str, attr: &str) -> bool {
+    PY_INSTANCE_ATTRS.with(|m| {
+        m.borrow()
+            .get(var)
+            .map(|attrs| attrs.contains(attr))
+            .unwrap_or(false)
+    })
+}
+
+fn python_instance_index(var: &str, attr: &str) -> Expression {
+    Expression::new(ExprKind::Index {
+        object: Box::new(Expression::ident(var)),
+        index: Box::new(Expression::string(attr)),
+        null_safe: false,
     })
 }
 
@@ -6375,6 +8126,29 @@ fn py_relational_helper(op: BinOp) -> Option<&'static str> {
         BinOp::GtEq => "__pyge__",
         _ => return None,
     })
+}
+
+fn py_richcompare_method(op: BinOp) -> Option<&'static str> {
+    Some(match op {
+        BinOp::Lt => "__lt__",
+        BinOp::Gt => "__gt__",
+        BinOp::LtEq => "__le__",
+        BinOp::GtEq => "__ge__",
+        _ => return None,
+    })
+}
+
+fn py_fresh_class_lacks_richcompare(expr: &Expression, op: BinOp) -> bool {
+    let Some(method) = py_richcompare_method(op) else {
+        return false;
+    };
+    let ExprKind::New { class, .. } = &expr.kind else {
+        return false;
+    };
+    let ExprKind::Ident(class_name) = &class.kind else {
+        return false;
+    };
+    !class_has_attr(class_name, method)
 }
 
 /// `strftime` directives this expands, as `(property, pad width)`.
@@ -7017,6 +8791,20 @@ fn call_or_new(callee: Expression, args: Vec<Argument>) -> ExprKind {
             return build_namedtuple_construction(&def, args);
         }
         if is_defined_class(name) {
+            if is_callable_class(name) && !class_has_init(name) && !args.is_empty() {
+                return ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::new(ExprKind::New {
+                            class: Box::new(callee),
+                            args: Vec::new(),
+                        })),
+                        field: "__call__".into(),
+                        null_safe: false,
+                    })),
+                    args,
+                    optional: false,
+                };
+            }
             return ExprKind::New {
                 class: Box::new(callee),
                 args,
@@ -7061,7 +8849,7 @@ fn module_namespace_path(e: &Expression) -> Option<String> {
     match &e.kind {
         ExprKind::Ident(n) => {
             let module = resolve_module_alias(n).unwrap_or_else(|| n.clone());
-            is_imported_module(n).then_some(module)
+            (is_imported_module(n) || py_module_surface(&module).is_some()).then_some(module)
         }
         ExprKind::Member { object, field, .. } => {
             Some(format!("{}.{}", module_namespace_path(object)?, field))
@@ -7198,6 +8986,18 @@ fn py_static_type_name(e: &Expression) -> Option<&'static str> {
         ExprKind::Ident(name) if is_defined_function(name) => Some("function"),
         ExprKind::Ident(name) if py_builtin_callable_lambda(name).is_some() => {
             Some("builtin_function_or_method")
+        }
+        ExprKind::Index { object, index, .. } => {
+            if let ExprKind::New { class, .. } = &object.kind
+                && let ExprKind::Ident(class_name) = &class.kind
+                && let ExprKind::Lit(Literal::Str(field)) = &index.kind
+                && class_has_attr(class_name, field)
+                && !class_has_data_attr(class_name, field)
+            {
+                Some("method")
+            } else {
+                None
+            }
         }
         ExprKind::Ident(name) => py_builtin_type_name(name).map(|_| "type"),
         ExprKind::Call { callee, args, .. }
@@ -7455,6 +9255,41 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     object = Expression::new(ExprKind::Ident(module));
                 }
             }
+            if let ExprKind::Ident(var) = &object.kind
+                && instance_has_attr(var, &field)
+            {
+                return python_instance_index(var, &field);
+            }
+            if let ExprKind::Ident(var) = &object.kind
+                && is_chainmap_var(var)
+                && field == "parents"
+            {
+                return call_ident("__py_chainmap_parents", vec![Expression::ident(var)]);
+            }
+            if let ExprKind::Ident(var) = &object.kind
+                && is_userlist_var(var)
+                && field == "data"
+            {
+                return Expression::ident(var);
+            }
+            if let ExprKind::Ident(var) = &object.kind
+                && is_chainmap_var(var)
+                && field == "maps"
+            {
+                return call_ident("__py_chainmap_maps", vec![Expression::ident(var)]);
+            }
+            if let ExprKind::Ident(var) = &object.kind
+                && let Some(class_name) = instance_class(var)
+                && class_has_data_attr(&class_name, &field)
+                && !instance_has_attr(var, &field)
+                && !in_assignment_target()
+            {
+                return Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(&class_name)),
+                    field,
+                    null_safe,
+                });
+            }
             // `types.ModuleType.__name__` — static metadata of the mounted
             // types surface.
             if field == "__name__" {
@@ -7528,13 +9363,13 @@ fn desugar_member_reads(e: Expression) -> Expression {
             // host-backed component modules.
             if let ExprKind::Ident(module_name) = &object.kind {
                 if is_imported_module(module_name) {
-                    if field == "__name__" {
-                        return Expression::new(ExprKind::Lit(Literal::Str(
-                            module_name.clone().into(),
-                        )));
+                    let module_name = resolve_module_alias(module_name)
+                        .unwrap_or_else(|| module_name.clone());
+                    if let Some(value) = dynamic_module_attr(&module_name, &field) {
+                        return value;
                     }
-                    if field == "__file__" || field == "__doc__" {
-                        return Expression::new(ExprKind::Lit(Literal::Null));
+                    if let Some(value) = py_module_metadata_attr(&module_name, &field) {
+                        return value;
                     }
                     // `mod.__dict__` — a REAL Python dict built from the
                     // namespace object's entries, via the same dict-
@@ -7585,6 +9420,14 @@ fn desugar_member_reads(e: Expression) -> Expression {
                             }],
                         });
                     }
+                }
+            }
+            if let Some(path) = module_namespace_path(&object) {
+                if let Some(value) = dynamic_module_attr(&path, &field) {
+                    return value;
+                }
+                if let Some(value) = py_module_metadata_attr(&path, &field) {
+                    return value;
                 }
             }
             // `datetime.date.min` / `datetime.timezone.utc` — class
@@ -7641,10 +9484,27 @@ fn desugar_member_reads(e: Expression) -> Expression {
             // `__import__('json')` — same static mount binding as
             // importlib.import_module.
             if let ExprKind::Ident(n) = &callee.kind {
+                if let Some(rewritten) = collections_ctor_call(n, &args) {
+                    return rewritten;
+                }
+                if n == "hash" && args.len() == 1 {
+                    let value = desugar_member_reads(args[0].value.clone());
+                    if matches!(value.kind, ExprKind::New { .. }) {
+                        return Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(value),
+                                field: "__hash__".into(),
+                                null_safe: false,
+                            })),
+                            args: Vec::new(),
+                            optional: false,
+                        });
+                    }
+                }
                 if n == "__import__" && args.len() == 1 {
-                    if let ExprKind::Lit(Literal::Str(module_name)) = &args[0].value.kind {
-                        note_imported_module(module_name);
-                        return Expression::new(ExprKind::Ident(module_name.clone()));
+                    if let Some(module_name) = resolve_string_const(&args[0].value) {
+                        note_imported_module(&module_name);
+                        return Expression::new(ExprKind::Ident(module_name));
                     }
                 }
                 // `getattr(module, 'lit')` — a static member read of the
@@ -7655,8 +9515,27 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     {
                         if is_imported_module(m) {
                             let module = resolve_module_alias(m).unwrap_or_else(|| m.clone());
-                            // Subscript (data) read — the stamped surface
-                            // is plain properties on the namespace object.
+                            if let Some(value) = dynamic_module_attr(&module, attr) {
+                                return value;
+                            }
+                            if let Some(value) = py_module_metadata_attr(&module, attr) {
+                                return value;
+                            }
+                            if let Some(value) = py_module_callable_member(&module, attr) {
+                                return value;
+                            }
+                            if py_module_surface(&module)
+                                .is_some_and(|surface| surface.iter().any(|name| *name == attr))
+                                || py_module_renames(&module).is_some_and(|renames| {
+                                    renames.iter().any(|(py, canon)| *py == attr || *canon == attr)
+                                })
+                            {
+                                return Expression::new(ExprKind::Member {
+                                    object: Box::new(Expression::new(ExprKind::Ident(module))),
+                                    field: attr.to_string(),
+                                    null_safe: false,
+                                });
+                            }
                             return Expression::new(ExprKind::Index {
                                 object: Box::new(Expression::new(ExprKind::Ident(module))),
                                 index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
@@ -7698,8 +9577,16 @@ fn desugar_member_reads(e: Expression) -> Expression {
                         // Module metadata dunders always exist on a module.
                         if matches!(
                             attr.as_ref(),
-                            "__name__" | "__package__" | "__doc__" | "__loader__" | "__spec__"
+                            "__name__"
+                                | "__file__"
+                                | "__package__"
+                                | "__doc__"
+                                | "__loader__"
+                                | "__spec__"
                         ) {
+                            return Expression::new(ExprKind::Lit(Literal::Bool(true)));
+                        }
+                        if dynamic_module_attr(&path, attr.as_ref()).is_some() {
                             return Expression::new(ExprKind::Lit(Literal::Bool(true)));
                         }
                         if let Some(surface) = py_module_surface(&path) {
@@ -7716,7 +9603,27 @@ fn desugar_member_reads(e: Expression) -> Expression {
                 if matches!(&object.kind, ExprKind::Ident(n) if n == "pkgutil")
                     && field == "iter_modules"
                 {
-                    return Expression::new(ExprKind::Array(vec![]));
+                    let modules = ["json", "math", "os", "sys", "collections"];
+                    return Expression::new(ExprKind::Array(
+                        modules
+                            .into_iter()
+                            .map(|name| ArrayElement {
+                                key: None,
+                                spread: false,
+                                by_ref: false,
+                                value: Expression::new(ExprKind::Object(vec![
+                                    ObjectProperty::KeyValue {
+                                        key: Expression::new(ExprKind::Lit(Literal::Str(
+                                            "name".into(),
+                                        ))),
+                                        value: Expression::new(ExprKind::Lit(Literal::Str(
+                                            name.into(),
+                                        ))),
+                                    },
+                                ])),
+                            })
+                            .collect(),
+                    ));
                 }
                 // `types.ModuleType('name')` — a module object with its
                 // `__name__` metadata.
@@ -7724,10 +9631,38 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     && field == "ModuleType"
                     && args.len() == 1
                 {
-                    return Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
-                        key: Expression::new(ExprKind::Lit(Literal::Str("__name__".into()))),
-                        value: args.into_iter().next().unwrap().value,
-                    }]));
+                    let name = args.into_iter().next().unwrap().value;
+                    return Expression::new(ExprKind::Object(vec![
+                        ObjectProperty::KeyValue {
+                            key: Expression::new(ExprKind::Lit(Literal::Str("__name__".into()))),
+                            value: name.clone(),
+                        },
+                        ObjectProperty::KeyValue {
+                            key: Expression::new(ExprKind::Lit(Literal::Str("__file__".into()))),
+                            value: Expression::string("<module>"),
+                        },
+                        ObjectProperty::KeyValue {
+                            key: Expression::new(ExprKind::Lit(Literal::Str("__doc__".into()))),
+                            value: Expression::string(""),
+                        },
+                        ObjectProperty::KeyValue {
+                            key: Expression::new(ExprKind::Lit(Literal::Str("__spec__".into()))),
+                            value: Expression::new(ExprKind::Object(vec![
+                                ObjectProperty::KeyValue {
+                                    key: Expression::new(ExprKind::Lit(Literal::Str(
+                                        "name".into(),
+                                    ))),
+                                    value: name,
+                                },
+                                ObjectProperty::KeyValue {
+                                    key: Expression::new(ExprKind::Lit(Literal::Str(
+                                        "loader".into(),
+                                    ))),
+                                    value: Expression::new(ExprKind::Object(vec![])),
+                                },
+                            ])),
+                        },
+                    ]));
                 }
             }
             // `importlib.import_module('json')` with a literal module name →
@@ -7739,9 +9674,9 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     && field == "import_module"
                     && args.len() == 1
                 {
-                    if let ExprKind::Lit(Literal::Str(module_name)) = &args[0].value.kind {
-                        note_imported_module(module_name);
-                        return Expression::new(ExprKind::Ident(module_name.clone()));
+                    if let Some(module_name) = resolve_string_const(&args[0].value) {
+                        note_imported_module(&module_name);
+                        return Expression::new(ExprKind::Ident(module_name));
                     }
                 }
                 // `importlib.reload(m)` — modules are immutable mounts here;
@@ -7765,17 +9700,8 @@ fn desugar_member_reads(e: Expression) -> Expression {
                         if matches!(&inner_obj.kind, ExprKind::Ident(n) if n == "importlib")
                             && inner_field == "util"
                         {
-                            if let ExprKind::Lit(Literal::Str(module_name)) = &args[0].value.kind {
-                                return Expression::new(ExprKind::Object(vec![
-                                    ObjectProperty::KeyValue {
-                                        key: Expression::new(ExprKind::Lit(Literal::Str(
-                                            "name".into(),
-                                        ))),
-                                        value: Expression::new(ExprKind::Lit(Literal::Str(
-                                            module_name.clone(),
-                                        ))),
-                                    },
-                                ]));
+                            if let Some(module_name) = resolve_string_const(&args[0].value) {
+                                return py_module_spec_object(&module_name);
                             }
                         }
                     }
@@ -7812,6 +9738,72 @@ fn desugar_member_reads(e: Expression) -> Expression {
             // sqlite3: `sqlite3.connect(...)` and methods on tracked
             // connection/cursor variables → collision-free `__sql_*` builtins.
             if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if let ExprKind::Ident(name) = &object.kind {
+                    if let Some(source) = mapping_proxy_source(name) {
+                        let recv = desugar_member_reads(source);
+                        return Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(recv),
+                                field: field.clone(),
+                                null_safe: false,
+                            })),
+                            args,
+                            optional,
+                        });
+                    }
+                }
+                if let Some(path) = module_namespace_path(object)
+                    && path == "collections"
+                    && let Some(rewritten) = collections_ctor_call(field, &args)
+                {
+                    return rewritten;
+                }
+                if matches!(&object.kind, ExprKind::Ident(n) if n == "Counter")
+                    && field == "fromkeys"
+                    && !args.is_empty()
+                {
+                    let keys = desugar_member_reads(args[0].value.clone());
+                    let value = args
+                        .iter()
+                        .find(|a| a.name.as_deref() == Some("v"))
+                        .map(|a| desugar_member_reads(a.value.clone()))
+                        .or_else(|| args.get(1).map(|a| desugar_member_reads(a.value.clone())))
+                        .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+                    return call_ident("__py_counter_fromkeys", vec![keys, value]);
+                }
+                if matches!(&object.kind, ExprKind::Ident(n) if n == "types")
+                    && matches!(
+                        field.as_str(),
+                        "SimpleNamespace"
+                            | "MappingProxyType"
+                            | "MethodType"
+                            | "DynamicClassAttribute"
+                            | "new_class"
+                            | "resolve_bases"
+                    )
+                {
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(field)),
+                        args,
+                        optional,
+                    });
+                }
+                if let Some(path) = module_namespace_path(object) {
+                    if let Some(value) = dynamic_module_attr(&path, field) {
+                        let args = args
+                            .into_iter()
+                            .map(|mut a| {
+                                a.value = desugar_member_reads(a.value);
+                                a
+                            })
+                            .collect();
+                        return Expression::new(ExprKind::Call {
+                            callee: Box::new(value),
+                            args,
+                            optional,
+                        });
+                    }
+                }
                 if let Some(rewritten) =
                     rewrite_sqlite_call(object, field, args.clone(), optional)
                 {
@@ -7846,6 +9838,195 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     }
                     if let Some(rewritten) = rewrite_re_match_method(object, field, &args) {
                         return rewritten;
+                    }
+                }
+                if let ExprKind::Index {
+                    object: indexed_object,
+                    index,
+                    ..
+                } = &object.kind
+                    && let ExprKind::Ident(var) = &indexed_object.kind
+                    && let Some(factory) = defaultdict_factory(var)
+                {
+                    let vals: Vec<Expression> = args
+                        .iter()
+                        .map(|a| desugar_member_reads(a.value.clone()))
+                        .collect();
+                    if field == "append" && vals.len() == 1 {
+                        return call_ident(
+                            "__py_defaultdict_append",
+                            vec![Expression::ident(var), factory, *index.clone(), vals[0].clone()],
+                        );
+                    }
+                    if field == "add" && vals.len() == 1 {
+                        return call_ident(
+                            "__py_defaultdict_add",
+                            vec![Expression::ident(var), factory, *index.clone(), vals[0].clone()],
+                        );
+                    }
+                }
+                if let ExprKind::Call {
+                    callee: indexed_callee,
+                    args: indexed_args,
+                    ..
+                } = &object.kind
+                    && matches!(&indexed_callee.kind, ExprKind::Ident(n) if n == "__py_defaultdict_get")
+                    && indexed_args.len() == 3
+                {
+                    let vals: Vec<Expression> = args
+                        .iter()
+                        .map(|a| desugar_member_reads(a.value.clone()))
+                        .collect();
+                    let recv = indexed_args[0].value.clone();
+                    let factory = indexed_args[1].value.clone();
+                    let key = indexed_args[2].value.clone();
+                    if field == "append" && vals.len() == 1 {
+                        return call_ident(
+                            "__py_defaultdict_append",
+                            vec![recv, factory, key, vals[0].clone()],
+                        );
+                    }
+                    if field == "add" && vals.len() == 1 {
+                        return call_ident(
+                            "__py_defaultdict_add",
+                            vec![recv, factory, key, vals[0].clone()],
+                        );
+                    }
+                }
+                if let ExprKind::Ident(var) = &object.kind {
+                    if let Some(maxlen) = deque_maxlen(var) {
+                        let recv = desugar_member_reads((**object).clone());
+                        let vals: Vec<Expression> = args
+                            .iter()
+                            .map(|a| desugar_member_reads(a.value.clone()))
+                            .collect();
+                        match field.as_str() {
+                            "append" if vals.len() == 1 => {
+                                return call_ident(
+                                    "__py_deque_append",
+                                    vec![recv, vals[0].clone(), maxlen],
+                                );
+                            }
+                            "appendleft" if vals.len() == 1 => {
+                                return call_ident(
+                                    "__py_deque_appendleft",
+                                    vec![recv, vals[0].clone(), maxlen],
+                                );
+                            }
+                            "extend" if vals.len() == 1 => {
+                                return call_ident(
+                                    "__py_deque_extend",
+                                    vec![recv, vals[0].clone(), maxlen],
+                                );
+                            }
+                            "extendleft" if vals.len() == 1 => {
+                                return call_ident(
+                                    "__py_deque_extendleft",
+                                    vec![recv, vals[0].clone(), maxlen],
+                                );
+                            }
+                            "remove" if vals.len() == 1 => {
+                                return call_ident(
+                                    "__py_deque_remove",
+                                    vec![recv, vals[0].clone()],
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                    if is_userlist_var(var) {
+                        let recv = desugar_member_reads((**object).clone());
+                        let vals: Vec<Expression> = args
+                            .iter()
+                            .map(|a| desugar_member_reads(a.value.clone()))
+                            .collect();
+                        match field.as_str() {
+                            "append" if vals.len() == 1 => {
+                                return call_ident(
+                                    "__py_deque_append",
+                                    vec![
+                                        recv,
+                                        vals[0].clone(),
+                                        Expression::new(ExprKind::Lit(Literal::Null)),
+                                    ],
+                                );
+                            }
+                            "extend" if vals.len() == 1 => {
+                                return call_ident(
+                                    "__py_deque_extend",
+                                    vec![
+                                        recv,
+                                        vals[0].clone(),
+                                        Expression::new(ExprKind::Lit(Literal::Null)),
+                                    ],
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                    if is_counter_expr(object) {
+                        let recv = desugar_member_reads((**object).clone());
+                        let vals: Vec<Expression> = args
+                            .iter()
+                            .map(|a| desugar_member_reads(a.value.clone()))
+                            .collect();
+                        match field.as_str() {
+                            "update" if vals.len() == 1 => {
+                                return call_ident(
+                                    "__py_counter_update",
+                                    vec![recv, vals[0].clone()],
+                                );
+                            }
+                            "subtract" if vals.len() == 1 => {
+                                return call_ident(
+                                    "__py_counter_subtract",
+                                    vec![recv, vals[0].clone()],
+                                );
+                            }
+                            "elements" if vals.is_empty() => {
+                                return call_ident("__py_counter_elements", vec![recv]);
+                            }
+                            "total" if vals.is_empty() => {
+                                return call_ident("__py_counter_total", vec![recv]);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if is_chainmap_var(var) {
+                        let recv = desugar_member_reads((**object).clone());
+                        let vals: Vec<Expression> = args
+                            .iter()
+                            .map(|a| desugar_member_reads(a.value.clone()))
+                            .collect();
+                        if field == "new_child" {
+                            let child = vals
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+                            return call_ident("__py_chainmap_new_child", vec![recv, child]);
+                        }
+                    }
+                }
+                if field == "most_common" && args.len() <= 1 {
+                    let mut vals = vec![desugar_member_reads((**object).clone())];
+                    vals.extend(args.iter().map(|a| desugar_member_reads(a.value.clone())));
+                    return call_ident("__py_counter_most_common", vals);
+                }
+                if field == "move_to_end" && !args.is_empty() && args.len() <= 2 {
+                    let has_last =
+                        args.len() > 1 || args.iter().any(|a| a.name.as_deref() == Some("last"));
+                    if !has_last {
+                        // Shared adapter handles the default last=True path.
+                    } else {
+                    let recv = desugar_member_reads((**object).clone());
+                    let key = desugar_member_reads(args[0].value.clone());
+                    let last = args
+                        .iter()
+                        .find(|a| a.name.as_deref() == Some("last"))
+                        .map(|a| desugar_member_reads(a.value.clone()))
+                        .or_else(|| args.get(1).map(|a| desugar_member_reads(a.value.clone())))
+                        .unwrap_or_else(|| Expression::bool(true));
+                    return call_ident("__py_ordereddict_move_to_end", vec![recv, key, last]);
                     }
                 }
             }
@@ -7986,6 +10167,30 @@ fn desugar_member_reads(e: Expression) -> Expression {
             // Method call: keep the Member callee (method dispatch), but
             // desugar the receiver's own chain.
             let callee = match callee.kind {
+                ExprKind::New { class, args } => Expression::new(ExprKind::Member {
+                    object: Box::new(desugar_member_reads(Expression::new(ExprKind::New {
+                        class,
+                        args,
+                    }))),
+                    field: "__call__".into(),
+                    null_safe: false,
+                }),
+                ExprKind::Call {
+                    callee: inner,
+                    args: inner_args,
+                    optional: inner_optional,
+                } if matches!(&inner.kind, ExprKind::New { .. }) => {
+                    let constructed = Expression::new(ExprKind::Call {
+                        callee: inner,
+                        args: inner_args,
+                        optional: inner_optional,
+                    });
+                    Expression::new(ExprKind::Member {
+                        object: Box::new(desugar_member_reads(constructed)),
+                        field: "__call__".into(),
+                        null_safe: false,
+                    })
+                }
                 ExprKind::Member {
                     object,
                     field,
@@ -7999,7 +10204,13 @@ fn desugar_member_reads(e: Expression) -> Expression {
             };
             Expression::new(ExprKind::Call {
                 callee: Box::new(callee),
-                args,
+                args: args
+                    .into_iter()
+                    .map(|mut a| {
+                        a.value = desugar_member_reads(a.value);
+                        a
+                    })
+                    .collect(),
                 optional,
             })
         }
@@ -8007,11 +10218,57 @@ fn desugar_member_reads(e: Expression) -> Expression {
             object,
             index,
             null_safe,
-        } => Expression::new(ExprKind::Index {
-            object: Box::new(desugar_member_reads(*object)),
-            index,
-            null_safe,
-        }),
+        } => {
+            if let ExprKind::Lit(Literal::Str(field)) = &index.kind
+                && field == "__name__"
+                && let Some(value) = py_type_call_arg(&object)
+                && let Some(name) = py_static_type_name(value)
+            {
+                return Expression::string(name);
+            }
+            if let ExprKind::Ident(name) = &object.kind {
+                if let Some(source) = mapping_proxy_source(name) {
+                    return Expression::new(ExprKind::Index {
+                        object: Box::new(desugar_member_reads(source)),
+                        index,
+                        null_safe,
+                    });
+                }
+                if !in_assignment_target()
+                    && let Some(rewritten) = collection_index_read(&object, &index)
+                {
+                    return rewritten;
+                }
+            }
+            if let ExprKind::Call { callee, .. } = &object.kind
+                && matches!(&callee.kind, ExprKind::Ident(n)
+                    if n == "__py_chainmap_new"
+                        || n == "__py_chainmap_new_child"
+                        || n == "__py_chainmap_parents")
+                && !in_assignment_target()
+            {
+                return call_ident(
+                    "__py_chainmap_get",
+                    vec![desugar_member_reads(*object), desugar_member_reads(*index)],
+                );
+            }
+            Expression::new(ExprKind::Index {
+                object: Box::new(desugar_member_reads(*object)),
+                index: Box::new(desugar_member_reads(*index)),
+                null_safe,
+            })
+        }
+        ExprKind::Binary { op, left, right } => {
+            let left = desugar_member_reads(*left);
+            let right = desugar_member_reads(*right);
+            py_counter_binary(op, &left, &right).unwrap_or_else(|| {
+                Expression::new(ExprKind::Binary {
+                    op,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                })
+            })
+        }
         // A module-aliased local reads AS the module (`m = json; m.dumps`),
         // and bare `__import__` is a callable value.
         ExprKind::Ident(name) => {
@@ -8072,6 +10329,11 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             args: Vec::new(),
                             optional: false,
                         });
+                    } else if let Some(path) = module_namespace_path(object)
+                        && path == "collections"
+                        && let Some(rewritten) = collections_ctor_call(field, &[])
+                    {
+                        expr = rewritten;
                     } else if field == "format"
                         && let ExprKind::Lit(Literal::Str(tmpl)) = &object.kind
                         && let Some(expanded) = expand_str_format(tmpl, &[])
@@ -8110,6 +10372,10 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         args: Vec::new(),
                         optional: false,
                     });
+                } else if let ExprKind::Ident(name) = &expr.kind
+                    && let Some(rewritten) = collections_ctor_call(name, &[])
+                {
+                    expr = rewritten;
                 } else {
                     // `Foo()` — construction if `Foo` is a declared class.
                     expr = Expression::new(call_or_new(expr, Vec::new()));
@@ -8255,6 +10521,165 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     continue;
                                 }
                             }
+                            if field == "move_to_end" && !args.is_empty() && args.len() <= 2 {
+                                let has_last = args.len() > 1
+                                    || args.iter().any(|a| a.name.as_deref() == Some("last"));
+                                if !has_last {
+                                    // Shared adapter handles the default last=True path.
+                                } else {
+                                let recv = desugar_member_reads((**object).clone());
+                                let key = desugar_member_reads(args[0].value.clone());
+                                let last = args
+                                    .iter()
+                                    .find(|a| a.name.as_deref() == Some("last"))
+                                    .map(|a| desugar_member_reads(a.value.clone()))
+                                    .or_else(|| args.get(1).map(|a| desugar_member_reads(a.value.clone())))
+                                    .unwrap_or_else(|| Expression::bool(true));
+                                expr = call_ident(
+                                    "__py_ordereddict_move_to_end",
+                                    vec![recv, key, last],
+                                );
+                                continue;
+                                }
+                            }
+                            if let ExprKind::Ident(var) = &object.kind {
+                                if let Some(factory) = defaultdict_factory(var) {
+                                    if let ExprKind::Index { object: indexed_object, index, .. } =
+                                        &object.kind
+                                        && matches!(&indexed_object.kind, ExprKind::Ident(n) if n == var)
+                                    {
+                                        if field == "append" && args.len() == 1 {
+                                            expr = call_ident(
+                                                "__py_defaultdict_append",
+                                                vec![
+                                                    Expression::ident(var),
+                                                    factory,
+                                                    *index.clone(),
+                                                    args[0].value.clone(),
+                                                ],
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                }
+                                if is_counter_expr(object) {
+                                    let vals: Vec<Expression> =
+                                        args.iter().map(|a| desugar_member_reads(a.value.clone())).collect();
+                                    match field.as_str() {
+                                        "update" if vals.len() == 1 => {
+                                            expr = call_ident(
+                                                "__py_counter_update",
+                                                vec![Expression::ident(var), vals[0].clone()],
+                                            );
+                                            continue;
+                                        }
+                                        "subtract" if vals.len() == 1 => {
+                                            expr = call_ident(
+                                                "__py_counter_subtract",
+                                                vec![Expression::ident(var), vals[0].clone()],
+                                            );
+                                            continue;
+                                        }
+                                        "elements" if vals.is_empty() => {
+                                            expr = call_ident(
+                                                "__py_counter_elements",
+                                                vec![Expression::ident(var)],
+                                            );
+                                            continue;
+                                        }
+                                        "total" if vals.is_empty() => {
+                                            expr = call_ident(
+                                                "__py_counter_total",
+                                                vec![Expression::ident(var)],
+                                            );
+                                            continue;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                if let Some(maxlen) = deque_maxlen(var) {
+                                    let vals: Vec<Expression> =
+                                        args.iter().map(|a| desugar_member_reads(a.value.clone())).collect();
+                                    match field.as_str() {
+                                        "append" if vals.len() == 1 => {
+                                            expr = call_ident(
+                                                "__py_deque_append",
+                                                vec![Expression::ident(var), vals[0].clone(), maxlen],
+                                            );
+                                            continue;
+                                        }
+                                        "appendleft" if vals.len() == 1 => {
+                                            expr = call_ident(
+                                                "__py_deque_appendleft",
+                                                vec![Expression::ident(var), vals[0].clone(), maxlen],
+                                            );
+                                            continue;
+                                        }
+                                        "extend" if vals.len() == 1 => {
+                                            expr = call_ident(
+                                                "__py_deque_extend",
+                                                vec![Expression::ident(var), vals[0].clone(), maxlen],
+                                            );
+                                            continue;
+                                        }
+                                        "extendleft" if vals.len() == 1 => {
+                                            expr = call_ident(
+                                                "__py_deque_extendleft",
+                                                vec![Expression::ident(var), vals[0].clone(), maxlen],
+                                            );
+                                            continue;
+                                        }
+                                        "remove" if vals.len() == 1 => {
+                                            expr = call_ident(
+                                                "__py_deque_remove",
+                                                vec![Expression::ident(var), vals[0].clone()],
+                                            );
+                                            continue;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                if is_userlist_var(var) {
+                                    let vals: Vec<Expression> =
+                                        args.iter().map(|a| desugar_member_reads(a.value.clone())).collect();
+                                    match field.as_str() {
+                                        "append" if vals.len() == 1 => {
+                                            expr = call_ident(
+                                                "__py_deque_append",
+                                                vec![
+                                                    Expression::ident(var),
+                                                    vals[0].clone(),
+                                                    Expression::new(ExprKind::Lit(Literal::Null)),
+                                                ],
+                                            );
+                                            continue;
+                                        }
+                                        "extend" if vals.len() == 1 => {
+                                            expr = call_ident(
+                                                "__py_deque_extend",
+                                                vec![
+                                                    Expression::ident(var),
+                                                    vals[0].clone(),
+                                                    Expression::new(ExprKind::Lit(Literal::Null)),
+                                                ],
+                                            );
+                                            continue;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                if is_chainmap_var(var) && field == "new_child" {
+                                    let child = args
+                                        .first()
+                                        .map(|a| desugar_member_reads(a.value.clone()))
+                                        .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)));
+                                    expr = call_ident(
+                                        "__py_chainmap_new_child",
+                                        vec![Expression::ident(var), child],
+                                    );
+                                    continue;
+                                }
+                            }
                         }
                         // Python `super(Type, self)` explicit 2-arg form → ExprKind::Super
                         if matches!(&expr.kind, ExprKind::Ident(n) if n == "super") {
@@ -8295,6 +10720,10 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
                         // Python-specific: rewrite builtins that differ from JS semantics.
                         if let ExprKind::Ident(name) = &expr.kind {
+                            if let Some(rewritten) = collections_ctor_call(name, &args) {
+                                expr = rewritten;
+                                continue;
+                            }
                             match name.as_str() {
                                 "print" => {
                                     // `print(..., file=f)` to a real stream/file
@@ -8402,6 +10831,27 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                         continue;
                                     }
                                 }
+                                "len" if args.len() == 1 => {
+                                    let value = desugar_member_reads(args[0].value.clone());
+                                    if is_counter_expr(&value) {
+                                        expr = call_ident("__py_counter_len", vec![value]);
+                                        continue;
+                                    }
+                                    if let ExprKind::Member { object, field, .. } = &args[0].value.kind
+                                        && field == "maps"
+                                        && let ExprKind::Ident(var) = &object.kind
+                                        && is_chainmap_var(var)
+                                    {
+                                        expr = call_ident(
+                                            "len",
+                                            vec![call_ident(
+                                                "__py_chainmap_maps",
+                                                vec![Expression::ident(var)],
+                                            )],
+                                        );
+                                        continue;
+                                    }
+                                }
                                 "dir" if args.len() == 1 => {
                                     if matches!(&args[0].value.kind, ExprKind::Ident(n) if n == "__builtins__")
                                     {
@@ -8448,6 +10898,29 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                         optional: false,
                                     });
                                     continue;
+                                }
+                                "repr" if args.len() == 1 => {
+                                    let value = desugar_member_reads(args[0].value.clone());
+                                    if is_counter_expr(&value) {
+                                        expr = call_ident("__py_counter_repr", vec![value]);
+                                        continue;
+                                    }
+                                    if let ExprKind::Ident(var) = &args[0].value.kind {
+                                        if is_simple_namespace_var(var) {
+                                            expr = call_ident(
+                                                "__py_simple_namespace_repr",
+                                                vec![args[0].value.clone()],
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                }
+                                "str" if args.len() == 1 => {
+                                    let value = desugar_member_reads(args[0].value.clone());
+                                    if is_counter_expr(&value) {
+                                        expr = call_ident("__py_counter_repr", vec![value]);
+                                        continue;
+                                    }
                                 }
                                 "isinstance" if args.len() == 2 => {
                                     // `isinstance(x, datetime.date)` — the
@@ -8772,7 +11245,24 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     // `['a']`), but a Map spreads as [k, v]
                                     // pairs — route through the Python iterate
                                     // helper first, same as `sorted`.
-                                    let iterable = args[0].value.clone();
+                                    let mut iterable = args[0].value.clone();
+                                    if let ExprKind::New { class, .. } = &iterable.kind {
+                                        if let ExprKind::Ident(class_name) = &class.kind {
+                                            if class_has_attr(class_name, "__iter__") {
+                                                iterable = Expression::new(ExprKind::Call {
+                                                    callee: Box::new(Expression::new(
+                                                        ExprKind::Member {
+                                                            object: Box::new(iterable),
+                                                            field: "__iter__".into(),
+                                                            null_safe: false,
+                                                        },
+                                                    )),
+                                                    args: Vec::new(),
+                                                    optional: false,
+                                                });
+                                            }
+                                        }
+                                    }
                                     expr = Expression::new(ExprKind::Array(vec![ArrayElement {
                                         key: None,
                                         spread: true,
@@ -8820,6 +11310,18 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 "dict" if args.is_empty() => {
                                     expr = Expression::new(ExprKind::Object(vec![]));
                                     continue;
+                                }
+                                "dict" if args.len() == 1 => {
+                                    let value = desugar_member_reads(args[0].value.clone());
+                                    if is_counter_expr(&value) {
+                                        expr = call_ident("__py_counter_dict", vec![value]);
+                                        continue;
+                                    }
+                                    if matches!(&value.kind, ExprKind::Ident(n) if defaultdict_factory(n).is_some())
+                                    {
+                                        expr = value;
+                                        continue;
+                                    }
                                 }
                                 "bytes" if args.is_empty() => {
                                     expr = wrap_bytes(Expression::new(ExprKind::Array(vec![])));
@@ -8926,7 +11428,15 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     // sorted(iterable) → [...iterable].sort()
                                     // sorted(iterable, key=f) → __py_sort_by_key([...iterable], f)
                                     // sorted(..., reverse=True) → … .reverse()
-                                    let iterable = args[0].value.clone();
+                                    let iterable = desugar_member_reads(args[0].value.clone());
+                                    let sorts_tuple_pairs = matches!(
+                                        &iterable.kind,
+                                        ExprKind::Comprehension {
+                                            kind: ComprehensionKind::List,
+                                            element,
+                                            ..
+                                        } if matches!(&element.kind, ExprKind::Tuple(items) if items.len() == 2)
+                                    );
                                     let has_reverse =
                                         args.iter().any(|a| a.name.as_deref() == Some("reverse"));
                                     let key_fn = args
@@ -8934,6 +11444,16 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                         .find(|a| a.name.as_deref() == Some("key"))
                                         .map(|a| a.value.clone())
                                         .map(wrap_key_ident_in_lambda);
+                                    let key_fn = key_fn.or_else(|| {
+                                        if sorts_tuple_pairs {
+                                            Some(py_lambda1(
+                                                "__sk",
+                                                py_index(Expression::ident("__sk"), Expression::int(0)),
+                                            ))
+                                        } else {
+                                            None
+                                        }
+                                    });
                                     // A dict iterates its KEYS, but spreading a
                                     // Map yields [k, v] pairs — route through
                                     // the Python iterate helper first.
@@ -9236,6 +11756,7 @@ fn expr_is_python_float(e: &Expression) -> bool {
         } => expr_is_python_float(expr),
         ExprKind::Call { callee, args, .. } => match &callee.kind {
             ExprKind::Ident(n) if n == "float" => true,
+            ExprKind::Ident(n) if is_float_returning_import(n) => true,
             // `/` lowers to __pytruediv__ and is always float in Python.
             ExprKind::Ident(n) if n == "__pytruediv__" => true,
             // Python arithmetic lowers to __py* helpers — float if an operand is.
@@ -9437,10 +11958,16 @@ fn normalize_python_print_args(raw: Vec<Argument>) -> Vec<Argument> {
                 // Format statically-known floats Python-style (`4.0`, not `4`).
                 // Bytes display is handled at runtime in `emit_py_repr` via
                 // `arraybuffer.isView`, so no static wrapping is needed here.
-                if expr_is_python_float(&a.value) {
-                    items.push(Argument::positional(wrap_float_repr(a.value)));
+                let value = desugar_member_reads(a.value);
+                if is_counter_expr(&value) {
+                    items.push(Argument::positional(call_ident("__py_counter_repr", vec![value])));
+                } else if expr_is_python_float(&value) {
+                    items.push(Argument::positional(wrap_float_repr(value)));
                 } else {
-                    items.push(a);
+                    items.push(Argument {
+                        value,
+                        ..a
+                    });
                 }
             }
         }

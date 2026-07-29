@@ -104,6 +104,33 @@ fn register_from_profile() {
         add(name, node);
     }
 
+    // ECMA-shared math names. The host exports them under `ecma:math`, which
+    // `mount_host_exports` mounts LOWERCASED as `ecma.math.<name>` — so an
+    // `Alias` leaf reaches them with no per-name profile row. namespaceplan.md
+    // §"Source-name ≠ canonical-name": `python.json.dumps =
+    // Alias(ecma.json.stringify)` is exactly this shape. These five are the
+    // only `FLOAT_MATH_FNS` members with no profile entry.
+    for name in ["hypot", "gamma", "lgamma", "erf", "erfc"] {
+        // `Path` is a dotted string.
+        let target = match name {
+            // tgamma/lgamma live in the libc platform tree, not ecma.
+            "gamma" => "libc.math.tgamma".to_string(),
+            "lgamma" => "libc.math.lgamma".to_string(),
+            _ => format!("ecma.math.{name}"),
+        };
+        let root = roots.entry("math".to_string()).or_default();
+        insert_path(root, &[name], NamespaceNode::Alias(target));
+    }
+
+    // Register each module as its own root (`math.pi`, `os.stat`) AND under a
+    // `python.*` package root, so ANY language can walk `python.math.pi` the
+    // same way it can walk `php.str_replace`. Same data, two mount points.
+    let mut python_root = Subtree::new();
+    for (root, tree) in &roots {
+        python_root.insert(root.clone(), NamespaceNode::Namespace(tree.clone()));
+    }
+    namespaces::register_namespace_tree("python", NamespaceNode::Namespace(python_root));
+
     for (root, tree) in roots {
         namespaces::register_namespace_tree(&root, NamespaceNode::Namespace(tree));
     }

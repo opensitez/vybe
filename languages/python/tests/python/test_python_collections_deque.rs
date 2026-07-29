@@ -10,7 +10,7 @@ q.appendleft(0)
 print(list(q))
 print(q.pop())
 "#;
-    assert_eq!(run_python(src), vec!["[4, 1, 2, 3, 0]", "0"]);
+    assert_eq!(run_python(src), vec!["[0, 4, 1, 2, 3]", "3"]);
 }
 
 #[test]

@@ -17,7 +17,28 @@ use vybe_bytecode::opcode::Op;
 /// `emit = "common:python.json_dumps"`.
 /// Stack in (bottom→top): value, default, sort_keys, indent, item_sep, kv_sep.
 /// Leaves the JSON string on the stack.
-pub fn emit_json_dumps(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+pub fn emit_json_dumps(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    // Self-sufficient target: the walker's rewrite supplies all six, but a
+    // BINDING (`from json import dumps`) calls it with only the positional
+    // args the user wrote. Fill the missing trailing slots with Python's own
+    // defaults so the adapter behaves the same either way — that is what lets
+    // a name bound to this target match `json.dumps(...)` exactly.
+    if argc < 6 {
+        let c = &mut chunks[current];
+        // default=None, sort_keys=False, indent=None, separators=(", ", ": ")
+        for i in argc..6 {
+            match i {
+                1 | 3 => {
+                    let k = c.add_constant(vybe_bytecode::Value::Null);
+                    c.emit_op_u16(Op::CONST, k, line);
+                }
+                2 => c.emit_i32_const(0, line),
+                4 => c.emit_string_const(", ", line),
+                _ => c.emit_string_const(": ", line),
+            }
+        }
+    }
+
     let (value_slot, default_slot, sort_slot, indent_slot, item_slot, kv_slot, props_slot, norm_slot) = {
         let c = &mut chunks[current];
         (
