@@ -18,7 +18,7 @@
 //!
 //! READ side (compiler): `resolve_path` is a raw walk. The POLICY around it —
 //! ambient roots, alias resolution, `Resolution` — is compiler behaviour and
-//! stays in `vybe_compiler::compiler::resolver`.
+//! stays in `vybe_compiler::primitives::resolver`.
 
 use std::collections::BTreeMap;
 use std::sync::{OnceLock, RwLock};

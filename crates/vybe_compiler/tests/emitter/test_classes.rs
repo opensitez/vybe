@@ -1,11 +1,11 @@
 // Classes were centralized into the compiler. The OBJECT-level primitives
 // (method/accessor binding, protocol-slot publication) stayed in
-// `vybe_compiler::compiler::object`, because crates BELOW the compiler — platforms/dotnet —
+// `vybe_compiler::primitives::object`, because crates BELOW the compiler — platforms/dotnet —
 // still call them. Class construction, registration and super wiring moved to
-// `vybe_compiler::compiler::classes`. This test spans both, so it names both.
-use vybe_compiler::compiler::classes;
-use vybe_compiler::compiler::object;
-use vybe_compiler::compiler::dict;
+// `vybe_compiler::primitives::classes`. This test spans both, so it names both.
+use vybe_compiler::primitives::classes;
+use vybe_compiler::primitives::dict;
+use vybe_compiler::primitives::object;
 
 // ── protocol slots: cross-language reach without synonyms ───
 //
@@ -39,7 +39,11 @@ fn slot_keys_are_derived_from_the_number_not_a_spelling() {
     ] {
         let key = protocol_slot_key(slot);
         assert!(key.starts_with("__vybe_slot_"));
-        assert!(key["__vybe_slot_".len()..].chars().all(|c| c.is_ascii_digit()));
+        assert!(
+            key["__vybe_slot_".len()..]
+                .chars()
+                .all(|c| c.is_ascii_digit())
+        );
     }
 }
 

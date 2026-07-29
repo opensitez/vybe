@@ -5,7 +5,7 @@
 //! point. These helpers cover the single-code-unit ASCII/UTF-8 path directly;
 //! stateful multibyte sequences can be layered on top without changing callers.
 
-use super::pointers;
+use vybe_compiler::primitives::pointers;
 use vybe_ast::{Argument, BinOp, ExprKind, Expression, Literal};
 
 fn e(kind: ExprKind) -> Expression {

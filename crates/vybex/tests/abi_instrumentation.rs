@@ -16,7 +16,7 @@ fn compile_python(src: &str) -> Vec<vybe_bytecode::Chunk> {
     let module = vybe_language_python::parse(src).expect("parse");
     let profile = vybe_compiler::profile::parse_profile(vybe_language_python::profile_source())
         .expect("profile");
-    vybe_compiler::compiler::Compiler::with_profile(profile)
+    vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile")
 }
@@ -25,7 +25,7 @@ fn compile_js(src: &str) -> Vec<vybe_bytecode::Chunk> {
     let module = vybe_language_js::parse(src).expect("parse");
     let profile =
         vybe_compiler::profile::parse_profile(vybe_language_js::profile_source()).expect("profile");
-    vybe_compiler::compiler::Compiler::with_profile(profile)
+    vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile")
 }
@@ -34,7 +34,7 @@ fn compile_vb(src: &str) -> Vec<vybe_bytecode::Chunk> {
     let module = vybe_language_vb::parse(src).expect("parse");
     let profile =
         vybe_compiler::profile::parse_profile(vybe_language_vb::profile_source()).expect("profile");
-    vybe_compiler::compiler::Compiler::with_profile(profile)
+    vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile")
 }
@@ -44,7 +44,7 @@ fn run_with_recorder(chunks: Vec<vybe_bytecode::Chunk>) -> (Vec<String>, String)
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     vm.register_host_fn(
         "wasi:logging/logging",
         "log",
@@ -54,7 +54,7 @@ fn run_with_recorder(chunks: Vec<vybe_bytecode::Chunk>) -> (Vec<String>, String)
             Value::Null
         }),
     );
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vm.record_types(true);
     let _ = vm.run(chunks);
     let rec = vm.take_type_record().unwrap();

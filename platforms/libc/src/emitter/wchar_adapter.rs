@@ -12,11 +12,12 @@
 //! display) — the analogue of the proposal's `fromCharCodeArray` /
 //! `intoCharCodeArray`.
 
-use crate::emitter::pointers;
+use vybe_compiler::primitives::pointers;
 use vybe_ast::{
     Argument, BinOp, BindingPattern, ExprKind, Expression, Literal, Modifiers, Param, PassBy,
     Statement, StmtKind, VarDeclKind, VarDeclarator,
 };
+use vybe_compiler::primitives::addressable_storage;
 
 fn e(kind: ExprKind) -> Expression {
     Expression::new(kind)
@@ -138,7 +139,7 @@ fn function(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Statement {
 
 /// `L"hello"` → flat NUL-terminated code-point array `[104,101,108,108,111,0]`.
 pub fn wide_string_literal(text: &str) -> Expression {
-    crate::emitter::arrays::carray_from_string_literal(text)
+    addressable_storage::codepoints_from_string_literal(text)
 }
 
 // Wide buffers are `int`-typed flat arrays (wchar_t == int on wasm32-wasi), so

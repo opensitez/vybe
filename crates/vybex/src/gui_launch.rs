@@ -1116,7 +1116,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use vybe_bytecode::value::ObjectKind;
     use vybe_bytecode::{HostContext, VM, Value};
-    use vybe_compiler::compiler::Compiler;
+    use vybe_compiler::primitives::Compiler;
     use vybe_compiler::profile::parse_profile;
     use vybe_compiler::projects;
     use vybe_platform_vybe::gui_state::GuiState;

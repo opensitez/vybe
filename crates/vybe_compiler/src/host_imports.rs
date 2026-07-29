@@ -22,7 +22,7 @@ use vybe_bytecode::module_record::ExportEntry;
 use vybe_bytecode::value::{Object, ObjectKind};
 use vybe_bytecode::{VM, Value};
 
-use crate::compiler::HostImportMetadata;
+use crate::primitives::HostImportMetadata;
 
 /// Install named + wildcard ESM host-module imports as VM globals.
 pub fn install(vm: &mut VM, meta: &HostImportMetadata) {

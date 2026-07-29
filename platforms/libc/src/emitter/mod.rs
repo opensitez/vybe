@@ -9,15 +9,11 @@
 //! `Statement` nodes) so walkers stay language-specific while runtime
 //! semantics are centralised here.
 
-pub mod arrays;
 pub mod build;
 pub mod c_runtime;
-pub mod complex_adapter;
-pub mod ctype_adapter;
 pub mod dispatch;
 pub mod math_adapter;
 pub mod math_runtime;
-pub mod pointers;
 pub mod posix_adapter;
 pub mod regex_adapter;
 pub mod stdio_adapter;

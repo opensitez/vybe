@@ -109,6 +109,23 @@ pub struct NormalClass {
     /// this replaces. See flexclassplan.md §4c.
     pub augmentations: Vec<Augmentation>,
 
+    /// LINK classes synthesized for this class's `NextInOrder` augmentations,
+    /// parent-first, each already present in the compiler's class map.
+    ///
+    /// A Dart mixin's `super` means "the next entry in the linearization", and
+    /// a flat member list has no "next" — so those members are not copied into
+    /// the class at all. They are given real classes spliced into the parent
+    /// chain (`Base ← D&A ← D&A&B ← D`), which is how the Dart VM names them
+    /// (`_D&Base&A`), how Ruby's `ancestors` reads, and how a C3 MRO is built.
+    /// `super` then resolves through the ordinary prototype hop with no
+    /// change to super emission at all — flexclassplan.md §4c-R.
+    ///
+    /// Emission must emit these BEFORE the class itself: the class's parent is
+    /// the last of them. Empty for every class with no such augmentation, so a
+    /// language that declares `OwnParent` (PHP traits, Go embedding) is
+    /// untouched.
+    pub synthesized_bases: Vec<String>,
+
     /// The class's parent is a registered PLATFORM type (a `Type` node in the
     /// namespace tree), not a user class — so this carries that type's
     /// construction spec.
@@ -413,6 +430,9 @@ impl Default for NormalClass {
             special_methods: Vec::new(),
             raw_extra_members: Vec::new(),
             augmentations: Vec::new(),
+            // Filled only by the compiler's augmentation pass; a normalizer
+            // declares augmentations, never their lowering.
+            synthesized_bases: Vec::new(),
             platform_base: None,
         }
     }

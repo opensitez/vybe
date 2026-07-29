@@ -1,5 +1,5 @@
 use vybe_bytecode::Chunk;
-use vybe_compiler::compiler::errors;
+use vybe_compiler::primitives::errors;
 
 #[test]
 fn emit_try_start_produces_bytecode() {

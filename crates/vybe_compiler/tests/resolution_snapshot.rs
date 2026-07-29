@@ -15,7 +15,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use vybe_compiler::ast::{Lang, Module};
-use vybe_compiler::compiler::Compiler;
+use vybe_compiler::primitives::Compiler;
 
 fn lang_enum(name: &str) -> Lang {
     match name {

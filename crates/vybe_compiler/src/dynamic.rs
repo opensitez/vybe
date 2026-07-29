@@ -6,13 +6,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::bundle::{Bundle, CompiledBundle, EntryPoint, SourceFile};
-use crate::compiler::HostImportMetadata;
+use crate::primitives::HostImportMetadata;
 use crate::languages::{self, Language};
+use vybe_bytecode::capabilities::{Capabilities, Capability};
 use vybe_bytecode::chunk::Chunk;
 use vybe_bytecode::chunk::Import;
 use vybe_bytecode::value::{Function, Object, ObjectKind};
 use vybe_bytecode::{HostContext, ImportTarget, VM, Value};
-use vybe_bytecode::capabilities::{Capabilities, Capability};
 
 thread_local! {
     static ACTIVE_PHP_RUNTIME: RefCell<Option<*mut PhpIncludeRuntime>> = const { RefCell::new(None) };
@@ -311,7 +311,7 @@ pub fn debug_eval_expression(
     //    to link. The fresh GuiState this creates is immediately shadowed by the
     //    live closures in `overlay_host_fns_from`.
     let mut eval_vm = VM::new();
-    crate::compiler::platforms::register_platforms_all(&mut eval_vm);
+    crate::primitives::platforms::register_platforms_all(&mut eval_vm);
     ensure_php_runtime_registered(&mut eval_vm);
     ensure_js_runtime_registered(&mut eval_vm);
     // Share the LIVE program's host-function closures (matched by name), so host
@@ -478,8 +478,6 @@ fn eval_value_is_copyable(_v: &Value) -> bool {
 }
 
 pub fn install_chunk_globals(vm: &mut VM, chunks: &[Chunk], base_chunk_index: usize) {
-    
-
     for (idx, chunk) in chunks.iter().enumerate() {
         if !should_publish_chunk_name(&chunk.name) {
             continue;
@@ -884,7 +882,7 @@ impl JsDynamicRuntime {
                 {
                     for d in declarations {
                         let mut names = std::collections::HashSet::new();
-                        crate::compiler::collect_binding_pattern_names_pub(&d.pattern, &mut names);
+                        crate::primitives::collect_binding_pattern_names_pub(&d.pattern, &mut names);
                         var_names.extend(names);
                     }
                     if let Some(off) =
@@ -927,7 +925,7 @@ impl JsDynamicRuntime {
         let bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
 
         let mut eval_vm = VM::new();
-        crate::compiler::platforms::register_platforms_all(&mut eval_vm);
+        crate::primitives::platforms::register_platforms_all(&mut eval_vm);
 
         // Direct eval shares the caller's (global) scope: copy scalar /
         // object globals in. Function values are excluded — their
@@ -997,7 +995,7 @@ impl JsDynamicRuntime {
                     {
                         let mut names = std::collections::HashSet::new();
                         for d in declarations {
-                            crate::compiler::collect_binding_pattern_names_pub(
+                            crate::primitives::collect_binding_pattern_names_pub(
                                 &d.pattern, &mut names,
                             );
                         }
@@ -1090,7 +1088,7 @@ impl JsDynamicRuntime {
         let bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
 
         let mut eval_vm = VM::new();
-        crate::compiler::platforms::register_platforms_all(&mut eval_vm);
+        crate::primitives::platforms::register_platforms_all(&mut eval_vm);
 
         // Python's explicit namespace dict: `eval(code, globals[, locals])` /
         // `exec(code, ns)`. The walker forwards it as `attrs.namespace` (a
@@ -1243,7 +1241,7 @@ impl JsDynamicRuntime {
         let function_global_name = symbol.to_lowercase();
 
         let mut function_vm = VM::new();
-        crate::compiler::platforms::register_platforms_all(&mut function_vm);
+        crate::primitives::platforms::register_platforms_all(&mut function_vm);
         let _ = crate::adapters::register_all(&mut function_vm);
         sync_dynamic_function_globals(vm, &mut function_vm);
 
@@ -1453,8 +1451,10 @@ fn throw_eval_error(ctx: &mut HostContext, kind: &str, message: &str) -> Value {
         Value::String(Arc::from(kind)),
         Value::String(Arc::from("Error")),
     ]);
-    obj.properties
-        .insert("__types".into(), Value::Object(vybe_bytecode::heap::alloc(chain)));
+    obj.properties.insert(
+        "__types".into(),
+        Value::Object(vybe_bytecode::heap::alloc(chain)),
+    );
     ctx.throw_value(Value::Object(vybe_bytecode::heap::alloc(obj)));
     Value::Undefined
 }
@@ -1603,8 +1603,10 @@ fn ensure_js_runtime_registered(vm: &mut VM) {
         obj.properties
             .insert("name".into(), Value::String(Arc::from("eval")));
         obj.kind = ObjectKind::HostFunction(idx);
-        vm.globals
-            .insert("eval".to_string(), Value::Object(vybe_bytecode::heap::alloc(obj)));
+        vm.globals.insert(
+            "eval".to_string(),
+            Value::Object(vybe_bytecode::heap::alloc(obj)),
+        );
     }
 }
 
@@ -1805,7 +1807,7 @@ mod tests {
 
     fn configured_vm() -> VM {
         let mut vm = VM::new();
-        crate::compiler::platforms::register_platforms_all(&mut vm);
+        crate::primitives::platforms::register_platforms_all(&mut vm);
         vm
     }
 
@@ -1927,8 +1929,10 @@ mod tests {
     #[test]
     fn dynamic_compile_requires_capability_for_source_text() {
         let mut vm = configured_vm();
-        let mut service =
-            RuntimeCompilerService::with_capabilities(&mut vm, vybe_bytecode::capabilities::Capabilities::safe());
+        let mut service = RuntimeCompilerService::with_capabilities(
+            &mut vm,
+            vybe_bytecode::capabilities::Capabilities::safe(),
+        );
 
         let err = service
             .compile_source_by_name("let x = 7;", "js", PathBuf::from("dynamic/locked.js"))
@@ -1943,7 +1947,8 @@ mod tests {
         ensure_js_runtime_registered(&mut vm);
 
         let value = {
-            let mut runtime = JsDynamicRuntime::new(vybe_bytecode::capabilities::Capabilities::all());
+            let mut runtime =
+                JsDynamicRuntime::new(vybe_bytecode::capabilities::Capabilities::all());
             let _guard = runtime.activate(&mut vm, vec![], vec![]);
             runtime
                 .handle_function_constructor(&[
@@ -1988,7 +1993,8 @@ mod tests {
         chunk.emit_op(vybe_bytecode::opcode::Op::HALT, 0);
 
         {
-            let mut runtime = JsDynamicRuntime::new(vybe_bytecode::capabilities::Capabilities::all());
+            let mut runtime =
+                JsDynamicRuntime::new(vybe_bytecode::capabilities::Capabilities::all());
             let _guard = runtime.activate(&mut vm, vec![], vec![]);
             vm.run_linked(
                 vec![chunk],

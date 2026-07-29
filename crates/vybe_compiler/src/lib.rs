@@ -8,7 +8,7 @@
 //! * [`emitter`] — the WASM bytecode emission layer (dict, collections, strings,
 //!   loops, classes, stdlib, invoke, dotnet). Was the `vybe_compiler_common`
 //!   crate; moved in-tree now that it has a single consumer.
-//! * [`compiler`] — AST-driven dispatch that feeds the emitter.
+//! * [`primitives`] — shared AST-driven primitives and bytecode emission.
 //! * [`languages`] — per-language walkers + profiles.
 //! * [`platforms`] — reusable runtime/framework surfaces such as .NET.
 
@@ -18,10 +18,10 @@ include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
 pub use vybe_ast as ast;
 pub mod adapters;
 pub mod bundle;
-pub mod compiler;
+pub mod primitives;
 pub mod dynamic;
 pub mod host_imports;
-pub use compiler::Compiler; // avoid the `crate::compiler::Compiler` stutter
+pub use primitives::Compiler;
 pub mod languages;
 pub mod lsp;
 pub mod platforms {
@@ -38,7 +38,6 @@ pub mod platforms {
     //! `winforms`, `component_descriptor`, `namespace_constant_mappings`; plib
     //! `gcl`). Route those through the registry and these dependencies — and
     //! this facade — go away entirely.
-
 }
 pub use vybe_bytecode::profile;
 pub mod projects;

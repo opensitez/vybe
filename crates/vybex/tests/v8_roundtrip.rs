@@ -21,7 +21,7 @@ fn compile_to_wasm(src: &str) -> Vec<u8> {
     let module = vybe_language_js::parse(src).expect("parse");
     let profile =
         vybe_compiler::profile::parse_profile(vybe_language_js::profile_source()).expect("profile");
-    let chunks = vybe_compiler::compiler::Compiler::with_profile(profile)
+    let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
         .compile(&module)
         .expect("compile");
     vybe_platform_wasm::write_wasm(&chunks)

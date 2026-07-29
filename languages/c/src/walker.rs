@@ -14,12 +14,14 @@ use std::collections::{HashMap, HashSet};
 
 use super::{CParser, Rule};
 use vybe_ast::*;
-use vybe_platform_libc::emitter::pointers::{self, CARRAY_BASE_KEY, CARRAY_IDX_KEY, CARRAY_KIND};
-use vybe_platform_libc::emitter::{
-    complex_adapter, posix_adapter, regex_adapter, thread_adapter, time_adapter,
+use vybe_compiler::primitives::codepoints;
+use vybe_compiler::primitives::complex;
+use vybe_compiler::primitives::pointers::{
+    self, CARRAY_BASE_KEY, CARRAY_IDX_KEY, CARRAY_KIND,
 };
+use vybe_platform_libc::emitter::{posix_adapter, regex_adapter, thread_adapter, time_adapter};
 use vybe_platform_libc::emitter::{
-    ctype_adapter, math_adapter, stdio_adapter, string_adapter, uchar_adapter, wchar_adapter,
+    math_adapter, stdio_adapter, string_adapter, uchar_adapter, wchar_adapter,
 };
 
 const ARRAY_PARAM_MARKER: &str = "__c_array_param";
@@ -1370,7 +1372,7 @@ fn builtin_overflow_expr(
 }
 
 fn bool_int(value: Expression) -> Expression {
-    ctype_adapter::bool_to_int(value)
+    codepoints::bool_to_int(value)
 }
 
 fn c_nan_predicate(value: Expression) -> Expression {
@@ -6681,7 +6683,7 @@ impl Walker {
     }
 
     fn complex_object(&self, real: Expression, imag: Expression) -> Expression {
-        complex_adapter::complex_object(real, imag)
+        complex::complex_object(real, imag)
     }
 
     fn complex_real_part(&self, value: Expression) -> Expression {
@@ -6756,13 +6758,13 @@ impl Walker {
 
     fn complex_log_parts(&self, re: Expression, im: Expression) -> Expression {
         self.complex_object(
-            ecma_math_call("log", complex_adapter::cabs(re.clone(), im.clone())),
-            complex_adapter::carg(re, im),
+            ecma_math_call("log", complex::cabs(re.clone(), im.clone())),
+            complex::carg(re, im),
         )
     }
 
     fn complex_sqrt_parts(&self, re: Expression, im: Expression) -> Expression {
-        let r = complex_adapter::cabs(re.clone(), im.clone());
+        let r = complex::cabs(re.clone(), im.clone());
         let real = ecma_math_call(
             "sqrt",
             binary_expr(
@@ -10144,86 +10146,86 @@ impl Walker {
                 // ── ctype.h — inline arithmetic on integer char codes ────────
                 "isalpha" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ctype_adapter::c_isalpha(a.value);
+                        return codepoints::c_isalpha(a.value);
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isdigit" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ctype_adapter::c_isdigit(a.value);
+                        return codepoints::c_isdigit(a.value);
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isalnum" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ctype_adapter::c_isalnum(a.value);
+                        return codepoints::c_isalnum(a.value);
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isspace" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ctype_adapter::c_isspace(a.value);
+                        return codepoints::c_isspace(a.value);
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isupper" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ctype_adapter::c_isupper(a.value);
+                        return codepoints::c_isupper(a.value);
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "islower" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ctype_adapter::c_islower(a.value);
+                        return codepoints::c_islower(a.value);
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isxdigit" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ctype_adapter::c_isxdigit(a.value);
+                        return codepoints::c_isxdigit(a.value);
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "iscntrl" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ctype_adapter::c_iscntrl(a.value);
+                        return codepoints::c_iscntrl(a.value);
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isprint" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ctype_adapter::c_isprint(a.value);
+                        return codepoints::c_isprint(a.value);
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "ispunct" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ctype_adapter::c_ispunct(a.value);
+                        return codepoints::c_ispunct(a.value);
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isgraph" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ctype_adapter::c_isgraph(a.value);
+                        return codepoints::c_isgraph(a.value);
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isblank" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ctype_adapter::c_isblank(a.value);
+                        return codepoints::c_isblank(a.value);
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 // toupper/tolower: pure inline char-code arithmetic
                 "toupper" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ctype_adapter::c_toupper(a.value);
+                        return codepoints::c_toupper(a.value);
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "tolower" => {
                     if let Some(a) = args.into_iter().next() {
-                        return ctype_adapter::c_tolower(a.value);
+                        return codepoints::c_tolower(a.value);
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
@@ -10359,7 +10361,7 @@ impl Walker {
                         }
                         let re = self.complex_real_part(a.value.clone());
                         let im = self.complex_imag_part(a.value);
-                        return complex_adapter::cabs(re, im);
+                        return complex::cabs(re, im);
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
@@ -10367,7 +10369,7 @@ impl Walker {
                     if let Some(a) = args.into_iter().next() {
                         let re = self.complex_real_part(a.value.clone());
                         let im = self.complex_imag_part(a.value);
-                        return complex_adapter::carg(re, im);
+                        return complex::carg(re, im);
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }

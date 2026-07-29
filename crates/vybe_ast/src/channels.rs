@@ -1,7 +1,7 @@
 //! Channel AST builders — shared normalization, not emission.
 //!
 //! A language's walker normalizes its channel syntax into these common AST
-//! shapes; the compiler emits them (`vybe_compiler::compiler::channels`).
+//! shapes; the compiler emits them (`vybe_compiler::primitives::channels`).
 //! They construct `Expression`/`ExprKind` only — no chunks, no opcodes — so
 //! they belong with the AST, where every frontend can reach them without
 //! depending on a backend.
@@ -10,7 +10,7 @@
 //! channel lowering. Centralizing it was the point; putting it in the AST is
 //! where it belongs.
 
-use crate::{Argument, Expression, ExprKind, ObjectProperty, UnaryOp};
+use crate::{Argument, ExprKind, Expression, ObjectProperty, UnaryOp};
 
 fn channel_runtime_call(name: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {

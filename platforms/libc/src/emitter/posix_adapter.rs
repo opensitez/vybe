@@ -9,7 +9,7 @@ use super::build::{
     assign_expr, call_expr, call_member, expr, function_stmt, ident, index_expr, int_lit, member,
     null_lit, stmt, str_lit, var_decl_stmt,
 };
-use super::pointers;
+use vybe_compiler::primitives::pointers;
 
 pub type HeaderStruct = (&'static str, &'static [(&'static str, &'static str)]);
 

@@ -66,12 +66,8 @@ pub fn load_many(paths: &[std::path::PathBuf]) -> Result<Bundle, String> {
 
     for path in rest {
         let ext = ext_of(path);
-        let lang = crate::languages::find_by_extension(&ext).ok_or_else(|| {
-            format!(
-                "Unknown file extension: .{ext} ({})",
-                path.display()
-            )
-        })?;
+        let lang = crate::languages::find_by_extension(&ext)
+            .ok_or_else(|| format!("Unknown file extension: .{ext} ({})", path.display()))?;
         if lang.name != bundle.language.name {
             return Err(format!(
                 "Cannot link {} ({}) with {} ({}): all source files in one command must \

@@ -1,6 +1,6 @@
 use vybe_bytecode::{Chunk, Op};
 
-use vybe_compiler::compiler::{collections, strings};
+use vybe_compiler::primitives::{collections, strings};
 
 /// Receiver-polymorphic member method: the libc walker/runtime helpers call
 /// `indexOf`/`lastIndexOf`/`slice` on BOTH host strings (format parsing,
@@ -22,7 +22,7 @@ fn emit_string_or_array_method(
     chunk.emit_op_u16(Op::LOCAL_GET, base, line);
     let is_array = chunk.add_import("ecma:array", "isArray");
     chunk.emit_call(is_array, 1, line);
-    vybe_compiler::compiler::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     let chunk = &mut chunks[current];
     chunk.emit_if_value(line);
     for slot in 0..=argc as u16 {

@@ -597,7 +597,7 @@ mod tests {
         let module = vybe_language_php::parse(src).expect("parse php");
         let profile = vybe_compiler::profile::parse_profile(vybe_language_php::profile_source())
             .expect("parse php profile");
-        vybe_compiler::compiler::Compiler::with_profile(profile)
+        vybe_compiler::primitives::Compiler::with_profile(profile)
             .compile(&module)
             .expect("compile php")
     }

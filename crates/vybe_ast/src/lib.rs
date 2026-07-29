@@ -1,5 +1,5 @@
 //! Common AST — the language-neutral IR every walker produces and the
-//! compiler/emitters consume.
+//! primitives/emitters consume.
 //!
 //! Maps to emitter modules:
 //!   classes    → ClassDecl, ClassMember, Property
@@ -82,6 +82,178 @@ pub struct Span {
     pub start_col: u32,
     pub end_line: u32,
     pub end_col: u32,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Types and generics
+// ════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TypePath {
+    pub segments: Vec<String>,
+}
+
+impl TypePath {
+    pub fn new(segments: Vec<String>) -> Self {
+        Self { segments }
+    }
+
+    pub fn from_dotted(path: &str) -> Self {
+        Self {
+            segments: path
+                .split('.')
+                .map(str::trim)
+                .filter(|segment| !segment.is_empty())
+                .map(str::to_string)
+                .collect(),
+        }
+    }
+
+    pub fn display_name(&self) -> String {
+        self.segments.join(".")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TypeRef {
+    pub kind: TypeRefKind,
+}
+
+impl TypeRef {
+    pub fn named(path: impl Into<String>) -> Self {
+        Self {
+            kind: TypeRefKind::Named {
+                path: TypePath::from_dotted(&path.into()),
+                args: Vec::new(),
+            },
+        }
+    }
+
+    pub fn generic_param(name: impl Into<String>) -> Self {
+        Self {
+            kind: TypeRefKind::GenericParam { name: name.into() },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TypeRefKind {
+    Named {
+        path: TypePath,
+        args: Vec<GenericArg>,
+    },
+    GenericParam {
+        name: String,
+    },
+    Array {
+        element: Box<TypeRef>,
+        rank: usize,
+    },
+    Tuple {
+        elements: Vec<TypeRef>,
+    },
+    Function {
+        params: Vec<TypeRef>,
+        result: Box<TypeRef>,
+    },
+    Union {
+        members: Vec<TypeRef>,
+    },
+    Intersection {
+        members: Vec<TypeRef>,
+    },
+    Nullable {
+        inner: Box<TypeRef>,
+    },
+    Pointer {
+        inner: Box<TypeRef>,
+    },
+    Reference {
+        inner: Box<TypeRef>,
+    },
+    Wildcard {
+        bound: Option<GenericBound>,
+    },
+    SelfType,
+    Infer,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GenericArg {
+    Type(TypeRef),
+    Const(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GenericBound {
+    Extends(Box<TypeRef>),
+    Super(Box<TypeRef>),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct GenericDecl {
+    pub params: Vec<GenericParam>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GenericParam {
+    pub name: String,
+    pub constraints: Vec<GenericConstraint>,
+    pub variance: GenericVariance,
+    pub default: Option<TypeRef>,
+    pub runtime: GenericRuntimeMode,
+}
+
+impl GenericParam {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            constraints: Vec::new(),
+            variance: GenericVariance::Invariant,
+            default: None,
+            runtime: GenericRuntimeMode::Erased,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum GenericVariance {
+    #[default]
+    Invariant,
+    Covariant,
+    Contravariant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum GenericRuntimeMode {
+    #[default]
+    Erased,
+    Reified,
+    Specialized,
+    Shared,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GenericConstraint {
+    Any,
+    Class,
+    Struct,
+    Record,
+    Interface,
+    Enum,
+    Delegate,
+    Constructor { argc: Option<usize> },
+    Extends(TypeRef),
+    Implements(TypeRef),
+    Comparable,
+    Numeric,
+    Integer,
+    Floating,
+    NonNull,
+    Nullable,
+    Unmanaged,
+    CopyLike,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -820,7 +992,7 @@ pub enum ExprKind {
     /// C# named `ValueTuple` `(x: 1, y: 2)`). Lowered by the shared compiler to
     /// a tagged array plus field-name keys and hidden `__fields`/`__typename`,
     /// so a named tuple is one runtime value across languages.
-    /// See `vybe_compiler::compiler::tuples`.
+    /// See `vybe_compiler::primitives::tuples`.
     NamedTuple {
         fields: Vec<(Option<String>, Expression)>,
         type_name: Option<String>,
@@ -1331,7 +1503,9 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
         | StmtKind::Using { body, .. }
         | StmtKind::Lock { body, .. } => statements_contain_yield_outside_nested_scopes(body),
         StmtKind::Assign { targets, value } => {
-            targets.iter().any(expr_contains_yield_outside_nested_scopes)
+            targets
+                .iter()
+                .any(expr_contains_yield_outside_nested_scopes)
                 || expr_contains_yield_outside_nested_scopes(value)
         }
         StmtKind::CompoundAssign { target, value, .. } => {
@@ -1450,15 +1624,14 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
                     .as_ref()
                     .is_some_and(expr_contains_yield_outside_nested_scopes)
         }),
-        ExprKind::Tuple(exprs)
-        | ExprKind::Set(exprs)
-        | ExprKind::Sequence(exprs) => exprs.iter().any(expr_contains_yield_outside_nested_scopes),
+        ExprKind::Tuple(exprs) | ExprKind::Set(exprs) | ExprKind::Sequence(exprs) => {
+            exprs.iter().any(expr_contains_yield_outside_nested_scopes)
+        }
         ExprKind::NamedTuple { fields, .. } => fields
             .iter()
             .any(|(_, expr)| expr_contains_yield_outside_nested_scopes(expr)),
         ExprKind::Object(props) => props.iter().any(|prop| match prop {
-            ObjectProperty::KeyValue { key, value }
-            | ObjectProperty::Computed { key, value } => {
+            ObjectProperty::KeyValue { key, value } | ObjectProperty::Computed { key, value } => {
                 expr_contains_yield_outside_nested_scopes(key)
                     || expr_contains_yield_outside_nested_scopes(value)
             }
@@ -1477,7 +1650,9 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
             expr_contains_yield_outside_nested_scopes(subject)
                 || arms.iter().any(|arm| {
                     arm.conditions.as_ref().is_some_and(|conditions| {
-                        conditions.iter().any(expr_contains_yield_outside_nested_scopes)
+                        conditions
+                            .iter()
+                            .any(expr_contains_yield_outside_nested_scopes)
                     }) || expr_contains_yield_outside_nested_scopes(&arm.body)
                 })
         }
@@ -1495,9 +1670,10 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
                             .any(expr_contains_yield_outside_nested_scopes)
                 })
         }
-        ExprKind::Slice { lower, upper, step } => [lower, upper, step]
-            .iter()
-            .any(|expr| expr.as_ref().is_some_and(|expr| expr_contains_yield_outside_nested_scopes(expr))),
+        ExprKind::Slice { lower, upper, step } => [lower, upper, step].iter().any(|expr| {
+            expr.as_ref()
+                .is_some_and(|expr| expr_contains_yield_outside_nested_scopes(expr))
+        }),
         _ => false,
     }
 }

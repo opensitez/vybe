@@ -78,7 +78,7 @@ pub struct LanguageProfile {
     pub slice_step_zero_raises: bool,
 
     /// Tuple literals produce a distinct tuple value (array-backed, but tagged
-    /// via `vybe_compiler::compiler::tuples::TUPLE_TAG`) rather than a plain list, so
+    /// via `vybe_compiler::primitives::tuples::TUPLE_TAG`) rather than a plain list, so
     /// `repr`/`type()`/slicing tell a tuple from a list. Python opts in;
     /// languages whose `(a, b)` is just grouping/an array keep this `false`.
     pub tuple_literals_tagged: bool,
@@ -413,6 +413,12 @@ pub struct LanguageProfile {
     /// is a function reference leave this false.
     pub bare_name_invokes_parameterless_function: bool,
 
+    /// Source functions are also published under an internal callable-value
+    /// global so runtime string/name dispatch can resolve `"f"` to the same
+    /// closure object as a direct `f(...)` call. Languages with PHP/Ruby-style
+    /// dynamic callables opt in; the compiler code stays profile-driven.
+    pub source_function_callable_aliases: bool,
+
     /// PHP: when a class constructor global is undefined at construction
     /// time, invoke the registered `spl_autoload_register` callback with
     /// the class name and retry. When false, a plain `GLOBAL_GET` is used.
@@ -462,7 +468,7 @@ pub struct LanguageProfile {
     /// namespaceplan.md migration switch: when true, this language's
     /// namespace-shaped entry points (host prefix chains, wildcard
     /// namespace member access, …) resolve through the common resolver
-    /// (`compiler::resolver`) instead of the legacy hardcoded arms.
+    /// (`primitives::resolver`) instead of the legacy hardcoded arms.
     /// Flipped per language as its phase lands (JS → Python → PHP →
     /// dotnet → rest); the legacy arms are deleted once every profile
     /// is migrated.
@@ -1216,6 +1222,10 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("bare_name_invokes_parameterless_function")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let source_function_callable_aliases = compiler
+        .get("source_function_callable_aliases")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let supports_autoload = compiler
         .get("supports_autoload")
         .and_then(|v| v.as_bool())
@@ -1646,6 +1656,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         integer_division_on_slash,
         for_loop_per_iteration_binding,
         bare_name_invokes_parameterless_function,
+        source_function_callable_aliases,
         separate_property_method_namespace,
         reflection_type_naming,
         supports_private_fields,

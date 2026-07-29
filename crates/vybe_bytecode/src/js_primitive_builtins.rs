@@ -225,7 +225,7 @@ fn register_boolean(vm: &mut VM) {
     //     return x ? 1 : 0;
     // Traps on every non-boolean. This is safe for the emitter because `cast`
     // is only ever emitted inside an `if test(v)` guard (see
-    // `vybe_compiler::compiler::ops::emit_dyn_to_bool`), and `test` returns 1 *only* for
+    // `vybe_compiler::primitives::ops::emit_dyn_to_bool`), and `test` returns 1 *only* for
     // Value::Bool — so a non-boolean never reaches this call.
     vm.register_host_fn(
         "wasm:js-boolean",

@@ -52,7 +52,7 @@ pub struct Bundle {
 /// synthesize namespace objects for wildcard imports.
 pub struct CompiledBundle {
     pub chunks: Vec<vybe_bytecode::Chunk>,
-    pub host_imports: crate::compiler::HostImportMetadata,
+    pub host_imports: crate::primitives::HostImportMetadata,
 }
 
 impl Bundle {
@@ -264,7 +264,10 @@ impl Bundle {
             static SEED: std::sync::Once = std::sync::Once::new();
             SEED.call_once(|| {
                 let constants = vybe_bytecode::registry::platform_namespace_constants();
-                let m = constants.iter().map(|c| **c).collect::<Vec<_>>()
+                let m = constants
+                    .iter()
+                    .map(|c| **c)
+                    .collect::<Vec<_>>()
                     .iter()
                     .map(|(n, v)| (n.to_string(), *v))
                     .collect();
@@ -279,7 +282,7 @@ impl Bundle {
 
         let module_exports = flatten_module_exports(modules);
         let value_exports = flatten_module_value_exports(modules);
-        let compile_result = crate::compiler::Compiler::with_profile(profile)
+        let compile_result = crate::primitives::Compiler::with_profile(profile)
             .with_module_exports(module_exports)
             .with_module_value_exports(value_exports)
             .compile_with_imports(module)?;
@@ -292,10 +295,7 @@ impl Bundle {
             // registered a reader. The compiler does not name `vybe_platform_wasm`.
             let wasm_chunks = vybe_bytecode::registry::platform_read_binary_module(&wf.data)
                 .ok_or_else(|| {
-                    format!(
-                        "no platform registered a reader for {}",
-                        wf.path.display()
-                    )
+                    format!("no platform registered a reader for {}", wf.path.display())
                 })?
                 .map_err(|e| format!("WASM error in {}: {}", wf.path.display(), e))?;
             if std::env::var_os("VYBE_TRACE").is_some() {
@@ -2310,7 +2310,7 @@ mod tests {
         let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let captured = output.clone();
 
-        crate::compiler::platforms::register_platforms_all(&mut vm);
+        crate::primitives::platforms::register_platforms_all(&mut vm);
         vm.register_host_fn(
             "wasi:logging/logging",
             "log",
@@ -3784,7 +3784,7 @@ pub fn flatten_module_value_exports(
 /// `flatten_module_exports`.
 pub fn validate_imports_against_modules(
     chunks: &[vybe_bytecode::Chunk],
-    host_imports: &crate::compiler::HostImportMetadata,
+    host_imports: &crate::primitives::HostImportMetadata,
     modules: &HashMap<String, ModuleRecord>,
 ) -> Vec<String> {
     let mut unresolved = Vec::new();

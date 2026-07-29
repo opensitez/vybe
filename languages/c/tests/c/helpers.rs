@@ -59,7 +59,7 @@ fn compile_chunks(src: &str) -> Result<Vec<vybe_bytecode::Chunk>, String> {
     let module = vybe_language_c::parse(src)?;
     let profile = vybe_compiler::profile::parse_profile(vybe_language_c::profile_source())
         .map_err(|e| format!("profile parse failed: {}", e))?;
-    vybe_compiler::compiler::Compiler::with_profile(profile).compile(&module)
+    vybe_compiler::primitives::Compiler::with_profile(profile).compile(&module)
 }
 
 pub fn compile_ok(src: &str) {
@@ -83,7 +83,7 @@ pub fn run_prints(src: &str) -> Vec<String> {
     // - `wasi:logging/logging.log` — line-oriented; one record per call,
     //   newline implied.
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    vybe_compiler::compiler::platforms::init_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     let out = output.clone();
     vm.register_host_fn(
         "wasi:logging/logging",
@@ -110,7 +110,7 @@ pub fn run_prints(src: &str) -> Vec<String> {
             Value::Null
         }),
     );
-    vybe_compiler::compiler::platforms::finalize_platforms(&mut vm);
+    vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("run failed");
     // Concatenate fragments and split into lines so each printf line becomes
     // one captured entry. Strip only the final empty artifact of a trailing
