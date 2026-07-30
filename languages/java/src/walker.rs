@@ -6914,8 +6914,34 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
     // The profile has dotted builtins like "Integer.parseInt", "Math.max", etc.
     if let ExprKind::Ident(ref type_name) = receiver.kind {
         if is_java_type_or_util(type_name) {
+            // `Class.forName(name)` is a runtime type lookup, not a string.
+            // A JDK type keeps the existing pass-through (there is no compiled
+            // global for `java.lang.String`, and its reflection surface is
+            // served off the qualified name). Anything else — a user class, or
+            // a name that resolves to nothing — goes through the shared
+            // dynamic-symbol path, which consults any registered resolver and
+            // then raises `ClassNotFoundException`. Knowing which names are
+            // JDK types is Java's business and stays here.
             if type_name == "Class" && method == "forName" && args.len() == 1 {
-                return args[0].value.clone();
+                let jdk_type = match &args[0].value.kind {
+                    ExprKind::Lit(Literal::Str(name)) => {
+                        is_java_type_or_util(name.rsplit('.').next().unwrap_or(name))
+                    }
+                    _ => false,
+                };
+                if jdk_type {
+                    return args[0].value.clone();
+                }
+                return Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__vybe_class_for_name")),
+                    args: vec![Argument {
+                        name: None,
+                        value: args[0].value.clone(),
+                        by_ref: false,
+                        spread: false,
+                    }],
+                    optional: false,
+                });
             }
             if let Some(expr) = java_functional_static_call(type_name, method.as_str(), &args) {
                 return expr;

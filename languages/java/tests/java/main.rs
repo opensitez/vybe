@@ -227,3 +227,4 @@ mod test_wrappers;
 mod test_zone_id;
 mod test_zoned_date_time;
 // 226 test modules
+mod test_class_for_name_dynamic;

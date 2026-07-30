@@ -33,6 +33,12 @@ has_ecma_bigint    = true
 
 [builtins]
 
+# ── Dynamic type lookup ──────────────────────────────────────────────────────
+# `Class.forName(name)` — the walker rewrites non-JDK names to this. Resolution
+# is the shared dynamic-symbol path (so any registered resolver gets a turn);
+# only the exception raised on a miss is Java's, and it arrives here as data.
+__vybe_class_for_name = { emit = "intrinsic:symbol_require:ClassNotFoundException", min_args = 1, max_args = 1 }
+
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
 # Walker rewrites System.out.println → println, System.out.print → print
