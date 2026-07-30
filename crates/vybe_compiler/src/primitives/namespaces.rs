@@ -90,11 +90,29 @@ impl Compiler {
             }
         }
 
+        if let Some(qualified) = self.resolve_source_namespace_value(&normalized) {
+            if self.defined_functions.contains(&qualified) {
+                return Some(qualified);
+            }
+        }
+
         if normalized.contains('.') {
             let mut parts = normalized.split('.');
             let first = parts.next().unwrap_or_default();
             let last = normalized.rsplit('.').next().unwrap_or(normalized.as_str());
             let last_canon = self.canon(last);
+            if !first.is_empty() && !self.profile.is_namespace_root(&first.to_lowercase()) {
+                let suffix = format!(".{exact}");
+                let mut matches = self
+                    .defined_functions
+                    .iter()
+                    .filter(|function| function.ends_with(&suffix));
+                if let Some(qualified) = matches.next().cloned() {
+                    if matches.next().is_none() {
+                        return Some(qualified);
+                    }
+                }
+            }
             if !first.is_empty()
                 && !self.profile.is_namespace_root(&first.to_lowercase())
                 && self.defined_functions.contains(&last_canon)

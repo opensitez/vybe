@@ -1,7 +1,7 @@
 use crate::primitives as common;
 use crate::primitives::*;
 use std::sync::Arc;
-use vybe_ast::{ExprKind, Expression, Literal};
+use vybe_ast::Expression;
 use vybe_runtime::{Op, Value};
 
 #[derive(Clone, Copy)]
@@ -628,20 +628,6 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, result_slot as u16);
         self.chunk().emit_end(line);
         self.emit_u16(Op::LOCAL_GET, result_slot as u16);
-    }
-    pub(crate) fn compile_php_autoload_callable_ref(
-        &mut self,
-        expr: &Expression,
-    ) -> Result<(), String> {
-        match &expr.kind {
-            ExprKind::Lit(Literal::Str(function_name)) => {
-                let resolved_name = self.resolve_source_type_alias(function_name);
-                let function_idx = self.str_const(&self.canon(&resolved_name));
-                self.emit_u16(Op::GLOBAL_GET, function_idx);
-                Ok(())
-            }
-            _ => self.compile_expr(expr),
-        }
     }
     pub(crate) fn is_php_profile(&self) -> bool {
         self.profile.name == "php"

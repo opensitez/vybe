@@ -936,6 +936,21 @@ impl Compiler {
             }
         }
 
+        // builtinslotplan.md step 3 — the SECOND census site. The first one
+        // (`calls.rs`, value-method dispatch) only ever sees `obj.method()`,
+        // so it recorded zero rows for PHP and none of Python's `len()`: those
+        // languages spell their built-in operations as FREE FUNCTIONS
+        // (`strlen($s)`, `count($xs)`, `len(s)`) and arrive here instead.
+        // Deriving step 5's flip list from the method-shaped site alone would
+        // have read "PHP has no built-in slot traffic", which is an artefact of
+        // where the hook sat, not a fact about PHP.
+        //
+        // Argument 0 is the receiver for this shape. Emits nothing; off unless
+        // VYBE_SLOT_AUDIT is set.
+        if let (Some(def), Some(receiver)) = (builtin.as_ref(), args.first()) {
+            self.audit_builtin_slot_census(receiver, name, &def.emit);
+        }
+
         if let Some(def) = builtin {
             match &def.emit {
                 BuiltinEmit::Print => {
@@ -957,7 +972,9 @@ impl Compiler {
                     // top via `emit_dotnet_console_arg`.
                     let mut arg_slots = Vec::with_capacity(args.len());
                     for (index, a) in args.iter().enumerate() {
-                        if let Some(enum_type) = self.console_enum_type_from_expr(a) {
+                        if let Some((_, member_name)) = self.qualified_enum_member_expr(a) {
+                            self.emit_const(Value::String(Arc::from(member_name.as_str())));
+                        } else if let Some(enum_type) = self.console_enum_type_from_expr(a) {
                             self.emit_enum_value_to_string(&enum_type, a)?;
                         } else {
                             self.compile_expr(a)?;
@@ -2456,7 +2473,9 @@ impl Compiler {
                 self.chunk().emit_if_value(line);
 
                 self.emit_u16(Op::LOCAL_GET, value_slot);
-                let type_key = self.chunk().add_constant(Value::String(Arc::from("__type")));
+                let type_key = self
+                    .chunk()
+                    .add_constant(Value::String(Arc::from("__type")));
                 self.emit_u16(Op::STRUCT_GET, type_key);
                 self.emit_const(Value::String(Arc::from("DateTime")));
                 {
@@ -2466,7 +2485,9 @@ impl Compiler {
                 crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if_value(line);
                 self.emit_u16(Op::LOCAL_GET, value_slot);
-                let time_key = self.chunk().add_constant(Value::String(Arc::from("__time")));
+                let time_key = self
+                    .chunk()
+                    .add_constant(Value::String(Arc::from("__time")));
                 self.emit_u16(Op::STRUCT_GET, time_key);
                 let iso_idx = self.import("ecma:date", "toISOString");
                 self.emit_host_call(iso_idx, 1);
@@ -2935,13 +2956,132 @@ impl Compiler {
                     }
                 }
             }
-            "php_class_exists" => {
+            // `symbol_exists` / `symbol_exists:<kind>` — the one primitive behind
+            // `class_exists` / `interface_exists` / `trait_exists` /
+            // `enum_exists` / `kind_of?`. They differ only in which declared
+            // kind they accept, so the kind is a parameter from the profile's
+            // builtin table rather than four near-identical intrinsics.
+            //
+            // The answer comes from the `__kind` annotation the class compiler
+            // stamps, so it is true for a type defined after compilation — by an
+            // autoloader, by `eval`, or in another file of the same bundle.
+            // A second argument of literal `false` suppresses resolver
+            // consultation (a language's "autoload" flag).
+            // `symbol_resolve_or_throw:<ExceptionName>` — resolve a declared
+            // type by name at runtime and yield it, or throw when it does not
+            // resolve. Java `Class.forName` (ClassNotFoundException), and the
+            // same shape serves Python/Ruby `NameError`. The exception's
+            // spelling is profile data; the mechanism is shared.
+            //
+            // Resolution goes through the same constructor-global-ref path as
+            // the `*_exists` family, so a language with a registered resolver
+            // stack (PHP autoload, a Java ClassLoader) gets a chance to supply
+            // the type before this decides it is missing.
+            // `symbol_probe` — resolve a declared type by name and yield its
+            // NAME, or `null` when it does not resolve. .NET
+            // `Type.GetType(name)` returns null on a miss rather than throwing
+            // (it only throws when asked, `throwOnError: true`), so this is the
+            // resolve-or-null counterpart of `symbol_require`.
+            //
+            // Yields the name because .NET, like Java, represents a type BY its
+            // name: `typeof(X).Name` is `"X"`, so `Type.GetType("X")` has to
+            // agree with `typeof(X)` rather than invent a second representation.
+            "symbol_probe" => {
                 if let Some(Expression {
                     kind: ExprKind::Lit(Literal::Str(name)),
                     ..
                 }) = args.first()
                 {
-                    let autoload = !matches!(
+                    for arg in args.iter().skip(1) {
+                        self.compile_expr(arg)?;
+                        self.emit(Op::DROP);
+                    }
+                    let global_name = self.canon_type_global(name);
+                    self.emit_constructor_global_ref(&global_name, name);
+                    let line = self.line;
+                    let resolved = self.define_local("__symbol_probe");
+                    self.emit_u16(Op::LOCAL_SET, resolved);
+                    self.emit_u16(Op::LOCAL_GET, resolved);
+                    {
+                        let idx = self.chunk().add_import("wasm:js-undefined", "test");
+                        self.chunk().emit_call(idx, 1, line);
+                    }
+                    self.chunk().emit_if_value(line);
+                    self.emit(Op::NULL);
+                    self.chunk().emit_else(line);
+                    self.emit_const(Value::String(Arc::from(name.as_str())));
+                    self.chunk().emit_end(line);
+                } else {
+                    for arg in args.iter() {
+                        self.compile_expr(arg)?;
+                        self.emit(Op::DROP);
+                    }
+                    self.emit(Op::NULL);
+                }
+            }
+            n if n.starts_with("symbol_resolve_or_throw:") || n.starts_with("symbol_require:") => {
+                // Both shapes assert the symbol resolves and raise the
+                // profile-named exception when it does not. They differ only in
+                // what they hand back:
+                //   symbol_resolve_or_throw — the resolved symbol itself.
+                //   symbol_require          — the NAME, for languages whose
+                //                             surface represents a type by its
+                //                             name (Java: `X.class` is a
+                //                             string, so `Class.forName` must
+                //                             agree with it).
+                let (prefix, yields_name) = match n.starts_with("symbol_require:") {
+                    true => ("symbol_require:", true),
+                    false => ("symbol_resolve_or_throw:", false),
+                };
+                let exception_name = &n[prefix.len()..];
+                if let Some(Expression {
+                    kind: ExprKind::Lit(Literal::Str(name)),
+                    ..
+                }) = args.first()
+                {
+                    for arg in args.iter().skip(1) {
+                        self.compile_expr(arg)?;
+                        self.emit(Op::DROP);
+                    }
+                    let global_name = self.canon_type_global(name);
+                    self.emit_constructor_global_ref(&global_name, name);
+                    let line = self.line;
+                    let message = name.clone();
+                    crate::primitives::dynamic_symbols::emit_throw_if_unresolved(
+                        self.chunk(),
+                        exception_name,
+                        &message,
+                        line,
+                    );
+                    if yields_name {
+                        self.emit(Op::DROP);
+                        self.emit_const(Value::String(Arc::from(name.as_str())));
+                    }
+                } else {
+                    // A computed name has no global to read at compile time;
+                    // leave the argument as the value so behaviour is unchanged
+                    // rather than wrongly throwing.
+                    if let Some(arg) = args.first() {
+                        self.compile_expr(arg)?;
+                    } else {
+                        self.emit(Op::NULL);
+                    }
+                    for arg in args.iter().skip(1) {
+                        self.compile_expr(arg)?;
+                        self.emit(Op::DROP);
+                    }
+                }
+            }
+            n if n == "symbol_exists" || n.starts_with("symbol_exists:") => {
+                let expected_kind = n
+                    .strip_prefix("symbol_exists:")
+                    .and_then(crate::primitives::reflection::ReflectKind::from_name);
+                if let Some(Expression {
+                    kind: ExprKind::Lit(Literal::Str(name)),
+                    ..
+                }) = args.first()
+                {
+                    let consult_resolvers = !matches!(
                         args.get(1).map(|expr| &expr.kind),
                         Some(ExprKind::Lit(Literal::Bool(false)))
                     );
@@ -2949,29 +3089,22 @@ impl Compiler {
                         self.compile_expr(arg)?;
                         self.emit(Op::DROP);
                     }
-                    let global_name = self.canon(name).replace('\\', ".");
-                    if autoload {
+                    let global_name = self.canon_type_global(name);
+                    if consult_resolvers {
                         self.emit_constructor_global_ref(&global_name, name);
                     } else {
                         let idx = self.str_const(&global_name);
                         self.emit_u16(Op::GLOBAL_GET, idx);
                     }
-                    fn_call!(self, "ecma:value", "typeof", 1);
-                    self.emit_const(Value::String(Arc::from("undefined")));
-                    {
-                        let line = self.line;
-                        crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-                    };
-                    {
-                        let line = self.line;
-                        crate::primitives::ops::emit_dyn_not(self.chunk(), line);
-                    };
+                    let line = self.line;
+                    crate::primitives::dynamic_symbols::emit_symbol_kind_test(
+                        self.chunk(),
+                        expected_kind,
+                        line,
+                    );
                 } else {
-                    if let Some(arg) = args.first() {
-                        self.compile_expr(arg)?;
-                        self.emit(Op::DROP);
-                    }
-                    for arg in args.iter().skip(1) {
+                    // A computed name has no global to read at compile time.
+                    for arg in args.iter() {
                         self.compile_expr(arg)?;
                         self.emit(Op::DROP);
                     }

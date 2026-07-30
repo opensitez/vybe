@@ -245,7 +245,10 @@ pub fn finalize_with_runtime_helpers_excluding(
     let helpers = {
         let (first, _rest) = chunks.split_at_mut(1);
         let exports = ordered_helper_exports(&requested);
-        crate::primitives::runtime_helpers::build_runtime_helpers_for_exports(&mut first[0], &exports)
+        crate::primitives::runtime_helpers::build_runtime_helpers_for_exports(
+            &mut first[0],
+            &exports,
+        )
     };
 
     for (i, &chunk_name) in helpers.exports.iter().enumerate() {

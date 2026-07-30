@@ -12,7 +12,13 @@ impl Compiler {
     ) -> Option<ReflectionBinding> {
         match &expr.kind {
             ExprKind::Lit(Literal::Str(type_name)) if type_name.starts_with("System.") => {
-                Some(ReflectionBinding::Type(type_name.clone()))
+                let leaf = type_name.strip_prefix("System.").unwrap_or(type_name);
+                let resolved = self
+                    .resolve_source_namespace_type(type_name)
+                    .or_else(|| self.resolve_source_namespace_type(leaf))
+                    .map(|name| self.reflection_runtime_type_name(&name, None))
+                    .unwrap_or_else(|| type_name.clone());
+                Some(ReflectionBinding::Type(resolved))
             }
             ExprKind::TypeOf(inner) => {
                 let raw_name = match &inner.kind {
@@ -20,6 +26,9 @@ impl Compiler {
                     ExprKind::Member { .. } => self.flatten_member_chain(inner).join("."),
                     _ => return None,
                 };
+                let raw_name = self
+                    .resolve_source_namespace_type(&raw_name)
+                    .unwrap_or(raw_name);
                 Some(ReflectionBinding::Type(
                     self.reflection_runtime_type_name(&raw_name, None),
                 ))
@@ -380,11 +389,46 @@ impl Compiler {
             .filter(|decorator| {
                 attribute_type.is_none_or(|wanted| {
                     self.reflection_attribute_type_name(decorator)
-                        .is_some_and(|actual| actual.eq_ignore_ascii_case(wanted))
+                        .is_some_and(|actual| self.reflection_attribute_types_match(&actual, wanted))
                 })
             })
             .cloned()
             .collect()
+    }
+
+    fn reflection_attribute_types_match(&self, actual: &str, wanted: &str) -> bool {
+        if actual.eq_ignore_ascii_case(wanted) {
+            return true;
+        }
+        let actual_resolved = self
+            .resolve_source_namespace_type(actual)
+            .or_else(|| {
+                actual
+                    .strip_prefix("System.")
+                    .and_then(|name| self.resolve_source_namespace_type(name))
+            })
+            .map(|name| self.reflection_runtime_type_name(&name, None))
+            .unwrap_or_else(|| actual.to_string());
+        let wanted_resolved = self
+            .resolve_source_namespace_type(wanted)
+            .or_else(|| {
+                wanted
+                    .strip_prefix("System.")
+                    .and_then(|name| self.resolve_source_namespace_type(name))
+            })
+            .map(|name| self.reflection_runtime_type_name(&name, None))
+            .unwrap_or_else(|| wanted.to_string());
+        if actual_resolved.eq_ignore_ascii_case(&wanted_resolved) {
+            return true;
+        }
+
+        let actual_leaf = self.reflection_type_short_name(&actual_resolved);
+        let wanted_leaf = self.reflection_type_short_name(&wanted_resolved);
+        actual_leaf.eq_ignore_ascii_case(&wanted_leaf)
+            || (!actual_leaf.ends_with("Attribute")
+                && format!("{actual_leaf}Attribute").eq_ignore_ascii_case(&wanted_leaf))
+            || (!wanted_leaf.ends_with("Attribute")
+                && actual_leaf.eq_ignore_ascii_case(&format!("{wanted_leaf}Attribute")))
     }
 
     pub(super) fn compile_reflection_attribute_instance(
@@ -415,6 +459,10 @@ impl Compiler {
                 ])));
             }
         }
+        let resolved_class = self
+            .reflection_attribute_type_name(attr)
+            .map(|name| Expression::ident(&name))
+            .unwrap_or_else(|| class.as_ref().clone());
 
         let positional_args: Vec<Argument> = args
             .iter()
@@ -423,11 +471,14 @@ impl Compiler {
             .collect();
         let named_args: Vec<&Argument> = args.iter().filter(|arg| arg.name.is_some()).collect();
         if named_args.is_empty() {
-            return self.compile_expr(attr);
+            return self.compile_expr(&Expression::new(ExprKind::New {
+                class: Box::new(resolved_class),
+                args: args.clone(),
+            }));
         }
 
         self.compile_expr(&Expression::new(ExprKind::New {
-            class: class.clone(),
+            class: Box::new(resolved_class),
             args: positional_args,
         }))?;
         let slot = self.define_local("__reflection_attr");
@@ -1028,6 +1079,47 @@ fn token_string_array(elems: &[ArrayElement], index: usize) -> Option<Vec<String
     )
 }
 
+impl ReflectKind {
+    /// Parse a kind name as written in a profile's builtin table
+    /// (`intrinsic:symbol_exists:interface`). Inverse of [`Self::as_str`].
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "class" => ReflectKind::Class,
+            "interface" => ReflectKind::Interface,
+            "trait" => ReflectKind::Trait,
+            "mixin" => ReflectKind::Mixin,
+            "module" => ReflectKind::Module,
+            "struct" => ReflectKind::Struct,
+            "function" => ReflectKind::Function,
+            // Deliberately NO "enum": enums are a separate `StmtKind::EnumDecl`
+            // and are not stamped yet, so binding `symbol_exists:enum` would
+            // silently answer false for every enum. Add `ReflectKind::Enum` and
+            // stamp `EnumDecl` before wiring `enum_exists`. (Do not reuse
+            // `Number` — that is the runtime kind of an enum VALUE, not of the
+            // declaration.)
+            _ => return None,
+        })
+    }
+
+    /// The runtime kind for a declared type.
+    ///
+    /// `class` / `interface` / `trait` / `mixin` / `module` / `struct` all parse
+    /// to one `StmtKind::ClassDecl`, and `ClassModifiers::kind` is what tells
+    /// them apart. Reading it here is what lets `trait_exists` /
+    /// `interface_exists` be answered from the stamped annotation instead of a
+    /// per-language compile-time table.
+    pub fn from_class_kind(kind: vybe_ast::ClassKind) -> Self {
+        match kind {
+            vybe_ast::ClassKind::Class => ReflectKind::Class,
+            vybe_ast::ClassKind::Interface => ReflectKind::Interface,
+            vybe_ast::ClassKind::Trait => ReflectKind::Trait,
+            vybe_ast::ClassKind::Mixin => ReflectKind::Mixin,
+            vybe_ast::ClassKind::Module => ReflectKind::Module,
+            vybe_ast::ClassKind::Struct => ReflectKind::Struct,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReflectKind {
     Undefined,
@@ -1044,6 +1136,12 @@ pub enum ReflectKind {
     Struct,
     Class,
     Interface,
+    /// An augmentation source, never instantiable: PHP `trait`, Dart `mixin`,
+    /// Ruby `module`. Kept distinct from `Interface` because `trait_exists`
+    /// and `interface_exists` must not answer for each other.
+    Trait,
+    Mixin,
+    Module,
     Exception,
     Pointer,
     Slice,
@@ -1067,6 +1165,9 @@ impl ReflectKind {
             ReflectKind::Struct => "struct",
             ReflectKind::Class => "class",
             ReflectKind::Interface => "interface",
+            ReflectKind::Trait => "trait",
+            ReflectKind::Mixin => "mixin",
+            ReflectKind::Module => "module",
             ReflectKind::Exception => "exception",
             ReflectKind::Pointer => "ptr",
             ReflectKind::Slice => "slice",

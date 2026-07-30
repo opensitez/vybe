@@ -3171,89 +3171,6 @@ impl Compiler {
 
         if self.is_php_profile() {
             if let ExprKind::Ident(name) = &callee.kind {
-                if name.eq_ignore_ascii_case("spl_autoload_register") {
-                    let receiver_idx = self.str_const("__php_autoload_callback_receiver");
-                    if let Some(callback) = args.first() {
-                        match &callback.value.kind {
-                            ExprKind::Array(elements)
-                                if elements.len() == 2
-                                    && elements.iter().all(|element| element.key.is_none()) =>
-                            {
-                                let ExprKind::Lit(Literal::Str(class_name)) =
-                                    &elements[0].value.kind
-                                else {
-                                    inst!(self, core_wasm::undefined);
-                                    self.emit_u16(Op::GLOBAL_SET, receiver_idx);
-                                    self.compile_php_autoload_callable_ref(&callback.value)?;
-                                    let global_idx = self.str_const("__php_autoload_callback");
-                                    self.emit_u16(Op::GLOBAL_SET, global_idx);
-                                    for arg in args.iter().skip(1) {
-                                        self.compile_expr(&arg.value)?;
-                                        self.emit(Op::DROP);
-                                    }
-                                    self.emit_const(Value::Bool(true));
-                                    return Ok(());
-                                };
-                                let ExprKind::Lit(Literal::Str(method_name)) =
-                                    &elements[1].value.kind
-                                else {
-                                    inst!(self, core_wasm::undefined);
-                                    self.emit_u16(Op::GLOBAL_SET, receiver_idx);
-                                    self.compile_php_autoload_callable_ref(&callback.value)?;
-                                    let global_idx = self.str_const("__php_autoload_callback");
-                                    self.emit_u16(Op::GLOBAL_SET, global_idx);
-                                    for arg in args.iter().skip(1) {
-                                        self.compile_expr(&arg.value)?;
-                                        self.emit(Op::DROP);
-                                    }
-                                    self.emit_const(Value::Bool(true));
-                                    return Ok(());
-                                };
-
-                                let _ = (class_name, method_name);
-                                inst!(self, core_wasm::undefined);
-                                self.emit_u16(Op::GLOBAL_SET, receiver_idx);
-                                self.compile_php_autoload_callable_ref(&callback.value)?;
-                            }
-                            _ => {
-                                inst!(self, core_wasm::undefined);
-                                self.emit_u16(Op::GLOBAL_SET, receiver_idx);
-                                self.compile_php_autoload_callable_ref(&callback.value)?;
-                            }
-                        }
-                    } else {
-                        inst!(self, core_wasm::undefined);
-                        self.emit_u16(Op::GLOBAL_SET, receiver_idx);
-                        inst!(self, core_wasm::undefined);
-                    }
-                    let global_idx = self.str_const("__php_autoload_callback");
-                    self.emit_u16(Op::GLOBAL_SET, global_idx);
-
-                    for arg in args.iter().skip(1) {
-                        self.compile_expr(&arg.value)?;
-                        self.emit(Op::DROP);
-                    }
-
-                    self.emit_const(Value::Bool(true));
-                    return Ok(());
-                }
-
-                if name.eq_ignore_ascii_case("spl_autoload_unregister") {
-                    for arg in args {
-                        self.compile_expr(&arg.value)?;
-                        self.emit(Op::DROP);
-                    }
-
-                    inst!(self, core_wasm::undefined);
-                    let receiver_idx = self.str_const("__php_autoload_callback_receiver");
-                    self.emit_u16(Op::GLOBAL_SET, receiver_idx);
-                    inst!(self, core_wasm::undefined);
-                    let global_idx = self.str_const("__php_autoload_callback");
-                    self.emit_u16(Op::GLOBAL_SET, global_idx);
-                    self.emit_const(Value::Bool(true));
-                    return Ok(());
-                }
-
                 if name == "compact" {
                     let line = self.line;
                     common::collections::emit_map_new(&mut self.chunks, self.current, line);
@@ -3845,6 +3762,20 @@ impl Compiler {
             }
         }
         if let ExprKind::Member { object, field, .. } = &callee.kind {
+            let source_member_parts = self.flatten_member_chain(callee);
+            if source_member_parts.len() >= 2 {
+                if let Some(source_function) =
+                    self.resolve_namespaced_function_identity(&source_member_parts.join("."))
+                {
+                    let global_idx = self.str_const(&source_function);
+                    self.emit_u16(Op::GLOBAL_GET, global_idx);
+                    for a in &arg_exprs {
+                        self.compile_expr(a)?;
+                    }
+                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    return Ok(());
+                }
+            }
             if resolves_to_static_container_method(self, object, field) {
                 self.compile_expr(object)?;
                 let obj_tmp = self.define_local("__static_container_obj");
@@ -4068,7 +3999,8 @@ impl Compiler {
                         .and_then(|exports| exports.get(field))
                         .cloned()
                         .or_else(|| {
-                            let ctx = crate::primitives::instructions::host::CapabilityContext::get();
+                            let ctx =
+                                crate::primitives::instructions::host::CapabilityContext::get();
                             if ctx.functions.has(&ns_module, field) {
                                 Some((ns_module.clone(), field.clone()))
                             } else {
@@ -4112,13 +4044,11 @@ impl Compiler {
                 if self.try_compile_builtin(&compound, &arg_exprs)? {
                     return Ok(());
                 }
-                // Component model fallback: try dotnet resolver for System.*
-                // chains. Gated on the profile's dotnet resolver (VB/C#/Java)
-                // — on JS this hijacked calls like `text.matchAll(re)` into
-                // phantom `ecma:string.matchall` imports (receiver dropped,
-                // method lowercased). A user binding on the leading ident
-                // shadows namespace resolution in any language.
-                if self.profile.namespaces.use_dotnet_resolver
+                // Component-model namespace fallback. Profile tree mounts
+                // (`System` -> `dotnet.system`, `Flutter` -> `flutter`, ...)
+                // drive this; a user binding on the leading ident shadows
+                // namespace resolution in any language.
+                if self.profile.uses_namespace_resolver()
                     && !self.has_accessible_local_binding(&parts[0])
                     && self.try_compile_dotnet_component_call(&parts, &arg_exprs)?
                 {
@@ -4266,8 +4196,18 @@ impl Compiler {
                     }
                 }
 
-                if early_static_class_canon.is_some() && self.profile.namespaces.use_dotnet_resolver
-                {
+                if early_static_class_canon.is_some() && self.profile.uses_namespace_resolver() {
+                    super::resolver::register_platform_trees();
+                    let arity_tree_backed = vybe_runtime::namespaces::lookup_type_static_member(
+                        &self.profile.namespaces.type_scopes,
+                        &class_parts.join("."),
+                        &method_name,
+                    )
+                    .and_then(|member| {
+                        vybe_runtime::namespaces::select_overload(&member, arg_exprs.len() as u8)
+                            .cloned()
+                    })
+                    .is_some();
                     let tree_backed = matches!(
                         self.resolve_profile_namespace_chain(&parts),
                         Some(super::resolver::Resolution::HostImport { .. })
@@ -4281,7 +4221,7 @@ impl Compiler {
                                 crate::primitives::namespaces::ResolutionTarget::Const(_)
                             ))
                             | Some(super::resolver::Resolution::ResolvedPrefix { .. })
-                    );
+                    ) || arity_tree_backed;
                     if tree_backed {
                         early_static_class_canon = None;
                     }
@@ -4445,8 +4385,20 @@ impl Compiler {
                     return Ok(());
                 }
 
-                // Use dotnet resolver when enabled
-                if self.profile.namespaces.use_dotnet_resolver {
+                if let Some(source_function) =
+                    self.resolve_namespaced_function_identity(&parts.join("."))
+                {
+                    let global_idx = self.str_const(&source_function);
+                    self.emit_u16(Op::GLOBAL_GET, global_idx);
+                    for a in &arg_exprs {
+                        self.compile_expr(a)?;
+                    }
+                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    return Ok(());
+                }
+
+                // Use the shared namespace resolver when profile data enables it.
+                if self.profile.uses_namespace_resolver() {
                     let skip_simple_instance_chain = if lower_parts.len() == 2 {
                         let head = &parts[0];
                         self.has_accessible_local_binding(head)
@@ -4771,7 +4723,7 @@ impl Compiler {
                 // Reads from `host_namespace_aliases` (populated by the
                 // Linker) instead of `profile.lookup_module_alias` — one
                 // source of truth for Member-chain resolution.
-                let mounted_tree_chain = self.profile.namespaces.use_dotnet_resolver
+                let mounted_tree_chain = self.profile.uses_namespace_resolver()
                     && self.resolve_profile_namespace_chain(&parts).is_some();
                 if !mounted_tree_chain {
                     let alias_key = self.canon(&lower_parts[0]);
@@ -4922,6 +4874,20 @@ impl Compiler {
         // Must run BEFORE value methods so user class names like MathUtils.Add
         // don't get hijacked by the array Add value method.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
+            let source_member_parts = self.flatten_member_chain(callee);
+            if source_member_parts.len() >= 2 {
+                if let Some(source_function) =
+                    self.resolve_namespaced_function_identity(&source_member_parts.join("."))
+                {
+                    let global_idx = self.str_const(&source_function);
+                    self.emit_u16(Op::GLOBAL_GET, global_idx);
+                    for a in &arg_exprs {
+                        self.compile_expr(a)?;
+                    }
+                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    return Ok(());
+                }
+            }
             let class_parts = self.flatten_member_chain(object);
             if !class_parts.is_empty() {
                 let class_path = class_parts.join(".");
@@ -5673,6 +5639,14 @@ impl Compiler {
                     .lookup_value_method(field, arg_exprs.len() as u8)
                     .cloned()
             };
+            // builtinslotplan.md step 3 — CENSUS, not a decision. Records which
+            // `(built-in receiver type, method)` pairs actually reach
+            // value-method dispatch, so steps 4-5 flip a measured list rather
+            // than a guessed one. Emits nothing and changes nothing; off unless
+            // VYBE_SLOT_AUDIT is set.
+            if let Some(def) = matched_value_method.as_ref() {
+                self.audit_builtin_slot_census(object, field, &def.emit);
+            }
             let array_only_value_method_for_non_array = matches!(
                 matched_value_method.as_ref().map(|d| &d.emit),
                 Some(BuiltinEmit::HostCall(module, func))

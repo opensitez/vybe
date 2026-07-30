@@ -116,12 +116,25 @@ impl Bundle {
                 .unwrap_or(err)
         })?;
 
-        // Resolve imports relative to first source's directory
+        // Resolve imports relative to the FIRST source's directory. Correct for
+        // one source, and for languages whose sources are one text stream; with
+        // several independent files it sends every file's relative imports to
+        // the first file's folder, so `parse_sources_separately` languages take
+        // the per-source path above instead.
         if let Some(first) = self.sources.first() {
             let base_dir = first.path.parent().unwrap_or(Path::new("."));
             resolve_imports(&mut module, &self.language, base_dir);
         }
 
+        self.apply_entry_point(&mut module);
+
+        Ok(module)
+    }
+
+    /// Entry-point injection + completion-value rewriting, applied to a parsed
+    /// module. Shared by the combined-parse and per-source-parse paths so they
+    /// cannot drift.
+    fn apply_entry_point(&self, module: &mut Module) {
         // If the project starts with a static method (e.g. C# Program.Main()),
         // inject a call:  ClassName.MethodName()
         if let EntryPoint::Method(ref class_name, ref method_name) = self.entry_point {
@@ -190,8 +203,6 @@ impl Bundle {
                 }
             }
         }
-
-        Ok(module)
     }
 
     /// Parse all sources and compile to bytecode chunks.

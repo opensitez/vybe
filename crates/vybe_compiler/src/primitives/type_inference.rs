@@ -845,7 +845,12 @@ impl Compiler {
         self.chunk().emit_else(line);
 
         let clone_slot = self.define_local("__value_type_clone");
-        crate::primitives::classes::emit_new_typed_object(self.chunk(), clone_slot, type_name, line);
+        crate::primitives::classes::emit_new_typed_object(
+            self.chunk(),
+            clone_slot,
+            type_name,
+            line,
+        );
 
         for member_name in fields.iter().chain(instance_member_names.iter()) {
             let member_key = self.str_const(member_name);

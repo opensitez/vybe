@@ -1,6 +1,6 @@
+use vybe_compiler::primitives::functions;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::functions;
 
 #[test]
 fn default_param_roundtrip() {

@@ -483,6 +483,15 @@ impl Compiler {
         let trimmed = global_stripped.trim().trim_end_matches('?').trim();
         let erased = common::generics::erased_type_name(trimmed);
         let base = erased.trim();
+        let source_base = base.strip_prefix("System.").unwrap_or(base);
+        if parent_runtime_name.is_none() {
+            if let Some(resolved) = self
+                .resolve_source_namespace_type(base)
+                .or_else(|| self.resolve_source_namespace_type(source_base))
+            {
+                return resolved;
+            }
+        }
 
         match self.profile.reflection_type_naming {
             // Native: the type keeps its own name. This is what preserves
@@ -547,6 +556,34 @@ impl Compiler {
         };
 
         if !raw_name.contains('.') {
+            if let Some(resolved) = self.resolve_source_namespace_type(&raw_name) {
+                return Some(self.reflection_runtime_type_name(&resolved, None));
+            }
+            if !raw_name.ends_with("Attribute") {
+                let attr_name = format!("{raw_name}Attribute");
+                if let Some(resolved) = self.resolve_source_namespace_type(&attr_name) {
+                    return Some(self.reflection_runtime_type_name(&resolved, None));
+                }
+            }
+            let attr_leaf = if raw_name.ends_with("Attribute") {
+                raw_name.clone()
+            } else {
+                format!("{raw_name}Attribute")
+            };
+            let attr_suffix = format!(".{attr_leaf}");
+            let mut class_matches = self
+                .defined_classes
+                .iter()
+                .filter(|known| {
+                    known.eq_ignore_ascii_case(&raw_name)
+                        || known.eq_ignore_ascii_case(&attr_leaf)
+                        || known.ends_with(&attr_suffix)
+                });
+            if let Some(resolved) = class_matches.next().cloned() {
+                if class_matches.next().is_none() {
+                    return Some(self.reflection_runtime_type_name(&resolved, None));
+                }
+            }
             let mut matches: Vec<String> = self
                 .reflection_types
                 .keys()

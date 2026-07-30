@@ -4,9 +4,9 @@
 //! wasm:js-* host functions registered, and asserts the result.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::ops;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, VM, Value};
-use vybe_compiler::primitives::ops;
 
 fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
     let mut chunk = Chunk::new("<test>");

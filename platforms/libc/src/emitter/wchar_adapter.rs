@@ -12,12 +12,12 @@
 //! display) — the analogue of the proposal's `fromCharCodeArray` /
 //! `intoCharCodeArray`.
 
-use vybe_compiler::primitives::pointers;
 use vybe_ast::{
     Argument, BinOp, BindingPattern, ExprKind, Expression, Literal, Modifiers, Param, PassBy,
     Statement, StmtKind, VarDeclKind, VarDeclarator,
 };
 use vybe_compiler::primitives::addressable_storage;
+use vybe_compiler::primitives::pointers;
 
 fn e(kind: ExprKind) -> Expression {
     Expression::new(kind)

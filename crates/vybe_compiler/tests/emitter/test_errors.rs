@@ -1,5 +1,5 @@
-use vybe_runtime::Chunk;
 use vybe_compiler::primitives::errors;
+use vybe_runtime::Chunk;
 
 #[test]
 fn emit_try_start_produces_bytecode() {

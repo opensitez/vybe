@@ -6,18 +6,25 @@
 use super::*;
 use vybe_ast::class_normalize::{PlatformBaseSpec, PlatformFieldGui};
 
-fn dotnet_ambient_tree_root(path: &str) -> Option<String> {
+fn mounted_ambient_tree_root(tree_mounts: &HashMap<String, String>, path: &str) -> Option<String> {
     let trimmed = path.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    if lower == "system" {
-        return Some("dotnet.system".into());
+    let mut segments = trimmed
+        .split(['.', '\\'])
+        .map(str::trim)
+        .filter(|part| !part.is_empty());
+    let head = segments.next()?;
+    let base = tree_mounts.get(&head.to_ascii_lowercase())?;
+    let mut out = base.clone();
+    for segment in segments {
+        out.push('.');
+        out.push_str(&segment.to_ascii_lowercase());
     }
-    lower
-        .strip_prefix("system.")
-        .map(|tail| format!("dotnet.system.{tail}"))
+    Some(out)
 }
 
-fn platform_base_spec_from_ctor_spec(spec: crate::primitives::namespaces::CtorSpec) -> PlatformBaseSpec {
+fn platform_base_spec_from_ctor_spec(
+    spec: crate::primitives::namespaces::CtorSpec,
+) -> PlatformBaseSpec {
     PlatformBaseSpec {
         params: spec.params,
         fields: spec.fields,
@@ -238,6 +245,9 @@ impl Compiler {
                                     vybe_ast::ProtocolSlot::SetItem => {
                                         self.classes_with_index_setter.insert(member.clone());
                                     }
+                                    vybe_ast::ProtocolSlot::GetAttr => {
+                                        self.program_has_getattr = true;
+                                    }
                                     _ => {}
                                 }
                             }
@@ -293,6 +303,9 @@ impl Compiler {
                                     vybe_ast::ProtocolSlot::SetItem => {
                                         self.classes_with_index_setter.insert(member.clone());
                                     }
+                                    vybe_ast::ProtocolSlot::GetAttr => {
+                                        self.program_has_getattr = true;
+                                    }
                                     _ => {}
                                 }
                             }
@@ -335,6 +348,52 @@ impl Compiler {
                         let qualified = format!("{prefix}.{member}");
                         self.defined_globals.insert(qualified.clone());
                         self.defined_classes.insert(qualified);
+                        for module_member in members {
+                            let ClassMember::Method(stmt) = module_member else {
+                                continue;
+                            };
+                            let StmtKind::FunctionDecl {
+                                name,
+                                params,
+                                return_type,
+                                is_generator,
+                                ..
+                            } = &stmt.kind
+                            else {
+                                continue;
+                            };
+                            let function_name = self.canon(&format!("{prefix}.{member}.{name}"));
+                            self.defined_globals.insert(function_name.clone());
+                            self.defined_functions.insert(function_name.clone());
+                            if *is_generator && self.profile.buffered_iterator_methods {
+                                self.generator_functions.insert(function_name.clone());
+                            }
+                            self.function_param_modes
+                                .entry(function_name.clone())
+                                .or_insert_with(|| params.iter().map(|param| param.pass_by).collect());
+                            self.function_param_types
+                                .entry(function_name.clone())
+                                .or_insert_with(|| {
+                                    params.iter().map(|param| param.type_hint.clone()).collect()
+                                });
+                            self.function_min_arity
+                                .entry(function_name.clone())
+                                .or_insert_with(|| {
+                                    params
+                                        .iter()
+                                        .take_while(|param| param.default.is_none() && !param.is_rest)
+                                        .count()
+                                });
+                            self.function_signatures
+                                .entry(function_name.clone())
+                                .or_default()
+                                .push(CallSignature::from_params(params));
+                            if let Some(return_type) = return_type.as_ref() {
+                                self.function_return_types
+                                    .entry(function_name)
+                                    .or_insert_with(|| return_type.clone());
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -1048,16 +1107,27 @@ impl Compiler {
                         self.host_namespace_aliases.insert(key, path);
                     }
                 }
-                // Simple .NET namespace imports (`Imports System.Text` /
-                // `using System.Text;`) make bare qualified chains resolve
-                // under the shared dotnet tree (`Regex.IsMatch` →
-                // `dotnet.system.text.regularexpressions.regex.ismatch`).
+                // Simple namespace imports (`Imports System.Text`,
+                // `using Flutter.Material`) make bare qualified chains
+                // resolve under the mounted namespace tree. The mount itself
+                // is profile data (`System` -> `dotnet.system`,
+                // `Flutter` -> `flutter`, ...), so this is not a .NET mode.
                 crate::ast::ImportKind::Simple { path, alias: None }
-                    if self.profile.namespaces.use_dotnet =>
+                    if self.profile.uses_namespace_resolver() =>
                 {
-                    if let Some(root) = dotnet_ambient_tree_root(path) {
+                    if let Some(root) = mounted_ambient_tree_root(&self.tree_mounts, path) {
                         if !self.ambient_tree_roots.iter().any(|p| p == &root) {
                             self.ambient_tree_roots.push(root);
+                        }
+                    } else if self.profile.namespaces.source_imports_are_namespaces {
+                        let source_root = self.canon(&path.replace('\\', "."));
+                        if !source_root.is_empty()
+                            && !self
+                                .source_namespace_imports
+                                .iter()
+                                .any(|p| p == &source_root)
+                        {
+                            self.source_namespace_imports.push(source_root);
                         }
                     }
                 }
@@ -1096,7 +1166,8 @@ impl Compiler {
 
     pub(crate) fn resolve_source_type_alias(&self, name: &str) -> String {
         let normalized = Self::strip_global_namespace_prefix(name);
-        let trimmed = normalized.trim().replace('\\', ".");
+        let trimmed = crate::primitives::generics::erased_type_name(normalized.trim())
+            .replace('\\', ".");
         let (head, tail) = trimmed
             .split_once('.')
             .map(|(head, tail)| (head.trim(), Some(tail.trim())))
@@ -1106,12 +1177,103 @@ impl Compiler {
             .map(|bare| (bare.trim_end(), "()"))
             .unwrap_or((head, ""));
         let key = self.canon(alias_head);
-        let Some(target) = self.source_type_aliases.get(&key) else {
-            return trimmed;
-        };
-        match tail {
-            Some(tail) if !tail.is_empty() => format!("{}{}.{}", target, suffix, tail),
-            _ => format!("{}{}", target, suffix),
+        if let Some(target) = self.source_type_aliases.get(&key) {
+            return match tail {
+                Some(tail) if !tail.is_empty() => format!("{}{}.{}", target, suffix, tail),
+                _ => format!("{}{}", target, suffix),
+            };
         }
+
+        let lookup_name = match tail {
+            Some(tail) if !tail.is_empty() => format!("{alias_head}.{tail}"),
+            _ => alias_head.to_string(),
+        };
+        if let Some(target) = self.resolve_source_namespace_type(&lookup_name) {
+            return format!("{target}{suffix}");
+        }
+
+        trimmed
+    }
+
+    pub(crate) fn resolve_source_namespace_type(&self, name: &str) -> Option<String> {
+        let name = self.canon(&Self::strip_global_namespace_prefix(name).replace('\\', "."));
+        if name.is_empty() {
+            return None;
+        }
+        if self.defined_classes.contains(&name) {
+            return Some(name);
+        }
+        for ns in self.source_namespace_contexts() {
+            let qualified = self.canon(&format!("{ns}.{name}"));
+            if self.defined_classes.contains(&qualified) {
+                return Some(qualified);
+            }
+        }
+        for prefix in &self.source_namespace_imports {
+            let qualified = self.canon(&format!("{prefix}.{name}"));
+            if self.defined_classes.contains(&qualified) {
+                return Some(qualified);
+            }
+        }
+        let suffix = format!(".{name}");
+        let mut matches = self
+            .defined_classes
+            .iter()
+            .filter(|class_name| class_name.ends_with(&suffix));
+        if let Some(qualified) = matches.next().cloned() {
+            if matches.next().is_none() {
+                return Some(qualified);
+            }
+        }
+        None
+    }
+
+    pub(crate) fn resolve_source_namespace_value(&self, name: &str) -> Option<String> {
+        let name = self.canon(&Self::strip_global_namespace_prefix(name).replace('\\', "."));
+        if name.is_empty() {
+            return None;
+        }
+        if self.defined_functions.contains(&name) || self.defined_globals.contains(&name) {
+            return Some(name);
+        }
+        for ns in self.source_namespace_contexts() {
+            let qualified = self.canon(&format!("{ns}.{name}"));
+            if self.defined_functions.contains(&qualified)
+                || self.defined_globals.contains(&qualified)
+            {
+                return Some(qualified);
+            }
+        }
+        for prefix in &self.source_namespace_imports {
+            let qualified = self.canon(&format!("{prefix}.{name}"));
+            if self.defined_functions.contains(&qualified)
+                || self.defined_globals.contains(&qualified)
+            {
+                return Some(qualified);
+            }
+        }
+        None
+    }
+
+    fn source_namespace_contexts(&self) -> Vec<String> {
+        let mut namespaces = Vec::new();
+        if let Some(ns) = self.current_namespace.as_deref() {
+            if !ns.is_empty() {
+                namespaces.push(self.canon(ns));
+            }
+        }
+        if let Some(class_name) = self.current_class.as_deref() {
+            let class_name = self.canon(class_name);
+            if let Some((namespace, _)) = class_name.rsplit_once('.') {
+                if !namespace.is_empty()
+                    && !namespaces
+                        .iter()
+                        .any(|existing| existing.eq_ignore_ascii_case(namespace))
+                {
+                    namespaces.push(namespace.to_string());
+                }
+            }
+        }
+        namespaces
     }
 }

@@ -326,6 +326,31 @@ pub fn emit_normalize(
     call_ref(c, 4, line);
 }
 
+/// Shared JSON parse that returns `null` instead of throwing on invalid text.
+/// Stack: `[json_text] -> [value|null]`.
+pub fn emit_parse_or_null(chunks: &mut [Chunk], current: usize, line: u32) {
+    add_call(&mut chunks[current], "ecma:json", "parseOrNull", 1, line);
+}
+
+/// Shared object/array friendly stringify used by language DOM wrappers.
+/// Stack: `[value] -> [json_text]`.
+pub fn emit_stringify_props(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let value_slot = chunks[current].alloc_scratch(4);
+    let default_slot = value_slot + 1;
+    let sort_slot = value_slot + 2;
+    let props_slot = value_slot + 3;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, default_slot, line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, sort_slot, line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, props_slot, line);
+    emit_normalize(chunks, current, value_slot, default_slot, sort_slot, props_slot, line);
+    add_call(&mut chunks[current], "ecma:json", "stringify", 1, line);
+}
+
 // ── separator-aware renderer ─────────────────────────────────────────────────
 
 /// Build the recursive `__json_render(value, itemSep, kvSep)` helper chunk.

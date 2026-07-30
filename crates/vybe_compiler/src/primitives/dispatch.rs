@@ -24,7 +24,9 @@ use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
 use crate::primitives::threading as thread_adapter;
-use crate::primitives::{collections, dict, heap, object, ops, reflection, strings, threading, xml};
+use crate::primitives::{
+    collections, dict, heap, object, ops, reflection, strings, threading, xml,
+};
 
 /// Handle common ops that need only a chunk and line.
 /// Returns `true` if `name` was recognized and emitted, `false` otherwise.

@@ -1,5 +1,5 @@
-use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::strings;
+use vybe_runtime::{Chunk, Value};
 
 #[test]
 fn emit_to_string_adds_import() {

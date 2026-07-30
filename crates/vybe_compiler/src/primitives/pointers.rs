@@ -17,6 +17,8 @@
 use vybe_ast::{Argument, BinOp, ExprKind, Expression, Literal, ObjectProperty};
 
 pub const REF_KIND_KEY: &str = "__ref_kind";
+pub const REF_VALUE_KEY: &str = "__value";
+pub const CELL_KIND: &str = "cell";
 pub const CARRAY_BASE_KEY: &str = "__base";
 pub const CARRAY_IDX_KEY: &str = "__idx";
 pub const CARRAY_KIND: &str = "carray";
@@ -106,6 +108,48 @@ pub fn carray_indexed_read(ptr: Expression, n: Expression) -> Expression {
     })
 }
 
+fn carray_byte_index(ptr: Expression, offset: Expression, byte_width: i64) -> Expression {
+    let byte_index = binary(BinOp::Add, member(ptr, CARRAY_IDX_KEY), offset);
+    if byte_width <= 1 {
+        byte_index
+    } else {
+        binary(BinOp::IDiv, byte_index, Expression::int(byte_width))
+    }
+}
+
+/// Read from a byte-addressed pointer surface such as .NET Marshal.
+///
+/// The underlying carray remains element-addressed for cross-language pointer
+/// interop; this helper converts byte offsets to element slots for typed reads.
+pub fn carray_byte_offset_read(
+    ptr: Expression,
+    offset: Expression,
+    byte_width: i64,
+) -> Expression {
+    e(ExprKind::Index {
+        object: Box::new(member(ptr.clone(), CARRAY_BASE_KEY)),
+        index: Box::new(carray_byte_index(ptr, offset, byte_width)),
+        null_safe: false,
+    })
+}
+
+/// Write through a byte-addressed pointer surface such as .NET Marshal.
+pub fn carray_byte_offset_write(
+    ptr: Expression,
+    offset: Expression,
+    byte_width: i64,
+    val: Expression,
+) -> Expression {
+    e(ExprKind::Assign {
+        target: Box::new(e(ExprKind::Index {
+            object: Box::new(member(ptr.clone(), CARRAY_BASE_KEY)),
+            index: Box::new(carray_byte_index(ptr, offset, byte_width)),
+            null_safe: false,
+        })),
+        value: Box::new(val),
+    })
+}
+
 /// Advance a pointer by `n` elements. The base array is shared.
 pub fn carray_advance(ptr: Expression, n: Expression) -> Expression {
     if is_zero(&n) {
@@ -182,6 +226,16 @@ pub fn is_carray_ptr_kind(ptr: Expression) -> Expression {
         op: BinOp::Eq,
         left: Box::new(member(ptr, REF_KIND_KEY)),
         right: Box::new(e(ExprKind::Lit(Literal::Str(CARRAY_KIND.to_string())))),
+    })
+}
+
+/// Treat `value` as an array pointer. Existing carray pointers pass through;
+/// plain array-like values become a carray pointer at index zero.
+pub fn ensure_carray_ptr(value: Expression) -> Expression {
+    e(ExprKind::Ternary {
+        cond: Box::new(is_carray_ptr_kind(value.clone())),
+        then: Box::new(value.clone()),
+        else_: Box::new(make_carray_ptr(value, Expression::int(0))),
     })
 }
 

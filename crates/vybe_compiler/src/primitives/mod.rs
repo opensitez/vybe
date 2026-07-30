@@ -16,8 +16,8 @@
 // The former `emitter` module. Its free functions over `&mut Chunk` and the
 // `impl Compiler` walkers alongside them are one layer now — this crate IS
 // the emitter, so there is no second module to route through.
-pub mod bundle;
 pub mod addressable_storage;
+pub mod bundle;
 pub mod codepoints;
 pub mod collections;
 pub mod complex;
@@ -25,6 +25,7 @@ pub mod convert;
 pub mod delegates;
 pub mod dict;
 pub mod dispatch;
+pub mod builtin_slots;
 pub mod dynamic_symbols;
 pub mod errors;
 pub mod functions;
@@ -38,6 +39,7 @@ pub mod io;
 pub mod json;
 pub mod loops;
 pub mod math;
+pub mod memory;
 pub mod multivalue;
 pub mod object;
 pub mod ops;
@@ -438,6 +440,16 @@ pub struct Compiler {
     /// Kept apart from `classes_with_indexer` — a class may define either
     /// half on its own.
     pub(crate) classes_with_index_setter: HashSet<String>,
+    /// Any class in this program binds the `GetAttr` role (Python
+    /// `__getattr__`, PHP `__get`, JS Proxy get) — the attribute-miss
+    /// interceptor.
+    ///
+    /// A program-level flag, not a per-class set like `classes_with_indexer`,
+    /// because the receiver's type is usually unknown exactly where this
+    /// matters: `f = FlexObj(); f.undefined` has no static hint in a
+    /// dynamically-typed language, so a hint-keyed gate would miss the case it
+    /// exists for. Programs that bind the role nowhere pay nothing.
+    pub(crate) program_has_getattr: bool,
     global_type_hints: HashMap<String, String>,
     /// Map from member name → containing namespace name.
     /// Used for bare-name resolution within modules/namespaces/enums.
@@ -579,6 +591,10 @@ pub struct Compiler {
     /// Shared across languages so `Imports X = System.Text.StringBuilder`
     /// and `using X = System.Text.StringBuilder` normalize below the walker.
     source_type_aliases: HashMap<String, String>,
+    /// Source-language namespace imports (`Imports Demo.Core`,
+    /// `using Demo.Core`) that expose declarations under that namespace to
+    /// unqualified source lookup.
+    source_namespace_imports: Vec<String>,
     /// Snapshot of the current module's source imports.
     ///
     /// Used for narrow source-shape decisions that depend on the ambient
@@ -2211,6 +2227,7 @@ impl Compiler {
             defined_class_methods: HashSet::new(),
             classes_with_indexer: HashSet::new(),
             classes_with_index_setter: HashSet::new(),
+            program_has_getattr: false,
             global_type_hints: HashMap::new(),
             enum_members: HashMap::new(),
             enum_value_names: HashMap::new(),
@@ -2257,6 +2274,7 @@ impl Compiler {
             tree_mounts: HashMap::new(),
             ambient_tree_roots: Vec::new(),
             source_type_aliases: HashMap::new(),
+            source_namespace_imports: Vec::new(),
             current_module_imports: Vec::new(),
             module_exports: HashMap::new(),
             module_value_exports: HashMap::new(),
@@ -2514,6 +2532,7 @@ impl Compiler {
             module.body.clone()
         };
 
+        self.predeclare_type_names(&merged_body, None);
         self.collect_reflection_metadata(&merged_body);
 
         // Multi-value pre-scan: any function whose every explicit `Return`
@@ -2524,7 +2543,6 @@ impl Compiler {
             self.collect_multi_return_functions(&merged_body);
         }
 
-        self.predeclare_type_names(&merged_body, None);
         // Declaration pass, phases 2 and 3: fold declared augmentations across
         // ALL normalized classes, THEN register member surfaces. Order matters
         // — a contributed member missing from registration reintroduces the

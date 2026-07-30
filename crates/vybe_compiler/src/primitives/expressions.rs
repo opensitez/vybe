@@ -172,6 +172,73 @@ impl Compiler {
         self.chunk().emit_else(line);
         self.emit_primitive_prototype_member_get(obj_slot, field_name);
         self.chunk().emit_end(line);
+
+        self.emit_getattr_slot_probe(obj_slot, field_name);
+    }
+
+    /// The `GetAttr` role — the attribute-miss interceptor (Python
+    /// `__getattr__`, PHP `__get`, JS Proxy get). Resolved by SLOT, so the
+    /// spelling each language used is irrelevant here; both frontends already
+    /// bind it to `ProtocolSlot::GetAttr`.
+    ///
+    /// ADDED after the normal read, never substituted for it: this site also
+    /// serves plain maps, host objects and primitives, which carry no slot, and
+    /// flexclassplan records that substituting at such a site is what broke
+    /// `Len` and `Iterator`. So the read happens first and only an `undefined`
+    /// result consults the slot.
+    ///
+    /// Whole thing is skipped unless some class in the program binds the role,
+    /// so programs without it emit exactly what they did before.
+    ///
+    /// Stack: `[value] -> [value]`.
+    fn emit_getattr_slot_probe(&mut self, obj_slot: u16, field_name: &str) {
+        if !self.program_has_getattr {
+            return;
+        }
+        // The slot's implementation is published under a key derived from the
+        // slot NUMBER, so this never mentions `__getattr__` or `__get`.
+        let slot_key = vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::GetAttr);
+        let line = self.line;
+        let value_slot = self.define_local("__getattr_value");
+        let handler_slot = self.define_local("__getattr_handler");
+
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        {
+            let undef = self.chunk().add_import("wasm:js-undefined", "test");
+            self.chunk().emit_call(undef, 1, line);
+        }
+        self.chunk().emit_if(line);
+
+        // Only an object can carry the slot; `Reflect.get` throws otherwise.
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        inst!(self, recipes::is_object);
+        self.chunk().emit_if(line);
+        let get = self.import("ecma:reflect", "get");
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_const(Value::String(Arc::from(slot_key.as_str())));
+        self.emit_host_call(get, 2);
+        self.emit_u16(Op::LOCAL_SET, handler_slot);
+
+        self.emit_u16(Op::LOCAL_GET, handler_slot);
+        {
+            let undef = self.chunk().add_import("wasm:js-undefined", "test");
+            self.chunk().emit_call(undef, 1, line);
+        }
+        self.chunk().emit_op(Op::I32_EQZ, line);
+        self.chunk().emit_if(line);
+        // handler(receiver, name)
+        self.emit_u16(Op::LOCAL_GET, handler_slot);
+        self.emit_u16(Op::LOCAL_GET, obj_slot);
+        self.emit_const(Value::String(Arc::from(field_name)));
+        self.chunk().emit_op_u8(Op::CALL_REF, 2, line);
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.chunk().emit_end(line);
+
+        self.chunk().emit_end(line);
+        self.chunk().emit_end(line);
+
+        self.emit_u16(Op::LOCAL_GET, value_slot);
     }
 
     /// §7.3.2 GetV on a PRIMITIVE receiver: look `field_name` up on the
@@ -1677,6 +1744,16 @@ impl Compiler {
                     self.emit_private_access_denied(field)?;
                     return Ok(());
                 }
+                let source_member_parts = self.flatten_member_chain(expr);
+                if source_member_parts.len() >= 2 {
+                    if let Some(source_function) =
+                        self.resolve_namespaced_function_identity(&source_member_parts.join("."))
+                    {
+                        let global_idx = self.str_const(&source_function);
+                        self.emit_u16(Op::GLOBAL_GET, global_idx);
+                        return Ok(());
+                    }
+                }
                 if self.profile.name == "vb"
                     && self.profile.namespaces.use_dotnet
                     && field.eq_ignore_ascii_case("Result")
@@ -2051,7 +2128,9 @@ impl Compiler {
                                         let idx = self.import(&module, &func);
                                         self.emit_host_call(idx, 0);
                                     }
-                                    crate::primitives::namespaces::ResolutionTarget::Const(value) => {
+                                    crate::primitives::namespaces::ResolutionTarget::Const(
+                                        value,
+                                    ) => {
                                         self.emit_const(value);
                                     }
                                     _ => {}
@@ -3789,7 +3868,7 @@ impl Compiler {
                         }
                     }
                     ExprKind::Member { .. }
-                        if self.profile.namespaces.use_dotnet && !class_parts.is_empty() =>
+                        if self.profile.uses_namespace_resolver() && !class_parts.is_empty() =>
                     {
                         Some(self.resolve_source_type_alias(&class_parts.join(".")))
                     }
@@ -3816,7 +3895,9 @@ impl Compiler {
                             &format!("Cannot instantiate abstract class {}", type_name),
                             line,
                         );
-                        crate::primitives::errors::emit_exception_new_finalize(chunk, "Error", line);
+                        crate::primitives::errors::emit_exception_new_finalize(
+                            chunk, "Error", line,
+                        );
                         crate::primitives::errors::emit_throw(chunk, line);
                         return Ok(());
                     }
@@ -4551,6 +4632,33 @@ impl Compiler {
                 }
             }
 
+            // ── Cross-language zip primitive ───────────────────────────
+            ExprKind::Zip {
+                iterables,
+                mode,
+                strict,
+            } => {
+                let line = self.line;
+                if *strict {
+                    return Err("strict zip lowering is not wired yet".into());
+                }
+                for iterable in iterables {
+                    self.compile_expr(iterable)?;
+                }
+                let mode = match mode {
+                    crate::ast::ZipMode::First => common::collections::ZipLen::First,
+                    crate::ast::ZipMode::Shortest => common::collections::ZipLen::Shortest,
+                    crate::ast::ZipMode::Longest => common::collections::ZipLen::Longest,
+                };
+                common::collections::emit_zip(
+                    &mut self.chunks,
+                    self.current,
+                    iterables.len() as u8,
+                    mode,
+                    line,
+                );
+            }
+
             // ── Tuple (Python) ──────────────────────────────────────────
             ExprKind::Tuple(elements) => {
                 let line = self.line;
@@ -5181,19 +5289,41 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, matched_slot);
                 self.chunk().emit_end(line);
 
-                self.emit_u16(Op::LOCAL_GET, obj_slot);
-                let type_key = self.str_const("__type");
-                self.emit_u16(Op::STRUCT_GET, type_key);
-                self.emit_const(Value::String(Arc::from(canon_type.as_str())));
+                let mut type_name_candidates = vec![canon_type.clone()];
+                let short_type = self.canon(&self.reflection_type_short_name(type_name));
+                if !type_name_candidates
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(&short_type))
                 {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-                };
-                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                self.chunk().emit_if(line);
-                self.emit_const(Value::I32(1));
-                self.emit_u16(Op::LOCAL_SET, matched_slot);
-                self.chunk().emit_end(line);
+                    type_name_candidates.push(short_type);
+                }
+                let raw_short = type_name
+                    .rsplit(['.', '\\'])
+                    .next()
+                    .unwrap_or(type_name)
+                    .trim()
+                    .to_string();
+                if !type_name_candidates
+                    .iter()
+                    .any(|candidate| candidate == &raw_short)
+                {
+                    type_name_candidates.push(raw_short);
+                }
+                for candidate in type_name_candidates {
+                    self.emit_u16(Op::LOCAL_GET, obj_slot);
+                    let type_key = self.str_const("__type");
+                    self.emit_u16(Op::STRUCT_GET, type_key);
+                    self.emit_const(Value::String(Arc::from(candidate.as_str())));
+                    {
+                        let line = self.line;
+                        crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+                    };
+                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                    self.chunk().emit_if(line);
+                    self.emit_const(Value::I32(1));
+                    self.emit_u16(Op::LOCAL_SET, matched_slot);
+                    self.chunk().emit_end(line);
+                }
 
                 let reflection_matches: Vec<String> = self
                     .reflection_types
@@ -6346,7 +6476,11 @@ impl Compiler {
                     }
                     // Contiguous slice via ecma:array.slice (string→substring /
                     // array→array, negative-wrap + clamp). Home: crate::primitives::slices.
-                    crate::primitives::slices::emit_contiguous(&mut self.chunks, self.current, line);
+                    crate::primitives::slices::emit_contiguous(
+                        &mut self.chunks,
+                        self.current,
+                        line,
+                    );
                 } else {
                     // Strided slice → [obj, lower, upper, step] (NULL = absent);
                     // obj is already on the stack from the Index parent.
@@ -6368,8 +6502,9 @@ impl Compiler {
                     } else {
                         self.emit(Op::NULL);
                     }
-                    let opts =
-                        crate::primitives::slices::Options::new(self.profile.slice_step_zero_raises);
+                    let opts = crate::primitives::slices::Options::new(
+                        self.profile.slice_step_zero_raises,
+                    );
                     crate::primitives::slices::emit_stepped(
                         &mut self.chunks,
                         self.current,

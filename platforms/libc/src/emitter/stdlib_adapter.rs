@@ -1,6 +1,6 @@
 //! C stdlib.h — memory allocation and conversion adapters.
 
-use vybe_ast::{Argument, ArrayElement, BinOp, ExprKind, Expression, Literal};
+use vybe_ast::{Argument, BinOp, ExprKind, Expression, Literal};
 
 fn e(kind: ExprKind) -> Expression {
     Expression::new(kind)
@@ -12,15 +12,6 @@ fn lit_int(n: i64) -> Expression {
 
 fn lit_float(f: f64) -> Expression {
     e(ExprKind::Lit(Literal::Float(f)))
-}
-
-fn array_elem(value: Expression) -> ArrayElement {
-    ArrayElement {
-        value,
-        spread: false,
-        key: None,
-        by_ref: false,
-    }
 }
 
 fn call(callee: Expression, args: Vec<Expression>) -> Expression {
@@ -39,19 +30,18 @@ fn ident(name: &str) -> Expression {
 
 /// `malloc(n)` → empty GC-managed array (VM handles lifetime).
 pub fn c_malloc() -> Expression {
-    e(ExprKind::Array(Vec::new()))
+    vybe_compiler::primitives::memory::heap_array(Vec::new())
 }
 
 /// `calloc(count, _size)` → flat zero-filled array of `count` elements.
 /// The element size is ignored — the VM array is element-indexed, not byte-indexed.
 pub fn c_calloc(count: usize) -> Expression {
-    let zeros = (0..count).map(|_| array_elem(lit_int(0))).collect();
-    e(ExprKind::Array(zeros))
+    vybe_compiler::primitives::memory::heap_zeroed_array(count)
 }
 
 /// `free(p)` → null (GC handles deallocation; noop at expression level).
 pub fn c_free() -> Expression {
-    e(ExprKind::Lit(Literal::Null))
+    vybe_compiler::primitives::memory::free_value()
 }
 
 // ── String → number conversions ───────────────────────────────────────────────

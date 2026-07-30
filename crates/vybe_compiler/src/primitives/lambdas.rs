@@ -611,14 +611,71 @@ impl Compiler {
         parts: &[String],
         args: &[&Expression],
     ) -> Result<bool, String> {
+        // This registers platform namespace trees as a side effect, then the
+        // arity-aware type lookup below can see overloaded static members.
+        let namespace_resolution = self.resolve_profile_namespace_chain(parts);
+
+        if parts.len() >= 2 {
+            let method_name = parts.last().expect("parts len checked");
+            let class_name = parts[..parts.len() - 1].join(".");
+            if let Some(member) = vybe_runtime::namespaces::lookup_type_static_member(
+                &self.profile.namespaces.type_scopes,
+                &class_name,
+                method_name,
+            ) {
+                if let Some(target) =
+                    vybe_runtime::namespaces::select_overload(&member, args.len() as u8)
+                {
+                    match target {
+                        vybe_runtime::namespaces::NamespaceNode::CommonEmit(emit) => {
+                            if (emit.eq_ignore_ascii_case("dotnet.console_writeline")
+                                || emit.eq_ignore_ascii_case("dotnet.console_write"))
+                                && args.len() == 1
+                            {
+                                self.emit_dotnet_console_arg(args[0])?;
+                            } else {
+                                for a in args {
+                                    self.compile_expr(a)?;
+                                }
+                            }
+                            let line = self.line;
+                            self.emit_common(emit, args.len() as u8, line);
+                            return Ok(true);
+                        }
+                        vybe_runtime::namespaces::NamespaceNode::Fn {
+                            module,
+                            func,
+                            arity,
+                            ..
+                        } => {
+                            for a in args {
+                                self.compile_expr(a)?;
+                            }
+                            let idx = self.import(module, func);
+                            self.emit_host_call(idx, arity.unwrap_or(args.len() as u8));
+                            return Ok(true);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
         // namespaceplan.md: platform surfaces are data in the shared tree;
         // the common resolver handles the mounted chain.
-        match self.resolve_profile_namespace_chain(parts) {
+        match namespace_resolution {
             Some(super::resolver::Resolution::Tree(
                 crate::primitives::namespaces::ResolutionTarget::CommonEmit(emit),
             )) => {
-                for a in args {
-                    self.compile_expr(a)?;
+                if (emit.eq_ignore_ascii_case("dotnet.console_writeline")
+                    || emit.eq_ignore_ascii_case("dotnet.console_write"))
+                    && args.len() == 1
+                {
+                    self.emit_dotnet_console_arg(args[0])?;
+                } else {
+                    for a in args {
+                        self.compile_expr(a)?;
+                    }
                 }
                 let line = self.line;
                 self.emit_common(&emit, args.len() as u8, line);

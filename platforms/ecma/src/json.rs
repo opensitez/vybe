@@ -62,6 +62,19 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
+    vm.register_host_fn(
+        "ecma:json",
+        "parseOrNull",
+        Box::new(|_ctx, args| {
+            let text: String = match args.first() {
+                Some(Value::String(s)) => s.to_string(),
+                Some(other) => format!("{}", other),
+                None => return Value::Null,
+            };
+            parse_json(&text).unwrap_or(Value::Null)
+        }),
+    );
+
     // JSON.stringify(value, replacer, space) — replacer as Array filters keys.
     vm.register_host_fn(
         "ecma:json",

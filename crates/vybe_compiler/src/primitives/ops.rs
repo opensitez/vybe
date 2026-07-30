@@ -8,7 +8,8 @@
 //!   `Op::IF` (0x04) / `Op::ELSE` (0x05) / `Op::END` (0x0B)
 //! No flat-offset BR_IF_FALSE / BR_IF_TRUE / BR_IF_NULL custom opcodes.
 
-use vybe_runtime::Chunk;
+use std::sync::Arc;
+use vybe_runtime::{Chunk, Value};
 use vybe_runtime::opcode::Op;
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -63,6 +64,42 @@ fn i64_const(chunk: &mut Chunk, v: i64, line: u32) {
 
 fn f64_const(chunk: &mut Chunk, v: f64, line: u32) {
     chunk.emit_f64_const(v, line);
+}
+
+fn emit_object_field_to_slot(chunk: &mut Chunk, src_slot: u16, dst_slot: u16, field: &str, line: u32) {
+    let field_key = chunk.add_constant(Value::String(Arc::from(field)));
+    load(chunk, src_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, field_key, line);
+    save(chunk, dst_slot, line);
+}
+
+fn emit_slot_is_null_or_undefined(chunk: &mut Chunk, slot: u16, line: u32) {
+    load(chunk, slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    load(chunk, slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-undefined", "test");
+        chunk.emit_call(idx, 1, line);
+    }
+    chunk.emit_op(Op::I32_OR, line);
+}
+
+fn emit_both_object_field_present(
+    chunk: &mut Chunk,
+    a_slot: u16,
+    b_slot: u16,
+    a_field_slot: u16,
+    b_field_slot: u16,
+    field: &str,
+    line: u32,
+) {
+    emit_object_field_to_slot(chunk, a_slot, a_field_slot, field, line);
+    emit_object_field_to_slot(chunk, b_slot, b_field_slot, field, line);
+    emit_slot_is_null_or_undefined(chunk, a_field_slot, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    emit_slot_is_null_or_undefined(chunk, b_field_slot, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_op(Op::I32_AND, line);
 }
 
 fn emit_js_to_number_f64(
@@ -224,9 +261,11 @@ pub fn emit_dyn_not(chunk: &mut Chunk, line: u32) {
 // ── emit_dyn_eq ───────────────────────────────────────────────────────
 
 pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
-    let slots = alloc_locals(chunk, 2);
+    let slots = alloc_locals(chunk, 4);
     let b_slot = slots;
     let a_slot = slots + 1;
+    let b_time_slot = slots + 2;
+    let a_time_slot = slots + 3;
 
     let test_num = chunk.add_import("wasm:js-number", "test");
     let to_f64 = chunk.add_import("wasm:js-number", "toF64");
@@ -306,10 +345,20 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
     load(chunk, b_slot, line);
     chunk.emit_op(Op::I64_EQ, line);
     chunk.emit_else(line);
+    // DateTime-like comparable objects carry a numeric `__time` field.
+    emit_both_object_field_present(chunk, a_slot, b_slot, a_time_slot, b_time_slot, "Ticks", line);
+    chunk.emit_if(line);
+    load(chunk, a_time_slot, line);
+    call1(chunk, to_f64, line);
+    load(chunk, b_time_slot, line);
+    call1(chunk, to_f64, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_else(line);
     // object / cross-type → reference equality
     load(chunk, a_slot, line);
     load(chunk, b_slot, line);
     chunk.emit_op(Op::REF_EQ, line);
+    chunk.emit_end(line); // comparable object
     chunk.emit_end(line); // bigint
     chunk.emit_end(line); // boolean
     chunk.emit_end(line); // string
@@ -466,9 +515,11 @@ fn i64_cmp_op(op: &CmpOp) -> Op {
 }
 
 fn emit_dyn_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
-    let slots = alloc_locals(chunk, 2);
+    let slots = alloc_locals(chunk, 4);
     let b_slot = slots;
     let a_slot = slots + 1;
+    let b_time_slot = slots + 2;
+    let a_time_slot = slots + 3;
 
     let test_num = chunk.add_import("wasm:js-number", "test");
     let to_f64 = chunk.add_import("wasm:js-number", "toF64");
@@ -520,10 +571,20 @@ fn emit_dyn_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
     load(chunk, b_slot, line);
     chunk.emit_op(i64_cmp_op(&op), line);
     chunk.emit_else(line);
+    // DateTime-like comparable objects carry a numeric `__time` field.
+    emit_both_object_field_present(chunk, a_slot, b_slot, a_time_slot, b_time_slot, "Ticks", line);
+    chunk.emit_if(line);
+    load(chunk, a_time_slot, line);
+    call1(chunk, to_f64, line);
+    load(chunk, b_time_slot, line);
+    call1(chunk, to_f64, line);
+    chunk.emit_op(f64_cmp_op(&op), line);
+    chunk.emit_else(line);
     // fallback: coerce both to f64
     emit_js_to_number_f64(chunk, a_slot, to_f64, test_bool, cast_bool, line);
     emit_js_to_number_f64(chunk, b_slot, to_f64, test_bool, cast_bool, line);
     chunk.emit_op(f64_cmp_op(&op), line);
+    chunk.emit_end(line); // comparable object
     chunk.emit_end(line); // bigint
     chunk.emit_end(line); // string
     chunk.emit_end(line); // number
@@ -827,9 +888,11 @@ pub fn emit_dyn_not_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
 }
 
 pub fn emit_dyn_eq_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
-    let slots = alloc_locals(code, 2);
+    let slots = alloc_locals(code, 4);
     let b_slot = slots;
     let a_slot = slots + 1;
+    let b_time_slot = slots + 2;
+    let a_time_slot = slots + 3;
 
     let test_num = code.add_import("wasm:js-number", "test");
     let to_f64 = code.add_import("wasm:js-number", "toF64");
@@ -901,9 +964,18 @@ pub fn emit_dyn_eq_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     load(code, b_slot, line);
     code.emit_op(Op::I64_EQ, line);
     code.emit_else(line);
+    emit_both_object_field_present(code, a_slot, b_slot, a_time_slot, b_time_slot, "Ticks", line);
+    code.emit_if(line);
+    load(code, a_time_slot, line);
+    call1(code, to_f64, line);
+    load(code, b_time_slot, line);
+    call1(code, to_f64, line);
+    code.emit_op(Op::F64_EQ, line);
+    code.emit_else(line);
     load(code, a_slot, line);
     load(code, b_slot, line);
     code.emit_op(Op::REF_EQ, line);
+    code.emit_end(line);
     code.emit_end(line);
     code.emit_end(line);
     code.emit_end(line);
@@ -918,9 +990,11 @@ pub fn emit_dyn_ne_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
 }
 
 fn emit_dyn_cmp_into(_imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpOp) {
-    let slots = alloc_locals(code, 2);
+    let slots = alloc_locals(code, 4);
     let b_slot = slots;
     let a_slot = slots + 1;
+    let b_time_slot = slots + 2;
+    let a_time_slot = slots + 3;
 
     let test_num = code.add_import("wasm:js-number", "test");
     let to_f64 = code.add_import("wasm:js-number", "toF64");
@@ -969,9 +1043,18 @@ fn emit_dyn_cmp_into(_imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpO
     load(code, b_slot, line);
     code.emit_op(i64_cmp_op(&op), line);
     code.emit_else(line);
+    emit_both_object_field_present(code, a_slot, b_slot, a_time_slot, b_time_slot, "Ticks", line);
+    code.emit_if(line);
+    load(code, a_time_slot, line);
+    call1(code, to_f64, line);
+    load(code, b_time_slot, line);
+    call1(code, to_f64, line);
+    code.emit_op(f64_cmp_op(&op), line);
+    code.emit_else(line);
     emit_js_to_number_f64(code, a_slot, to_f64, test_bool, cast_bool, line);
     emit_js_to_number_f64(code, b_slot, to_f64, test_bool, cast_bool, line);
     code.emit_op(f64_cmp_op(&op), line);
+    code.emit_end(line);
     code.emit_end(line);
     code.emit_end(line);
     code.emit_end(line);

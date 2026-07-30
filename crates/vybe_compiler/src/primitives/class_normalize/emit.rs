@@ -110,7 +110,7 @@ pub fn emit_class_from_ast(
     // members. It is also the point of having one class model: normalize once,
     // use everywhere. See flexclassplan.md §3a, §4c.
     let canon = compiler.canon(cname);
-    let nc = match compiler.normalized_classes.get(&canon) {
+    let mut nc = match compiler.normalized_classes.get(&canon) {
         Some(stored) => {
             let mut nc = stored.clone();
             // These two are supplied by the caller at definition time; the
@@ -130,6 +130,10 @@ pub fn emit_class_from_ast(
             is_value_type,
         )?,
     };
+    // Set centrally, like `bases`: every path lands here — the stored
+    // declaration-pass copy and each per-language normalizer alike — so no
+    // language has to remember to carry it.
+    nc.declared_kind = modifiers.kind;
     // Link classes for `NextInOrder` augmentations come first: this class's
     // parent IS the last of them, and a class cannot wire a prototype chain
     // through a parent that has not been defined yet. They are emitted here,

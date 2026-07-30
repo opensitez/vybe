@@ -3,8 +3,8 @@
 //! the imports it registers land on `chunks[0]` (module-level WASM
 //! convention). These tests drive them through a one-element slice.
 
-use vybe_runtime::Chunk;
 use vybe_compiler::primitives::loops;
+use vybe_runtime::Chunk;
 
 fn one_chunk(local_count: u16) -> Vec<Chunk> {
     let mut c = Chunk::new("test");

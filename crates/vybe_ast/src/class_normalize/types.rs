@@ -12,7 +12,7 @@
 //!
 //! See `classnormalization.md` for the full shape rationale.
 
-use crate::{Argument, Expression, Modifiers, Param, Span, Statement};
+use crate::{Argument, ClassKind, Expression, Modifiers, Param, Span, Statement};
 
 /// The protocol-slot vocabulary lives in the AST, because the WALKER is what
 /// knows a method's role — Python from a reserved name, Dart from `operator`
@@ -75,6 +75,19 @@ pub struct NormalClass {
     /// for `instanceof` / `isinstance` / `is` / `kind_of?` identity
     /// checks; method dispatch never walks this list.
     pub interfaces: Vec<String>,
+
+    /// What this declaration actually declares: `class` / `interface` /
+    /// `trait` / `mixin` / `module` / `struct`. All of them arrive as one
+    /// `StmtKind::ClassDecl`, so without this the compiler cannot tell them
+    /// apart — which is why languages kept walker-thread-local side tables
+    /// (`trait_names`, `DART_MIXIN_NAMES`) to recover it.
+    ///
+    /// Filled centrally in `emit_class_from_ast` from `ClassModifiers::kind`,
+    /// so per-language normalizers don't populate it. The compiler stamps it
+    /// on the class object, which is what lets `interface_exists` /
+    /// `trait_exists` be answered at runtime — including for a type an
+    /// autoloader defined after compilation.
+    pub declared_kind: ClassKind,
 
     pub is_abstract: bool,
     pub is_sealed: bool,
@@ -442,6 +455,7 @@ impl Default for NormalClass {
             parent: None,
             bases: Vec::new(),
             interfaces: Vec::new(),
+            declared_kind: ClassKind::default(),
             is_abstract: false,
             is_sealed: false,
             is_partial: false,

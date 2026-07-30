@@ -4104,7 +4104,10 @@ impl Compiler {
                 self.emit_u16(Op::STRUCT_SET, name_key);
                 {
                     let line = self.line;
-                    crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
+                    crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(
+                        self.chunk(),
+                        line,
+                    );
                 }
                 let key = self.str_const(mname);
                 self.emit_u16(Op::STRUCT_SET, key);
@@ -4383,7 +4386,10 @@ impl Compiler {
                     self.emit_const(Value::String(Arc::from(method.source_name.as_str())));
                     let name_key = self.str_const("name");
                     self.emit_u16(Op::STRUCT_SET, name_key);
-                    crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
+                    crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(
+                        self.chunk(),
+                        line,
+                    );
                     let storage_key = self.str_const(&bound_name);
                     self.emit_u16(Op::STRUCT_SET, storage_key);
                     self.emit(Op::DROP);
@@ -4470,11 +4476,79 @@ impl Compiler {
             );
         }
 
+        // What the source actually declared — `interface` / `trait` / `mixin` /
+        // `module` all arrive as one `ClassDecl`, so this is the only thing that
+        // tells them apart. A value type still reports `struct` when its
+        // language did not say otherwise.
+        let declared_kind = match class.declared_kind {
+            vybe_ast::ClassKind::Class if class.is_value_type => {
+                crate::primitives::reflection::ReflectKind::Struct
+            }
+            kind => crate::primitives::reflection::ReflectKind::from_class_kind(kind),
+        };
+
+        // The declared-kind annotation is stamped unconditionally: it is what
+        // `interface_exists` / `trait_exists` / `kind_of?` read, and every
+        // language with those needs it. Deliberately NOT inside the
+        // `class_introspection_metadata` opt-in below — that gate is for
+        // Python's `__name__` / `__mro__`, and hiding the kind behind it is
+        // what forced languages into compile-time side tables instead.
+        crate::primitives::object::stamp_local_string_field(
+            self.chunk(),
+            ctor_local,
+            crate::primitives::reflection::FIELD_KIND,
+            declared_kind.as_str(),
+            line,
+        );
+
+        // The class's own member list, for languages whose reflection surface
+        // reads it at runtime rather than deriving it at compile time.
+        if self.profile.class_member_metadata {
+            let fields: Vec<(String, Option<String>, i64)> = class
+                .instance_fields
+                .iter()
+                .chain(class.static_fields.iter())
+                .map(|f| (f.name.clone(), f.type_hint.clone(), 0))
+                .collect();
+            let methods: Vec<(String, usize, Option<String>, Vec<String>, i64)> = class
+                .instance_methods
+                .iter()
+                .chain(class.static_methods.iter())
+                .map(|m| {
+                    (
+                        m.source_name.clone(),
+                        m.params.len(),
+                        m.return_type.clone(),
+                        m.params
+                            .iter()
+                            .map(|p| p.type_hint.clone().unwrap_or_default())
+                            .collect(),
+                        0,
+                    )
+                })
+                .collect();
+            crate::primitives::classes::emit_stamp_class_members(
+                &mut self.chunks,
+                self.current,
+                ctor_local,
+                name,
+                &fields,
+                &methods,
+                line,
+            );
+        }
+
         // Class-introspection metadata on the class object: `__name__` (own
         // name) and `__mro__` (self → bases → `object`). Universal — every
         // class gets it, keyed on class construction, no language check.
         if self.profile.class_introspection_metadata {
-            crate::primitives::classes::emit_stamp_class_name(self.chunk(), ctor_local, name, line);
+            crate::primitives::classes::emit_stamp_class_name(
+                self.chunk(),
+                ctor_local,
+                name,
+                declared_kind,
+                line,
+            );
             // Under multiple inheritance, `__mro__` follows the full C3
             // linearization and `__bases__` lists every declared base; single
             // inheritance keeps the one-parent chain unchanged.
@@ -4819,19 +4893,122 @@ pub fn emit_instanceof(chunks: &mut [Chunk], current: usize, line: u32) {
 
 // ── Method binding ──────────────────────────────────────────────────────
 
-/// Stamp `__name__` (the class's own name) on the class/constructor object so
-/// `Cls.__name__` and `type(obj).__name__` resolve. Stack: unchanged.
-pub fn emit_stamp_class_name(chunk: &mut Chunk, ctor_slot: u16, class_name: &str, line: u32) {
+/// Stamp `__name__` (the class's own name) and the declared kind on the
+/// class/constructor object so `Cls.__name__` and `type(obj).__name__` resolve,
+/// and so `interface_exists` / `trait_exists` can be answered at runtime from
+/// the annotation rather than a compile-time per-language table.
+///
+/// `kind` comes from `ClassModifiers::kind` — `class` / `interface` / `trait` /
+/// `mixin` / `module` / `struct` all reach here as one `ClassDecl`.
+/// Stack: unchanged.
+pub fn emit_stamp_class_name(
+    chunk: &mut Chunk,
+    ctor_slot: u16,
+    class_name: &str,
+    kind: crate::primitives::reflection::ReflectKind,
+    line: u32,
+) {
     crate::primitives::object::stamp_local_string_field(
         chunk, ctor_slot, "__name__", class_name, line,
     );
-    stamp_reflection_type_fields(
-        chunk,
-        ctor_slot,
-        class_name,
-        crate::primitives::reflection::ReflectKind::Class,
-        line,
-    );
+    stamp_reflection_type_fields(chunk, ctor_slot, class_name, kind, line);
+}
+
+/// Stamp `__fields` and `__methods` on the class object: this class's own
+/// members as reflection member tokens.
+///
+/// Each token is the same 8-element shape `reflection::member_token_expr`
+/// builds — `[kind, owner, name, param_count, type_name, return_type,
+/// param_types, modifiers]` — so a consumer can read it with
+/// `reflection::member_token` without knowing which language produced it.
+///
+/// This is the runtime source that did not previously exist. Languages had to
+/// derive their member lists at compile time (Pascal's `PascalRttiMetadata`
+/// HashMap, Dart's `reflection_adapter`), which cannot answer for a type the
+/// walk never saw — an autoloaded class, an `eval`'d one, or one from another
+/// compilation unit. Stack: unchanged.
+pub fn emit_stamp_class_members(
+    chunks: &mut [Chunk],
+    current: usize,
+    ctor_slot: u16,
+    class_name: &str,
+    fields: &[(String, Option<String>, i64)],
+    methods: &[(String, usize, Option<String>, Vec<String>, i64)],
+    line: u32,
+) {
+    use crate::primitives::reflection;
+
+    // One member token: an 8-element array, all elements compile-time known.
+    let push_token = |chunks: &mut [Chunk],
+                          kind: &str,
+                          name: &str,
+                          param_count: usize,
+                          type_name: &Option<String>,
+                          return_type: &Option<String>,
+                          param_types: &[String],
+                          modifiers: i64| {
+        chunks[current].emit_string_const(kind, line);
+        chunks[current].emit_string_const(class_name, line);
+        chunks[current].emit_string_const(name, line);
+        chunks[current].emit_i32_const(param_count as i32, line);
+        match type_name {
+            Some(t) => chunks[current].emit_string_const(t, line),
+            None => chunks[current].emit_op(Op::NULL, line),
+        }
+        match return_type {
+            Some(t) => chunks[current].emit_string_const(t, line),
+            None => chunks[current].emit_op(Op::NULL, line),
+        }
+        for param_type in param_types {
+            chunks[current].emit_string_const(param_type, line);
+        }
+        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, param_types.len() as u16, line);
+        chunks[current].emit_i32_const(modifiers as i32, line);
+        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 8, line);
+    };
+
+    for (name, type_name, modifiers) in fields {
+        push_token(
+            chunks,
+            reflection::MEMBER_KIND_FIELD,
+            name,
+            0,
+            type_name,
+            &None,
+            &[],
+            *modifiers,
+        );
+    }
+    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, fields.len() as u16, line);
+    let fields_key = chunks[current].add_constant(Value::String(Arc::from(reflection::FIELD_FIELDS)));
+    let fields_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, fields_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, fields_slot, line);
+    chunks[current].emit_op_u16(Op::STRUCT_SET, fields_key, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    for (name, param_count, return_type, param_types, modifiers) in methods {
+        push_token(
+            chunks,
+            reflection::MEMBER_KIND_METHOD,
+            name,
+            *param_count,
+            &None,
+            return_type,
+            param_types,
+            *modifiers,
+        );
+    }
+    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, methods.len() as u16, line);
+    let methods_key =
+        chunks[current].add_constant(Value::String(Arc::from(reflection::FIELD_METHODS)));
+    let methods_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, methods_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, methods_slot, line);
+    chunks[current].emit_op_u16(Op::STRUCT_SET, methods_key, line);
+    chunks[current].emit_op(Op::DROP, line);
 }
 
 /// Stamp `__mro__` on the class object: an array of the ancestor class objects

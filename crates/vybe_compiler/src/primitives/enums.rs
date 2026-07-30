@@ -27,6 +27,12 @@ impl Compiler {
                 .and_then(|hint| self.resolve_known_enum_type(hint))
                 .or_else(|| self.resolve_known_enum_type(name)),
             ExprKind::Member { object, .. } => {
+                if let Some(path) = Self::member_access_path(object) {
+                    if let Some(enum_type) = self.resolve_known_enum_type(strip_generic_suffix(&path))
+                    {
+                        return Some(enum_type);
+                    }
+                }
                 if let Some(hint) = self.infer_expr_type_hint(expr) {
                     if let Some(enum_type) = self.resolve_known_enum_type(&hint) {
                         return Some(enum_type);
@@ -59,6 +65,19 @@ impl Compiler {
             .keys()
             .find(|known| known.eq_ignore_ascii_case(name) || known.eq_ignore_ascii_case(&canon))
             .cloned()
+            .or_else(|| {
+                let suffix = format!(".{canon}");
+                let mut matches = self
+                    .enum_value_names
+                    .keys()
+                    .filter(|known| known.ends_with(&suffix));
+                let resolved = matches.next().cloned();
+                if matches.next().is_none() {
+                    resolved
+                } else {
+                    None
+                }
+            })
     }
 
     pub(super) fn enum_member_ordinal(&self, enum_type: &str, member_name: &str) -> Option<i64> {
@@ -79,6 +98,25 @@ impl Compiler {
             .collect();
         entries.sort_by_key(|(value, _)| *value);
         Some(entries)
+    }
+
+    pub(super) fn qualified_enum_member_expr(&self, expr: &Expression) -> Option<(String, String)> {
+        let ExprKind::Member { object, field, .. } = &expr.kind else {
+            return None;
+        };
+        let path = Self::member_access_path(object)?;
+        let base_path = strip_generic_suffix(&path);
+        if let Some(enum_type) = self.resolve_known_enum_type(base_path) {
+            return self
+                .enum_member_ordinal(&enum_type, field)
+                .is_some()
+                .then(|| (enum_type, field.clone()));
+        }
+        let member_key = self.canon(field);
+        let owner = self.enum_members.get(&member_key)?;
+        let canon_path = self.canon(base_path);
+        (owner == &canon_path || owner.eq_ignore_ascii_case(base_path))
+            .then(|| (owner.clone(), field.clone()))
     }
 
     pub(super) fn compile_string_array(&mut self, values: &[String]) -> Result<(), String> {
@@ -297,6 +335,10 @@ impl Compiler {
     }
 
     pub(super) fn emit_dotnet_console_arg(&mut self, expr: &Expression) -> Result<(), String> {
+        if let Some((_, member_name)) = self.qualified_enum_member_expr(expr) {
+            self.emit_const(Value::String(Arc::from(member_name.as_str())));
+            return Ok(());
+        }
         if let Some(enum_type) = self.console_enum_type_from_expr(expr) {
             self.emit_enum_value_to_string(&enum_type, expr)?;
             return Ok(());
@@ -521,6 +563,10 @@ impl Compiler {
                 Ok(true)
             }
             "ToString" if args.is_empty() => {
+                if let Some((_, member_name)) = self.qualified_enum_member_expr(object) {
+                    self.emit_const(Value::String(Arc::from(member_name.as_str())));
+                    return Ok(true);
+                }
                 self.emit_enum_value_to_string(&enum_type, object)?;
                 Ok(true)
             }

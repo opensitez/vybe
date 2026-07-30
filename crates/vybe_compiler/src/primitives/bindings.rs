@@ -254,7 +254,7 @@ impl Compiler {
                 Some(q) => q,
                 None => match self.source_type_aliases.get(&cname) {
                     Some(target) => self.canon(target),
-                    None => cname,
+                    None => self.resolve_source_namespace_value(&cname).unwrap_or(cname),
                 },
             }
         } else {
@@ -325,7 +325,11 @@ impl Compiler {
         }
         self.emit_u16(Op::GLOBAL_GET, idx);
         if self.binding_uses_pointer_cell(name) {
-            crate::primitives::references::emit_cell_load(&mut self.chunks, self.current, self.line);
+            crate::primitives::references::emit_cell_load(
+                &mut self.chunks,
+                self.current,
+                self.line,
+            );
         }
     }
 

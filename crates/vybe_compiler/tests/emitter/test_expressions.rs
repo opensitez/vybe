@@ -1,7 +1,7 @@
-use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::expressions;
 use vybe_compiler::primitives::ops;
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 #[test]
 fn ternary_emits_jumps() {

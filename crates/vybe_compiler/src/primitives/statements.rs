@@ -1403,7 +1403,10 @@ impl Compiler {
                                     self.chunks[self.current].emit_op_u16(Op::REF_TEST, idx, line);
                                     {
                                         let line = self.line;
-                                        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                                        crate::primitives::ops::emit_dyn_to_bool(
+                                            self.chunk(),
+                                            line,
+                                        );
                                     };
                                     self.chunk().emit_if(line);
                                     inst!(self, core_wasm::bool_const, true);
@@ -1844,7 +1847,7 @@ impl Compiler {
                 let module_name = self.canon(name);
                 self.defined_classes.insert(module_name.clone());
                 self.register_module_static_container(&module_name, members);
-                let mut member_names: Vec<String> = Vec::new();
+                let mut member_names: Vec<(String, String)> = Vec::new();
 
                 // First pass: compile all members as globals + collect names
                 for m in members {
@@ -1852,17 +1855,26 @@ impl Compiler {
                         ClassMember::Method(stmt) => {
                             if let StmtKind::FunctionDecl { name: mname, .. } = &stmt.kind {
                                 let mn = self.canon(mname);
+                                let global_name = if module_name.contains('.') {
+                                    format!("{module_name}.{mn}")
+                                } else {
+                                    mn.clone()
+                                };
+                                let mut module_stmt = stmt.clone();
+                                if let StmtKind::FunctionDecl { name, .. } = &mut module_stmt.kind {
+                                    *name = global_name.clone();
+                                }
                                 let saved_class = self.current_class.clone();
                                 let saved_implicit_self = self.current_class_implicit_self;
                                 let saved_member_static = self.current_member_is_static;
                                 self.current_class = Some(module_name.clone());
                                 self.current_class_implicit_self = false;
                                 self.current_member_is_static = true;
-                                self.compile_stmt(stmt)?;
+                                self.compile_stmt(&module_stmt)?;
                                 self.current_class = saved_class;
                                 self.current_class_implicit_self = saved_implicit_self;
                                 self.current_member_is_static = saved_member_static;
-                                member_names.push(mn);
+                                member_names.push((mn, global_name));
                             }
                         }
                         ClassMember::Field {
@@ -1877,7 +1889,7 @@ impl Compiler {
                             let idx = self.str_const(&cname);
                             self.emit_u16(Op::GLOBAL_SET, idx);
                             self.defined_globals.insert(cname.clone());
-                            member_names.push(cname);
+                            member_names.push((cname.clone(), cname));
                         }
                         ClassMember::Const {
                             name: cname, value, ..
@@ -1896,7 +1908,7 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, val_slot);
                             self.emit_u16(Op::GLOBAL_SET, idx);
                             self.defined_globals.insert(cn.clone());
-                            member_names.push(cn.clone());
+                            member_names.push((cn.clone(), cn.clone()));
 
                             // Stamp on class object for static access.
                             // `name` here is the enclosing class name; on
@@ -1927,7 +1939,7 @@ impl Compiler {
                                 }
                                 _ => None,
                             } {
-                                member_names.push(cn);
+                                member_names.push((cn.clone(), cn));
                             }
                             self.compile_stmt(stmt)?;
                         }
@@ -1954,7 +1966,8 @@ impl Compiler {
                             self.current_class = saved_class;
                             self.current_class_implicit_self = saved_implicit_self;
                             self.current_member_is_static = saved_member_static;
-                            member_names.push(self.canon(&self.profile.constructor_name));
+                            let ctor = self.canon(&self.profile.constructor_name);
+                            member_names.push((ctor.clone(), ctor));
                         }
                         _ => {}
                     }
@@ -1962,7 +1975,7 @@ impl Compiler {
 
                 if member_names
                     .iter()
-                    .any(|mn| mn.eq_ignore_ascii_case("__static_init__"))
+                    .any(|(mn, _)| mn.eq_ignore_ascii_case("__static_init__"))
                 {
                     let init_idx = self.str_const("__static_init__");
                     self.emit_u16(Op::GLOBAL_GET, init_idx);
@@ -1972,9 +1985,9 @@ impl Compiler {
 
                 // Second pass: build namespace struct { member1: global, member2: global, ... }
                 self.emit_u16(Op::STRUCT_NEW, 0);
-                for mn in &member_names {
+                for (mn, global_name) in &member_names {
                     inst!(self, core_wasm::dup);
-                    let gidx = self.str_const(mn);
+                    let gidx = self.str_const(global_name);
                     self.emit_u16(Op::GLOBAL_GET, gidx);
                     let key = self.str_const(mn);
                     self.emit_u16(Op::STRUCT_SET, key);
@@ -4548,12 +4561,18 @@ impl Compiler {
                 }
                 let arr_slot = self.define_local("__destruct_arr");
                 self.emit_u16(Op::LOCAL_SET, arr_slot);
+                let n = elems.len();
+                let rest_at = elems
+                    .iter()
+                    .position(|e| matches!(e, ArrayPatternElem::Rest(_)));
                 for (i, elem) in elems.iter().enumerate() {
                     match elem {
                         ArrayPatternElem::Pattern(pat, default) => {
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
-                            self.emit_const(Value::F64(i as f64));
-                            {
+                            if rest_at.is_some_and(|r| i > r) {
+                                self.emit_array_pattern_read_from_end(n - i);
+                            } else {
+                                self.emit_const(Value::F64(i as f64));
                                 let l = self.line;
                                 common::collections::emit_get(&mut self.chunks, self.current, l);
                             }
@@ -4574,11 +4593,7 @@ impl Compiler {
                         ArrayPatternElem::Rest(name) => {
                             self.emit_u16(Op::LOCAL_GET, arr_slot);
                             self.emit_const(Value::F64(i as f64));
-                            self.emit_u16(Op::LOCAL_GET, arr_slot);
-                            {
-                                let l = self.line;
-                                common::collections::emit_len(&mut self.chunks, self.current, l);
-                            }
+                            self.emit_array_pattern_rest_end(arr_slot, n - 1 - i);
                             let line = self.line;
                             common::collections::emit_slice(&mut self.chunks, self.current, line);
                             let slot = self.define_local(name);
@@ -4601,35 +4616,34 @@ impl Compiler {
         arr_slot: u16,
         elems: &[ArrayPatternElem],
     ) -> Result<(), String> {
+        let n = elems.len();
+        let rest_at = elems
+            .iter()
+            .position(|e| matches!(e, ArrayPatternElem::Rest(_)));
         for (i, elem) in elems.iter().enumerate() {
+            let read_elem = |c: &mut Self| {
+                c.emit_u16(Op::LOCAL_GET, arr_slot);
+                if rest_at.is_some_and(|r| i > r) {
+                    c.emit_array_pattern_read_from_end(n - i);
+                } else {
+                    c.emit_const(Value::F64(i as f64));
+                    let l = c.line;
+                    common::collections::emit_get(&mut c.chunks, c.current, l);
+                }
+            };
             match elem {
                 ArrayPatternElem::Pattern(BindingPattern::Ident(name), _) => {
-                    self.emit_u16(Op::LOCAL_GET, arr_slot);
-                    self.emit_const(Value::F64(i as f64));
-                    {
-                        let l = self.line;
-                        common::collections::emit_get(&mut self.chunks, self.current, l);
-                    }
+                    read_elem(self);
                     self.emit_var_set(name);
                 }
                 ArrayPatternElem::Pattern(BindingPattern::Array(items), _) => {
-                    self.emit_u16(Op::LOCAL_GET, arr_slot);
-                    self.emit_const(Value::F64(i as f64));
-                    {
-                        let l = self.line;
-                        common::collections::emit_get(&mut self.chunks, self.current, l);
-                    }
+                    read_elem(self);
                     let nested_slot = self.define_local("__destruct_nested_arr");
                     self.emit_u16(Op::LOCAL_SET, nested_slot);
                     self.compile_array_pattern_assignment_from_slot(nested_slot, items)?;
                 }
                 ArrayPatternElem::Pattern(BindingPattern::Object(_), _) => {
-                    self.emit_u16(Op::LOCAL_GET, arr_slot);
-                    self.emit_const(Value::F64(i as f64));
-                    {
-                        let l = self.line;
-                        common::collections::emit_get(&mut self.chunks, self.current, l);
-                    }
+                    read_elem(self);
                     if let ArrayPatternElem::Pattern(pattern, _) = elem {
                         self.compile_destructure_bind(pattern)?;
                     }
@@ -4637,11 +4651,7 @@ impl Compiler {
                 ArrayPatternElem::Rest(name) => {
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
                     self.emit_const(Value::F64(i as f64));
-                    self.emit_u16(Op::LOCAL_GET, arr_slot);
-                    {
-                        let l = self.line;
-                        common::collections::emit_len(&mut self.chunks, self.current, l);
-                    }
+                    self.emit_array_pattern_rest_end(arr_slot, n - 1 - i);
                     let line = self.line;
                     common::collections::emit_slice(&mut self.chunks, self.current, line);
                     self.emit_var_set(name);
@@ -4650,6 +4660,37 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+
+    /// Read an array-pattern element that sits AFTER the rest element.
+    ///
+    /// The rest absorbs a variable-length middle, so everything past it is
+    /// positioned relative to the END: the element `from_end` places from the
+    /// last one is `arr.at(-from_end)`. Reading it as `arr[i]` — its position
+    /// counted from the front — is what made `a, *b, c = [1,2,3,4,5]` bind
+    /// `c` to `3`. `at` takes the negative index directly (ECMA-262
+    /// §23.1.3.1), so no length arithmetic is needed.
+    /// Stack: `[arr] -> [element]`.
+    fn emit_array_pattern_read_from_end(&mut self, from_end: usize) {
+        self.emit_const(Value::F64(-(from_end as f64)));
+        let idx = self.import("ecma:array", "at");
+        let line = self.line;
+        self.chunk().emit_call(idx, 2, line);
+    }
+
+    /// Push the END index for a rest element that has `trailing` pattern
+    /// elements after it. With none it runs to the array's length (the whole
+    /// tail); otherwise it must stop `trailing` short, which `slice` expresses
+    /// as the negative index `-trailing` (ECMA-262 §23.1.3.28).
+    /// Stack: `[…] -> […, end]`.
+    fn emit_array_pattern_rest_end(&mut self, arr_slot: u16, trailing: usize) {
+        if trailing == 0 {
+            self.emit_u16(Op::LOCAL_GET, arr_slot);
+            let l = self.line;
+            common::collections::emit_len(&mut self.chunks, self.current, l);
+        } else {
+            self.emit_const(Value::F64(-(trailing as f64)));
+        }
     }
 
     pub(super) fn compile_assign_target(&mut self, target: &Expression) -> Result<(), String> {
@@ -4851,7 +4892,9 @@ impl Compiler {
                                     self.emit(Op::DROP);
                                     return Ok(());
                                 }
-                                vybe_runtime::component_model::InstancePropertyTarget::Common { emit } => {
+                                vybe_runtime::component_model::InstancePropertyTarget::Common {
+                                    emit,
+                                } => {
                                     let value_tmp = self.define_local("__dotnet_prop_value");
                                     self.emit_u16(Op::LOCAL_SET, value_tmp);
                                     self.compile_expr(object)?;

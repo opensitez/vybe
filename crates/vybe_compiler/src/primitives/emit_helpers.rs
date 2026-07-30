@@ -112,15 +112,19 @@ impl Compiler {
     // (`dotnet_register.rs`) but operates on Compiler internals. These
     // helpers expose just the bits that registration needs without
     // making the underlying fields `pub`.
+    #[allow(dead_code)]
     pub(crate) fn chunks_mut(&mut self) -> &mut Vec<Chunk> {
         &mut self.chunks
     }
+    #[allow(dead_code)]
     pub(crate) fn current_line(&self) -> u32 {
         self.line
     }
+    #[allow(dead_code)]
     pub(crate) fn note_defined_global(&mut self, name: &str) {
         self.defined_globals.insert(name.to_string());
     }
+    #[allow(dead_code)]
     pub(crate) fn note_defined_class(&mut self, name: &str) {
         self.defined_classes.insert(name.to_string());
     }
@@ -172,6 +176,18 @@ impl Compiler {
         } else {
             name.to_lowercase()
         }
+    }
+
+    /// Canonical global name for a *type* reference: [`Self::canon`] plus
+    /// namespace-separator normalization.
+    ///
+    /// `\` (PHP) and `::` (C++ / Pascal / Ruby) both mean "namespace boundary";
+    /// globals spell it `.`. Neither character can occur inside an identifier in
+    /// any supported language, so normalizing both is separator-agnostic rather
+    /// than a language check — which is what the scattered
+    /// `canon(name).replace('\\', ".")` calls amount to today.
+    pub(crate) fn canon_type_global(&self, name: &str) -> String {
+        self.canon(name).replace("::", ".").replace('\\', ".")
     }
 
     pub(crate) fn php_variable_global_key(&self, name: &str, canon: &str) -> String {

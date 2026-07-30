@@ -389,6 +389,23 @@ pub struct LanguageProfile {
     /// resolve. Off by default; languages with this reflection surface opt in.
     pub class_introspection_metadata: bool,
 
+    /// Stamp `__fields` / `__methods` on each class object: the class's own
+    /// members as reflection member tokens, the same 8-element shape
+    /// `reflection::member_token_expr` produces.
+    ///
+    /// Without this there is NO runtime source for a class's member list —
+    /// `stamp_reflection_type_fields` records only `__type`, `__typename` and
+    /// `__kind`, and `__fields`/`__methods` exist solely inside an on-demand
+    /// `ReflectionType` descriptor whose lists the caller supplies. That is why
+    /// Pascal derives them into a compile-time HashMap and Dart's
+    /// `reflection_adapter` builds its own: each language recomputes what
+    /// nothing publishes.
+    ///
+    /// Off by default — it is real bytecode per class, so a language pays only
+    /// when its reflection surface reads it.
+    pub class_member_metadata: bool,
+
+
     /// Honour ALL declared bases (`NormalClass.bases`), computing a C3
     /// linearization and attaching every base's methods (multiple
     /// inheritance). Off by default: single-inheritance languages ignore
@@ -625,21 +642,16 @@ pub enum StringIndexing {
 /// Namespace resolution configuration.
 #[derive(Debug, Clone, Default)]
 pub struct NamespaceConfig {
-    /// Use .NET BCL resolution from crate::platforms::dotnet::emitter.
-    /// When true, the compiler uses dotnet::namespace_roots(), dotnet::default_interface_imports(),
-    /// dotnet::resolve_dotted_name(), etc. — the full .NET resolution pipeline.
+    /// Enable .NET runtime surface semantics that are not namespace lookup
+    /// decisions (collection dispatch, primitive aliases, WinForms inference).
+    /// Namespace lookup itself is driven by `uses_namespace_resolver()` and
+    /// the tree/default import data below.
     pub use_dotnet: bool,
-    /// When true, uses the shared .NET dotted-name resolver
-    /// (`resolve_dotted_name`) for `Foo.Bar(...)` call sites. VB
-    /// needs this because `Thread.Sleep` / `String.Format` etc. must
-    /// route to host imports. C# generally doesn't — the default
-    /// member-call path handles static dispatch on user classes and
-    /// the dotnet-class ctor path handles `new Form()`-style uses.
-    /// Splitting this flag from `use_dotnet` lets C# install Form /
-    /// Button / Point / Size as callable globals **without** pulling
-    /// the eager import-prefix fallback that mis-routes user static
-    /// calls (`MathUtils.Fact(5)` → `system.mathutils.fact`).
-    pub use_dotnet_resolver: bool,
+    /// Treat simple source imports (`Imports Demo.Core`, `using Demo.Core`)
+    /// as namespace imports for user declarations too. This is generic source
+    /// namespace behavior, separate from platform tree mounts like
+    /// `System -> dotnet.system`.
+    pub source_imports_are_namespaces: bool,
     /// Additional imports beyond the defaults (e.g. "microsoft.visualbasic" for VB).
     pub extra_imports: Vec<String>,
     /// Known namespace roots (used when use_dotnet is false).
@@ -736,6 +748,20 @@ pub enum BuiltinEmit {
 }
 
 impl LanguageProfile {
+    /// Whether this profile uses the shared namespace resolver.
+    ///
+    /// This is data-shaped, not platform-shaped: a language opts in through
+    /// common resolver imports, namespace-tree mounts/ambients, type scopes,
+    /// package roots, or source namespace roots. `dotnet` is only one such
+    /// mounted tree, same as `flutter`, `plib`, `php`, etc.
+    pub fn uses_namespace_resolver(&self) -> bool {
+        self.uses_common_resolver
+            || !self.namespaces.type_scopes.is_empty()
+            || !self.esm_defaults.is_empty()
+            || !self.namespaces.roots.is_empty()
+            || !self.namespaces.default_imports.is_empty()
+    }
+
     /// Look up a builtin by name (case-insensitive for case-insensitive languages).
     pub fn lookup_builtin(&self, name: &str) -> Option<&BuiltinDef> {
         if self.case_sensitive {
@@ -1206,6 +1232,10 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("class_introspection_metadata")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let class_member_metadata = compiler
+        .get("class_member_metadata")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let class_multiple_inheritance = compiler
         .get("class_multiple_inheritance")
         .and_then(|v| v.as_bool())
@@ -1380,18 +1410,10 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                 .get("use_dotnet")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
-            use_dotnet_resolver: ns
-                .get("use_dotnet_resolver")
+            source_imports_are_namespaces: ns
+                .get("source_imports_are_namespaces")
                 .and_then(|v| v.as_bool())
-                // Default: the resolver is on whenever `use_dotnet` is —
-                // that's how VB works today. Languages that want the
-                // class registration but NOT the eager dotted-name
-                // rewrite (C#) can override to `false`.
-                .unwrap_or_else(|| {
-                    ns.get("use_dotnet")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false)
-                }),
+                .unwrap_or(false),
             extra_imports: ns
                 .get("extra_imports")
                 .and_then(|v| v.as_array())
@@ -1701,6 +1723,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         for_in_object_yields_keys,
         dict_literals_as_map,
         class_introspection_metadata,
+        class_member_metadata,
         class_multiple_inheritance,
         supports_autoload,
         buffered_iterator_methods,

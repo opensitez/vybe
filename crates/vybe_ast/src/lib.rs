@@ -15,6 +15,7 @@
 //!   threading  → async/await
 //!   dotnet     → namespace resolution (profile-driven)
 
+pub mod builtin_slots;
 pub mod channels;
 pub mod class_normalize;
 
@@ -45,6 +46,7 @@ pub enum Lang {
     Go,
     Lua,
     Java,
+    Kotlin,
     Unknown,
 }
 
@@ -919,6 +921,13 @@ pub enum PlaceExpr {
     Deref(Box<Expression>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZipMode {
+    First,
+    Shortest,
+    Longest,
+}
+
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Lit(Literal),
@@ -1001,6 +1010,15 @@ pub enum ExprKind {
     /// Python `{1, 2, 3}` — unordered unique collection
     Set(Vec<Expression>),
     Object(Vec<ObjectProperty>),
+    /// Cross-language zip/transpose primitive. Languages choose the length
+    /// policy in their walker: Python `zip` uses `Shortest`, PHP
+    /// `array_map(null, ...)` uses `Longest`, Ruby-style receiver zip uses
+    /// `First`. Lowered by the shared collections primitive.
+    Zip {
+        iterables: Vec<Expression>,
+        mode: ZipMode,
+        strict: bool,
+    },
 
     // ── String interpolation ─────────────────────────────────────────────
     Interpolation(Vec<InterpolPart>),
@@ -1625,7 +1643,12 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
                     .as_ref()
                     .is_some_and(expr_contains_yield_outside_nested_scopes)
         }),
-        ExprKind::Tuple(exprs) | ExprKind::Set(exprs) | ExprKind::Sequence(exprs) => {
+        ExprKind::Tuple(exprs)
+        | ExprKind::Set(exprs)
+        | ExprKind::Sequence(exprs)
+        | ExprKind::Zip {
+            iterables: exprs, ..
+        } => {
             exprs.iter().any(expr_contains_yield_outside_nested_scopes)
         }
         ExprKind::NamedTuple { fields, .. } => fields
@@ -2436,7 +2459,12 @@ fn expr_has_yield(expr: &Expression) -> bool {
         ExprKind::Array(items) => items.iter().any(|item| {
             item.key.as_ref().map_or(false, expr_has_yield) || expr_has_yield(&item.value)
         }),
-        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items)
+        | ExprKind::Zip {
+            iterables: items, ..
+        } => {
             items.iter().any(expr_has_yield)
         }
         ExprKind::NamedTuple { fields, .. } => {
@@ -2809,7 +2837,12 @@ fn collect_rest_in_expr(expr: &Expression, out: &mut Vec<u8>) {
                 collect_rest_in_expr(&item.value, out);
             }
         }
-        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items)
+        | ExprKind::Zip {
+            iterables: items, ..
+        } => {
             for item in items {
                 collect_rest_in_expr(item, out);
             }

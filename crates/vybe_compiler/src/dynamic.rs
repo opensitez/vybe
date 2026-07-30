@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::bundle::{Bundle, CompiledBundle, EntryPoint, SourceFile};
-use crate::primitives::HostImportMetadata;
 use crate::languages::{self, Language};
+use crate::primitives::HostImportMetadata;
 use vybe_runtime::capabilities::{Capabilities, Capability};
 use vybe_runtime::chunk::Chunk;
 use vybe_runtime::chunk::Import;
@@ -882,7 +882,9 @@ impl JsDynamicRuntime {
                 {
                     for d in declarations {
                         let mut names = std::collections::HashSet::new();
-                        crate::primitives::collect_binding_pattern_names_pub(&d.pattern, &mut names);
+                        crate::primitives::collect_binding_pattern_names_pub(
+                            &d.pattern, &mut names,
+                        );
                         var_names.extend(names);
                     }
                     if let Some(off) =

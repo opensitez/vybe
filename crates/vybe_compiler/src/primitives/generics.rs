@@ -7,8 +7,8 @@
 
 use std::collections::HashMap;
 use vybe_ast::{
-    GenericArg, GenericBound, GenericConstraint, GenericParam, GenericRuntimeMode,
-    GenericVariance, TypePath, TypeRef, TypeRefKind,
+    GenericArg, GenericBound, GenericConstraint, GenericParam, GenericRuntimeMode, GenericVariance,
+    TypePath, TypeRef, TypeRefKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -505,7 +505,10 @@ fn split_generic_param_constraints(text: &str) -> (&str, Option<&str>) {
     let trimmed = text.trim();
     let lower = trimmed.to_ascii_lowercase();
     if let Some(index) = lower.find(" extends ") {
-        return (&trimmed[..index], Some(&trimmed[index + " extends ".len()..]));
+        return (
+            &trimmed[..index],
+            Some(&trimmed[index + " extends ".len()..]),
+        );
     }
     if let Some(index) = lower.find(" super ") {
         return (&trimmed[..index], Some(&trimmed[index + " super ".len()..]));
@@ -517,10 +520,7 @@ fn split_generic_param_constraints(text: &str) -> (&str, Option<&str>) {
     if let Some(right) = right {
         return (left, Some(right));
     }
-    if let Some((index, _)) = trimmed
-        .char_indices()
-        .find(|(_, ch)| ch.is_whitespace())
-    {
+    if let Some((index, _)) = trimmed.char_indices().find(|(_, ch)| ch.is_whitespace()) {
         let left = trimmed[..index].trim();
         let right = trimmed[index..].trim();
         if !left.is_empty() && !right.is_empty() {
@@ -781,7 +781,7 @@ fn matching_bracket_end(text: &str, start: usize, open: char, close: char) -> Op
             match ch {
                 '<' | '(' | '[' | '{' if open != ch => depth += 1,
                 '>' | ')' | ']' | '}' if close != ch => {
-                depth = depth.checked_sub(1)?;
+                    depth = depth.checked_sub(1)?;
                 }
                 _ => {}
             }
