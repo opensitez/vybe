@@ -617,6 +617,15 @@ fn register_wasi_sockets(vm: &mut VM) {
             match TcpListener::bind(&bind_addr) {
                 Ok(listener) => {
                     let _ = listener.set_nonblocking(true);
+                    // The address the socket is ACTUALLY bound to, which is not
+                    // the one that was asked for when the port is zero: the wit
+                    // says "If the TCP/UDP port is zero, the socket will be
+                    // bound to a random free port" (tcp.wit, `start-bind`), and
+                    // `local-address` is specified as "the bound local address"
+                    // — POSIX `getsockname`. Recording the requested port made
+                    // `getsockname()` answer 0 after every ephemeral bind, so a
+                    // caller could never learn the port to connect to.
+                    let bound = listener.local_addr().ok();
                     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
                     get_state()
                         .lock()
@@ -634,7 +643,10 @@ fn register_wasi_sockets(vm: &mut VM) {
                     );
                     obj.properties.insert(
                         "__local_address".into(),
-                        make_ip_socket_address(&host, port, &family),
+                        match bound {
+                            Some(addr) => socket_addr_to_value(addr),
+                            None => make_ip_socket_address(&host, port, &family),
+                        },
                     );
                     Value::Bool(true)
                 }
@@ -941,6 +953,10 @@ fn register_wasi_sockets(vm: &mut VM) {
             let bind_addr = format!("{}:{}", host, port);
             match UdpSocket::bind(&bind_addr) {
                 Ok(udp) => {
+                    // Same ephemeral-port rule as TCP (udp.wit `start-bind`):
+                    // port zero binds to a random free port, and
+                    // `local-address` must report the one actually bound.
+                    let bound = udp.local_addr().ok();
                     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
                     get_state().lock().unwrap().udp_sockets.insert(id, udp);
                     let mut obj = socket.lock().unwrap();
@@ -954,7 +970,10 @@ fn register_wasi_sockets(vm: &mut VM) {
                     );
                     obj.properties.insert(
                         "__local_address".into(),
-                        make_ip_socket_address(&host, port, &family),
+                        match bound {
+                            Some(addr) => socket_addr_to_value(addr),
+                            None => make_ip_socket_address(&host, port, &family),
+                        },
                     );
                     Value::Bool(true)
                 }
