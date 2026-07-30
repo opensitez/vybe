@@ -76,6 +76,96 @@ __pyadd__       = { emit = "common:python.pyadd",            min_args = 2, max_a
 "str.maketrans" = { emit = "common:python.str_maketrans", min_args = 1, max_args = 3 }
 # `list(x)`/`sorted(x)` iterate a dict's KEYS, not its entry pairs.
 __py_iter_array__ = { emit = "common:python.iter_array",     min_args = 1, max_args = 1 }
+__py_gen_send     = { emit = "common:python.gen_send",       min_args = 2, max_args = 2 }
+__py_gen_throw    = { emit = "common:python.gen_throw",      min_args = 2, max_args = 2 }
+__py_gen_close    = { emit = "common:python.gen_close",      min_args = 1, max_args = 1 }
+__py_getitem      = { emit = "common:python.getitem",        min_args = 2, max_args = 2 }
+# `o.attr` read — distinct from `d[k]`: a miss consults the GetAttr role and
+# then raises AttributeError, where a subscript miss raises KeyError.
+__py_attr_read    = { emit = "common:python.attr_read",      min_args = 2, max_args = 2 }
+BaseException     = { emit = "common:python.exc.BaseException",     min_args = 0, max_args = 16 }
+Exception         = { emit = "common:python.exc.Exception",         min_args = 0, max_args = 16 }
+ArithmeticError   = { emit = "common:python.exc.ArithmeticError",   min_args = 0, max_args = 16 }
+AssertionError    = { emit = "common:python.exc.AssertionError",    min_args = 0, max_args = 16 }
+AttributeError    = { emit = "common:python.exc.AttributeError",    min_args = 0, max_args = 16 }
+ExceptionGroup    = { emit = "common:python.exc.ExceptionGroup",    min_args = 0, max_args = 16 }
+FileNotFoundError = { emit = "common:python.exc.FileNotFoundError", min_args = 0, max_args = 16 }
+GeneratorExit     = { emit = "common:python.exc.GeneratorExit",     min_args = 0, max_args = 16 }
+ImportError       = { emit = "common:python.exc.ImportError",       min_args = 0, max_args = 16 }
+IndexError        = { emit = "common:python.exc.IndexError",        min_args = 0, max_args = 16 }
+KeyboardInterrupt = { emit = "common:python.exc.KeyboardInterrupt", min_args = 0, max_args = 16 }
+KeyError          = { emit = "common:python.exc.KeyError",          min_args = 0, max_args = 16 }
+LookupError       = { emit = "common:python.exc.LookupError",       min_args = 0, max_args = 16 }
+NameError         = { emit = "common:python.exc.NameError",         min_args = 0, max_args = 16 }
+NotImplementedError = { emit = "common:python.exc.NotImplementedError", min_args = 0, max_args = 16 }
+OSError           = { emit = "common:python.exc.OSError",           min_args = 0, max_args = 16 }
+OverflowError     = { emit = "common:python.exc.OverflowError",     min_args = 0, max_args = 16 }
+RecursionError    = { emit = "common:python.exc.RecursionError",    min_args = 0, max_args = 16 }
+RuntimeError      = { emit = "common:python.exc.RuntimeError",      min_args = 0, max_args = 16 }
+StopIteration     = { emit = "common:python.exc.StopIteration",     min_args = 0, max_args = 16 }
+StopAsyncIteration = { emit = "common:python.exc.StopAsyncIteration", min_args = 0, max_args = 16 }
+SyntaxError       = { emit = "common:python.exc.SyntaxError",       min_args = 0, max_args = 16 }
+SystemExit        = { emit = "common:python.exc.SystemExit",        min_args = 0, max_args = 16 }
+TypeError         = { emit = "common:python.exc.TypeError",         min_args = 0, max_args = 16 }
+UnicodeError      = { emit = "common:python.exc.UnicodeError",      min_args = 0, max_args = 16 }
+ValueError        = { emit = "common:python.exc.ValueError",        min_args = 0, max_args = 16 }
+ZeroDivisionError = { emit = "common:python.exc.ZeroDivisionError", min_args = 0, max_args = 16 }
+__py_exc_BaseException     = { emit = "common:python.exc.BaseException",     min_args = 0, max_args = 16 }
+__py_exc_Exception         = { emit = "common:python.exc.Exception",         min_args = 0, max_args = 16 }
+__py_exc_ArithmeticError   = { emit = "common:python.exc.ArithmeticError",   min_args = 0, max_args = 16 }
+__py_exc_AssertionError    = { emit = "common:python.exc.AssertionError",    min_args = 0, max_args = 16 }
+__py_exc_AttributeError    = { emit = "common:python.exc.AttributeError",    min_args = 0, max_args = 16 }
+__py_exc_ExceptionGroup    = { emit = "common:python.exc.ExceptionGroup",    min_args = 0, max_args = 16 }
+__py_exc_FileNotFoundError = { emit = "common:python.exc.FileNotFoundError", min_args = 0, max_args = 16 }
+__py_exc_GeneratorExit     = { emit = "common:python.exc.GeneratorExit",     min_args = 0, max_args = 16 }
+__py_exc_ImportError       = { emit = "common:python.exc.ImportError",       min_args = 0, max_args = 16 }
+__py_exc_IndexError        = { emit = "common:python.exc.IndexError",        min_args = 0, max_args = 16 }
+__py_exc_KeyboardInterrupt = { emit = "common:python.exc.KeyboardInterrupt", min_args = 0, max_args = 16 }
+__py_exc_KeyError          = { emit = "common:python.exc.KeyError",          min_args = 0, max_args = 16 }
+__py_exc_LookupError       = { emit = "common:python.exc.LookupError",       min_args = 0, max_args = 16 }
+__py_exc_NameError         = { emit = "common:python.exc.NameError",         min_args = 0, max_args = 16 }
+__py_exc_NotImplementedError = { emit = "common:python.exc.NotImplementedError", min_args = 0, max_args = 16 }
+__py_exc_OSError           = { emit = "common:python.exc.OSError",           min_args = 0, max_args = 16 }
+__py_exc_OverflowError     = { emit = "common:python.exc.OverflowError",     min_args = 0, max_args = 16 }
+__py_exc_RecursionError    = { emit = "common:python.exc.RecursionError",    min_args = 0, max_args = 16 }
+__py_exc_RuntimeError      = { emit = "common:python.exc.RuntimeError",      min_args = 0, max_args = 16 }
+__py_exc_StopIteration     = { emit = "common:python.exc.StopIteration",     min_args = 0, max_args = 16 }
+__py_exc_StopAsyncIteration = { emit = "common:python.exc.StopAsyncIteration", min_args = 0, max_args = 16 }
+__py_exc_SyntaxError       = { emit = "common:python.exc.SyntaxError",       min_args = 0, max_args = 16 }
+__py_exc_SystemExit        = { emit = "common:python.exc.SystemExit",        min_args = 0, max_args = 16 }
+__py_exc_TypeError         = { emit = "common:python.exc.TypeError",         min_args = 0, max_args = 16 }
+__py_exc_UnicodeError      = { emit = "common:python.exc.UnicodeError",      min_args = 0, max_args = 16 }
+__py_exc_ValueError        = { emit = "common:python.exc.ValueError",        min_args = 0, max_args = 16 }
+__py_exc_ZeroDivisionError = { emit = "common:python.exc.ZeroDivisionError", min_args = 0, max_args = 16 }
+__py_raise_AttributeError    = { emit = "common:python.raise.AttributeError",    min_args = 0, max_args = 1 }
+__py_raise_AssertionError    = { emit = "common:python.raise.AssertionError",    min_args = 0, max_args = 1 }
+__py_raise_ArithmeticError   = { emit = "common:python.raise.ArithmeticError",   min_args = 0, max_args = 1 }
+__py_raise_EOFError          = { emit = "common:python.raise.EOFError",          min_args = 0, max_args = 1 }
+__py_raise_Exception         = { emit = "common:python.raise.Exception",         min_args = 0, max_args = 1 }
+__py_raise_ExceptionGroup    = { emit = "common:python.raise.ExceptionGroup",    min_args = 0, max_args = 1 }
+__py_raise_FileNotFoundError = { emit = "common:python.raise.FileNotFoundError", min_args = 0, max_args = 1 }
+__py_raise_GeneratorExit     = { emit = "common:python.raise.GeneratorExit",     min_args = 0, max_args = 1 }
+__py_raise_ImportError       = { emit = "common:python.raise.ImportError",       min_args = 0, max_args = 1 }
+__py_raise_IndexError        = { emit = "common:python.raise.IndexError",        min_args = 0, max_args = 1 }
+__py_raise_KeyboardInterrupt = { emit = "common:python.raise.KeyboardInterrupt", min_args = 0, max_args = 1 }
+__py_raise_KeyError          = { emit = "common:python.raise.KeyError",          min_args = 0, max_args = 1 }
+__py_raise_LookupError       = { emit = "common:python.raise.LookupError",       min_args = 0, max_args = 1 }
+__py_raise_NameError         = { emit = "common:python.raise.NameError",         min_args = 0, max_args = 1 }
+__py_raise_NotImplementedError = { emit = "common:python.raise.NotImplementedError", min_args = 0, max_args = 1 }
+__py_raise_OSError           = { emit = "common:python.raise.OSError",           min_args = 0, max_args = 1 }
+__py_raise_OverflowError     = { emit = "common:python.raise.OverflowError",     min_args = 0, max_args = 1 }
+__py_raise_RecursionError    = { emit = "common:python.raise.RecursionError",    min_args = 0, max_args = 1 }
+__py_raise_RuntimeError      = { emit = "common:python.raise.RuntimeError",      min_args = 0, max_args = 1 }
+__py_raise_StopIteration     = { emit = "common:python.raise.StopIteration",     min_args = 0, max_args = 1 }
+__py_raise_StopAsyncIteration = { emit = "common:python.raise.StopAsyncIteration", min_args = 0, max_args = 1 }
+__py_raise_SyntaxError       = { emit = "common:python.raise.SyntaxError",       min_args = 0, max_args = 1 }
+__py_raise_SystemExit        = { emit = "common:python.raise.SystemExit",        min_args = 0, max_args = 1 }
+__py_raise_TypeError         = { emit = "common:python.raise.TypeError",         min_args = 0, max_args = 1 }
+__py_raise_UnicodeError      = { emit = "common:python.raise.UnicodeError",      min_args = 0, max_args = 1 }
+__py_raise_ValueError        = { emit = "common:python.raise.ValueError",        min_args = 0, max_args = 1 }
+__py_raise_ZeroDivisionError = { emit = "common:python.raise.ZeroDivisionError", min_args = 0, max_args = 1 }
+__py_exception_instance      = { emit = "common:python.exception_instance",      min_args = 2, max_args = 2 }
+__py_exception_message       = { emit = "common:python.exception_message",       min_args = 1, max_args = 1 }
 # Raw filesystem primitives for the `os` prelude (wasi first, node for gaps).
 __os_readdir__  = { emit = "host:wasi:filesystem:readDirEntries", min_args = 1, max_args = 1 }
 __os_stat_raw__ = { emit = "host:wasi:filesystem:stat",           min_args = 1, max_args = 1 }
@@ -122,6 +212,12 @@ __py_bytes_new__ = { emit = "host:ecma:uint8array:new",       min_args = 1, max_
 # bytes.hex() → lowercase hex string; bytes.fromhex(s) → bytes.
 __py_bytes_hex__    = { emit = "host:ecma:uint8array:toHex",   min_args = 1, max_args = 1 }
 __py_bytes_fromhex__ = { emit = "host:ecma:uint8array:fromHex", min_args = 1, max_args = 1 }
+__py_int_bit_length__ = { emit = "common:python.int_bit_length", min_args = 1, max_args = 1 }
+__py_int_bit_count__  = { emit = "common:python.int_bit_count",  min_args = 1, max_args = 1 }
+__py_int_to_bytes__   = { emit = "common:python.int_to_bytes",   min_args = 3, max_args = 3 }
+__py_int_from_bytes__ = { emit = "common:python.int_from_bytes", min_args = 2, max_args = 2 }
+__py_num_is_integer__ = { emit = "host:ecma:number:isInteger",   min_args = 1, max_args = 1 }
+__py_float_as_integer_ratio__ = { emit = "common:python.float_as_integer_ratio", min_args = 1, max_args = 1 }
 
 # TEMP cross-check hooks
 __py_crypto_hash__ = { emit = "host:node:crypto:createHash",  min_args = 1, max_args = 1 }
@@ -164,7 +260,7 @@ input           = { emit = "host:wasi:cli:readLine",        min_args = 0, max_ar
 
 # ── Type conversion ──────────────────────────────────────────────────────────
 
-int             = { emit = "common:to_int",         min_args = 1, max_args = 2 }
+int             = { emit = "common:python.int",     min_args = 1, max_args = 2 }
 parseInt        = { emit = "host:ecma:number:parseInt",   min_args = 2, max_args = 2 }
 float           = { emit = "host:ecma:number:Number",        min_args = 1, max_args = 1 }
 str             = { emit = "common:python.str",              min_args = 0, max_args = 1 }
@@ -191,6 +287,18 @@ frozenset       = { emit = "common:python.make_set",        min_args = 0, max_ar
 __py_frozenset  = { emit = "common:python.frozenset",       min_args = 0, max_args = 1 }
 # `sorted(x, key=f)` → sort the (spread) array by key_fn via the shared primitive.
 __py_sort_by_key = { emit = "common:python.sort_by_key",    min_args = 2, max_args = 2 }
+__py_min        = { emit = "common:python.min",             min_args = 1, max_args = 2 }
+__py_max        = { emit = "common:python.max",             min_args = 1, max_args = 2 }
+__py_sum        = { emit = "common:python.sum",             min_args = 1, max_args = 2 }
+__py_reversed   = { emit = "common:python.reversed",        min_args = 1, max_args = 1 }
+__py_iter_sentinel = { emit = "common:python.iter_sentinel", min_args = 2, max_args = 2 }
+__py_zip_strict = { emit = "common:python.zip_strict",      min_args = 2, max_args = 255 }
+__py_zip_spread = { emit = "common:python.zip_spread",      min_args = 1, max_args = 1 }
+__py_dict_from_pairs = { emit = "common:python.dict_from_pairs", min_args = 1, max_args = 1 }
+__py_str_isdigit = { emit = "host:ecma:string:isdigit",     min_args = 1, max_args = 1 }
+__py_str_isalpha = { emit = "host:ecma:string:isalpha",     min_args = 1, max_args = 1 }
+__py_str_isalnum = { emit = "host:ecma:string:isalnum",     min_args = 1, max_args = 1 }
+__py_str_isspace = { emit = "host:ecma:string:isspace",     min_args = 1, max_args = 1 }
 # `re.*` over ecma:regexp (walker rewrites re.search/…→__re_*; m.group(i)→m[i]).
 __re_search     = { emit = "common:python.re_search",       min_args = 2, max_args = 2 }
 __re_match      = { emit = "common:python.re_match",         min_args = 2, max_args = 2 }
@@ -202,7 +310,7 @@ __re_escape     = { emit = "common:python.re_escape",        min_args = 1, max_a
 # so __re_search/findall/sub/split accept a compiled pattern OR a string.
 __re_compile    = { emit = "host:ecma:regexp:new",           min_args = 1, max_args = 2 }
 sorted          = { emit = "host:ecma:array:toSorted",        min_args = 1, max_args = 3 }
-reversed        = { emit = "host:ecma:array:reversed",      min_args = 1, max_args = 1 }
+reversed        = { emit = "common:python.reversed",        min_args = 1, max_args = 1 }
 enumerate       = { emit = "common:python.enumerate",              min_args = 1, max_args = 2 }
 zip             = { emit = "common:python.zip",                    min_args = 2, max_args = 255 }
 map             = { emit = "common:python.map",                  min_args = 2, max_args = 255 }
@@ -467,6 +575,7 @@ __py_dt_pad               = { emit = "common:python.dt_pad",     min_args = 2, m
 # ── Type checking ────────────────────────────────────────────────────────────
 
 type            = { emit = "common:python.type",              min_args = 1, max_args = 1 }
+__py_type_name  = { emit = "common:python.type_name",          min_args = 1, max_args = 1 }
 isinstance      = { emit = "common:python.instanceof",              min_args = 2, max_args = 2 }
 issubclass      = { emit = "common:python.issubclass",              min_args = 2, max_args = 2 }
 callable        = { emit = "common:python.callable",                min_args = 1, max_args = 1 }
@@ -478,6 +587,69 @@ id              = { emit = "common:python.id",            min_args = 1, max_args
 hash            = { emit = "common:python.hash",          min_args = 1, max_args = 1 }
 vars            = { emit = "common:python.vars",              min_args = 0, max_args = 1 }
 dir             = { emit = "common:python.dir",               min_args = 0, max_args = 1 }
+
+# ── urllib.parse ─────────────────────────────────────────────────────────────
+# Over `web:url` — the same WHATWG parser JS `new URL(...)` and node's `url`
+# module use. Only the field NAMES differ from CPython's; see url_adapter.rs.
+# ── socket: the wasi:sockets calls the prelude class composes ────────────────
+# Each is ONE host call with the arguments already on the stack, so none needs
+# an adapter — the `socket` class in SOCKET_PRELUDE sequences them. The WASI
+# start-*/finish-* pairs are two calls because the proposal is poll-based; a
+# Python socket call is blocking, so the class does both.
+_wasi_network      = { emit = "host:wasi:sockets/instance-network:instance-network", min_args = 0, max_args = 0 }
+_wasi_tcp_new      = { emit = "host:wasi:sockets/tcp-create-socket:create-tcp-socket", min_args = 0, max_args = 1 }
+_wasi_udp_new      = { emit = "host:wasi:sockets/udp-create-socket:create-udp-socket", min_args = 0, max_args = 1 }
+_wasi_start_bind   = { emit = "host:wasi:sockets/tcp:start-bind",     min_args = 3, max_args = 3 }
+_wasi_finish_bind  = { emit = "host:wasi:sockets/tcp:finish-bind",    min_args = 1, max_args = 1 }
+_wasi_start_listen = { emit = "host:wasi:sockets/tcp:start-listen",   min_args = 1, max_args = 1 }
+_wasi_backlog      = { emit = "host:wasi:sockets/tcp:set-listen-backlog-size", min_args = 2, max_args = 2 }
+_wasi_start_conn   = { emit = "host:wasi:sockets/tcp:start-connect",  min_args = 3, max_args = 3 }
+_wasi_finish_conn  = { emit = "host:wasi:sockets/tcp:finish-connect", min_args = 1, max_args = 1 }
+_wasi_accept       = { emit = "host:wasi:sockets/tcp:accept",         min_args = 1, max_args = 1 }
+_wasi_local_addr   = { emit = "host:wasi:sockets/tcp:local-address",  min_args = 1, max_args = 1 }
+_wasi_remote_addr  = { emit = "host:wasi:sockets/tcp:remote-address", min_args = 1, max_args = 1 }
+_wasi_sock_shutdown = { emit = "host:wasi:sockets/tcp:shutdown",      min_args = 1, max_args = 2 }
+_wasi_stream_read  = { emit = "host:wasi:io/streams:blocking-read",   min_args = 2, max_args = 2 }
+_wasi_stream_write = { emit = "host:wasi:io/streams:blocking-write-and-flush", min_args = 2, max_args = 2 }
+
+# ── socket (module-level, no socket object) ──────────────────────────────────
+# `inet_*` are pure conversions; `getservbyname` is /etc/services data (no WASI
+# or node interface exists); `gethostname` is host identity via node:os; the
+# resolvers go to wasi:sockets/ip-name-lookup. See socket_adapter.rs.
+"socket.inet_aton"     = { emit = "common:python.sock_inet_aton",     min_args = 1, max_args = 1 }
+"socket.inet_ntoa"     = { emit = "common:python.sock_inet_ntoa",     min_args = 1, max_args = 1 }
+"socket.getservbyname" = { emit = "common:python.sock_getservbyname", min_args = 1, max_args = 2 }
+"socket.gethostname"   = { emit = "common:python.sock_gethostname",   min_args = 0, max_args = 0 }
+"socket.gethostbyname" = { emit = "common:python.sock_gethostbyname", min_args = 1, max_args = 1 }
+"socket.getaddrinfo"   = { emit = "common:python.sock_getaddrinfo",   min_args = 1, max_args = 6 }
+inet_aton              = { emit = "common:python.sock_inet_aton",     min_args = 1, max_args = 1 }
+inet_ntoa              = { emit = "common:python.sock_inet_ntoa",     min_args = 1, max_args = 1 }
+getservbyname          = { emit = "common:python.sock_getservbyname", min_args = 1, max_args = 2 }
+gethostname            = { emit = "common:python.sock_gethostname",   min_args = 0, max_args = 0 }
+gethostbyname          = { emit = "common:python.sock_gethostbyname", min_args = 1, max_args = 1 }
+getaddrinfo            = { emit = "common:python.sock_getaddrinfo",   min_args = 1, max_args = 6 }
+
+urljoin         = { emit = "common:python.url_join",           min_args = 2, max_args = 3 }
+urlsplit        = { emit = "common:python.url_split",          min_args = 1, max_args = 3 }
+urlparse        = { emit = "common:python.url_split",          min_args = 1, max_args = 3 }
+urlunsplit      = { emit = "common:python.url_unsplit",        min_args = 1, max_args = 1 }
+urlunparse      = { emit = "common:python.url_unsplit",        min_args = 1, max_args = 1 }
+urlencode       = { emit = "common:python.url_encode",         min_args = 1, max_args = 4 }
+parse_qs        = { emit = "common:python.url_parse_qs",       min_args = 1, max_args = 4 }
+parse_qsl       = { emit = "common:python.url_parse_qsl",      min_args = 1, max_args = 4 }
+quote           = { emit = "common:python.url_quote",          min_args = 1, max_args = 4 }
+quote_plus      = { emit = "common:python.url_quote_plus",     min_args = 1, max_args = 4 }
+unquote         = { emit = "common:python.url_unquote",        min_args = 1, max_args = 3 }
+unquote_plus    = { emit = "common:python.url_unquote_plus",   min_args = 1, max_args = 3 }
+
+# ── dataclasses ──────────────────────────────────────────────────────────────
+# All four read the `__dataclass_fields__` array the walker synthesizes onto
+# every `@dataclass`, so they work on a class OR an instance, in declaration
+# order. `replace` takes keyword arguments and is lowered in the walker instead.
+is_dataclass    = { emit = "common:python.is_dataclass",       min_args = 1, max_args = 1 }
+asdict          = { emit = "common:python.dataclass_asdict",   min_args = 1, max_args = 2 }
+astuple         = { emit = "common:python.dataclass_astuple",  min_args = 1, max_args = 2 }
+fields          = { emit = "common:python.dataclass_fields",   min_args = 1, max_args = 1 }
 
 # ── String ───────────────────────────────────────────────────────────────────
 
@@ -671,6 +843,7 @@ is_dir          = { emit = "common:python.os_is_dir",        min_args = 0, max_a
 is_symlink      = { emit = "common:python.os_is_symlink",    min_args = 0, max_args = 0 }
 inode           = { emit = "common:python.os_inode",         min_args = 0, max_args = 0 }
 translate       = { emit = "common:python.str_translate",    min_args = 1, max_args = 1 }
+add_note        = { emit = "common:python.exception_add_note", min_args = 1, max_args = 1 }
 istitle         = { emit = "common:python.str_istitle",      min_args = 0, max_args = 0 }
 removeprefix    = { emit = "common:python.str_removeprefix",  min_args = 1, max_args = 1 }
 removesuffix    = { emit = "common:python.str_removesuffix",  min_args = 1, max_args = 1 }
@@ -797,6 +970,21 @@ __len__         = { emit = "str_length",                       min_args = 0, max
 "logging.ERROR"    = 40
 "logging.CRITICAL" = 50
 "logging.FATAL"    = 50
+# socket constants (CPython on Linux)
+"socket.AF_INET"      = 2
+"socket.AF_INET6"     = 10
+"socket.AF_UNIX"      = 1
+"socket.SOCK_STREAM"  = 1
+"socket.SOCK_DGRAM"   = 2
+"socket.SOL_SOCKET"   = 1
+"socket.SO_REUSEADDR" = 2
+"socket.SO_KEEPALIVE" = 9
+"socket.SO_BROADCAST" = 6
+"socket.IPPROTO_TCP"  = 6
+"socket.IPPROTO_UDP"  = 17
+"socket.SHUT_RD"      = 0
+"socket.SHUT_WR"      = 1
+"socket.SHUT_RDWR"    = 2
 
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS — Python namespace objects → host modules, ECMA-262 §16.2 shape

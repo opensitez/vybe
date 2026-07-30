@@ -75,7 +75,7 @@ try:
     except ZeroDivisionError:
         [][0]
 except IndexError as e:
-    print(type(e).__context__).__name__
+    print(type(e.__context__).__name__)
 "#;
     assert_eq!(run_python(src), vec!["ZeroDivisionError"]);
 }

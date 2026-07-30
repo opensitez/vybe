@@ -62,30 +62,30 @@ fn builtin_all() {
 // ── Runtime tests for Python any/all runtime helpers ──
 #[test]
 fn builtin_any_runtime_true() {
-    assert_eq!(run_python_one("print(any([False, True, False]))\n"), "true");
+    assert_eq!(run_python_one("print(any([False, True, False]))\n"), "True");
 }
 #[test]
 fn builtin_any_runtime_false() {
     assert_eq!(
         run_python_one("print(any([False, False, False]))\n"),
-        "false"
+        "False"
     );
 }
 #[test]
 fn builtin_any_empty() {
-    assert_eq!(run_python_one("print(any([]))\n"), "false");
+    assert_eq!(run_python_one("print(any([]))\n"), "False");
 }
 #[test]
 fn builtin_all_runtime_true() {
-    assert_eq!(run_python_one("print(all([True, 1, 'x']))\n"), "true");
+    assert_eq!(run_python_one("print(all([True, 1, 'x']))\n"), "True");
 }
 #[test]
 fn builtin_all_runtime_false() {
-    assert_eq!(run_python_one("print(all([True, False, True]))\n"), "false");
+    assert_eq!(run_python_one("print(all([True, False, True]))\n"), "False");
 }
 #[test]
 fn builtin_all_empty() {
-    assert_eq!(run_python_one("print(all([]))\n"), "true");
+    assert_eq!(run_python_one("print(all([]))\n"), "True");
 }
 
 // ── Runtime tests for new bare-form polyfills ──

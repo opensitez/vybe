@@ -165,6 +165,40 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_if(line);
     lget(&mut c, value, line);
     {
+        let idx = c.add_import("ecma:number", "isNaN");
+        c.emit_call(idx, 1, line);
+    }
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
+    c.emit_if(line);
+    str_const(&mut c, "nan", line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+
+    lget(&mut c, value, line);
+    {
+        let idx = c.add_import("ecma:number", "isFinite");
+        c.emit_call(idx, 1, line);
+    }
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut c, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if(line);
+    lget(&mut c, value, line);
+    {
+        let idx = c.add_import("wasm:js-number", "toF64");
+        c.emit_call(idx, 1, line);
+    }
+    c.emit_f64_const(0.0, line);
+    c.emit_op(Op::F64_LT, line);
+    c.emit_if(line);
+    str_const(&mut c, "-inf", line);
+    c.emit_else(line);
+    str_const(&mut c, "inf", line);
+    c.emit_end(line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+
+    lget(&mut c, value, line);
+    {
         let idx = c.add_import("ecma:string", "String");
         c.emit_call(idx, 1, line);
     }

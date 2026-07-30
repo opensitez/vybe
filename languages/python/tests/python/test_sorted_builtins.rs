@@ -234,7 +234,7 @@ fn sum_of_range_list() {
 fn sorted_bool_values_false_before_true() {
     assert_eq!(
         run_print("sorted([True, False, True])"),
-        "[False, False, True]"
+        "[False, True, True]"
     );
 }
 
@@ -263,7 +263,7 @@ fn reversed_range_via_list() {
 
 #[test]
 fn sum_floats_with_fractions() {
-    assert_eq!(run_print("sum([0.1, 0.2, 0.3])"), "0.6");
+    assert_eq!(run_print("sum([0.1, 0.2, 0.3])"), "0.6000000000000001");
 }
 
 #[test]

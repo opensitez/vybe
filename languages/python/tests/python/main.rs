@@ -450,3 +450,4 @@ mod test_python_struct_binary_packing;
 mod test_python_re_sub_callable;
 mod test_python_tempfile_advanced;
 
+mod test_py_getattr_slot;

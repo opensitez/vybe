@@ -113,12 +113,12 @@ fn builtin_str_conversion() {
 
 #[test]
 fn builtin_bool_falsy() {
-    assert_eq!(run_python_one("print(bool(0))\n"), "false");
+    assert_eq!(run_python_one("print(bool(0))\n"), "False");
 }
 
 #[test]
 fn builtin_bool_truthy() {
-    assert_eq!(run_python_one("print(bool(1))\n"), "true");
+    assert_eq!(run_python_one("print(bool(1))\n"), "True");
 }
 
 #[test]

@@ -4,6 +4,14 @@
 use vybe_runtime::Chunk;
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
+    if let Some(exc_name) = name.strip_prefix("python.exc.") {
+        crate::emitter::runtime_adapter::emit_py_exception(chunks, current, argc, exc_name, line);
+        return true;
+    }
+    if let Some(exc_name) = name.strip_prefix("python.raise.") {
+        crate::emitter::runtime_adapter::emit_py_raise(chunks, current, argc, exc_name, line);
+        return true;
+    }
     match name {
         // hashlib / hmac over node:crypto — see hash_adapter.rs
         "python.hash_sha256" => {
@@ -29,6 +37,23 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.json_dumps" => {
             crate::emitter::json_adapter::emit_json_dumps(chunks, current, argc, line);
+        }
+        "python.int_bit_length" => {
+            crate::emitter::collections_adapter::emit_int_bit_length(chunks, current, argc, line)
+        }
+        "python.int_bit_count" => {
+            crate::emitter::collections_adapter::emit_int_bit_count(chunks, current, argc, line)
+        }
+        "python.int_to_bytes" => {
+            crate::emitter::collections_adapter::emit_int_to_bytes(chunks, current, argc, line)
+        }
+        "python.int_from_bytes" => {
+            crate::emitter::collections_adapter::emit_int_from_bytes(chunks, current, argc, line)
+        }
+        "python.float_as_integer_ratio" => {
+            crate::emitter::collections_adapter::emit_float_as_integer_ratio(
+                chunks, current, argc, line,
+            )
         }
         "python.enumerate" => {
             crate::emitter::collections_adapter::emit_enumerate(chunks, current, argc, line)
@@ -235,6 +260,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.contains" => {
             crate::emitter::collections_adapter::emit_contains(chunks, current, line)
+        }
+        "python.attr_read" => {
+            crate::emitter::collections_adapter::emit_attr_read(chunks, current, line)
+        }
+        "python.getitem" => {
+            crate::emitter::collections_adapter::emit_getitem(chunks, current, line)
         }
         "python.next" => {
             crate::emitter::collections_adapter::emit_pynext(chunks, current, argc, line)
@@ -531,11 +562,38 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "python.gen_throw" => {
             crate::emitter::collections_adapter::emit_gen_throw(chunks, current, argc, line)
         }
+        "python.gen_close" => {
+            crate::emitter::collections_adapter::emit_gen_close(chunks, current, argc, line)
+        }
         "python.frozenset" => {
             crate::emitter::collections_adapter::emit_frozenset(chunks, current, argc, line)
         }
         "python.sort_by_key" => {
             crate::emitter::collections_adapter::emit_sort_by_key(chunks, current, argc, line)
+        }
+        "python.min" => {
+            crate::emitter::collections_adapter::emit_py_minmax(chunks, current, argc, false, line)
+        }
+        "python.max" => {
+            crate::emitter::collections_adapter::emit_py_minmax(chunks, current, argc, true, line)
+        }
+        "python.sum" => {
+            crate::emitter::collections_adapter::emit_py_sum(chunks, current, argc, line)
+        }
+        "python.reversed" => {
+            crate::emitter::collections_adapter::emit_reversed(chunks, current, argc, line)
+        }
+        "python.iter_sentinel" => {
+            crate::emitter::collections_adapter::emit_iter_sentinel(chunks, current, argc, line)
+        }
+        "python.zip_strict" => {
+            crate::emitter::collections_adapter::emit_zip_strict(chunks, current, argc, line)
+        }
+        "python.zip_spread" => {
+            crate::emitter::collections_adapter::emit_zip_spread(chunks, current, argc, line)
+        }
+        "python.dict_from_pairs" => {
+            crate::emitter::collections_adapter::emit_dict_from_pairs(chunks, current, argc, line)
         }
         "python.re_search" => crate::emitter::re_adapter::emit_search(chunks, current, argc, line),
         "python.re_match" => crate::emitter::re_adapter::emit_match(chunks, current, argc, line),
@@ -635,7 +693,76 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::runtime_adapter::emit_issubclass(chunks, current, line)
         }
         "python.type" => crate::emitter::runtime_adapter::emit_py_type(chunks, current, line),
+        "python.type_name" => {
+            crate::emitter::runtime_adapter::emit_py_type_name(chunks, current, line)
+        }
+        "python.exception_instance" => {
+            crate::emitter::runtime_adapter::emit_py_exception_instance(chunks, current, line)
+        }
+        "python.exception_message" => {
+            crate::emitter::runtime_adapter::emit_py_exception_message(chunks, current, line)
+        }
+        "python.exception_add_note" => {
+            crate::emitter::runtime_adapter::emit_py_exception_add_note(chunks, current, line)
+        }
+        "python.int" => crate::emitter::runtime_adapter::emit_py_int(chunks, current, argc, line),
+        "python.sock_inet_aton" => {
+            crate::emitter::socket_adapter::emit_inet_aton(chunks, current, argc, line)
+        }
+        "python.sock_inet_ntoa" => {
+            crate::emitter::socket_adapter::emit_inet_ntoa(chunks, current, argc, line)
+        }
+        "python.sock_getservbyname" => {
+            crate::emitter::socket_adapter::emit_getservbyname(chunks, current, argc, line)
+        }
+        "python.sock_gethostname" => {
+            crate::emitter::socket_adapter::emit_gethostname(chunks, current, argc, line)
+        }
+        "python.sock_gethostbyname" => {
+            crate::emitter::socket_adapter::emit_gethostbyname(chunks, current, argc, line)
+        }
+        "python.sock_getaddrinfo" => {
+            crate::emitter::socket_adapter::emit_getaddrinfo(chunks, current, argc, line)
+        }
+        "python.url_join" => crate::emitter::url_adapter::emit_urljoin(chunks, current, argc, line),
+        "python.url_split" => {
+            crate::emitter::url_adapter::emit_urlsplit(chunks, current, argc, line)
+        }
+        "python.url_unsplit" => {
+            crate::emitter::url_adapter::emit_urlunsplit(chunks, current, argc, line)
+        }
+        "python.url_encode" => {
+            crate::emitter::url_adapter::emit_urlencode(chunks, current, argc, line)
+        }
+        "python.url_parse_qs" => {
+            crate::emitter::url_adapter::emit_parse_qs(chunks, current, argc, line)
+        }
+        "python.url_parse_qsl" => {
+            crate::emitter::url_adapter::emit_parse_qsl(chunks, current, argc, line)
+        }
+        "python.url_quote" => crate::emitter::url_adapter::emit_quote(chunks, current, argc, line),
+        "python.url_quote_plus" => {
+            crate::emitter::url_adapter::emit_quote_plus(chunks, current, argc, line)
+        }
+        "python.url_unquote" => {
+            crate::emitter::url_adapter::emit_unquote(chunks, current, argc, line)
+        }
+        "python.url_unquote_plus" => {
+            crate::emitter::url_adapter::emit_unquote_plus(chunks, current, argc, line)
+        }
         "python.vars" => crate::emitter::runtime_adapter::emit_vars(chunks, current, argc, line),
+        "python.is_dataclass" => {
+            crate::emitter::dataclass_adapter::emit_is_dataclass(chunks, current, argc, line)
+        }
+        "python.dataclass_asdict" => {
+            crate::emitter::dataclass_adapter::emit_asdict(chunks, current, argc, line)
+        }
+        "python.dataclass_astuple" => {
+            crate::emitter::dataclass_adapter::emit_astuple(chunks, current, argc, line)
+        }
+        "python.dataclass_fields" => {
+            crate::emitter::dataclass_adapter::emit_fields(chunks, current, argc, line)
+        }
         "python.dir" => crate::emitter::runtime_adapter::emit_dir(chunks, current, argc, line),
         "python.hasattr" => crate::emitter::runtime_adapter::emit_hasattr(chunks, current, line),
         "python.getattr" => {

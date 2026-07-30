@@ -1,8 +1,24 @@
-use vybe_runtime::Chunk;
-use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::Chunk;
 
 use vybe_compiler::primitives::{collections, dict, ops, strings, tuples};
+
+fn emit_throw_python_exception(chunk: &mut Chunk, exc_name: &str, message: &str, line: u32) {
+    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    core_wasm::dup(chunk, line);
+    chunk.emit_string_const(message, line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, exc_name, line);
+    let obj_slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunk.emit_string_const("", line);
+    let stack_key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("stack")));
+    chunk.emit_op_u16(Op::STRUCT_SET, stack_key, line);
+    chunk.emit_op(Op::DROP, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    vybe_compiler::primitives::errors::emit_throw(chunk, line);
+}
 
 /// Merge every `[k, v]` entry of `src` into the Map in `recv` (Python
 /// `dict.update`). Loops `entries(src)` and calls the shared `ecma:map.set`.
@@ -114,6 +130,273 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
         chunks[current].emit_op_u16(Op::LOCAL_SET, base + offset, line);
     }
     base
+}
+
+/// Python `int.bit_length()` — count binary digits of `abs(trunc(n))`, with
+/// CPython's special `0.bit_length() == 0`.
+pub fn emit_int_bit_length(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op(Op::F64_ABS, line);
+    chunks[current].emit_op(Op::F64_TRUNC, line);
+    call_import(chunks, current, "wasm:js-number", "fromF64", 1, line);
+    chunks[current].emit_f64_const(2.0, line);
+    call_import(chunks, current, "wasm:js-number", "fromF64", 1, line);
+    call_import(chunks, current, "ecma:number", "toString", 2, line);
+    strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+}
+
+/// Python `int.bit_count()` — count one bits of `abs(trunc(n))`.
+pub fn emit_int_bit_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let x = chunks[current].alloc_scratch(1);
+    let q = chunks[current].alloc_scratch(1);
+    let count = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op(Op::F64_ABS, line);
+    chunks[current].emit_op(Op::F64_TRUNC, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, x, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count, line);
+
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, x, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_LE, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, x, line);
+    chunks[current].emit_f64_const(2.0, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_op(Op::F64_FLOOR, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, q, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, x, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, q, line);
+    chunks[current].emit_f64_const(2.0, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_NE, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, q, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, x, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count, line);
+}
+
+/// Python `int.to_bytes(length, byteorder)` for non-negative values. Builds a
+/// Uint8Array through the same bytes constructor the walker uses for literals.
+pub fn emit_int_to_bytes(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let n_slot = base;
+    let len_slot = base + 1;
+    let order_slot = base + 2;
+    let arr = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    let shift = chunks[current].alloc_scratch(1);
+    let q = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op(Op::I32_TRUNC_SAT_F64_S, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, order_slot, line);
+    chunks[current].emit_string_const("big", line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, shift, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n_slot, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_f64_const(256.0, line);
+    call_import(chunks, current, "wasm:js-number", "fromF64", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, shift, line);
+    chunks[current].emit_op(Op::F64_FROM_I32, line);
+    call_import(chunks, current, "wasm:js-number", "fromF64", 1, line);
+    call_import(chunks, current, "ecma:math", "pow", 2, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_op(Op::F64_FLOOR, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, q, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, q, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, q, line);
+    chunks[current].emit_f64_const(256.0, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_op(Op::F64_FLOOR, line);
+    chunks[current].emit_f64_const(256.0, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    call_import(chunks, current, "wasm:js-number", "fromF64", 1, line);
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    call_import(chunks, current, "ecma:uint8array", "new", 1, line);
+}
+
+/// Python `int.from_bytes(bytes, byteorder)` for byte arrays/lists.
+pub fn emit_int_from_bytes(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let bytes_slot = base;
+    let order_slot = base + 1;
+    let len = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+    let result = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+    call_import(chunks, current, "ecma:array", "length", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, order_slot, line);
+    chunks[current].emit_string_const("little", line);
+    call_import(chunks, current, "wasm:js-string", "equals", 2, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+    chunks[current].emit_f64_const(256.0, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+    call_import(chunks, current, "wasm:js-number", "fromF64", 1, line);
+}
+
+/// Python `float.as_integer_ratio()` for finite ordinary values. This scales by
+/// powers of two until the numerator is integral, matching values like `0.75`.
+pub fn emit_float_as_integer_ratio(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let num = chunks[current].alloc_scratch(1);
+    let den = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, num, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, den, line);
+
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, num, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, num, line);
+    chunks[current].emit_op(Op::F64_TRUNC, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_br_if(1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, den, line);
+    chunks[current].emit_i32_const(1 << 30, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, num, line);
+    chunks[current].emit_f64_const(2.0, line);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, num, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, den, line);
+    chunks[current].emit_i32_const(2, line);
+    chunks[current].emit_op(Op::I32_MUL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, den, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, num, line);
+    chunks[current].emit_op(Op::F64_TRUNC, line);
+    call_import(chunks, current, "wasm:js-number", "fromF64", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, den, line);
+    tuples::emit_tuple(chunks, current, 2, line);
 }
 
 /// Python `enumerate(iterable[, start])` → array of `(index, value)` tagged
@@ -532,13 +815,90 @@ pub fn emit_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 pub fn emit_gen_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_args(chunks, current, argc, line);
     let recv = base;
+    let value_arg = base + 1;
+    let started_key = chunks[current].add_constant(vybe_runtime::Value::String(
+        std::sync::Arc::from("__vybe_gen_started"),
+    ));
+    let closed_key = chunks[current].add_constant(vybe_runtime::Value::String(
+        std::sync::Arc::from("__py_gen_closed"),
+    ));
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::STRUCT_GET, closed_key, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("", line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        "StopIteration",
+        line,
+    );
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+        chunks[current].emit_op_u16(Op::STRUCT_GET, started_key, line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_op(Op::I32_EQZ, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value_arg, line);
+        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        chunks[current].emit_op(Op::I32_EQZ, line);
+        chunks[current].emit_op(Op::I32_AND, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunks[current].emit_dup(line);
+        chunks[current].emit_string_const(
+            "can't send non-None value to a just-started generator",
+            line,
+        );
+        vybe_compiler::primitives::errors::emit_exception_new_finalize(
+            &mut chunks[current],
+            "TypeError",
+            line,
+        );
+        vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+        chunks[current].emit_end(line);
+    }
+
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     if argc >= 2 {
-        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value_arg, line);
     } else {
         chunks[current].emit_op(Op::NULL, line);
     }
     vybe_compiler::primitives::generators::emit_resume(&mut chunks[current], line);
+    let result_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_op_u16(Op::STRUCT_SET, started_key, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    call_import(chunks, current, "ecma:value", "isGeneratorDone", 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("", line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        "StopIteration",
+        line,
+    );
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    let value_key =
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("value")));
+    chunks[current].emit_op_u16(Op::STRUCT_SET, value_key, line);
+    chunks[current].emit_op(Op::DROP, line);
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
+    chunks[current].emit_end(line);
 }
 
 /// Python `gen.throw(exc)` — resume the generator by throwing `exc` at the
@@ -555,9 +915,41 @@ pub fn emit_gen_throw(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
         core_wasm::dup(&mut chunks[current], line);
         chunks[current].emit_string_const("", line);
-        vybe_compiler::primitives::errors::emit_exception_new_finalize(&mut chunks[current], "Exception", line);
+        vybe_compiler::primitives::errors::emit_exception_new_finalize(
+            &mut chunks[current],
+            "Exception",
+            line,
+        );
     }
     vybe_compiler::primitives::generators::emit_resume_throw(&mut chunks[current], line);
+}
+
+/// Python `gen.close()` — inject `GeneratorExit` at the suspended yield through
+/// the shared generator resume/throw path. Python close returns None to the
+/// caller; a fully compliant VM also suppresses GeneratorExit/StopIteration.
+pub fn emit_gen_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let recv = base;
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_bool_const(true, line);
+    let closed_key = chunks[current].add_constant(vybe_runtime::Value::String(
+        std::sync::Arc::from("__py_gen_closed"),
+    ));
+    chunks[current].emit_op_u16(Op::STRUCT_SET, closed_key, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    core_wasm::dup(&mut chunks[current], line);
+    chunks[current].emit_string_const("", line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        "GeneratorExit",
+        line,
+    );
+    vybe_compiler::primitives::generators::emit_resume_throw(&mut chunks[current], line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
 }
 
 /// Python `next(it[, default])`. For a generator, resume it through the shared
@@ -577,6 +969,13 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // generator: GEN_NEXT → [value, has_more]
     chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
     vybe_compiler::primitives::generators::emit_next(&mut chunks[current], line);
+    let started_key = chunks[current].add_constant(vybe_runtime::Value::String(
+        std::sync::Arc::from("__vybe_gen_started"),
+    ));
+    chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_op_u16(Op::STRUCT_SET, started_key, line);
+    chunks[current].emit_op(Op::DROP, line);
     let has_more = chunks[current].local_count;
     chunks[current].alloc_scratch(1);
     let value = chunks[current].local_count;
@@ -601,6 +1000,12 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
             "StopIteration",
             line,
         );
+        chunks[current].emit_dup(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+        let value_key = chunks[current]
+            .add_constant(vybe_runtime::Value::String(std::sync::Arc::from("value")));
+        chunks[current].emit_op_u16(Op::STRUCT_SET, value_key, line);
+        chunks[current].emit_op(Op::DROP, line);
         vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_op(Op::NULL, line); // unreachable (throw diverges)
     }
@@ -608,6 +1013,17 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
     chunks[current].emit_else(line);
     // not a generator → shared iterator-protocol next
+    if argc < 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
+        collections::emit_len(chunks, current, line);
+        chunks[current].emit_i32_const(0, line);
+        ops::emit_dyn_eq(&mut chunks[current], line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        emit_throw_python_exception(&mut chunks[current], "StopIteration", "", line);
+        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_end(line);
+    }
     chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
     if argc >= 2 {
         chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
@@ -745,6 +1161,117 @@ pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line);
 }
 
+/// Python `obj[key]` read. Shared collection lookup returns `null`/missing for
+/// absent values; Python raises `IndexError` for sequence bounds and `KeyError`
+/// for mapping misses.
+/// `obj.attr` — an attribute READ, as distinct from the `obj[key]` subscript
+/// that shares the same map-backed storage.
+///
+/// Two things differ, and both are why this cannot just be `emit_getitem`:
+/// a miss raises `AttributeError`, not `KeyError`, and a miss first consults
+/// the `GetAttr` role (`__getattr__`). The role is resolved by SLOT through the
+/// shared recipe, so nothing here names `__getattr__`; PHP's `__get` and JS's
+/// Proxy get bind the same slot.
+///
+/// Stack: `[obj, name] -> [value]`.
+pub fn emit_attr_read(chunks: &mut [Chunk], current: usize, line: u32) {
+    let name = chunks[current].alloc_scratch(1);
+    let obj = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
+    call_import(chunks, current, "ecma:object", "hasIn", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
+    collections::emit_get(chunks, current, line);
+
+    chunks[current].emit_else(line);
+
+    // Miss: the `GetAttr` role gets first refusal, then AttributeError.
+    let handler = chunks[current].alloc_scratch(1);
+    let slot_key = vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::GetAttr);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_string_const(&slot_key, line);
+    call_import(chunks, current, "ecma:reflect", "get", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, handler, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, handler, line);
+    {
+        let idx = chunks[current].add_import("wasm:js-undefined", "test");
+        chunks[current].emit_call(idx, 1, line);
+    }
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, handler, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_else(line);
+    emit_throw_python_exception(
+        &mut chunks[current],
+        "AttributeError",
+        "object has no attribute",
+        line,
+    );
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_getitem(chunks: &mut [Chunk], current: usize, line: u32) {
+    let key = chunks[current].alloc_scratch(1);
+    let obj = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    call_import(chunks, current, "ecma:array", "isArray", 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+
+    // Array: if key < 0 or key >= len(obj), raise IndexError.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_i32_const(0, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    collections::emit_len(chunks, current, line);
+    ops::emit_dyn_ge(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    emit_throw_python_exception(&mut chunks[current], "IndexError", "list index out of range", line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_else(line);
+    // Map/Object: use the Map-aware `hasIn` probe, then shared lookup.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    call_import(chunks, current, "ecma:object", "hasIn", 2, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_else(line);
+    emit_throw_python_exception(&mut chunks[current], "KeyError", "", line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+}
+
 /// `len(obj) + idx` — helper for the from-end wrap. Stack: `[]` → `[value]`.
 fn emit_len_plus(chunks: &mut [Chunk], current: usize, obj: u16, idx: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
@@ -850,6 +1377,344 @@ pub fn emit_sort_by_key(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     collections::emit_sort_by_key_in_place(chunks, current, line);
 }
 
+pub fn emit_reversed(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 1 {
+        return;
+    }
+    emit_py_iter_array(chunks, current, 1, line);
+    call_import(chunks, current, "ecma:array", "from", 1, line);
+    collections::emit_reversed(chunks, current, line);
+}
+
+pub fn emit_iter_sentinel(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 2 {
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let func = base;
+    let sentinel = base + 1;
+    let out = chunks[current].alloc_scratch(1);
+    let item = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, func, line);
+    chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, item, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sentinel, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_br(0, line);
+
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+pub fn emit_zip_strict(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc < 2 {
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let first_len = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, first_len, line);
+
+    for offset in 1..argc as u16 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + offset, line);
+        chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, first_len, line);
+        chunks[current].emit_op(Op::I32_NE, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        core_wasm::dup(&mut chunks[current], line);
+        chunks[current].emit_string_const("zip() argument lengths differ", line);
+        vybe_compiler::primitives::errors::emit_exception_new_finalize(
+            &mut chunks[current],
+            "ValueError",
+            line,
+        );
+        vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+        chunks[current].emit_end(line);
+    }
+
+    for offset in 0..argc as u16 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + offset, line);
+    }
+    collections::emit_zip(chunks, current, argc, collections::ZipLen::Shortest, line);
+}
+
+pub fn emit_zip_spread(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 1 {
+        return;
+    }
+    let rows = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let cols = chunks[current].alloc_scratch(1);
+    let row_count = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let j = chunks[current].alloc_scratch(1);
+    let tuple = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, rows, line);
+    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rows, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, row_count, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, row_count, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rows, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, cols, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let outer_block = chunks[current].emit_block(line);
+    let (outer_lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, cols, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tuple, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+
+    let inner_block = chunks[current].emit_block(line);
+    let (inner_lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, row_count, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tuple, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rows, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(inner_lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(inner_block);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tuple, line);
+    tuples::emit_tag(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tuple, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tuple, line);
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(outer_lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer_block);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_dict_from_pairs(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc != 1 {
+        return;
+    }
+    let rows = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let pair = chunks[current].alloc_scratch(1);
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, rows, line);
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rows, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, rows, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, pair, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, pair, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, pair, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    call_import(chunks, current, "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
+}
+
+pub fn emit_py_minmax(chunks: &mut [Chunk], current: usize, argc: u8, is_max: bool, line: u32) {
+    let base = stash_args(chunks, current, argc, line);
+    let arr = base;
+    let default = if argc >= 2 { Some(base + 1) } else { None };
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+    if let Some(default) = default {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, default, line);
+    } else {
+        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        core_wasm::dup(&mut chunks[current], line);
+        chunks[current].emit_string_const("empty sequence", line);
+        vybe_compiler::primitives::errors::emit_exception_new_finalize(
+            &mut chunks[current],
+            "ValueError",
+            line,
+        );
+        chunks[current].emit_dup(line);
+        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunks[current].emit_dup(line);
+        chunks[current].emit_string_const("ValueError", line);
+        let name_key = chunks[current].add_constant(vybe_runtime::Value::String(
+            std::sync::Arc::from("__name__"),
+        ));
+        chunks[current].emit_op_u16(Op::STRUCT_SET, name_key, line);
+        chunks[current].emit_op(Op::DROP, line);
+        let class_key = chunks[current].add_constant(vybe_runtime::Value::String(
+            std::sync::Arc::from("__class__"),
+        ));
+        chunks[current].emit_op_u16(Op::STRUCT_SET, class_key, line);
+        chunks[current].emit_op(Op::DROP, line);
+        vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+        chunks[current].emit_op(Op::NULL, line);
+    }
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    collections::emit_runtime_helper_call(
+        chunks,
+        current,
+        if is_max { "__vybe_max" } else { "__vybe_min" },
+        1,
+        line,
+    );
+    chunks[current].emit_end(line);
+}
+
+pub fn emit_py_sum(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 || argc > 2 {
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let arr = base;
+    let acc = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+
+    if argc == 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    } else {
+        chunks[current].emit_i32_const(0, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, acc, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, len, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let block = chunks[current].emit_block(line);
+    let (lp, _) = chunks[current].emit_loop_s(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, acc, line);
+    call_import(chunks, current, "ecma:array", "isArray", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    call_import(chunks, current, "ecma:array", "isArray", 1, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, acc, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    call_import(chunks, current, "ecma:array", "concat", 2, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, acc, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, acc, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, acc, line);
+}
+
 pub fn emit_make_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc == 0 {
         call_import(chunks, current, "ecma:set", "new", 0, line);
@@ -875,7 +1740,9 @@ pub fn emit_frozenset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     // Stamp `__frozenset = true` so repr renders `frozenset({...})`.
     c.emit_dup(line);
     core_wasm::bool_const(c, line, true);
-    let k = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__frozenset")));
+    let k = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
+        "__frozenset",
+    )));
     c.emit_op_u16(Op::STRUCT_SET, k, line);
     c.emit_op(Op::DROP, line);
 }
@@ -930,7 +1797,11 @@ fn emit_remove_impl(chunks: &mut [Chunk], current: usize, raises: bool, line: u3
         chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
         core_wasm::dup(&mut chunks[current], line);
         chunks[current].emit_string_const("", line);
-        vybe_compiler::primitives::errors::emit_exception_new_finalize(&mut chunks[current], "KeyError", line);
+        vybe_compiler::primitives::errors::emit_exception_new_finalize(
+            &mut chunks[current],
+            "KeyError",
+            line,
+        );
         vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_end(line);
     } else {
@@ -1113,7 +1984,11 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
         core_wasm::dup(&mut chunks[current], line);
         chunks[current].emit_string_const("pop from an empty set", line);
-        vybe_compiler::primitives::errors::emit_exception_new_finalize(&mut chunks[current], "KeyError", line);
+        vybe_compiler::primitives::errors::emit_exception_new_finalize(
+            &mut chunks[current],
+            "KeyError",
+            line,
+        );
         vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_end(line);
         // v = arr[0]
@@ -1207,9 +2082,8 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // User-defined `__len__` → call it with the receiver. (Cross-language:
     // bound alongside `__get_length`/`__get_count`.)
-    let len_key = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
-        "__len__",
-    )));
+    let len_key =
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__len__")));
     let len_method = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::STRUCT_GET, len_key, line);

@@ -8,12 +8,12 @@ crate::runtime_case!(
 crate::runtime_case!(
     generator_send_none,
     "def g():\n yield 1\n yield 2\nit = g()\nprint(next(it))\nprint(it.send(None))\n",
-    "1"
+    "1\n2"
 );
 crate::runtime_case!(
     generator_throw_caught,
     "def g():\n try:\n  yield 1\n except ValueError:\n  yield 2\nit = g()\nprint(next(it))\nprint(it.throw(ValueError))\n",
-    "1"
+    "1\n2"
 );
 crate::runtime_case!(
     generator_throw_uncaught,
@@ -53,7 +53,7 @@ crate::runtime_case!(
 crate::runtime_case!(
     generator_stop_iteration,
     "def g():\n yield 1\ntry:\n next(g())\n next(g())\nexcept StopIteration:\n print('stop')\n",
-    "stop"
+    ""
 );
 crate::runtime_case!(
     generator_expr_send,
@@ -63,7 +63,7 @@ crate::runtime_case!(
 crate::runtime_case!(
     generator_delegation_throw,
     "def inner():\n try:\n  yield 1\n except ValueError:\n  yield 2\ndef outer():\n yield from inner()\nit = outer()\nprint(next(it))\nprint(it.throw(ValueError))\n",
-    "1"
+    "1\n2"
 );
 crate::runtime_case!(
     generator_frame_locals,
