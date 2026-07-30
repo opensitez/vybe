@@ -701,6 +701,8 @@ ob_gzhandler        = { emit = "common:php.ob_gzhandler",        min_args = 1, m
 register_shutdown_function = { emit = "intrinsic:php_register_shutdown_function", min_args = 1, max_args = 255 }
 spl_autoload_register = { emit = "common:php.spl_autoload_register", min_args = 1, max_args = 3 }
 spl_autoload_unregister = { emit = "common:php.spl_autoload_unregister", min_args = 1, max_args = 1 }
+spl_autoload_functions = { emit = "common:php.spl_autoload_functions", min_args = 0, max_args = 0 }
+spl_autoload_call   = { emit = "common:php.spl_autoload_call",   min_args = 1, max_args = 1 }
 php_sapi_name       = { emit = "host:node:http:php_sapi_name", min_args = 0, max_args = 0 }
 getcwd              = { emit = "host:wasi:cli:cwd",          min_args = 0, max_args = 0 }
 gethostname         = { emit = "host:wasi:cli:machineName",  min_args = 0, max_args = 0 }
@@ -724,7 +726,13 @@ defined             = { emit = "intrinsic:php_defined",      min_args = 1, max_a
 define              = { emit = "intrinsic:php_define",       min_args = 2, max_args = 3 }
 constant            = { emit = "intrinsic:php_constant",     min_args = 1, max_args = 1 }
 function_exists     = { emit = "intrinsic:php_function_exists", min_args = 1, max_args = 1 }
-class_exists        = { emit = "intrinsic:php_class_exists", min_args = 1, max_args = 2 }
+# The `*_exists` family is ONE kind-parameterized primitive. It answers from
+# the `__kind` annotation the class compiler stamps, so it is also true for a
+# type an autoloader or `eval` defined after compilation — which a compile-time
+# walker fold could never be. The 2nd arg (`false`) suppresses autoloading.
+class_exists        = { emit = "intrinsic:symbol_exists:class",     min_args = 1, max_args = 2 }
+interface_exists    = { emit = "intrinsic:symbol_exists:interface", min_args = 1, max_args = 2 }
+trait_exists        = { emit = "intrinsic:symbol_exists:trait",     min_args = 1, max_args = 2 }
 
 # ── mysqli compatibility (wpdb bootstrap path) ─────────────────────────────
 # Routed through the PHP database adapter emitter so WordPress db bootstrap

@@ -9068,7 +9068,10 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         parents,
         interfaces: Vec::new(),
         members: class_members,
-        modifiers: ClassModifiers::default(),
+        modifiers: ClassModifiers {
+            kind: ClassKind::Interface,
+            ..ClassModifiers::default()
+        },
         decorators: vec![],
     })
 }
@@ -9122,7 +9125,10 @@ fn walk_trait_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         parents: Vec::new(),
         interfaces: Vec::new(),
         members,
-        modifiers: ClassModifiers::default(),
+        modifiers: ClassModifiers {
+            kind: ClassKind::Trait,
+            ..ClassModifiers::default()
+        },
         decorators: vec![],
     })
 }
@@ -16731,7 +16737,7 @@ fn apply_postfix(
                     span.clone(),
                 ));
             }
-            if let Some(kind) = rewrite_php_call_to_js(&receiver, &args, &span) {
+            if let Some(kind) = lower_php_builtin_call(&receiver, &args, &span) {
                 return Ok(Expression::with_span(kind, span.clone()));
             }
             // PHP `__invoke` magic method: when invoking a value held in a
@@ -23840,15 +23846,26 @@ fn php_natcmp_lambda(fold_case: bool, span: &Span) -> Expression {
     )
 }
 
-/// Rewrites a PHP function call into the JS-shaped equivalent AST when the
-/// callee name maps to a JS standard library function. Returns `None` to
-/// leave the call untouched.
+/// Lowers a PHP builtin call into the common AST. Returns `None` to leave the
+/// call untouched, so it falls through to the profile's builtin table.
 ///
-/// This is the central place where PHP-specific function names get folded
-/// into the common AST. Anything that returns Some here flows through the
-/// shared compile path with no PHP-aware logic in the compiler / emitter —
-/// the same path JS uses (`Math.trunc(...)`, `parseInt(s, base)`, etc.).
-fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -> Option<ExprKind> {
+/// This is the central place PHP builtin *syntax* gets desugared, and that is
+/// all it should do: `deg2rad($x)` → `$x * M_PI / 180`, `call_user_func($cb,…)`
+/// → a direct call. Anything returning `Some` then flows through the shared
+/// compile path with no PHP-aware logic in the compiler.
+///
+/// # What must NOT go here
+///
+/// Do not answer a question about program state by folding a literal. Arms that
+/// consult a walker thread-local (`TYPE_KINDS`, `CLASS_REGISTRY`,
+/// `TRAIT_USAGES`) and return `Lit(Bool)` are wrong for every name the walker
+/// has not personally seen — autoloaded, `eval`'d, conditionally defined, or
+/// simply declared in another file of the same bundle, since those tables are
+/// thread-locals cleared per parse. `*_exists` / `get_declared_*` /
+/// `method_exists` / `property_exists` belong in a runtime primitive reading
+/// the annotation the class compiler stamps, reached through the profile's
+/// builtin table (`intrinsic:symbol_exists:<kind>`), not here.
+fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -> Option<ExprKind> {
     let name = match &callee.kind {
         ExprKind::Ident(n) => n.as_str(),
         _ => return None,
@@ -24464,10 +24481,11 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
                     Some(ExprKind::Lit(Literal::Null))
                 ) =>
         {
-            mk_call(
-                Expression::ident("zip"),
-                args.iter().skip(1).map(|arg| arg.value.clone()).collect(),
-            )
+            ExprKind::Zip {
+                iterables: args.iter().skip(1).map(|arg| arg.value.clone()).collect(),
+                mode: ZipMode::Longest,
+                strict: false,
+            }
         }
         // PHP `array_map(null, ...$arrays)` also zips. Preserve the spread
         // so the common call machinery expands the runtime list before
@@ -25173,6 +25191,62 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             let mut call_args = vec![php_wrap_callable(arg(0)?, 4, span)];
             call_args.extend(args.iter().skip(1).map(|a| a.value.clone()));
             mk_call(Expression::ident("set_error_handler"), call_args)
+        }
+        // ── Autoloader registration ────────────────────────────────────
+        // The autoload queue stores callables as given, because
+        // `spl_autoload_unregister($loader)` removes by identity. The two
+        // *literal* callable spellings have no identity to preserve — a string
+        // function name and a `[Class::class, 'method']` pair — so normalize
+        // just those into a closure over the same callable resolver
+        // `call_user_func` uses. Closures, first-class callables and invokable
+        // objects pass through untouched, keeping the identity intact.
+        "spl_autoload_register"
+            if matches!(
+                args.first().map(|a| &a.value.kind),
+                Some(ExprKind::Lit(Literal::Str(_))) | Some(ExprKind::Array(_))
+            ) =>
+        {
+            let callback = arg(0)?;
+            let is_pair = matches!(&callback.kind, ExprKind::Array(e) if e.len() == 2);
+            let is_name = matches!(&callback.kind, ExprKind::Lit(Literal::Str(_)));
+            if !is_pair && !is_name {
+                return None;
+            }
+            let param = "__vybe_autoload_class";
+            let forwarded = Expression::with_span(ExprKind::Ident(param.to_string()), span.clone());
+            let body = Expression::with_span(
+                ExprKind::Call {
+                    callee: Box::new(php_callable_target_expr(callback, span)),
+                    args: vec![Argument {
+                        name: None,
+                        value: forwarded,
+                        by_ref: false,
+                        spread: false,
+                    }],
+                    optional: false,
+                },
+                span.clone(),
+            );
+            let mut rest: Vec<Argument> = vec![Argument {
+                name: None,
+                value: Expression::with_span(
+                    ExprKind::Lambda {
+                        params: vec![mk_param_named(param)],
+                        body: LambdaBody::Expr(Box::new(body)),
+                        is_async: false,
+                        captures: Vec::new(),
+                    },
+                    span.clone(),
+                ),
+                by_ref: false,
+                spread: false,
+            }];
+            rest.extend(args.iter().skip(1).cloned());
+            ExprKind::Call {
+                callee: Box::new(Expression::ident("spl_autoload_register")),
+                args: rest,
+                optional: false,
+            }
         }
         // ── Dynamic callable helpers ───────────────────────────────────
         // PHP `call_user_func($cb, ...)` and `call_user_func_array($cb, $args)`
@@ -27473,18 +27547,12 @@ fn rewrite_php_call_to_js(callee: &Expression, args: &[Argument], span: &Span) -
             }
             _ => return None,
         },
-        "interface_exists" if !args.is_empty() => match &args[0].value.kind {
-            ExprKind::Lit(Literal::Str(n)) => {
-                ExprKind::Lit(Literal::Bool(type_kind_is(n, "interface")))
-            }
-            _ => return None,
-        },
-        "trait_exists" if !args.is_empty() => match &args[0].value.kind {
-            ExprKind::Lit(Literal::Str(n)) => {
-                ExprKind::Lit(Literal::Bool(type_kind_is(n, "trait")))
-            }
-            _ => return None,
-        },
+        // `interface_exists` / `trait_exists` deliberately DO NOT fold here.
+        // They resolve through `intrinsic:symbol_exists:<kind>` in the profile,
+        // which reads the stamped `__kind` annotation at runtime — the only way
+        // to be right about a type an autoloader or `eval` defined, or one
+        // declared in another file of the same bundle. Folding them from
+        // `TYPE_KINDS` answered `false` for every name this walk had not seen.
         "enum_exists" if !args.is_empty() => match &args[0].value.kind {
             ExprKind::Lit(Literal::Str(n)) => ExprKind::Lit(Literal::Bool(type_kind_is(n, "enum"))),
             _ => return None,

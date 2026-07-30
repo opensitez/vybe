@@ -693,3 +693,4 @@ mod test_php_web_filter_var_domain_url_flags;
 mod test_php_web_http_response_headers_list_sent;
 mod test_php_web_parse_str_max_input_vars;
 mod test_php_web_session_id_custom_generator;
+mod test_class_exists_builtin_types;

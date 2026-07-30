@@ -1145,14 +1145,22 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::misc_adapter::emit_php_phpinfo(chunks, current, argc, line)
         }
         "php.spl_autoload_register" => {
-            crate::emitter::misc_adapter::emit_php_spl_autoload_register(
+            crate::emitter::autoload_adapter::emit_spl_autoload_register(
                 chunks, current, argc, line,
             )
         }
         "php.spl_autoload_unregister" => {
-            crate::emitter::misc_adapter::emit_php_spl_autoload_unregister(
+            crate::emitter::autoload_adapter::emit_spl_autoload_unregister(
                 chunks, current, argc, line,
             )
+        }
+        "php.spl_autoload_functions" => {
+            crate::emitter::autoload_adapter::emit_spl_autoload_functions(
+                chunks, current, argc, line,
+            )
+        }
+        "php.spl_autoload_call" => {
+            crate::emitter::autoload_adapter::emit_spl_autoload_call(chunks, current, argc, line)
         }
         "php.empty" => crate::emitter::misc_adapter::emit_php_empty(chunks, current, argc, line),
         "php.session_start" => {

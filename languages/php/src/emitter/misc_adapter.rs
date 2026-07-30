@@ -285,22 +285,6 @@ pub fn emit_php_phpinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     push_const(chunk, Value::Bool(true), line);
 }
 
-pub fn emit_php_spl_autoload_register(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    for _ in 0..argc {
-        chunk.emit_op(Op::DROP, line);
-    }
-    push_const(chunk, Value::Bool(true), line);
-}
-
-pub fn emit_php_spl_autoload_unregister(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    for _ in 0..argc {
-        chunk.emit_op(Op::DROP, line);
-    }
-    push_const(chunk, Value::Bool(true), line);
-}
-
 pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let set_cookie_import = chunks[0].add_import("node:http".to_string(), "set_cookie".to_string());
     let map_new_import = chunks[0].add_import("ecma:map".to_string(), "new".to_string());
