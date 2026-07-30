@@ -360,7 +360,7 @@ const_statement_line = _{ const_statement ~ (NEWLINE | EOI) }
 
 // Class declarations
 partial_keyword = { ^"Partial" }
-inherits_statement = { ^"Inherits" ~ type_name }
+inherits_statement = { ^"Inherits" ~ type_name ~ ("," ~ type_name)* }
 inherits_line = _{ inherits_statement ~ (NEWLINE | EOI) }
 visibility_modifier = { ^"Public" | ^"Private" | ^"Protected" | ^"Friend" }
 
@@ -393,13 +393,13 @@ implements_line = _{ implements_statement ~ (NEWLINE | EOI) }
 interface_decl = {
     attribute_line* ~ visibility_modifier? ~ ^"Interface" ~ identifier ~ generic_suffix? ~ (NEWLINE | EOI | ":")
     ~ inherits_line?
-    ~ (!interface_end ~ (inherits_statement ~ ":" | interface_sub | interface_function | interface_property | interface_event | NEWLINE | COMMENT))*
+    ~ (!interface_end ~ (inherits_statement ~ ":" | interface_decl | interface_sub | interface_function | interface_property | interface_event | NEWLINE | COMMENT))*
     ~ interface_end
 }
 interface_end = { ^"End" ~ ^"Interface" }
 interface_member_modifier = _{ default_keyword | ^"Shadows" | ^"ReadOnly" | ^"WriteOnly" }
-interface_sub = { (^"Shadows")? ~ ^"Sub" ~ identifier ~ "(" ~ param_list? ~ ")" ~ (NEWLINE | EOI | ":") }
-interface_function = { (^"Shadows")? ~ ^"Function" ~ identifier ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? ~ (NEWLINE | EOI | ":") }
+interface_sub = { (^"Shadows")? ~ ^"Sub" ~ sub_name ~ generic_suffix? ~ "(" ~ param_list? ~ ")" ~ (NEWLINE | EOI | ":") }
+interface_function = { (^"Shadows")? ~ ^"Function" ~ function_name ~ generic_suffix? ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? ~ (NEWLINE | EOI | ":") }
 interface_property = { interface_member_modifier* ~ ^"Property" ~ identifier ~ ("(" ~ param_list? ~ ")")? ~ (^"As" ~ type_name)? ~ (NEWLINE | EOI | ":") }
 interface_event = { ^"Event" ~ identifier ~ (^"As" ~ type_name | "(" ~ param_list? ~ ")")? ~ (NEWLINE | EOI | ":") }
 
@@ -700,7 +700,7 @@ type_name = {
         (^"Integer" | ^"Long" | ^"Single" | ^"Double" | ^"String" | ^"Boolean" | ^"Variant" | ^"Object")
         ~ !(ASCII_ALPHANUMERIC | "_")
         | dotted_identifier
-    ) ~ fixed_length_suffix? ~ (generic_suffix | array_type_suffix)? ~ ("." ~ member_identifier ~ (generic_suffix | array_type_suffix)?)* ~ "?"?
+    ) ~ fixed_length_suffix? ~ (generic_suffix | array_type_suffix)? ~ ("." ~ member_identifier ~ (generic_suffix | array_type_suffix)?)* ~ "*"* ~ "?"?
 }
 
 fixed_length_suffix = { "*" ~ numeric_literal }

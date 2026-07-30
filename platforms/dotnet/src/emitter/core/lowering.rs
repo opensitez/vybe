@@ -161,6 +161,11 @@ pub fn datetime_field_name(name: &str) -> &'static str {
         "hour" => "Hour",
         "minute" => "Minute",
         "second" => "Second",
+        "millisecond" => "Millisecond",
+        "dayofyear" => "DayOfYear",
+        "dayofweek" => "DayOfWeek",
+        "ticks" => "Ticks",
+        "kind" => "Kind",
         _ => "Year",
     }
 }
@@ -183,6 +188,10 @@ pub fn is_datetime_static_producer(name: &str) -> bool {
             | "system.datetime.utcnow"
             | "system.datetime.today"
             | "system.datetime.parse"
+            | "datetime.minvalue"
+            | "datetime.maxvalue"
+            | "system.datetime.minvalue"
+            | "system.datetime.maxvalue"
     )
 }
 

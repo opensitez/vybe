@@ -1,6 +1,13 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use vybe_runtime::{HostContext, VM, Value};
 use vybe_platform_vybe::gui_state::GuiState;
+
+fn vb_runtime_test_guard() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Capture VB console output on BOTH surfaces, mirroring the C#/libc harness:
 /// - `wasi:io/streams.blocking-write-and-flush` — the byte-faithful
@@ -61,6 +68,7 @@ fn finalize_lines(output: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
 
 /// Run VB source through vybex pipeline: pest grammar → walker → common AST → compiler → VM
 pub fn run_vb(src: &str) -> Vec<String> {
+    let _guard = vb_runtime_test_guard();
     {
         static R: std::sync::Once = std::sync::Once::new();
         R.call_once(vybe_language_vb::register);
@@ -83,6 +91,7 @@ pub fn run_vb(src: &str) -> Vec<String> {
 
 /// Run VB source, return (VM, output) for post-run inspection of globals etc.
 pub fn run_vb_vm(src: &str) -> (VM, Arc<Mutex<Vec<String>>>) {
+    let _guard = vb_runtime_test_guard();
     let module = vybe_language_vb::parse(src).expect("VB parse failed");
     let profile = load_vb_profile();
     let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
@@ -104,6 +113,7 @@ pub fn run_vb_vm(src: &str) -> (VM, Arc<Mutex<Vec<String>>>) {
 /// Run VB source with GUI host functions, return (VM, GuiState, output).
 /// Uses register_all_with_gui which creates widgets directly (no side effects).
 pub fn run_vb_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<String>>>) {
+    let _guard = vb_runtime_test_guard();
     let module = vybe_language_vb::parse(src).expect("VB parse failed");
     let profile = load_vb_profile();
     let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)
@@ -153,6 +163,7 @@ pub fn dotnet_expected_lines(expected: &[&str]) -> Vec<String> {
 pub fn run_vb_gui_capture_msgbox(
     src: &str,
 ) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<(String, String)>>>) {
+    let _guard = vb_runtime_test_guard();
     let module = vybe_language_vb::parse(src).expect("VB parse failed");
     let profile = load_vb_profile();
     let chunks = vybe_compiler::primitives::Compiler::with_profile(profile)

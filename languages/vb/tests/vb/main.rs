@@ -810,3 +810,4 @@ mod test_vb_yield_in_using;
 mod test_vb_yield_infinite_loop;
 mod test_vb_yield_state_machine;
 mod test_vb_yield_statement;
+mod test_type_gettype_dynamic;

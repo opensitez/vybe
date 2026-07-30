@@ -13,11 +13,153 @@
 
 use super::array_adapter;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::Chunk;
+use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::instructions::core_wasm;
 
 fn alloc_locals(chunk: &mut Chunk, n: u16) -> u16 {
     chunk.alloc_scratch(n)
+}
+
+fn key(chunk: &mut Chunk, name: &str) -> u16 {
+    chunk.add_constant(Value::String(name.into()))
+}
+
+fn set_field(chunk: &mut Chunk, object_slot: u16, field: &str, value_slot: u16, line: u32) {
+    let field_key = key(chunk, field);
+    chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_SET, field_key, line);
+    chunk.emit_op(Op::DROP, line);
+}
+
+fn set_string_field(chunk: &mut Chunk, object_slot: u16, field: &str, value: &str, line: u32) {
+    let value_slot = chunk.alloc_scratch(1);
+    let value_key = chunk.add_constant(Value::String(value.into()));
+    chunk.emit_op_u16(Op::CONST, value_key, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    set_field(chunk, object_slot, field, value_slot, line);
+}
+
+fn get_field(chunk: &mut Chunk, object_slot: u16, field: &str, line: u32) {
+    let field_key = key(chunk, field);
+    chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
+    chunk.emit_op_u16(Op::STRUCT_GET, field_key, line);
+}
+
+fn emit_array_segment_from_slots(
+    chunks: &mut [Chunk],
+    current: usize,
+    array_slot: u16,
+    offset_slot: u16,
+    count_slot: u16,
+    line: u32,
+) {
+    let object_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, object_slot, line);
+    set_field(&mut chunks[current], object_slot, "Array", array_slot, line);
+    set_field(&mut chunks[current], object_slot, "array", array_slot, line);
+    set_field(&mut chunks[current], object_slot, "Offset", offset_slot, line);
+    set_field(&mut chunks[current], object_slot, "offset", offset_slot, line);
+    set_field(&mut chunks[current], object_slot, "Count", count_slot, line);
+    set_field(&mut chunks[current], object_slot, "count", count_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, object_slot, line);
+}
+
+fn emit_array_with_length(chunks: &mut [Chunk], current: usize, count_slot: u16, line: u32) {
+    let idx = chunks[current].add_import("ecma:array", "newWithLength");
+    chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
+    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunks[current].emit(1, line);
+}
+
+pub fn emit_array_pool_shared(chunks: &mut [Chunk], current: usize, line: u32) {
+    let pool_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, pool_slot, line);
+    set_string_field(
+        &mut chunks[current],
+        pool_slot,
+        "__type",
+        "ArrayPool",
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_GET, pool_slot, line);
+}
+
+pub fn emit_array_pool_rent(chunks: &mut [Chunk], current: usize, line: u32) {
+    let count_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    emit_array_with_length(chunks, current, count_slot, line);
+}
+
+pub fn emit_array_pool_rent_static(chunks: &mut [Chunk], current: usize, line: u32) {
+    let count_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
+    emit_array_with_length(chunks, current, count_slot, line);
+}
+
+pub fn emit_array_pool_return(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+pub fn emit_memory_pool_shared(chunks: &mut [Chunk], current: usize, line: u32) {
+    let pool_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, pool_slot, line);
+    set_string_field(
+        &mut chunks[current],
+        pool_slot,
+        "__type",
+        "MemoryPool",
+        line,
+    );
+    chunks[current].emit_op_u16(Op::LOCAL_GET, pool_slot, line);
+}
+
+pub fn emit_memory_pool_rent(chunks: &mut [Chunk], current: usize, line: u32) {
+    let count_slot = chunks[current].alloc_scratch(3);
+    let array_slot = count_slot + 1;
+    let owner_slot = count_slot + 2;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
+    chunks[current].emit_op(Op::DROP, line);
+    emit_array_with_length(chunks, current, count_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, array_slot, line);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, owner_slot, line);
+    set_string_field(
+        &mut chunks[current],
+        owner_slot,
+        "__type",
+        "MemoryPoolOwner",
+        line,
+    );
+    set_field(&mut chunks[current], owner_slot, "Memory", array_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, owner_slot, line);
+}
+
+pub fn emit_memory_pool_rent_static(chunks: &mut [Chunk], current: usize, line: u32) {
+    let count_slot = chunks[current].alloc_scratch(3);
+    let array_slot = count_slot + 1;
+    let owner_slot = count_slot + 2;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
+    emit_array_with_length(chunks, current, count_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, array_slot, line);
+    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, owner_slot, line);
+    set_string_field(
+        &mut chunks[current],
+        owner_slot,
+        "__type",
+        "MemoryPoolOwner",
+        line,
+    );
+    set_field(&mut chunks[current], owner_slot, "Memory", array_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, owner_slot, line);
 }
 
 /// `new Span<T>(array)` / `new Span<T>(array, start, length)` — and the same
@@ -34,6 +176,142 @@ pub fn emit_span_ctor(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         vybe_compiler::primitives::collections::emit_get_range(chunks, current, line);
     }
     // argc == 1 (or anything else): the array is already the result — leave it.
+}
+
+/// `new ArraySegment<T>(array)` / `(array, offset, count)`.
+pub fn emit_array_segment_ctor(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let array_slot = alloc_locals(&mut chunks[current], 3);
+    let offset_slot = array_slot + 1;
+    let count_slot = array_slot + 2;
+    if argc >= 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, offset_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, array_slot, line);
+    } else {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, array_slot, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, offset_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
+        vybe_compiler::primitives::collections::emit_len(chunks, current, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
+    }
+    emit_array_segment_from_slots(chunks, current, array_slot, offset_slot, count_slot, line);
+}
+
+pub fn emit_array_segment_empty(chunks: &mut [Chunk], current: usize, line: u32) {
+    let array_slot = alloc_locals(&mut chunks[current], 3);
+    let offset_slot = array_slot + 1;
+    let count_slot = array_slot + 2;
+    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, array_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, offset_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
+    emit_array_segment_from_slots(chunks, current, array_slot, offset_slot, count_slot, line);
+}
+
+fn emit_segment_abs_index(chunk: &mut Chunk, segment_slot: u16, index_slot: u16, line: u32) {
+    get_field(chunk, segment_slot, "Offset", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+}
+
+/// `segment.Item(i)`.
+pub fn emit_array_segment_get(chunks: &mut [Chunk], current: usize, line: u32) {
+    let segment_slot = alloc_locals(&mut chunks[current], 2);
+    let index_slot = segment_slot + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, segment_slot, line);
+    get_field(&mut chunks[current], segment_slot, "Array", line);
+    emit_segment_abs_index(&mut chunks[current], segment_slot, index_slot, line);
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
+}
+
+/// `segment.SetItem(i, value)`.
+pub fn emit_array_segment_set(chunks: &mut [Chunk], current: usize, line: u32) {
+    let segment_slot = alloc_locals(&mut chunks[current], 3);
+    let index_slot = segment_slot + 1;
+    let value_slot = segment_slot + 2;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, index_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, segment_slot, line);
+    get_field(&mut chunks[current], segment_slot, "Array", line);
+    emit_segment_abs_index(&mut chunks[current], segment_slot, index_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    vybe_compiler::primitives::collections::emit_set(chunks, current, line);
+}
+
+/// `segment.Slice(start, count)`.
+pub fn emit_array_segment_slice(chunks: &mut [Chunk], current: usize, line: u32) {
+    let segment_slot = alloc_locals(&mut chunks[current], 4);
+    let start_slot = segment_slot + 1;
+    let count_slot = segment_slot + 2;
+    let offset_slot = segment_slot + 3;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, start_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, segment_slot, line);
+    get_field(&mut chunks[current], segment_slot, "Offset", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, start_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, offset_slot, line);
+    get_field(&mut chunks[current], segment_slot, "Array", line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, segment_slot, line);
+    emit_array_segment_from_slots(chunks, current, segment_slot, offset_slot, count_slot, line);
+}
+
+/// `segment.ToArray()`.
+pub fn emit_array_segment_to_array(chunks: &mut [Chunk], current: usize, line: u32) {
+    let segment_slot = alloc_locals(&mut chunks[current], 1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, segment_slot, line);
+    get_field(&mut chunks[current], segment_slot, "Array", line);
+    get_field(&mut chunks[current], segment_slot, "Offset", line);
+    get_field(&mut chunks[current], segment_slot, "Count", line);
+    vybe_compiler::primitives::collections::emit_get_range(chunks, current, line);
+}
+
+/// `segment.CopyTo(dest)`.
+pub fn emit_array_segment_copy_to(chunks: &mut [Chunk], current: usize, line: u32) {
+    let segment_slot = alloc_locals(&mut chunks[current], 2);
+    let dest_slot = segment_slot + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, dest_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, segment_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dest_slot, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, segment_slot, line);
+    emit_array_segment_to_array(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_set_range(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
+}
+
+/// `segment.Equals(other)` — value equality over the visible range.
+pub fn emit_array_segment_equals(chunks: &mut [Chunk], current: usize, line: u32) {
+    let left_slot = alloc_locals(&mut chunks[current], 2);
+    let right_slot = left_slot + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, right_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, left_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
+    emit_array_segment_to_array(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
+    emit_array_segment_to_array(chunks, current, line);
+    vybe_compiler::primitives::collections::emit_sequence_equal(chunks, current, line);
+}
+
+pub fn emit_buffer_byte_length(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::collections::emit_len(chunks, current, line);
+    core_wasm::f64_const(&mut chunks[current], line, 4.0);
+    chunks[current].emit_op(Op::F64_MUL, line);
+}
+
+pub fn emit_buffer_get_byte(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
+}
+
+pub fn emit_buffer_set_byte(chunks: &mut [Chunk], current: usize, line: u32) {
+    vybe_compiler::primitives::collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op(Op::NULL, line);
 }
 
 /// `span.IsEmpty` → `span.Length == 0`.

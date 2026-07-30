@@ -61,6 +61,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "ReferenceEquals",
                     2,
                     MethodBody::Common("dotnet.object_reference_equals".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToString",
+                    1,
+                    MethodBody::Common("dotnet.object_to_string_role".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -109,11 +114,27 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
         ),
         DotnetClassExport::new(
             "dotnet.System",
-            ClassType::new("Buffer").with_method(MethodDef::static_method(
-                "BlockCopy",
-                5,
-                MethodBody::Common("dotnet.buffer_block_copy".into()),
-            )),
+            ClassType::new("Buffer")
+                .with_method(MethodDef::static_method(
+                    "BlockCopy",
+                    5,
+                    MethodBody::Common("dotnet.buffer_block_copy".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ByteLength",
+                    1,
+                    MethodBody::Common("dotnet.buffer_byte_length".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "GetByte",
+                    2,
+                    MethodBody::Common("dotnet.buffer_get_byte".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SetByte",
+                    3,
+                    MethodBody::Common("dotnet.buffer_set_byte".into()),
+                )),
         ),
         DotnetClassExport::new(
             "dotnet.System",
@@ -199,6 +220,10 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System",
             ClassType::new("DateTime")
                 .with_constructor(ConstructorDef::new(3).with_common_backing("dotnet.datetime_new"))
+                .with_constructor(ConstructorDef::new(6).with_common_backing("dotnet.datetime_new"))
+                .with_constructor(ConstructorDef::new(7).with_common_backing("dotnet.datetime_new"))
+                .with_constructor(ConstructorDef::new(8).with_common_backing("dotnet.datetime_new"))
+                .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.datetime_new"))
                 .with_method(MethodDef::static_method(
                     "Now",
                     0,
@@ -215,9 +240,54 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.datetime_today".into()),
                 ))
                 .with_method(MethodDef::static_method(
+                    "MinValue",
+                    0,
+                    MethodBody::Common("dotnet.datetime_min_value".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "MaxValue",
+                    0,
+                    MethodBody::Common("dotnet.datetime_max_value".into()),
+                ))
+                .with_method(MethodDef::static_method(
                     "Parse",
                     1,
                     MethodBody::Common("dotnet.datetime_parse".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Parse",
+                    2,
+                    MethodBody::Common("dotnet.datetime_parse".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ParseExact",
+                    3,
+                    MethodBody::Common("dotnet.datetime_parse_exact".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ParseExact",
+                    4,
+                    MethodBody::Common("dotnet.datetime_parse_exact".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Equals",
+                    2,
+                    MethodBody::Common("dotnet.datetime_equals_static".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FromBinary",
+                    1,
+                    MethodBody::Common("dotnet.datetime_from_binary".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FromFileTimeUtc",
+                    1,
+                    MethodBody::Common("dotnet.datetime_from_file_time_utc".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FromOADate",
+                    1,
+                    MethodBody::Common("dotnet.datetime_from_oadate".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "DaysInMonth",
@@ -233,6 +303,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Compare",
                     2,
                     MethodBody::Common("dotnet.datetime_compare".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "SpecifyKind",
+                    2,
+                    MethodBody::Common("dotnet.datetime_specify_kind".into()),
                 ))
                 .with_method(MethodDef::new(
                     "AddDays",
@@ -250,9 +325,79 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.datetime_add_months".into()),
                 ))
                 .with_method(MethodDef::new(
+                    "Add",
+                    1,
+                    MethodBody::Common("dotnet.datetime_add_timespan".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AddTicks",
+                    1,
+                    MethodBody::Common("dotnet.datetime_add_ticks".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Subtract",
+                    1,
+                    MethodBody::Common("dotnet.datetime_subtract_datetime".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CompareTo",
+                    1,
+                    MethodBody::Common("dotnet.datetime_compare".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Equals",
+                    1,
+                    MethodBody::Common("dotnet.datetime_equals_instance".into()),
+                ))
+                .with_method(MethodDef::new(
                     "ToShortDateString",
                     0,
                     MethodBody::Common("dotnet.datetime_to_short_date_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    0,
+                    MethodBody::Common("dotnet.datetime_to_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    1,
+                    MethodBody::Common("dotnet.datetime_to_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    2,
+                    MethodBody::Common("dotnet.datetime_to_string".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToUniversalTime",
+                    0,
+                    MethodBody::Common("dotnet.datetime_to_universal_time".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToLocalTime",
+                    0,
+                    MethodBody::Common("dotnet.datetime_to_local_time".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToBinary",
+                    0,
+                    MethodBody::Common("dotnet.datetime_to_binary".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToFileTimeUtc",
+                    0,
+                    MethodBody::Common("dotnet.datetime_to_file_time_utc".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToOADate",
+                    0,
+                    MethodBody::Common("dotnet.datetime_to_oadate".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetHashCode",
+                    0,
+                    MethodBody::Common("dotnet.datetime_get_hash_code".into()),
                 )),
         ),
         DotnetClassExport::new(
@@ -790,7 +935,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::static_method(
                     "Join",
                     2,
-                    MethodBody::Common("collections.join_sep_first".into()),
+                    MethodBody::Common("dotnet.string_join_sep_first".into()),
                 ))
                 .with_method(MethodDef::static_method(
                     "Concat",

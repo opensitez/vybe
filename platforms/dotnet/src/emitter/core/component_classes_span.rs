@@ -121,6 +121,81 @@ fn memory_extensions_class() -> ClassType {
             MethodBody::Common("collections.binary_search".into()),
         ))
         .with_method(MethodDef::static_method(
+            "Slice",
+            2,
+            MethodBody::HostCall(HostTarget::new("ecma:array", "slice")),
+        ))
+        .with_method(MethodDef::static_method(
+            "Slice",
+            3,
+            MethodBody::Common("dotnet.get_range_checked".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "ToArray",
+            1,
+            MethodBody::HostCall(HostTarget::new("ecma:array", "slice")),
+        ))
+        .with_method(MethodDef::static_method(
+            "Fill",
+            2,
+            MethodBody::HostCall(HostTarget::new("ecma:array", "fill")),
+        ))
+        .with_method(MethodDef::static_method(
+            "Contains",
+            2,
+            MethodBody::HostCall(HostTarget::new("ecma:array", "includes")),
+        ))
+        .with_method(MethodDef::static_method(
+            "IndexOf",
+            2,
+            MethodBody::HostCall(HostTarget::new("ecma:array", "indexOf")),
+        ))
+        .with_method(MethodDef::static_method(
+            "LastIndexOf",
+            2,
+            MethodBody::HostCall(HostTarget::new("ecma:array", "lastIndexOf")),
+        ))
+        .with_method(MethodDef::static_method(
+            "Reverse",
+            1,
+            MethodBody::HostCall(HostTarget::new("ecma:array", "reverse")),
+        ))
+        .with_method(MethodDef::static_method(
+            "SequenceEqual",
+            2,
+            MethodBody::Common("collections.sequence_equal".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "IsEmpty",
+            1,
+            MethodBody::Common("dotnet.span_is_empty".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "Clear",
+            1,
+            MethodBody::Common("dotnet.span_clear".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "CopyTo",
+            2,
+            MethodBody::Common("dotnet.span_copy_to".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "TryCopyTo",
+            2,
+            MethodBody::Common("dotnet.span_try_copy_to".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "TrimStart",
+            2,
+            MethodBody::Common("dotnet.span_trim_start".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "TrimEnd",
+            2,
+            MethodBody::Common("dotnet.span_trim_end".into()),
+        ))
+        .with_method(MethodDef::static_method(
             "AsSpan",
             1,
             MethodBody::HostCall(HostTarget::new("ecma:object", "valueOf")),
@@ -135,6 +210,132 @@ fn memory_extensions_class() -> ClassType {
             2,
             MethodBody::Common("dotnet.span_mismatch".into()),
         ))
+}
+
+fn array_segment_class() -> ClassType {
+    ClassType::new("ArraySegment")
+        .with_constructor(ConstructorDef::new(1).with_common_backing("dotnet.array_segment_ctor"))
+        .with_method(MethodDef::static_method(
+            "Empty",
+            0,
+            MethodBody::Common("dotnet.array_segment_empty".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "Get",
+            2,
+            MethodBody::Common("dotnet.array_segment_get".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "Set",
+            3,
+            MethodBody::Common("dotnet.array_segment_set".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "Slice",
+            3,
+            MethodBody::Common("dotnet.array_segment_slice".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "CopyTo",
+            2,
+            MethodBody::Common("dotnet.array_segment_copy_to".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "ToArray",
+            1,
+            MethodBody::Common("dotnet.array_segment_to_array".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "Equals",
+            2,
+            MethodBody::Common("dotnet.array_segment_equals".into()),
+        ))
+        .with_method(MethodDef::new(
+            "Item",
+            1,
+            MethodBody::Common("dotnet.array_segment_get".into()),
+        ))
+        .with_method(MethodDef::new(
+            "SetItem",
+            2,
+            MethodBody::Common("dotnet.array_segment_set".into()),
+        ))
+        .with_method(MethodDef::new(
+            "Slice",
+            2,
+            MethodBody::Common("dotnet.array_segment_slice".into()),
+        ))
+        .with_method(MethodDef::new(
+            "CopyTo",
+            1,
+            MethodBody::Common("dotnet.array_segment_copy_to".into()),
+        ))
+        .with_method(MethodDef::new(
+            "ToArray",
+            0,
+            MethodBody::Common("dotnet.array_segment_to_array".into()),
+        ))
+        .with_method(MethodDef::new(
+            "Equals",
+            1,
+            MethodBody::Common("dotnet.array_segment_equals".into()),
+        ))
+}
+
+fn array_pool_class() -> ClassType {
+    ClassType::new("ArrayPool")
+        .with_method(MethodDef::static_method(
+            "Shared",
+            0,
+            MethodBody::Common("dotnet.array_pool_shared".into()),
+        ))
+        .with_method(MethodDef::new(
+            "Rent",
+            1,
+            MethodBody::Common("dotnet.array_pool_rent".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "Rent",
+            1,
+            MethodBody::Common("dotnet.array_pool_rent_static".into()),
+        ))
+        .with_method(MethodDef::new(
+            "Return",
+            1,
+            MethodBody::Common("dotnet.array_pool_return".into()),
+        ))
+        .with_method(MethodDef::new(
+            "Return",
+            2,
+            MethodBody::Common("dotnet.array_pool_return".into()),
+        ))
+}
+
+fn memory_pool_class() -> ClassType {
+    ClassType::new("MemoryPool")
+        .with_method(MethodDef::static_method(
+            "Shared",
+            0,
+            MethodBody::Common("dotnet.memory_pool_shared".into()),
+        ))
+        .with_method(MethodDef::new(
+            "Rent",
+            1,
+            MethodBody::Common("dotnet.memory_pool_rent".into()),
+        ))
+        .with_method(MethodDef::static_method(
+            "Rent",
+            1,
+            MethodBody::Common("dotnet.memory_pool_rent_static".into()),
+        ))
+}
+
+fn memory_owner_class() -> ClassType {
+    ClassType::new("MemoryPoolOwner").with_method(MethodDef::new(
+        "Dispose",
+        0,
+        MethodBody::Common("dotnet.noop".into()),
+    ))
 }
 
 /// `AsSpan` in instance position on a plain array (`data.AsSpan(1, 2)`).
@@ -179,6 +380,22 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
     exports.push(DotnetClassExport::new(
         "dotnet.System",
         memory_extensions_class(),
+    ));
+    exports.push(DotnetClassExport::new(
+        "dotnet.System",
+        array_segment_class(),
+    ));
+    exports.push(DotnetClassExport::new(
+        "dotnet.System.Buffers",
+        array_pool_class(),
+    ));
+    exports.push(DotnetClassExport::new(
+        "dotnet.System.Buffers",
+        memory_pool_class(),
+    ));
+    exports.push(DotnetClassExport::new(
+        "dotnet.System.Buffers",
+        memory_owner_class(),
     ));
     exports
 }

@@ -75,11 +75,17 @@ async_wraps_body_in_try = true
 
 [builtins]
 
+# `Type.GetType("Name")` — static type lookup by name. Resolution is the shared
+# dynamic-symbol path; .NET yields null on a miss rather than throwing, and the
+# result is the type's NAME so it agrees with `typeof(X)`.
+__vybe_type_get = { emit = "intrinsic:symbol_probe", min_args = 1, max_args = 1 }
+
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
 "__vb_object_get" = { emit = "common:reflection.object_get", min_args = 2, max_args = 2 }
 "__vb_err_raise" = { emit = "throw", min_args = 1, max_args = 3 }
 "__dotnet_string_compare" = { emit = "common:dotnet.string_compare", min_args = 2, max_args = 3 }
+"__vb_string_contains" = { emit = "common:str_contains", min_args = 2, max_args = 2 }
 "__vb_task_delay" = { emit = "common:dotnet.task_delay", min_args = 1, max_args = 2 }
 "__vb_task_run" = { emit = "common:threading.task_run", min_args = 1, max_args = 1 }
 "__vb_task_from_result" = { emit = "common:dotnet.task_from_result", min_args = 1, max_args = 1 }
@@ -450,7 +456,7 @@ indexofany    = { emit = "common:dotnet.string_index_of_any", min_args = 1, max_
 lastindexof   = { emit = "common:dotnet.string_last_index_of", min_args = 1, max_args = 3 }
 lastindexofany = { emit = "common:dotnet.string_last_index_of_any", min_args = 1, max_args = 1 }
 contains      = [
-    { emit = "common:str_includes",                min_args = 1, max_args = 1 },
+    { emit = "common:str_contains",                min_args = 1, max_args = 1 },
     { emit = "common:dotnet.string_contains",      min_args = 2, max_args = 2 },
 ]
 equals        = [
@@ -553,12 +559,10 @@ foreach       = "__array_forEach"
 # ────────────────────────────────────────────────────────────────────────────
 
 [namespaces]
-# Use the .NET BCL namespace resolution from vybe_compiler_common::dotnet.
-# This gives us 60+ namespace roots, default imports, known constants,
-# resolve_dotted_name(), and the full .NET resolution order
-# (locals → fields → FQN → imports → known types).
+# Enable .NET runtime surface semantics; namespace lookup is data-driven by
+# the common resolver through the tree mounts and ambient imports below.
 use_dotnet = true
-use_dotnet_resolver = true
+source_imports_are_namespaces = true
 
 # Types under this namespace-tree path dispatch at RUNTIME through the type
 # registry rather than through this language's value-method tables — `xs.Add(v)`

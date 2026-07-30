@@ -8,8 +8,8 @@ fn csharp_profile_enables_dotnet_namespace_resolution() {
         "C# must keep .NET namespace support enabled"
     );
     assert!(
-        profile.namespaces.use_dotnet_resolver,
-        "C# must keep shared .NET dotted-name resolver enabled"
+        profile.namespaces.source_imports_are_namespaces && profile.uses_namespace_resolver(),
+        "C# must use the shared namespace resolver through profile data"
     );
 }
 
@@ -25,7 +25,10 @@ fn vb_and_csharp_both_use_shared_dotnet_namespace_system() {
         "VB and C# must both use shared .NET namespace registration"
     );
     assert!(
-        vb.namespaces.use_dotnet_resolver && cs.namespaces.use_dotnet_resolver,
-        "VB and C# must both use shared .NET resolver semantics"
+        vb.namespaces.source_imports_are_namespaces
+            && cs.namespaces.source_imports_are_namespaces
+            && vb.uses_namespace_resolver()
+            && cs.uses_namespace_resolver(),
+        "VB and C# must both use shared namespace resolver semantics"
     );
 }

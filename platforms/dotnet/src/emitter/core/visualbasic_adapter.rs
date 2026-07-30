@@ -540,7 +540,7 @@ pub fn emit_vb_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_end(line);
 }
 
-pub fn emit_vb_filedatetime(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_vb_filedatetime(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let stat = chunks[current].add_import("wasi:filesystem", "stat");
     let modified_key = chunks[current].add_constant(Value::String(Arc::from("modified")));
     let path_slot = {

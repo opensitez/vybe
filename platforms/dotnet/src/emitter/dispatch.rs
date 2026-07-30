@@ -1201,8 +1201,19 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.datetime_parse" => {
             crate::emitter::core::datetime_adapter::emit_datetime_parse(chunks, current, line)
         }
+        "dotnet.datetime_parse_exact" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_parse_exact(
+                chunks, current, argc, line,
+            )
+        }
         "dotnet.datetime_today" => {
             crate::emitter::core::datetime_adapter::emit_datetime_today(chunks, current, line)
+        }
+        "dotnet.datetime_min_value" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_min_value(chunks, current, line)
+        }
+        "dotnet.datetime_max_value" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_max_value(chunks, current, line)
         }
         "dotnet.datetime_new" => {
             crate::emitter::core::datetime_adapter::emit_datetime_new(chunks, current, argc, line)
@@ -1225,8 +1236,26 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.datetime_second" => {
             crate::emitter::core::datetime_adapter::emit_datetime_second(chunks, current, line)
         }
+        "dotnet.datetime_millisecond" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_millisecond(chunks, current, line)
+        }
+        "dotnet.datetime_day_of_year" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_day_of_year(chunks, current, line)
+        }
         "dotnet.datetime_day_of_week" => {
             crate::emitter::core::datetime_adapter::emit_datetime_day_of_week(chunks, current, line)
+        }
+        "dotnet.datetime_ticks" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_ticks(chunks, current, line)
+        }
+        "dotnet.datetime_kind" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_kind(chunks, current, line)
+        }
+        "dotnet.datetime_date" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_date(chunks, current, line)
+        }
+        "dotnet.datetime_time_of_day" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_time_of_day(chunks, current, line)
         }
         "dotnet.datetime_add_days" => {
             crate::emitter::core::datetime_adapter::emit_datetime_add_days(chunks, current, line)
@@ -1250,8 +1279,53 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.datetime_compare" => {
             crate::emitter::core::datetime_adapter::emit_datetime_compare(chunks, current, line)
         }
+        "dotnet.datetime_equals_static" | "dotnet.datetime_equals_instance" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_equals(chunks, current, line)
+        }
         "dotnet.datetime_to_short_date_string" => {
             crate::emitter::core::datetime_adapter::emit_datetime_to_short_date_string(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetime_to_string" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_to_string(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.datetime_to_universal_time" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_to_universal_time(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetime_to_local_time" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_to_local_time(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetime_to_binary" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_to_binary(chunks, current, line)
+        }
+        "dotnet.datetime_from_binary" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_from_binary(chunks, current, line)
+        }
+        "dotnet.datetime_to_file_time_utc" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_to_file_time_utc(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetime_from_file_time_utc" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_from_file_time_utc(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetime_to_oadate" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_to_oadate(chunks, current, line)
+        }
+        "dotnet.datetime_from_oadate" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_from_oadate(chunks, current, line)
+        }
+        "dotnet.datetime_get_hash_code" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_get_hash_code(
                 chunks, current, line,
             )
         }
@@ -1260,10 +1334,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, line,
             )
         }
-        "dotnet.datetime_subtract_datetime" => {
-            crate::emitter::core::datetime_adapter::emit_datetime_subtract_datetime(
+        "dotnet.datetime_add_ticks" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_add_ticks(chunks, current, line)
+        }
+        "dotnet.datetime_specify_kind" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_specify_kind(
                 chunks, current, line,
             )
+        }
+        "dotnet.datetime_subtract_datetime" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_subtract(chunks, current, line)
         }
 
         // ── PHP DateTime / DateTimeImmutable / DateInterval adapters ──
@@ -1842,6 +1922,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunks[current].emit_op(Op::REF_EQ, line);
             vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
         }
+        "dotnet.object_to_string_role" => {
+            let slot = chunks[current].alloc_scratch(1);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+            vybe_compiler::primitives::expressions::emit_rich_to_string(
+                &mut chunks[current],
+                slot,
+                line,
+            );
+        }
         "dotnet.gc_noop" => {
             crate::emitter::core::gc_adapter::emit_gc_noop(chunks, current, argc, line)
         }
@@ -2342,6 +2431,68 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.span_mismatch" => {
             crate::emitter::core::span_adapter::emit_span_mismatch(chunks, current, line)
+        }
+        "dotnet.array_segment_ctor" => {
+            crate::emitter::core::span_adapter::emit_array_segment_ctor(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.array_segment_empty" => {
+            crate::emitter::core::span_adapter::emit_array_segment_empty(chunks, current, line)
+        }
+        "dotnet.array_segment_get" => {
+            crate::emitter::core::span_adapter::emit_array_segment_get(chunks, current, line)
+        }
+        "dotnet.array_segment_set" => {
+            crate::emitter::core::span_adapter::emit_array_segment_set(chunks, current, line)
+        }
+        "dotnet.array_segment_slice" => {
+            crate::emitter::core::span_adapter::emit_array_segment_slice(chunks, current, line)
+        }
+        "dotnet.array_segment_copy_to" => {
+            crate::emitter::core::span_adapter::emit_array_segment_copy_to(chunks, current, line)
+        }
+        "dotnet.array_segment_to_array" => {
+            crate::emitter::core::span_adapter::emit_array_segment_to_array(chunks, current, line)
+        }
+        "dotnet.array_segment_equals" => {
+            crate::emitter::core::span_adapter::emit_array_segment_equals(chunks, current, line)
+        }
+        "dotnet.array_pool_shared" => {
+            crate::emitter::core::span_adapter::emit_array_pool_shared(chunks, current, line)
+        }
+        "dotnet.array_pool_rent" => {
+            crate::emitter::core::span_adapter::emit_array_pool_rent(chunks, current, line)
+        }
+        "dotnet.array_pool_rent_static" => {
+            crate::emitter::core::span_adapter::emit_array_pool_rent_static(
+                chunks, current, line,
+            )
+        }
+        "dotnet.array_pool_return" => {
+            crate::emitter::core::span_adapter::emit_array_pool_return(
+                chunks, current, argc, line,
+            )
+        }
+        "dotnet.memory_pool_shared" => {
+            crate::emitter::core::span_adapter::emit_memory_pool_shared(chunks, current, line)
+        }
+        "dotnet.memory_pool_rent" => {
+            crate::emitter::core::span_adapter::emit_memory_pool_rent(chunks, current, line)
+        }
+        "dotnet.memory_pool_rent_static" => {
+            crate::emitter::core::span_adapter::emit_memory_pool_rent_static(
+                chunks, current, line,
+            )
+        }
+        "dotnet.buffer_byte_length" => {
+            crate::emitter::core::span_adapter::emit_buffer_byte_length(chunks, current, line)
+        }
+        "dotnet.buffer_get_byte" => {
+            crate::emitter::core::span_adapter::emit_buffer_get_byte(chunks, current, line)
+        }
+        "dotnet.buffer_set_byte" => {
+            crate::emitter::core::span_adapter::emit_buffer_set_byte(chunks, current, line)
         }
 
         // ── .NET parse helpers — `int.Parse`, `double.Parse`, `bool.Parse`

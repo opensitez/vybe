@@ -316,6 +316,18 @@ pub fn emit_array_set_checked(chunks: &mut [Chunk], current: usize, line: u32) {
 /// runtime helper returns the resized array; .NET `Array.Resize`
 /// signature is by-ref but the bytecode propagates the value).
 pub fn emit_array_resize(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr_slot = chunks[current].alloc_scratch(2);
+    let size_slot = arr_slot + 1;
+    chunks[current].emit_op_u16(Op::LOCAL_SET, size_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, size_slot, line);
+    vybe_compiler::primitives::collections::emit_new_with_length(chunks, current, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, size_slot, line);
     vybe_compiler::primitives::collections::emit_runtime_helper_call(
         chunks,
         current,
@@ -323,6 +335,7 @@ pub fn emit_array_resize(chunks: &mut [Chunk], current: usize, line: u32) {
         2,
         line,
     );
+    chunks[current].emit_end(line);
 }
 
 /// `Array.Sort(arr)` — in-place sort. Lowers to `__vybe_sort_in_place`
@@ -980,10 +993,10 @@ pub fn emit_array_binary_search(chunks: &mut [Chunk], current: usize, argc: u8, 
     vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
-    core_wasm::i32_const(chunk, line, 1);
+    core_wasm::i32_const(chunk, line, -1);
     chunk.emit_op_u16(Op::LOCAL_SET, compare_slot, line);
     chunk.emit_else(line);
-    core_wasm::i32_const(chunk, line, -1);
+    core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op_u16(Op::LOCAL_SET, compare_slot, line);
     chunk.emit_end(line);
     chunk.emit_end(line);

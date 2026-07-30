@@ -5,6 +5,8 @@ use pest::Parser;
 use pest::iterators::Pair;
 use vybe_ast::*;
 use vybe_compiler::primitives::generics as common_generics;
+use vybe_compiler::primitives::memory as common_memory;
+use vybe_compiler::primitives::pointers as common_pointers;
 use vybe_platform_dotnet::emitter::core::exceptions as dotnet_exceptions;
 use vybe_platform_dotnet::emitter::core::lowering as dotnet_lowering;
 
@@ -98,8 +100,774 @@ pub fn parse(source: &str) -> Result<Module, String> {
     rewrite_sorted_dictionary_foreach(&mut module.body);
     rewrite_sorted_set_foreach(&mut module.body);
     rewrite_csharp_xml_linq_factories(&mut module.body);
+    rewrite_csharp_span_slice_aliases(&mut module.body);
+    lower_csharp_pointer_uses(&mut module.body);
     rewrite_user_defined_operator_calls(&mut module);
     Ok(module)
+}
+
+fn lower_csharp_pointer_uses(body: &mut [Statement]) {
+    let mut scope = CsharpPointerScope::default();
+    lower_csharp_pointer_statements(body, &mut scope);
+}
+
+#[derive(Clone, Default)]
+struct CsharpPointerScope {
+    carray: HashSet<String>,
+    chars: HashSet<String>,
+}
+
+fn is_csharp_pointer_type_hint(type_hint: &str) -> bool {
+    type_hint.contains('*')
+}
+
+#[derive(Clone)]
+struct CsharpSpanSliceAlias {
+    base: Expression,
+    offset: Expression,
+}
+
+fn rewrite_csharp_span_slice_aliases(body: &mut [Statement]) {
+    let mut aliases = HashMap::new();
+    rewrite_csharp_span_slice_aliases_in_statements(body, &mut aliases);
+}
+
+fn rewrite_csharp_span_slice_aliases_in_statements(
+    body: &mut [Statement],
+    aliases: &mut HashMap<String, CsharpSpanSliceAlias>,
+) {
+    for stmt in body {
+        rewrite_csharp_span_slice_aliases_in_statement(stmt, aliases);
+    }
+}
+
+fn rewrite_csharp_span_slice_aliases_in_statement(
+    stmt: &mut Statement,
+    aliases: &mut HashMap<String, CsharpSpanSliceAlias>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_csharp_span_slice_aliases_in_expr(init, aliases);
+                    if let Some(alias) = csharp_span_slice_alias_from_expr(init) {
+                        if let BindingPattern::Ident(name) = &decl.pattern {
+                            aliases.insert(name.clone(), alias);
+                        }
+                    }
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            rewrite_csharp_span_slice_aliases_in_expr(value, aliases);
+            for target in targets {
+                rewrite_csharp_span_slice_aliases_in_expr(target, aliases);
+            }
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_csharp_span_slice_aliases_in_expr(target, aliases);
+            rewrite_csharp_span_slice_aliases_in_expr(value, aliases);
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_csharp_span_slice_aliases_in_expr(expr, aliases);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            let mut scoped = aliases.clone();
+            rewrite_csharp_span_slice_aliases_in_statements(body, &mut scoped);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_csharp_span_slice_aliases_in_expr(cond, aliases);
+            let mut scoped = aliases.clone();
+            rewrite_csharp_span_slice_aliases_in_statements(then_body, &mut scoped);
+            for (elif_cond, elif_body) in elifs {
+                rewrite_csharp_span_slice_aliases_in_expr(elif_cond, aliases);
+                let mut scoped = aliases.clone();
+                rewrite_csharp_span_slice_aliases_in_statements(elif_body, &mut scoped);
+            }
+            if let Some(body) = else_body {
+                let mut scoped = aliases.clone();
+                rewrite_csharp_span_slice_aliases_in_statements(body, &mut scoped);
+            }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            rewrite_csharp_span_slice_aliases_in_expr(cond, aliases);
+            let mut scoped = aliases.clone();
+            rewrite_csharp_span_slice_aliases_in_statements(body, &mut scoped);
+            if let Some(else_body) = else_body {
+                let mut scoped = aliases.clone();
+                rewrite_csharp_span_slice_aliases_in_statements(else_body, &mut scoped);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                rewrite_csharp_span_slice_aliases_in_statement(init, aliases);
+            }
+            if let Some(cond) = cond {
+                rewrite_csharp_span_slice_aliases_in_expr(cond, aliases);
+            }
+            if let Some(update) = update {
+                rewrite_csharp_span_slice_aliases_in_expr(update, aliases);
+            }
+            let mut scoped = aliases.clone();
+            rewrite_csharp_span_slice_aliases_in_statements(body, &mut scoped);
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_csharp_span_slice_aliases_in_expr(iter, aliases);
+            let mut scoped = aliases.clone();
+            rewrite_csharp_span_slice_aliases_in_statements(body, &mut scoped);
+            if let Some(else_body) = else_body {
+                let mut scoped = aliases.clone();
+                rewrite_csharp_span_slice_aliases_in_statements(else_body, &mut scoped);
+            }
+        }
+        StmtKind::FunctionDecl { body, .. } => {
+            let mut scoped = HashMap::new();
+            rewrite_csharp_span_slice_aliases_in_statements(body, &mut scoped);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_csharp_span_slice_aliases_in_expr(
+    expr: &mut Expression,
+    aliases: &HashMap<String, CsharpSpanSliceAlias>,
+) {
+    match &mut expr.kind {
+        ExprKind::Index { object, index, .. } => {
+            rewrite_csharp_span_slice_aliases_in_expr(object, aliases);
+            rewrite_csharp_span_slice_aliases_in_expr(index, aliases);
+            if let ExprKind::Ident(name) = &object.kind {
+                if let Some(alias) = aliases.get(name) {
+                    *expr = csharp_span_slice_alias_index(alias, (**index).clone());
+                }
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_csharp_span_slice_aliases_in_expr(callee, aliases);
+            for arg in args {
+                rewrite_csharp_span_slice_aliases_in_expr(&mut arg.value, aliases);
+            }
+        }
+        ExprKind::Member { object, .. }
+        | ExprKind::Unary { expr: object, .. }
+        | ExprKind::RefLoad(object)
+        | ExprKind::Await(object)
+        | ExprKind::YieldFrom(object)
+        | ExprKind::Spread(object)
+        | ExprKind::TypeOf(object) => rewrite_csharp_span_slice_aliases_in_expr(object, aliases),
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right } => {
+            rewrite_csharp_span_slice_aliases_in_expr(left, aliases);
+            rewrite_csharp_span_slice_aliases_in_expr(right, aliases);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_csharp_span_slice_aliases_in_expr(cond, aliases);
+            rewrite_csharp_span_slice_aliases_in_expr(then, aliases);
+            rewrite_csharp_span_slice_aliases_in_expr(else_, aliases);
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_csharp_span_slice_aliases_in_expr(target, aliases);
+            rewrite_csharp_span_slice_aliases_in_expr(value, aliases);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_csharp_span_slice_aliases_in_expr(&mut item.value, aliases);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { value, .. } = prop {
+                    rewrite_csharp_span_slice_aliases_in_expr(value, aliases);
+                }
+            }
+        }
+        ExprKind::Cast { expr: inner, .. } | ExprKind::IsType { expr: inner, .. } => {
+            rewrite_csharp_span_slice_aliases_in_expr(inner, aliases);
+        }
+        _ => {}
+    }
+}
+
+fn csharp_span_slice_alias_from_expr(expr: &Expression) -> Option<CsharpSpanSliceAlias> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if !expr_dotted_name(object).is_some_and(|name| {
+        name.eq_ignore_ascii_case("System.MemoryExtensions")
+            || name.eq_ignore_ascii_case("MemoryExtensions")
+    }) || !(field.eq_ignore_ascii_case("Slice")
+        || field.eq_ignore_ascii_case("AsSpan")
+        || field.eq_ignore_ascii_case("AsMemory"))
+        || args.len() != 3
+    {
+        return None;
+    }
+    Some(CsharpSpanSliceAlias {
+        base: args[0].value.clone(),
+        offset: args[1].value.clone(),
+    })
+}
+
+fn csharp_span_slice_alias_index(alias: &CsharpSpanSliceAlias, index: Expression) -> Expression {
+    Expression::new(ExprKind::Index {
+        object: Box::new(alias.base.clone()),
+        index: Box::new(Expression::new(ExprKind::Binary {
+            op: BinOp::Add,
+            left: Box::new(alias.offset.clone()),
+            right: Box::new(index),
+        })),
+        null_safe: false,
+    })
+}
+
+fn is_csharp_char_pointer_type_hint(type_hint: &str) -> bool {
+    type_hint
+        .split('*')
+        .next()
+        .is_some_and(|prefix| prefix.trim().eq_ignore_ascii_case("char"))
+}
+
+fn is_csharp_pointer_expr(expr: &Expression, scope: &CsharpPointerScope) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => scope.carray.contains(name),
+        ExprKind::Object(props) => props.iter().any(|prop| {
+            matches!(
+                prop,
+                ObjectProperty::KeyValue { key, value }
+                    if matches!(&key.kind, ExprKind::Lit(Literal::Str(k)) if k == common_pointers::REF_KIND_KEY)
+                        && matches!(&value.kind, ExprKind::Lit(Literal::Str(v)) if v == common_pointers::CARRAY_KIND)
+            )
+        }),
+        _ => false,
+    }
+}
+
+fn is_csharp_char_pointer_expr(expr: &Expression, scope: &CsharpPointerScope) -> bool {
+    matches!(&expr.kind, ExprKind::Ident(name) if scope.chars.contains(name))
+}
+
+fn csharp_member(object: Expression, field: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(object),
+        field: field.to_string(),
+        null_safe: false,
+    })
+}
+
+fn csharp_binary(op: BinOp, left: Expression, right: Expression) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn csharp_carray_pointer_eq(left: Expression, right: Expression) -> Expression {
+    csharp_binary(
+        BinOp::And,
+        csharp_binary(
+            BinOp::Eq,
+            csharp_member(left.clone(), common_pointers::CARRAY_BASE_KEY),
+            csharp_member(right.clone(), common_pointers::CARRAY_BASE_KEY),
+        ),
+        csharp_binary(
+            BinOp::Eq,
+            csharp_member(left, common_pointers::CARRAY_IDX_KEY),
+            csharp_member(right, common_pointers::CARRAY_IDX_KEY),
+        ),
+    )
+}
+
+fn csharp_char_code_expr(value: Expression) -> Expression {
+    match value.kind {
+        ExprKind::Lit(Literal::Char(ch)) => Expression::int(ch as i64),
+        _ => value,
+    }
+}
+
+fn csharp_char_pointer_read_value(
+    ptr: Expression,
+    read: Expression,
+    scope: &CsharpPointerScope,
+) -> Expression {
+    if is_csharp_char_pointer_expr(&ptr, scope) {
+        csharp_char_code_expr(read)
+    } else {
+        read
+    }
+}
+
+fn csharp_char_pointer_write_value(
+    ptr: &Expression,
+    value: Expression,
+    scope: &CsharpPointerScope,
+) -> Expression {
+    if is_csharp_char_pointer_expr(ptr, scope) {
+        csharp_char_code_expr(value)
+    } else {
+        value
+    }
+}
+
+fn csharp_pointer_init_expr(
+    init: Expression,
+    scope: &CsharpPointerScope,
+    array_default_for_plain_value: bool,
+) -> Expression {
+    match &init.kind {
+        ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr,
+        } => match &expr.kind {
+            ExprKind::Index { object, index, .. } => {
+                common_pointers::make_carray_ptr((**object).clone(), (**index).clone())
+            }
+            _ => init,
+        },
+        ExprKind::Array(_) => common_pointers::make_carray_ptr(init, Expression::int(0)),
+        ExprKind::Ident(name) if scope.carray.contains(name) => init,
+        ExprKind::Lit(Literal::Null) => init,
+        _ if array_default_for_plain_value => {
+            common_pointers::make_carray_ptr(init, Expression::int(0))
+        }
+        _ => init,
+    }
+}
+
+fn normalize_csharp_char_array_literal(expr: &mut Expression) {
+    let ExprKind::Array(items) = &mut expr.kind else {
+        return;
+    };
+    for item in items {
+        if let ExprKind::Lit(Literal::Char(ch)) = item.value.kind {
+            item.value = Expression::int(ch as i64);
+        }
+    }
+}
+
+fn lower_csharp_pointer_statements(body: &mut [Statement], scope: &mut CsharpPointerScope) {
+    for stmt in body {
+        lower_csharp_pointer_statement(stmt, scope);
+    }
+}
+
+fn lower_csharp_pointer_statement(stmt: &mut Statement, scope: &mut CsharpPointerScope) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                let is_pointer_decl = decl
+                    .type_hint
+                    .as_deref()
+                    .is_some_and(is_csharp_pointer_type_hint);
+                let is_char_pointer_decl = decl
+                    .type_hint
+                    .as_deref()
+                    .is_some_and(is_csharp_char_pointer_type_hint);
+                let is_char_array_decl = decl.type_hint.as_deref().is_some_and(|hint| {
+                    hint.trim()
+                        .to_ascii_lowercase()
+                        .replace(' ', "")
+                        .starts_with("char[]")
+                });
+                if let Some(init) = decl.init.take() {
+                    let mut lowered = init;
+                    if is_char_array_decl {
+                        normalize_csharp_char_array_literal(&mut lowered);
+                    }
+                    lower_csharp_pointer_expr(&mut lowered, scope);
+                    if is_pointer_decl {
+                        lowered = csharp_pointer_init_expr(lowered, scope, true);
+                    }
+                    if is_pointer_decl
+                        && is_csharp_pointer_expr(&lowered, scope)
+                        && let BindingPattern::Ident(name) = &decl.pattern
+                    {
+                        scope.carray.insert(name.clone());
+                        if is_char_pointer_decl {
+                            scope.chars.insert(name.clone());
+                        }
+                    }
+                    decl.init = Some(lowered);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } if targets.len() == 1 => {
+            lower_csharp_pointer_expr(value, scope);
+            if let ExprKind::RefLoad(ptr) = &mut targets[0].kind {
+                lower_csharp_pointer_expr(ptr, scope);
+                if is_csharp_pointer_expr(ptr, scope) {
+                    stmt.kind = StmtKind::Expr(common_pointers::carray_deref_write(
+                        (**ptr).clone(),
+                        csharp_char_pointer_write_value(ptr, value.clone(), scope),
+                    ));
+                }
+                return;
+            }
+            if let ExprKind::Index { object, index, .. } = &mut targets[0].kind {
+                lower_csharp_pointer_expr(object, scope);
+                lower_csharp_pointer_expr(index, scope);
+                if is_csharp_pointer_expr(object, scope) {
+                    let target =
+                        common_pointers::carray_indexed_read((**object).clone(), (**index).clone());
+                    let write_value =
+                        csharp_char_pointer_write_value(object, value.clone(), scope);
+                    targets[0] = target;
+                    *value = write_value;
+                    return;
+                }
+            }
+            lower_csharp_pointer_expr(&mut targets[0], scope);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                lower_csharp_pointer_expr(target, scope);
+            }
+            lower_csharp_pointer_expr(value, scope);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            lower_csharp_pointer_expr(target, scope);
+            lower_csharp_pointer_expr(value, scope);
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            lower_csharp_pointer_expr(expr, scope);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            let mut scoped = scope.clone();
+            lower_csharp_pointer_statements(body, &mut scoped);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            lower_csharp_pointer_expr(cond, scope);
+            let mut scoped = scope.clone();
+            lower_csharp_pointer_statements(then_body, &mut scoped);
+            for (cond, body) in elifs {
+                lower_csharp_pointer_expr(cond, scope);
+                let mut scoped = scope.clone();
+                lower_csharp_pointer_statements(body, &mut scoped);
+            }
+            if let Some(body) = else_body {
+                let mut scoped = scope.clone();
+                lower_csharp_pointer_statements(body, &mut scoped);
+            }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            lower_csharp_pointer_expr(cond, scope);
+            let mut scoped = scope.clone();
+            lower_csharp_pointer_statements(body, &mut scoped);
+            if let Some(body) = else_body {
+                let mut scoped = scope.clone();
+                lower_csharp_pointer_statements(body, &mut scoped);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped = scope.clone();
+            if let Some(init) = init {
+                lower_csharp_pointer_statement(init, &mut scoped);
+            }
+            if let Some(cond) = cond {
+                lower_csharp_pointer_expr(cond, &scoped);
+            }
+            if let Some(update) = update {
+                lower_csharp_pointer_expr(update, &scoped);
+            }
+            lower_csharp_pointer_statements(body, &mut scoped);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            lower_csharp_pointer_expr(iter, scope);
+            let mut scoped = scope.clone();
+            lower_csharp_pointer_statements(body, &mut scoped);
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            let mut scoped = scope.clone();
+            lower_csharp_pointer_statements(body, &mut scoped);
+            lower_csharp_pointer_expr(cond, &scoped);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            let mut scoped = scope.clone();
+            lower_csharp_pointer_statements(body, &mut scoped);
+            for catch in catches {
+                let mut scoped = scope.clone();
+                lower_csharp_pointer_statements(&mut catch.body, &mut scoped);
+            }
+            if let Some(body) = else_body {
+                let mut scoped = scope.clone();
+                lower_csharp_pointer_statements(body, &mut scoped);
+            }
+            if let Some(body) = finally {
+                let mut scoped = scope.clone();
+                lower_csharp_pointer_statements(body, &mut scoped);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                lower_csharp_pointer_member(member);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lower_csharp_pointer_member(member: &mut ClassMember) {
+    let mut scope = CsharpPointerScope::default();
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            lower_csharp_pointer_statement(stmt, &mut scope);
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            for param in params {
+                if param.type_hint.as_deref().is_some_and(|hint| {
+                    is_csharp_pointer_type_hint(hint) && hint.contains("[]")
+                })
+                {
+                    scope.carray.insert(param.name.clone());
+                }
+            }
+            lower_csharp_pointer_statements(body, &mut scope);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                lower_csharp_pointer_statements(getter, &mut scope.clone());
+            }
+            if let Some(setter) = setter {
+                lower_csharp_pointer_statements(&mut setter.body, &mut scope);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lower_csharp_pointer_expr(expr: &mut Expression, scope: &CsharpPointerScope) {
+    match &mut expr.kind {
+        ExprKind::RefLoad(inner) => {
+            if let ExprKind::Unary { op, expr: ptr } = &mut inner.kind {
+                lower_csharp_pointer_expr(ptr, scope);
+                if let ExprKind::Ident(name) = &ptr.kind {
+                    if is_csharp_pointer_expr(ptr, scope) {
+                        let step = Expression::int(1);
+                        match op {
+                            UnaryOp::PreInc => {
+                                let read = common_pointers::carray_deref_read((**ptr).clone());
+                                *expr = Expression::new(ExprKind::Sequence(vec![
+                                    common_pointers::carray_advance_inplace(name, step),
+                                    csharp_char_pointer_read_value((**ptr).clone(), read, scope),
+                                ]));
+                                return;
+                            }
+                            UnaryOp::PreDec => {
+                                let read = common_pointers::carray_deref_read((**ptr).clone());
+                                *expr = Expression::new(ExprKind::Sequence(vec![
+                                    common_pointers::carray_retreat_inplace(name, step),
+                                    csharp_char_pointer_read_value((**ptr).clone(), read, scope),
+                                ]));
+                                return;
+                            }
+                            UnaryOp::PostInc => {
+                                let read_old = common_pointers::carray_deref_read((**ptr).clone());
+                                let read_old = csharp_char_pointer_read_value(
+                                    (**ptr).clone(),
+                                    read_old,
+                                    scope,
+                                );
+                                let old_again = common_pointers::carray_indexed_read(
+                                    (**ptr).clone(),
+                                    Expression::int(-1),
+                                );
+                                *expr = Expression::new(ExprKind::Sequence(vec![
+                                    read_old,
+                                    common_pointers::carray_advance_inplace(name, step),
+                                    csharp_char_pointer_read_value((**ptr).clone(), old_again, scope),
+                                ]));
+                                return;
+                            }
+                            UnaryOp::PostDec => {
+                                let read_old = common_pointers::carray_deref_read((**ptr).clone());
+                                let read_old = csharp_char_pointer_read_value(
+                                    (**ptr).clone(),
+                                    read_old,
+                                    scope,
+                                );
+                                let old_again = common_pointers::carray_indexed_read(
+                                    (**ptr).clone(),
+                                    Expression::int(1),
+                                );
+                                *expr = Expression::new(ExprKind::Sequence(vec![
+                                    read_old,
+                                    common_pointers::carray_retreat_inplace(name, step),
+                                    csharp_char_pointer_read_value((**ptr).clone(), old_again, scope),
+                                ]));
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            lower_csharp_pointer_expr(inner, scope);
+            if is_csharp_pointer_expr(inner, scope) {
+                let read = common_pointers::carray_deref_read((**inner).clone());
+                *expr = csharp_char_pointer_read_value((**inner).clone(), read, scope);
+            }
+        }
+        ExprKind::Index { object, index, .. } => {
+            lower_csharp_pointer_expr(object, scope);
+            lower_csharp_pointer_expr(index, scope);
+            if is_csharp_pointer_expr(object, scope) {
+                let read = common_pointers::carray_indexed_read((**object).clone(), (**index).clone());
+                *expr = csharp_char_pointer_read_value((**object).clone(), read, scope);
+            }
+        }
+        ExprKind::Unary { op, expr: inner } => {
+            lower_csharp_pointer_expr(inner, scope);
+            if is_csharp_pointer_expr(inner, scope) {
+                match op {
+                    UnaryOp::PreInc | UnaryOp::PostInc => {
+                        if let ExprKind::Ident(name) = &inner.kind {
+                            *expr =
+                                common_pointers::carray_advance_inplace(name, Expression::int(1));
+                        }
+                    }
+                    UnaryOp::PreDec | UnaryOp::PostDec => {
+                        if let ExprKind::Ident(name) = &inner.kind {
+                            *expr =
+                                common_pointers::carray_retreat_inplace(name, Expression::int(1));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Binary { op, left, right } => {
+            lower_csharp_pointer_expr(left, scope);
+            lower_csharp_pointer_expr(right, scope);
+            let left_is_ptr = is_csharp_pointer_expr(left, scope);
+            let right_is_ptr = is_csharp_pointer_expr(right, scope);
+            match (*op, left_is_ptr, right_is_ptr) {
+                (BinOp::Eq, true, true) => {
+                    *expr = csharp_carray_pointer_eq((**left).clone(), (**right).clone());
+                }
+                (BinOp::NotEq, true, true) => {
+                    *expr = Expression::new(ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(csharp_carray_pointer_eq(
+                            (**left).clone(),
+                            (**right).clone(),
+                        )),
+                    });
+                }
+                (BinOp::Add, true, _) => {
+                    *expr = common_pointers::carray_advance((**left).clone(), (**right).clone());
+                }
+                (BinOp::Add, _, true) => {
+                    *expr = common_pointers::carray_advance((**right).clone(), (**left).clone());
+                }
+                (BinOp::Sub, true, true) => {
+                    *expr = common_pointers::carray_diff((**left).clone(), (**right).clone());
+                }
+                (BinOp::Sub, true, false) => {
+                    *expr = common_pointers::carray_retreat((**left).clone(), (**right).clone());
+                }
+                _ => {}
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            lower_csharp_pointer_expr(value, scope);
+            lower_csharp_pointer_expr(target, scope);
+            if let ExprKind::RefLoad(ptr) = &target.kind {
+                if is_csharp_pointer_expr(ptr, scope) {
+                    *expr =
+                        common_pointers::carray_deref_write(
+                            (**ptr).clone(),
+                            csharp_char_pointer_write_value(ptr, (**value).clone(), scope),
+                        );
+                }
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            lower_csharp_pointer_expr(callee, scope);
+            for arg in args {
+                lower_csharp_pointer_expr(&mut arg.value, scope);
+            }
+        }
+        ExprKind::Member { object, .. } => lower_csharp_pointer_expr(object, scope),
+        ExprKind::Ternary { cond, then, else_ } => {
+            lower_csharp_pointer_expr(cond, scope);
+            lower_csharp_pointer_expr(then, scope);
+            lower_csharp_pointer_expr(else_, scope);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                if let Some(key) = &mut item.key {
+                    lower_csharp_pointer_expr(key, scope);
+                }
+                lower_csharp_pointer_expr(&mut item.value, scope);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        lower_csharp_pointer_expr(key, scope);
+                        lower_csharp_pointer_expr(value, scope);
+                    }
+                    ObjectProperty::Spread(value) => lower_csharp_pointer_expr(value, scope),
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                lower_csharp_pointer_expr(item, scope);
+            }
+        }
+        ExprKind::Cast { expr: inner, .. }
+        | ExprKind::TypeOf(inner)
+        | ExprKind::Void(inner)
+        | ExprKind::Delete(inner)
+        | ExprKind::Await(inner)
+        | ExprKind::Yield(Some(inner))
+        | ExprKind::Spread(inner)
+        | ExprKind::YieldFrom(inner) => lower_csharp_pointer_expr(inner, scope),
+        ExprKind::Range { start, end, .. } => {
+            lower_csharp_pointer_expr(start, scope);
+            lower_csharp_pointer_expr(end, scope);
+        }
+        _ => {}
+    }
 }
 
 fn split_csharp_top_level(text: &str, separator: char) -> Vec<String> {
@@ -716,7 +1484,12 @@ fn rewrite_explicit_interface_accesses_in_expr(
                 }
             }
         }
-        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items)
+        | ExprKind::Zip {
+            iterables: items, ..
+        } => {
             for item in items {
                 rewrite_explicit_interface_accesses_in_expr(item, conflicted);
             }
@@ -2560,10 +3333,11 @@ fn visit_csharp_stmt_lists_for_using(kind: &mut StmtKind, visit: fn(&mut Vec<Sta
 }
 
 fn lower_one_csharp_using(var: &str, resource: Expression, tail: Vec<Statement>) -> Vec<Statement> {
+    let resource_type = infer_csharp_type_from_expr(&resource);
     let decl = Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(var.to_string()),
-            type_hint: None,
+            type_hint: resource_type.clone(),
             init: Some(resource),
             array_bounds: None,
             with_events: false,
@@ -2571,11 +3345,23 @@ fn lower_one_csharp_using(var: &str, resource: Expression, tail: Vec<Statement>)
         kind: VarDeclKind::Let,
     });
     let mut out = vec![decl];
-    out.extend(csharp_using_disposal_wrap(var, tail));
+    out.extend(csharp_using_disposal_wrap(var, tail, resource_type.as_deref()));
     out
 }
 
-fn csharp_using_disposal_wrap(var: &str, tail: Vec<Statement>) -> Vec<Statement> {
+fn csharp_using_disposal_wrap(
+    var: &str,
+    tail: Vec<Statement>,
+    resource_type: Option<&str>,
+) -> Vec<Statement> {
+    if resource_type.is_some_and(|ty| ty.eq_ignore_ascii_case("MemoryPoolOwner")) {
+        return vec![Statement::new(StmtKind::Try {
+            body: tail,
+            catches: Vec::new(),
+            else_body: None,
+            finally: Some(Vec::new()),
+        })];
+    }
     let var_expr = Expression::ident(var);
     let dispose_call = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
@@ -3470,9 +4256,44 @@ fn rewrite_using_imports_in_statement(
         | StmtKind::NamespaceDecl { body, .. } => {
             rewrite_using_imports_in_statements(body, aliases, static_paths);
         }
-        StmtKind::ClassDecl { members, .. }
-        | StmtKind::StructDecl { members, .. }
-        | StmtKind::ModuleDecl { members, .. } => {
+        StmtKind::ClassDecl {
+            decorators,
+            members,
+            ..
+        }
+        | StmtKind::StructDecl {
+            decorators,
+            members,
+            ..
+        } => {
+            for decorator in decorators {
+                rewrite_using_imports_in_expr(decorator, aliases, static_paths);
+            }
+            for member in members {
+                rewrite_using_imports_in_member(member, aliases, static_paths);
+            }
+        }
+        StmtKind::InterfaceDecl {
+            decorators,
+            ..
+        } => {
+            for decorator in decorators {
+                rewrite_using_imports_in_expr(decorator, aliases, static_paths);
+            }
+        }
+        StmtKind::EnumDecl {
+            decorators,
+            body_members,
+            ..
+        } => {
+            for decorator in decorators {
+                rewrite_using_imports_in_expr(decorator, aliases, static_paths);
+            }
+            for member in body_members {
+                rewrite_using_imports_in_member(member, aliases, static_paths);
+            }
+        }
+        StmtKind::ModuleDecl { members, .. } => {
             for member in members {
                 rewrite_using_imports_in_member(member, aliases, static_paths);
             }
@@ -3606,6 +4427,22 @@ fn rewrite_using_imports_in_member(
     static_paths: &[String],
 ) {
     match member {
+        ClassMember::Field { modifiers, .. } | ClassMember::Property { modifiers, .. } => {
+            for decorator in &mut modifiers.decorators {
+                rewrite_using_imports_in_expr(decorator, aliases, static_paths);
+            }
+        }
+        ClassMember::Method(stmt) => {
+            if let StmtKind::FunctionDecl { modifiers, .. } = &mut stmt.kind {
+                for decorator in &mut modifiers.decorators {
+                    rewrite_using_imports_in_expr(decorator, aliases, static_paths);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    match member {
         ClassMember::Field {
             init: Some(expr),
             array_bounds,
@@ -3726,7 +4563,12 @@ fn rewrite_using_imports_in_expr(
                 }
             }
         }
-        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items)
+        | ExprKind::Zip {
+            iterables: items, ..
+        } => {
             for item in items {
                 rewrite_using_imports_in_expr(item, aliases, static_paths);
             }
@@ -4405,7 +5247,12 @@ fn rewrite_extension_calls_in_expr(
                 }
             }
         }
-        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items)
+        | ExprKind::Zip {
+            iterables: items, ..
+        } => {
             for item in items {
                 rewrite_extension_calls_in_expr(item, extension_methods, extension_containers);
             }
@@ -4683,6 +5530,14 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             }
             return Ok(stmt);
         }
+        Rule::unsafe_statement => {
+            let block = pair
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::block_statement)
+                .ok_or("Empty unsafe statement")?;
+            return walk_statement(block);
+        }
+        Rule::fixed_statement => walk_fixed_statement(pair)?,
         Rule::local_var_declaration => walk_local_var(pair)?,
         Rule::local_function_decl => walk_local_function(pair)?,
         Rule::using_declaration => walk_using_declaration(pair)?,
@@ -5192,7 +6047,40 @@ fn infer_csharp_type_from_expr(expr: &Expression) -> Option<String> {
             }
             element_type.map(|inner| format!("{}[]", inner))
         }
-        ExprKind::Call { .. } => infer_csharp_iife_return_type(expr),
+        ExprKind::Call { callee, args, .. } => {
+            if args.is_empty() {
+                if let ExprKind::Member { object, field, .. } = &callee.kind {
+                    if field.eq_ignore_ascii_case("Shared") {
+                        if let Some(path) = expr_dotted_name(object) {
+                            let stripped = strip_csharp_type_path_generic_args(&path);
+                            if stripped.eq_ignore_ascii_case("System.Buffers.ArrayPool")
+                                || stripped.eq_ignore_ascii_case("ArrayPool")
+                            {
+                                return Some("ArrayPool".into());
+                            }
+                            if stripped.eq_ignore_ascii_case("System.Buffers.MemoryPool")
+                                || stripped.eq_ignore_ascii_case("MemoryPool")
+                            {
+                                return Some("MemoryPool".into());
+                            }
+                        }
+                    }
+                }
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if field.eq_ignore_ascii_case("Rent") {
+                    if let Some(path) = expr_dotted_name(object) {
+                        let stripped = strip_csharp_type_path_generic_args(&path);
+                        if stripped.eq_ignore_ascii_case("System.Buffers.MemoryPool")
+                            || stripped.eq_ignore_ascii_case("MemoryPool")
+                        {
+                            return Some("MemoryPoolOwner".into());
+                        }
+                    }
+                }
+            }
+            infer_csharp_iife_return_type(expr)
+        }
         _ => None,
     }
 }
@@ -6250,6 +7138,10 @@ fn is_span_like_type_name(normalized_hint: &str) -> bool {
         .next()
         .unwrap_or(normalized_hint);
     matches!(base, "span" | "readonlyspan" | "memory" | "readonlymemory")
+}
+
+fn is_span_or_memory_runtime_type(type_name: &str) -> bool {
+    is_span_like_type_name(&normalize_runtime_type_name(type_name).to_lowercase())
 }
 
 /// The value a target-typed `default` stands for, given the declared type.
@@ -10666,6 +11558,31 @@ fn walk_lock(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::Lock { expr, body })
 }
 
+fn walk_fixed_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let mut decl_stmt = None;
+    let mut body_stmt = None;
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::local_var_declaration_no_semi => {
+                decl_stmt = Some(Statement::new(walk_local_var(p)?));
+            }
+            _ => {
+                body_stmt = Some(walk_statement(p)?);
+            }
+        }
+    }
+
+    let mut body = Vec::new();
+    if let Some(stmt) = decl_stmt {
+        body.push(stmt);
+    }
+    if let Some(stmt) = body_stmt {
+        body.push(stmt);
+    }
+    Ok(StmtKind::Block(body))
+}
+
 // ── Parameters ──────────────────────────────────────────────────────────────
 
 fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
@@ -11441,6 +12358,10 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             let op = match op_str {
                 "-" => UnaryOp::Neg,
                 "+" => UnaryOp::Pos,
+                "*" => {
+                    return Ok(ExprKind::RefLoad(Box::new(operand)));
+                }
+                "&" => UnaryOp::AddrOf,
                 "!" => UnaryOp::Not,
                 "~" => UnaryOp::BitNot,
                 "++" => UnaryOp::PreInc,
@@ -12123,22 +13044,18 @@ fn walk_stackalloc_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
     // `stackalloc int[3] { 10, 20, 30 }` — the initializer supplies the values,
     // so the length is redundant (C# requires them to agree).
     if !elements.is_empty() {
-        return Ok(ExprKind::Array(
-            elements
-                .into_iter()
-                .map(|value| ArrayElement {
-                    key: None,
-                    value,
-                    spread: false,
-                    by_ref: false,
-                })
-                .collect(),
-        ));
+        return Ok(common_memory::heap_array(elements).kind);
     }
 
     match size {
-        Some(length) => Ok(build_csharp_sized_array_expr(&[length], &element_type, 0).kind),
-        None => Ok(ExprKind::Array(Vec::new())),
+        Some(length) => {
+            if let Some(count) = try_csharp_usize_literal(&length) {
+                Ok(common_memory::heap_zeroed_array(count).kind)
+            } else {
+                Ok(build_csharp_sized_array_expr(&[length], &element_type, 0).kind)
+            }
+        }
+        None => Ok(common_memory::heap_array(Vec::new()).kind),
     }
 }
 
@@ -12325,6 +13242,26 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
     // (e.g. "MyApp.Foo" → Member { Ident("MyApp"), "Foo" })
     let class_expr = build_dotted_expr(&type_name);
 
+    if is_span_or_memory_runtime_type(&raw_type_name) && array_init.is_empty() && obj_init.is_empty()
+    {
+        match args.len() {
+            0 => return Ok(common_memory::heap_array(Vec::new()).kind),
+            1 => return Ok(args[0].value.clone().kind),
+            3 => {
+                return Ok(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(build_dotted_expr("System.MemoryExtensions")),
+                        field: "AsSpan".into(),
+                        null_safe: false,
+                    })),
+                    args,
+                    optional: false,
+                });
+            }
+            _ => {}
+        }
+    }
+
     if is_array {
         let dimensions: Vec<Expression> = args.iter().map(|arg| arg.value.clone()).collect();
         if dimensions.is_empty() {
@@ -12356,7 +13293,7 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
         } else {
             Expression::new(emit_generic_ctor_binding_iife(new_call, generic_bindings))
         };
-        return Ok(emit_object_init_iife(new_call, obj_init));
+        return Ok(emit_object_init_iife(new_call, obj_init, Some(type_name.clone())));
     }
 
     let generic_bindings = csharp_generic_ctor_bindings(&raw_type_name, &type_name);
@@ -12599,13 +13536,17 @@ fn emit_generic_ctor_binding_iife(
 /// assignment, and returns the instance. Same pattern as the
 /// Dictionary / HashSet initializer lowerings — keeps the temp local
 /// out of the caller's scope.
-fn emit_object_init_iife(new_call: Expression, props: Vec<(String, Expression)>) -> ExprKind {
+fn emit_object_init_iife(
+    new_call: Expression,
+    props: Vec<(String, Expression)>,
+    type_hint: Option<String>,
+) -> ExprKind {
     let mut body: Vec<Statement> = Vec::new();
     body.push(Statement::with_span(
         StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__obj".into()),
-                type_hint: None,
+                type_hint,
                 init: Some(new_call),
                 array_bounds: None,
                 with_events: false,
@@ -14662,14 +15603,22 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
 
     if let Some(path) = expr_dotted_name(&object) {
         let normalized = path.trim();
+        if is_span_or_memory_runtime_type(normalized) && name.eq_ignore_ascii_case("Empty") {
+            return common_memory::heap_array(Vec::new());
+        }
         if let Some(value) = vybe_platform_dotnet::emitter::static_member_constant(normalized, name)
         {
             return Expression::new(ExprKind::Lit(Literal::Str(value.into())));
         }
         if vybe_platform_dotnet::emitter::static_member_parameterless_call(normalized, name) {
+            let static_object = if normalized.contains('<') {
+                build_dotted_expr(&strip_csharp_type_path_generic_args(normalized))
+            } else {
+                object
+            };
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Member {
-                    object: Box::new(object),
+                    object: Box::new(static_object),
                     field: name.to_string(),
                     null_safe: false,
                 })),
@@ -14677,6 +15626,21 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
                 optional: false,
             });
         }
+    }
+
+    if name.eq_ignore_ascii_case("Span") {
+        return object;
+    }
+    if name.eq_ignore_ascii_case("IsEmpty") {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(build_dotted_expr("System.MemoryExtensions")),
+                field: "IsEmpty".into(),
+                null_safe: false,
+            })),
+            args: vec![Argument::positional(object)],
+            optional: false,
+        });
     }
 
     // typeof(T) emits a string literal `"System.<Name>"`. Resolve
@@ -14724,6 +15688,18 @@ fn canonicalize_member_access(object: Expression, name: &str) -> Expression {
     // unwrap to the ternary directly. Standalone `expr.GetType()` (no
     // chained access) is left alone — its result is unused in any
     // current test path.
+    // `Type.GetType("X").Name` — the shared lookup already yields the type's
+    // NAME, so `.Name` on it is the value itself. Same representation
+    // `typeof(X).Name` produces, which is the point: both spellings of "which
+    // type" have to agree.
+    if name == "Name" || name == "FullName" {
+        if let ExprKind::Call { callee, .. } = &object.kind {
+            if matches!(&callee.kind, ExprKind::Ident(n) if n == "__vybe_type_get") {
+                return object;
+            }
+        }
+    }
+
     if name == "Name" || name == "FullName" || name == "IsArray" {
         if let ExprKind::Call { callee, args, .. } = &object.kind {
             if args.is_empty() {
@@ -14889,7 +15865,25 @@ fn rewrite_csharp_string_instance_call(
     let is_string_receiver = matches!(&receiver.kind, ExprKind::Lit(Literal::Str(_)));
     if field.eq_ignore_ascii_case("AsSpan") && is_string_receiver {
         if args.is_empty() {
-            return Some(receiver);
+            return Some(call_builtin(
+                "__csharp_str_split",
+                vec![
+                    Argument::positional(receiver),
+                    Argument::positional(Expression::string("")),
+                ],
+            ));
+        }
+        return rewrite_csharp_string_instance_call(receiver, "Substring", args);
+    }
+    if field.eq_ignore_ascii_case("AsMemory") && is_string_receiver {
+        if args.is_empty() {
+            return Some(call_builtin(
+                "__csharp_str_split",
+                vec![
+                    Argument::positional(receiver),
+                    Argument::positional(Expression::string("")),
+                ],
+            ));
         }
         return rewrite_csharp_string_instance_call(receiver, "Substring", args);
     }
@@ -15152,6 +16146,109 @@ fn char_arg_to_string(expr: &Expression) -> Expression {
     }
 }
 
+fn csharp_span_extension_method_call(
+    receiver: Expression,
+    field: &str,
+    args: &[Argument],
+) -> Option<Expression> {
+    if (field.eq_ignore_ascii_case("AsSpan") || field.eq_ignore_ascii_case("AsMemory"))
+        && args.is_empty()
+    {
+        return Some(receiver);
+    }
+
+    if field.eq_ignore_ascii_case("CopyTo")
+        && args.len() == 1
+        && let Some(alias) = csharp_span_slice_alias_from_expr(&args[0].value)
+    {
+        let count = if let ExprKind::Call {
+            args: slice_args, ..
+        } = &args[0].value.kind
+        {
+            slice_args
+                .get(2)
+                .map(|arg| arg.value.clone())
+                .unwrap_or_else(|| canonicalize_member_access(receiver.clone(), "Length"))
+        } else {
+            canonicalize_member_access(receiver.clone(), "Length")
+        };
+        return Some(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(build_dotted_expr("System.Array")),
+                field: "Copy".into(),
+                null_safe: false,
+            })),
+            args: vec![
+                Argument::positional(receiver),
+                Argument::positional(Expression::int(0)),
+                Argument::positional(alias.base),
+                Argument::positional(alias.offset),
+                Argument::positional(count),
+            ],
+            optional: false,
+        }));
+    }
+
+    if (field.eq_ignore_ascii_case("Slice")
+        || field.eq_ignore_ascii_case("AsSpan")
+        || field.eq_ignore_ascii_case("AsMemory"))
+        && args.len() == 1
+    {
+        let start = args[0].value.clone();
+        let count = Expression::new(ExprKind::Binary {
+            op: BinOp::Sub,
+            left: Box::new(canonicalize_member_access(receiver.clone(), "Length")),
+            right: Box::new(start.clone()),
+        });
+        return Some(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(build_dotted_expr("System.MemoryExtensions")),
+                field: "Slice".into(),
+                null_safe: false,
+            })),
+            args: vec![
+                Argument::positional(receiver),
+                Argument::positional(start),
+                Argument::positional(count),
+            ],
+            optional: false,
+        }));
+    }
+
+    let name = match field.to_ascii_lowercase().as_str() {
+        "slice" if args.len() == 2 => "Slice",
+        "toarray" if args.is_empty() => "ToArray",
+        "fill" if args.len() == 1 => "Fill",
+        "contains" if args.len() == 1 => "Contains",
+        "indexof" if args.len() == 1 => "IndexOf",
+        "lastindexof" if args.len() == 1 => "LastIndexOf",
+        "reverse" if args.is_empty() => "Reverse",
+        "sequenceequal" if args.len() == 1 => "SequenceEqual",
+        "clear" if args.is_empty() => "Clear",
+        "copyto" if args.len() == 1 => "CopyTo",
+        "trycopyto" if args.len() == 1 => "TryCopyTo",
+        "trimstart" if args.len() == 1 => "TrimStart",
+        "trimend" if args.len() == 1 => "TrimEnd",
+        "mismatch" if args.len() == 1 => "Mismatch",
+        "asspan" if args.len() == 2 => "AsSpan",
+        "asmemory" if args.len() == 2 => "AsSpan",
+        _ => return None,
+    };
+
+    let mut call_args = Vec::with_capacity(args.len() + 1);
+    call_args.push(Argument::positional(receiver));
+    call_args.extend(args.iter().cloned());
+    Some(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(build_dotted_expr("System.MemoryExtensions")),
+            field: name.into(),
+            null_safe: false,
+        })),
+        args: call_args,
+        optional: false,
+    }))
+}
+
 fn build_csharp_string_null_or_empty_expr(value: Expression, trim_first: bool) -> Expression {
     let value_for_len = if trim_first {
         Expression::new(ExprKind::Call {
@@ -15204,7 +16301,90 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
     //
     // Instance-method rewrite: `a.CompareTo(b)` → `a < b ? -1 : a > b ? 1 : 0`
     // (works for strings AND numbers — same JS comparison semantics).
+    // `Type.GetType("Name")` — the STATIC lookup of a type by name, as opposed
+    // to `value.GetType()` (the instance method asking what a value is, handled
+    // in `canonicalize_member_access`). Routed to the shared dynamic-symbol
+    // path, which consults any registered resolver and yields the type's name
+    // so this agrees with `typeof(X)`, or `null` when it does not resolve —
+    // .NET returns null here rather than throwing.
     if let ExprKind::Member { object, field, .. } = &callee.kind {
+        if field.eq_ignore_ascii_case("GetType")
+            && args.len() == 1
+            && expr_dotted_name(object)
+                .as_deref()
+                .is_some_and(|path| {
+                    path.eq_ignore_ascii_case("Type") || path.eq_ignore_ascii_case("System.Type")
+                })
+            && matches!(&args[0].value.kind, ExprKind::Lit(Literal::Str(_)))
+        {
+            return Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__vybe_type_get")),
+                args,
+                optional: false,
+            });
+        }
+    }
+
+    if let ExprKind::Member { object, field, .. } = &callee.kind {
+        if field.eq_ignore_ascii_case("Shared") && args.is_empty() {
+            if let Some(path) = expr_dotted_name(object) {
+                let stripped = strip_csharp_type_path_generic_args(&path);
+                if stripped != path
+                    && (stripped.eq_ignore_ascii_case("System.Buffers.ArrayPool")
+                        || stripped.eq_ignore_ascii_case("ArrayPool")
+                        || stripped.eq_ignore_ascii_case("System.Buffers.MemoryPool")
+                        || stripped.eq_ignore_ascii_case("MemoryPool"))
+                {
+                    return Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new(build_dotted_expr(&stripped)),
+                            field: field.clone(),
+                            null_safe: false,
+                        })),
+                        args,
+                        optional: false,
+                    });
+                }
+            }
+        }
+        if field.eq_ignore_ascii_case("Rent") && args.len() == 1 {
+            if let ExprKind::Call {
+                callee: shared_callee,
+                args: shared_args,
+                ..
+            } = &object.kind
+            {
+                if shared_args.is_empty() {
+                    if let ExprKind::Member {
+                        object: shared_object,
+                        field: shared_field,
+                        ..
+                    } = &shared_callee.kind
+                    {
+                        if shared_field.eq_ignore_ascii_case("Shared") {
+                            if let Some(path) = expr_dotted_name(shared_object) {
+                                let stripped = strip_csharp_type_path_generic_args(&path);
+                                if stripped.eq_ignore_ascii_case("System.Buffers.ArrayPool")
+                                    || stripped.eq_ignore_ascii_case("ArrayPool")
+                                    || stripped.eq_ignore_ascii_case("System.Buffers.MemoryPool")
+                                    || stripped.eq_ignore_ascii_case("MemoryPool")
+                                {
+                                    return Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Member {
+                                            object: Box::new(build_dotted_expr(&stripped)),
+                                            field: field.clone(),
+                                            null_safe: false,
+                                        })),
+                                        args,
+                                        optional: false,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if field.eq_ignore_ascii_case("Parse")
             && args.len() == 1
             && infer_csharp_new_type_name(object)
@@ -15243,6 +16423,11 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
         }
         if let Some(rewritten) =
             rewrite_csharp_string_instance_call((**object).clone(), field, &args)
+        {
+            return rewritten;
+        }
+        if let Some(rewritten) =
+            csharp_span_extension_method_call((**object).clone(), field, &args)
         {
             return rewritten;
         }

@@ -102,6 +102,18 @@ pub fn register_namespace_tree() {
                     NamespaceNode::CommonEmit("dotnet.object_reference_equals".into()),
                 );
             }
+            if interface.eq_ignore_ascii_case("dotnet.System")
+                && class.name.eq_ignore_ascii_case("DateTime")
+            {
+                statics.insert(
+                    "minvalue".into(),
+                    NamespaceNode::CommonEmit("dotnet.datetime_min_value".into()),
+                );
+                statics.insert(
+                    "maxvalue".into(),
+                    NamespaceNode::CommonEmit("dotnet.datetime_max_value".into()),
+                );
+            }
             // Declare return types with the class, so the compiler reads them
             // from the tree instead of calling a dotnet-side name cascade.
             let mut member_returns = std::collections::BTreeMap::new();
@@ -147,6 +159,10 @@ pub fn register_namespace_tree() {
             let mut segments: Vec<String> =
                 interface.split('.').map(|s| s.to_lowercase()).collect();
             segments.push(class.name.to_lowercase());
+
+            if interface.eq_ignore_ascii_case("dotnet.System") {
+                namespaces::register_namespace_tree(&class.name.to_lowercase(), ty.clone());
+            }
 
             let mut node = ty;
             while segments.len() > 1 {

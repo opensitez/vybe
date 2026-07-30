@@ -192,7 +192,7 @@ Module Program
     Sub Main()
         Dim p1 As New IntPtr(10)
         Dim p2 As New IntPtr(20)
-        Console.WriteLine(p1.CompareTo(p2) < 0 & "|" & p2.CompareTo(p1) > 0)
+        Console.WriteLine((p1.CompareTo(p2) < 0) & "|" & (p2.CompareTo(p1) > 0))
     End Sub
 End Module
 "#;

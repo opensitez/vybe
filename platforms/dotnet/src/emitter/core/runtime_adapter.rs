@@ -7,6 +7,7 @@ use vybe_runtime::Op;
 use vybe_runtime::Value;
 use vybe_compiler::primitives::collections;
 use vybe_compiler::primitives::instructions::host;
+use vybe_compiler::primitives::loops;
 
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
     if name == "dotnet.tostring" {
@@ -18,6 +19,11 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
 
     if name == "dotnet.tostring_runtime" {
         emit_tostring_runtime(&mut chunks[current], argc, line);
+        return true;
+    }
+
+    if name == "dotnet.string_join_sep_first" {
+        emit_string_join_sep_first(chunks, current, line);
         return true;
     }
 
@@ -225,9 +231,24 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, is_primitive, line);
     chunk.emit_if(line);
-    // Primitive: plain String() coercion.
+    // Primitive: .NET stringification. Booleans are capitalized (`True` /
+    // `False`), other primitives follow ECMA String().
+    chunk.emit_op_u16(Op::LOCAL_GET, ty, line);
+    chunk.emit_string_const("boolean", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_string_const("True", line);
+    chunk.emit_else(line);
+    chunk.emit_string_const("False", line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     vybe_compiler::primitives::strings::emit_to_string(chunk, line);
+    chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
     chunk.emit_else(line);
 
@@ -275,4 +296,44 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
 
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
+}
+
+/// .NET `String.Join(separator, values)`.
+///
+/// ECMA `Array.join` stringifies with JavaScript semantics (`true`,
+/// `[object]`). .NET goes through each element's `ToString` role first, then
+/// joins the materialized strings. Stack: `[separator, values] -> [string]`.
+fn emit_string_join_sep_first(chunks: &mut [Chunk], current: usize, line: u32) {
+    let sep_slot = chunks[current].alloc_scratch(5);
+    let values_slot = sep_slot + 1;
+    let mapped_slot = sep_slot + 2;
+    let idx_slot = sep_slot + 3;
+    let elem_slot = sep_slot + 4;
+
+    chunks[current].emit_op_u16(Op::LOCAL_SET, values_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, sep_slot, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, mapped_slot, line);
+
+    let state = loops::emit_for_in_start(chunks, current, values_slot, idx_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, elem_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, mapped_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
+    emit_tostring_dispatch(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    loops::emit_for_in_end(chunks, current, idx_slot, state, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, mapped_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sep_slot, line);
+    host::emit(&mut chunks[current], "ecma:array", "join", 2, line);
 }

@@ -5,5 +5,6 @@ fn dotnet_profile_flags_are_enabled_for_vb() {
     let profile = load_vb_profile();
 
     assert!(profile.namespaces.use_dotnet);
-    assert!(profile.namespaces.use_dotnet_resolver);
+    assert!(profile.namespaces.source_imports_are_namespaces);
+    assert!(profile.uses_namespace_resolver());
 }

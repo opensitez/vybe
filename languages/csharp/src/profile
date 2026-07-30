@@ -52,6 +52,11 @@ tuple_literals_tagged = true
 
 [builtins]
 
+# `Type.GetType("Name")` — static type lookup by name. Resolution is the shared
+# dynamic-symbol path; .NET yields null on a miss rather than throwing, and the
+# result is the type's NAME so it agrees with `typeof(X)`.
+__vybe_type_get = { emit = "intrinsic:symbol_probe", min_args = 1, max_args = 1 }
+
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
 "Array.isArray"           = { emit = "common:ref_is_array",       min_args = 1, max_args = 1 }
@@ -209,18 +214,10 @@ path = "dotnet.system"
 "bool.FalseString"      = "False"
 
 [namespaces]
-# Use the .NET BCL namespace resolution from the shared dotnet module.
-# Installs Form, Button, TextBox, Label, Panel, Size, Point, etc. as
-# callable globals before the user program is compiled, so `new Form()`
-# / `new Button()` in C# source resolves the same way it does in VB.
-# Without this the auto-base-call in `public class MyForm : Form {}`
-# sees `Form` as `undefined` and traps at runtime.
+# Enable .NET runtime surface semantics; namespace lookup is data-driven by
+# the common resolver through the tree mounts and ambient imports below.
 use_dotnet = true
-# Route C# through the shared .NET dotted-name resolver as well. The
-# resolver now bails out for user-defined types before trying namespace
-# imports, so `MathUtils.Fact(5)` still uses the normal static-method path
-# while real .NET namespace/type calls share the same surface as VB.
-use_dotnet_resolver = true
+source_imports_are_namespaces = true
 
 # Types under this namespace-tree path dispatch at RUNTIME through the type
 # registry rather than through this language's value-method tables — `xs.Add(v)`

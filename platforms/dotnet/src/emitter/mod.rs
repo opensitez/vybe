@@ -469,6 +469,29 @@ impl DotnetSurface {
                 });
             }
         }
+        if requested_short.eq_ignore_ascii_case("DateTime") && !want_setter {
+            let emit = match property_name.to_ascii_lowercase().as_str() {
+                "year" => Some("dotnet.datetime_year"),
+                "month" => Some("dotnet.datetime_month"),
+                "day" => Some("dotnet.datetime_day"),
+                "hour" => Some("dotnet.datetime_hour"),
+                "minute" => Some("dotnet.datetime_minute"),
+                "second" => Some("dotnet.datetime_second"),
+                "millisecond" => Some("dotnet.datetime_millisecond"),
+                "dayofyear" => Some("dotnet.datetime_day_of_year"),
+                "dayofweek" => Some("dotnet.datetime_day_of_week"),
+                "ticks" => Some("dotnet.datetime_ticks"),
+                "kind" => Some("dotnet.datetime_kind"),
+                "date" => Some("dotnet.datetime_date"),
+                "timeofday" => Some("dotnet.datetime_time_of_day"),
+                _ => None,
+            };
+            if let Some(emit) = emit {
+                return Some(InstancePropertyTarget::Common {
+                    emit: emit.to_string(),
+                });
+            }
+        }
         if matches!(
             requested_short.to_ascii_lowercase().as_str(),
             "list" | "arraylist"
@@ -655,6 +678,32 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
         && method_name.eq_ignore_ascii_case("WriteLineAsync")
     {
         return Some("Task".into());
+    }
+    if class.eq_ignore_ascii_case("DateTime") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "add" | "adddays" | "addhours" | "addmonths" | "touniversaltime" | "tolocaltime" => {
+                Some("DateTime".into())
+            }
+            "subtract" => Some("TimeSpan".into()),
+            "compareto" | "gethashcode" => Some("Int32".into()),
+            "equals" => Some("Boolean".into()),
+            "tostring" | "toshortdatestring" => Some("string".into()),
+            "tobinary" | "tofiletimeutc" => Some("Int64".into()),
+            "tooadate" => Some("Double".into()),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("DateTimeOffset") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "adddays" | "addhours" | "tooffset" | "touniversaltime" => {
+                Some("DateTimeOffset".into())
+            }
+            "compareto" | "gethashcode" => Some("Int32".into()),
+            "equals" | "equalsexact" => Some("Boolean".into()),
+            "tostring" => Some("string".into()),
+            "tounixtimeseconds" | "tounixtimemilliseconds" => Some("Int64".into()),
+            _ => None,
+        };
     }
     if class.eq_ignore_ascii_case("XElement") {
         if matches!(method_name.to_ascii_lowercase().as_str(), "element") {
@@ -1036,7 +1085,14 @@ pub fn static_member_constant(prefix: &str, member_name: &str) -> Option<&'stati
 }
 
 pub fn static_member_parameterless_call(prefix: &str, member_name: &str) -> bool {
-    let normalized = prefix.trim();
+    let trimmed = prefix.trim();
+    let normalized_storage;
+    let normalized = if trimmed.contains('<') {
+        normalized_storage = strip_generic_suffixes(trimmed);
+        normalized_storage.as_str()
+    } else {
+        trimmed
+    };
     if (normalized.eq_ignore_ascii_case("CancellationToken")
         || normalized.eq_ignore_ascii_case("System.Threading.CancellationToken"))
         && member_name.eq_ignore_ascii_case("None")
@@ -1063,6 +1119,26 @@ pub fn static_member_parameterless_call(prefix: &str, member_name: &str) -> bool
                 member_name.to_ascii_lowercase().as_str(),
                 "utf8" | "ascii" | "unicode" | "default" | "utf32" | "latin1" | "bigendianunicode"
             ))
+        || ((normalized.eq_ignore_ascii_case("ArrayPool")
+            || normalized.eq_ignore_ascii_case("System.Buffers.ArrayPool"))
+            && member_name.eq_ignore_ascii_case("Shared"))
+        || ((normalized.eq_ignore_ascii_case("MemoryPool")
+            || normalized.eq_ignore_ascii_case("System.Buffers.MemoryPool"))
+            && member_name.eq_ignore_ascii_case("Shared"))
+}
+
+fn strip_generic_suffixes(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut depth = 0usize;
+    for ch in name.chars() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    out
 }
 
 pub fn canonical_type_name(raw: &str) -> String {
@@ -1151,13 +1227,41 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
     if class.eq_ignore_ascii_case("DateTime")
         && matches!(
             method_name.to_ascii_lowercase().as_str(),
-            "now" | "utcnow" | "today" | "parse"
+            "now"
+                | "utcnow"
+                | "today"
+                | "minvalue"
+                | "maxvalue"
+                | "parse"
+                | "parseexact"
+                | "frombinary"
+                | "fromfiletimeutc"
+                | "fromoadate"
         )
     {
         return Some("DateTime");
     }
-    if class.eq_ignore_ascii_case("DateTime") && method_name.eq_ignore_ascii_case("Compare") {
-        return Some("Int32");
+    if class.eq_ignore_ascii_case("DateTime") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "compare" => Some("Int32"),
+            "equals" | "isleapyear" | "tryparse" | "tryparseexact" => Some("Boolean"),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("DateTimeOffset")
+        && matches!(
+            method_name.to_ascii_lowercase().as_str(),
+            "now" | "utcnow" | "parse" | "fromunixtimeseconds" | "fromunixtimemilliseconds"
+        )
+    {
+        return Some("DateTimeOffset");
+    }
+    if class.eq_ignore_ascii_case("DateTimeOffset") {
+        return match method_name.to_ascii_lowercase().as_str() {
+            "compare" => Some("Int32"),
+            "equals" | "tryparse" => Some("Boolean"),
+            _ => None,
+        };
     }
     if class.eq_ignore_ascii_case("Stopwatch") {
         return match method_name.to_ascii_lowercase().as_str() {
@@ -1288,10 +1392,26 @@ pub fn static_property_type(class_name: &str, property_name: &str) -> Option<&'s
     if class.eq_ignore_ascii_case("DateTime")
         && matches!(
             property_name.to_ascii_lowercase().as_str(),
-            "now" | "utcnow" | "today"
+            "now" | "utcnow" | "today" | "minvalue" | "maxvalue"
         )
     {
         return Some("DateTime");
+    }
+    if class.eq_ignore_ascii_case("DateTimeOffset")
+        && matches!(
+            property_name.to_ascii_lowercase().as_str(),
+            "now" | "utcnow" | "minvalue" | "maxvalue"
+        )
+    {
+        return Some("DateTimeOffset");
+    }
+    if class.eq_ignore_ascii_case("DateTimeKind")
+        && matches!(
+            property_name.to_ascii_lowercase().as_str(),
+            "utc" | "local" | "unspecified"
+        )
+    {
+        return Some("String");
     }
     if class.eq_ignore_ascii_case("TimeSpan") && property_name.eq_ignore_ascii_case("Zero") {
         return Some("TimeSpan");
@@ -1338,6 +1458,27 @@ pub fn instance_property_type(class_name: &str, property_name: &str) -> Option<&
                 Some("Double")
             }
             "days" | "hours" | "minutes" | "seconds" => Some("Int32"),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("DateTime") {
+        return match property_name.to_ascii_lowercase().as_str() {
+            "year" | "month" | "day" | "hour" | "minute" | "second" | "millisecond"
+            | "dayofyear" => Some("Int32"),
+            "ticks" => Some("Int64"),
+            "date" => Some("DateTime"),
+            "timeofday" => Some("TimeSpan"),
+            "kind" | "dayofweek" => Some("String"),
+            _ => None,
+        };
+    }
+    if class.eq_ignore_ascii_case("DateTimeOffset") {
+        return match property_name.to_ascii_lowercase().as_str() {
+            "year" | "month" | "day" | "hour" | "minute" | "second" | "millisecond"
+            | "dayofyear" => Some("Int32"),
+            "ticks" => Some("Int64"),
+            "offset" => Some("TimeSpan"),
+            "datetime" | "utcdatetime" | "date" => Some("DateTime"),
             _ => None,
         };
     }

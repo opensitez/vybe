@@ -851,7 +851,7 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 .with_method(MethodDef::new(
                     "BinarySearch",
                     1,
-                    MethodBody::Common("collections.binary_search".into()),
+                    MethodBody::Common("dotnet.array_binary_search".into()),
                 ))
                 .with_method(MethodDef::new(
                     "AddRange",
