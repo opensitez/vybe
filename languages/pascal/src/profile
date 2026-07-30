@@ -8,6 +8,9 @@ name = "pascal"
 extensions = ["pas", "pp", "dpr", "lpr"]
 
 [compiler]
+# Pascal RTTI (`TRttiType.GetProperty`, `GetAttributes`) reads a class's member
+# list at runtime instead of the walker deriving it into a compile-time HashMap.
+class_member_metadata = true
 function_return = "result_slot"        # Pascal uses Result := value
 self_keyword = "self"
 base_keyword = "inherited"
@@ -77,6 +80,29 @@ floor         = { emit = "opcode:f64_floor",               min_args = 1, max_arg
 ceil          = { emit = "opcode:f64_ceil",                min_args = 1, max_args = 1 }
 min           = { emit = "opcode:f64_min",                 min_args = 2, max_args = 2 }
 max           = { emit = "opcode:f64_max",                 min_args = 2, max_args = 2 }
+__pascal_f64_eq    = { emit = "common:pascal.f64_eq",      min_args = 2, max_args = 2 }
+__pascal_f64_ne    = { emit = "common:pascal.f64_ne",      min_args = 2, max_args = 2 }
+__pascal_currency_round = { emit = "common:pascal.currency_round", min_args = 1, max_args = 1 }
+__pascal_array_contains = { emit = "common:collections.contains", min_args = 2, max_args = 2 }
+__pascal_json_object_new = { emit = "common:pascal.json_object_new", min_args = 0, max_args = 0 }
+__pascal_json_array_new = { emit = "common:pascal.json_array_new", min_args = 0, max_args = 0 }
+__pascal_json_add_pair = { emit = "common:pascal.json_add_pair", min_args = 3, max_args = 3 }
+__pascal_json_array_add = { emit = "common:pascal.json_array_add", min_args = 2, max_args = 2 }
+__pascal_json_stringify = { emit = "common:pascal.json_stringify", min_args = 1, max_args = 1 }
+__pascal_json_parse = { emit = "common:pascal.json_parse", min_args = 1, max_args = 1 }
+__pascal_json_count = { emit = "common:pascal.json_count", min_args = 1, max_args = 1 }
+__pascal_json_remove_pair = { emit = "common:pascal.json_remove_pair", min_args = 2, max_args = 2 }
+__pascal_json_clone = { emit = "common:pascal.json_clone", min_args = 1, max_args = 1 }
+__pascal_json_entries = { emit = "common:pascal.json_entries", min_args = 1, max_args = 1 }
+__pascal_xml_document_new = { emit = "common:pascal.xml_document_new", min_args = 0, max_args = 0 }
+__pascal_xml_load_from_xml = { emit = "common:pascal.xml_load_from_xml", min_args = 2, max_args = 2 }
+__pascal_xml_save = { emit = "common:pascal.xml_save", min_args = 1, max_args = 1 }
+__pascal_xml_child_node = { emit = "common:pascal.xml_child_node", min_args = 2, max_args = 2 }
+__pascal_xml_add_child = { emit = "common:pascal.xml_add_child", min_args = 2, max_args = 2 }
+__pascal_xml_set_text = { emit = "common:pascal.xml_set_text", min_args = 2, max_args = 2 }
+__pascal_xml_clone_node = { emit = "common:pascal.xml_clone_node", min_args = 2, max_args = 2 }
+__pascal_xml_remove_child = { emit = "common:pascal.xml_remove_child", min_args = 2, max_args = 2 }
+__pascal_assert_message = { emit = "common:pascal.assert_message", min_args = 1, max_args = 1 }
 
 # ── Math — host calls ───────────────────────────────────────────────────────
 
@@ -88,7 +114,7 @@ arctan2       = { emit = "host:ecma:math:atan2",           min_args = 2, max_arg
 exp           = { emit = "host:ecma:math:exp",             min_args = 1, max_args = 1 }
 ln            = { emit = "host:ecma:math:log",             min_args = 1, max_args = 1 }
 power         = { emit = "host:ecma:math:pow",             min_args = 2, max_args = 2 }
-random        = { emit = "host:ecma:math:random",          min_args = 0, max_args = 0 }
+random        = { emit = "common:pascal.random",           min_args = 0, max_args = 1 }
 randomize     = { emit = "noop",                           min_args = 0, max_args = 0 }
 
 # ── Math — intrinsics (multi-opcode) ────────────────────────────────────────
@@ -101,6 +127,7 @@ length        = { emit = "common:strings.length",          min_args = 1, max_arg
 upcase        = { emit = "common:strings.to_upper",        min_args = 1, max_args = 1 }
 uppercase     = { emit = "common:strings.to_upper",        min_args = 1, max_args = 1 }
 lowercase     = { emit = "common:strings.to_lower",        min_args = 1, max_args = 1 }
+locase        = { emit = "common:strings.to_lower",        min_args = 1, max_args = 1 }
 trim          = { emit = "common:strings.trim",            min_args = 1, max_args = 1 }
 trimleft      = { emit = "common:str_trim_start",          min_args = 1, max_args = 1 }
 trimright     = { emit = "common:str_trim_end",            min_args = 1, max_args = 1 }
@@ -142,6 +169,7 @@ inttostr      = { emit = "common:pascal.tostring", min_args = 1, max_args = 1 }
 floattostr    = { emit = "common:pascal.tostring", min_args = 1, max_args = 1 }
 strtoint      = { emit = "host:ecma:number:parseInt",     min_args = 1, max_args = 1 }
 strtointdef   = { emit = "host:ecma:number:parseInt",     min_args = 1, max_args = 2 }
+strtoint64    = { emit = "host:ecma:number:parseInt",     min_args = 1, max_args = 1 }
 strtofloat    = { emit = "host:ecma:number:parseFloat",   min_args = 1, max_args = 1 }
 booltostr     = { emit = "common:pascal.tostring", min_args = 1, max_args = 1 }
 strtobool     = { emit = "common:dyn_to_bool",             min_args = 1, max_args = 1 }
@@ -167,23 +195,30 @@ __pascal_abs       = { emit = "opcode:f64_abs",             min_args = 1, max_ar
 
 inc           = { emit = "mutate:add",                     min_args = 1, max_args = 2 }
 dec           = { emit = "mutate:sub",                     min_args = 1, max_args = 2 }
-succ          = { emit = "intrinsic:succ",                 min_args = 1, max_args = 1 }
-pred          = { emit = "intrinsic:pred",                 min_args = 1, max_args = 1 }
+succ          = { emit = "common:pascal.succ",             min_args = 1, max_args = 1 }
+pred          = { emit = "common:pascal.pred",             min_args = 1, max_args = 1 }
 
 # ── Type info ────────────────────────────────────────────────────────────────
 
-high          = { emit = "intrinsic:high",                 min_args = 1, max_args = 1 }
-low           = { emit = "intrinsic:low",                  min_args = 1, max_args = 1 }
+high          = { emit = "common:pascal.high",             min_args = 1, max_args = 1 }
+low           = { emit = "common:pascal.low",              min_args = 1, max_args = 1 }
 assigned      = { emit = "intrinsic:assigned",             min_args = 1, max_args = 1 }
 sizeof        = { emit = "intrinsic:sizeof",               min_args = 1, max_args = 1 }
 classname     = { emit = "intrinsic:classname",            min_args = 1, max_args = 1 }
 typename      = { emit = "intrinsic:classname",            min_args = 1, max_args = 1 }
+paramstr      = { emit = "common:pascal.paramstr",         min_args = 1, max_args = 1 }
 
 # ── Array operations ─────────────────────────────────────────────────────────
 
 append        = { emit = "host:ecma:array:push",           min_args = 2, max_args = 2 }
 __pascal_array_slice  = { emit = "host:ecma:array:slice",  min_args = 3, max_args = 3 }
 __pascal_array_concat = { emit = "host:ecma:array:concat", min_args = 2, max_args = 2 }
+__pascal_array_indexof = { emit = "host:ecma:array:indexOf", min_args = 2, max_args = 2 }
+__pascal_array_join   = { emit = "host:ecma:array:join",   min_args = 2, max_args = 2 }
+__pascal_array_splice = { emit = "host:ecma:array:splice", min_args = 3, max_args = 4 }
+__pascal_string_split = { emit = "host:ecma:string:split", min_args = 2, max_args = 2 }
+__pascal_string_indexof = { emit = "host:ecma:string:indexOf", min_args = 2, max_args = 3 }
+__pascal_string_replace = { emit = "host:ecma:string:replace", min_args = 3, max_args = 3 }
 __pascal_structured_clone = { emit = "host:ecma:structured-clone:clone", min_args = 1, max_args = 1 }
 sort          = { emit = "common:pascal.sort_in_place",   min_args = 1, max_args = 1 }
 reverse       = { emit = "host:ecma:array:reverse",        min_args = 1, max_args = 1 }
@@ -260,6 +295,7 @@ tostring      = { emit = "common:pascal.tostring", min_args = 0, max_args = 0 }
 [namespace_constants]
 "maxint"      = 2147483647
 "pi"          = 3.141592653589793
+"ntelement"   = 1
 
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS — Pascal has no ambient host module imports.

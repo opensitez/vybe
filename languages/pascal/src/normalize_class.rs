@@ -14,12 +14,10 @@
 //!   - Case-insensitive: Pascal method names lowercase to canonical.
 
 use std::collections::{HashMap, HashSet};
+use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
 use vybe_ast::{
     Argument, CaseCondition, ClassMember, ClassModifiers, ExprKind, Expression, Literal, Modifiers,
     PropertySetter, Span, Statement, StmtKind,
-};
-use vybe_ast::class_normalize::{
-    NormalMembers, build_normal_method, from_method_stmt, types::*,
 };
 
 const PASCAL_NO_BASE_CTOR_MARKER: &str = "__pascal_no_base_ctor__";

@@ -910,7 +910,7 @@ begin
   if n = 0 then WriteLn('zero');
 end;
 begin
-  A(0);
+  A(1);
 end."#
         ),
         &["zero"]

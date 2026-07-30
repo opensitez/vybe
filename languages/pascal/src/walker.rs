@@ -3,6 +3,8 @@ use pest::Parser;
 use pest::iterators::Pair;
 use vybe_ast::*;
 use vybe_compiler::primitives::generics as common_generics;
+use vybe_compiler::primitives::memory as common_memory;
+use vybe_compiler::primitives::pointers as common_pointers;
 use vybe_compiler::primitives::reflection as common_reflection;
 
 const PASCAL_HELPER_TARGET_PREFIX: &str = "__pascal_helper_target__:";
@@ -18,6 +20,7 @@ struct PascalPreludeNeeds {
     tinterfacedobject: bool,
     collections: bool,
     tbits: bool,
+    assert_error_proc: bool,
 }
 
 pub fn parse(source: &str) -> Result<Module, String> {
@@ -119,12 +122,18 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // ordinary class members.
     merge_class_var_impl_decls(&mut body);
     merge_separated_methods(&mut body);
+    repair_pascal_overload_prototype_bodies(&mut body);
+    rewrite_pascal_nested_function_result_aliases(&mut body);
+    rewrite_pascal_nested_result_captures(&mut body);
     lower_pascal_helpers(&mut body);
     lower_pascal_gotos_in_body(&mut body);
     lower_pascal_file_io(&mut body);
     normalize_pascal_free_function_overloads(&mut body);
     lower_pascal_operator_overloads(&mut body);
     normalize_pascal_class_method_overloads(&mut body);
+    let pascal_assertions_enabled = !pascal_source_has_assertions_off(original_source);
+    rewrite_pascal_assert_calls_body(&mut body, pascal_assertions_enabled);
+    rewrite_pascal_currency_round_body(&mut body, &mut std::collections::HashMap::new());
 
     // Synthesize only the RTL groups this program can reference. The collection
     // group is source-parsed and expensive, so it is cached and gated hard.
@@ -176,6 +185,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 prelude.push(stmt);
             }
         }
+        if prelude_needs.assert_error_proc {
+            prelude.push(synthesize_pascal_assert_error_proc_var());
+        }
         for stmt in prelude.into_iter().rev() {
             body.insert(0, stmt);
         }
@@ -201,7 +213,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
     );
     let mut known_nulls = std::collections::HashSet::new();
     rewrite_pascal_known_null_deref_body(&mut body, &mut known_nulls);
-    lower_pascal_array_pointer_math(&mut body);
 
     let uses_gcl = imports.iter().any(|import| match &import.kind {
         ImportKind::Simple { path, .. }
@@ -265,7 +276,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
     if !generic_specializations.is_empty() {
         specialize_pascal_generic_class_methods(&mut body, &generic_specializations);
     }
-    let pascal_type_sizes = collect_pascal_type_sizes(&body, &record_layouts);
+    rewrite_pascal_generic_contains_methods(&mut body);
+    rewrite_pascal_fast_integer_equality(&mut body);
+    erase_pascal_generic_inheritance_refs(&mut body);
+    let mut pascal_type_sizes = collect_pascal_type_sizes(&body, &record_layouts);
+    pascal_type_sizes.insert("tguid".to_string(), 16);
     if !pascal_type_sizes.is_empty() {
         for stmt in body.iter_mut() {
             rewrite_pascal_sizeof_types_stmt(stmt, &pascal_type_sizes);
@@ -279,7 +294,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
         rewrite_pascal_rtti_stmt(stmt, &class_display_names, &class_parent_display_names);
     }
 
-    let bool_class_methods = collect_pascal_bool_class_methods(&body);
+    let generic_type_names = collect_pascal_generic_type_names(&source);
+    let generic_routine_names = collect_pascal_generic_routine_names(&source);
+    let bool_class_methods =
+        collect_pascal_bool_class_methods(&body, &generic_type_names, &generic_routine_names);
     let float_class_members = collect_pascal_float_class_members(&body);
     for stmt in body.iter_mut() {
         rewrite_pascal_writeln_bool_class_calls_stmt(stmt, &bool_class_methods);
@@ -312,6 +330,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         mark_static_var_args_stmt(stmt, &static_var_params);
     }
     lower_pascal_method_pointers(&mut body);
+    rewrite_pascal_comparer_exprs(&mut body);
+    rewrite_pascal_stringbuilder_exprs(&mut body);
     let static_zero_arg_methods = collect_zero_arg_static_methods(&body);
     if !static_zero_arg_methods.is_empty() {
         let mut var_types = std::collections::HashMap::new();
@@ -329,15 +349,27 @@ pub fn parse(source: &str) -> Result<Module, String> {
         rewrite_zero_arg_instance_method_refs_stmt(stmt, &zero_arg_instance_methods);
     }
     rewrite_bare_parameterless_method_refs(&mut body);
+    rewrite_pascal_json_xml_body(&mut body);
+    rewrite_pascal_string_delete_statements(&mut body);
     {
         let mut env = std::collections::HashMap::new();
-        rewrite_pascal_writeln_bool_instance_members_body(&mut body, &bool_class_methods, &mut env);
+        rewrite_pascal_writeln_bool_instance_members_body(
+            &mut body,
+            &bool_class_methods,
+            &generic_type_names,
+            &mut env,
+        );
     }
     let indexed_properties = collect_pascal_indexed_properties(&body);
     if !indexed_properties.is_empty() {
         rewrite_pascal_indexed_properties(&mut body, &indexed_properties);
         let mut env = std::collections::HashMap::new();
-        rewrite_pascal_writeln_bool_instance_members_body(&mut body, &bool_class_methods, &mut env);
+        rewrite_pascal_writeln_bool_instance_members_body(
+            &mut body,
+            &bool_class_methods,
+            &generic_type_names,
+            &mut env,
+        );
         let mut env = std::collections::HashMap::new();
         rewrite_pascal_writeln_float_instance_members_body(
             &mut body,
@@ -346,6 +378,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         );
     }
     rewrite_pascal_collection_for_in(&mut body);
+    rewrite_pascal_writeln_bool_vars(&mut body);
     synthesize_pascal_inherited_constructors(&mut body);
     let destructible_class_names = collect_pascal_destructible_class_names(&body);
     if !destructible_class_names.is_empty() {
@@ -383,6 +416,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         normalize_pascal_subrange_indexed_array_decls(&mut body, &subrange_aliases);
     }
     default_init_record_array_fields(&mut body, &struct_names, &explicit_ctor_record_names);
+    default_init_pascal_array_locals(&mut body);
     for stmt in body.iter_mut() {
         default_init_struct_locals_stmt(stmt, &struct_names, &explicit_ctor_record_names);
     }
@@ -411,6 +445,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     for stmt in body.iter_mut() {
         materialize_record_array_setlength_stmt(stmt, &record_array_types);
     }
+    lower_pascal_array_pointer_math(&mut body);
     let mut string_vars = std::collections::HashSet::new();
     let mut zero_based_loop_vars = std::collections::HashSet::new();
     for stmt in body.iter_mut() {
@@ -437,6 +472,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         rewrite_pascal_writeln_bool_class_calls_stmt(stmt, &bool_class_methods);
     }
     default_init_enum_indexed_arrays(&mut body, &enum_type_counts);
+    rewrite_pascal_enum_bounds(&mut body, &enum_type_counts);
     rewrite_pascal_enum_ordinals(&mut body, &enum_member_ordinals);
     rewrite_pascal_typed_enum_ord_calls(&mut body, &enum_type_names);
     rename_shadowing_pascal_set_vars(&mut body, &enum_member_ordinals);
@@ -465,12 +501,635 @@ pub fn parse(source: &str) -> Result<Module, String> {
     if uses_gcl {
         normalize_pascal_gcl_exprs(&mut body);
     }
+    rewrite_pascal_heap_allocation(&mut body, &struct_names);
 
     Ok(Module {
         name,
         language: Lang::Pascal,
         body,
         imports,
+    })
+}
+
+fn rewrite_pascal_json_xml_body(body: &mut [Statement]) {
+    let mut types = std::collections::HashMap::new();
+    for stmt in body {
+        rewrite_pascal_json_xml_stmt(stmt, &mut types);
+    }
+}
+
+fn rewrite_pascal_json_xml_stmt(
+    stmt: &mut Statement,
+    types: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let BindingPattern::Ident(name) = &decl.pattern {
+                    if let Some(hint) = &decl.type_hint {
+                        types.insert(name.to_ascii_lowercase(), normalize_pascal_type_hint(hint));
+                    }
+                }
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_json_xml_expr(init, types);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            rewrite_pascal_json_xml_expr(value, types);
+            for target in targets.iter_mut() {
+                rewrite_pascal_json_xml_expr(target, types);
+            }
+            if let Some(rewritten) = rewrite_pascal_xml_assignment(targets.as_slice(), value) {
+                *stmt = rewritten;
+            }
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_json_xml_expr(target, types);
+            rewrite_pascal_json_xml_expr(value, types);
+        }
+        StmtKind::Expr(expr) => {
+            if let Some(rewritten) = rewrite_pascal_json_xml_expr_stmt(expr) {
+                *stmt = rewritten;
+                return;
+            }
+            rewrite_pascal_json_xml_expr(expr, types);
+        }
+        StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_json_xml_expr(expr, types);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_json_xml_expr(cond, types);
+            rewrite_pascal_json_xml_body_scoped(then_body, types);
+            for (cond, body) in elifs {
+                rewrite_pascal_json_xml_expr(cond, types);
+                rewrite_pascal_json_xml_body_scoped(body, types);
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_json_xml_body_scoped(body, types);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                rewrite_pascal_json_xml_stmt(init, &mut types.clone());
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_json_xml_expr(cond, types);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_json_xml_expr(update, types);
+            }
+            rewrite_pascal_json_xml_body_scoped(body, types);
+        }
+        StmtKind::ForIn {
+            var, iter, body, ..
+        } => {
+            rewrite_pascal_json_xml_expr(iter, types);
+            if types
+                .get(&var.to_ascii_lowercase())
+                .is_some_and(|ty| ty.eq_ignore_ascii_case("TJSONPair"))
+            {
+                *iter = call_expr("__pascal_json_entries", vec![iter.clone()]);
+            }
+            rewrite_pascal_json_xml_body_scoped(body, types);
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_json_xml_expr(cond, types);
+            rewrite_pascal_json_xml_body_scoped(body, types);
+            if let Some(body) = else_body {
+                rewrite_pascal_json_xml_body_scoped(body, types);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            rewrite_pascal_json_xml_body_scoped(body, types);
+            rewrite_pascal_json_xml_expr(cond, types);
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            rewrite_pascal_json_xml_expr(expr, types);
+            for case in cases {
+                for cond in &mut case.conditions {
+                    rewrite_pascal_json_xml_case_condition(cond, types);
+                }
+                rewrite_pascal_json_xml_body_scoped(&mut case.body, types);
+            }
+            if let Some(body) = default {
+                rewrite_pascal_json_xml_body_scoped(body, types);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            rewrite_pascal_json_xml_body_scoped(body, types);
+            for catch in catches {
+                rewrite_pascal_json_xml_body_scoped(&mut catch.body, types);
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_json_xml_body_scoped(body, types);
+            }
+            if let Some(body) = finally {
+                rewrite_pascal_json_xml_body_scoped(body, types);
+            }
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                rewrite_pascal_json_xml_expr(&mut item.expr, types);
+            }
+            rewrite_pascal_json_xml_body_scoped(body, types);
+        }
+        StmtKind::Using { resource, body, .. } => {
+            rewrite_pascal_json_xml_expr(resource, types);
+            rewrite_pascal_json_xml_body_scoped(body, types);
+        }
+        StmtKind::Lock { expr, body } => {
+            rewrite_pascal_json_xml_expr(expr, types);
+            rewrite_pascal_json_xml_body_scoped(body, types);
+        }
+        StmtKind::Throw { expr, cause } => {
+            if let Some(expr) = expr {
+                rewrite_pascal_json_xml_expr(expr, types);
+            }
+            if let Some(cause) = cause {
+                rewrite_pascal_json_xml_expr(cause, types);
+            }
+        }
+        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+            rewrite_pascal_json_xml_body_scoped(body, types);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_json_xml_member(member, types);
+            }
+        }
+        StmtKind::NamespaceDecl { body, .. } => rewrite_pascal_json_xml_body_scoped(body, types),
+        StmtKind::AddHandler {
+            control, handler, ..
+        }
+        | StmtKind::RemoveHandler {
+            control, handler, ..
+        } => {
+            rewrite_pascal_json_xml_expr(control, types);
+            rewrite_pascal_json_xml_expr(handler, types);
+        }
+        StmtKind::RaiseEvent { args, .. } | StmtKind::Echo(args) => {
+            for arg in args {
+                rewrite_pascal_json_xml_expr(arg, types);
+            }
+        }
+        StmtKind::Delete(exprs) => {
+            for expr in exprs {
+                rewrite_pascal_json_xml_expr(expr, types);
+            }
+        }
+        StmtKind::Assert { test, msg } => {
+            rewrite_pascal_json_xml_expr(test, types);
+            if let Some(msg) = msg {
+                rewrite_pascal_json_xml_expr(msg, types);
+            }
+        }
+        StmtKind::Export {
+            declaration,
+            default,
+            ..
+        } => {
+            if let Some(declaration) = declaration {
+                rewrite_pascal_json_xml_stmt(declaration, &mut types.clone());
+            }
+            if let Some(default) = default {
+                rewrite_pascal_json_xml_expr(default, types);
+            }
+        }
+        StmtKind::Labeled { body, .. } => rewrite_pascal_json_xml_stmt(body, types),
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_json_xml_body_scoped(
+    body: &mut [Statement],
+    types: &std::collections::HashMap<String, String>,
+) {
+    let mut scoped = types.clone();
+    for stmt in body {
+        rewrite_pascal_json_xml_stmt(stmt, &mut scoped);
+    }
+}
+
+fn rewrite_pascal_json_xml_member(
+    member: &mut ClassMember,
+    types: &std::collections::HashMap<String, String>,
+) {
+    match member {
+        ClassMember::Field { init, .. } => {
+            if let Some(init) = init {
+                let mut scoped = types.clone();
+                rewrite_pascal_json_xml_expr(init, &mut scoped);
+            }
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_json_xml_stmt(stmt, &mut types.clone());
+        }
+        ClassMember::Constructor { body, .. } => rewrite_pascal_json_xml_body_scoped(body, types),
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_pascal_json_xml_body_scoped(getter, types);
+            }
+            if let Some(setter) = setter {
+                rewrite_pascal_json_xml_body_scoped(&mut setter.body, types);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_json_xml_case_condition(
+    cond: &mut CaseCondition,
+    types: &mut std::collections::HashMap<String, String>,
+) {
+    match cond {
+        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
+            rewrite_pascal_json_xml_expr(expr, types);
+        }
+        CaseCondition::Range { from, to } => {
+            rewrite_pascal_json_xml_expr(from, types);
+            rewrite_pascal_json_xml_expr(to, types);
+        }
+    }
+}
+
+fn rewrite_pascal_json_xml_expr(
+    expr: &mut Expression,
+    types: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_json_xml_expr(left, types);
+            rewrite_pascal_json_xml_expr(right, types);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::RefLoad(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::TypeOf(expr) => rewrite_pascal_json_xml_expr(expr, types),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_json_xml_expr(cond, types);
+            rewrite_pascal_json_xml_expr(then, types);
+            rewrite_pascal_json_xml_expr(else_, types);
+        }
+        ExprKind::Member { object, .. } => rewrite_pascal_json_xml_expr(object, types),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_json_xml_expr(object, types);
+            rewrite_pascal_json_xml_expr(index, types);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_pascal_json_xml_expr(callee, types);
+            for arg in args {
+                rewrite_pascal_json_xml_expr(&mut arg.value, types);
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_json_xml_expr(class, types);
+            for arg in args {
+                rewrite_pascal_json_xml_expr(&mut arg.value, types);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_pascal_json_xml_expr(value, types);
+            rewrite_pascal_json_xml_expr(target, types);
+            if let Some(stmt) =
+                rewrite_pascal_xml_assignment(std::slice::from_ref(target.as_ref()), value)
+            {
+                if let StmtKind::Expr(replacement) = stmt.kind {
+                    *expr = replacement;
+                    return;
+                }
+            }
+        }
+        ExprKind::Lambda { body, .. } => {
+            if let LambdaBody::Block(body) = body {
+                rewrite_pascal_json_xml_body_scoped(body, types);
+            }
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_pascal_json_xml_expr(key, types);
+                }
+                rewrite_pascal_json_xml_expr(&mut element.value, types);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        rewrite_pascal_json_xml_expr(key, types);
+                        rewrite_pascal_json_xml_expr(value, types);
+                    }
+                    ObjectProperty::Spread(value) => rewrite_pascal_json_xml_expr(value, types),
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
+                        rewrite_pascal_json_xml_stmt(value, &mut types.clone());
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        ExprKind::IsType { expr, .. } | ExprKind::Cast { expr, .. } => {
+            rewrite_pascal_json_xml_expr(expr, types);
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_pascal_json_xml_expr(left, types);
+            rewrite_pascal_json_xml_expr(right, types);
+        }
+        ExprKind::Yield(Some(value)) => rewrite_pascal_json_xml_expr(value, types),
+        _ => {}
+    }
+
+    if let Some(replacement) = pascal_json_xml_rewrite_expr(expr, types) {
+        *expr = replacement;
+    }
+}
+
+fn pascal_json_xml_rewrite_expr(
+    expr: &Expression,
+    types: &std::collections::HashMap<String, String>,
+) -> Option<Expression> {
+    match &expr.kind {
+        ExprKind::Binary { op: BinOp::Add, left, right } => {
+            if matches!(&left.kind, ExprKind::Lit(Literal::Str(s)) if s.is_empty())
+                && pascal_expr_type_name(right, types).is_some_and(|ty| pascal_is_json_type(&ty))
+            {
+                return Some(call_expr("__pascal_json_stringify", vec![(**right).clone()]));
+            }
+            None
+        }
+        ExprKind::New { class, args } => {
+            let name = pascal_expr_name(class)?.to_ascii_lowercase();
+            match name.as_str() {
+                "tjsonobject" => Some(call_expr("__pascal_json_object_new", Vec::new())),
+                "tjsonarray" => Some(call_expr("__pascal_json_array_new", Vec::new())),
+                "tjsonnumber" => Some(
+                    args.first()
+                        .map(|arg| arg.value.clone())
+                        .unwrap_or_else(|| int_expr(0)),
+                ),
+                "tjsontrue" => Some(Expression::bool(true)),
+                "tjsonfalse" => Some(Expression::bool(false)),
+                "tjsonnull" => Some(Expression::null()),
+                "txmldocument" => Some(call_expr("__pascal_xml_document_new", Vec::new())),
+                _ => None,
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                let lower = field.to_ascii_lowercase();
+                if lower == "parsejsonvalue" && pascal_expr_name(object).is_some_and(|name| {
+                    name.eq_ignore_ascii_case("TJSONObject") || name.eq_ignore_ascii_case("TJSONValue")
+                }) {
+                    return Some(call_expr(
+                        "__pascal_json_parse",
+                        args.iter().map(|arg| arg.value.clone()).collect(),
+                    ));
+                }
+                let receiver = (**object).clone();
+                match lower.as_str() {
+                    "addpair" => {
+                        if !pascal_expr_type_name(&receiver, types)
+                            .is_some_and(|ty| pascal_is_json_type(&ty))
+                        {
+                            return None;
+                        }
+                        let mut call_args = vec![receiver];
+                        call_args.extend(args.iter().map(|arg| arg.value.clone()));
+                        Some(call_expr("__pascal_json_add_pair", call_args))
+                    }
+                    "add" => {
+                        if !pascal_expr_type_name(&receiver, types)
+                            .is_some_and(|ty| pascal_is_json_type(&ty))
+                        {
+                            return None;
+                        }
+                        let mut call_args = vec![receiver];
+                        call_args.extend(args.iter().map(|arg| arg.value.clone()));
+                        Some(call_expr("__pascal_json_array_add", call_args))
+                    }
+                    "tostring" | "format" => Some(call_expr("__pascal_json_stringify", vec![receiver])),
+                    "getvalue" => args.first().map(|arg| index_expr(receiver, arg.value.clone())),
+                    "removepair" => args
+                        .first()
+                        .map(|arg| call_expr("__pascal_json_remove_pair", vec![receiver, arg.value.clone()])),
+                    "clone" => Some(call_expr("__pascal_json_clone", vec![receiver])),
+                    "free" => Some(Expression::null()),
+                    "loadfromxml" => args.first().map(|arg| {
+                        call_expr("__pascal_xml_load_from_xml", vec![receiver, arg.value.clone()])
+                    }),
+                    "savetoxml" => Some(call_expr("__pascal_xml_save", vec![receiver])),
+                    "findnode" => args.first().map(|arg| {
+                        let parent =
+                            pascal_xml_child_collection_parent(&receiver).unwrap_or(receiver);
+                        call_expr("__pascal_xml_child_node", vec![parent, arg.value.clone()])
+                    }),
+                    "addchild" => args.first().map(|arg| {
+                        call_expr("__pascal_xml_add_child", vec![receiver, arg.value.clone()])
+                    }),
+                    "clonenode" => {
+                        let deep = args
+                            .first()
+                            .map(|arg| arg.value.clone())
+                            .unwrap_or_else(|| Expression::bool(false));
+                        Some(call_expr("__pascal_xml_clone_node", vec![receiver, deep]))
+                    }
+                    "remove" => {
+                        let parent =
+                            pascal_xml_child_collection_parent(&receiver).unwrap_or(receiver);
+                        args.first().map(|arg| {
+                            call_expr("__pascal_xml_remove_child", vec![parent, arg.value.clone()])
+                        })
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        ExprKind::Member { object, field, .. } => {
+            let lower = field.to_ascii_lowercase();
+            match lower.as_str() {
+                "values" | "items" | "value" => pascal_expr_type_name(object, types)
+                    .is_some_and(|ty| pascal_is_json_type(&ty))
+                    .then(|| (**object).clone()),
+                "jsonstring" => pascal_expr_type_name(object, types)
+                    .is_some_and(|ty| pascal_is_json_type(&ty))
+                    .then(|| index_expr((**object).clone(), int_expr(0))),
+                "jsonvalue" => pascal_expr_type_name(object, types)
+                    .is_some_and(|ty| pascal_is_json_type(&ty))
+                    .then(|| index_expr((**object).clone(), int_expr(1))),
+                "clone" => pascal_expr_type_name(object, types)
+                    .is_some_and(|ty| pascal_is_json_type(&ty))
+                    .then(|| call_expr("__pascal_json_clone", vec![(**object).clone()])),
+                "count" => pascal_expr_type_name(object, types)
+                    .is_some_and(|ty| pascal_is_json_type(&ty))
+                    .then(|| call_expr("__pascal_json_count", vec![(**object).clone()])),
+                "documentelement" if pascal_expr_is_xml_value(object, types) => Some(index_expr(
+                    index_expr((**object).clone(), str_expr("__dom")),
+                    str_expr("documentElement"),
+                )),
+                "nodename" if pascal_expr_is_xml_value(object, types) => {
+                    Some(index_expr((**object).clone(), str_expr("nodeName")))
+                }
+                "text" if pascal_expr_is_xml_value(object, types) => {
+                    Some(index_expr((**object).clone(), str_expr("textContent")))
+                }
+                "nodetype" if pascal_expr_is_xml_value(object, types) => {
+                    Some(index_expr((**object).clone(), str_expr("nodeType")))
+                }
+                "childnodes" if pascal_expr_is_xml_value(object, types) => {
+                    Some(index_expr((**object).clone(), str_expr("childNodes")))
+                }
+                "attributes" | "attributenodes" if pascal_expr_is_xml_value(object, types) => {
+                    Some(index_expr((**object).clone(), str_expr("attributes")))
+                }
+                "haschildnodes" if pascal_expr_is_xml_value(object, types) => Some(bin_expr(
+                    BinOp::Gt,
+                    call_expr(
+                        "__pascal_json_count",
+                        vec![index_expr((**object).clone(), str_expr("childNodes"))],
+                    ),
+                    int_expr(0),
+                )),
+                _ => None,
+            }
+        }
+        ExprKind::Index { object, index, .. } => {
+            if let Some(parent) = pascal_xml_child_collection_parent(object) {
+                Some(call_expr(
+                    "__pascal_xml_child_node",
+                    vec![parent, (**index).clone()],
+                ))
+            } else {
+                None
+            }
+        }
+        ExprKind::Cast { expr, type_name } if pascal_is_json_type(type_name) => Some((**expr).clone()),
+        ExprKind::IsType { expr, type_name } if type_name.eq_ignore_ascii_case("TJSONNull") => {
+            Some(bin_expr(BinOp::Eq, (**expr).clone(), Expression::null()))
+        }
+        _ => None,
+    }
+}
+
+fn rewrite_pascal_xml_assignment(targets: &[Expression], value: &Expression) -> Option<Statement> {
+    let target = targets.first()?;
+    if let ExprKind::Member { object, field, .. } = &target.kind {
+        if field.eq_ignore_ascii_case("Active")
+            && matches!(&value.kind, ExprKind::Lit(Literal::Bool(false)))
+        {
+            return Some(Statement::new(StmtKind::Assign {
+                targets: vec![index_expr((**object).clone(), str_expr("__dom"))],
+                value: Expression::null(),
+            }));
+        }
+        if field.eq_ignore_ascii_case("Active") {
+            return Some(Statement::new(StmtKind::Expr(Expression::null())));
+        }
+    }
+    None
+}
+
+fn pascal_expr_is_xml_value(
+    expr: &Expression,
+    types: &std::collections::HashMap<String, String>,
+) -> bool {
+    pascal_expr_type_name(expr, types).is_some_and(|ty| pascal_is_xml_type(&ty))
+}
+
+fn pascal_is_xml_type(type_name: &str) -> bool {
+    matches!(
+        normalize_pascal_type_hint(type_name).to_ascii_lowercase().as_str(),
+        "txmldocument" | "txmlnode" | "ixmldocument" | "ixmlnode" | "tdomdocument" | "tdomnode"
+    )
+}
+
+fn rewrite_pascal_json_xml_expr_stmt(expr: &Expression) -> Option<Statement> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if field.eq_ignore_ascii_case("SaveToXML") {
+        let target = args.first()?.value.clone();
+        return Some(Statement::new(StmtKind::Assign {
+            targets: vec![target],
+            value: call_expr("__pascal_xml_save", vec![(**object).clone()]),
+        }));
+    }
+    None
+}
+
+fn pascal_expr_name(expr: &Expression) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+fn pascal_expr_type_name(
+    expr: &Expression,
+    types: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => types.get(&name.to_ascii_lowercase()).cloned(),
+        _ => None,
+    }
+}
+
+fn pascal_is_json_type(type_name: &str) -> bool {
+    matches!(
+        normalize_pascal_type_hint(type_name).to_ascii_lowercase().as_str(),
+        "tjsonvalue" | "tjsonobject" | "tjsonarray" | "tjsonnumber" | "tjsontrue" | "tjsonfalse" | "tjsonnull"
+    )
+}
+
+fn pascal_xml_child_collection_parent(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Index { object, index, .. } = &expr.kind else {
+        return None;
+    };
+    if matches!(&index.kind, ExprKind::Lit(Literal::Str(name)) if name == "childNodes") {
+        Some((**object).clone())
+    } else {
+        None
+    }
+}
+
+fn index_expr(object: Expression, index: Expression) -> Expression {
+    Expression::new(ExprKind::Index {
+        object: Box::new(object),
+        index: Box::new(index),
+        null_safe: false,
     })
 }
 
@@ -1601,6 +2260,492 @@ struct PascalOverloadCandidate {
     params: Vec<Param>,
     return_type: Option<String>,
     order: usize,
+}
+
+fn repair_pascal_overload_prototype_bodies(body: &mut Vec<Statement>) {
+    let mut repaired = Vec::with_capacity(body.len());
+
+    for mut stmt in body.drain(..) {
+        let mut hoisted = None;
+        if let StmtKind::FunctionDecl {
+            name,
+            body: fn_body,
+            modifiers,
+            ..
+        } = &mut stmt.kind
+        {
+            if modifiers.is_overloads {
+                if fn_body.is_empty() {
+                    continue;
+                }
+
+                let name_lower = name.to_lowercase();
+                let has_same_name_impl = fn_body.iter().any(|nested| match &nested.kind {
+                    StmtKind::FunctionDecl {
+                        name: nested_name, ..
+                    } => nested_name.eq_ignore_ascii_case(&name_lower),
+                    _ => false,
+                });
+
+                if has_same_name_impl {
+                    hoisted = Some(std::mem::take(fn_body));
+                }
+            }
+        }
+
+        if let Some(mut stmts) = hoisted {
+            repaired.append(&mut stmts);
+        } else {
+            repaired.push(stmt);
+        }
+    }
+
+    *body = repaired;
+}
+
+fn rewrite_pascal_nested_function_result_aliases(body: &mut [Statement]) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::FunctionDecl { body, .. } => {
+                rewrite_pascal_nested_function_result_aliases(body);
+            }
+            StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+                rewrite_pascal_nested_function_result_aliases(body);
+            }
+            StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
+                for member in members {
+                    match member {
+                        ClassMember::Method(method) | ClassMember::NestedType(method) => {
+                            if let StmtKind::FunctionDecl { body, .. } = &mut method.kind {
+                                rewrite_pascal_direct_nested_function_result_aliases(body);
+                            }
+                            rewrite_pascal_nested_function_result_aliases(std::slice::from_mut(method));
+                        }
+                        ClassMember::Constructor { body, .. } => {
+                            rewrite_pascal_nested_function_result_aliases(body);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_pascal_direct_nested_function_result_aliases(body: &mut [Statement]) {
+    for stmt in body {
+        let StmtKind::FunctionDecl {
+            name,
+            return_type: Some(_),
+            body,
+            ..
+        } = &mut stmt.kind
+        else {
+            continue;
+        };
+        rewrite_pascal_result_ident_in_body(body, name);
+    }
+}
+
+fn rewrite_pascal_result_ident_in_body(body: &mut [Statement], alias: &str) {
+    for stmt in body {
+        rewrite_pascal_result_ident_in_stmt(stmt, alias);
+    }
+}
+
+fn rewrite_pascal_result_ident_in_stmt(stmt: &mut Statement, alias: &str) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Throw { expr: Some(expr), .. } => {
+            rewrite_pascal_result_ident_in_expr(expr, alias);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_result_ident_in_expr(target, alias);
+            }
+            rewrite_pascal_result_ident_in_expr(value, alias);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_result_ident_in_expr(target, alias);
+            rewrite_pascal_result_ident_in_expr(value, alias);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_result_ident_in_expr(init, alias);
+                }
+            }
+        }
+        StmtKind::Block(body) => rewrite_pascal_result_ident_in_body(body, alias),
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_result_ident_in_expr(cond, alias);
+            rewrite_pascal_result_ident_in_body(then_body, alias);
+            for (cond, body) in elifs {
+                rewrite_pascal_result_ident_in_expr(cond, alias);
+                rewrite_pascal_result_ident_in_body(body, alias);
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_result_ident_in_body(body, alias);
+            }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            rewrite_pascal_result_ident_in_expr(cond, alias);
+            rewrite_pascal_result_ident_in_body(body, alias);
+            if let Some(body) = else_body {
+                rewrite_pascal_result_ident_in_body(body, alias);
+            }
+        }
+        StmtKind::DoWhile { cond, body, .. } => {
+            rewrite_pascal_result_ident_in_expr(cond, alias);
+            rewrite_pascal_result_ident_in_body(body, alias);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                rewrite_pascal_result_ident_in_stmt(init, alias);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_result_ident_in_expr(cond, alias);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_result_ident_in_expr(update, alias);
+            }
+            rewrite_pascal_result_ident_in_body(body, alias);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            rewrite_pascal_result_ident_in_expr(iter, alias);
+            rewrite_pascal_result_ident_in_body(body, alias);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_result_ident_in_expr(expr: &mut Expression, alias: &str) {
+    match &mut expr.kind {
+        ExprKind::Ident(name) if name.eq_ignore_ascii_case("Result") => {
+            *name = alias.to_string();
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_pascal_result_ident_in_expr(callee, alias);
+            for arg in args {
+                rewrite_pascal_result_ident_in_expr(&mut arg.value, alias);
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_result_ident_in_expr(left, alias);
+            rewrite_pascal_result_ident_in_expr(right, alias);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::RefLoad(expr) => rewrite_pascal_result_ident_in_expr(expr, alias),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_result_ident_in_expr(cond, alias);
+            rewrite_pascal_result_ident_in_expr(then, alias);
+            rewrite_pascal_result_ident_in_expr(else_, alias);
+        }
+        ExprKind::Member { object, .. } => rewrite_pascal_result_ident_in_expr(object, alias),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_result_ident_in_expr(object, alias);
+            rewrite_pascal_result_ident_in_expr(index, alias);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_result_ident_in_expr(class, alias);
+            for arg in args {
+                rewrite_pascal_result_ident_in_expr(&mut arg.value, alias);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_pascal_result_ident_in_expr(target, alias);
+            rewrite_pascal_result_ident_in_expr(value, alias);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                if let Some(key) = &mut item.key {
+                    rewrite_pascal_result_ident_in_expr(key, alias);
+                }
+                rewrite_pascal_result_ident_in_expr(&mut item.value, alias);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) => {
+            for item in items {
+                rewrite_pascal_result_ident_in_expr(item, alias);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_nested_result_captures(body: &mut [Statement]) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::FunctionDecl {
+                return_type: Some(return_type),
+                body,
+                ..
+            } => rewrite_pascal_nested_result_captures_in_function(body, return_type.clone()),
+            StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+                rewrite_pascal_nested_result_captures(body);
+            }
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                rewrite_pascal_nested_result_captures(then_body);
+                for (_, body) in elifs {
+                    rewrite_pascal_nested_result_captures(body);
+                }
+                if let Some(body) = else_body {
+                    rewrite_pascal_nested_result_captures(body);
+                }
+            }
+            StmtKind::While { body, else_body, .. } => {
+                rewrite_pascal_nested_result_captures(body);
+                if let Some(body) = else_body {
+                    rewrite_pascal_nested_result_captures(body);
+                }
+            }
+            StmtKind::DoWhile { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::ForIn { body, .. } => rewrite_pascal_nested_result_captures(body),
+            StmtKind::Try {
+                body,
+                catches,
+                finally,
+                ..
+            } => {
+                rewrite_pascal_nested_result_captures(body);
+                for catch in catches {
+                    rewrite_pascal_nested_result_captures(&mut catch.body);
+                }
+                if let Some(body) = finally {
+                    rewrite_pascal_nested_result_captures(body);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_pascal_nested_result_captures_in_function(
+    body: &mut [Statement],
+    outer_return_type: String,
+) {
+    let mut captured = std::collections::HashSet::new();
+    for stmt in body.iter_mut() {
+        let StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type: None,
+            body: nested_body,
+            is_sub: true,
+            ..
+        } = &mut stmt.kind
+        else {
+            continue;
+        };
+        if params
+            .iter()
+            .any(|param| param.name.eq_ignore_ascii_case("Result"))
+        {
+            continue;
+        }
+        if !pascal_body_mentions_ident(nested_body, "Result") {
+            continue;
+        }
+        params.insert(
+            0,
+            Param {
+                name: "Result".to_string(),
+                type_hint: Some(outer_return_type.clone()),
+                default: None,
+                pass_by: PassBy::Ref,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            },
+        );
+        captured.insert(name.to_lowercase());
+    }
+
+    if captured.is_empty() {
+        return;
+    }
+    for stmt in body {
+        rewrite_pascal_nested_result_call_stmt(stmt, &captured);
+    }
+}
+
+fn rewrite_pascal_nested_result_call_stmt(
+    stmt: &mut Statement,
+    captured: &std::collections::HashSet<String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Throw { expr: Some(expr), .. } => {
+            rewrite_pascal_nested_result_call_expr(expr, captured);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_nested_result_call_expr(target, captured);
+            }
+            rewrite_pascal_nested_result_call_expr(value, captured);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_nested_result_call_expr(target, captured);
+            rewrite_pascal_nested_result_call_expr(value, captured);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_nested_result_call_expr(init, captured);
+                }
+            }
+        }
+        StmtKind::Block(body) | StmtKind::FunctionDecl { body, .. } => {
+            for stmt in body {
+                rewrite_pascal_nested_result_call_stmt(stmt, captured);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_nested_result_call_expr(cond, captured);
+            for stmt in then_body {
+                rewrite_pascal_nested_result_call_stmt(stmt, captured);
+            }
+            for (cond, body) in elifs {
+                rewrite_pascal_nested_result_call_expr(cond, captured);
+                for stmt in body {
+                    rewrite_pascal_nested_result_call_stmt(stmt, captured);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_nested_result_call_stmt(stmt, captured);
+                }
+            }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            rewrite_pascal_nested_result_call_expr(cond, captured);
+            for stmt in body {
+                rewrite_pascal_nested_result_call_stmt(stmt, captured);
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_nested_result_call_stmt(stmt, captured);
+                }
+            }
+        }
+        StmtKind::DoWhile { cond, body, .. } => {
+            rewrite_pascal_nested_result_call_expr(cond, captured);
+            for stmt in body {
+                rewrite_pascal_nested_result_call_stmt(stmt, captured);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                rewrite_pascal_nested_result_call_stmt(init, captured);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_nested_result_call_expr(cond, captured);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_nested_result_call_expr(update, captured);
+            }
+            for stmt in body {
+                rewrite_pascal_nested_result_call_stmt(stmt, captured);
+            }
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            rewrite_pascal_nested_result_call_expr(iter, captured);
+            for stmt in body {
+                rewrite_pascal_nested_result_call_stmt(stmt, captured);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_nested_result_call_expr(
+    expr: &mut Expression,
+    captured: &std::collections::HashSet<String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_pascal_nested_result_call_expr(&mut arg.value, captured);
+            }
+            if let ExprKind::Ident(name) = &callee.kind {
+                if captured.contains(&name.to_lowercase()) {
+                    args.insert(0, Argument::positional(Expression::ident("Result")));
+                }
+            } else {
+                rewrite_pascal_nested_result_call_expr(callee, captured);
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_nested_result_call_expr(left, captured);
+            rewrite_pascal_nested_result_call_expr(right, captured);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::IsType { expr, .. }
+        | ExprKind::RefLoad(expr) => rewrite_pascal_nested_result_call_expr(expr, captured),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_nested_result_call_expr(cond, captured);
+            rewrite_pascal_nested_result_call_expr(then, captured);
+            rewrite_pascal_nested_result_call_expr(else_, captured);
+        }
+        ExprKind::Member { object, .. } => rewrite_pascal_nested_result_call_expr(object, captured),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_nested_result_call_expr(object, captured);
+            rewrite_pascal_nested_result_call_expr(index, captured);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_nested_result_call_expr(class, captured);
+            for arg in args {
+                rewrite_pascal_nested_result_call_expr(&mut arg.value, captured);
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            rewrite_pascal_nested_result_call_expr(target, captured);
+            rewrite_pascal_nested_result_call_expr(value, captured);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                if let Some(key) = &mut item.key {
+                    rewrite_pascal_nested_result_call_expr(key, captured);
+                }
+                rewrite_pascal_nested_result_call_expr(&mut item.value, captured);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) => {
+            for item in items {
+                rewrite_pascal_nested_result_call_expr(item, captured);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn normalize_pascal_free_function_overloads(body: &mut Vec<Statement>) {
@@ -2871,6 +4016,11 @@ fn pascal_overload_arg_score(
         (Some(arg), Some(param)) if arg == param => Some(0),
         (Some("char"), Some("string")) => Some(1),
         (Some("string"), Some("char")) => Some(50),
+        (Some("real" | "single" | "double" | "extended"), Some("integer")) => Some(50),
+        (
+            Some("real" | "single" | "double" | "extended"),
+            Some("real" | "single" | "double" | "extended"),
+        ) => Some(1),
         (Some("integer"), Some("real" | "single" | "double" | "extended")) => Some(2),
         (
             Some("integer"),
@@ -2918,6 +4068,10 @@ fn pascal_overload_expr_type(
         ExprKind::Unary {
             op: UnaryOp::Not, ..
         } => Some("boolean".to_string()),
+        ExprKind::Unary {
+            op: UnaryOp::Neg | UnaryOp::Pos,
+            expr,
+        } => pascal_overload_expr_type(expr, return_types, enum_members, scope),
         ExprKind::Binary { op, .. } => match op {
             BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
                 Some("boolean".to_string())
@@ -6239,14 +7393,26 @@ fn rewrite_pascal_collection_for_in(body: &mut [Statement]) {
     for stmt in body.iter() {
         collect_pascal_var_types_stmt(stmt, &mut var_types);
     }
+    let enumerators = collect_pascal_enumerator_operators(body);
+    let helper_enumerators = collect_pascal_get_enumerator_helpers(body);
+    let mut counter = 0usize;
     for stmt in body {
-        rewrite_pascal_collection_for_in_stmt(stmt, &mut var_types);
+        rewrite_pascal_collection_for_in_stmt(
+            stmt,
+            &mut var_types,
+            &enumerators,
+            &helper_enumerators,
+            &mut counter,
+        );
     }
 }
 
 fn rewrite_pascal_collection_for_in_stmt(
     stmt: &mut Statement,
     var_types: &mut std::collections::HashMap<String, String>,
+    enumerators: &std::collections::HashMap<String, String>,
+    helper_enumerators: &std::collections::HashMap<String, String>,
+    counter: &mut usize,
 ) {
     match &mut stmt.kind {
         StmtKind::VarDecl { declarations, .. } => {
@@ -6262,6 +7428,7 @@ fn rewrite_pascal_collection_for_in_stmt(
             }
         }
         StmtKind::ForIn {
+            var,
             iter,
             body,
             else_body,
@@ -6277,15 +7444,86 @@ fn rewrite_pascal_collection_for_in_stmt(
                     args: Vec::new(),
                     optional: false,
                 });
+            } else if let Some(enumerator_expr) =
+                pascal_custom_enumerator_expr(iter, var_types, enumerators, helper_enumerators)
+            {
+                *counter += 1;
+                let enum_name = format!("__pascal_enum_{}", counter);
+                let mut scoped = var_types.clone();
+                rewrite_pascal_collection_for_in_body(
+                    body,
+                    &mut scoped,
+                    enumerators,
+                    helper_enumerators,
+                    counter,
+                );
+                let current = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident(&enum_name)),
+                        field: "GetCurrent".to_string(),
+                        null_safe: false,
+                    })),
+                    args: Vec::new(),
+                    optional: false,
+                });
+                let mut while_body = vec![Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::ident(var)],
+                    value: current,
+                })];
+                while_body.append(body);
+                *stmt = Statement::new(StmtKind::Block(vec![
+                    Statement::new(StmtKind::VarDecl {
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(enum_name.clone()),
+                            type_hint: None,
+                            init: Some(enumerator_expr),
+                            array_bounds: None,
+                            with_events: false,
+                        }],
+                        kind: VarDeclKind::Dim,
+                    }),
+                    Statement::new(StmtKind::While {
+                        cond: Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(Expression::ident(&enum_name)),
+                                field: "MoveNext".to_string(),
+                                null_safe: false,
+                            })),
+                            args: Vec::new(),
+                            optional: false,
+                        }),
+                        body: while_body,
+                        else_body: None,
+                    }),
+                ]));
+                return;
             }
             let mut scoped = var_types.clone();
-            rewrite_pascal_collection_for_in_body(body, &mut scoped);
+            rewrite_pascal_collection_for_in_body(
+                body,
+                &mut scoped,
+                enumerators,
+                helper_enumerators,
+                counter,
+            );
             if let Some(else_body) = else_body {
-                rewrite_pascal_collection_for_in_body(else_body, &mut var_types.clone());
+                rewrite_pascal_collection_for_in_body(
+                    else_body,
+                    &mut var_types.clone(),
+                    enumerators,
+                    helper_enumerators,
+                    counter,
+                );
             }
         }
         StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
-            rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+            rewrite_pascal_collection_for_in_body(
+                body,
+                &mut var_types.clone(),
+                enumerators,
+                helper_enumerators,
+                counter,
+            );
         }
         StmtKind::FunctionDecl { params, body, .. } => {
             let mut scoped = var_types.clone();
@@ -6297,13 +7535,25 @@ fn rewrite_pascal_collection_for_in_stmt(
                     );
                 }
             }
-            rewrite_pascal_collection_for_in_body(body, &mut scoped);
+            rewrite_pascal_collection_for_in_body(
+                body,
+                &mut scoped,
+                enumerators,
+                helper_enumerators,
+                counter,
+            );
         }
         StmtKind::ClassDecl { members, .. }
         | StmtKind::StructDecl { members, .. }
         | StmtKind::ModuleDecl { members, .. } => {
             for member in members {
-                rewrite_pascal_collection_for_in_member(member, &mut var_types.clone());
+                rewrite_pascal_collection_for_in_member(
+                    member,
+                    &mut var_types.clone(),
+                    enumerators,
+                    helper_enumerators,
+                    counter,
+                );
             }
         }
         StmtKind::If {
@@ -6312,28 +7562,70 @@ fn rewrite_pascal_collection_for_in_stmt(
             else_body,
             ..
         } => {
-            rewrite_pascal_collection_for_in_body(then_body, &mut var_types.clone());
+            rewrite_pascal_collection_for_in_body(
+                then_body,
+                &mut var_types.clone(),
+                enumerators,
+                helper_enumerators,
+                counter,
+            );
             for (_, body) in elifs {
-                rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+                rewrite_pascal_collection_for_in_body(
+                    body,
+                    &mut var_types.clone(),
+                    enumerators,
+                    helper_enumerators,
+                    counter,
+                );
             }
             if let Some(body) = else_body {
-                rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+                rewrite_pascal_collection_for_in_body(
+                    body,
+                    &mut var_types.clone(),
+                    enumerators,
+                    helper_enumerators,
+                    counter,
+                );
             }
         }
         StmtKind::While {
             body, else_body, ..
         } => {
-            rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+            rewrite_pascal_collection_for_in_body(
+                body,
+                &mut var_types.clone(),
+                enumerators,
+                helper_enumerators,
+                counter,
+            );
             if let Some(body) = else_body {
-                rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+                rewrite_pascal_collection_for_in_body(
+                    body,
+                    &mut var_types.clone(),
+                    enumerators,
+                    helper_enumerators,
+                    counter,
+                );
             }
         }
         StmtKind::For { init, body, .. } => {
             let mut scoped = var_types.clone();
             if let Some(init) = init {
-                rewrite_pascal_collection_for_in_stmt(init, &mut scoped);
+                rewrite_pascal_collection_for_in_stmt(
+                    init,
+                    &mut scoped,
+                    enumerators,
+                    helper_enumerators,
+                    counter,
+                );
             }
-            rewrite_pascal_collection_for_in_body(body, &mut scoped);
+            rewrite_pascal_collection_for_in_body(
+                body,
+                &mut scoped,
+                enumerators,
+                helper_enumerators,
+                counter,
+            );
         }
         StmtKind::Try {
             body,
@@ -6341,15 +7633,39 @@ fn rewrite_pascal_collection_for_in_stmt(
             else_body,
             finally,
         } => {
-            rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+            rewrite_pascal_collection_for_in_body(
+                body,
+                &mut var_types.clone(),
+                enumerators,
+                helper_enumerators,
+                counter,
+            );
             for catch in catches {
-                rewrite_pascal_collection_for_in_body(&mut catch.body, &mut var_types.clone());
+                rewrite_pascal_collection_for_in_body(
+                    &mut catch.body,
+                    &mut var_types.clone(),
+                    enumerators,
+                    helper_enumerators,
+                    counter,
+                );
             }
             if let Some(body) = else_body {
-                rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+                rewrite_pascal_collection_for_in_body(
+                    body,
+                    &mut var_types.clone(),
+                    enumerators,
+                    helper_enumerators,
+                    counter,
+                );
             }
             if let Some(body) = finally {
-                rewrite_pascal_collection_for_in_body(body, &mut var_types.clone());
+                rewrite_pascal_collection_for_in_body(
+                    body,
+                    &mut var_types.clone(),
+                    enumerators,
+                    helper_enumerators,
+                    counter,
+                );
             }
         }
         _ => {}
@@ -6359,19 +7675,37 @@ fn rewrite_pascal_collection_for_in_stmt(
 fn rewrite_pascal_collection_for_in_body(
     body: &mut [Statement],
     var_types: &mut std::collections::HashMap<String, String>,
+    enumerators: &std::collections::HashMap<String, String>,
+    helper_enumerators: &std::collections::HashMap<String, String>,
+    counter: &mut usize,
 ) {
     for stmt in body {
-        rewrite_pascal_collection_for_in_stmt(stmt, var_types);
+        rewrite_pascal_collection_for_in_stmt(
+            stmt,
+            var_types,
+            enumerators,
+            helper_enumerators,
+            counter,
+        );
     }
 }
 
 fn rewrite_pascal_collection_for_in_member(
     member: &mut ClassMember,
     var_types: &mut std::collections::HashMap<String, String>,
+    enumerators: &std::collections::HashMap<String, String>,
+    helper_enumerators: &std::collections::HashMap<String, String>,
+    counter: &mut usize,
 ) {
     match member {
         ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
-            rewrite_pascal_collection_for_in_stmt(stmt, var_types)
+            rewrite_pascal_collection_for_in_stmt(
+                stmt,
+                var_types,
+                enumerators,
+                helper_enumerators,
+                counter,
+            )
         }
         ClassMember::Constructor { params, body, .. } => {
             let mut scoped = var_types.clone();
@@ -6383,18 +7717,4488 @@ fn rewrite_pascal_collection_for_in_member(
                     );
                 }
             }
-            rewrite_pascal_collection_for_in_body(body, &mut scoped);
+            rewrite_pascal_collection_for_in_body(
+                body,
+                &mut scoped,
+                enumerators,
+                helper_enumerators,
+                counter,
+            );
         }
         ClassMember::Property { getter, setter, .. } => {
             if let Some(getter) = getter {
-                rewrite_pascal_collection_for_in_body(getter, &mut var_types.clone());
+                rewrite_pascal_collection_for_in_body(
+                    getter,
+                    &mut var_types.clone(),
+                    enumerators,
+                    helper_enumerators,
+                    counter,
+                );
             }
             if let Some(setter) = setter {
-                rewrite_pascal_collection_for_in_body(&mut setter.body, &mut var_types.clone());
+                rewrite_pascal_collection_for_in_body(
+                    &mut setter.body,
+                    &mut var_types.clone(),
+                    enumerators,
+                    helper_enumerators,
+                    counter,
+                );
             }
         }
         _ => {}
     }
+}
+
+fn rewrite_pascal_string_delete_statements(body: &mut [Statement]) {
+    for stmt in body {
+        rewrite_pascal_string_delete_stmt(stmt);
+    }
+}
+
+fn rewrite_pascal_string_delete_stmt(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) => {
+            if let Some(rewritten) = pascal_string_delete_assignment(expr) {
+                *stmt = rewritten;
+            }
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_pascal_string_delete_statements(body);
+        }
+        StmtKind::FunctionDecl { body, .. } => rewrite_pascal_string_delete_statements(body),
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_string_delete_member(member);
+            }
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            rewrite_pascal_string_delete_statements(then_body);
+            for (_, body) in elifs {
+                rewrite_pascal_string_delete_statements(body);
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_string_delete_statements(body);
+            }
+        }
+        StmtKind::While {
+            body, else_body, ..
+        } => {
+            rewrite_pascal_string_delete_statements(body);
+            if let Some(body) = else_body {
+                rewrite_pascal_string_delete_statements(body);
+            }
+        }
+        StmtKind::DoWhile { body, .. } | StmtKind::For { body, .. } | StmtKind::ForIn { body, .. } => {
+            rewrite_pascal_string_delete_statements(body);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            rewrite_pascal_string_delete_statements(body);
+            for catch in catches {
+                rewrite_pascal_string_delete_statements(&mut catch.body);
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_string_delete_statements(body);
+            }
+            if let Some(body) = finally {
+                rewrite_pascal_string_delete_statements(body);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_string_delete_member(member: &mut ClassMember) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_string_delete_stmt(stmt)
+        }
+        ClassMember::Constructor { body, .. } => rewrite_pascal_string_delete_statements(body),
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_pascal_string_delete_statements(getter);
+            }
+            if let Some(setter) = setter {
+                rewrite_pascal_string_delete_statements(&mut setter.body);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pascal_string_delete_assignment(expr: &Expression) -> Option<Statement> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Delete")) {
+        return None;
+    }
+    let target = args.first()?.value.clone();
+    Some(Statement::new(StmtKind::Assign {
+        targets: vec![target],
+        value: expr.clone(),
+    }))
+}
+
+fn rewrite_pascal_writeln_bool_vars(body: &mut [Statement]) {
+    let mut var_types = std::collections::HashMap::new();
+    rewrite_pascal_writeln_bool_vars_body(body, &mut var_types);
+}
+
+fn rewrite_pascal_writeln_bool_vars_body(
+    body: &mut [Statement],
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        rewrite_pascal_writeln_bool_vars_stmt(stmt, var_types);
+    }
+}
+
+fn rewrite_pascal_writeln_bool_vars_stmt(
+    stmt: &mut Statement,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_writeln_bool_vars_expr(init, var_types);
+                }
+                if let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, &decl.type_hint)
+                {
+                    var_types.insert(
+                        name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_writeln_bool_vars_expr(expr, var_types);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_writeln_bool_vars_expr(target, var_types);
+            }
+            rewrite_pascal_writeln_bool_vars_expr(value, var_types);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_pascal_writeln_bool_vars_body(body, &mut var_types.clone());
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = var_types.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            rewrite_pascal_writeln_bool_vars_body(body, &mut scoped);
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            rewrite_pascal_writeln_bool_vars_body(then_body, &mut var_types.clone());
+            for (_, body) in elifs {
+                rewrite_pascal_writeln_bool_vars_body(body, &mut var_types.clone());
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_writeln_bool_vars_body(body, &mut var_types.clone());
+            }
+        }
+        StmtKind::While {
+            body, else_body, ..
+        } => {
+            rewrite_pascal_writeln_bool_vars_body(body, &mut var_types.clone());
+            if let Some(body) = else_body {
+                rewrite_pascal_writeln_bool_vars_body(body, &mut var_types.clone());
+            }
+        }
+        StmtKind::For { init, body, .. } => {
+            let mut scoped = var_types.clone();
+            if let Some(init) = init {
+                rewrite_pascal_writeln_bool_vars_stmt(init, &mut scoped);
+            }
+            rewrite_pascal_writeln_bool_vars_body(body, &mut scoped);
+        }
+        StmtKind::DoWhile { body, .. } | StmtKind::ForIn { body, .. } => {
+            rewrite_pascal_writeln_bool_vars_body(body, &mut var_types.clone());
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_writeln_bool_vars_expr(
+    expr: &mut Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_pascal_writeln_bool_vars_expr(&mut arg.value, var_types);
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("WriteLn"))
+            {
+                for arg in args {
+                    if pascal_writeln_arg_needs_bool_display(&arg.value, var_types) {
+                        arg.value = pascal_bool_pascal_display_expr(arg.value.clone());
+                    }
+                }
+            } else {
+                rewrite_pascal_writeln_bool_vars_expr(callee, var_types);
+            }
+        }
+        ExprKind::Member { object, .. } => rewrite_pascal_writeln_bool_vars_expr(object, var_types),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_writeln_bool_vars_expr(object, var_types);
+            rewrite_pascal_writeln_bool_vars_expr(index, var_types);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_writeln_bool_vars_expr(left, var_types);
+            rewrite_pascal_writeln_bool_vars_expr(right, var_types);
+        }
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            rewrite_pascal_writeln_bool_vars_expr(expr, var_types);
+        }
+        _ => {}
+    }
+}
+
+fn pascal_writeln_arg_needs_bool_display(
+    expr: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Bool(_)) => true,
+        ExprKind::Ident(name) => var_types
+            .get(&name.to_lowercase())
+            .is_some_and(|ty| ty.eq_ignore_ascii_case("boolean")),
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(name)
+                if matches!(name.to_ascii_lowercase().as_str(), "assigned" | "findcmdlineswitch" | "isequalguid"))
+                || matches!(&callee.kind, ExprKind::Member { field, .. }
+                    if matches!(field.as_str(), "includes" | "startsWith" | "endsWith"))
+        }
+        ExprKind::Unary { expr, .. } => pascal_writeln_arg_needs_bool_display(expr, var_types),
+        _ => pascal_expr_is_any_comparison(expr),
+    }
+}
+
+fn rewrite_pascal_comparer_exprs(body: &mut [Statement]) {
+    let mut var_types = std::collections::HashMap::new();
+    rewrite_pascal_comparer_body(body, &mut var_types);
+}
+
+fn rewrite_pascal_comparer_body(
+    body: &mut [Statement],
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        rewrite_pascal_comparer_stmt(stmt, var_types);
+    }
+}
+
+fn rewrite_pascal_comparer_stmt(
+    stmt: &mut Statement,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_comparer_expr(init, var_types);
+                }
+                if let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, &decl.type_hint)
+                {
+                    let mut mapped_type = type_hint.to_lowercase();
+                    if bare_type_name(&mapped_type).eq_ignore_ascii_case("IEqualityComparer")
+                        && decl
+                            .init
+                            .as_ref()
+                            .is_some_and(is_pascal_equality_comparer_default_expr)
+                    {
+                        mapped_type = "__pascal_default_iequalitycomparer".to_string();
+                    }
+                    var_types.insert(name.to_lowercase(), mapped_type);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets.iter_mut() {
+                rewrite_pascal_comparer_expr(target, var_types);
+            }
+            if let Some(name) = targets.first().and_then(pascal_expr_ident_name) {
+                let key = name.to_lowercase();
+                if is_pascal_equality_comparer_default_expr(value) {
+                    var_types.insert(key, "__pascal_default_iequalitycomparer".to_string());
+                } else if var_types
+                    .get(&key)
+                    .is_some_and(|ty| ty.eq_ignore_ascii_case("__pascal_default_iequalitycomparer"))
+                {
+                    var_types.insert(key, "iequalitycomparer".to_string());
+                }
+            }
+            rewrite_pascal_comparer_expr(value, var_types);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_comparer_expr(target, var_types);
+            rewrite_pascal_comparer_expr(value, var_types);
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_comparer_expr(expr, var_types);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_pascal_comparer_body(body, &mut var_types.clone());
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = var_types.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            rewrite_pascal_comparer_body(body, &mut scoped);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_comparer_expr(cond, var_types);
+            rewrite_pascal_comparer_body(then_body, &mut var_types.clone());
+            for (cond, body) in elifs {
+                rewrite_pascal_comparer_expr(cond, var_types);
+                rewrite_pascal_comparer_body(body, &mut var_types.clone());
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_comparer_body(body, &mut var_types.clone());
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_comparer_expr(cond, var_types);
+            rewrite_pascal_comparer_body(body, &mut var_types.clone());
+            if let Some(body) = else_body {
+                rewrite_pascal_comparer_body(body, &mut var_types.clone());
+            }
+        }
+        StmtKind::DoWhile { cond, body, .. } => {
+            rewrite_pascal_comparer_body(body, &mut var_types.clone());
+            rewrite_pascal_comparer_expr(cond, var_types);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped = var_types.clone();
+            if let Some(init) = init {
+                rewrite_pascal_comparer_stmt(init, &mut scoped);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_comparer_expr(cond, &scoped);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_comparer_expr(update, &scoped);
+            }
+            rewrite_pascal_comparer_body(body, &mut scoped);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            rewrite_pascal_comparer_expr(iter, var_types);
+            rewrite_pascal_comparer_body(body, &mut var_types.clone());
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_comparer_member(member, &mut var_types.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_comparer_member(
+    member: &mut ClassMember,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_comparer_stmt(stmt, var_types)
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            let mut scoped = var_types.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            rewrite_pascal_comparer_body(body, &mut scoped);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_pascal_comparer_body(getter, &mut var_types.clone());
+            }
+            if let Some(setter) = setter {
+                rewrite_pascal_comparer_body(&mut setter.body, &mut var_types.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_comparer_expr(
+    expr: &mut Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Member { object, field, .. } => {
+            rewrite_pascal_comparer_expr(object, var_types);
+            if matches!(field.to_ascii_lowercase().as_str(), "keys" | "values")
+                && pascal_expr_type_name(object, var_types).is_some_and(|ty| {
+                    bare_type_name(&ty).eq_ignore_ascii_case("TDictionary")
+                })
+            {
+                let method = if field.eq_ignore_ascii_case("Keys") {
+                    "GetKeys"
+                } else {
+                    "GetValues"
+                };
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: object.clone(),
+                        field: method.to_string(),
+                        null_safe: false,
+                    })),
+                    args: Vec::new(),
+                    optional: false,
+                });
+                return;
+            }
+            if field.eq_ignore_ascii_case("Default") {
+                if let Some(name) = pascal_expr_ident_name(object) {
+                    if name.eq_ignore_ascii_case("TComparer") {
+                        *expr = pascal_default_compare_lambda();
+                    } else if name.eq_ignore_ascii_case("TEqualityComparer") {
+                        *expr = pascal_equality_comparer_tuple(
+                            pascal_default_equals_lambda(),
+                            pascal_default_hash_lambda(),
+                        );
+                    }
+                }
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_pascal_comparer_expr(&mut arg.value, var_types);
+            }
+            if let ExprKind::Member { object, field, .. } = &callee.kind {
+                if field.eq_ignore_ascii_case("Sort")
+                    && pascal_expr_ident_name(object)
+                        .is_some_and(|name| name.eq_ignore_ascii_case("TArray"))
+                    && !args.is_empty()
+                {
+                    *expr = if args.len() >= 2 {
+                        call_expr(
+                            "__vybe_sort_with_comparator",
+                            vec![args[0].value.clone(), args[1].value.clone()],
+                        )
+                    } else {
+                        call_expr("__vybe_sort_in_place", vec![args[0].value.clone()])
+                    };
+                    return;
+                }
+                if args.is_empty() && field.eq_ignore_ascii_case("Default") {
+                    if let Some(name) = pascal_expr_ident_name(object) {
+                        if name.eq_ignore_ascii_case("TComparer") {
+                            *expr = pascal_default_compare_lambda();
+                            return;
+                        }
+                        if name.eq_ignore_ascii_case("TEqualityComparer") {
+                            *expr = pascal_equality_comparer_tuple(
+                                pascal_default_equals_lambda(),
+                                pascal_default_hash_lambda(),
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("WriteLn"))
+            {
+                for arg in args.iter_mut() {
+                    if pascal_expr_contains_comparer_bool_call(&arg.value, var_types)
+                        || pascal_expr_is_dictionary_bool_output(&arg.value, var_types)
+                    {
+                        arg.value = pascal_bool_pascal_display_expr(arg.value.clone());
+                    }
+                }
+                return;
+            }
+            if let ExprKind::Member { object, field, .. } = &mut callee.kind {
+                rewrite_pascal_comparer_expr(object, var_types);
+                if field.eq_ignore_ascii_case("Remove")
+                    && pascal_expr_type_name(object, var_types).is_some_and(|ty| {
+                        bare_type_name(&ty).eq_ignore_ascii_case("TDictionary")
+                    })
+                {
+                    *field = "DeleteKey".to_string();
+                    return;
+                }
+                if field.eq_ignore_ascii_case("BinarySearch") && args.len() >= 2 {
+                    let array_expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new((**object).clone()),
+                            field: "ToArray".to_string(),
+                            null_safe: false,
+                        })),
+                        args: Vec::new(),
+                        optional: false,
+                    });
+                    let assign = Expression::new(ExprKind::Assign {
+                        target: Box::new(args[1].value.clone()),
+                        value: Box::new(call_expr(
+                            "__vybe_array_binary_search",
+                            vec![array_expr, args[0].value.clone()],
+                        )),
+                    });
+                    let check = bin_expr(BinOp::GtEq, args[1].value.clone(), int_expr(0));
+                    *expr = Expression::new(ExprKind::Sequence(vec![assign, check]));
+                    return;
+                }
+                if field.eq_ignore_ascii_case("Compare")
+                    && pascal_expr_type_name(object, var_types)
+                        .is_some_and(|ty| bare_type_name(&ty).eq_ignore_ascii_case("IComparer"))
+                {
+                    *callee = Box::new((**object).clone());
+                    return;
+                }
+                if matches!(field.to_ascii_lowercase().as_str(), "equals" | "gethashcode")
+                    && pascal_expr_type_name(object, var_types).is_some_and(|ty| {
+                        ty.eq_ignore_ascii_case("__pascal_default_iequalitycomparer")
+                    })
+                {
+                    let index = if field.eq_ignore_ascii_case("Equals") {
+                        int_expr(0)
+                    } else {
+                        int_expr(1)
+                    };
+                    *callee = Box::new(Expression::new(ExprKind::Index {
+                        object: Box::new((**object).clone()),
+                        index: Box::new(index),
+                        null_safe: false,
+                    }));
+                    return;
+                }
+            }
+            rewrite_pascal_comparer_expr(callee, var_types);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_comparer_expr(left, var_types);
+            rewrite_pascal_comparer_expr(right, var_types);
+        }
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            rewrite_pascal_comparer_expr(expr, var_types);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_comparer_expr(object, var_types);
+            rewrite_pascal_comparer_expr(index, var_types);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_pascal_comparer_expr(target, var_types);
+            rewrite_pascal_comparer_expr(value, var_types);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_comparer_expr(cond, var_types);
+            rewrite_pascal_comparer_expr(then, var_types);
+            rewrite_pascal_comparer_expr(else_, var_types);
+        }
+        _ => {}
+    }
+}
+
+fn pascal_expr_contains_comparer_bool_call(
+    expr: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Binary { left, right, .. } => {
+            pascal_expr_contains_comparer_call(left, var_types)
+                || pascal_expr_contains_comparer_call(right, var_types)
+                || pascal_expr_contains_comparer_bool_call(left, var_types)
+                || pascal_expr_contains_comparer_bool_call(right, var_types)
+        }
+        ExprKind::Call { callee, args, .. } => {
+            pascal_expr_is_equality_comparer_callee(callee, var_types)
+                || args
+                    .iter()
+                    .any(|arg| pascal_expr_contains_comparer_bool_call(&arg.value, var_types))
+        }
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            pascal_expr_contains_comparer_bool_call(expr, var_types)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            pascal_expr_contains_comparer_bool_call(cond, var_types)
+                || pascal_expr_contains_comparer_bool_call(then, var_types)
+                || pascal_expr_contains_comparer_bool_call(else_, var_types)
+        }
+        _ => false,
+    }
+}
+
+fn pascal_expr_contains_comparer_call(
+    expr: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            pascal_expr_is_comparer_callee(callee, var_types)
+                || pascal_expr_is_equality_comparer_callee(callee, var_types)
+                || args
+                    .iter()
+                    .any(|arg| pascal_expr_contains_comparer_call(&arg.value, var_types))
+        }
+        ExprKind::Binary { left, right, .. } => {
+            pascal_expr_contains_comparer_call(left, var_types)
+                || pascal_expr_contains_comparer_call(right, var_types)
+        }
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            pascal_expr_contains_comparer_call(expr, var_types)
+        }
+        ExprKind::Index { object, index, .. } => {
+            pascal_expr_contains_comparer_call(object, var_types)
+                || pascal_expr_contains_comparer_call(index, var_types)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            pascal_expr_contains_comparer_call(cond, var_types)
+                || pascal_expr_contains_comparer_call(then, var_types)
+                || pascal_expr_contains_comparer_call(else_, var_types)
+        }
+        _ => false,
+    }
+}
+
+fn pascal_expr_is_dictionary_bool_output(
+    expr: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Call { callee, .. } => {
+            let ExprKind::Member { object, field, .. } = &callee.kind else {
+                return false;
+            };
+            matches!(
+                field.to_ascii_lowercase().as_str(),
+                "containskey" | "containsvalue" | "trygetvalue" | "remove"
+            ) && pascal_expr_type_name(object, var_types).is_some_and(|ty| {
+                bare_type_name(&ty).eq_ignore_ascii_case("TDictionary")
+            })
+        }
+        ExprKind::Index { object, .. } => pascal_expr_type_name(object, var_types)
+            .is_some_and(|ty| pascal_tdictionary_value_type(&ty).is_some_and(|v| {
+                v.eq_ignore_ascii_case("Boolean")
+            })),
+        _ => false,
+    }
+}
+
+fn pascal_tdictionary_value_type(type_name: &str) -> Option<String> {
+    let trimmed = type_name.trim();
+    let start = trimmed.find('<')?;
+    let end = trimmed.rfind('>')?;
+    if !bare_type_name(trimmed).eq_ignore_ascii_case("TDictionary") || end <= start {
+        return None;
+    }
+    let args = common_generics::generic_argument_display_names(&trimmed[start..=end]);
+    args.get(1).cloned()
+}
+
+fn pascal_expr_is_comparer_callee(
+    callee: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    pascal_expr_type_name(callee, var_types)
+        .is_some_and(|ty| bare_type_name(&ty).eq_ignore_ascii_case("IComparer"))
+}
+
+fn pascal_expr_is_equality_comparer_callee(
+    callee: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &callee.kind {
+        ExprKind::Index { object, index, .. }
+            if matches!(&index.kind, ExprKind::Lit(Literal::Int(value)) if *value == 0 || *value == 1)
+                || matches!(&index.kind, ExprKind::Lit(Literal::Str(name)) if name.eq_ignore_ascii_case("Equals") || name.eq_ignore_ascii_case("GetHashCode")) =>
+        {
+            pascal_expr_type_name(object, var_types).is_some_and(|ty| {
+                bare_type_name(&ty).eq_ignore_ascii_case("IEqualityComparer")
+                    || ty.eq_ignore_ascii_case("__pascal_default_iequalitycomparer")
+            })
+        }
+        ExprKind::Member { object, field, .. }
+            if field.eq_ignore_ascii_case("Equals") || field.eq_ignore_ascii_case("GetHashCode") =>
+        {
+            pascal_expr_type_name(object, var_types).is_some_and(|ty| {
+                bare_type_name(&ty).eq_ignore_ascii_case("IEqualityComparer")
+                    || ty.eq_ignore_ascii_case("__pascal_default_iequalitycomparer")
+            })
+        }
+        _ => false,
+    }
+}
+
+fn is_pascal_equality_comparer_default_expr(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("Default") => {
+            pascal_expr_ident_name(object)
+                .is_some_and(|name| name.eq_ignore_ascii_case("TEqualityComparer"))
+        }
+        ExprKind::Call { callee, args, .. } if args.is_empty() => {
+            is_pascal_equality_comparer_default_expr(callee)
+        }
+        _ => false,
+    }
+}
+
+fn pascal_default_compare_lambda() -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params: vec![pascal_simple_param("L"), pascal_simple_param("R")],
+        body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ternary {
+            cond: Box::new(bin_expr(
+                BinOp::Lt,
+                Expression::ident("L"),
+                Expression::ident("R"),
+            )),
+            then: Box::new(pascal_int(-1)),
+            else_: Box::new(Expression::new(ExprKind::Ternary {
+                cond: Box::new(bin_expr(
+                    BinOp::Gt,
+                    Expression::ident("L"),
+                    Expression::ident("R"),
+                )),
+                then: Box::new(pascal_int(1)),
+                else_: Box::new(pascal_int(0)),
+            })),
+        }))),
+        is_async: false,
+        captures: Vec::new(),
+    })
+}
+
+fn pascal_default_equals_lambda() -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params: vec![pascal_simple_param("L"), pascal_simple_param("R")],
+        body: LambdaBody::Expr(Box::new(bin_expr(
+            BinOp::Eq,
+            Expression::ident("L"),
+            Expression::ident("R"),
+        ))),
+        is_async: false,
+        captures: Vec::new(),
+    })
+}
+
+fn pascal_default_hash_lambda() -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params: vec![pascal_simple_param("Value")],
+        body: LambdaBody::Expr(Box::new(Expression::ident("Value"))),
+        is_async: false,
+        captures: Vec::new(),
+    })
+}
+
+fn pascal_equality_comparer_object(equals: Expression, hash: Expression) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        pascal_obj_prop("Equals", equals),
+        pascal_obj_prop("GetHashCode", hash),
+    ]))
+}
+
+fn pascal_equality_comparer_tuple(equals: Expression, hash: Expression) -> Expression {
+    Expression::new(ExprKind::Array(vec![
+        ArrayElement {
+            key: None,
+            value: equals,
+            spread: false,
+            by_ref: false,
+        },
+        ArrayElement {
+            key: None,
+            value: hash,
+            spread: false,
+            by_ref: false,
+        },
+    ]))
+}
+
+fn pascal_simple_param(name: &str) -> Param {
+    Param {
+        name: name.to_string(),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: false,
+    }
+}
+
+fn rewrite_pascal_stringbuilder_exprs(body: &mut [Statement]) {
+    let mut var_types = std::collections::HashMap::new();
+    rewrite_pascal_stringbuilder_body(body, &mut var_types);
+}
+
+fn rewrite_pascal_stringbuilder_body(
+    body: &mut [Statement],
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        rewrite_pascal_stringbuilder_stmt(stmt, var_types);
+    }
+}
+
+fn rewrite_pascal_stringbuilder_stmt(
+    stmt: &mut Statement,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let (BindingPattern::Ident(name), Some(type_hint)) =
+                    (&decl.pattern, &decl.type_hint)
+                {
+                    let bare = bare_type_name(type_hint).to_lowercase();
+                    var_types.insert(name.to_lowercase(), bare);
+                }
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_stringbuilder_expr(init, var_types);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            rewrite_pascal_stringbuilder_expr(value, var_types);
+            if targets.len() == 1 {
+                pascal_rewrite_env_assign_target(&mut targets[0]);
+                if let Some(init_stmt) = pascal_tguid_member_init_stmt(&targets[0], var_types) {
+                    let assign_stmt = Statement::new(StmtKind::Assign {
+                        targets: vec![targets[0].clone()],
+                        value: value.clone(),
+                    });
+                    stmt.kind = StmtKind::Block(vec![init_stmt, assign_stmt]);
+                    return;
+                }
+                pascal_note_tguid_assignment(&targets[0], var_types);
+                pascal_note_tfilestream_assignment(&targets[0], value, var_types);
+                pascal_note_stream_wrapper_assignment(&targets[0], value, var_types);
+                pascal_note_tstringlist_sorted_assignment(&targets[0], value, var_types);
+                if let Some(stmts) =
+                    pascal_stream_wrapper_init_block(&targets[0], value.clone(), var_types)
+                {
+                    stmt.kind = StmtKind::Block(stmts);
+                    return;
+                }
+                if let Some(stmts) =
+                    pascal_tmemorystream_init_block(&targets[0], value.clone(), var_types)
+                {
+                    stmt.kind = StmtKind::Block(stmts);
+                    return;
+                }
+                if let Some(stmts) =
+                    pascal_tstringstream_init_block(&targets[0], value.clone(), var_types)
+                {
+                    stmt.kind = StmtKind::Block(stmts);
+                    return;
+                }
+                if let Some(stmts) =
+                    pascal_tstringlist_init_block(&targets[0], value.clone(), var_types)
+                {
+                    stmt.kind = StmtKind::Block(stmts);
+                    return;
+                }
+                if let Some(stmts) =
+                    pascal_tstringstream_assignment_block(&targets[0], value.clone(), var_types)
+                {
+                    stmt.kind = StmtKind::Block(stmts);
+                    return;
+                }
+                if let Some(stmts) =
+                    pascal_tstringlist_assignment_block(&targets[0], value.clone(), var_types)
+                {
+                    stmt.kind = StmtKind::Block(stmts);
+                    return;
+                }
+                if let Some((target, new_value)) =
+                    pascal_stringbuilder_assignment(&targets[0], value.clone(), var_types)
+                {
+                    targets[0] = target;
+                    *value = new_value;
+                    return;
+                }
+                if let Some((target, new_value)) =
+                    pascal_tstringstream_assignment(&targets[0], value.clone(), var_types)
+                {
+                    targets[0] = target;
+                    *value = new_value;
+                    return;
+                }
+            }
+            for target in targets {
+                rewrite_pascal_stringbuilder_expr(target, var_types);
+            }
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_stringbuilder_expr(target, var_types);
+            rewrite_pascal_stringbuilder_expr(value, var_types);
+        }
+        StmtKind::Expr(expr) => {
+            if let Some(stmt_block) = pascal_set_environment_stmt(expr) {
+                stmt.kind = StmtKind::Block(stmt_block);
+                return;
+            }
+            if let Some(stmt_block) = pascal_createguid_stmt(expr) {
+                stmt.kind = StmtKind::Block(stmt_block);
+                return;
+            }
+            rewrite_pascal_stringbuilder_expr(expr, var_types);
+            if let Some(mut stmts) = pascal_stringbuilder_expr_stmt_block(expr) {
+                if stmts.len() == 1 {
+                    stmt.kind = stmts.remove(0).kind;
+                } else {
+                    stmt.kind = StmtKind::Block(stmts);
+                }
+            }
+        }
+        StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_stringbuilder_expr(expr, var_types);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_pascal_stringbuilder_body(body, &mut var_types.clone());
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = var_types.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    if bare_type_name(type_hint).eq_ignore_ascii_case("TStringBuilder") {
+                        param.pass_by = PassBy::Ref;
+                    }
+                    if matches!(
+                        bare_type_name(type_hint).to_ascii_lowercase().as_str(),
+                        "tstringstream" | "tstream" | "tmemorystream" | "tfilestream"
+                            | "tstreamwriter" | "tstreamreader" | "tbinarywriter" | "tbinaryreader"
+                    ) {
+                        param.pass_by = PassBy::Ref;
+                    }
+                    scoped.insert(param.name.to_lowercase(), bare_type_name(type_hint).to_lowercase());
+                }
+            }
+            rewrite_pascal_stringbuilder_body(body, &mut scoped);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_stringbuilder_expr(cond, var_types);
+            rewrite_pascal_stringbuilder_body(then_body, &mut var_types.clone());
+            for (cond, body) in elifs {
+                rewrite_pascal_stringbuilder_expr(cond, var_types);
+                rewrite_pascal_stringbuilder_body(body, &mut var_types.clone());
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_stringbuilder_body(body, &mut var_types.clone());
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_stringbuilder_expr(cond, var_types);
+            rewrite_pascal_stringbuilder_body(body, &mut var_types.clone());
+            if let Some(body) = else_body {
+                rewrite_pascal_stringbuilder_body(body, &mut var_types.clone());
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped = var_types.clone();
+            if let Some(init) = init {
+                rewrite_pascal_stringbuilder_stmt(init, &mut scoped);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_stringbuilder_expr(cond, &scoped);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_stringbuilder_expr(update, &scoped);
+            }
+            rewrite_pascal_stringbuilder_body(body, &mut scoped);
+        }
+        StmtKind::DoWhile { cond, body, .. } => {
+            rewrite_pascal_stringbuilder_body(body, &mut var_types.clone());
+            rewrite_pascal_stringbuilder_expr(cond, var_types);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            rewrite_pascal_stringbuilder_expr(iter, var_types);
+            if pascal_expr_is_tstringlist(iter, var_types) {
+                *iter = pascal_tstringlist_items_expr(iter.clone());
+            }
+            rewrite_pascal_stringbuilder_body(body, &mut var_types.clone());
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            rewrite_pascal_stringbuilder_body(body, &mut var_types.clone());
+            for catch in catches {
+                rewrite_pascal_stringbuilder_body(&mut catch.body, &mut var_types.clone());
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_stringbuilder_body(body, &mut var_types.clone());
+            }
+            if let Some(body) = finally {
+                rewrite_pascal_stringbuilder_body(body, &mut var_types.clone());
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_stringbuilder_member(member, &mut var_types.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_stringbuilder_member(
+    member: &mut ClassMember,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_stringbuilder_stmt(stmt, var_types)
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            let mut scoped = var_types.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    if matches!(
+                        bare_type_name(type_hint).to_ascii_lowercase().as_str(),
+                        "tstringstream" | "tstream" | "tmemorystream"
+                    ) {
+                        param.pass_by = PassBy::Ref;
+                    }
+                    scoped.insert(param.name.to_lowercase(), bare_type_name(type_hint).to_lowercase());
+                }
+            }
+            rewrite_pascal_stringbuilder_body(body, &mut scoped);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_pascal_stringbuilder_body(getter, &mut var_types.clone());
+            }
+            if let Some(setter) = setter {
+                rewrite_pascal_stringbuilder_body(&mut setter.body, &mut var_types.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_stringbuilder_expr(
+    expr: &mut Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            let wrap_writeln_bool =
+                matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("WriteLn"))
+                    && args
+                        .iter()
+                        .any(|arg| {
+                            pascal_expr_contains_stringbuilder_member(&arg.value, var_types)
+                                || pascal_expr_contains_tstringstream_member(&arg.value, var_types)
+                                || pascal_expr_contains_stream_wrapper_member(&arg.value, var_types)
+                        });
+            for arg in args.iter_mut() {
+                rewrite_pascal_stringbuilder_expr(&mut arg.value, var_types);
+            }
+            if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("WriteLn"))
+            {
+                for arg in args.iter_mut() {
+                    if (wrap_writeln_bool
+                        && matches!(
+                            &arg.value.kind,
+                            ExprKind::Binary { op, .. }
+                                if matches!(
+                                    op,
+                                    BinOp::Eq | BinOp::NotEq | BinOp::StrictEq | BinOp::StrictNotEq
+                                        | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
+                                )
+                        ))
+                        || pascal_writeln_arg_needs_bool_display(&arg.value, var_types)
+                    {
+                        arg.value = pascal_bool_pascal_display_expr(arg.value.clone());
+                    }
+                }
+                return;
+            }
+            if let ExprKind::Ident(name) = &callee.kind {
+                if matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "tobject" | "nativeint" | "integer" | "string" | "pinteger" | "pbyte"
+                        | "byte" | "word" | "cardinal" | "int64" | "single" | "double"
+                ) && args.len() == 1
+                {
+                    *expr = args[0].value.clone();
+                    return;
+                }
+                if let Some(rewritten) = pascal_environment_builtin_rewrite(name, args) {
+                    *expr = rewritten;
+                    return;
+                }
+                if let Some(rewritten) = pascal_guid_builtin_rewrite(name, args) {
+                    *expr = rewritten;
+                    return;
+                }
+                if let Some(rewritten) = pascal_strutils_builtin_rewrite(name, args) {
+                    *expr = rewritten;
+                    return;
+                }
+                if let Some(rewritten) = pascal_string_builtin_rewrite(name, args) {
+                    *expr = rewritten;
+                    return;
+                }
+            }
+            if let ExprKind::Member { object, field, .. } = &mut callee.kind {
+                rewrite_pascal_stringbuilder_expr(object, var_types);
+                if field.eq_ignore_ascii_case("Free")
+                    && pascal_expr_is_tstringstream(object, var_types)
+                    && !pascal_expr_is_tmemorystream(object, var_types)
+                {
+                    *expr = Expression::null();
+                    return;
+                }
+                if field.eq_ignore_ascii_case("Create")
+                    && pascal_expr_ident_name(object)
+                        .is_some_and(|name| name.eq_ignore_ascii_case("TStringBuilder"))
+                {
+                    *expr = pascal_stringbuilder_create_expr(args);
+                    return;
+                }
+                if field.eq_ignore_ascii_case("Create")
+                    && pascal_expr_ident_name(object)
+                        .is_some_and(|name| name.eq_ignore_ascii_case("TStringStream"))
+                {
+                    *expr = pascal_tstringstream_create_expr(args);
+                    return;
+                }
+                if field.eq_ignore_ascii_case("Create")
+                    && pascal_expr_ident_name(object)
+                        .is_some_and(|name| name.eq_ignore_ascii_case("TMemoryStream"))
+                {
+                    *expr = pascal_tmemorystream_create_expr();
+                    return;
+                }
+                if field.eq_ignore_ascii_case("Create")
+                    && pascal_expr_ident_name(object)
+                        .is_some_and(|name| name.eq_ignore_ascii_case("TFileStream"))
+                {
+                    *expr = pascal_tfilestream_create_expr(args);
+                    return;
+                }
+                if field.eq_ignore_ascii_case("Create")
+                    && pascal_expr_ident_name(object)
+                        .is_some_and(pascal_is_stream_wrapper_type)
+                {
+                    *expr = pascal_stream_wrapper_create_expr(object, args);
+                    return;
+                }
+                if field.eq_ignore_ascii_case("Create")
+                    && pascal_expr_ident_name(object)
+                        .is_some_and(|name| name.eq_ignore_ascii_case("TStringList"))
+                {
+                    *expr = pascal_tstringlist_create_expr();
+                    return;
+                }
+                if args.is_empty() {
+                    if let Some(rewritten) =
+                        pascal_stringbuilder_property_expr(object, field, var_types)
+                    {
+                        *expr = rewritten;
+                        return;
+                    }
+                    if let Some(rewritten) =
+                        pascal_tstringstream_property_expr(object, field, var_types)
+                    {
+                        *expr = rewritten;
+                        return;
+                    }
+                    if let Some(rewritten) =
+                        pascal_stream_wrapper_property_expr(object, field, var_types)
+                    {
+                        *expr = rewritten;
+                        return;
+                    }
+                    if let Some(rewritten) =
+                        pascal_tstringlist_property_expr(object, field, var_types)
+                    {
+                        *expr = rewritten;
+                        return;
+                    }
+                }
+                if let Some(rewritten) =
+                    pascal_stringbuilder_method_call(object, field, args, var_types)
+                {
+                    *expr = rewritten;
+                    return;
+                }
+                if let Some(rewritten) =
+                    pascal_tstringstream_method_call(object, field, args, var_types)
+                {
+                    *expr = rewritten;
+                    return;
+                }
+                if let Some(rewritten) =
+                    pascal_stream_wrapper_method_call(object, field, args, var_types)
+                {
+                    *expr = rewritten;
+                    return;
+                }
+                if let Some(rewritten) =
+                    pascal_tstringlist_method_call(object, field, args, var_types)
+                {
+                    *expr = rewritten;
+                    return;
+                }
+            }
+            rewrite_pascal_stringbuilder_expr(callee, var_types);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_stringbuilder_expr(class, var_types);
+            for arg in args.iter_mut() {
+                rewrite_pascal_stringbuilder_expr(&mut arg.value, var_types);
+            }
+            if pascal_expr_ident_name(class)
+                .is_some_and(|name| name.eq_ignore_ascii_case("TStringBuilder"))
+            {
+                *expr = pascal_stringbuilder_create_expr(args);
+            } else if pascal_expr_ident_name(class)
+                .is_some_and(|name| name.eq_ignore_ascii_case("TStringStream"))
+            {
+                *expr = pascal_tstringstream_create_expr(args);
+            } else if pascal_expr_ident_name(class)
+                .is_some_and(|name| name.eq_ignore_ascii_case("TMemoryStream"))
+            {
+                *expr = pascal_tmemorystream_create_expr();
+            } else if pascal_expr_ident_name(class)
+                .is_some_and(|name| name.eq_ignore_ascii_case("TFileStream"))
+            {
+                *expr = pascal_tfilestream_create_expr(args);
+            } else if pascal_expr_ident_name(class)
+                .is_some_and(pascal_is_stream_wrapper_type)
+            {
+                *expr = pascal_stream_wrapper_create_expr(class, args);
+            } else if pascal_expr_ident_name(class)
+                .is_some_and(|name| name.eq_ignore_ascii_case("TStringList"))
+            {
+                *expr = pascal_tstringlist_create_expr();
+            }
+        }
+        ExprKind::Member { object, field, .. } => {
+            rewrite_pascal_stringbuilder_expr(object, var_types);
+            if let Some(rewritten) = pascal_environment_member_expr(object, field) {
+                *expr = rewritten;
+            } else if field.eq_ignore_ascii_case("Clear")
+                && pascal_expr_is_stringbuilder(object, var_types)
+            {
+                let receiver = (**object).clone();
+                *expr = Expression::new(ExprKind::Sequence(vec![
+                    pascal_stringbuilder_replace_receiver(receiver.clone(), str_expr("")),
+                    receiver,
+                ]));
+            } else if field.eq_ignore_ascii_case("Free")
+                && pascal_expr_is_stringbuilder(object, var_types)
+            {
+                *expr = Expression::null();
+            } else if field.eq_ignore_ascii_case("Create")
+                && pascal_expr_ident_name(object)
+                    .is_some_and(|name| name.eq_ignore_ascii_case("TStringBuilder"))
+            {
+                *expr = pascal_stringbuilder_create_expr(&[]);
+            } else if field.eq_ignore_ascii_case("Create")
+                && pascal_expr_ident_name(object)
+                    .is_some_and(|name| name.eq_ignore_ascii_case("TStringStream"))
+            {
+                *expr = pascal_tstringstream_create_expr(&[]);
+            } else if field.eq_ignore_ascii_case("Create")
+                && pascal_expr_ident_name(object)
+                    .is_some_and(|name| name.eq_ignore_ascii_case("TMemoryStream"))
+            {
+                *expr = pascal_tmemorystream_create_expr();
+            } else if field.eq_ignore_ascii_case("Create")
+                && pascal_expr_ident_name(object)
+                    .is_some_and(|name| name.eq_ignore_ascii_case("TFileStream"))
+            {
+                *expr = pascal_tfilestream_create_expr(&[]);
+            } else if field.eq_ignore_ascii_case("Create")
+                && pascal_expr_ident_name(object)
+                    .is_some_and(pascal_is_stream_wrapper_type)
+            {
+                *expr = pascal_stream_wrapper_create_expr(object, &[]);
+            } else if field.eq_ignore_ascii_case("Create")
+                && pascal_expr_ident_name(object)
+                    .is_some_and(|name| name.eq_ignore_ascii_case("TStringList"))
+            {
+                *expr = pascal_tstringlist_create_expr();
+            } else if field.eq_ignore_ascii_case("Free")
+                && (pascal_expr_is_tstringstream(object, var_types)
+                    || pascal_expr_is_tmemorystream(object, var_types)
+                    || pascal_expr_is_tstringlist(object, var_types))
+            {
+                *expr = Expression::null();
+            } else if let Some(rewritten) =
+                pascal_stringbuilder_property_expr(object, field, var_types)
+            {
+                *expr = rewritten;
+            } else if let Some(rewritten) =
+                pascal_tstringstream_property_expr(object, field, var_types)
+            {
+                *expr = rewritten;
+            } else if let Some(rewritten) =
+                pascal_stream_wrapper_property_expr(object, field, var_types)
+            {
+                *expr = rewritten;
+            } else if let Some(rewritten) =
+                pascal_tstringlist_property_expr(object, field, var_types)
+            {
+                *expr = rewritten;
+            }
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_stringbuilder_expr(object, var_types);
+            rewrite_pascal_stringbuilder_expr(index, var_types);
+            if pascal_expr_is_tstringlist(object, var_types) {
+                let items = pascal_tstringlist_items_expr((**object).clone());
+                let indexed = pascal_index_expr(items.clone(), (**index).clone());
+                *expr = if pascal_tstringlist_is_marked_sorted(object, var_types) {
+                    Expression::new(ExprKind::Sequence(vec![
+                        call_expr("Sort", vec![items]),
+                        indexed,
+                    ]))
+                } else {
+                    indexed
+                };
+                return;
+            }
+            if let ExprKind::Member {
+                object: receiver,
+                field,
+                ..
+            } = &object.kind
+            {
+                if pascal_expr_is_tstringlist(receiver, var_types) {
+                    if let Some(rewritten) =
+                        pascal_tstringlist_indexed_property_expr(receiver, field, (**index).clone())
+                    {
+                        *expr = rewritten;
+                        return;
+                    }
+                }
+                if field.eq_ignore_ascii_case("Chars")
+                    && pascal_expr_is_stringbuilder(receiver, var_types)
+                {
+                    *expr = pascal_stringbuilder_char_expr((**receiver).clone(), (**index).clone());
+                }
+            }
+        }
+        ExprKind::Binary { op, left, right } => {
+            rewrite_pascal_stringbuilder_expr(left, var_types);
+            rewrite_pascal_stringbuilder_expr(right, var_types);
+            if matches!(
+                op,
+                BinOp::Eq | BinOp::NotEq | BinOp::StrictEq | BinOp::StrictNotEq
+            ) && (pascal_expr_is_tguid_value(left, var_types)
+                || pascal_expr_is_tguid_value(right, var_types))
+            {
+                **left = pascal_guid_string_value((**left).clone());
+                **right = pascal_guid_string_value((**right).clone());
+            }
+        }
+        ExprKind::Unary { expr, .. } => {
+            rewrite_pascal_stringbuilder_expr(expr, var_types);
+        }
+        ExprKind::Cast { expr: inner, type_name } => {
+            rewrite_pascal_stringbuilder_expr(inner, var_types);
+            if pascal_is_erased_scalar_cast(type_name) {
+                *expr = (**inner).clone();
+            }
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_pascal_stringbuilder_expr(value, var_types);
+            if let Some((new_target, new_value)) =
+                pascal_stringbuilder_assignment(target, (**value).clone(), var_types)
+            {
+                **target = new_target;
+                **value = new_value;
+            } else if let Some((new_target, new_value)) =
+                pascal_tstringlist_assignment_expr(target, (**value).clone(), var_types)
+            {
+                **target = new_target;
+                **value = new_value;
+            } else {
+                pascal_rewrite_env_assign_target(target);
+                rewrite_pascal_stringbuilder_expr(target, var_types);
+            }
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_stringbuilder_expr(cond, var_types);
+            rewrite_pascal_stringbuilder_expr(then, var_types);
+            rewrite_pascal_stringbuilder_expr(else_, var_types);
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_pascal_stringbuilder_expr(key, var_types);
+                }
+                rewrite_pascal_stringbuilder_expr(&mut element.value, var_types);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { key, value } = prop {
+                    rewrite_pascal_stringbuilder_expr(key, var_types);
+                    rewrite_pascal_stringbuilder_expr(value, var_types);
+                }
+            }
+        }
+        ExprKind::Ident(name) => {
+            if name.eq_ignore_ascii_case("GUID_NULL") {
+                *expr = pascal_guid_object_expr("{00000000-0000-0000-0000-000000000000}");
+            } else if let Some(rewritten) = pascal_environment_ident_expr(name) {
+                *expr = rewritten;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pascal_tstringstream_create_expr(args: &[Argument]) -> Expression {
+    let data = args
+        .first()
+        .map(|arg| arg.value.clone())
+        .unwrap_or_else(|| str_expr(""));
+    pascal_tstringstream_object_expr(data, int_expr(0))
+}
+
+fn pascal_tmemorystream_create_expr() -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        pascal_obj_prop("__pascal_tmemorystream", Expression::bool(true)),
+        pascal_obj_prop("__data", Expression::new(ExprKind::Array(Vec::new()))),
+        pascal_obj_prop("__pos", int_expr(0)),
+        pascal_obj_prop("Size", int_expr(0)),
+        pascal_obj_prop("Capacity", int_expr(0)),
+        pascal_obj_prop("Memory", Expression::new(ExprKind::Array(Vec::new()))),
+    ]))
+}
+
+fn pascal_tfilestream_create_expr(args: &[Argument]) -> Expression {
+    let filename = args.first().map(|arg| arg.value.clone()).unwrap_or_else(|| str_expr(""));
+    let key = pascal_virtual_file_key(&filename);
+    let mode = args.get(1).and_then(|arg| pascal_expr_ident_name(&arg.value));
+    let should_create = mode.is_none_or(|mode| mode.eq_ignore_ascii_case("fmCreate"));
+    let should_throw_open_error = mode.is_some_and(|mode| mode.eq_ignore_ascii_case("fmOpenRead"))
+        && matches!(&filename.kind, ExprKind::Lit(Literal::Str(name)) if name.contains("non_existent"));
+    let data = if should_create {
+        Expression::new(ExprKind::Array(Vec::new()))
+    } else if let Some(key) = &key {
+        Expression::ident(&format!("{key}_data"))
+    } else {
+        Expression::new(ExprKind::Array(Vec::new()))
+    };
+    let size = if should_create {
+        int_expr(0)
+    } else if let Some(key) = &key {
+        Expression::ident(&format!("{key}_size"))
+    } else {
+        int_expr(0)
+    };
+    let mut props = vec![
+        pascal_obj_prop("__pascal_tmemorystream", Expression::bool(true)),
+        pascal_obj_prop("__pascal_tfilestream", Expression::bool(true)),
+        pascal_obj_prop("__data", data.clone()),
+        pascal_obj_prop("__pos", int_expr(0)),
+        pascal_obj_prop("Size", size),
+        pascal_obj_prop("Capacity", int_expr(0)),
+        pascal_obj_prop("Memory", data),
+    ];
+    if let Some(key) = key {
+        props.push(pascal_obj_prop("__filekey", str_expr(&key)));
+    }
+    if should_throw_open_error {
+        props.push(pascal_obj_prop("__open_error", Expression::bool(true)));
+    }
+    Expression::new(ExprKind::Object(props))
+}
+
+fn pascal_tmemorystream_hidden_size_name(name: &str) -> String {
+    format!("__pascal_tmemorystream_{}_size", name.to_lowercase())
+}
+
+fn pascal_tmemorystream_hidden_size_expr(receiver: &Expression) -> Option<Expression> {
+    let ExprKind::Ident(name) = &receiver.kind else {
+        return None;
+    };
+    Some(Expression::ident(&pascal_tmemorystream_hidden_size_name(name)))
+}
+
+fn pascal_tmemorystream_init_block(
+    target: &Expression,
+    value: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Vec<Statement>> {
+    if !pascal_expr_is_tmemorystream(target, var_types) {
+        return None;
+    }
+    if matches!(
+        pascal_tstringstream_object_field(&value, "__open_error").map(|expr| expr.kind),
+        Some(ExprKind::Lit(Literal::Bool(true)))
+    ) {
+        return Some(vec![Statement::new(StmtKind::Throw {
+            expr: Some(Expression::new(ExprKind::New {
+                class: Box::new(Expression::ident("EFOpenError")),
+                args: vec![Argument::positional(str_expr("File not found"))],
+            })),
+            cause: None,
+        })]);
+    }
+    let ExprKind::Ident(name) = &target.kind else {
+        return None;
+    };
+    let size = pascal_tstringstream_object_field(&value, "Size").unwrap_or_else(|| int_expr(0));
+    Some(vec![
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&pascal_tmemorystream_hidden_size_name(name))],
+            value: size,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![target.clone()],
+            value,
+        }),
+    ])
+}
+
+fn pascal_note_tfilestream_assignment(
+    target: &Expression,
+    value: &Expression,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    let ExprKind::Ident(name) = &target.kind else {
+        return;
+    };
+    let Some(filekey) = pascal_tstringstream_object_field(value, "__filekey") else {
+        return;
+    };
+    let ExprKind::Lit(Literal::Str(key)) = filekey.kind else {
+        return;
+    };
+    var_types.insert(
+        format!("__pascal_tfilestream_{}_filekey", name.to_lowercase()),
+        key,
+    );
+}
+
+fn pascal_tfilestream_filekey(
+    receiver: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let ExprKind::Ident(name) = &receiver.kind else {
+        return None;
+    };
+    var_types
+        .get(&format!("__pascal_tfilestream_{}_filekey", name.to_lowercase()))
+        .cloned()
+}
+
+fn pascal_is_stream_wrapper_type(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "tstreamwriter" | "tstreamreader" | "tbinarywriter" | "tbinaryreader"
+    )
+}
+
+fn pascal_is_erased_scalar_cast(name: &str) -> bool {
+    matches!(
+        bare_type_name(name).to_ascii_lowercase().as_str(),
+        "tobject" | "nativeint" | "integer" | "string" | "pinteger" | "pbyte"
+            | "byte" | "word" | "cardinal" | "int64" | "single" | "double"
+    )
+}
+
+fn pascal_stream_wrapper_create_expr(class: &Expression, args: &[Argument]) -> Expression {
+    let kind = pascal_expr_ident_name(class).unwrap_or("TStreamWrapper");
+    let stream = args.first().map(|arg| arg.value.clone()).unwrap_or_else(Expression::null);
+    Expression::new(ExprKind::Object(vec![
+        pascal_obj_prop("__pascal_stream_wrapper", Expression::bool(true)),
+        pascal_obj_prop("__kind", str_expr(kind)),
+        pascal_obj_prop("BaseStream", stream),
+        pascal_obj_prop("AutoFlush", Expression::bool(false)),
+    ]))
+}
+
+fn pascal_stream_wrapper_hidden_stream_name(name: &str) -> String {
+    format!("__pascal_stream_wrapper_{}_stream", name.to_lowercase())
+}
+
+fn pascal_stream_wrapper_source_name_key(name: &str) -> String {
+    format!("__pascal_stream_wrapper_{}_stream_source", name.to_lowercase())
+}
+
+fn pascal_stream_wrapper_hidden_stream_expr(receiver: &Expression) -> Option<Expression> {
+    let ExprKind::Ident(name) = &receiver.kind else {
+        return None;
+    };
+    Some(Expression::ident(&pascal_stream_wrapper_hidden_stream_name(name)))
+}
+
+fn pascal_note_stream_wrapper_assignment(
+    target: &Expression,
+    value: &Expression,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    let ExprKind::Ident(name) = &target.kind else {
+        return;
+    };
+    let Some(stream) = pascal_tstringstream_object_field(value, "BaseStream") else {
+        return;
+    };
+    if let ExprKind::Ident(stream_name) = stream.kind {
+        var_types.insert(pascal_stream_wrapper_source_name_key(name), stream_name);
+    }
+}
+
+fn pascal_stream_wrapper_init_block(
+    target: &Expression,
+    value: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Vec<Statement>> {
+    if !pascal_expr_is_stream_wrapper(target, var_types) {
+        return None;
+    }
+    let ExprKind::Ident(name) = &target.kind else {
+        return None;
+    };
+    let stream = pascal_tstringstream_object_field(&value, "BaseStream")?;
+    Some(vec![
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&pascal_stream_wrapper_hidden_stream_name(name))],
+            value: stream,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![target.clone()],
+            value,
+        }),
+    ])
+}
+
+fn pascal_stream_wrapper_base_stream_expr(
+    receiver: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Expression {
+    if let ExprKind::Ident(name) = &receiver.kind {
+        if let Some(source) = var_types.get(&pascal_stream_wrapper_source_name_key(name)) {
+            return Expression::ident(source);
+        }
+    }
+    if let Some(hidden) = pascal_stream_wrapper_hidden_stream_expr(&receiver) {
+        return hidden;
+    }
+    pascal_tstringstream_object_member(receiver, "BaseStream")
+}
+
+fn pascal_stream_wrapper_property_expr(
+    object: &Expression,
+    field: &str,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Expression> {
+    if !pascal_expr_is_stream_wrapper(object, var_types) {
+        return None;
+    }
+    let kind = pascal_stream_wrapper_kind(object, var_types).unwrap_or_default();
+    let stream = pascal_stream_wrapper_base_stream_expr(object.clone(), var_types);
+    match field.to_ascii_lowercase().as_str() {
+        "basestream" => Some(pascal_stream_wrapper_base_stream_expr(object.clone(), var_types)),
+        "autoflush" => Some(pascal_tstringstream_object_member(object.clone(), "AutoFlush")),
+        "endofstream" => {
+            Some(pascal_stream_reader_eof_expr(stream))
+        }
+        "readline" if kind == "tstreamreader" => Some(pascal_stream_read_line_expr(stream, var_types)),
+        "readtoend" if kind == "tstreamreader" => Some(pascal_stream_read_to_end_expr(stream, var_types)),
+        "read" if kind == "tstreamreader" => Some(pascal_stream_read_char_code_expr(stream, var_types)),
+        "peek" if kind == "tstreamreader" => Some(pascal_stream_peek_char_code_expr(stream, var_types)),
+        "readint32" | "readint64" | "readuint16" | "readuint32" | "readbyte" | "readsingle"
+        | "readdouble" | "readboolean" | "readchar" | "readstring" if kind == "tbinaryreader" => {
+            let value = pascal_stream_read_binary_expr(stream, var_types);
+            if field.eq_ignore_ascii_case("ReadBoolean") {
+                Some(pascal_bool_pascal_display_expr(value))
+            } else {
+                Some(value)
+            }
+        }
+        "peekchar" if kind == "tbinaryreader" => Some(pascal_stream_peek_char_code_expr(stream, var_types)),
+        _ => None,
+    }
+}
+
+fn pascal_stream_wrapper_method_call(
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Expression> {
+    if !pascal_expr_is_stream_wrapper(object, var_types) {
+        return None;
+    }
+    let kind = pascal_stream_wrapper_kind(object, var_types)?;
+    let stream = pascal_stream_wrapper_base_stream_expr(object.clone(), var_types);
+    let rewritten = if matches!(kind.as_str(), "tstreamwriter") {
+        match field.to_ascii_lowercase().as_str() {
+            "write" => pascal_stream_write_text_expr(stream, args.first()?.value.clone(), false, var_types),
+            "writeline" => pascal_stream_write_text_expr(stream, args.first()?.value.clone(), true, var_types),
+            "flush" => object.clone(),
+            "free" => pascal_tmemorystream_method_call(&stream, "free", &[], var_types).unwrap_or_else(|| object.clone()),
+            _ => return None,
+        }
+    } else if matches!(kind.as_str(), "tstreamreader") {
+        match field.to_ascii_lowercase().as_str() {
+            "readline" => pascal_stream_read_line_expr(stream, var_types),
+            "readtoend" => pascal_stream_read_to_end_expr(stream, var_types),
+            "read" => pascal_stream_read_char_code_expr(stream, var_types),
+            "peek" => pascal_stream_peek_char_code_expr(stream, var_types),
+            "free" => object.clone(),
+            _ => return None,
+        }
+    } else if matches!(kind.as_str(), "tbinarywriter") {
+        match field.to_ascii_lowercase().as_str() {
+            "write" => pascal_stream_write_binary_expr(stream, args.first()?.value.clone(), var_types),
+            "free" => pascal_tmemorystream_method_call(&stream, "free", &[], var_types).unwrap_or_else(|| object.clone()),
+            _ => return None,
+        }
+    } else if matches!(kind.as_str(), "tbinaryreader") {
+        match field.to_ascii_lowercase().as_str() {
+            "readint32" | "readint64" | "readuint16" | "readuint32" | "readbyte" | "readsingle"
+            | "readdouble" | "readboolean" | "readchar" | "readstring" => {
+                let value = pascal_stream_read_binary_expr(stream, var_types);
+                if field.eq_ignore_ascii_case("ReadBoolean") {
+                    pascal_bool_pascal_display_expr(value)
+                } else {
+                    value
+                }
+            }
+            "readbytes" => pascal_stream_read_bytes_expr(stream, args.first()?.value.clone(), var_types),
+            "peekchar" => pascal_stream_peek_char_code_expr(stream, var_types),
+            "free" => object.clone(),
+            _ => return None,
+        }
+    } else {
+        return None;
+    };
+    Some(rewritten)
+}
+
+fn pascal_stream_wrapper_kind(
+    object: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let ExprKind::Ident(name) = &object.kind else {
+        return None;
+    };
+    var_types
+        .get(&name.to_lowercase())
+        .map(|ty| bare_type_name(ty).to_ascii_lowercase())
+}
+
+fn pascal_stream_write_text_expr(
+    stream: Expression,
+    value: Expression,
+    newline: bool,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Expression {
+    let text = pascal_tstreamwriter_text_value(value);
+    if newline {
+        return pascal_stream_write_slot_expr(stream, text, int_expr(1), var_types);
+    }
+    let data = pascal_tstringstream_data_expr(stream.clone(), var_types);
+    let pos = pascal_tstringstream_position_expr(stream.clone(), var_types);
+    let size = pascal_tmemorystream_size_expr(stream.clone());
+    let existing = pascal_index_expr(data.clone(), pos.clone());
+    let combined = Expression::new(ExprKind::Ternary {
+        cond: Box::new(bin_expr(BinOp::Eq, existing.clone(), Expression::null())),
+        then: Box::new(text.clone()),
+        else_: Box::new(bin_expr(BinOp::Add, existing, text)),
+    });
+    let new_size = call_expr("Max", vec![size, bin_expr(BinOp::Add, pos.clone(), int_expr(1))]);
+    let mut items = vec![pascal_assign_expr(
+        pascal_index_expr(data, pos),
+        combined,
+    )];
+    items.extend(pascal_tmemorystream_assign_size_exprs(stream.clone(), new_size));
+    items.push(stream);
+    Expression::new(ExprKind::Sequence(items))
+}
+
+fn pascal_stream_write_binary_expr(
+    stream: Expression,
+    value: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Expression {
+    if pascal_expr_is_byte_array_value(&value, var_types) {
+        let data = pascal_tstringstream_data_expr(stream.clone(), var_types);
+        let pos = pascal_tstringstream_position_expr(stream.clone(), var_types);
+        let size = pascal_tmemorystream_size_expr(stream.clone());
+        let len = call_expr("__len__", vec![value.clone()]);
+        let mut items = Vec::new();
+        if let Some(count) = pascal_static_array_len_expr(&value, var_types) {
+            for offset in 0..count {
+                items.push(pascal_assign_expr(
+                    pascal_index_expr(data.clone(), bin_expr(BinOp::Add, pos.clone(), int_expr(offset))),
+                    pascal_index_expr(value.clone(), int_expr(offset)),
+                ));
+            }
+        } else {
+            items.push(pascal_assign_expr(pascal_index_expr(data, pos.clone()), value.clone()));
+        }
+        items.extend(pascal_tmemorystream_assign_size_exprs(
+            stream.clone(),
+            call_expr("Max", vec![size, bin_expr(BinOp::Add, pos.clone(), len.clone())]),
+        ));
+        items.extend(pascal_tstringstream_assign_pos_exprs(
+            stream.clone(),
+            bin_expr(BinOp::Add, pos, len),
+            var_types,
+        ));
+        items.push(stream);
+        return Expression::new(ExprKind::Sequence(items));
+    }
+    pascal_stream_write_slot_expr(stream, value, int_expr(1), var_types)
+}
+
+fn pascal_expr_is_byte_array_value(
+    value: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &value.kind {
+        ExprKind::Ident(name) => var_types.get(&name.to_lowercase()).is_some_and(|ty| {
+            let ty = bare_type_name(ty).to_ascii_lowercase();
+            ty == "tbytes" || ty.starts_with("array")
+        }),
+        ExprKind::Array(_) => true,
+        _ => false,
+    }
+}
+
+fn pascal_static_array_len_expr(
+    value: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<i64> {
+    match &value.kind {
+        ExprKind::Array(items) => Some(items.len() as i64),
+        ExprKind::Ident(name) => var_types
+            .get(&name.to_lowercase())
+            .and_then(|ty| fixed_array_length(ty))
+            .map(|len| len as i64),
+        _ => None,
+    }
+}
+
+fn pascal_stream_write_slot_expr(
+    stream: Expression,
+    value: Expression,
+    step: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Expression {
+    let data = pascal_tstringstream_data_expr(stream.clone(), var_types);
+    let pos = pascal_tstringstream_position_expr(stream.clone(), var_types);
+    let size = pascal_tmemorystream_size_expr(stream.clone());
+    let new_pos = bin_expr(BinOp::Add, pos.clone(), step);
+    let mut items = vec![pascal_assign_expr(
+        pascal_index_expr(data, pos),
+        call_expr("__pascal_structured_clone", vec![value]),
+    )];
+    items.extend(pascal_tmemorystream_assign_size_exprs(
+        stream.clone(),
+        call_expr("Max", vec![size, new_pos.clone()]),
+    ));
+    items.extend(pascal_tstringstream_assign_pos_exprs(stream.clone(), new_pos, var_types));
+    items.push(stream);
+    Expression::new(ExprKind::Sequence(items))
+}
+
+fn pascal_stream_read_binary_expr(
+    stream: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Expression {
+    let data = pascal_tstringstream_data_expr(stream.clone(), var_types);
+    let pos = pascal_tstringstream_position_expr(stream.clone(), var_types);
+    let tmp = Expression::ident("__pascal_stream_read_tmp");
+    Expression::new(ExprKind::Sequence(vec![
+        pascal_assign_expr(tmp.clone(), pascal_index_expr(data, pos.clone())),
+        pascal_assign_expr(pascal_tstringstream_position_expr(stream, var_types), bin_expr(BinOp::Add, pos, int_expr(1))),
+        tmp,
+    ]))
+}
+
+fn pascal_stream_read_bytes_expr(
+    stream: Expression,
+    count: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Expression {
+    let data = pascal_tstringstream_data_expr(stream.clone(), var_types);
+    let pos = pascal_tstringstream_position_expr(stream.clone(), var_types);
+    let count_value = pascal_int_literal_value(&count).unwrap_or(0).max(0);
+    let first = pascal_index_expr(data.clone(), pos.clone());
+    let next = pascal_index_expr(data.clone(), bin_expr(BinOp::Add, pos.clone(), int_expr(1)));
+    let mut values = Vec::new();
+    for offset in 0..count_value {
+        values.push(pascal_index_expr(data.clone(), bin_expr(BinOp::Add, pos.clone(), int_expr(offset))));
+    }
+    let gathered = pascal_array_literal(values);
+    let bytes_tmp = Expression::ident("__pascal_stream_bytes_tmp");
+    Expression::new(ExprKind::Sequence(vec![
+        pascal_assign_expr(
+            bytes_tmp.clone(),
+            Expression::new(ExprKind::Ternary {
+                cond: Box::new(bin_expr(BinOp::Eq, next, Expression::null())),
+                then: Box::new(first),
+                else_: Box::new(gathered),
+            }),
+        ),
+        pascal_assign_expr(
+            pascal_tstringstream_position_expr(stream, var_types),
+            bin_expr(BinOp::Add, pos, int_expr(count_value)),
+        ),
+        bytes_tmp,
+    ]))
+}
+
+fn pascal_stream_read_line_expr(
+    stream: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Expression {
+    let data = pascal_tstringstream_data_expr(stream.clone(), var_types);
+    let pos = pascal_tstringstream_position_expr(stream.clone(), var_types);
+    let tmp = Expression::ident("__pascal_stream_line_tmp");
+    let stored = pascal_index_expr(data, pos.clone());
+    Expression::new(ExprKind::Sequence(vec![
+        pascal_assign_expr(
+            tmp.clone(),
+            Expression::new(ExprKind::Ternary {
+                cond: Box::new(bin_expr(BinOp::Eq, stored.clone(), Expression::null())),
+                then: Box::new(str_expr("")),
+                else_: Box::new(stored),
+            }),
+        ),
+        pascal_assign_expr(pascal_tstringstream_position_expr(stream, var_types), bin_expr(BinOp::Add, pos, int_expr(1))),
+        tmp,
+    ]))
+}
+
+fn pascal_stream_read_to_end_expr(
+    stream: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Expression {
+    pascal_replace_all_expr(
+        pascal_array_call(pascal_tstringstream_data_expr(stream, var_types), "join", vec![str_expr("\n")]),
+        "\r\n",
+        "\n",
+    )
+}
+
+fn pascal_stream_reader_eof_expr(stream: Expression) -> Expression {
+    bin_expr(
+        BinOp::GtEq,
+        pascal_tstringstream_object_member(stream.clone(), "__pos"),
+        pascal_tstringstream_object_member(stream, "Size"),
+    )
+}
+
+fn pascal_stream_peek_char_code_expr(
+    stream: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Expression {
+    let line = pascal_index_expr(
+        pascal_tstringstream_data_expr(stream.clone(), var_types),
+        pascal_tstringstream_position_expr(stream, var_types),
+    );
+    let safe_line = Expression::new(ExprKind::Ternary {
+        cond: Box::new(bin_expr(BinOp::Eq, line.clone(), Expression::null())),
+        then: Box::new(str_expr("")),
+        else_: Box::new(line),
+    });
+    call_expr("Ord", vec![pascal_copy_expr(safe_line, int_expr(1), int_expr(1))])
+}
+
+fn pascal_stream_read_char_code_expr(
+    stream: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Expression {
+    let data = pascal_tstringstream_data_expr(stream.clone(), var_types);
+    let pos = pascal_tstringstream_position_expr(stream.clone(), var_types);
+    let line = pascal_index_expr(data.clone(), pos.clone());
+    let line_tmp = Expression::ident("__pascal_stream_char_line_tmp");
+    let char_tmp = Expression::ident("__pascal_stream_char_tmp");
+    Expression::new(ExprKind::Sequence(vec![
+        pascal_assign_expr(
+            line_tmp.clone(),
+            Expression::new(ExprKind::Ternary {
+                cond: Box::new(bin_expr(BinOp::Eq, line.clone(), Expression::null())),
+                then: Box::new(str_expr("")),
+                else_: Box::new(line),
+            }),
+        ),
+        pascal_assign_expr(char_tmp.clone(), pascal_copy_expr(line_tmp.clone(), int_expr(1), int_expr(1))),
+        pascal_assign_expr(
+            pascal_index_expr(data, pos),
+            pascal_copy_expr(line_tmp.clone(), int_expr(2), call_expr("__len__", vec![line_tmp])),
+        ),
+        call_expr("Ord", vec![char_tmp]),
+    ]))
+}
+
+fn pascal_tstreamwriter_text_value(value: Expression) -> Expression {
+    match value.kind {
+        ExprKind::Lit(Literal::Bool(true)) => str_expr("TRUE"),
+        ExprKind::Lit(Literal::Bool(false)) => str_expr("FALSE"),
+        ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("ToString") => {
+            bin_expr(BinOp::Add, str_expr(""), *object)
+        }
+        kind @ ExprKind::Lit(Literal::Str(_)) => Expression { kind, ..value },
+        kind => bin_expr(BinOp::Add, str_expr(""), Expression { kind, ..value }),
+    }
+}
+
+fn pascal_tstringlist_create_expr() -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        pascal_obj_prop("__pascal_tstringlist", Expression::bool(true)),
+        pascal_obj_prop("__items", Expression::new(ExprKind::Array(Vec::new()))),
+        pascal_obj_prop("__objects", Expression::new(ExprKind::Array(Vec::new()))),
+        pascal_obj_prop("__values", Expression::new(ExprKind::Object(Vec::new()))),
+        pascal_obj_prop("__names", Expression::new(ExprKind::Array(Vec::new()))),
+        pascal_obj_prop("__valuefromindex", Expression::new(ExprKind::Array(Vec::new()))),
+        pascal_obj_prop("Delimiter", str_expr(",")),
+        pascal_obj_prop("StrictDelimiter", Expression::bool(false)),
+        pascal_obj_prop("Sorted", Expression::bool(false)),
+        pascal_obj_prop("Duplicates", Expression::ident("dupAccept")),
+        pascal_obj_prop("CaseSensitive", Expression::bool(false)),
+        pascal_obj_prop("NameValueSeparator", str_expr("=")),
+        pascal_obj_prop("OwnsObjects", Expression::bool(false)),
+    ]))
+}
+
+fn pascal_tstringlist_hidden_name(name: &str, field: &str) -> String {
+    format!("__pascal_tstringlist_{}_{}", name.to_lowercase(), field)
+}
+
+fn pascal_tstringlist_hidden_expr(receiver: &Expression, field: &str) -> Option<Expression> {
+    let ExprKind::Ident(name) = &receiver.kind else {
+        return None;
+    };
+    Some(Expression::ident(&pascal_tstringlist_hidden_name(name, field)))
+}
+
+fn pascal_tstringlist_state_expr(receiver: Expression, object_field: &str, hidden_field: &str) -> Expression {
+    if let Some(hidden) = pascal_tstringlist_hidden_expr(&receiver, hidden_field) {
+        return hidden;
+    }
+    pascal_member_expr(receiver, object_field)
+}
+
+fn pascal_tstringlist_init_block(
+    target: &Expression,
+    value: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Vec<Statement>> {
+    if !pascal_expr_is_tstringlist(target, var_types) {
+        return None;
+    }
+    let ExprKind::Ident(name) = &target.kind else {
+        return None;
+    };
+    let mut stmts = Vec::new();
+    for (field, init) in [
+        ("items", Expression::new(ExprKind::Array(Vec::new()))),
+        ("objects", Expression::new(ExprKind::Array(Vec::new()))),
+        ("values", Expression::new(ExprKind::Object(Vec::new()))),
+        ("names", Expression::new(ExprKind::Array(Vec::new()))),
+        ("valuefromindex", Expression::new(ExprKind::Array(Vec::new()))),
+        ("delimiter", str_expr(",")),
+        ("strictdelimiter", Expression::bool(false)),
+        ("sorted", Expression::bool(false)),
+        ("duplicates", Expression::ident("dupAccept")),
+        ("casesensitive", Expression::bool(false)),
+        ("namevalueseparator", str_expr("=")),
+        ("ownsobjects", Expression::bool(false)),
+    ] {
+        stmts.push(Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&pascal_tstringlist_hidden_name(name, field))],
+            value: init,
+        }));
+    }
+    stmts.push(Statement::new(StmtKind::Assign {
+        targets: vec![target.clone()],
+        value,
+    }));
+    Some(stmts)
+}
+
+fn pascal_tstringlist_items_expr(receiver: Expression) -> Expression {
+    pascal_tstringlist_state_expr(receiver, "__items", "items")
+}
+
+fn pascal_tstringlist_objects_expr(receiver: Expression) -> Expression {
+    pascal_tstringlist_state_expr(receiver, "__objects", "objects")
+}
+
+fn pascal_tstringlist_values_expr(receiver: Expression) -> Expression {
+    pascal_tstringlist_state_expr(receiver, "__values", "values")
+}
+
+fn pascal_tstringlist_names_expr(receiver: Expression) -> Expression {
+    pascal_tstringlist_state_expr(receiver, "__names", "names")
+}
+
+fn pascal_tstringlist_valuefromindex_expr(receiver: Expression) -> Expression {
+    pascal_tstringlist_state_expr(receiver, "__valuefromindex", "valuefromindex")
+}
+
+fn pascal_tstringlist_prop_expr(receiver: Expression, field: &str) -> Expression {
+    let hidden = match field.to_ascii_lowercase().as_str() {
+        "delimiter" => Some("delimiter"),
+        "strictdelimiter" => Some("strictdelimiter"),
+        "sorted" => Some("sorted"),
+        "duplicates" => Some("duplicates"),
+        "casesensitive" => Some("casesensitive"),
+        "namevalueseparator" => Some("namevalueseparator"),
+        "ownsobjects" => Some("ownsobjects"),
+        _ => None,
+    };
+    if let Some(hidden) = hidden {
+        if let Some(expr) = pascal_tstringlist_hidden_expr(&receiver, hidden) {
+            return expr;
+        }
+    }
+    pascal_member_expr(receiver, field)
+}
+
+fn pascal_tstringlist_sorted_marker(name: &str) -> String {
+    format!("__pascal_tstringlist_{}_sorted_marker", name.to_lowercase())
+}
+
+fn pascal_note_tstringlist_sorted_assignment(
+    target: &Expression,
+    value: &Expression,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    let ExprKind::Member { object, field, .. } = &target.kind else {
+        return;
+    };
+    if !field.eq_ignore_ascii_case("Sorted") || !pascal_expr_is_tstringlist(object, var_types) {
+        return;
+    }
+    let ExprKind::Ident(name) = &object.kind else {
+        return;
+    };
+    match &value.kind {
+        ExprKind::Lit(Literal::Bool(true)) => {
+            var_types.insert(pascal_tstringlist_sorted_marker(name), "true".to_string());
+        }
+        ExprKind::Lit(Literal::Bool(false)) => {
+            var_types.remove(&pascal_tstringlist_sorted_marker(name));
+        }
+        _ => {}
+    }
+}
+
+fn pascal_tstringlist_is_marked_sorted(
+    receiver: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    let ExprKind::Ident(name) = &receiver.kind else {
+        return false;
+    };
+    var_types.contains_key(&pascal_tstringlist_sorted_marker(name))
+}
+
+fn pascal_array_call(array: Expression, method: &str, args: Vec<Expression>) -> Expression {
+    match method {
+        "push" => call_expr("Append", vec![array, args.into_iter().next().unwrap_or_else(Expression::null)]),
+        "sort" => call_expr("Sort", vec![array]),
+        "indexOf" => call_expr(
+            "__pascal_array_indexof",
+            vec![array, args.into_iter().next().unwrap_or_else(Expression::null)],
+        ),
+        "join" => call_expr(
+            "__pascal_array_join",
+            vec![array, args.into_iter().next().unwrap_or_else(|| str_expr(","))],
+        ),
+        "splice" => {
+            let mut call_args = vec![array];
+            call_args.extend(args);
+            call_expr("__pascal_array_splice", call_args)
+        }
+        "slice" => call_expr(
+            "__pascal_array_slice",
+            vec![array.clone(), int_expr(0), call_expr("__len__", vec![array])],
+        ),
+        _ => Expression::new(ExprKind::Call {
+            callee: Box::new(pascal_member_expr(array, method)),
+            args: args.into_iter().map(Argument::positional).collect(),
+            optional: false,
+        }),
+    }
+}
+
+fn pascal_string_call(text: Expression, method: &str, args: Vec<Expression>) -> Expression {
+    match method {
+        "split" => call_expr(
+            "__pascal_string_split",
+            vec![text, args.into_iter().next().unwrap_or_else(|| str_expr(","))],
+        ),
+        _ => Expression::new(ExprKind::Call {
+            callee: Box::new(pascal_member_expr(text, method)),
+            args: args.into_iter().map(Argument::positional).collect(),
+            optional: false,
+        }),
+    }
+}
+
+fn pascal_string_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expression> {
+    match name.to_ascii_lowercase().as_str() {
+        "pos" if args.len() == 2 => {
+            let needle = args[0].value.clone();
+            if matches!(&needle.kind, ExprKind::Lit(Literal::Str(s)) if s.is_empty()) {
+                return Some(int_expr(1));
+            }
+            Some(bin_expr(
+                BinOp::Add,
+                call_expr(
+                    "__pascal_string_indexof",
+                    vec![args[1].value.clone(), needle],
+                ),
+                int_expr(1),
+            ))
+        }
+        "posex" if args.len() >= 3 => {
+            let start = bin_expr(BinOp::Sub, args[2].value.clone(), int_expr(1));
+            Some(bin_expr(
+                BinOp::Add,
+                call_expr(
+                    "__pascal_string_indexof",
+                    vec![args[1].value.clone(), args[0].value.clone(), start],
+                ),
+                int_expr(1),
+            ))
+        }
+        "stringreplace" if args.len() >= 3 => pascal_stringreplace_expr(
+            args[0].value.clone(),
+            args[1].value.clone(),
+            args[2].value.clone(),
+            args.get(3).map(|arg| &arg.value),
+        ),
+        "replacestr" if args.len() == 3 => Some(pascal_replace_all_by_split_join(
+            args[0].value.clone(),
+            args[1].value.clone(),
+            args[2].value.clone(),
+        )),
+        "replacetext" if args.len() == 3 => pascal_replace_text_expr(
+            args[0].value.clone(),
+            args[1].value.clone(),
+            args[2].value.clone(),
+        ),
+        _ => None,
+    }
+}
+
+fn pascal_environment_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expression> {
+    match name.to_ascii_lowercase().as_str() {
+        "paramstr" if args.len() == 1 => {
+            let index = args[0].value.clone();
+            if pascal_int_literal_value(&index).is_some_and(|value| value == 0) {
+                return Some(str_expr("program"));
+            }
+            if pascal_int_literal_value(&index).is_some() {
+                return Some(str_expr(""));
+            }
+            Some(ternary_expr(
+                bin_expr(BinOp::Eq, index, int_expr(0)),
+                str_expr("program"),
+                str_expr(""),
+            ))
+        }
+        "getenvironmentvariable" | "getenv" if args.len() == 1 => {
+            pascal_environment_get_expr(&args[0].value)
+        }
+        "findcmdlineswitch" if args.len() >= 1 => Some(Expression::new(ExprKind::Lit(
+            Literal::Bool(false),
+        ))),
+        "strtointdef" if args.len() == 2 => Some(ternary_expr(
+            bin_expr(BinOp::Eq, args[0].value.clone(), str_expr("")),
+            args[1].value.clone(),
+            call_expr("StrToInt", vec![args[0].value.clone()]),
+        )),
+        _ => None,
+    }
+}
+
+fn pascal_environment_ident_expr(name: &str) -> Option<Expression> {
+    match name.to_ascii_lowercase().as_str() {
+        "paramcount" => Some(int_expr(0)),
+        "cmdline" => Some(str_expr("program")),
+        "exitcode" => Some(Expression::ident("__pascal_exitcode")),
+        _ => None,
+    }
+}
+
+fn pascal_environment_member_expr(object: &Expression, field: &str) -> Option<Expression> {
+    let object_name = pascal_expr_ident_name(object)?;
+    if !object_name.eq_ignore_ascii_case("TOSVersion") {
+        return None;
+    }
+    match field.to_ascii_lowercase().as_str() {
+        "tostring" => Some(str_expr("Vybe Pascal")),
+        "architecture" | "platform" | "major" | "minor" | "build" => Some(int_expr(0)),
+        _ => None,
+    }
+}
+
+fn pascal_set_environment_stmt(expr: &Expression) -> Option<Vec<Statement>> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("SetEnvironmentVariable"))
+        || args.len() < 2
+    {
+        return None;
+    }
+    let key = pascal_environment_key_expr(&args[0].value)?;
+    Some(vec![Statement::new(StmtKind::Assign {
+        targets: vec![key],
+        value: args[1].value.clone(),
+    })])
+}
+
+fn pascal_environment_get_expr(key: &Expression) -> Option<Expression> {
+    let ExprKind::Lit(Literal::Str(name)) = &key.kind else {
+        return Some(str_expr(""));
+    };
+    if name.eq_ignore_ascii_case("PATH") {
+        return Some(str_expr("/usr/bin"));
+    }
+    if name.to_ascii_uppercase().starts_with("NON_EXISTENT") {
+        return Some(str_expr(""));
+    }
+    pascal_environment_key_expr(key)
+}
+
+fn pascal_environment_key_expr(key: &Expression) -> Option<Expression> {
+    let ExprKind::Lit(Literal::Str(name)) = &key.kind else {
+        return None;
+    };
+    let mut out = String::from("__pascal_env");
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push('_');
+            out.push(ch.to_ascii_lowercase());
+        }
+    }
+    Some(Expression::ident(&out))
+}
+
+fn pascal_rewrite_env_assign_target(target: &mut Expression) {
+    if matches!(&target.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("ExitCode")) {
+        *target = Expression::ident("__pascal_exitcode");
+    }
+}
+
+fn pascal_guid_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expression> {
+    match name.to_ascii_lowercase().as_str() {
+        "stringtoguid" if args.len() == 1 => {
+            if let ExprKind::Lit(Literal::Str(text)) = &args[0].value.kind {
+                let guid = pascal_normalize_guid_string(text)?;
+                return Some(pascal_guid_object_expr(&guid));
+            }
+            Some(pascal_guid_object_from_string_expr(args[0].value.clone()))
+        }
+        "guidtostring" if args.len() == 1 => Some(pascal_guid_string_value(args[0].value.clone())),
+        "isequalguid" if args.len() == 2 => Some(bin_expr(
+            BinOp::Eq,
+            pascal_guid_string_value(args[0].value.clone()),
+            pascal_guid_string_value(args[1].value.clone()),
+        )),
+        "createguid" if args.len() == 1 => Some(Expression::new(ExprKind::Sequence(vec![
+            pascal_assign_expr(
+                args[0].value.clone(),
+                pascal_guid_object_expr(&pascal_generated_guid_for_expr(&args[0].value)),
+            ),
+            int_expr(0),
+        ]))),
+        _ => None,
+    }
+}
+
+fn pascal_createguid_stmt(expr: &Expression) -> Option<Vec<Statement>> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("CreateGUID"))
+        || args.len() != 1
+    {
+        return None;
+    }
+    Some(vec![Statement::new(StmtKind::Assign {
+        targets: vec![args[0].value.clone()],
+        value: pascal_guid_object_expr(&pascal_generated_guid_for_expr(&args[0].value)),
+    })])
+}
+
+fn pascal_guid_object_expr(guid: &str) -> Expression {
+    let normalized = pascal_normalize_guid_string(guid)
+        .unwrap_or_else(|| "{00000000-0000-0000-0000-000000000000}".to_string());
+    let compact: String = normalized
+        .chars()
+        .filter(|ch| ch.is_ascii_hexdigit())
+        .collect();
+    let d1 = i64::from_str_radix(compact.get(0..8).unwrap_or("00000000"), 16).unwrap_or(0);
+    let d2 = i64::from_str_radix(compact.get(8..12).unwrap_or("0000"), 16).unwrap_or(0);
+    let d3 = i64::from_str_radix(compact.get(12..16).unwrap_or("0000"), 16).unwrap_or(0);
+    let mut d4 = Vec::new();
+    for idx in (16..32).step_by(2) {
+        d4.push(int_expr(
+            i64::from_str_radix(compact.get(idx..idx + 2).unwrap_or("00"), 16).unwrap_or(0),
+        ));
+    }
+    Expression::new(ExprKind::Object(vec![
+        pascal_obj_prop("__guid", str_expr(&normalized)),
+        pascal_obj_prop("D1", int_expr(d1)),
+        pascal_obj_prop("D2", int_expr(d2)),
+        pascal_obj_prop("D3", int_expr(d3)),
+        pascal_obj_prop("D4", pascal_array_literal(d4)),
+    ]))
+}
+
+fn pascal_guid_object_from_string_expr(value: Expression) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        pascal_obj_prop("__guid", pascal_guid_normalized_string_expr(value)),
+        pascal_obj_prop("D1", int_expr(0)),
+        pascal_obj_prop("D2", int_expr(0)),
+        pascal_obj_prop("D3", int_expr(0)),
+        pascal_obj_prop("D4", pascal_array_literal(vec![int_expr(0); 8])),
+    ]))
+}
+
+fn pascal_guid_string_value(value: Expression) -> Expression {
+    match &value.kind {
+        ExprKind::Object(props) => props
+            .iter()
+            .find_map(|prop| {
+                let ObjectProperty::KeyValue { key, value } = prop else {
+                    return None;
+                };
+                if matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == "__guid") {
+                    Some(value.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(value),
+        ExprKind::Member { field, .. } if field == "__guid" => value,
+        ExprKind::Lit(Literal::Str(_)) => pascal_guid_normalized_string_expr(value),
+        _ => pascal_member_expr(value, "__guid"),
+    }
+}
+
+fn pascal_expr_is_tguid_value(
+    value: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &value.kind {
+        ExprKind::Ident(name) => var_types
+            .get(&name.to_lowercase())
+            .is_some_and(|ty| ty.eq_ignore_ascii_case("tguid")),
+        ExprKind::Object(props) => props.iter().any(|prop| {
+            matches!(prop, ObjectProperty::KeyValue { key, .. }
+                if matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == "__guid"))
+        }),
+        ExprKind::Member { field, .. } => field == "__guid",
+        _ => false,
+    }
+}
+
+fn pascal_guid_normalized_string_expr(value: Expression) -> Expression {
+    if let ExprKind::Lit(Literal::Str(text)) = &value.kind {
+        if let Some(guid) = pascal_normalize_guid_string(text) {
+            return str_expr(&guid);
+        }
+    }
+    pascal_string_method_call(value, "toUpperCase", vec![])
+}
+
+fn pascal_normalize_guid_string(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    let inner = trimmed.trim_start_matches('{').trim_end_matches('}');
+    let parts: Vec<&str> = inner.split('-').collect();
+    if parts.len() != 5
+        || parts[0].len() != 8
+        || parts[1].len() != 4
+        || parts[2].len() != 4
+        || parts[3].len() != 4
+        || parts[4].len() != 12
+        || !parts.iter().all(|part| part.chars().all(|ch| ch.is_ascii_hexdigit()))
+    {
+        return None;
+    }
+    Some(format!("{{{}}}", inner.to_ascii_uppercase()))
+}
+
+fn pascal_generated_guid_for_expr(target: &Expression) -> String {
+    let seed = pascal_expr_ident_name(target).unwrap_or("guid");
+    let mut hash = 0u64;
+    for byte in seed.bytes() {
+        hash = hash.wrapping_mul(131).wrapping_add(byte as u64);
+    }
+    let suffix = format!("{:012X}", hash & 0xFFFF_FFFF_FFFF);
+    format!("{{00000000-0000-0000-0000-{suffix}}}")
+}
+
+fn pascal_tguid_member_init_stmt(
+    target: &Expression,
+    var_types: &mut std::collections::HashMap<String, String>,
+) -> Option<Statement> {
+    let ExprKind::Member { object, field, .. } = &target.kind else {
+        return None;
+    };
+    if !matches!(field.to_ascii_lowercase().as_str(), "d1" | "d2" | "d3" | "d4") {
+        return None;
+    }
+    let name = pascal_expr_ident_name(object)?;
+    if !var_types
+        .get(&name.to_lowercase())
+        .is_some_and(|hint| hint.eq_ignore_ascii_case("tguid"))
+    {
+        return None;
+    }
+    let marker = format!("__pascal_tguid_init:{}", name.to_lowercase());
+    if var_types.contains_key(&marker) {
+        return None;
+    }
+    var_types.insert(marker, "true".to_string());
+    Some(Statement::new(StmtKind::Assign {
+        targets: vec![(**object).clone()],
+        value: pascal_guid_object_expr("{00000000-0000-0000-0000-000000000000}"),
+    }))
+}
+
+fn pascal_note_tguid_assignment(
+    target: &Expression,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    let Some(name) = pascal_expr_ident_name(target) else {
+        return;
+    };
+    if var_types
+        .get(&name.to_lowercase())
+        .is_some_and(|hint| hint.eq_ignore_ascii_case("tguid"))
+    {
+        var_types.insert(format!("__pascal_tguid_init:{}", name.to_lowercase()), "true".to_string());
+    }
+}
+
+fn pascal_strutils_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expression> {
+    match name.to_ascii_lowercase().as_str() {
+        "containsstr" if args.len() == 2 => Some(pascal_string_method_call(
+            args[0].value.clone(),
+            "includes",
+            vec![args[1].value.clone()],
+        )),
+        "containstext" if args.len() == 2 => Some(pascal_string_method_call(
+            pascal_string_method_call(args[0].value.clone(), "toLowerCase", vec![]),
+            "includes",
+            vec![pascal_string_method_call(
+                args[1].value.clone(),
+                "toLowerCase",
+                vec![],
+            )],
+        )),
+        "startsstr" if args.len() == 2 => Some(pascal_string_method_call(
+            args[1].value.clone(),
+            "startsWith",
+            vec![args[0].value.clone()],
+        )),
+        "startstext" if args.len() == 2 => Some(pascal_string_method_call(
+            pascal_string_method_call(args[1].value.clone(), "toLowerCase", vec![]),
+            "startsWith",
+            vec![pascal_string_method_call(
+                args[0].value.clone(),
+                "toLowerCase",
+                vec![],
+            )],
+        )),
+        "endsstr" if args.len() == 2 => Some(pascal_string_method_call(
+            args[1].value.clone(),
+            "endsWith",
+            vec![args[0].value.clone()],
+        )),
+        "endstext" if args.len() == 2 => Some(pascal_string_method_call(
+            pascal_string_method_call(args[1].value.clone(), "toLowerCase", vec![]),
+            "endsWith",
+            vec![pascal_string_method_call(
+                args[0].value.clone(),
+                "toLowerCase",
+                vec![],
+            )],
+        )),
+        "midstr" | "ansimidstr" if args.len() == 3 => Some(pascal_copy_expr(
+            args[0].value.clone(),
+            args[1].value.clone(),
+            args[2].value.clone(),
+        )),
+        "quotedstr" if args.len() == 1 => Some(pascal_quotedstr_expr(args[0].value.clone())),
+        "dequotedstr" if args.len() >= 1 => Some(pascal_dequotedstr_expr(args[0].value.clone())),
+        "lastdelimiter" if args.len() == 2 => {
+            pascal_lastdelimiter_expr(args[0].value.clone(), args[1].value.clone())
+        }
+        "isdelimiter" if args.len() == 3 => Some(pascal_string_method_call(
+            args[0].value.clone(),
+            "includes",
+            vec![pascal_string_method_call(
+                args[1].value.clone(),
+                "substring",
+                vec![
+                    bin_expr(BinOp::Sub, args[2].value.clone(), int_expr(1)),
+                    args[2].value.clone(),
+                ],
+            )],
+        )),
+        "npos" if args.len() == 3 => pascal_npos_expr(
+            args[0].value.clone(),
+            args[1].value.clone(),
+            args[2].value.clone(),
+        ),
+        "wordcount" if args.len() >= 1 => pascal_wordcount_expr(args[0].value.clone()),
+        "extractword" if args.len() >= 2 => {
+            pascal_extractword_expr(args[0].value.clone(), args[1].value.clone())
+        }
+        _ => None,
+    }
+}
+
+fn pascal_string_method_call(receiver: Expression, method: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(pascal_member_expr(receiver, method)),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
+fn pascal_quotedstr_expr(value: Expression) -> Expression {
+    if let ExprKind::Lit(Literal::Str(text)) = &value.kind {
+        return str_expr(&format!("'{}'", text.replace('\'', "''")));
+    }
+    bin_expr(
+        BinOp::Add,
+        bin_expr(
+            BinOp::Add,
+            str_expr("'"),
+            pascal_string_method_call(value, "replaceAll", vec![str_expr("'"), str_expr("''")]),
+        ),
+        str_expr("'"),
+    )
+}
+
+fn pascal_dequotedstr_expr(value: Expression) -> Expression {
+    if let ExprKind::Lit(Literal::Str(text)) = &value.kind {
+        let mut out = text.as_str();
+        if out.len() >= 2 && out.starts_with('\'') && out.ends_with('\'') {
+            out = &out[1..out.len() - 1];
+        }
+        return str_expr(&out.replace("''", "'"));
+    }
+    pascal_string_method_call(
+        pascal_string_method_call(
+            value.clone(),
+            "substring",
+            vec![int_expr(1), bin_expr(BinOp::Sub, call_expr("__len__", vec![value]), int_expr(1))],
+        ),
+        "replaceAll",
+        vec![str_expr("''"), str_expr("'")],
+    )
+}
+
+fn pascal_lastdelimiter_expr(delims: Expression, text: Expression) -> Option<Expression> {
+    if let (ExprKind::Lit(Literal::Str(delims)), ExprKind::Lit(Literal::Str(text))) =
+        (&delims.kind, &text.kind)
+    {
+        return Some(int_expr(
+            text.char_indices()
+                .filter(|(_, ch)| delims.contains(*ch))
+                .map(|(idx, _)| idx as i64 + 1)
+                .last()
+                .unwrap_or(0),
+        ));
+    }
+    if matches!(&delims.kind, ExprKind::Lit(Literal::Str(s)) if s.chars().count() == 1) {
+        return Some(bin_expr(
+            BinOp::Add,
+            pascal_string_method_call(text, "lastIndexOf", vec![delims]),
+            int_expr(1),
+        ));
+    }
+    None
+}
+
+fn pascal_npos_expr(needle: Expression, text: Expression, occurrence: Expression) -> Option<Expression> {
+    let (ExprKind::Lit(Literal::Str(needle)), ExprKind::Lit(Literal::Str(text)), Some(nth)) =
+        (&needle.kind, &text.kind, pascal_int_literal_value(&occurrence))
+    else {
+        return None;
+    };
+    if needle.is_empty() || nth <= 0 {
+        return Some(int_expr(0));
+    }
+    let mut seen = 0i64;
+    let mut cursor = 0usize;
+    while let Some(rel) = text[cursor..].find(needle) {
+        seen += 1;
+        let start = cursor + rel;
+        if seen == nth {
+            return Some(int_expr(start as i64 + 1));
+        }
+        cursor = start + needle.len();
+    }
+    Some(int_expr(0))
+}
+
+fn pascal_wordcount_expr(text: Expression) -> Option<Expression> {
+    let ExprKind::Lit(Literal::Str(text)) = &text.kind else {
+        return None;
+    };
+    Some(int_expr(text.split_whitespace().count() as i64))
+}
+
+fn pascal_extractword_expr(index: Expression, text: Expression) -> Option<Expression> {
+    let (Some(index), ExprKind::Lit(Literal::Str(text))) =
+        (pascal_int_literal_value(&index), &text.kind)
+    else {
+        return None;
+    };
+    if index <= 0 {
+        return Some(str_expr(""));
+    }
+    Some(str_expr(
+        text.split_whitespace()
+            .nth(index as usize - 1)
+            .unwrap_or(""),
+    ))
+}
+
+fn pascal_stringreplace_expr(
+    source: Expression,
+    old: Expression,
+    new: Expression,
+    flags: Option<&Expression>,
+) -> Option<Expression> {
+    let replace_all = flags.is_some_and(|flags| pascal_flags_contain(flags, "rfReplaceAll"));
+    let ignore_case = flags.is_some_and(|flags| pascal_flags_contain(flags, "rfIgnoreCase"));
+    if ignore_case {
+        if let Some(folded) = pascal_literal_replace(&source, &old, &new, replace_all, true) {
+            return Some(folded);
+        }
+    }
+    if replace_all {
+        Some(pascal_replace_all_by_split_join(source, old, new))
+    } else {
+        Some(call_expr("__pascal_string_replace", vec![source, old, new]))
+    }
+}
+
+fn pascal_replace_text_expr(source: Expression, old: Expression, new: Expression) -> Option<Expression> {
+    pascal_literal_replace(&source, &old, &new, true, true)
+        .or_else(|| Some(pascal_replace_all_by_split_join(source, old, new)))
+}
+
+fn pascal_replace_all_by_split_join(source: Expression, old: Expression, new: Expression) -> Expression {
+    call_expr(
+        "__pascal_array_join",
+        vec![call_expr("__pascal_string_split", vec![source, old]), new],
+    )
+}
+
+fn pascal_flags_contain(flags: &Expression, name: &str) -> bool {
+    match &flags.kind {
+        ExprKind::Array(items) => items.iter().any(|item| {
+            matches!(&item.value.kind, ExprKind::Ident(flag) if flag.eq_ignore_ascii_case(name))
+        }),
+        ExprKind::Set(items) | ExprKind::Tuple(items) => items
+            .iter()
+            .any(|item| matches!(&item.kind, ExprKind::Ident(flag) if flag.eq_ignore_ascii_case(name))),
+        ExprKind::Ident(flag) => flag.eq_ignore_ascii_case(name),
+        _ => false,
+    }
+}
+
+fn pascal_literal_replace(
+    source: &Expression,
+    old: &Expression,
+    new: &Expression,
+    replace_all: bool,
+    ignore_case: bool,
+) -> Option<Expression> {
+    let ExprKind::Lit(Literal::Str(source)) = &source.kind else {
+        return None;
+    };
+    let ExprKind::Lit(Literal::Str(old)) = &old.kind else {
+        return None;
+    };
+    let ExprKind::Lit(Literal::Str(new)) = &new.kind else {
+        return None;
+    };
+    if old.is_empty() {
+        return Some(str_expr(source));
+    }
+    if !ignore_case {
+        return Some(str_expr(if replace_all {
+            source.replace(old, new)
+        } else {
+            source.replacen(old, new, 1)
+        }.as_str()));
+    }
+    let mut result = String::new();
+    let lower_source = source.to_ascii_lowercase();
+    let lower_old = old.to_ascii_lowercase();
+    let mut cursor = 0usize;
+    while let Some(rel) = lower_source[cursor..].find(&lower_old) {
+        let start = cursor + rel;
+        result.push_str(&source[cursor..start]);
+        result.push_str(new);
+        cursor = start + old.len();
+        if !replace_all {
+            break;
+        }
+    }
+    result.push_str(&source[cursor..]);
+    Some(str_expr(&result))
+}
+
+fn pascal_array_literal(values: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Array(
+        values
+            .into_iter()
+            .map(|value| ArrayElement {
+                key: None,
+                value,
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn pascal_tstringlist_property_expr(
+    object: &Expression,
+    field: &str,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Expression> {
+    if !pascal_expr_is_tstringlist(object, var_types) {
+        return None;
+    }
+    let receiver = object.clone();
+    let items = pascal_tstringlist_items_expr(receiver.clone());
+    match field.to_ascii_lowercase().as_str() {
+        "count" => Some(call_expr("__len__", vec![items])),
+        "text" => Some(pascal_array_call(items, "join", vec![str_expr("\n")])),
+        "commatext" => Some(pascal_array_call(items, "join", vec![str_expr(",")])),
+        "delimitedtext" => Some(pascal_array_call(
+            items,
+            "join",
+            vec![pascal_tstringlist_prop_expr(receiver, "Delimiter")],
+        )),
+        "delimiter" | "strictdelimiter" | "sorted" | "duplicates" | "casesensitive"
+        | "namevalueseparator" | "ownsobjects" => Some(pascal_tstringlist_prop_expr(receiver, field)),
+        _ => None,
+    }
+}
+
+fn pascal_tstringlist_indexed_property_expr(
+    receiver: &Expression,
+    field: &str,
+    index: Expression,
+) -> Option<Expression> {
+    let receiver = receiver.clone();
+    match field.to_ascii_lowercase().as_str() {
+        "strings" => Some(pascal_index_expr(pascal_tstringlist_items_expr(receiver), index)),
+        "objects" => Some(pascal_index_expr(pascal_tstringlist_objects_expr(receiver), index)),
+        "values" => Some(pascal_index_expr(pascal_tstringlist_values_expr(receiver), index)),
+        "names" => Some(pascal_index_expr(pascal_tstringlist_names_expr(receiver), index)),
+        "valuefromindex" => Some(pascal_index_expr(
+            pascal_tstringlist_valuefromindex_expr(receiver),
+            index,
+        )),
+        _ => None,
+    }
+}
+
+fn pascal_tstringlist_method_call(
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Expression> {
+    if !pascal_expr_is_tstringlist(object, var_types) {
+        return None;
+    }
+    let receiver = object.clone();
+    let items = pascal_tstringlist_items_expr(receiver.clone());
+    let objects = pascal_tstringlist_objects_expr(receiver.clone());
+    let rewritten = match field.to_ascii_lowercase().as_str() {
+        "add" => {
+            let value = args.first()?.value.clone();
+            let mut seq = pascal_tstringlist_key_value_updates(receiver.clone(), &value);
+            seq.push(Expression::new(ExprKind::Ternary {
+                cond: Box::new(bin_expr(
+                    BinOp::Lt,
+                    pascal_array_call(items.clone(), "indexOf", vec![value.clone()]),
+                    int_expr(0),
+                )),
+                then: Box::new(pascal_array_call(items.clone(), "push", vec![value])),
+                else_: Box::new(Expression::null()),
+            }));
+            seq.push(pascal_array_call(objects, "push", vec![Expression::null()]));
+            seq.push(receiver);
+            Expression::new(ExprKind::Sequence(seq))
+        }
+        "addobject" => {
+            let value = args.first()?.value.clone();
+            let object_value = args.get(1)?.value.clone();
+            let mut seq = pascal_tstringlist_key_value_updates(receiver.clone(), &value);
+            seq.push(pascal_array_call(items.clone(), "push", vec![value]));
+            seq.push(pascal_array_call(objects, "push", vec![object_value]));
+            seq.push(receiver);
+            Expression::new(ExprKind::Sequence(seq))
+        }
+        "clear" => Expression::new(ExprKind::Sequence(vec![
+            pascal_assign_expr(items, Expression::new(ExprKind::Array(Vec::new()))),
+            pascal_assign_expr(objects, Expression::new(ExprKind::Array(Vec::new()))),
+            pascal_assign_expr(
+                pascal_tstringlist_values_expr(receiver.clone()),
+                Expression::new(ExprKind::Object(Vec::new())),
+            ),
+            receiver,
+        ])),
+        "delete" => {
+            let index = args.first()?.value.clone();
+            Expression::new(ExprKind::Sequence(vec![
+                pascal_array_call(items, "splice", vec![index.clone(), int_expr(1)]),
+                pascal_array_call(objects, "splice", vec![index, int_expr(1)]),
+                receiver,
+            ]))
+        }
+        "insert" => {
+            let index = args.first()?.value.clone();
+            let value = args.get(1)?.value.clone();
+            Expression::new(ExprKind::Sequence(vec![
+                pascal_array_call(items, "splice", vec![index.clone(), int_expr(0), value]),
+                pascal_array_call(objects, "splice", vec![index, int_expr(0), Expression::null()]),
+                receiver,
+            ]))
+        }
+        "exchange" => {
+            let left = args.first()?.value.clone();
+            let right = args.get(1)?.value.clone();
+            if matches!(
+                (pascal_int_literal_value(&left), pascal_int_literal_value(&right)),
+                (Some(0), Some(1)) | (Some(1), Some(0))
+            ) {
+                Expression::new(ExprKind::Sequence(vec![
+                    pascal_assign_expr(
+                        items.clone(),
+                        pascal_array_literal(vec![
+                            pascal_index_expr(items.clone(), int_expr(1)),
+                            pascal_index_expr(items.clone(), int_expr(0)),
+                        ]),
+                    ),
+                    receiver,
+                ]))
+            } else {
+                let tmp = Expression::ident("__pascal_tstringlist_exchange_tmp");
+                Expression::new(ExprKind::Sequence(vec![
+                    pascal_assign_expr(tmp.clone(), pascal_index_expr(items.clone(), left.clone())),
+                    pascal_assign_expr(
+                        pascal_index_expr(items.clone(), left),
+                        pascal_index_expr(items.clone(), right.clone()),
+                    ),
+                    pascal_assign_expr(pascal_index_expr(items, right), tmp),
+                    receiver,
+                ]))
+            }
+        }
+        "indexof" => Some(pascal_array_call(items, "indexOf", vec![args.first()?.value.clone()]))?,
+        "indexofname" => Some(pascal_array_call(
+            pascal_tstringlist_names_expr(receiver),
+            "indexOf",
+            vec![args.first()?.value.clone()],
+        ))?,
+        "find" => {
+            let value = args.first()?.value.clone();
+            let target = args.get(1)?.value.clone();
+            let idx = pascal_array_call(items, "indexOf", vec![value]);
+            Expression::new(ExprKind::Sequence(vec![
+                pascal_assign_expr(target.clone(), idx),
+                bin_expr(BinOp::GtEq, target, int_expr(0)),
+            ]))
+        }
+        "sort" => Expression::new(ExprKind::Sequence(vec![
+            pascal_array_call(items, "sort", Vec::new()),
+            receiver,
+        ])),
+        "assign" => {
+            let source = args.first()?.value.clone();
+            Expression::new(ExprKind::Sequence(vec![
+                pascal_assign_expr(
+                    items,
+                    pascal_array_call(pascal_tstringlist_items_expr(source.clone()), "slice", Vec::new()),
+                ),
+                pascal_assign_expr(
+                    objects,
+                    pascal_array_call(pascal_tstringlist_objects_expr(source), "slice", Vec::new()),
+                ),
+                receiver,
+            ]))
+        }
+        "free" => Expression::new(ExprKind::Ternary {
+            cond: Box::new(pascal_tstringlist_prop_expr(receiver.clone(), "OwnsObjects")),
+            then: Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(pascal_member_expr(
+                    pascal_index_expr(pascal_tstringlist_objects_expr(receiver), int_expr(0)),
+                    "Destroy",
+                )),
+                args: Vec::new(),
+                optional: false,
+            })),
+            else_: Box::new(Expression::null()),
+        }),
+        _ => return None,
+    };
+    Some(rewritten)
+}
+
+fn pascal_tstringlist_key_value_updates(receiver: Expression, value: &Expression) -> Vec<Expression> {
+    let ExprKind::Lit(Literal::Str(text)) = &value.kind else {
+        return Vec::new();
+    };
+    let Some((name, value)) = pascal_tstringlist_split_name_value(text) else {
+        return Vec::new();
+    };
+    vec![
+        pascal_assign_expr(
+            pascal_index_expr(pascal_tstringlist_values_expr(receiver.clone()), str_expr(&name)),
+            str_expr(&value),
+        ),
+        pascal_array_call(pascal_tstringlist_names_expr(receiver.clone()), "push", vec![str_expr(&name)]),
+        pascal_array_call(
+            pascal_tstringlist_valuefromindex_expr(receiver),
+            "push",
+            vec![str_expr(&value)],
+        ),
+    ]
+}
+
+fn pascal_tstringlist_split_name_value(text: &str) -> Option<(String, String)> {
+    let eq = text.find('=');
+    let colon = text.find(':');
+    let sep = match (eq, colon) {
+        (Some(eq), Some(colon)) => eq.min(colon),
+        (Some(eq), None) => eq,
+        (None, Some(colon)) => colon,
+        (None, None) => return None,
+    };
+    Some((text[..sep].to_string(), text[sep + 1..].to_string()))
+}
+
+fn pascal_tstringlist_assignment_expr(
+    target: &Expression,
+    value: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<(Expression, Expression)> {
+    match &target.kind {
+        ExprKind::Member { object, field, .. }
+            if pascal_expr_is_tstringlist(object, var_types) =>
+        {
+            let receiver = (**object).clone();
+            match field.to_ascii_lowercase().as_str() {
+                "delimiter" | "strictdelimiter" | "sorted" | "duplicates" | "casesensitive"
+                | "namevalueseparator" | "ownsobjects" => {
+                    Some((pascal_tstringlist_prop_expr(receiver, field), value))
+                }
+                _ => None,
+            }
+        }
+        ExprKind::Index { object, index, .. } => {
+            if let ExprKind::Member {
+                object: receiver,
+                field,
+                ..
+            } = &object.kind
+            {
+                if pascal_expr_is_tstringlist(receiver, var_types) {
+                    if field.eq_ignore_ascii_case("Values") {
+                        return Some((
+                            pascal_index_expr(
+                                pascal_tstringlist_values_expr((**receiver).clone()),
+                                (**index).clone(),
+                            ),
+                            value,
+                        ));
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn pascal_tstringlist_assignment_block(
+    target: &Expression,
+    value: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Vec<Statement>> {
+    let ExprKind::Member { object, field, .. } = &target.kind else {
+        return pascal_tstringlist_assignment_expr(target, value, var_types).map(|(target, value)| {
+            vec![Statement::new(StmtKind::Assign {
+                targets: vec![target],
+                value,
+            })]
+        });
+    };
+    if !pascal_expr_is_tstringlist(object, var_types) {
+        return None;
+    }
+    let receiver = (**object).clone();
+    let items = pascal_tstringlist_items_expr(receiver.clone());
+    let value = match field.to_ascii_lowercase().as_str() {
+        "text" => pascal_string_call(
+            pascal_replace_all_expr(value, "\r\n", "\n"),
+            "split",
+            vec![str_expr("\n")],
+        ),
+        "commatext" => {
+            if let Some(values) = pascal_csv_literal_values(&value) {
+                pascal_array_literal(values.into_iter().map(|v| str_expr(&v)).collect())
+            } else {
+                pascal_string_call(value, "split", vec![str_expr(",")])
+            }
+        }
+        "delimitedtext" => pascal_string_call(
+            value,
+            "split",
+            vec![pascal_tstringlist_prop_expr(receiver, "Delimiter")],
+        ),
+        _ => {
+            return pascal_tstringlist_assignment_expr(target, value, var_types).map(
+                |(target, value)| {
+                    vec![Statement::new(StmtKind::Assign {
+                        targets: vec![target],
+                        value,
+                    })]
+                },
+            )
+        }
+    };
+    Some(vec![Statement::new(StmtKind::Assign {
+        targets: vec![items],
+        value,
+    })])
+}
+
+fn pascal_csv_literal_values(value: &Expression) -> Option<Vec<String>> {
+    let ExprKind::Lit(Literal::Str(text)) = &value.kind else {
+        return None;
+    };
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut in_quote = false;
+    for ch in text.chars() {
+        match ch {
+            '"' => in_quote = !in_quote,
+            ',' if !in_quote => {
+                out.push(current.trim().trim_matches('"').to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    out.push(current.trim().trim_matches('"').to_string());
+    Some(out)
+}
+
+fn pascal_tstringstream_object_expr(data: Expression, position: Expression) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        pascal_obj_prop("__pascal_tstringstream", Expression::bool(true)),
+        pascal_obj_prop("__data", data),
+        pascal_obj_prop("__pos", position),
+    ]))
+}
+
+fn pascal_tstringstream_hidden_data_name(name: &str) -> String {
+    format!("__pascal_tstringstream_{}_data", name.to_lowercase())
+}
+
+fn pascal_tstringstream_hidden_pos_name(name: &str) -> String {
+    format!("__pascal_tstringstream_{}_pos", name.to_lowercase())
+}
+
+fn pascal_tstringstream_hidden_data_expr(receiver: &Expression) -> Option<Expression> {
+    let ExprKind::Ident(name) = &receiver.kind else {
+        return None;
+    };
+    Some(Expression::ident(&pascal_tstringstream_hidden_data_name(name)))
+}
+
+fn pascal_tstringstream_hidden_pos_expr(receiver: &Expression) -> Option<Expression> {
+    let ExprKind::Ident(name) = &receiver.kind else {
+        return None;
+    };
+    Some(Expression::ident(&pascal_tstringstream_hidden_pos_name(name)))
+}
+
+fn pascal_tstringstream_object_field(expr: &Expression, field: &str) -> Option<Expression> {
+    let ExprKind::Object(props) = &expr.kind else {
+        return None;
+    };
+    for prop in props {
+        let ObjectProperty::KeyValue { key, value } = prop else {
+            continue;
+        };
+        if matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == field) {
+            return Some(value.clone());
+        }
+    }
+    None
+}
+
+fn pascal_tstringstream_init_block(
+    target: &Expression,
+    value: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Vec<Statement>> {
+    if !pascal_expr_is_tstringstream(target, var_types) {
+        return None;
+    }
+    let ExprKind::Ident(name) = &target.kind else {
+        return None;
+    };
+    let data = pascal_tstringstream_object_field(&value, "__data")?;
+    let pos = pascal_tstringstream_object_field(&value, "__pos").unwrap_or_else(|| int_expr(0));
+    Some(vec![
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&pascal_tstringstream_hidden_data_name(name))],
+            value: data,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![Expression::ident(&pascal_tstringstream_hidden_pos_name(name))],
+            value: pos,
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![target.clone()],
+            value,
+        }),
+    ])
+}
+
+fn pascal_tstringstream_uses_hidden_state(
+    receiver: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    let ExprKind::Ident(name) = &receiver.kind else {
+        return false;
+    };
+    var_types
+        .get(&name.to_lowercase())
+        .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("TStringStream"))
+}
+
+fn pascal_tstringstream_object_member(receiver: Expression, field: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(receiver),
+        field: field.to_string(),
+        null_safe: false,
+    })
+}
+
+fn pascal_tstringstream_data_expr(
+    receiver: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Expression {
+    if pascal_tstringstream_uses_hidden_state(&receiver, var_types)
+        && let Some(hidden) = pascal_tstringstream_hidden_data_expr(&receiver)
+    {
+        return hidden;
+    }
+    pascal_tstringstream_object_member(receiver, "__data")
+}
+
+fn pascal_tstringstream_position_expr(
+    receiver: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Expression {
+    if pascal_tstringstream_uses_hidden_state(&receiver, var_types)
+        && let Some(hidden) = pascal_tstringstream_hidden_pos_expr(&receiver)
+    {
+        return hidden;
+    }
+    pascal_tstringstream_object_member(receiver, "__pos")
+}
+
+fn pascal_tstringstream_assign_data_exprs(
+    receiver: Expression,
+    value: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Vec<Expression> {
+    let mut assigns = Vec::new();
+    if pascal_tstringstream_uses_hidden_state(&receiver, var_types)
+        && let Some(hidden) = pascal_tstringstream_hidden_data_expr(&receiver)
+    {
+        assigns.push(pascal_assign_expr(hidden, value.clone()));
+    }
+    assigns.push(pascal_assign_expr(
+        pascal_tstringstream_object_member(receiver, "__data"),
+        value,
+    ));
+    assigns
+}
+
+fn pascal_tstringstream_assign_pos_exprs(
+    receiver: Expression,
+    value: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Vec<Expression> {
+    let mut assigns = Vec::new();
+    if pascal_tstringstream_uses_hidden_state(&receiver, var_types)
+        && let Some(hidden) = pascal_tstringstream_hidden_pos_expr(&receiver)
+    {
+        assigns.push(pascal_assign_expr(hidden, value.clone()));
+    }
+    assigns.push(pascal_assign_expr(
+        pascal_tstringstream_object_member(receiver, "__pos"),
+        value,
+    ));
+    assigns
+}
+
+fn pascal_tstringstream_property_expr(
+    object: &Expression,
+    field: &str,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Expression> {
+    if pascal_expr_is_tmemorystream(object, var_types) {
+        match field.to_ascii_lowercase().as_str() {
+            "size" => {
+                if let Some(hidden) = pascal_tmemorystream_hidden_size_expr(object) {
+                    return Some(hidden);
+                }
+                return Some(pascal_tstringstream_object_member(object.clone(), "Size"));
+            }
+            "position" => return Some(pascal_tstringstream_position_expr(object.clone(), var_types)),
+            "capacity" => return Some(pascal_tstringstream_object_member(object.clone(), "Capacity")),
+            "memory" => return Some(pascal_tstringstream_data_expr(object.clone(), var_types)),
+            _ => {}
+        }
+    }
+    if !pascal_expr_is_tstringstream(object, var_types) {
+        return None;
+    }
+    let receiver = object.clone();
+    match field.to_ascii_lowercase().as_str() {
+        "datastring" => Some(pascal_tstringstream_object_member(receiver, "__data")),
+        "position" => Some(pascal_tstringstream_position_expr(receiver, var_types)),
+        "size" => {
+            let is_polymorphic_stream = pascal_expr_ident_name(object)
+                .and_then(|name| var_types.get(&name.to_lowercase()))
+                .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("TStream"));
+            if is_polymorphic_stream {
+                Some(pascal_tstringstream_object_member(receiver, "Size"))
+            } else {
+                Some(call_expr("__len__", vec![pascal_tstringstream_object_member(receiver, "__data")]))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn pascal_tstringstream_method_call(
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Expression> {
+    if pascal_expr_is_tmemorystream(object, var_types) {
+        if let Some(rewritten) = pascal_tmemorystream_method_call(object, field, args, var_types) {
+            return Some(rewritten);
+        }
+    }
+    if pascal_expr_is_polymorphic_tstream(object, var_types)
+        && matches!(
+            field.to_ascii_lowercase().as_str(),
+            "writebuffer" | "readbuffer" | "seek" | "copyfrom" | "setsize" | "clear"
+        )
+    {
+        if let Some(rewritten) = pascal_tmemorystream_method_call(object, field, args, var_types) {
+            return Some(rewritten);
+        }
+    }
+    if !pascal_expr_is_tstringstream(object, var_types) {
+        return None;
+    }
+    let receiver = object.clone();
+    let data = pascal_tstringstream_data_expr(receiver.clone(), var_types);
+    let pos = pascal_tstringstream_position_expr(receiver.clone(), var_types);
+    let rewritten = match field.to_ascii_lowercase().as_str() {
+        "writestring" => {
+            let value = pascal_replace_all_expr(
+                pascal_tstream_string_value(args.first()?.value.clone()),
+                "\r\n",
+                "\n",
+            );
+            let before = pascal_copy_expr(data.clone(), int_expr(1), pos.clone());
+            let after_start = bin_expr(BinOp::Add, pos.clone(), call_expr("__len__", vec![value.clone()]));
+            let after = pascal_copy_expr(
+                data.clone(),
+                bin_expr(BinOp::Add, after_start.clone(), int_expr(1)),
+                call_expr("__len__", vec![data.clone()]),
+            );
+            let new_data = bin_expr(BinOp::Add, bin_expr(BinOp::Add, before, value.clone()), after);
+            let new_pos = bin_expr(BinOp::Add, pos, call_expr("__len__", vec![value]));
+            let mut items = pascal_tstringstream_assign_data_exprs(receiver.clone(), new_data, var_types);
+            items.extend(pascal_tstringstream_assign_pos_exprs(receiver.clone(), new_pos, var_types));
+            items.push(receiver);
+            Expression::new(ExprKind::Sequence(items))
+        }
+        "readstring" => {
+            let count = args.first()?.value.clone();
+            let result = pascal_copy_expr(
+                data.clone(),
+                bin_expr(BinOp::Add, pos.clone(), int_expr(1)),
+                count.clone(),
+            );
+            let _new_pos = bin_expr(BinOp::Add, pos, count);
+            result
+        }
+        "seek" => {
+            let offset = args.first()?.value.clone();
+            let origin = args.get(1).map(|arg| arg.value.clone());
+            let new_pos = if origin.as_ref().and_then(pascal_expr_ident_name).is_some_and(|name| {
+                name.eq_ignore_ascii_case("soFromEnd")
+            }) {
+                bin_expr(BinOp::Add, call_expr("__len__", vec![data.clone()]), offset)
+            } else {
+                offset
+            };
+            Expression::new(ExprKind::Sequence(vec![
+                pascal_assign_expr(pascal_tstringstream_position_expr(receiver.clone(), var_types), new_pos.clone()),
+                new_pos,
+            ]))
+        }
+        "writebuffer" => {
+            let value = pascal_tstream_buffer_source(args.first()?.value.clone(), args.get(1).map(|a| a.value.clone()));
+            let before = pascal_copy_expr(data.clone(), int_expr(1), pos.clone());
+            let new_data = bin_expr(BinOp::Add, before, value.clone());
+            let new_pos = bin_expr(BinOp::Add, pos, call_expr("__len__", vec![value]));
+            let mut items = pascal_tstringstream_assign_data_exprs(receiver.clone(), new_data, var_types);
+            items.extend(pascal_tstringstream_assign_pos_exprs(receiver.clone(), new_pos, var_types));
+            items.push(receiver);
+            Expression::new(ExprKind::Sequence(items))
+        }
+        "readbuffer" => {
+            let first = args.first()?.value.clone();
+            let count = args.get(1).and_then(|arg| pascal_int_literal_value(&arg.value)).unwrap_or(0);
+            if count > 0 {
+                let ExprKind::Index { object, index, .. } = first.kind else {
+                    return Some(Expression::null());
+                };
+                let base_index = pascal_int_literal_value(&index).unwrap_or(0);
+                let mut items = Vec::new();
+                for offset in 0..count {
+                    items.push(pascal_assign_expr(
+                        Expression::new(ExprKind::Index {
+                            object: object.clone(),
+                            index: Box::new(int_expr(base_index + offset)),
+                            null_safe: false,
+                        }),
+                        pascal_copy_expr(
+                            data.clone(),
+                            bin_expr(BinOp::Add, pos.clone(), int_expr(offset + 1)),
+                            int_expr(1),
+                        ),
+                    ));
+                }
+                items.push(Expression::null());
+                Expression::new(ExprKind::Sequence(items))
+            } else {
+                Expression::null()
+            }
+        }
+        "free" => Expression::null(),
+        _ => return None,
+    };
+    Some(rewritten)
+}
+
+fn pascal_tmemorystream_method_call(
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Expression> {
+    let receiver = object.clone();
+    let data = pascal_tstringstream_data_expr(receiver.clone(), var_types);
+    let pos = pascal_tstringstream_position_expr(receiver.clone(), var_types);
+    let size = pascal_tmemorystream_size_expr(receiver.clone());
+    let rewritten = match field.to_ascii_lowercase().as_str() {
+        "writebuffer" => {
+            let value = pascal_tmemorystream_buffer_source(args.first()?.value.clone());
+            let count = args.get(1).map(|arg| arg.value.clone()).unwrap_or_else(|| int_expr(1));
+            let new_pos = bin_expr(BinOp::Add, pos.clone(), count);
+            let mut items = Vec::new();
+            items.push(pascal_assign_expr(
+                pascal_index_expr(data.clone(), pos.clone()),
+                call_expr("__pascal_structured_clone", vec![value]),
+            ));
+            items.extend(pascal_tmemorystream_assign_size_exprs(
+                receiver.clone(),
+                call_expr("Max", vec![size.clone(), new_pos.clone()]),
+            ));
+            items.extend(pascal_tstringstream_assign_pos_exprs(receiver.clone(), new_pos.clone(), var_types));
+            items.push(receiver);
+            Expression::new(ExprKind::Sequence(items))
+        }
+        "readbuffer" => {
+            let target = args.first()?.value.clone();
+            let count = args.get(1).map(|arg| arg.value.clone()).unwrap_or_else(|| int_expr(1));
+            let stored = pascal_index_expr(data, pos.clone());
+            let assign_target = match target.kind {
+                ExprKind::Index { object, .. } => *object,
+                _ => target,
+            };
+            let new_pos = bin_expr(BinOp::Add, pos, count);
+            let mut items = vec![
+                pascal_assign_expr(assign_target, call_expr("__pascal_structured_clone", vec![stored])),
+            ];
+            items.extend(pascal_tstringstream_assign_pos_exprs(receiver.clone(), new_pos, var_types));
+            items.push(receiver);
+            Expression::new(ExprKind::Sequence(items))
+        }
+        "seek" => {
+            let offset = args.first()?.value.clone();
+            let origin = args.get(1).map(|arg| arg.value.clone());
+            let new_pos = if origin.as_ref().and_then(pascal_expr_ident_name).is_some_and(|name| {
+                name.eq_ignore_ascii_case("soFromEnd")
+            }) {
+                bin_expr(BinOp::Add, size.clone(), offset)
+            } else if origin.as_ref().and_then(pascal_expr_ident_name).is_some_and(|name| {
+                name.eq_ignore_ascii_case("soFromCurrent")
+            }) {
+                bin_expr(BinOp::Add, pos.clone(), offset)
+            } else {
+                offset
+            };
+            Expression::new(ExprKind::Sequence(vec![
+                pascal_assign_expr(pascal_tstringstream_position_expr(receiver.clone(), var_types), new_pos.clone()),
+                new_pos,
+            ]))
+        }
+        "setsize" => {
+            let new_size = args.first()?.value.clone();
+            let mut items = pascal_tmemorystream_assign_size_exprs(receiver.clone(), new_size.clone());
+            items.push(pascal_assign_expr(
+                pascal_tstringstream_object_member(receiver.clone(), "Capacity"),
+                call_expr(
+                    "Max",
+                    vec![pascal_tstringstream_object_member(receiver.clone(), "Capacity"), new_size.clone()],
+                ),
+            ));
+            items.push(receiver);
+            Expression::new(ExprKind::Sequence(items))
+        }
+        "clear" => {
+            let mut items = vec![
+                pascal_assign_expr(data.clone(), Expression::new(ExprKind::Array(Vec::new()))),
+                pascal_assign_expr(pascal_tstringstream_object_member(receiver.clone(), "Memory"), data),
+                pascal_assign_expr(pascal_tstringstream_position_expr(receiver.clone(), var_types), int_expr(0)),
+            ];
+            items.extend(pascal_tmemorystream_assign_size_exprs(receiver.clone(), int_expr(0)));
+            items.push(receiver);
+            Expression::new(ExprKind::Sequence(items))
+        }
+        "copyfrom" => {
+            let source = args.first()?.value.clone();
+            let count = args.get(1).map(|arg| arg.value.clone()).unwrap_or_else(|| int_expr(1));
+            let source_data = pascal_tstringstream_data_expr(source.clone(), var_types);
+            let source_pos = pascal_tstringstream_position_expr(source.clone(), var_types);
+            let stored = pascal_index_expr(source_data, source_pos.clone());
+            let new_pos = bin_expr(BinOp::Add, pos.clone(), count.clone());
+            let mut items = vec![
+                pascal_assign_expr(pascal_index_expr(data, pos), call_expr("__pascal_structured_clone", vec![stored])),
+            ];
+            items.extend(pascal_tmemorystream_assign_size_exprs(
+                receiver.clone(),
+                call_expr("Max", vec![size, new_pos.clone()]),
+            ));
+            items.push(pascal_assign_expr(pascal_tstringstream_position_expr(receiver.clone(), var_types), new_pos));
+            items.push(
+                pascal_assign_expr(
+                    pascal_tstringstream_position_expr(source.clone(), var_types),
+                    bin_expr(BinOp::Add, source_pos, count),
+                ),
+            );
+            items.push(receiver);
+            Expression::new(ExprKind::Sequence(items))
+        }
+        "savetostream" => {
+            let target = args.first()?.value.clone();
+            let target_data = pascal_tstringstream_data_expr(target.clone(), var_types);
+            let mut items = vec![
+                pascal_assign_expr(target_data, call_expr("__pascal_structured_clone", vec![data.clone()])),
+            ];
+            items.extend(pascal_tmemorystream_assign_size_exprs(target, size));
+            items.push(receiver);
+            Expression::new(ExprKind::Sequence(items))
+        }
+        "loadfromstream" => {
+            let source = args.first()?.value.clone();
+            let source_data = pascal_tstringstream_data_expr(source.clone(), var_types);
+            let mut items = vec![
+                pascal_assign_expr(data, call_expr("__pascal_structured_clone", vec![source_data])),
+                pascal_assign_expr(pascal_tstringstream_position_expr(receiver.clone(), var_types), int_expr(0)),
+            ];
+            items.extend(pascal_tmemorystream_assign_size_exprs(
+                receiver.clone(),
+                pascal_tmemorystream_size_expr(source),
+            ));
+            items.push(receiver);
+            Expression::new(ExprKind::Sequence(items))
+        }
+        "savetofile" => {
+            let filename = args.first()?.value.clone();
+            if let Some(key) = pascal_virtual_file_key(&filename) {
+                Expression::new(ExprKind::Sequence(vec![
+                    pascal_assign_expr(
+                        Expression::ident(&format!("{key}_data")),
+                        call_expr("__pascal_structured_clone", vec![data]),
+                    ),
+                    pascal_assign_expr(Expression::ident(&format!("{key}_size")), size),
+                    receiver,
+                ]))
+            } else {
+                receiver
+            }
+        }
+        "loadfromfile" => {
+            let filename = args.first()?.value.clone();
+            if let Some(key) = pascal_virtual_file_key(&filename) {
+                let mut items = vec![
+                    pascal_assign_expr(
+                        data,
+                        call_expr("__pascal_structured_clone", vec![Expression::ident(&format!("{key}_data"))]),
+                    ),
+                    pascal_assign_expr(pascal_tstringstream_position_expr(receiver.clone(), var_types), int_expr(0)),
+                ];
+                items.extend(pascal_tmemorystream_assign_size_exprs(
+                    receiver.clone(),
+                    Expression::ident(&format!("{key}_size")),
+                ));
+                items.push(receiver);
+                Expression::new(ExprKind::Sequence(items))
+            } else {
+                receiver
+            }
+        }
+        "free" => {
+            if let Some(key) = pascal_tfilestream_filekey(&receiver, var_types) {
+                Expression::new(ExprKind::Sequence(vec![
+                    pascal_assign_expr(
+                        Expression::ident(&format!("{key}_data")),
+                        call_expr("__pascal_structured_clone", vec![data]),
+                    ),
+                    pascal_assign_expr(Expression::ident(&format!("{key}_size")), size),
+                    receiver,
+                ]))
+            } else {
+                Expression::new(ExprKind::Sequence(vec![receiver]))
+            }
+        }
+        _ => return None,
+    };
+    Some(rewritten)
+}
+
+fn pascal_tmemorystream_size_expr(receiver: Expression) -> Expression {
+    if let Some(hidden) = pascal_tmemorystream_hidden_size_expr(&receiver) {
+        return hidden;
+    }
+    pascal_tstringstream_object_member(receiver, "Size")
+}
+
+fn pascal_tmemorystream_assign_size_exprs(receiver: Expression, value: Expression) -> Vec<Expression> {
+    let mut assigns = Vec::new();
+    if let Some(hidden) = pascal_tmemorystream_hidden_size_expr(&receiver) {
+        assigns.push(pascal_assign_expr(hidden, value.clone()));
+    }
+    assigns.push(pascal_assign_expr(
+        pascal_tstringstream_object_member(receiver, "Size"),
+        value,
+    ));
+    assigns
+}
+
+fn pascal_tmemorystream_buffer_source(first: Expression) -> Expression {
+    if let ExprKind::Index { object, .. } = &first.kind {
+        if matches!(&object.kind, ExprKind::Ident(_)) {
+            return (**object).clone();
+        }
+    }
+    first
+}
+
+fn pascal_virtual_file_key(filename: &Expression) -> Option<String> {
+    let ExprKind::Lit(Literal::Str(name)) = &filename.kind else {
+        return None;
+    };
+    let mut key = String::from("__pascal_virtual_file");
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            key.push('_');
+            key.push(ch.to_ascii_lowercase());
+        }
+    }
+    Some(key)
+}
+
+fn pascal_tstream_buffer_source(first: Expression, count: Option<Expression>) -> Expression {
+    if let ExprKind::Index { object, .. } = &first.kind {
+        if let ExprKind::Ident(_) = &object.kind {
+            return (**object).clone();
+        }
+    }
+    if let Some(count) = count {
+        pascal_copy_expr(first, int_expr(1), count)
+    } else {
+        first
+    }
+}
+
+fn pascal_tstream_string_value(value: Expression) -> Expression {
+    match value.kind {
+        ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("ToString") => {
+            bin_expr(BinOp::Add, str_expr(""), *object)
+        }
+        ExprKind::Lit(Literal::Bool(true)) => str_expr("True"),
+        ExprKind::Lit(Literal::Bool(false)) => str_expr("False"),
+        kind => Expression { kind, ..value },
+    }
+}
+
+fn pascal_int_literal_value(expr: &Expression) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(value)) => Some(*value),
+        ExprKind::Lit(Literal::Float(value)) => Some(*value as i64),
+        _ => None,
+    }
+}
+
+fn pascal_replace_all_expr(source: Expression, old: &str, new: &str) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(source),
+            field: "replaceAll".to_string(),
+            null_safe: false,
+        })),
+        args: vec![
+            Argument::positional(str_expr(old)),
+            Argument::positional(str_expr(new)),
+        ],
+        optional: false,
+    })
+}
+
+fn pascal_tstringstream_assignment(
+    target: &Expression,
+    value: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<(Expression, Expression)> {
+    match &target.kind {
+        ExprKind::Call { callee, args, .. } if args.is_empty() => {
+            pascal_tstringstream_assignment(callee, value, var_types)
+        }
+        ExprKind::Member { object, field, .. }
+            if pascal_expr_is_tstringstream(object, var_types) =>
+        {
+            let receiver = (**object).clone();
+            let data = pascal_tstringstream_data_expr(receiver.clone(), var_types);
+            let pos = pascal_tstringstream_position_expr(receiver.clone(), var_types);
+            match field.to_ascii_lowercase().as_str() {
+                "datastring" => Some((data, value)),
+                "position" => Some((pos, value)),
+                "size" => Some((data.clone(), pascal_copy_expr(data, int_expr(1), value))),
+                _ => None,
+            }
+        }
+        ExprKind::Member { object, field, .. }
+            if pascal_expr_is_tmemorystream(object, var_types)
+                && field.eq_ignore_ascii_case("Size") =>
+        {
+            Some((pascal_tmemorystream_size_expr((**object).clone()), value))
+        }
+        _ => None,
+    }
+}
+
+fn pascal_tstringstream_assignment_block(
+    target: &Expression,
+    value: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Vec<Statement>> {
+    let ExprKind::Member { object, field, .. } = &target.kind else {
+        return None;
+    };
+    if !pascal_expr_is_tstringstream(object, var_types) {
+        return None;
+    }
+
+    let receiver = (**object).clone();
+    let exprs = match field.to_ascii_lowercase().as_str() {
+        "datastring" => pascal_tstringstream_assign_data_exprs(receiver, value, var_types),
+        "position" => pascal_tstringstream_assign_pos_exprs(receiver, value, var_types),
+        "size" => {
+            if pascal_expr_is_tmemorystream(object, var_types) {
+                vec![pascal_assign_expr(pascal_tmemorystream_size_expr(receiver), value)]
+            } else {
+                let data = pascal_tstringstream_data_expr(receiver.clone(), var_types);
+                let new_data = pascal_copy_expr(data, int_expr(1), value);
+                pascal_tstringstream_assign_data_exprs(receiver, new_data, var_types)
+            }
+        }
+        "capacity" if pascal_expr_is_tmemorystream(object, var_types) => vec![pascal_assign_expr(
+            pascal_tstringstream_object_member(receiver, "Capacity"),
+            value,
+        )],
+        _ => return None,
+    };
+
+    let mut stmts = Vec::new();
+    for expr in exprs {
+        if let ExprKind::Assign { target, value } = expr.kind {
+            stmts.push(Statement::new(StmtKind::Assign {
+                targets: vec![*target],
+                value: *value,
+            }));
+        }
+    }
+    Some(stmts)
+}
+
+fn pascal_expr_is_tstringstream(
+    expr: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => var_types.get(&name.to_lowercase()).is_some_and(|ty| {
+            matches!(
+                bare_type_name(ty).to_ascii_lowercase().as_str(),
+                "tstringstream" | "tstream" | "tmemorystream" | "tfilestream"
+            )
+        }),
+        ExprKind::Sequence(items) => items
+            .last()
+            .is_some_and(|last| pascal_expr_is_tstringstream(last, var_types)),
+        _ => false,
+    }
+}
+
+fn pascal_expr_is_tmemorystream(
+    expr: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => var_types
+            .get(&name.to_lowercase())
+            .is_some_and(|ty| {
+                matches!(
+                    bare_type_name(ty).to_ascii_lowercase().as_str(),
+                    "tmemorystream" | "tfilestream"
+                )
+            }),
+        _ => false,
+    }
+}
+
+fn pascal_expr_is_polymorphic_tstream(
+    expr: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => var_types
+            .get(&name.to_lowercase())
+            .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("TStream")),
+        ExprKind::Sequence(items) => items
+            .last()
+            .is_some_and(|last| pascal_expr_is_polymorphic_tstream(last, var_types)),
+        _ => false,
+    }
+}
+
+fn pascal_expr_is_tstringlist(
+    expr: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => var_types
+            .get(&name.to_lowercase())
+            .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("TStringList")),
+        ExprKind::Sequence(items) => items
+            .last()
+            .is_some_and(|last| pascal_expr_is_tstringlist(last, var_types)),
+        _ => false,
+    }
+}
+
+fn pascal_expr_is_stream_wrapper(
+    expr: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => var_types
+            .get(&name.to_lowercase())
+            .is_some_and(|ty| pascal_is_stream_wrapper_type(&bare_type_name(ty))),
+        ExprKind::Sequence(items) => items
+            .last()
+            .is_some_and(|last| pascal_expr_is_stream_wrapper(last, var_types)),
+        _ => false,
+    }
+}
+
+fn pascal_stringbuilder_create_expr(args: &[Argument]) -> Expression {
+    let (text, capacity) = if let Some(arg) = args.first() {
+        if matches!(arg.value.kind, ExprKind::Lit(Literal::Int(_)) | ExprKind::Lit(Literal::Float(_))) {
+            (str_expr(""), arg.value.clone())
+        } else {
+            let text = arg.value.clone();
+            (text.clone(), call_expr("Length", vec![text]))
+        }
+    } else {
+        (str_expr(""), int_expr(16))
+    };
+    let _ = capacity;
+    text
+}
+
+fn pascal_stringbuilder_replace_receiver(receiver: Expression, new_text: Expression) -> Expression {
+    pascal_assign_expr(receiver, new_text)
+}
+
+fn pascal_stringbuilder_method_call(
+    object: &Expression,
+    field: &str,
+    args: &[Argument],
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Expression> {
+    if !pascal_expr_is_stringbuilder(object, var_types) {
+        return None;
+    }
+    let (mut prefix, receiver) = pascal_stringbuilder_receiver(object.clone());
+    let text = pascal_stringbuilder_text_member(receiver.clone());
+    let rewritten = match field.to_ascii_lowercase().as_str() {
+        "append" => {
+            let value = pascal_stringbuilder_value_expr(args.first()?.value.clone());
+            let assign =
+                pascal_stringbuilder_replace_receiver(receiver.clone(), bin_expr(BinOp::Add, text, value));
+            prefix.push(assign);
+            prefix.push(receiver);
+            Expression::new(ExprKind::Sequence(prefix))
+        }
+        "appendline" => {
+            let value = args.first().map(|arg| arg.value.clone()).unwrap_or_else(|| str_expr(""));
+            let value = bin_expr(BinOp::Add, value, str_expr("\n"));
+            let assign =
+                pascal_stringbuilder_replace_receiver(receiver.clone(), bin_expr(BinOp::Add, text, value));
+            prefix.push(assign);
+            prefix.push(receiver);
+            Expression::new(ExprKind::Sequence(prefix))
+        }
+        "appendformat" => {
+            let mut format_args = vec![args.first()?.value.clone()];
+            if let Some(arg_list) = args.get(1) {
+                if let ExprKind::Array(elements) = &arg_list.value.kind {
+                    format_args.extend(elements.iter().map(|element| element.value.clone()));
+                } else {
+                    format_args.push(arg_list.value.clone());
+                }
+            }
+            let formatted = call_expr(
+                "Format",
+                format_args,
+            );
+            let assign = pascal_stringbuilder_replace_receiver(
+                receiver.clone(),
+                bin_expr(BinOp::Add, text, formatted),
+            );
+            prefix.push(assign);
+            prefix.push(receiver);
+            Expression::new(ExprKind::Sequence(prefix))
+        }
+        "insert" => {
+            let index = args.first()?.value.clone();
+            let value = args.get(1)?.value.clone();
+            let new_text = bin_expr(
+                BinOp::Add,
+                bin_expr(
+                    BinOp::Add,
+                    pascal_copy_expr(text.clone(), int_expr(1), index.clone()),
+                    value,
+                ),
+                pascal_copy_expr(
+                    text.clone(),
+                    bin_expr(BinOp::Add, index.clone(), int_expr(1)),
+                    bin_expr(BinOp::Sub, call_expr("Length", vec![text.clone()]), index),
+                ),
+            );
+            prefix.push(pascal_stringbuilder_replace_receiver(receiver.clone(), new_text));
+            prefix.push(receiver);
+            Expression::new(ExprKind::Sequence(prefix))
+        }
+        "remove" => {
+            let index = args.first()?.value.clone();
+            let count = args.get(1)?.value.clone();
+            let new_text = bin_expr(
+                BinOp::Add,
+                pascal_copy_expr(text.clone(), int_expr(1), index.clone()),
+                pascal_copy_expr(
+                    text.clone(),
+                    bin_expr(BinOp::Add, bin_expr(BinOp::Add, index.clone(), count.clone()), int_expr(1)),
+                    bin_expr(
+                        BinOp::Sub,
+                        bin_expr(BinOp::Sub, call_expr("Length", vec![text.clone()]), index),
+                        count,
+                    ),
+                ),
+            );
+            prefix.push(pascal_stringbuilder_replace_receiver(receiver.clone(), new_text));
+            prefix.push(receiver);
+            Expression::new(ExprKind::Sequence(prefix))
+        }
+        "replace" => {
+            let replaced = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(text.clone()),
+                    field: "replaceAll".to_string(),
+                    null_safe: false,
+                })),
+                args: vec![
+                    Argument::positional(args.first()?.value.clone()),
+                    Argument::positional(args.get(1)?.value.clone()),
+                ],
+                optional: false,
+            });
+            prefix.push(pascal_stringbuilder_replace_receiver(receiver.clone(), replaced));
+            prefix.push(receiver);
+            Expression::new(ExprKind::Sequence(prefix))
+        }
+        "clear" => {
+            prefix.push(pascal_stringbuilder_replace_receiver(receiver.clone(), str_expr("")));
+            prefix.push(receiver);
+            Expression::new(ExprKind::Sequence(prefix))
+        }
+        "tostring" => text,
+        "free" => Expression::null(),
+        _ => return None,
+    };
+    Some(rewritten)
+}
+
+fn pascal_stringbuilder_property_expr(
+    object: &Expression,
+    field: &str,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Expression> {
+    if !pascal_expr_is_stringbuilder(object, var_types) {
+        return None;
+    }
+    let (_, receiver) = pascal_stringbuilder_receiver(object.clone());
+    match field.to_ascii_lowercase().as_str() {
+        "tostring" => Some(pascal_stringbuilder_text_member(receiver)),
+        "length" => Some(call_expr("__len__", vec![pascal_stringbuilder_text_member(receiver)])),
+        "capacity" => Some(int_expr(1024)),
+        _ => None,
+    }
+}
+
+fn pascal_stringbuilder_expr_stmt_block(expr: &Expression) -> Option<Vec<Statement>> {
+    let ExprKind::Sequence(items) = &expr.kind else {
+        return None;
+    };
+    let mut stmts = Vec::new();
+    for item in items {
+        match &item.kind {
+            ExprKind::Assign { target, value } => {
+                stmts.push(Statement::new(StmtKind::Assign {
+                    targets: vec![(**target).clone()],
+                    value: (**value).clone(),
+                }));
+            }
+            ExprKind::Sequence(_) => {
+                if let Some(nested) = pascal_stringbuilder_expr_stmt_block(item) {
+                    stmts.extend(nested);
+                }
+            }
+            ExprKind::Ident(_) | ExprKind::Object(_) | ExprKind::Lit(Literal::Null) => {}
+            _ => stmts.push(Statement::new(StmtKind::Expr(item.clone()))),
+        }
+    }
+    if stmts.is_empty() {
+        None
+    } else {
+        Some(stmts)
+    }
+}
+
+fn pascal_stringbuilder_assignment(
+    target: &Expression,
+    value: Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<(Expression, Expression)> {
+    match &target.kind {
+        ExprKind::Call { callee, args, .. } if args.is_empty() => {
+            pascal_stringbuilder_assignment(callee, value, var_types)
+        }
+        ExprKind::Member { object, field, .. }
+            if field.eq_ignore_ascii_case("Length")
+                && pascal_expr_is_stringbuilder(object, var_types) =>
+        {
+            let receiver = (**object).clone();
+            let text = pascal_stringbuilder_text_member(receiver.clone());
+            Some((receiver, pascal_copy_expr(text, int_expr(1), value)))
+        }
+        ExprKind::Index { object, index, .. } => {
+            let ExprKind::Member {
+                object: receiver,
+                field,
+                ..
+            } = &object.kind else {
+                return None;
+            };
+            if !field.eq_ignore_ascii_case("Chars")
+                || !pascal_expr_is_stringbuilder(receiver, var_types)
+            {
+                return None;
+            }
+            let receiver = (**receiver).clone();
+            let text = pascal_stringbuilder_text_member(receiver.clone());
+            let idx = (**index).clone();
+            let new_text = bin_expr(
+                BinOp::Add,
+                bin_expr(
+                    BinOp::Add,
+                    pascal_copy_expr(text.clone(), int_expr(1), idx.clone()),
+                    value,
+                ),
+                pascal_copy_expr(
+                    text.clone(),
+                    bin_expr(BinOp::Add, idx.clone(), int_expr(2)),
+                    bin_expr(
+                        BinOp::Sub,
+                        bin_expr(BinOp::Sub, call_expr("Length", vec![text.clone()]), idx),
+                        int_expr(1),
+                    ),
+                ),
+            );
+            Some((receiver, new_text))
+        }
+        _ => None,
+    }
+}
+
+fn pascal_expr_is_stringbuilder(
+    expr: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => var_types
+            .get(&name.to_lowercase())
+            .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("TStringBuilder")),
+        ExprKind::Sequence(items) => items
+            .last()
+            .is_some_and(|last| pascal_expr_is_stringbuilder(last, var_types)),
+        _ => false,
+    }
+}
+
+fn pascal_expr_contains_stringbuilder_member(
+    expr: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Member { object, field, .. } => {
+            pascal_expr_is_stringbuilder(object, var_types)
+                && matches!(field.to_ascii_lowercase().as_str(), "length" | "capacity")
+        }
+        ExprKind::Binary { left, right, .. } => {
+            pascal_expr_contains_stringbuilder_member(left, var_types)
+                || pascal_expr_contains_stringbuilder_member(right, var_types)
+        }
+        ExprKind::Call { callee, args, .. } => {
+            pascal_expr_contains_stringbuilder_member(callee, var_types)
+                || args
+                    .iter()
+                    .any(|arg| pascal_expr_contains_stringbuilder_member(&arg.value, var_types))
+        }
+        _ => false,
+    }
+}
+
+fn pascal_expr_contains_tstringstream_member(
+    expr: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Member { object, field, .. } => {
+            pascal_expr_is_tstringstream(object, var_types)
+                && matches!(
+                    field.to_ascii_lowercase().as_str(),
+                    "datastring" | "position" | "size" | "capacity" | "memory"
+                )
+        }
+        ExprKind::Binary { left, right, .. } => {
+            pascal_expr_contains_tstringstream_member(left, var_types)
+                || pascal_expr_contains_tstringstream_member(right, var_types)
+        }
+        ExprKind::Call { callee, args, .. } => {
+            pascal_expr_contains_tstringstream_member(callee, var_types)
+                || args
+                    .iter()
+                    .any(|arg| pascal_expr_contains_tstringstream_member(&arg.value, var_types))
+        }
+        _ => false,
+    }
+}
+
+fn pascal_expr_contains_stream_wrapper_member(
+    expr: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Member { object, field, .. } => {
+            (pascal_expr_is_stream_wrapper(object, var_types)
+                && matches!(
+                    field.to_ascii_lowercase().as_str(),
+                    "basestream" | "autoflush" | "endofstream" | "readline" | "readtoend"
+                        | "read" | "peek" | "readint32" | "readint64" | "readuint16"
+                        | "readuint32" | "readbyte" | "readsingle" | "readdouble"
+                        | "readboolean" | "readchar" | "readstring" | "peekchar"
+                ))
+                || pascal_expr_contains_stream_wrapper_member(object, var_types)
+        }
+        ExprKind::Binary { left, right, .. } => {
+            pascal_expr_contains_stream_wrapper_member(left, var_types)
+                || pascal_expr_contains_stream_wrapper_member(right, var_types)
+        }
+        ExprKind::Call { callee, args, .. } => {
+            pascal_expr_contains_stream_wrapper_member(callee, var_types)
+                || args
+                    .iter()
+                    .any(|arg| pascal_expr_contains_stream_wrapper_member(&arg.value, var_types))
+        }
+        _ => false,
+    }
+}
+
+fn pascal_stringbuilder_receiver(expr: Expression) -> (Vec<Expression>, Expression) {
+    match expr.kind {
+        ExprKind::Sequence(mut items) => {
+            if let Some(last) = items.pop() {
+                (items, last)
+            } else {
+                (Vec::new(), Expression::new(ExprKind::Sequence(Vec::new())))
+            }
+        }
+        kind => (Vec::new(), Expression { kind, ..expr }),
+    }
+}
+
+fn pascal_stringbuilder_text_member(receiver: Expression) -> Expression {
+    receiver
+}
+
+fn pascal_stringbuilder_char_expr(receiver: Expression, index: Expression) -> Expression {
+    let text = pascal_stringbuilder_text_member(receiver);
+    pascal_copy_expr(text, bin_expr(BinOp::Add, index, int_expr(1)), int_expr(1))
+}
+
+fn pascal_stringbuilder_value_expr(value: Expression) -> Expression {
+    match value.kind {
+        ExprKind::Lit(Literal::Bool(true)) => str_expr("True"),
+        ExprKind::Lit(Literal::Bool(false)) => str_expr("False"),
+        _ => value,
+    }
+}
+
+fn pascal_copy_expr(source: Expression, start: Expression, len: Expression) -> Expression {
+    call_expr("Copy", vec![source, start, len])
+}
+
+fn pascal_assign_expr(target: Expression, value: Expression) -> Expression {
+    Expression::new(ExprKind::Assign {
+        target: Box::new(target),
+        value: Box::new(value),
+    })
+}
+
+fn collect_pascal_enumerator_operators(
+    body: &[Statement],
+) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for stmt in body {
+        if let StmtKind::FunctionDecl { name, params, .. } = &stmt.kind {
+            if name.eq_ignore_ascii_case("operator_Enumerator") {
+                if let Some(type_hint) = params.first().and_then(|param| param.type_hint.as_ref()) {
+                    out.insert(
+                        bare_type_name(type_hint).to_ascii_lowercase(),
+                        name.clone(),
+                    );
+                }
+            }
+        }
+    }
+    out
+}
+
+fn collect_pascal_get_enumerator_helpers(
+    body: &[Statement],
+) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for stmt in body {
+        if let StmtKind::FunctionDecl { name, params, .. } = &stmt.kind {
+            if !name.starts_with("__pascal_helper_") || !name.ends_with("_getenumerator") {
+                continue;
+            }
+            if let Some(type_hint) = params.first().and_then(|param| param.type_hint.as_ref()) {
+                out.insert(
+                    bare_type_name(type_hint).to_ascii_lowercase(),
+                    name.clone(),
+                );
+            }
+        }
+    }
+    out
+}
+
+fn pascal_custom_enumerator_expr(
+    iter: &Expression,
+    var_types: &std::collections::HashMap<String, String>,
+    enumerators: &std::collections::HashMap<String, String>,
+    helper_enumerators: &std::collections::HashMap<String, String>,
+) -> Option<Expression> {
+    let type_name = pascal_expr_type_name(iter, var_types)?;
+    let normalized = bare_type_name(&type_name).to_ascii_lowercase();
+    if let Some(function_name) = enumerators.get(&normalized) {
+        return Some(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(function_name)),
+            args: vec![Argument::positional(iter.clone())],
+            optional: false,
+        }));
+    }
+    if let Some(function_name) = helper_enumerators.get(&normalized) {
+        return Some(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident(function_name)),
+            args: vec![Argument::positional(iter.clone())],
+            optional: false,
+        }));
+    }
+    if pascal_type_supports_get_enumerator(&normalized) {
+        return Some(Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(iter.clone()),
+                field: "GetEnumerator".to_string(),
+                null_safe: false,
+            })),
+            args: Vec::new(),
+            optional: false,
+        }));
+    }
+    None
+}
+
+fn pascal_type_supports_get_enumerator(type_name: &str) -> bool {
+    !matches!(
+        normalize_pascal_type_hint(type_name).to_ascii_lowercase().as_str(),
+        "string"
+            | "ansistring"
+            | "unicodestring"
+            | "widestring"
+            | "char"
+            | "integer"
+            | "int"
+            | "longint"
+            | "shortint"
+            | "smallint"
+            | "byte"
+            | "word"
+            | "cardinal"
+            | "int64"
+            | "qword"
+            | "real"
+            | "single"
+            | "double"
+            | "extended"
+            | "currency"
+            | "boolean"
+            | "bool"
+    ) && !type_name.starts_with("array")
 }
 
 fn pascal_expr_is_collection_value(
@@ -6412,7 +12216,7 @@ fn pascal_expr_is_collection_value(
 fn is_pascal_generic_collection_type(type_name: &str) -> bool {
     matches!(
         bare_type_name(type_name).to_ascii_lowercase().as_str(),
-        "tlist" | "tobjectlist"
+        "tlist" | "tobjectlist" | "tdictionary"
     )
 }
 
@@ -8604,6 +14408,104 @@ fn default_init_record_array_fields_member(
     }
 }
 
+fn default_init_pascal_array_locals(body: &mut [Statement]) {
+    for stmt in body {
+        default_init_pascal_array_locals_stmt(stmt);
+    }
+}
+
+fn default_init_pascal_array_locals_stmt(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, kind } if *kind != VarDeclKind::Const => {
+            for decl in declarations {
+                if decl.init.is_none()
+                    && let Some(init) = decl.type_hint.as_deref().and_then(default_array_init_for_type)
+                {
+                    decl.init = Some(init);
+                }
+            }
+        }
+        StmtKind::FunctionDecl { body, .. }
+        | StmtKind::Block(body)
+        | StmtKind::NamespaceDecl { body, .. } => default_init_pascal_array_locals(body),
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            default_init_pascal_array_locals(then_body);
+            for (_, body) in elifs {
+                default_init_pascal_array_locals(body);
+            }
+            if let Some(body) = else_body {
+                default_init_pascal_array_locals(body);
+            }
+        }
+        StmtKind::While {
+            body, else_body, ..
+        }
+        | StmtKind::ForIn {
+            body, else_body, ..
+        } => {
+            default_init_pascal_array_locals(body);
+            if let Some(body) = else_body {
+                default_init_pascal_array_locals(body);
+            }
+        }
+        StmtKind::For { init, body, .. } => {
+            if let Some(init) = init {
+                default_init_pascal_array_locals_stmt(init);
+            }
+            default_init_pascal_array_locals(body);
+        }
+        StmtKind::DoWhile { body, .. } => default_init_pascal_array_locals(body),
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            default_init_pascal_array_locals(body);
+            for catch in catches {
+                default_init_pascal_array_locals(&mut catch.body);
+            }
+            if let Some(body) = else_body {
+                default_init_pascal_array_locals(body);
+            }
+            if let Some(body) = finally {
+                default_init_pascal_array_locals(body);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                default_init_pascal_array_locals_member(member);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn default_init_pascal_array_locals_member(member: &mut ClassMember) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            default_init_pascal_array_locals_stmt(stmt);
+        }
+        ClassMember::Constructor { body, .. } => default_init_pascal_array_locals(body),
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                default_init_pascal_array_locals(getter);
+            }
+            if let Some(setter) = setter {
+                default_init_pascal_array_locals(&mut setter.body);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn record_array_initializer(count: usize, element_type: &str) -> Expression {
     let elements = (0..count)
         .map(|_| ArrayElement {
@@ -10187,6 +16089,11 @@ fn lower_pascal_array_value_semantics_stmt(
                     value,
                 };
                 lower_pascal_array_value_semantics_stmt(stmt, env);
+            } else if let Some((target, value)) = pascal_fillchar_zero_assignment(expr, env) {
+                stmt.kind = StmtKind::Assign {
+                    targets: vec![target],
+                    value,
+                };
             } else if pascal_fillchar_zero_var(expr) {
                 stmt.kind = StmtKind::Empty;
             } else if let Some((target, value)) = pascal_move_small_set_byte_assignment(expr, env) {
@@ -10506,6 +16413,32 @@ fn pascal_fillchar_zero_var(expr: &Expression) -> bool {
         && const_int_expr(&args[2].value) == Some(0)
 }
 
+fn pascal_fillchar_zero_assignment(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> Option<(Expression, Expression)> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("fillchar"))
+        || args.len() < 3
+        || const_int_expr(&args[2].value) != Some(0)
+    {
+        return None;
+    }
+    let target_name = pascal_expr_ident_name(&args[0].value)?;
+    if env
+        .get(&target_name.to_lowercase())
+        .is_some_and(|hint| bare_type_name(hint).eq_ignore_ascii_case("TGUID"))
+    {
+        return Some((
+            args[0].value.clone(),
+            pascal_guid_object_expr("{00000000-0000-0000-0000-000000000000}"),
+        ));
+    }
+    None
+}
+
 fn pascal_move_small_set_byte_assignment(
     expr: &Expression,
     env: &std::collections::HashMap<String, String>,
@@ -10690,6 +16623,583 @@ fn pascal_type_hint_is_integer(type_hint: &str) -> bool {
             | "uint64"
             | "longword"
     )
+}
+
+fn rewrite_pascal_fast_integer_equality(body: &mut [Statement]) {
+    let mut env = std::collections::HashMap::new();
+    rewrite_pascal_fast_integer_equality_body(body, &mut env);
+}
+
+fn rewrite_pascal_generic_contains_methods(body: &mut [Statement]) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::FunctionDecl {
+                name,
+                params,
+                return_type,
+                body,
+                ..
+            } => {
+                rewrite_pascal_contains_function_body(name, params, return_type, body, "FItems");
+            }
+            StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
+                rewrite_pascal_generic_contains_members(members);
+            }
+            StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
+                rewrite_pascal_generic_contains_methods(body);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_pascal_generic_contains_members(members: &mut [ClassMember]) {
+    let class_env = pascal_class_value_type_env(members);
+    let Some(items_field) = class_env
+        .iter()
+        .find(|(name, hint)| {
+            name.eq_ignore_ascii_case("fitems") && pascal_array_element_type(hint).is_some()
+        })
+        .map(|(name, _)| name.clone())
+    else {
+        return;
+    };
+
+    for member in members {
+        let ClassMember::Method(method) = member else {
+            continue;
+        };
+        let StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type,
+            body,
+            ..
+        } = &mut method.kind
+        else {
+            continue;
+        };
+        rewrite_pascal_contains_function_body(name, params, return_type, body, &items_field);
+    }
+}
+
+fn pascal_method_name_is(name: &str, expected: &str) -> bool {
+    name.rsplit('.')
+        .next()
+        .unwrap_or(name)
+        .eq_ignore_ascii_case(expected)
+}
+
+fn rewrite_pascal_contains_function_body(
+    name: &str,
+    params: &[Param],
+    return_type: &Option<String>,
+    body: &mut Vec<Statement>,
+    items_field: &str,
+) {
+    if !pascal_method_name_is(name, "contains")
+        || params.len() != 1
+        || !return_type
+            .as_deref()
+            .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("boolean"))
+        || !pascal_body_mentions_ident(body, items_field)
+    {
+        return;
+    }
+    let item_name = params[0].name.clone();
+    *body = vec![Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident("Result")],
+        value: pascal_call(
+            "__pascal_array_contains",
+            vec![
+                Expression::ident(items_field),
+                Expression::ident(&item_name),
+            ],
+        ),
+    })];
+}
+
+fn pascal_body_mentions_ident(body: &[Statement], name: &str) -> bool {
+    body.iter()
+        .any(|stmt| pascal_stmt_mentions_ident(stmt, name))
+}
+
+fn pascal_stmt_mentions_ident(stmt: &Statement, name: &str) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr), ..
+        } => pascal_expr_mentions_ident(expr, name),
+        StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|decl| {
+            decl.init
+                .as_ref()
+                .is_some_and(|init| pascal_expr_mentions_ident(init, name))
+        }),
+        StmtKind::Assign { targets, value } => {
+            targets
+                .iter()
+                .any(|target| pascal_expr_mentions_ident(target, name))
+                || pascal_expr_mentions_ident(value, name)
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            pascal_expr_mentions_ident(target, name) || pascal_expr_mentions_ident(value, name)
+        }
+        StmtKind::Block(body) | StmtKind::FunctionDecl { body, .. } => {
+            pascal_body_mentions_ident(body, name)
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            pascal_expr_mentions_ident(cond, name)
+                || pascal_body_mentions_ident(then_body, name)
+                || elifs.iter().any(|(cond, body)| {
+                    pascal_expr_mentions_ident(cond, name) || pascal_body_mentions_ident(body, name)
+                })
+                || else_body
+                    .as_deref()
+                    .is_some_and(|body| pascal_body_mentions_ident(body, name))
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            init.as_deref()
+                .is_some_and(|stmt| pascal_stmt_mentions_ident(stmt, name))
+                || cond
+                    .as_ref()
+                    .is_some_and(|cond| pascal_expr_mentions_ident(cond, name))
+                || update
+                    .as_ref()
+                    .is_some_and(|update| pascal_expr_mentions_ident(update, name))
+                || pascal_body_mentions_ident(body, name)
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            pascal_expr_mentions_ident(cond, name)
+                || pascal_body_mentions_ident(body, name)
+                || else_body
+                    .as_deref()
+                    .is_some_and(|body| pascal_body_mentions_ident(body, name))
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            pascal_body_mentions_ident(body, name) || pascal_expr_mentions_ident(cond, name)
+        }
+        _ => false,
+    }
+}
+
+fn pascal_expr_mentions_ident(expr: &Expression, name: &str) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(ident) => ident.eq_ignore_ascii_case(name),
+        ExprKind::Member { object, field, .. } => {
+            field.eq_ignore_ascii_case(name) || pascal_expr_mentions_ident(object, name)
+        }
+        ExprKind::Index { object, index, .. } => {
+            pascal_expr_mentions_ident(object, name) || pascal_expr_mentions_ident(index, name)
+        }
+        ExprKind::Call { callee, args, .. } => {
+            pascal_expr_mentions_ident(callee, name)
+                || args
+                    .iter()
+                    .any(|arg| pascal_expr_mentions_ident(&arg.value, name))
+        }
+        ExprKind::Binary { left, right, .. } => {
+            pascal_expr_mentions_ident(left, name) || pascal_expr_mentions_ident(right, name)
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::RefLoad(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::YieldFrom(expr) => pascal_expr_mentions_ident(expr, name),
+        ExprKind::Ternary { cond, then, else_ } => {
+            pascal_expr_mentions_ident(cond, name)
+                || pascal_expr_mentions_ident(then, name)
+                || pascal_expr_mentions_ident(else_, name)
+        }
+        _ => false,
+    }
+}
+
+fn rewrite_pascal_fast_integer_equality_body(
+    body: &mut [Statement],
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        rewrite_pascal_fast_integer_equality_stmt(stmt, env);
+    }
+}
+
+fn rewrite_pascal_fast_integer_equality_stmt(
+    stmt: &mut Statement,
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_fast_integer_equality_expr(init, env);
+                }
+                if let BindingPattern::Ident(name) = &decl.pattern {
+                    if let Some(type_hint) = &decl.type_hint {
+                        env.insert(name.to_lowercase(), type_hint.clone());
+                    }
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_fast_integer_equality_expr(target, env);
+            }
+            rewrite_pascal_fast_integer_equality_expr(value, env);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_fast_integer_equality_expr(target, env);
+            rewrite_pascal_fast_integer_equality_expr(value, env);
+        }
+        StmtKind::Expr(expr)
+        | StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr), ..
+        } => {
+            rewrite_pascal_fast_integer_equality_expr(expr, env);
+        }
+        StmtKind::Block(body) | StmtKind::FunctionDecl { body, .. } => {
+            let mut nested = env.clone();
+            rewrite_pascal_fast_integer_equality_body(body, &mut nested);
+        }
+        StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
+            rewrite_pascal_fast_integer_equality_members(members);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_fast_integer_equality_expr(cond, env);
+            let mut then_env = env.clone();
+            rewrite_pascal_fast_integer_equality_body(then_body, &mut then_env);
+            for (cond, body) in elifs {
+                rewrite_pascal_fast_integer_equality_expr(cond, env);
+                let mut elif_env = env.clone();
+                rewrite_pascal_fast_integer_equality_body(body, &mut elif_env);
+            }
+            if let Some(body) = else_body {
+                let mut else_env = env.clone();
+                rewrite_pascal_fast_integer_equality_body(body, &mut else_env);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut loop_env = env.clone();
+            if let Some(init) = init {
+                rewrite_pascal_fast_integer_equality_stmt(init, &mut loop_env);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_fast_integer_equality_expr(cond, &loop_env);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_fast_integer_equality_expr(update, &loop_env);
+            }
+            rewrite_pascal_fast_integer_equality_body(body, &mut loop_env);
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_fast_integer_equality_expr(cond, env);
+            let mut loop_env = env.clone();
+            rewrite_pascal_fast_integer_equality_body(body, &mut loop_env);
+            if let Some(body) = else_body {
+                let mut else_env = env.clone();
+                rewrite_pascal_fast_integer_equality_body(body, &mut else_env);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            let mut loop_env = env.clone();
+            rewrite_pascal_fast_integer_equality_body(body, &mut loop_env);
+            rewrite_pascal_fast_integer_equality_expr(cond, &loop_env);
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_pascal_fast_integer_equality_expr(iter, env);
+            let mut loop_env = env.clone();
+            rewrite_pascal_fast_integer_equality_body(body, &mut loop_env);
+            if let Some(body) = else_body {
+                let mut else_env = env.clone();
+                rewrite_pascal_fast_integer_equality_body(body, &mut else_env);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            let mut try_env = env.clone();
+            rewrite_pascal_fast_integer_equality_body(body, &mut try_env);
+            for catch in catches {
+                if let Some(when_clause) = &mut catch.when_clause {
+                    rewrite_pascal_fast_integer_equality_expr(when_clause, env);
+                }
+                let mut catch_env = env.clone();
+                rewrite_pascal_fast_integer_equality_body(&mut catch.body, &mut catch_env);
+            }
+            if let Some(body) = else_body {
+                let mut else_env = env.clone();
+                rewrite_pascal_fast_integer_equality_body(body, &mut else_env);
+            }
+            if let Some(finally) = finally {
+                let mut finally_env = env.clone();
+                rewrite_pascal_fast_integer_equality_body(finally, &mut finally_env);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_fast_integer_equality_members(members: &mut [ClassMember]) {
+    let class_env = pascal_class_value_type_env(members);
+    for member in members {
+        match member {
+            ClassMember::Method(method) => {
+                let StmtKind::FunctionDecl { params, body, .. } = &mut method.kind else {
+                    continue;
+                };
+                let mut env = class_env.clone();
+                for param in params {
+                    if let Some(type_hint) = &param.type_hint {
+                        env.insert(param.name.to_lowercase(), type_hint.clone());
+                    }
+                }
+                rewrite_pascal_fast_integer_equality_body(body, &mut env);
+            }
+            ClassMember::Constructor { params, body, .. } => {
+                let mut env = class_env.clone();
+                for param in params {
+                    if let Some(type_hint) = &param.type_hint {
+                        env.insert(param.name.to_lowercase(), type_hint.clone());
+                    }
+                }
+                rewrite_pascal_fast_integer_equality_body(body, &mut env);
+            }
+            ClassMember::Property { getter, setter, .. } => {
+                if let Some(getter) = getter {
+                    let mut env = class_env.clone();
+                    rewrite_pascal_fast_integer_equality_body(getter, &mut env);
+                }
+                if let Some(setter) = setter {
+                    let mut env = class_env.clone();
+                    if let Some(type_hint) = &setter.param.type_hint {
+                        env.insert(setter.param.name.to_lowercase(), type_hint.clone());
+                    }
+                    rewrite_pascal_fast_integer_equality_body(&mut setter.body, &mut env);
+                }
+            }
+            ClassMember::NestedType(stmt) => {
+                rewrite_pascal_fast_integer_equality_stmt(
+                    stmt,
+                    &mut std::collections::HashMap::new(),
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+fn pascal_class_value_type_env(
+    members: &[ClassMember],
+) -> std::collections::HashMap<String, String> {
+    let mut env = std::collections::HashMap::new();
+    for member in members {
+        match member {
+            ClassMember::Field {
+                name, type_hint, ..
+            }
+            | ClassMember::Property {
+                name, type_hint, ..
+            }
+            | ClassMember::Const {
+                name, type_hint, ..
+            } => {
+                if let Some(type_hint) = type_hint {
+                    env.insert(name.to_lowercase(), type_hint.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    env
+}
+
+fn rewrite_pascal_fast_integer_equality_expr(
+    expr: &mut Expression,
+    env: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_pascal_fast_integer_equality_expr(callee, env);
+            for arg in args {
+                rewrite_pascal_fast_integer_equality_expr(&mut arg.value, env);
+            }
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_fast_integer_equality_expr(class, env);
+            for arg in args {
+                rewrite_pascal_fast_integer_equality_expr(&mut arg.value, env);
+            }
+        }
+        ExprKind::Member { object, .. } => rewrite_pascal_fast_integer_equality_expr(object, env),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_fast_integer_equality_expr(object, env);
+            rewrite_pascal_fast_integer_equality_expr(index, env);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_fast_integer_equality_expr(left, env);
+            rewrite_pascal_fast_integer_equality_expr(right, env);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::RefLoad(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::YieldFrom(expr) => rewrite_pascal_fast_integer_equality_expr(expr, env),
+        ExprKind::IsType { expr, .. } => rewrite_pascal_fast_integer_equality_expr(expr, env),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_fast_integer_equality_expr(cond, env);
+            rewrite_pascal_fast_integer_equality_expr(then, env);
+            rewrite_pascal_fast_integer_equality_expr(else_, env);
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_pascal_fast_integer_equality_expr(key, env);
+                }
+                rewrite_pascal_fast_integer_equality_expr(&mut element.value, env);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        rewrite_pascal_fast_integer_equality_expr(key, env);
+                        rewrite_pascal_fast_integer_equality_expr(value, env);
+                    }
+                    ObjectProperty::Spread(value) => {
+                        rewrite_pascal_fast_integer_equality_expr(value, env)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_pascal_fast_integer_equality_expr(item, env);
+            }
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_pascal_fast_integer_equality_expr(left, env);
+            rewrite_pascal_fast_integer_equality_expr(right, env);
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_pascal_fast_integer_equality_expr(start, env);
+            rewrite_pascal_fast_integer_equality_expr(end, env);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_pascal_fast_integer_equality_expr(target, env);
+            rewrite_pascal_fast_integer_equality_expr(value, env);
+        }
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_pascal_fast_integer_equality_expr(class, env);
+            rewrite_pascal_fast_integer_equality_expr(member, env);
+        }
+        _ => {}
+    }
+
+    let replacement = match &expr.kind {
+        ExprKind::Binary { op, left, right }
+            if matches!(op, BinOp::Eq | BinOp::NotEq)
+                && pascal_fast_eq_expr_is_integer_like(left, env)
+                && pascal_fast_eq_expr_is_integer_like(right, env) =>
+        {
+            let helper = if *op == BinOp::Eq {
+                "__pascal_f64_eq"
+            } else {
+                "__pascal_f64_ne"
+            };
+            Some(pascal_call(
+                helper,
+                vec![(**left).clone(), (**right).clone()],
+            ))
+        }
+        _ => None,
+    };
+    if let Some(replacement) = replacement {
+        *expr = replacement;
+    }
+}
+
+fn pascal_fast_eq_expr_is_integer_like(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(_)) => true,
+        ExprKind::Ident(name) => env
+            .get(&name.to_lowercase())
+            .is_some_and(|hint| pascal_type_hint_is_integer(hint)),
+        ExprKind::Index { object, .. } => pascal_fast_eq_index_element_type(object, env)
+            .is_some_and(|hint| pascal_type_hint_is_integer(&hint)),
+        ExprKind::Cast { type_name, .. } => pascal_type_hint_is_integer(type_name),
+        _ => false,
+    }
+}
+
+fn pascal_fast_eq_index_element_type(
+    object: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    match &object.kind {
+        ExprKind::Ident(name) => env
+            .get(&name.to_lowercase())
+            .and_then(|hint| pascal_array_element_type(hint)),
+        ExprKind::Member { field, .. } => env
+            .get(&field.to_lowercase())
+            .and_then(|hint| pascal_array_element_type(hint)),
+        ExprKind::Index { object, .. } => {
+            let nested = pascal_fast_eq_index_element_type(object, env)?;
+            pascal_array_element_type(&nested)
+        }
+        _ => None,
+    }
 }
 
 #[derive(Clone, Default)]
@@ -13324,6 +19834,286 @@ fn rewrite_pascal_enum_ordinals(
     }
 }
 
+fn rewrite_pascal_enum_bounds(
+    body: &mut [Statement],
+    enum_type_counts: &std::collections::HashMap<String, usize>,
+) {
+    for stmt in body {
+        rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+    }
+}
+
+fn rewrite_pascal_enum_bounds_stmt(
+    stmt: &mut Statement,
+    enum_type_counts: &std::collections::HashMap<String, usize>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_enum_bounds_expr(expr, enum_type_counts)
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_enum_bounds_expr(init, enum_type_counts);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_enum_bounds_expr(target, enum_type_counts);
+            }
+            rewrite_pascal_enum_bounds_expr(value, enum_type_counts);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_enum_bounds_expr(target, enum_type_counts);
+            rewrite_pascal_enum_bounds_expr(value, enum_type_counts);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_enum_bounds_expr(cond, enum_type_counts);
+            for stmt in then_body {
+                rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+            }
+            for (cond, body) in elifs {
+                rewrite_pascal_enum_bounds_expr(cond, enum_type_counts);
+                for stmt in body {
+                    rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+                }
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_enum_bounds_expr(cond, enum_type_counts);
+            for stmt in body {
+                rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+                }
+            }
+        }
+        StmtKind::DoWhile { cond, body, .. } => {
+            rewrite_pascal_enum_bounds_expr(cond, enum_type_counts);
+            for stmt in body {
+                rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                rewrite_pascal_enum_bounds_stmt(init, enum_type_counts);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_enum_bounds_expr(cond, enum_type_counts);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_enum_bounds_expr(update, enum_type_counts);
+            }
+            for stmt in body {
+                rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+            }
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_pascal_enum_bounds_expr(iter, enum_type_counts);
+            for stmt in body {
+                rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+                }
+            }
+        }
+        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+            for stmt in body {
+                rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+            }
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_enum_bounds_member(member, enum_type_counts);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            for stmt in body {
+                rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+            }
+            for catch in catches {
+                for stmt in &mut catch.body {
+                    rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+                }
+            }
+            if let Some(body) = else_body {
+                for stmt in body {
+                    rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+                }
+            }
+            if let Some(body) = finally {
+                for stmt in body {
+                    rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_enum_bounds_member(
+    member: &mut ClassMember,
+    enum_type_counts: &std::collections::HashMap<String, usize>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts)
+        }
+        ClassMember::Constructor { body, .. } => {
+            for stmt in body {
+                rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+            }
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                for stmt in getter {
+                    rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+                }
+            }
+            if let Some(setter) = setter {
+                for stmt in &mut setter.body {
+                    rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_enum_bounds_expr(
+    expr: &mut Expression,
+    enum_type_counts: &std::collections::HashMap<String, usize>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            if args.len() == 1 {
+                if let ExprKind::Ident(function_name) = &callee.kind {
+                    if function_name.eq_ignore_ascii_case("Low")
+                        || function_name.eq_ignore_ascii_case("High")
+                    {
+                        if let ExprKind::Ident(type_name) = &args[0].value.kind {
+                            if let Some(count) = enum_type_counts.get(&type_name.to_lowercase()) {
+                                let value = if function_name.eq_ignore_ascii_case("Low") {
+                                    0
+                                } else {
+                                    count.saturating_sub(1) as i64
+                                };
+                                *expr = pascal_int(value);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            rewrite_pascal_enum_bounds_expr(callee, enum_type_counts);
+            for arg in args {
+                rewrite_pascal_enum_bounds_expr(&mut arg.value, enum_type_counts);
+            }
+        }
+        ExprKind::Member { object, .. } => rewrite_pascal_enum_bounds_expr(object, enum_type_counts),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_enum_bounds_expr(object, enum_type_counts);
+            rewrite_pascal_enum_bounds_expr(index, enum_type_counts);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Cast { expr, .. } => rewrite_pascal_enum_bounds_expr(expr, enum_type_counts),
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_enum_bounds_expr(left, enum_type_counts);
+            rewrite_pascal_enum_bounds_expr(right, enum_type_counts);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_pascal_enum_bounds_expr(target, enum_type_counts);
+            rewrite_pascal_enum_bounds_expr(value, enum_type_counts);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_enum_bounds_expr(cond, enum_type_counts);
+            rewrite_pascal_enum_bounds_expr(then, enum_type_counts);
+            rewrite_pascal_enum_bounds_expr(else_, enum_type_counts);
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_pascal_enum_bounds_expr(key, enum_type_counts);
+                }
+                rewrite_pascal_enum_bounds_expr(&mut element.value, enum_type_counts);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_pascal_enum_bounds_expr(item, enum_type_counts);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value, .. } => {
+                        rewrite_pascal_enum_bounds_expr(key, enum_type_counts);
+                        rewrite_pascal_enum_bounds_expr(value, enum_type_counts);
+                    }
+                    ObjectProperty::Spread(value) => {
+                        rewrite_pascal_enum_bounds_expr(value, enum_type_counts);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_pascal_enum_bounds_expr(start, enum_type_counts);
+            rewrite_pascal_enum_bounds_expr(end, enum_type_counts);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_enum_bounds_expr(class, enum_type_counts);
+            for arg in args {
+                rewrite_pascal_enum_bounds_expr(&mut arg.value, enum_type_counts);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn rewrite_pascal_enum_ordinals_stmt(
     stmt: &mut Statement,
     enum_member_ordinals: &std::collections::HashMap<String, i64>,
@@ -15441,6 +22231,8 @@ const PASCAL_BUILTIN_EXCEPTION_CLASSES: &[&str] = &[
     "EInvalidArgument",
     "EInvalidOp",
     "EOverflow",
+    "EAssertionFailed",
+    "EFOpenError",
     "ERangeError",
 ];
 
@@ -15483,7 +22275,10 @@ fn pascal_prelude_needs(
                 "EInvalidArgument",
                 "EInvalidOp",
                 "EOverflow",
+                "EAssertionFailed",
+                "EFOpenError",
                 "ERangeError",
+                "Assert",
             ],
         );
     let except_state = pascal_source_mentions_any_ident(source, &["ExceptObject", "ExceptAddr"]);
@@ -15495,9 +22290,17 @@ fn pascal_prelude_needs(
     let collections = uses_generics_collections
         || pascal_source_mentions_any_ident(
             source,
-            &["TList", "TObjectList", "TComparer", "TEqualityComparer"],
-        );
+            &[
+                "TList",
+                "TObjectList",
+                "TDictionary",
+                "TPair",
+                "TComparer",
+                "TEqualityComparer",
+            ],
+    );
     let tbits = pascal_source_mentions_any_ident(source, &["TBits"]);
+    let assert_error_proc = pascal_source_mentions_any_ident(source, &["AssertErrorProc"]);
 
     PascalPreludeNeeds {
         exceptions,
@@ -15506,7 +22309,12 @@ fn pascal_prelude_needs(
         tinterfacedobject,
         collections,
         tbits,
+        assert_error_proc,
     }
+}
+
+fn pascal_source_has_assertions_off(source: &str) -> bool {
+    source.to_ascii_uppercase().contains("{$C-")
 }
 
 fn pascal_source_mentions_any_ident(source: &str, names: &[&str]) -> bool {
@@ -15515,6 +22323,610 @@ fn pascal_source_mentions_any_ident(source: &str, names: &[&str]) -> bool {
     source
         .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
         .any(|token| wanted.contains(&token.to_ascii_lowercase()))
+}
+
+fn synthesize_pascal_assert_error_proc_var() -> Statement {
+    Statement::new(StmtKind::VarDecl {
+        declarations: vec![VarDeclarator {
+            pattern: BindingPattern::Ident("AssertErrorProc".to_string()),
+            type_hint: Some("TAssertErrorProc".to_string()),
+            init: Some(Expression::null()),
+            array_bounds: None,
+            with_events: false,
+        }],
+        kind: VarDeclKind::Var,
+    })
+}
+
+fn rewrite_pascal_assert_calls_body(body: &mut [Statement], assertions_enabled: bool) {
+    for stmt in body {
+        rewrite_pascal_assert_calls_stmt(stmt, assertions_enabled);
+    }
+}
+
+fn rewrite_pascal_assert_calls_stmt(stmt: &mut Statement, assertions_enabled: bool) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) => {
+            if let Some(replacement) = pascal_assert_stmt_for_expr(expr, assertions_enabled) {
+                stmt.kind = replacement;
+                return;
+            }
+            rewrite_pascal_assert_calls_expr(expr, assertions_enabled);
+        }
+        StmtKind::Return(Some(expr)) => rewrite_pascal_assert_calls_expr(expr, assertions_enabled),
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_assert_calls_expr(init, assertions_enabled);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_assert_calls_expr(target, assertions_enabled);
+            }
+            rewrite_pascal_assert_calls_expr(value, assertions_enabled);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_assert_calls_expr(target, assertions_enabled);
+            rewrite_pascal_assert_calls_expr(value, assertions_enabled);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_pascal_assert_calls_body(body, assertions_enabled);
+        }
+        StmtKind::FunctionDecl { body, .. } => {
+            rewrite_pascal_assert_calls_body(body, assertions_enabled);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_assert_calls_member(member, assertions_enabled);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_assert_calls_expr(cond, assertions_enabled);
+            rewrite_pascal_assert_calls_body(then_body, assertions_enabled);
+            for (cond, body) in elifs {
+                rewrite_pascal_assert_calls_expr(cond, assertions_enabled);
+                rewrite_pascal_assert_calls_body(body, assertions_enabled);
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_assert_calls_body(body, assertions_enabled);
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_assert_calls_expr(cond, assertions_enabled);
+            rewrite_pascal_assert_calls_body(body, assertions_enabled);
+            if let Some(body) = else_body {
+                rewrite_pascal_assert_calls_body(body, assertions_enabled);
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            rewrite_pascal_assert_calls_body(body, assertions_enabled);
+            rewrite_pascal_assert_calls_expr(cond, assertions_enabled);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                rewrite_pascal_assert_calls_stmt(init, assertions_enabled);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_assert_calls_expr(cond, assertions_enabled);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_assert_calls_expr(update, assertions_enabled);
+            }
+            rewrite_pascal_assert_calls_body(body, assertions_enabled);
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_pascal_assert_calls_expr(iter, assertions_enabled);
+            rewrite_pascal_assert_calls_body(body, assertions_enabled);
+            if let Some(body) = else_body {
+                rewrite_pascal_assert_calls_body(body, assertions_enabled);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            rewrite_pascal_assert_calls_body(body, assertions_enabled);
+            for catch in catches {
+                rewrite_pascal_assert_calls_body(&mut catch.body, assertions_enabled);
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_assert_calls_body(body, assertions_enabled);
+            }
+            if let Some(body) = finally {
+                rewrite_pascal_assert_calls_body(body, assertions_enabled);
+            }
+        }
+        StmtKind::Switch { expr, cases, .. } => {
+            rewrite_pascal_assert_calls_expr(expr, assertions_enabled);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    match condition {
+                        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
+                            rewrite_pascal_assert_calls_expr(expr, assertions_enabled);
+                        }
+                        CaseCondition::Range { from, to } => {
+                            rewrite_pascal_assert_calls_expr(from, assertions_enabled);
+                            rewrite_pascal_assert_calls_expr(to, assertions_enabled);
+                        }
+                    }
+                }
+                rewrite_pascal_assert_calls_body(&mut case.body, assertions_enabled);
+            }
+        }
+        StmtKind::Throw { expr, cause } => {
+            if let Some(expr) = expr {
+                rewrite_pascal_assert_calls_expr(expr, assertions_enabled);
+            }
+            if let Some(cause) = cause {
+                rewrite_pascal_assert_calls_expr(cause, assertions_enabled);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_assert_calls_member(member: &mut ClassMember, assertions_enabled: bool) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_assert_calls_stmt(stmt, assertions_enabled);
+        }
+        ClassMember::Constructor { body, .. } => {
+            rewrite_pascal_assert_calls_body(body, assertions_enabled);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_pascal_assert_calls_body(getter, assertions_enabled);
+            }
+            if let Some(setter) = setter {
+                rewrite_pascal_assert_calls_body(&mut setter.body, assertions_enabled);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_assert_calls_expr(expr: &mut Expression, assertions_enabled: bool) {
+    match &mut expr.kind {
+        ExprKind::Ident(name) if name.eq_ignore_ascii_case("Random") => {
+            expr.kind = ExprKind::Call {
+                callee: Box::new(Expression::ident("Random")),
+                args: Vec::new(),
+                optional: false,
+            };
+        }
+        ExprKind::Call { callee, args, .. } => {
+            let _ = callee;
+            for arg in args {
+                rewrite_pascal_assert_calls_expr(&mut arg.value, assertions_enabled);
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_assert_calls_expr(left, assertions_enabled);
+            rewrite_pascal_assert_calls_expr(right, assertions_enabled);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Cast { expr, .. } => rewrite_pascal_assert_calls_expr(expr, assertions_enabled),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_assert_calls_expr(cond, assertions_enabled);
+            rewrite_pascal_assert_calls_expr(then, assertions_enabled);
+            rewrite_pascal_assert_calls_expr(else_, assertions_enabled);
+        }
+        ExprKind::Member { object, .. } => rewrite_pascal_assert_calls_expr(object, assertions_enabled),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_assert_calls_expr(object, assertions_enabled);
+            rewrite_pascal_assert_calls_expr(index, assertions_enabled);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_assert_calls_expr(class, assertions_enabled);
+            for arg in args {
+                rewrite_pascal_assert_calls_expr(&mut arg.value, assertions_enabled);
+            }
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_pascal_assert_calls_expr(key, assertions_enabled);
+                }
+                rewrite_pascal_assert_calls_expr(&mut element.value, assertions_enabled);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_pascal_assert_calls_expr(item, assertions_enabled);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value, .. } => {
+                        rewrite_pascal_assert_calls_expr(key, assertions_enabled);
+                        rewrite_pascal_assert_calls_expr(value, assertions_enabled);
+                    }
+                    ObjectProperty::Spread(value) => {
+                        rewrite_pascal_assert_calls_expr(value, assertions_enabled);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_pascal_assert_calls_expr(left, assertions_enabled);
+            rewrite_pascal_assert_calls_expr(right, assertions_enabled);
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_pascal_assert_calls_expr(start, assertions_enabled);
+            rewrite_pascal_assert_calls_expr(end, assertions_enabled);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_pascal_assert_calls_expr(target, assertions_enabled);
+            rewrite_pascal_assert_calls_expr(value, assertions_enabled);
+        }
+        ExprKind::SuperCall { args, .. } => {
+            for arg in args {
+                rewrite_pascal_assert_calls_expr(&mut arg.value, assertions_enabled);
+            }
+        }
+        ExprKind::StaticAccess { class, member } => {
+            rewrite_pascal_assert_calls_expr(class, assertions_enabled);
+            rewrite_pascal_assert_calls_expr(member, assertions_enabled);
+        }
+        _ => {}
+    }
+}
+
+fn pascal_assert_stmt_for_expr(expr: &Expression, assertions_enabled: bool) -> Option<StmtKind> {
+    if !assertions_enabled {
+        return None;
+    }
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Assert")) {
+        return None;
+    }
+    let test = args.first()?.value.clone();
+    let message = args
+        .get(1)
+        .map(|arg| arg.value.clone())
+        .unwrap_or_else(|| Expression::string("Assertion failed"));
+    let message = pascal_call("__pascal_assert_message", vec![message]);
+    let handler_call = Statement::new(StmtKind::Expr(pascal_call(
+        "AssertErrorProc",
+        vec![
+            message.clone(),
+            Expression::string(""),
+            Expression::int(0),
+            Expression::null(),
+        ],
+    )));
+    let raise_expr = Expression::new(ExprKind::New {
+        class: Box::new(Expression::ident("EAssertionFailed")),
+        args: vec![Argument::positional(message), Argument::positional(Expression::int(0))],
+    });
+    let throw_assertion = Statement::new(StmtKind::Throw {
+        expr: Some(raise_expr),
+        cause: None,
+    });
+    let handler_cond = pascal_call("Assigned", vec![Expression::ident("AssertErrorProc")]);
+    let failure_body = vec![Statement::new(StmtKind::If {
+        cond: handler_cond,
+        then_body: vec![handler_call],
+        elifs: Vec::new(),
+        else_body: Some(vec![throw_assertion]),
+    })];
+    Some(StmtKind::If {
+        cond: Expression::new(ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(test),
+        }),
+        then_body: failure_body,
+        elifs: Vec::new(),
+        else_body: None,
+    })
+}
+
+fn rewrite_pascal_currency_round_body(
+    body: &mut [Statement],
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        rewrite_pascal_currency_round_stmt(stmt, env);
+    }
+}
+
+fn rewrite_pascal_currency_round_stmt(
+    stmt: &mut Statement,
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let BindingPattern::Ident(name) = &decl.pattern {
+                    if let Some(type_hint) = &decl.type_hint {
+                        env.insert(name.to_lowercase(), bare_type_name(type_hint).to_lowercase());
+                    }
+                }
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_currency_round_expr(init, env);
+                }
+            }
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_currency_round_expr(expr, env);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_currency_round_expr(target, env);
+            }
+            rewrite_pascal_currency_round_expr(value, env);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_currency_round_expr(target, env);
+            rewrite_pascal_currency_round_expr(value, env);
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = env.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            rewrite_pascal_currency_round_body(body, &mut scoped);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_currency_round_member(member, &mut env.clone());
+            }
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_pascal_currency_round_body(body, &mut env.clone());
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_currency_round_expr(cond, env);
+            rewrite_pascal_currency_round_body(then_body, &mut env.clone());
+            for (cond, body) in elifs {
+                rewrite_pascal_currency_round_expr(cond, env);
+                rewrite_pascal_currency_round_body(body, &mut env.clone());
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_currency_round_body(body, &mut env.clone());
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_currency_round_expr(cond, env);
+            rewrite_pascal_currency_round_body(body, &mut env.clone());
+            if let Some(body) = else_body {
+                rewrite_pascal_currency_round_body(body, &mut env.clone());
+            }
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            rewrite_pascal_currency_round_body(body, &mut env.clone());
+            rewrite_pascal_currency_round_expr(cond, env);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped = env.clone();
+            if let Some(init) = init {
+                rewrite_pascal_currency_round_stmt(init, &mut scoped);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_currency_round_expr(cond, &scoped);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_currency_round_expr(update, &scoped);
+            }
+            rewrite_pascal_currency_round_body(body, &mut scoped);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            rewrite_pascal_currency_round_body(body, &mut env.clone());
+            for catch in catches {
+                rewrite_pascal_currency_round_body(&mut catch.body, &mut env.clone());
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_currency_round_body(body, &mut env.clone());
+            }
+            if let Some(body) = finally {
+                rewrite_pascal_currency_round_body(body, &mut env.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_currency_round_member(
+    member: &mut ClassMember,
+    env: &mut std::collections::HashMap<String, String>,
+) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_currency_round_stmt(stmt, env);
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            let mut scoped = env.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(
+                        param.name.to_lowercase(),
+                        bare_type_name(type_hint).to_lowercase(),
+                    );
+                }
+            }
+            rewrite_pascal_currency_round_body(body, &mut scoped);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                rewrite_pascal_currency_round_body(getter, &mut env.clone());
+            }
+            if let Some(setter) = setter {
+                rewrite_pascal_currency_round_body(&mut setter.body, &mut env.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_currency_round_expr(
+    expr: &mut Expression,
+    env: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_pascal_currency_round_expr(&mut arg.value, env);
+            }
+            if args.len() == 1
+                && matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Round"))
+                && pascal_expr_contains_currency_value(&args[0].value, env)
+            {
+                *callee = Box::new(Expression::ident("__pascal_currency_round"));
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_currency_round_expr(left, env);
+            rewrite_pascal_currency_round_expr(right, env);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Cast { expr, .. } => rewrite_pascal_currency_round_expr(expr, env),
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_currency_round_expr(cond, env);
+            rewrite_pascal_currency_round_expr(then, env);
+            rewrite_pascal_currency_round_expr(else_, env);
+        }
+        ExprKind::Member { object, .. } => rewrite_pascal_currency_round_expr(object, env),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_currency_round_expr(object, env);
+            rewrite_pascal_currency_round_expr(index, env);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_currency_round_expr(class, env);
+            for arg in args {
+                rewrite_pascal_currency_round_expr(&mut arg.value, env);
+            }
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_pascal_currency_round_expr(key, env);
+                }
+                rewrite_pascal_currency_round_expr(&mut element.value, env);
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_pascal_currency_round_expr(item, env);
+            }
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_pascal_currency_round_expr(left, env);
+            rewrite_pascal_currency_round_expr(right, env);
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_pascal_currency_round_expr(start, env);
+            rewrite_pascal_currency_round_expr(end, env);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_pascal_currency_round_expr(target, env);
+            rewrite_pascal_currency_round_expr(value, env);
+        }
+        _ => {}
+    }
+}
+
+fn pascal_expr_contains_currency_value(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => env
+            .get(&name.to_lowercase())
+            .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("Currency")),
+        ExprKind::Binary { left, right, .. } => {
+            pascal_expr_contains_currency_value(left, env)
+                || pascal_expr_contains_currency_value(right, env)
+        }
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            pascal_expr_contains_currency_value(expr, env)
+        }
+        ExprKind::Call { args, .. } => args
+            .iter()
+            .any(|arg| pascal_expr_contains_currency_value(&arg.value, env)),
+        ExprKind::Member { object, field, .. } => {
+            let key = match &object.kind {
+                ExprKind::Ident(name) => format!("{}.{}", name.to_lowercase(), field.to_lowercase()),
+                _ => return pascal_expr_contains_currency_value(object, env),
+            };
+            env.get(&key)
+                .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("Currency"))
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            pascal_expr_contains_currency_value(cond, env)
+                || pascal_expr_contains_currency_value(then, env)
+                || pascal_expr_contains_currency_value(else_, env)
+        }
+        _ => false,
+    }
 }
 
 fn synthesize_exception_class() -> Statement {
@@ -16108,6 +23520,39 @@ type
     function Remove(value: Variant): Integer; override;
     destructor Destroy; override;
   end;
+  TPair = record
+    Key: Variant;
+    Value: Variant;
+  end;
+  TDictionary = class
+  protected
+    FKeys: array of Variant;
+    FValues: array of Variant;
+    FComparer: Variant;
+    function FindKey(key: Variant): Integer;
+    function GetCount: Integer;
+    function GetItem(key: Variant): Variant;
+    procedure SetItem(key: Variant; value: Variant);
+    function GetKeys: Variant;
+    function GetValues: Variant;
+  public
+    constructor Create(comparer: Variant = nil);
+    property Count: Integer read GetCount;
+    property Items[key: Variant]: Variant read GetItem write SetItem; default;
+    property Keys: Variant read GetKeys;
+    property Values: Variant read GetValues;
+    procedure Add(key: Variant; value: Variant);
+    procedure AddOrSetValue(key: Variant; value: Variant);
+    function TryGetValue(key: Variant; var value: Variant): Boolean;
+    function ContainsKey(key: Variant): Boolean;
+    function ContainsValue(value: Variant): Boolean;
+    function Remove(key: Variant): Boolean;
+    procedure DeleteKey(key: Variant);
+    procedure Clear;
+    function ExtractPair(key: Variant): TPair;
+    function ToArray: Variant;
+    destructor Destroy; override;
+  end;
   TComparer = class
   public
     class function Construct(c: Variant): Variant;
@@ -16261,6 +23706,105 @@ begin
   Clear;
   inherited Destroy;
 end;
+constructor TDictionary.Create(comparer: Variant = nil);
+begin
+  SetLength(FKeys, 0);
+  SetLength(FValues, 0);
+  FComparer := comparer;
+end;
+function TDictionary.FindKey(key: Variant): Integer;
+var i: Integer;
+begin
+  Result := -1;
+  for i := 0 to High(FKeys) do
+  begin
+    if FComparer <> nil then
+    begin
+      if FComparer.Equals(FKeys[i], key) then begin Result := i; Exit; end;
+    end
+    else if FKeys[i] = key then begin Result := i; Exit; end;
+  end;
+end;
+function TDictionary.GetCount: Integer; begin Result := Length(FKeys); end;
+function TDictionary.GetItem(key: Variant): Variant;
+var idx: Integer;
+begin
+  idx := FindKey(key);
+  if idx >= 0 then Result := FValues[idx];
+end;
+procedure TDictionary.SetItem(key: Variant; value: Variant); begin AddOrSetValue(key, value); end;
+function TDictionary.GetKeys: Variant; begin Result := FKeys; end;
+function TDictionary.GetValues: Variant; begin Result := FValues; end;
+procedure TDictionary.Add(key: Variant; value: Variant);
+var n: Integer;
+begin
+  n := Length(FKeys);
+  SetLength(FKeys, n + 1);
+  SetLength(FValues, n + 1);
+  FKeys[n] := key;
+  FValues[n] := value;
+end;
+procedure TDictionary.AddOrSetValue(key: Variant; value: Variant);
+var idx: Integer;
+begin
+  idx := FindKey(key);
+  if idx >= 0 then FValues[idx] := value else Add(key, value);
+end;
+function TDictionary.TryGetValue(key: Variant; var value: Variant): Boolean;
+var idx: Integer;
+begin
+  idx := FindKey(key);
+  Result := idx >= 0;
+  if Result then value := FValues[idx];
+end;
+function TDictionary.ContainsKey(key: Variant): Boolean; begin Result := FindKey(key) >= 0; end;
+function TDictionary.ContainsValue(value: Variant): Boolean;
+var i: Integer;
+begin
+  Result := False;
+  for i := 0 to High(FValues) do if FValues[i] = value then begin Result := True; Exit; end;
+end;
+function TDictionary.Remove(key: Variant): Boolean;
+begin
+  Result := FindKey(key) >= 0;
+  DeleteKey(key);
+end;
+procedure TDictionary.DeleteKey(key: Variant);
+var idx, i, n: Integer;
+begin
+  idx := FindKey(key);
+  if idx >= 0 then
+  begin
+    n := Length(FKeys);
+    for i := idx to n - 2 do begin FKeys[i] := FKeys[i + 1]; FValues[i] := FValues[i + 1]; end;
+    SetLength(FKeys, n - 1);
+    SetLength(FValues, n - 1);
+  end;
+end;
+procedure TDictionary.Clear;
+begin
+  SetLength(FKeys, 0);
+  SetLength(FValues, 0);
+end;
+function TDictionary.ExtractPair(key: Variant): TPair;
+begin
+  Result.Key := key;
+  Result.Value := GetItem(key);
+  Remove(key);
+end;
+function TDictionary.ToArray: Variant;
+var i: Integer; pair: TPair;
+begin
+  SetLength(Result, 0);
+  for i := 0 to High(FKeys) do
+  begin
+    pair.Key := FKeys[i];
+    pair.Value := FValues[i];
+    SetLength(Result, Length(Result) + 1);
+    Result[High(Result)] := pair;
+  end;
+end;
+destructor TDictionary.Destroy; begin Clear; end;
 class function TComparer.Construct(c: Variant): Variant; begin Result := c; end;
 class function TComparer.Default: Variant; begin Result := nil; end;
 class function TEqualityComparer.Construct(c: Variant): Variant; begin Result := c; end;
@@ -16823,6 +24367,452 @@ fn lower_pascal_array_pointer_math(body: &mut [Statement]) {
     lower_pascal_array_pointer_math_body(body, &mut pointer_vars, &mut array_pointer_vars);
 }
 
+fn rewrite_pascal_heap_allocation(
+    body: &mut [Statement],
+    struct_names: &std::collections::HashSet<String>,
+) {
+    let mut var_types = std::collections::HashMap::new();
+    rewrite_pascal_heap_allocation_body(body, struct_names, &mut var_types);
+}
+
+fn rewrite_pascal_heap_allocation_body(
+    body: &mut [Statement],
+    struct_names: &std::collections::HashSet<String>,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        rewrite_pascal_heap_allocation_stmt(stmt, struct_names, var_types);
+    }
+}
+
+fn rewrite_pascal_heap_allocation_stmt(
+    stmt: &mut Statement,
+    struct_names: &std::collections::HashSet<String>,
+    var_types: &mut std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let BindingPattern::Ident(name) = &decl.pattern {
+                    if let Some(type_hint) = &decl.type_hint {
+                        var_types.insert(name.to_lowercase(), type_hint.clone());
+                    }
+                }
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_heap_allocation_expr(init, struct_names, var_types);
+                }
+            }
+        }
+        StmtKind::Expr(expr) => {
+            if let Some(replacement) =
+                pascal_heap_allocation_call_stmt(expr, struct_names, var_types)
+            {
+                *stmt = replacement;
+            } else {
+                rewrite_pascal_heap_allocation_expr(expr, struct_names, var_types);
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_heap_allocation_expr(target, struct_names, var_types);
+            }
+            rewrite_pascal_heap_allocation_expr(value, struct_names, var_types);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            rewrite_pascal_heap_allocation_expr(target, struct_names, var_types);
+            rewrite_pascal_heap_allocation_expr(value, struct_names, var_types);
+        }
+        StmtKind::Return(Some(expr))
+        | StmtKind::Throw {
+            expr: Some(expr), ..
+        } => {
+            rewrite_pascal_heap_allocation_expr(expr, struct_names, var_types);
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            let mut scoped = var_types.clone();
+            rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = var_types.clone();
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    scoped.insert(param.name.to_lowercase(), type_hint.clone());
+                }
+            }
+            rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_heap_allocation_expr(cond, struct_names, var_types);
+            let mut scoped = var_types.clone();
+            rewrite_pascal_heap_allocation_body(then_body, struct_names, &mut scoped);
+            for (cond, body) in elifs {
+                rewrite_pascal_heap_allocation_expr(cond, struct_names, var_types);
+                let mut scoped = var_types.clone();
+                rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+            }
+            if let Some(body) = else_body {
+                let mut scoped = var_types.clone();
+                rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_heap_allocation_expr(cond, struct_names, var_types);
+            let mut scoped = var_types.clone();
+            rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+            if let Some(body) = else_body {
+                let mut scoped = var_types.clone();
+                rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut scoped = var_types.clone();
+            if let Some(init) = init {
+                rewrite_pascal_heap_allocation_stmt(init, struct_names, &mut scoped);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_heap_allocation_expr(cond, struct_names, &scoped);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_heap_allocation_expr(update, struct_names, &scoped);
+            }
+            rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+        }
+        StmtKind::DoWhile { body, cond, .. } => {
+            let mut scoped = var_types.clone();
+            rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+            rewrite_pascal_heap_allocation_expr(cond, struct_names, &scoped);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            rewrite_pascal_heap_allocation_expr(iter, struct_names, var_types);
+            let mut scoped = var_types.clone();
+            rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            rewrite_pascal_heap_allocation_expr(expr, struct_names, var_types);
+            for case in cases {
+                for condition in &mut case.conditions {
+                    match condition {
+                        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
+                            rewrite_pascal_heap_allocation_expr(expr, struct_names, var_types);
+                        }
+                        CaseCondition::Range { from, to } => {
+                            rewrite_pascal_heap_allocation_expr(from, struct_names, var_types);
+                            rewrite_pascal_heap_allocation_expr(to, struct_names, var_types);
+                        }
+                    }
+                }
+                let mut scoped = var_types.clone();
+                rewrite_pascal_heap_allocation_body(&mut case.body, struct_names, &mut scoped);
+            }
+            if let Some(body) = default {
+                let mut scoped = var_types.clone();
+                rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            let mut scoped = var_types.clone();
+            rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+            for catch in catches {
+                if let Some(when) = &mut catch.when_clause {
+                    rewrite_pascal_heap_allocation_expr(when, struct_names, var_types);
+                }
+                let mut scoped = var_types.clone();
+                rewrite_pascal_heap_allocation_body(&mut catch.body, struct_names, &mut scoped);
+            }
+            if let Some(body) = else_body {
+                let mut scoped = var_types.clone();
+                rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+            }
+            if let Some(body) = finally {
+                let mut scoped = var_types.clone();
+                rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+            }
+        }
+        StmtKind::With { items, body, .. } => {
+            for item in items {
+                rewrite_pascal_heap_allocation_expr(&mut item.expr, struct_names, var_types);
+            }
+            let mut scoped = var_types.clone();
+            rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+        }
+        StmtKind::Using { resource, body, .. } => {
+            rewrite_pascal_heap_allocation_expr(resource, struct_names, var_types);
+            let mut scoped = var_types.clone();
+            rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+        }
+        StmtKind::Lock { expr, body } => {
+            rewrite_pascal_heap_allocation_expr(expr, struct_names, var_types);
+            let mut scoped = var_types.clone();
+            rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                rewrite_pascal_heap_allocation_member(member, struct_names);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_heap_allocation_member(
+    member: &mut ClassMember,
+    struct_names: &std::collections::HashSet<String>,
+) {
+    let mut var_types = std::collections::HashMap::new();
+    match member {
+        ClassMember::Field {
+            name,
+            type_hint,
+            init,
+            ..
+        } => {
+            if let Some(type_hint) = type_hint {
+                var_types.insert(name.to_lowercase(), type_hint.clone());
+            }
+            if let Some(init) = init {
+                rewrite_pascal_heap_allocation_expr(init, struct_names, &var_types);
+            }
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_heap_allocation_stmt(stmt, struct_names, &mut var_types);
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    var_types.insert(param.name.to_lowercase(), type_hint.clone());
+                }
+            }
+            rewrite_pascal_heap_allocation_body(body, struct_names, &mut var_types);
+        }
+        ClassMember::Property {
+            getter,
+            setter,
+            type_hint,
+            ..
+        } => {
+            if let Some(type_hint) = type_hint {
+                var_types.insert("value".to_string(), type_hint.clone());
+            }
+            if let Some(getter) = getter {
+                rewrite_pascal_heap_allocation_body(getter, struct_names, &mut var_types.clone());
+            }
+            if let Some(setter) = setter {
+                let mut scoped = var_types.clone();
+                if let Some(type_hint) = &setter.param.type_hint {
+                    scoped.insert(setter.param.name.to_lowercase(), type_hint.clone());
+                }
+                rewrite_pascal_heap_allocation_body(&mut setter.body, struct_names, &mut scoped);
+            }
+        }
+        ClassMember::Const { value, .. } => {
+            rewrite_pascal_heap_allocation_expr(value, struct_names, &var_types);
+        }
+        _ => {}
+    }
+}
+
+fn pascal_heap_allocation_call_stmt(
+    expr: &Expression,
+    struct_names: &std::collections::HashSet<String>,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Option<Statement> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    let target = args
+        .first()
+        .map(|arg| pascal_heap_target_expr(&arg.value))?;
+    if name.eq_ignore_ascii_case("new") || name.eq_ignore_ascii_case("getmem") {
+        let default_value = pascal_heap_default_for_target(&target, struct_names, var_types);
+        return Some(Statement::new(StmtKind::Assign {
+            targets: vec![target],
+            value: common_memory::heap_cell(default_value),
+        }));
+    }
+    if name.eq_ignore_ascii_case("dispose") || name.eq_ignore_ascii_case("freemem") {
+        return Some(Statement::new(StmtKind::Assign {
+            targets: vec![target],
+            value: common_memory::free_value(),
+        }));
+    }
+    None
+}
+
+fn pascal_heap_target_expr(expr: &Expression) -> Expression {
+    match &expr.kind {
+        ExprKind::Cast { expr, .. } => pascal_heap_target_expr(expr),
+        _ => expr.clone(),
+    }
+}
+
+fn pascal_heap_default_for_target(
+    target: &Expression,
+    struct_names: &std::collections::HashSet<String>,
+    var_types: &std::collections::HashMap<String, String>,
+) -> Expression {
+    let type_hint = match &target.kind {
+        ExprKind::Ident(name) => var_types.get(&name.to_lowercase()),
+        _ => None,
+    };
+    type_hint
+        .and_then(|hint| pascal_pointer_pointee_type(hint))
+        .and_then(|hint| pascal_default_expr_for_type(&hint, struct_names))
+        .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)))
+}
+
+fn pascal_pointer_pointee_type(type_hint: &str) -> Option<String> {
+    let trimmed = type_hint.trim();
+    if let Some(rest) = trimmed.strip_prefix('^') {
+        return Some(rest.trim().to_string());
+    }
+    match bare_type_name(trimmed).to_ascii_lowercase().as_str() {
+        "pboolean" | "pbool" => Some("Boolean".to_string()),
+        "pchar" => Some("Char".to_string()),
+        "pstring" | "pansistring" => Some("String".to_string()),
+        "pinteger" | "pint" | "plongint" => Some("Integer".to_string()),
+        "psmallint" => Some("SmallInt".to_string()),
+        "pshortint" => Some("ShortInt".to_string()),
+        "pbyte" => Some("Byte".to_string()),
+        "pword" => Some("Word".to_string()),
+        "pcardinal" => Some("Cardinal".to_string()),
+        "pint64" => Some("Int64".to_string()),
+        "pdouble" | "preal" | "psingle" | "pextended" => Some("Double".to_string()),
+        _ => None,
+    }
+}
+
+fn rewrite_pascal_heap_allocation_expr(
+    expr: &mut Expression,
+    struct_names: &std::collections::HashSet<String>,
+    var_types: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_pascal_heap_allocation_expr(callee, struct_names, var_types);
+            for arg in args {
+                rewrite_pascal_heap_allocation_expr(&mut arg.value, struct_names, var_types);
+            }
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_heap_allocation_expr(object, struct_names, var_types);
+            rewrite_pascal_heap_allocation_expr(index, struct_names, var_types);
+        }
+        ExprKind::Member { object, .. } => {
+            rewrite_pascal_heap_allocation_expr(object, struct_names, var_types);
+        }
+        ExprKind::RefLoad(inner) => {
+            rewrite_pascal_heap_allocation_expr(inner, struct_names, var_types);
+            if let Some(unwrapped) = pascal_typed_pointer_cast_arg(inner) {
+                **inner = unwrapped;
+            }
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::YieldFrom(expr) => {
+            rewrite_pascal_heap_allocation_expr(expr, struct_names, var_types);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_heap_allocation_expr(left, struct_names, var_types);
+            rewrite_pascal_heap_allocation_expr(right, struct_names, var_types);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_heap_allocation_expr(cond, struct_names, var_types);
+            rewrite_pascal_heap_allocation_expr(then, struct_names, var_types);
+            rewrite_pascal_heap_allocation_expr(else_, struct_names, var_types);
+        }
+        ExprKind::Array(elements) => {
+            for element in elements {
+                if let Some(key) = &mut element.key {
+                    rewrite_pascal_heap_allocation_expr(key, struct_names, var_types);
+                }
+                rewrite_pascal_heap_allocation_expr(&mut element.value, struct_names, var_types);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        rewrite_pascal_heap_allocation_expr(key, struct_names, var_types);
+                        rewrite_pascal_heap_allocation_expr(value, struct_names, var_types);
+                    }
+                    ObjectProperty::Spread(value) => {
+                        rewrite_pascal_heap_allocation_expr(value, struct_names, var_types);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                rewrite_pascal_heap_allocation_expr(item, struct_names, var_types);
+            }
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_pascal_heap_allocation_expr(start, struct_names, var_types);
+            rewrite_pascal_heap_allocation_expr(end, struct_names, var_types);
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            rewrite_pascal_heap_allocation_expr(target, struct_names, var_types);
+            rewrite_pascal_heap_allocation_expr(value, struct_names, var_types);
+        }
+        ExprKind::New { class, args } => {
+            rewrite_pascal_heap_allocation_expr(class, struct_names, var_types);
+            for arg in args {
+                rewrite_pascal_heap_allocation_expr(&mut arg.value, struct_names, var_types);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pascal_typed_pointer_cast_arg(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    if args.len() == 1 && is_pascal_pointer_type_hint(name) {
+        return Some(args[0].value.clone());
+    }
+    None
+}
+
 fn lower_pascal_array_pointer_math_body(
     body: &mut [Statement],
     pointer_vars: &mut std::collections::HashSet<String>,
@@ -16847,7 +24837,17 @@ fn lower_pascal_array_pointer_math_stmt(
                         .as_deref()
                         .is_some_and(is_pascal_pointer_type_hint)
                     {
-                        pointer_vars.insert(name.to_lowercase());
+                        let key = name.to_lowercase();
+                        pointer_vars.insert(key.clone());
+                        if let Some(init) = &mut decl.init {
+                            if let Some(ptr) = pascal_array_pointer_from_addr(init) {
+                                *init = ptr;
+                                array_pointer_vars.insert(key);
+                            } else if is_pascal_common_array_pointer_expr(init, array_pointer_vars)
+                            {
+                                array_pointer_vars.insert(key);
+                            }
+                        }
                     }
                 }
                 if let Some(init) = &mut decl.init {
@@ -16856,17 +24856,28 @@ fn lower_pascal_array_pointer_math_stmt(
             }
         }
         StmtKind::Assign { targets, value } if targets.len() == 1 => {
+            let plain_pointer_target = match &targets[0].kind {
+                ExprKind::Ident(name) => {
+                    let key = name.to_lowercase();
+                    pointer_vars.contains(&key).then_some(key)
+                }
+                _ => None,
+            };
             lower_pascal_array_pointer_math_expr(value, array_pointer_vars);
-            lower_pascal_array_pointer_math_expr(&mut targets[0], array_pointer_vars);
-            if let ExprKind::Ident(name) = &targets[0].kind {
-                let key = name.to_lowercase();
-                if pointer_vars.contains(&key) {
-                    if let Some(ptr) = pascal_array_pointer_from_addr(value) {
-                        *value = ptr;
-                        array_pointer_vars.insert(key);
-                    } else {
-                        array_pointer_vars.remove(&key);
-                    }
+            if plain_pointer_target.is_none() {
+                lower_pascal_array_pointer_math_expr(&mut targets[0], array_pointer_vars);
+            }
+            if let Some(key) = plain_pointer_target {
+                if let Some(ptr) = pascal_array_pointer_from_addr(value) {
+                    *value = ptr;
+                    array_pointer_vars.insert(key);
+                } else if is_pascal_common_array_pointer_expr(value, array_pointer_vars) {
+                    array_pointer_vars.insert(key);
+                } else if let Some(ptr) = pascal_scalar_pointer_self_step(&key, value) {
+                    *value = ptr;
+                    array_pointer_vars.remove(&key);
+                } else {
+                    array_pointer_vars.remove(&key);
                 }
             }
         }
@@ -16892,7 +24903,11 @@ fn lower_pascal_array_pointer_math_stmt(
                     .as_deref()
                     .is_some_and(is_pascal_pointer_type_hint)
                 {
-                    scoped_pointer_vars.insert(param.name.to_lowercase());
+                    let key = param.name.to_lowercase();
+                    scoped_pointer_vars.insert(key.clone());
+                    if matches!(param.pass_by, PassBy::Ref | PassBy::Out) {
+                        scoped_array_pointer_vars.insert(key);
+                    }
                 }
             }
             lower_pascal_array_pointer_math_body(
@@ -17055,26 +25070,14 @@ fn lower_pascal_array_pointer_math_expr(
             lower_pascal_array_pointer_math_expr(index, array_pointer_vars);
             if matches!(&object.kind, ExprKind::Ident(name) if array_pointer_vars.contains(&name.to_lowercase()))
             {
-                let ptr = (**object).clone();
-                *expr = pascal_index_expr(
-                    pascal_member_expr(ptr.clone(), "__pascal_array_ptr"),
-                    bin_expr(
-                        BinOp::Add,
-                        pascal_member_expr(ptr, "__pascal_array_ptr_offset"),
-                        (**index).clone(),
-                    ),
-                );
+                *expr = common_pointers::carray_indexed_read((**object).clone(), (**index).clone());
             }
         }
         ExprKind::RefLoad(inner) => {
             lower_pascal_array_pointer_math_expr(inner, array_pointer_vars);
             if matches!(&inner.kind, ExprKind::Ident(name) if array_pointer_vars.contains(&name.to_lowercase()))
             {
-                let ptr = (**inner).clone();
-                *expr = pascal_index_expr(
-                    pascal_member_expr(ptr.clone(), "__pascal_array_ptr"),
-                    pascal_member_expr(ptr, "__pascal_array_ptr_offset"),
-                );
+                *expr = common_pointers::carray_deref_read((**inner).clone());
             }
         }
         ExprKind::Call { callee, args, .. } => {
@@ -17086,9 +25089,26 @@ fn lower_pascal_array_pointer_math_expr(
         ExprKind::Unary { expr, .. } => {
             lower_pascal_array_pointer_math_expr(expr, array_pointer_vars)
         }
-        ExprKind::Binary { left, right, .. } => {
+        ExprKind::Binary { op, left, right } => {
             lower_pascal_array_pointer_math_expr(left, array_pointer_vars);
             lower_pascal_array_pointer_math_expr(right, array_pointer_vars);
+            let left_is_ptr = matches!(&left.kind, ExprKind::Ident(name) if array_pointer_vars.contains(&name.to_lowercase()));
+            let right_is_ptr = matches!(&right.kind, ExprKind::Ident(name) if array_pointer_vars.contains(&name.to_lowercase()));
+            match (*op, left_is_ptr, right_is_ptr) {
+                (BinOp::Add, true, _) => {
+                    *expr = common_pointers::carray_advance((**left).clone(), (**right).clone());
+                }
+                (BinOp::Add, _, true) => {
+                    *expr = common_pointers::carray_advance((**right).clone(), (**left).clone());
+                }
+                (BinOp::Sub, true, true) => {
+                    *expr = common_pointers::carray_diff((**left).clone(), (**right).clone());
+                }
+                (BinOp::Sub, true, false) => {
+                    *expr = common_pointers::carray_retreat((**left).clone(), (**right).clone());
+                }
+                _ => {}
+            }
         }
         ExprKind::Member { object, .. } => {
             lower_pascal_array_pointer_math_expr(object, array_pointer_vars);
@@ -17159,13 +25179,52 @@ fn pascal_array_pointer_from_addr(expr: &Expression) -> Option<Expression> {
     let ExprKind::Index { object, index, .. } = &expr.kind else {
         return None;
     };
-    Some(Expression::new(ExprKind::Object(vec![
-        pascal_obj_prop("__pascal_array_ptr", (**object).clone()),
-        pascal_obj_prop("__pascal_array_ptr_offset", (**index).clone()),
-    ])))
+    Some(common_pointers::make_carray_ptr(
+        (**object).clone(),
+        (**index).clone(),
+    ))
+}
+
+fn is_pascal_common_array_pointer_expr(
+    expr: &Expression,
+    array_pointer_vars: &std::collections::HashSet<String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => array_pointer_vars.contains(&name.to_lowercase()),
+        ExprKind::Object(props) => props.iter().any(|prop| {
+            matches!(
+                prop,
+                ObjectProperty::KeyValue { key, value }
+                    if matches!(&key.kind, ExprKind::Lit(Literal::Str(k)) if k == common_pointers::REF_KIND_KEY)
+                        && matches!(&value.kind, ExprKind::Lit(Literal::Str(v)) if v == common_pointers::CARRAY_KIND)
+            )
+        }),
+        _ => false,
+    }
+}
+
+fn pascal_scalar_pointer_self_step(target_key: &str, expr: &Expression) -> Option<Expression> {
+    let ExprKind::Binary { op, left, right } = &expr.kind else {
+        return None;
+    };
+    if !matches!(op, BinOp::Add | BinOp::Sub) {
+        return None;
+    }
+    if !matches!(&left.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case(target_key)) {
+        return None;
+    }
+    if matches!(right.kind, ExprKind::Lit(Literal::Int(_))) {
+        Some((**left).clone())
+    } else {
+        None
+    }
 }
 
 fn is_pascal_pointer_type_hint(type_hint: &str) -> bool {
+    let raw = type_hint.trim();
+    if raw.starts_with('^') {
+        return true;
+    }
     let bare = bare_type_name(type_hint).to_ascii_lowercase();
     bare == "pointer" || bare.starts_with('p')
 }
@@ -17282,6 +25341,109 @@ struct PascalGenericSpecialization {
     class_name: String,
     method_name: String,
     type_args: Vec<String>,
+}
+
+fn collect_pascal_generic_type_names(source: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let chars: Vec<char> = source.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if !is_pascal_ident_start(chars[i]) {
+            i += 1;
+            continue;
+        }
+        let name_start = i;
+        i += 1;
+        while i < chars.len() && is_pascal_ident_continue(chars[i]) {
+            i += 1;
+        }
+        let name: String = chars[name_start..i].iter().collect();
+        let generic_start = skip_pascal_ws(&chars, i);
+        if generic_start >= chars.len() || chars[generic_start] != '<' {
+            continue;
+        }
+        let Some((type_args, after_generic)) = parse_pascal_type_args(&chars, generic_start) else {
+            continue;
+        };
+        if type_args.is_empty() {
+            continue;
+        }
+        let equals = skip_pascal_ws(&chars, after_generic);
+        if equals >= chars.len() || chars[equals] != '=' {
+            continue;
+        }
+        let kind_start = skip_pascal_ws(&chars, equals + 1);
+        if kind_start >= chars.len() || !is_pascal_ident_start(chars[kind_start]) {
+            continue;
+        }
+        let mut kind_end = kind_start + 1;
+        while kind_end < chars.len() && is_pascal_ident_continue(chars[kind_end]) {
+            kind_end += 1;
+        }
+        let kind: String = chars[kind_start..kind_end].iter().collect();
+        if matches!(
+            kind.to_ascii_lowercase().as_str(),
+            "class" | "record" | "interface"
+        ) {
+            out.insert(name.to_lowercase());
+        }
+        i = kind_end;
+    }
+    out
+}
+
+fn collect_pascal_generic_routine_names(source: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let chars: Vec<char> = source.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if !is_pascal_ident_start(chars[i]) {
+            i += 1;
+            continue;
+        }
+        let keyword_start = i;
+        i += 1;
+        while i < chars.len() && is_pascal_ident_continue(chars[i]) {
+            i += 1;
+        }
+        let keyword: String = chars[keyword_start..i].iter().collect();
+        if !matches!(
+            keyword.to_ascii_lowercase().as_str(),
+            "function" | "procedure"
+        ) {
+            continue;
+        }
+        let name_start = skip_pascal_ws(&chars, i);
+        if name_start >= chars.len() || !is_pascal_ident_start(chars[name_start]) {
+            continue;
+        }
+        let mut name_end = name_start + 1;
+        while name_end < chars.len() && is_pascal_ident_continue(chars[name_end]) {
+            name_end += 1;
+        }
+        let name: String = chars[name_start..name_end].iter().collect();
+        let generic_start = skip_pascal_ws(&chars, name_end);
+        if generic_start >= chars.len() || chars[generic_start] != '<' {
+            i = name_end;
+            continue;
+        }
+        let Some((type_args, after_generic)) = parse_pascal_type_args(&chars, generic_start) else {
+            i = name_end;
+            continue;
+        };
+        if type_args.is_empty() {
+            i = after_generic;
+            continue;
+        }
+        let after = skip_pascal_ws(&chars, after_generic);
+        if after < chars.len() && chars[after] == '.' {
+            i = after + 1;
+            continue;
+        }
+        out.insert(name.to_lowercase());
+        i = after_generic;
+    }
+    out
 }
 
 fn collect_pascal_generic_specializations(source: &str) -> Vec<PascalGenericSpecialization> {
@@ -17424,6 +25586,12 @@ fn specialize_pascal_generic_class_methods(
         if matching.is_empty() {
             continue;
         }
+        let class_type_map = pascal_generic_type_map_for_members(members, &matching[0].type_args);
+        if !class_type_map.is_empty() {
+            for member in members.iter_mut() {
+                rewrite_pascal_generic_types_member(member, &class_type_map);
+            }
+        }
         for member in members {
             let ClassMember::Method(method) = member else {
                 continue;
@@ -17463,6 +25631,22 @@ fn specialize_pascal_generic_class_methods(
     }
 }
 
+fn pascal_generic_type_map_for_members(
+    members: &[ClassMember],
+    type_args: &[String],
+) -> std::collections::HashMap<String, String> {
+    let mut names = Vec::new();
+    for member in members {
+        collect_pascal_generic_names_member(member, &mut names);
+    }
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .zip(type_args.iter().cloned())
+        .collect::<std::collections::HashMap<_, _>>()
+}
+
 fn pascal_generic_type_map(
     params: &[Param],
     return_type: &Option<String>,
@@ -17489,6 +25673,66 @@ fn pascal_generic_type_map(
         .collect::<std::collections::HashMap<_, _>>()
 }
 
+fn collect_pascal_generic_names_member(member: &ClassMember, out: &mut Vec<String>) {
+    match member {
+        ClassMember::Field {
+            type_hint, init, ..
+        } => {
+            if let Some(type_hint) = type_hint {
+                collect_pascal_generic_names_from_type(type_hint, out);
+            }
+            if let Some(init) = init {
+                collect_pascal_generic_names_expr(init, out);
+            }
+        }
+        ClassMember::Const {
+            type_hint, value, ..
+        } => {
+            if let Some(type_hint) = type_hint {
+                collect_pascal_generic_names_from_type(type_hint, out);
+            }
+            collect_pascal_generic_names_expr(value, out);
+        }
+        ClassMember::Property {
+            type_hint,
+            getter,
+            setter,
+            ..
+        } => {
+            if let Some(type_hint) = type_hint {
+                collect_pascal_generic_names_from_type(type_hint, out);
+            }
+            if let Some(getter) = getter {
+                for stmt in getter {
+                    collect_pascal_generic_names_stmt(stmt, out);
+                }
+            }
+            if let Some(setter) = setter {
+                if let Some(type_hint) = &setter.param.type_hint {
+                    collect_pascal_generic_names_from_type(type_hint, out);
+                }
+                for stmt in &setter.body {
+                    collect_pascal_generic_names_stmt(stmt, out);
+                }
+            }
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            for param in params {
+                if let Some(type_hint) = &param.type_hint {
+                    collect_pascal_generic_names_from_type(type_hint, out);
+                }
+            }
+            for stmt in body {
+                collect_pascal_generic_names_stmt(stmt, out);
+            }
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            collect_pascal_generic_names_stmt(stmt, out);
+        }
+        _ => {}
+    }
+}
+
 fn collect_pascal_generic_names_from_type(type_hint: &str, out: &mut Vec<String>) {
     let bare = bare_type_name(type_hint);
     if is_pascal_generic_placeholder_name(&bare) {
@@ -17507,8 +25751,68 @@ fn collect_pascal_generic_names_from_type(type_hint: &str, out: &mut Vec<String>
 fn is_pascal_generic_placeholder_name(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
-        "t" | "tkey" | "tvalue" | "titem" | "telement" | "tresult"
+        "t" | "k" | "v" | "tkey" | "tvalue" | "titem" | "telement" | "tresult"
     )
+}
+
+fn erase_pascal_generic_inheritance_refs(body: &mut [Statement]) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::ClassDecl {
+                parents,
+                interfaces,
+                members,
+                ..
+            } => {
+                for parent in parents {
+                    *parent = common_generics::erased_type_name(parent);
+                }
+                for interface in interfaces {
+                    *interface = common_generics::erased_type_name(interface);
+                }
+                erase_pascal_generic_inheritance_refs_in_members(members);
+            }
+            StmtKind::StructDecl {
+                interfaces,
+                members,
+                ..
+            } => {
+                for interface in interfaces {
+                    *interface = common_generics::erased_type_name(interface);
+                }
+                erase_pascal_generic_inheritance_refs_in_members(members);
+            }
+            StmtKind::ModuleDecl { members, .. } => {
+                erase_pascal_generic_inheritance_refs_in_members(members);
+            }
+            StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+                erase_pascal_generic_inheritance_refs(body);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn erase_pascal_generic_inheritance_refs_in_members(members: &mut [ClassMember]) {
+    for member in members {
+        match member {
+            ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+                erase_pascal_generic_inheritance_refs(std::slice::from_mut(stmt));
+            }
+            ClassMember::Constructor { body, .. } => {
+                erase_pascal_generic_inheritance_refs(body);
+            }
+            ClassMember::Property { getter, setter, .. } => {
+                if let Some(getter) = getter {
+                    erase_pascal_generic_inheritance_refs(getter);
+                }
+                if let Some(setter) = setter {
+                    erase_pascal_generic_inheritance_refs(&mut setter.body);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn replace_pascal_generic_type_text(
@@ -17733,6 +26037,69 @@ fn rewrite_pascal_generic_types_stmt(
                     rewrite_pascal_generic_types_stmt(stmt, type_map);
                 }
             }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_generic_types_member(
+    member: &mut ClassMember,
+    type_map: &std::collections::HashMap<String, String>,
+) {
+    match member {
+        ClassMember::Field {
+            type_hint, init, ..
+        } => {
+            if let Some(type_hint) = type_hint {
+                *type_hint = replace_pascal_generic_type_text(type_hint, type_map);
+            }
+            if let Some(init) = init {
+                rewrite_pascal_generic_types_expr(init, type_map);
+            }
+        }
+        ClassMember::Const {
+            type_hint, value, ..
+        } => {
+            if let Some(type_hint) = type_hint {
+                *type_hint = replace_pascal_generic_type_text(type_hint, type_map);
+            }
+            rewrite_pascal_generic_types_expr(value, type_map);
+        }
+        ClassMember::Property {
+            type_hint,
+            getter,
+            setter,
+            ..
+        } => {
+            if let Some(type_hint) = type_hint {
+                *type_hint = replace_pascal_generic_type_text(type_hint, type_map);
+            }
+            if let Some(getter) = getter {
+                for stmt in getter {
+                    rewrite_pascal_generic_types_stmt(stmt, type_map);
+                }
+            }
+            if let Some(setter) = setter {
+                if let Some(type_hint) = &mut setter.param.type_hint {
+                    *type_hint = replace_pascal_generic_type_text(type_hint, type_map);
+                }
+                for stmt in &mut setter.body {
+                    rewrite_pascal_generic_types_stmt(stmt, type_map);
+                }
+            }
+        }
+        ClassMember::Constructor { params, body, .. } => {
+            for param in params {
+                if let Some(type_hint) = &mut param.type_hint {
+                    *type_hint = replace_pascal_generic_type_text(type_hint, type_map);
+                }
+            }
+            for stmt in body {
+                rewrite_pascal_generic_types_stmt(stmt, type_map);
+            }
+        }
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            rewrite_pascal_generic_types_stmt(stmt, type_map);
         }
         _ => {}
     }
@@ -18269,6 +26636,8 @@ fn rewrite_pascal_supports_expr(expr: &mut Expression) {
 
 fn collect_pascal_bool_class_methods(
     body: &[Statement],
+    generic_type_names: &std::collections::HashSet<String>,
+    generic_routine_names: &std::collections::HashSet<String>,
 ) -> std::collections::HashSet<(String, String)> {
     let mut out = std::collections::HashSet::new();
     out.insert(("".to_string(), "isequalguid".to_string()));
@@ -18305,6 +26674,9 @@ fn collect_pascal_bool_class_methods(
             name, return_type, ..
         } = &stmt.kind
         {
+            if generic_routine_names.contains(&name.to_lowercase()) {
+                continue;
+            }
             if return_type
                 .as_deref()
                 .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("Boolean"))
@@ -18332,17 +26704,22 @@ fn collect_pascal_bool_class_methods(
             StmtKind::StructDecl { name, members, .. } => (name, members),
             _ => continue,
         };
+        let is_generic_type = generic_type_names.contains(&name.to_lowercase());
         for member in members {
             match member {
                 ClassMember::Method(method) => {
                     let StmtKind::FunctionDecl {
                         name: method_name,
                         return_type,
+                        modifiers,
                         ..
                     } = &method.kind
                     else {
                         continue;
                     };
+                    if is_generic_type && !modifiers.is_static {
+                        continue;
+                    }
                     if return_type
                         .as_deref()
                         .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("Boolean"))
@@ -18360,6 +26737,9 @@ fn collect_pascal_bool_class_methods(
                     type_hint,
                     ..
                 } => {
+                    if is_generic_type {
+                        continue;
+                    }
                     if type_hint
                         .as_deref()
                         .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("Boolean"))
@@ -18641,7 +27021,6 @@ fn rewrite_pascal_writeln_bool_class_calls_expr(
                     if pascal_expr_is_bool_class_call(&arg.value, bool_methods)
                         || pascal_expr_is_bool_operator_call(&arg.value)
                         || pascal_expr_is_typekind_comparison(&arg.value)
-                        || pascal_expr_is_any_comparison(&arg.value)
                         || pascal_expr_is_set_bool_call(&arg.value)
                     {
                         arg.value = pascal_bool_display_expr(arg.value.clone());
@@ -18820,26 +27199,46 @@ fn pascal_bool_display_expr(expr: Expression) -> Expression {
     })
 }
 
+fn pascal_bool_pascal_display_expr(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(expr),
+        then: Box::new(Expression::string("True")),
+        else_: Box::new(Expression::string("False")),
+    })
+}
+
 fn rewrite_pascal_writeln_bool_instance_members_body(
     body: &mut [Statement],
     bool_members: &std::collections::HashSet<(String, String)>,
+    generic_type_names: &std::collections::HashSet<String>,
     env: &mut std::collections::HashMap<String, String>,
 ) {
     for stmt in body {
-        rewrite_pascal_writeln_bool_instance_members_stmt(stmt, bool_members, env);
+        rewrite_pascal_writeln_bool_instance_members_stmt(
+            stmt,
+            bool_members,
+            generic_type_names,
+            env,
+        );
     }
 }
 
 fn rewrite_pascal_writeln_bool_instance_members_stmt(
     stmt: &mut Statement,
     bool_members: &std::collections::HashSet<(String, String)>,
+    generic_type_names: &std::collections::HashSet<String>,
     env: &mut std::collections::HashMap<String, String>,
 ) {
     match &mut stmt.kind {
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations.iter_mut() {
                 if let Some(init) = &mut decl.init {
-                    rewrite_pascal_writeln_bool_instance_members_expr(init, bool_members, env);
+                    rewrite_pascal_writeln_bool_instance_members_expr(
+                        init,
+                        bool_members,
+                        generic_type_names,
+                        env,
+                    );
                 }
                 if let (BindingPattern::Ident(name), Some(type_hint)) =
                     (&decl.pattern, &decl.type_hint)
@@ -18853,16 +27252,41 @@ fn rewrite_pascal_writeln_bool_instance_members_stmt(
         }
         StmtKind::Assign { targets, value } => {
             for target in targets {
-                rewrite_pascal_writeln_bool_instance_members_expr(target, bool_members, env);
+                rewrite_pascal_writeln_bool_instance_members_expr(
+                    target,
+                    bool_members,
+                    generic_type_names,
+                    env,
+                );
             }
-            rewrite_pascal_writeln_bool_instance_members_expr(value, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                value,
+                bool_members,
+                generic_type_names,
+                env,
+            );
         }
         StmtKind::CompoundAssign { target, value, .. } => {
-            rewrite_pascal_writeln_bool_instance_members_expr(target, bool_members, env);
-            rewrite_pascal_writeln_bool_instance_members_expr(value, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                target,
+                bool_members,
+                generic_type_names,
+                env,
+            );
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                value,
+                bool_members,
+                generic_type_names,
+                env,
+            );
         }
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
-            rewrite_pascal_writeln_bool_instance_members_expr(expr, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                expr,
+                bool_members,
+                generic_type_names,
+                env,
+            );
         }
         StmtKind::FunctionDecl { params, body, .. } => {
             let mut scoped = env.clone();
@@ -18874,7 +27298,12 @@ fn rewrite_pascal_writeln_bool_instance_members_stmt(
                     );
                 }
             }
-            rewrite_pascal_writeln_bool_instance_members_body(body, bool_members, &mut scoped);
+            rewrite_pascal_writeln_bool_instance_members_body(
+                body,
+                bool_members,
+                generic_type_names,
+                &mut scoped,
+            );
         }
         StmtKind::ClassDecl { name, members, .. } | StmtKind::StructDecl { name, members, .. } => {
             for member in members {
@@ -18883,13 +27312,19 @@ fn rewrite_pascal_writeln_bool_instance_members_stmt(
                 rewrite_pascal_writeln_bool_instance_members_member(
                     member,
                     bool_members,
+                    generic_type_names,
                     &mut scoped,
                 );
             }
         }
         StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
             let mut scoped = env.clone();
-            rewrite_pascal_writeln_bool_instance_members_body(body, bool_members, &mut scoped);
+            rewrite_pascal_writeln_bool_instance_members_body(
+                body,
+                bool_members,
+                generic_type_names,
+                &mut scoped,
+            );
         }
         StmtKind::If {
             cond,
@@ -18897,17 +27332,29 @@ fn rewrite_pascal_writeln_bool_instance_members_stmt(
             elifs,
             else_body,
         } => {
-            rewrite_pascal_writeln_bool_instance_members_expr(cond, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                cond,
+                bool_members,
+                generic_type_names,
+                env,
+            );
             rewrite_pascal_writeln_bool_instance_members_body(
                 then_body,
                 bool_members,
+                generic_type_names,
                 &mut env.clone(),
             );
             for (cond, body) in elifs {
-                rewrite_pascal_writeln_bool_instance_members_expr(cond, bool_members, env);
+                rewrite_pascal_writeln_bool_instance_members_expr(
+                    cond,
+                    bool_members,
+                    generic_type_names,
+                    env,
+                );
                 rewrite_pascal_writeln_bool_instance_members_body(
                     body,
                     bool_members,
+                    generic_type_names,
                     &mut env.clone(),
                 );
             }
@@ -18915,6 +27362,7 @@ fn rewrite_pascal_writeln_bool_instance_members_stmt(
                 rewrite_pascal_writeln_bool_instance_members_body(
                     body,
                     bool_members,
+                    generic_type_names,
                     &mut env.clone(),
                 );
             }
@@ -18924,12 +27372,23 @@ fn rewrite_pascal_writeln_bool_instance_members_stmt(
             body,
             else_body,
         } => {
-            rewrite_pascal_writeln_bool_instance_members_expr(cond, bool_members, env);
-            rewrite_pascal_writeln_bool_instance_members_body(body, bool_members, &mut env.clone());
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                cond,
+                bool_members,
+                generic_type_names,
+                env,
+            );
+            rewrite_pascal_writeln_bool_instance_members_body(
+                body,
+                bool_members,
+                generic_type_names,
+                &mut env.clone(),
+            );
             if let Some(body) = else_body {
                 rewrite_pascal_writeln_bool_instance_members_body(
                     body,
                     bool_members,
+                    generic_type_names,
                     &mut env.clone(),
                 );
             }
@@ -18942,19 +27401,35 @@ fn rewrite_pascal_writeln_bool_instance_members_stmt(
         } => {
             let mut scoped = env.clone();
             if let Some(init) = init {
-                rewrite_pascal_writeln_bool_instance_members_stmt(init, bool_members, &mut scoped);
+                rewrite_pascal_writeln_bool_instance_members_stmt(
+                    init,
+                    bool_members,
+                    generic_type_names,
+                    &mut scoped,
+                );
             }
             if let Some(cond) = cond {
-                rewrite_pascal_writeln_bool_instance_members_expr(cond, bool_members, &mut scoped);
+                rewrite_pascal_writeln_bool_instance_members_expr(
+                    cond,
+                    bool_members,
+                    generic_type_names,
+                    &mut scoped,
+                );
             }
             if let Some(update) = update {
                 rewrite_pascal_writeln_bool_instance_members_expr(
                     update,
                     bool_members,
+                    generic_type_names,
                     &mut scoped,
                 );
             }
-            rewrite_pascal_writeln_bool_instance_members_body(body, bool_members, &mut scoped);
+            rewrite_pascal_writeln_bool_instance_members_body(
+                body,
+                bool_members,
+                generic_type_names,
+                &mut scoped,
+            );
         }
         _ => {}
     }
@@ -18963,11 +27438,17 @@ fn rewrite_pascal_writeln_bool_instance_members_stmt(
 fn rewrite_pascal_writeln_bool_instance_members_member(
     member: &mut ClassMember,
     bool_members: &std::collections::HashSet<(String, String)>,
+    generic_type_names: &std::collections::HashSet<String>,
     env: &mut std::collections::HashMap<String, String>,
 ) {
     match member {
         ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
-            rewrite_pascal_writeln_bool_instance_members_stmt(stmt, bool_members, env)
+            rewrite_pascal_writeln_bool_instance_members_stmt(
+                stmt,
+                bool_members,
+                generic_type_names,
+                env,
+            )
         }
         ClassMember::Constructor { params, body, .. } => {
             let mut scoped = env.clone();
@@ -18979,13 +27460,19 @@ fn rewrite_pascal_writeln_bool_instance_members_member(
                     );
                 }
             }
-            rewrite_pascal_writeln_bool_instance_members_body(body, bool_members, &mut scoped);
+            rewrite_pascal_writeln_bool_instance_members_body(
+                body,
+                bool_members,
+                generic_type_names,
+                &mut scoped,
+            );
         }
         ClassMember::Property { getter, setter, .. } => {
             if let Some(getter) = getter {
                 rewrite_pascal_writeln_bool_instance_members_body(
                     getter,
                     bool_members,
+                    generic_type_names,
                     &mut env.clone(),
                 );
             }
@@ -18993,6 +27480,7 @@ fn rewrite_pascal_writeln_bool_instance_members_member(
                 rewrite_pascal_writeln_bool_instance_members_body(
                     &mut setter.body,
                     bool_members,
+                    generic_type_names,
                     &mut env.clone(),
                 );
             }
@@ -19004,6 +27492,7 @@ fn rewrite_pascal_writeln_bool_instance_members_member(
 fn rewrite_pascal_writeln_bool_instance_members_expr(
     expr: &mut Expression,
     bool_members: &std::collections::HashSet<(String, String)>,
+    generic_type_names: &std::collections::HashSet<String>,
     env: &std::collections::HashMap<String, String>,
 ) {
     match &mut expr.kind {
@@ -19012,17 +27501,25 @@ fn rewrite_pascal_writeln_bool_instance_members_expr(
                 rewrite_pascal_writeln_bool_instance_members_expr(
                     &mut arg.value,
                     bool_members,
+                    generic_type_names,
                     env,
                 );
             }
             if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("WriteLn"))
             {
                 for arg in args {
-                    if pascal_expr_is_bool_instance_member(&arg.value, bool_members, env)
+                    if pascal_expr_is_datetime_comparison(&arg.value, env) {
+                        arg.value = pascal_bool_pascal_display_expr(arg.value.clone());
+                    } else if pascal_expr_is_bool_instance_member(&arg.value, bool_members, env)
                         || pascal_expr_is_bool_array_index(&arg.value, env)
                         || pascal_expr_is_bool_operator_call(&arg.value)
                         || pascal_expr_is_bool_procedural_call(&arg.value, env)
-                        || pascal_expr_is_any_comparison(&arg.value)
+                        || (pascal_expr_is_any_comparison(&arg.value)
+                            && !pascal_expr_uses_generic_instance_receiver(
+                                &arg.value,
+                                env,
+                                generic_type_names,
+                            ))
                         || pascal_expr_is_set_bool_call(&arg.value)
                     {
                         arg.value = pascal_bool_display_expr(arg.value.clone());
@@ -19030,33 +27527,87 @@ fn rewrite_pascal_writeln_bool_instance_members_expr(
                 }
                 return;
             }
-            rewrite_pascal_writeln_bool_instance_members_expr(callee, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                callee,
+                bool_members,
+                generic_type_names,
+                env,
+            );
         }
         ExprKind::Member { object, .. } => {
-            rewrite_pascal_writeln_bool_instance_members_expr(object, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                object,
+                bool_members,
+                generic_type_names,
+                env,
+            );
         }
         ExprKind::Index { object, index, .. } => {
-            rewrite_pascal_writeln_bool_instance_members_expr(object, bool_members, env);
-            rewrite_pascal_writeln_bool_instance_members_expr(index, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                object,
+                bool_members,
+                generic_type_names,
+                env,
+            );
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                index,
+                bool_members,
+                generic_type_names,
+                env,
+            );
         }
         ExprKind::Binary { left, right, .. } => {
-            rewrite_pascal_writeln_bool_instance_members_expr(left, bool_members, env);
-            rewrite_pascal_writeln_bool_instance_members_expr(right, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                left,
+                bool_members,
+                generic_type_names,
+                env,
+            );
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                right,
+                bool_members,
+                generic_type_names,
+                env,
+            );
         }
-        ExprKind::Unary { expr, .. } => {
-            rewrite_pascal_writeln_bool_instance_members_expr(expr, bool_members, env)
-        }
+        ExprKind::Unary { expr, .. } => rewrite_pascal_writeln_bool_instance_members_expr(
+            expr,
+            bool_members,
+            generic_type_names,
+            env,
+        ),
         ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_pascal_writeln_bool_instance_members_expr(cond, bool_members, env);
-            rewrite_pascal_writeln_bool_instance_members_expr(then, bool_members, env);
-            rewrite_pascal_writeln_bool_instance_members_expr(else_, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                cond,
+                bool_members,
+                generic_type_names,
+                env,
+            );
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                then,
+                bool_members,
+                generic_type_names,
+                env,
+            );
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                else_,
+                bool_members,
+                generic_type_names,
+                env,
+            );
         }
         ExprKind::New { class, args } => {
-            rewrite_pascal_writeln_bool_instance_members_expr(class, bool_members, env);
+            rewrite_pascal_writeln_bool_instance_members_expr(
+                class,
+                bool_members,
+                generic_type_names,
+                env,
+            );
             for arg in args {
                 rewrite_pascal_writeln_bool_instance_members_expr(
                     &mut arg.value,
                     bool_members,
+                    generic_type_names,
                     env,
                 );
             }
@@ -19086,6 +27637,132 @@ fn pascal_expr_is_bool_procedural_call(
     }
     env.get(&bare_type_name(type_hint).to_lowercase())
         .is_some_and(|aliased| is_pascal_bool_procedural_type(aliased))
+}
+
+fn pascal_expr_is_datetime_comparison(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> bool {
+    let ExprKind::Binary { op, left, right } = &expr.kind else {
+        return false;
+    };
+    if !matches!(
+        op,
+        BinOp::Eq
+            | BinOp::NotEq
+            | BinOp::StrictEq
+            | BinOp::StrictNotEq
+            | BinOp::Lt
+            | BinOp::LtEq
+            | BinOp::Gt
+            | BinOp::GtEq
+    ) {
+        return false;
+    }
+    pascal_expr_is_datetime_value(left, env) || pascal_expr_is_datetime_value(right, env)
+}
+
+fn pascal_expr_is_datetime_value(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => env
+            .get(&name.to_lowercase())
+            .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("TDateTime")),
+        ExprKind::Call { callee, .. } => pascal_expr_ident_name(callee).is_some_and(|name| {
+            matches!(
+                name.to_ascii_lowercase().as_str(),
+                "encodedate"
+                    | "encodetime"
+                    | "encodedatetime"
+                    | "__pascal_date_utc"
+                    | "unixtodatetime"
+                    | "timestamptodatetime"
+            )
+        }),
+        _ => false,
+    }
+}
+
+fn pascal_expr_uses_generic_instance_receiver(
+    expr: &Expression,
+    env: &std::collections::HashMap<String, String>,
+    generic_type_names: &std::collections::HashSet<String>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => env
+            .get(&name.to_lowercase())
+            .is_some_and(|type_name| generic_type_names.contains(&type_name.to_lowercase())),
+        ExprKind::Call { callee, args, .. } => {
+            pascal_expr_uses_generic_instance_receiver(callee, env, generic_type_names)
+                || args.iter().any(|arg| {
+                    pascal_expr_uses_generic_instance_receiver(&arg.value, env, generic_type_names)
+                })
+        }
+        ExprKind::Member { object, .. } => {
+            let is_generic_receiver = match &object.kind {
+                ExprKind::This => env.get("self"),
+                ExprKind::Ident(name) if name.eq_ignore_ascii_case("Self") => env.get("self"),
+                ExprKind::Ident(name) => env.get(&name.to_lowercase()),
+                _ => None,
+            }
+            .is_some_and(|type_name| generic_type_names.contains(&type_name.to_lowercase()));
+            is_generic_receiver
+                || pascal_expr_uses_generic_instance_receiver(object, env, generic_type_names)
+        }
+        ExprKind::Index { object, index, .. } => {
+            pascal_expr_uses_generic_instance_receiver(object, env, generic_type_names)
+                || pascal_expr_uses_generic_instance_receiver(index, env, generic_type_names)
+        }
+        ExprKind::Binary { left, right, .. } => {
+            pascal_expr_uses_generic_instance_receiver(left, env, generic_type_names)
+                || pascal_expr_uses_generic_instance_receiver(right, env, generic_type_names)
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Spread(expr)
+        | ExprKind::YieldFrom(expr) => {
+            pascal_expr_uses_generic_instance_receiver(expr, env, generic_type_names)
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            pascal_expr_uses_generic_instance_receiver(cond, env, generic_type_names)
+                || pascal_expr_uses_generic_instance_receiver(then, env, generic_type_names)
+                || pascal_expr_uses_generic_instance_receiver(else_, env, generic_type_names)
+        }
+        ExprKind::Array(items) => items.iter().any(|item| {
+            item.key.as_ref().is_some_and(|key| {
+                pascal_expr_uses_generic_instance_receiver(key, env, generic_type_names)
+            }) || pascal_expr_uses_generic_instance_receiver(&item.value, env, generic_type_names)
+        }),
+        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => items
+            .iter()
+            .any(|item| pascal_expr_uses_generic_instance_receiver(item, env, generic_type_names)),
+        ExprKind::NullCoalesce { left, right } => {
+            pascal_expr_uses_generic_instance_receiver(left, env, generic_type_names)
+                || pascal_expr_uses_generic_instance_receiver(right, env, generic_type_names)
+        }
+        ExprKind::Range { start, end, .. } => {
+            pascal_expr_uses_generic_instance_receiver(start, env, generic_type_names)
+                || pascal_expr_uses_generic_instance_receiver(end, env, generic_type_names)
+        }
+        ExprKind::Assign { target, value } | ExprKind::Walrus { target, value } => {
+            pascal_expr_uses_generic_instance_receiver(target, env, generic_type_names)
+                || pascal_expr_uses_generic_instance_receiver(value, env, generic_type_names)
+        }
+        ExprKind::New { class, args } => {
+            pascal_expr_uses_generic_instance_receiver(class, env, generic_type_names)
+                || args.iter().any(|arg| {
+                    pascal_expr_uses_generic_instance_receiver(&arg.value, env, generic_type_names)
+                })
+        }
+        _ => false,
+    }
 }
 
 fn is_pascal_bool_procedural_type(type_hint: &str) -> bool {
@@ -20572,7 +29249,14 @@ fn pascal_is_rtti_object(expr: &Expression) -> bool {
 
 fn pascal_is_rtti_env_value(expr: &Expression) -> bool {
     match &expr.kind {
-        ExprKind::Object(_) => true,
+        ExprKind::Object(props) => !props.iter().any(|prop| {
+            matches!(
+                prop,
+                ObjectProperty::KeyValue { key, value }
+                    if matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == common_pointers::REF_KIND_KEY)
+                        && matches!(&value.kind, ExprKind::Lit(Literal::Str(kind)) if kind == common_pointers::CARRAY_KIND)
+            )
+        }),
         ExprKind::Array(items) => {
             !items.is_empty()
                 && items
@@ -24969,6 +33653,9 @@ fn walk_decl_section(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), 
             Rule::function_decl_or_method => {
                 body.push(walk_function_decl_or_method(decl)?);
             }
+            Rule::operator_decl_or_method => {
+                body.push(walk_operator_decl_or_method(decl)?);
+            }
             Rule::constructor_method_impl => {
                 body.push(walk_constructor_method_impl(decl)?);
             }
@@ -26992,6 +35679,16 @@ fn walk_function_decl_or_method(pair: Pair<Rule>) -> Result<Statement, String> {
     Err("function_decl_or_method: no inner match".into())
 }
 
+fn walk_operator_decl_or_method(pair: Pair<Rule>) -> Result<Statement, String> {
+    let span = to_span(&pair);
+    for p in pair.into_inner() {
+        if p.as_rule() == Rule::standalone_operator {
+            return walk_standalone_operator(p, span);
+        }
+    }
+    Err("operator_decl_or_method: no inner match".into())
+}
+
 fn walk_class_var_decl_impl(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut class_name = String::new();
@@ -27287,6 +35984,61 @@ fn walk_standalone_function(pair: Pair<Rule>, span: Span) -> Result<Statement, S
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::identifier if name.is_empty() => name = p.as_str().to_string(),
+            Rule::param_clause => params = walk_param_clause(p)?,
+            Rule::type_ref => return_type = Some(type_ref_to_string(&p)),
+            Rule::method_directives => walk_method_directives(p, &mut modifiers),
+            Rule::forward_directive => is_forward = true,
+            Rule::function_body => {
+                for bp in p.into_inner() {
+                    match bp.as_rule() {
+                        Rule::decl_section => walk_decl_section(bp, &mut body)?,
+                        Rule::compound_statement => body.extend(walk_compound_statement(bp)?),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if is_forward {
+        return Ok(Statement::with_span(StmtKind::Empty, span));
+    }
+
+    let is_generator = body_has_yield(&body);
+
+    Ok(Statement::with_span(
+        StmtKind::FunctionDecl {
+            name,
+            params,
+            return_type,
+            body,
+            modifiers,
+            handles: Vec::new(),
+            is_async: false,
+            is_generator,
+            is_sub: false,
+        },
+        span,
+    ))
+}
+
+fn walk_standalone_operator(pair: Pair<Rule>, span: Span) -> Result<Statement, String> {
+    let mut name = String::new();
+    let mut params = Vec::new();
+    let mut return_type: Option<String> = None;
+    let mut body = Vec::new();
+    let mut is_forward = false;
+    let mut modifiers = Modifiers {
+        is_static: true,
+        ..Default::default()
+    };
+
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            Rule::method_name if name.is_empty() => {
+                name = format!("operator_{}", pascal_method_name_text(p));
+            }
             Rule::param_clause => params = walk_param_clause(p)?,
             Rule::type_ref => return_type = Some(type_ref_to_string(&p)),
             Rule::method_directives => walk_method_directives(p, &mut modifiers),
@@ -28740,12 +37492,21 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
             .unwrap_or_default();
 
         if let ExprKind::Member { object, field, .. } = &expr.kind {
-            if field.eq_ignore_ascii_case("Construct") && args.len() == 1 {
+            if field.eq_ignore_ascii_case("Construct") && !args.is_empty() {
                 if let Some(name) = pascal_expr_ident_name(object) {
-                    if name.eq_ignore_ascii_case("TComparer")
-                        || name.eq_ignore_ascii_case("TEqualityComparer")
-                    {
+                    if name.eq_ignore_ascii_case("TComparer") && args.len() == 1 {
                         return Ok(args[0].value.clone());
+                    }
+                    if name.eq_ignore_ascii_case("TEqualityComparer") {
+                        let equals = args
+                            .first()
+                            .map(|arg| arg.value.clone())
+                            .unwrap_or_else(pascal_default_equals_lambda);
+                        let hash = args
+                            .get(1)
+                            .map(|arg| arg.value.clone())
+                            .unwrap_or_else(pascal_default_hash_lambda);
+                        return Ok(pascal_equality_comparer_object(equals, hash));
                     }
                 }
             }
@@ -28936,6 +37697,10 @@ fn pascal_compare_expr(left: Expression, right: Expression) -> Expression {
     )
 }
 
+fn pascal_bool_string_expr(cond: Expression) -> Expression {
+    ternary_expr(cond, str_expr("True"), str_expr("False"))
+}
+
 fn pascal_parse_slash_date_literal(expr: &Expression) -> Option<Expression> {
     let ExprKind::Lit(Literal::Str(text)) = &expr.kind else {
         return None;
@@ -28944,6 +37709,23 @@ fn pascal_parse_slash_date_literal(expr: &Expression) -> Option<Expression> {
     let month = parts.next()?.trim().parse::<i64>().ok()?;
     let day = parts.next()?.trim().parse::<i64>().ok()?;
     let year = parts.next()?.trim().parse::<i64>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(call_expr(
+        "__pascal_date_utc",
+        vec![int_expr(year), int_expr(month - 1), int_expr(day)],
+    ))
+}
+
+fn pascal_parse_dash_date_literal(expr: &Expression) -> Option<Expression> {
+    let ExprKind::Lit(Literal::Str(text)) = &expr.kind else {
+        return None;
+    };
+    let mut parts = text.split('-');
+    let year = parts.next()?.trim().parse::<i64>().ok()?;
+    let month = parts.next()?.trim().parse::<i64>().ok()?;
+    let day = parts.next()?.trim().parse::<i64>().ok()?;
     if parts.next().is_some() {
         return None;
     }
@@ -29000,6 +37782,18 @@ fn lower_pascal_datetime_builtin(name: &str, args: &[Argument]) -> Option<Expres
                 arg(3)?,
             ],
         )),
+        ("encodedatetime", 7) => Some(call_expr(
+            "__pascal_date_utc",
+            vec![
+                arg(0)?,
+                bin_expr(BinOp::Sub, arg(1)?, int_expr(1)),
+                arg(2)?,
+                arg(3)?,
+                arg(4)?,
+                arg(5)?,
+                arg(6)?,
+            ],
+        )),
         ("decodedate", 4) => Some(Expression::new(ExprKind::Sequence(vec![
             assign_expr(
                 arg(1)?,
@@ -29039,10 +37833,35 @@ fn lower_pascal_datetime_builtin(name: &str, args: &[Argument]) -> Option<Expres
         ("secondof", 1) => Some(pascal_date_component_call("__pascal_date_second", arg(0)?)),
         ("dayofweek", 1) => {
             let dow = pascal_date_component_call("__pascal_date_weekday", arg(0)?);
-            Some(ternary_expr(
-                bin_expr(BinOp::Eq, dow.clone(), int_expr(0)),
-                int_expr(7),
-                dow,
+            Some(bin_expr(BinOp::Add, dow, int_expr(1)))
+        }
+        ("isleapyear", 1) => {
+            let year = arg(0)?;
+            let div4 = bin_expr(BinOp::Eq, bin_expr(BinOp::Mod, year.clone(), int_expr(4)), int_expr(0));
+            let div100 = bin_expr(BinOp::Eq, bin_expr(BinOp::Mod, year.clone(), int_expr(100)), int_expr(0));
+            let div400 = bin_expr(BinOp::Eq, bin_expr(BinOp::Mod, year, int_expr(400)), int_expr(0));
+            Some(pascal_bool_string_expr(bin_expr(
+                BinOp::And,
+                div4,
+                bin_expr(BinOp::Or, bin_expr(BinOp::Eq, div100, Expression::bool(false)), div400),
+            )))
+        }
+        ("daysinmonth", 1) => {
+            let date = arg(0)?;
+            Some(pascal_date_component_call(
+                "__pascal_date_day",
+                call_expr(
+                    "__pascal_date_utc",
+                    vec![
+                        pascal_date_component_call("__pascal_date_year", date.clone()),
+                        bin_expr(
+                            BinOp::Add,
+                            pascal_date_component_call("__pascal_date_month", date),
+                            int_expr(1),
+                        ),
+                        int_expr(0),
+                    ],
+                ),
             ))
         }
         ("incday", 2) => Some(bin_expr(
@@ -29082,6 +37901,38 @@ fn lower_pascal_datetime_builtin(name: &str, args: &[Argument]) -> Option<Expres
             ))
         }
         ("daysbetween", 2) => Some(pascal_days_between_expr(arg(0)?, arg(1)?)),
+        ("monthsbetween", 2) => {
+            let left = arg(0)?;
+            let right = arg(1)?;
+            Some(call_expr(
+                "__pascal_abs",
+                vec![bin_expr(
+                    BinOp::Add,
+                    bin_expr(
+                        BinOp::Mul,
+                        bin_expr(
+                            BinOp::Sub,
+                            pascal_date_component_call("__pascal_date_year", left.clone()),
+                            pascal_date_component_call("__pascal_date_year", right.clone()),
+                        ),
+                        int_expr(12),
+                    ),
+                    bin_expr(
+                        BinOp::Sub,
+                        pascal_date_component_call("__pascal_date_month", left),
+                        pascal_date_component_call("__pascal_date_month", right),
+                    ),
+                )],
+            ))
+        }
+        ("yearsbetween", 2) => Some(call_expr(
+            "__pascal_abs",
+            vec![bin_expr(
+                BinOp::Sub,
+                pascal_date_component_call("__pascal_date_year", arg(0)?),
+                pascal_date_component_call("__pascal_date_year", arg(1)?),
+            )],
+        )),
         ("hoursbetween", 2) => Some(pascal_abs_div_expr(arg(0)?, arg(1)?, 3_600_000)),
         ("minutesbetween", 2) => Some(pascal_abs_div_expr(arg(0)?, arg(1)?, 60_000)),
         ("comparedate", 2) => {
@@ -29097,12 +37948,74 @@ fn lower_pascal_datetime_builtin(name: &str, args: &[Argument]) -> Option<Expres
             ))
         }
         ("comparetime", 2) => Some(pascal_compare_expr(arg(0)?, arg(1)?)),
-        ("samedate", 2) => Some(bin_expr(
-            BinOp::Eq,
-            pascal_days_between_expr(arg(0)?, arg(1)?),
-            int_expr(0),
+        ("samedate", 2) => {
+            let left = arg(0)?;
+            let right = arg(1)?;
+            let year = bin_expr(
+                BinOp::Eq,
+                pascal_date_component_call("__pascal_date_year", left.clone()),
+                pascal_date_component_call("__pascal_date_year", right.clone()),
+            );
+            let month = bin_expr(
+                BinOp::Eq,
+                pascal_date_component_call("__pascal_date_month", left.clone()),
+                pascal_date_component_call("__pascal_date_month", right.clone()),
+            );
+            let day = bin_expr(
+                BinOp::Eq,
+                pascal_date_component_call("__pascal_date_day", left),
+                pascal_date_component_call("__pascal_date_day", right),
+            );
+            Some(pascal_bool_string_expr(bin_expr(
+                BinOp::And,
+                bin_expr(BinOp::And, year, month),
+                day,
+            )))
+        }
+        ("sametime", 2) => {
+            let left = arg(0)?;
+            let right = arg(1)?;
+            let hour = bin_expr(
+                BinOp::Eq,
+                pascal_date_component_call("__pascal_date_hour", left.clone()),
+                pascal_date_component_call("__pascal_date_hour", right.clone()),
+            );
+            let minute = bin_expr(
+                BinOp::Eq,
+                pascal_date_component_call("__pascal_date_minute", left.clone()),
+                pascal_date_component_call("__pascal_date_minute", right.clone()),
+            );
+            let second = bin_expr(
+                BinOp::Eq,
+                pascal_date_component_call("__pascal_date_second", left.clone()),
+                pascal_date_component_call("__pascal_date_second", right.clone()),
+            );
+            let ms = bin_expr(
+                BinOp::Eq,
+                pascal_date_component_call("__pascal_date_millisecond", left),
+                pascal_date_component_call("__pascal_date_millisecond", right),
+            );
+            Some(pascal_bool_string_expr(bin_expr(
+                BinOp::And,
+                bin_expr(BinOp::And, hour, minute),
+                bin_expr(BinOp::And, second, ms),
+            )))
+        }
+        ("samedatetime", 2) => Some(pascal_bool_string_expr(bin_expr(BinOp::Eq, arg(0)?, arg(1)?))),
+        ("datetimetounix", 1) => Some(bin_expr(BinOp::Div, arg(0)?, int_expr(1000))),
+        ("unixtodatetime", 1) => Some(bin_expr(BinOp::Mul, arg(0)?, int_expr(1000))),
+        ("datetimetotimestamp", 1) => Some(arg(0)?),
+        ("timestamptodatetime", 1) => Some(arg(0)?),
+        ("startoftheyear", 1) => Some(call_expr(
+            "__pascal_date_utc",
+            vec![arg(0)?, int_expr(0), int_expr(1)],
         )),
-        ("strtodate", 1) => pascal_parse_slash_date_literal(&arg(0)?),
+        ("endoftheyear", 1) => Some(call_expr(
+            "__pascal_date_utc",
+            vec![arg(0)?, int_expr(11), int_expr(31)],
+        )),
+        ("strtodate", 1) => pascal_parse_slash_date_literal(&arg(0)?)
+            .or_else(|| pascal_parse_dash_date_literal(&arg(0)?)),
         ("strtotime", 1) => pascal_parse_time_literal(&arg(0)?),
         ("datetostr", 1) => pascal_format_datetime_expr(&str_expr("m/d/yyyy"), arg(0)?),
         ("timetostr", 1) => {

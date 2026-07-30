@@ -55,7 +55,7 @@ fn pos_from_offset_via_copy() {
         run_pascal(
             r#"program T; var s:string; p:Integer; begin s:='banana'; p:=Pos('na',Copy(s,3,Length(s))); WriteLn(p); end."#
         ),
-        &["2"]
+        &["1"]
     );
 }
 
@@ -139,7 +139,7 @@ fn lastdelimiter_extract_filename() {
 fn lastdelimiter_pipe_list() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(LastDelimiter('|', 'a|b|c')); end."#),
-        &["3"]
+        &["4"]
     );
 }
 
@@ -359,7 +359,7 @@ fn pos_multichar_second_occurrence_manual() {
 fn lastdelimiter_semicolon_csv() {
     assert_eq!(
         run_pascal(r#"program T; begin WriteLn(LastDelimiter(',', '1,2,3,4')); end."#),
-        &["5"]
+        &["6"]
     );
 }
 

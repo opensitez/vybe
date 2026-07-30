@@ -1,15 +1,22 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use vybe_platform_vybe::gui_state::GuiState;
 use vybe_runtime::value::ObjectKind;
 use vybe_runtime::{HostContext, VM, Value};
-use vybe_platform_vybe::gui_state::GuiState;
 
 /// Run Pascal source through vybex pipeline: pest grammar -> walker -> common AST -> compiler -> VM
 pub fn run_pascal(src: &str) -> Vec<String> {
-    let _cwd_lock = pascal_test_cwd_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _cwd = PascalTestCwd::new();
+    let needs_isolated_cwd = pascal_source_needs_isolated_cwd(src);
+    let _cwd_lock = if needs_isolated_cwd {
+        Some(
+            pascal_test_cwd_lock()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    } else {
+        None
+    };
+    let _cwd = needs_isolated_cwd.then(PascalTestCwd::new);
     {
         static R: std::sync::Once = std::sync::Once::new();
         R.call_once(vybe_language_pascal::register);
@@ -77,6 +84,25 @@ pub fn run_pascal(src: &str) -> Vec<String> {
     }
     let result = output.lock().unwrap().clone();
     result
+}
+
+fn pascal_source_needs_isolated_cwd(src: &str) -> bool {
+    let lower = src.to_ascii_lowercase();
+    [
+        "assignfile",
+        "rewrite(",
+        "reset(",
+        "append(",
+        "closefile",
+        "erase(",
+        "rename(",
+        "fileexists",
+        "textfile",
+        "typedfile",
+        "file of",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 fn pascal_test_cwd_lock() -> &'static Mutex<()> {

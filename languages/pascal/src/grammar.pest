@@ -51,6 +51,7 @@ declaration = _{
     | class_destructor_method_impl
     | constructor_method_impl
     | destructor_method_impl
+    | operator_decl_or_method
     | procedure_decl_or_method
     | function_decl_or_method
 }
@@ -309,6 +310,7 @@ function_decl_or_method = {
     (^"class" ~ ^"function" ~ method_impl_func)
     | (^"function" ~ (method_impl_func | standalone_function))
 }
+operator_decl_or_method = { ^"operator" ~ standalone_operator }
 constructor_method_impl = { ^"constructor" ~ method_impl_body_proc }
 destructor_method_impl = { ^"destructor" ~ method_impl_body_proc }
 class_constructor_method_impl = { ^"class" ~ ^"constructor" ~ method_impl_body_proc }
@@ -329,6 +331,7 @@ procedure_body = { decl_section ~ compound_statement ~ ";"? }
 // info), so `generic_params` is captured-and-discarded by the walker.
 standalone_function = { identifier ~ generic_params? ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ method_directives ~ (forward_directive | function_body)? }
 function_body = { decl_section ~ compound_statement ~ ";"? }
+standalone_operator = { method_name ~ generic_params? ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ method_directives ~ (forward_directive | function_body)? }
 
 // Pascal / Delphi generic type parameters: `<T>` or `<T, U>`. Constraints
 // (`<T: class>`, `<T: constructor>`) are accepted but discarded — the
@@ -516,17 +519,22 @@ finally_handler = { ^"finally" ~ statement_list ~ ^"end" }
 raise_keyword = @{ ^"raise" ~ !(ASCII_ALPHANUMERIC | "_") }
 raise_statement = { raise_keyword ~ expression? }
 
-yield_statement = { ^"yield" ~ expression? }
+yield_keyword = @{ ^"yield" ~ !(ASCII_ALPHANUMERIC | "_") }
+yield_statement = { yield_keyword ~ expression? }
 
 // ── Exit / Break / Continue / Halt ─────────────────────────────────────────────
 
-exit_statement = { ^"exit" ~ ("(" ~ expression ~ ")")? }
+exit_keyword = @{ ^"exit" ~ !(ASCII_ALPHANUMERIC | "_") }
+exit_statement = { exit_keyword ~ ("(" ~ expression ~ ")")? }
 
-halt_statement = { ^"halt" ~ ("(" ~ expression ~ ")")? }
+halt_keyword = @{ ^"halt" ~ !(ASCII_ALPHANUMERIC | "_") }
+halt_statement = { halt_keyword ~ ("(" ~ expression ~ ")")? }
 
-break_statement = { ^"break" }
+break_keyword = @{ ^"break" ~ !(ASCII_ALPHANUMERIC | "_") }
+break_statement = { break_keyword }
 
-continue_statement = { ^"continue" }
+continue_keyword = @{ ^"continue" ~ !(ASCII_ALPHANUMERIC | "_") }
+continue_statement = { continue_keyword }
 
 // ── Inherited ──────────────────────────────────────────────────────────────────
 
@@ -733,7 +741,6 @@ keyword = _{
         | ^"single" | ^"double" | ^"extended"
         | ^"pointer"
         | ^"exit" | ^"yield" | ^"break" | ^"continue" | ^"halt"
-        | ^"new" | ^"dispose"
         | ^"constructor" | ^"destructor"
         | ^"public" | ^"private" | ^"protected" | ^"published"
         | ^"property" | ^"out"
