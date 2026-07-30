@@ -1067,3 +1067,206 @@ fn supported_values_of_returns_array() {
         panic!("supportedValuesOf should return Array");
     }
 }
+
+// ── Time zones, Locale info, and NumberFormat ranges ───────────────────────
+// Added when IANA tz data was linked and the ES2023/ES2024 gaps were filled.
+// These assert against REAL tzdb/CLDR data — each case is one that a
+// hand-written table gets wrong, which is the point.
+
+#[test]
+fn time_zone_offsets_follow_daylight_saving() {
+    // 2024-01-01 and 2024-07-01 UTC. A fixed-offset table cannot produce both.
+    let winter = Value::F64(1_704_067_200_000.0);
+    let summer = Value::F64(1_719_792_000_000.0);
+    let offset = |zone: &str, at: Value| {
+        invoke("ecma:intl/timezone", "offset", vec![s(zone), at]).as_f64() as i64
+    };
+    assert_eq!(offset("America/New_York", winter.clone()), -18000);
+    assert_eq!(offset("America/New_York", summer.clone()), -14400);
+    // Southern hemisphere runs the other way.
+    assert_eq!(offset("Australia/Sydney", winter.clone()), 39600);
+    assert_eq!(offset("Australia/Sydney", summer), 36000);
+    // Half-hour zone, no DST.
+    assert_eq!(offset("Asia/Kolkata", winter), 19800);
+}
+
+#[test]
+fn time_zone_identifiers_canonicalize_to_tzdb_casing() {
+    let canon = |zone: &str| {
+        as_string(&invoke(
+            "ecma:intl/timezone",
+            "canonicalize",
+            vec![s(zone)],
+        ))
+    };
+    assert_eq!(canon("america/new_york"), "America/New_York");
+    // ECMA-402: "UTC" is primary; Etc/UTC, Etc/GMT and GMT resolve to it.
+    for alias in ["Etc/UTC", "Etc/GMT", "GMT"] {
+        assert_eq!(canon(alias), "UTC", "{alias}");
+    }
+    assert!(matches!(
+        invoke("ecma:intl/timezone", "canonicalize", vec![s("Not/AZone")]),
+        Value::Null
+    ));
+}
+
+#[test]
+fn date_time_format_accepts_named_time_zones() {
+    // Previously every non-UTC zone threw RangeError while supportedValuesOf
+    // advertised them.
+    let options = Value::Object(Arc::new(Mutex::new({
+        let mut o = Object::new();
+        o.properties.insert("timeZone".into(), s("America/New_York"));
+        o
+    })));
+    let dtf = invoke("ecma:intl/datetimeformat", "new", vec![s("en-US"), options]);
+    let resolved = invoke("ecma:intl/datetimeformat", "resolvedOptions", vec![dtf]);
+    assert_eq!(
+        as_string(&obj_prop(&resolved, "timeZone")),
+        "America/New_York"
+    );
+}
+
+#[test]
+fn supported_values_of_time_zone_is_the_real_identifier_set() {
+    let zones = invoke("ecma:intl", "supportedValuesOf", vec![s("timeZone")]);
+    let Value::Object(obj) = &zones else {
+        panic!("expected array, got {zones:?}");
+    };
+    let count = {
+        let lock = obj.lock().unwrap();
+        match &lock.kind {
+            ObjectKind::Array(elems) => elems.len(),
+            other => panic!("expected array, got {other:?}"),
+        }
+    };
+    // The old hand-written list held 15 entries; tzdb has hundreds.
+    assert!(count > 300, "expected full tzdb identifier set, got {count}");
+}
+
+#[test]
+fn locale_reads_unicode_extension_keywords() {
+    // These were all hardcoded to "" regardless of the tag.
+    let loc = invoke(
+        "ecma:intl/locale",
+        "new",
+        vec![s("en-US-u-ca-buddhist-hc-h12-nu-latn")],
+    );
+    assert_eq!(as_string(&obj_prop(&loc, "calendar")), "buddhist");
+    assert_eq!(as_string(&obj_prop(&loc, "hourCycle")), "h12");
+    assert_eq!(as_string(&obj_prop(&loc, "numberingSystem")), "latn");
+}
+
+#[test]
+fn locale_text_info_direction_comes_from_script_data() {
+    let direction = |tag: &str| {
+        let loc = invoke("ecma:intl/locale", "new", vec![s(tag)]);
+        as_string(&obj_prop(
+            &invoke("ecma:intl/locale", "getTextInfo", vec![loc]),
+            "direction",
+        ))
+    };
+    assert_eq!(direction("en-US"), "ltr");
+    assert_eq!(direction("ar-EG"), "rtl");
+    assert_eq!(direction("he-IL"), "rtl");
+    // Script overrides the language's usual direction.
+    assert_eq!(direction("az-Latn-AZ"), "ltr");
+}
+
+#[test]
+fn locale_week_info_comes_from_cldr() {
+    let first_day = |tag: &str| {
+        let loc = invoke("ecma:intl/locale", "new", vec![s(tag)]);
+        obj_prop(
+            &invoke("ecma:intl/locale", "getWeekInfo", vec![loc]),
+            "firstDay",
+        )
+        .as_f64() as i64
+    };
+    // ECMA-402 numbering: Mon=1 … Sun=7.
+    assert_eq!(first_day("en-US"), 7);
+    assert_eq!(first_day("en-GB"), 1);
+    assert_eq!(first_day("fr-FR"), 1);
+}
+
+#[test]
+fn number_format_format_range_spans_both_values() {
+    let nf = invoke("ecma:intl/numberformat", "new", vec![s("en-US")]);
+    let out = as_string(&invoke(
+        "ecma:intl/numberformat",
+        "formatRange",
+        vec![nf, Value::F64(3.0), Value::F64(5.0)],
+    ));
+    assert!(out.contains('3') && out.contains('5'), "got {out:?}");
+}
+
+#[test]
+fn number_format_format_range_collapses_equal_ends() {
+    let nf = invoke("ecma:intl/numberformat", "new", vec![s("en-US")]);
+    let out = as_string(&invoke(
+        "ecma:intl/numberformat",
+        "formatRange",
+        vec![nf, Value::F64(3.0), Value::F64(3.0)],
+    ));
+    assert_eq!(out, "3");
+}
+
+#[test]
+fn number_format_format_range_to_parts_tags_each_source() {
+    let nf = invoke("ecma:intl/numberformat", "new", vec![s("en-US")]);
+    let parts = invoke(
+        "ecma:intl/numberformat",
+        "formatRangeToParts",
+        vec![nf, Value::F64(3.0), Value::F64(5.0)],
+    );
+    let Value::Object(obj) = &parts else {
+        panic!("expected array");
+    };
+    let sources: Vec<String> = {
+        let guard = obj.lock().unwrap();
+        match &guard.kind {
+            ObjectKind::Array(elems) => elems
+                .iter()
+                .map(|part| as_string(&obj_prop(part, "source")))
+                .collect(),
+            other => panic!("expected array, got {other:?}"),
+        }
+    };
+    assert!(sources.contains(&"startRange".to_string()), "{sources:?}");
+    assert!(sources.contains(&"endRange".to_string()), "{sources:?}");
+}
+
+#[test]
+fn segments_containing_finds_the_segment_at_an_index() {
+    let seg = invoke("ecma:intl/segmenter", "new", vec![s("en-US")]);
+    let segments = invoke("ecma:intl/segmenter", "segment", vec![seg, s("hello")]);
+    let found = invoke(
+        "ecma:intl/segmenter",
+        "containing",
+        vec![segments.clone(), Value::F64(2.0)],
+    );
+    assert_eq!(as_string(&obj_prop(&found, "segment")), "l");
+    assert_eq!(obj_prop(&found, "index").as_f64() as i64, 2);
+    // Out of range → undefined, per %Segments.prototype%.containing.
+    assert!(matches!(
+        invoke(
+            "ecma:intl/segmenter",
+            "containing",
+            vec![segments, Value::F64(99.0)]
+        ),
+        Value::Undefined
+    ));
+}
+
+#[test]
+fn locale_first_day_of_week_and_variants() {
+    let loc = invoke("ecma:intl/locale", "new", vec![s("en-US-u-fw-wed")]);
+    assert_eq!(obj_prop(&loc, "firstDayOfWeek").as_f64() as i64, 3);
+
+    let plain = invoke("ecma:intl/locale", "new", vec![s("en-US")]);
+    assert!(matches!(obj_prop(&plain, "firstDayOfWeek"), Value::Undefined));
+
+    let variant = invoke("ecma:intl/locale", "new", vec![s("de-DE-1901")]);
+    assert_eq!(as_string(&obj_prop(&variant, "variants")), "1901");
+    assert!(matches!(obj_prop(&plain, "variants"), Value::Undefined));
+}

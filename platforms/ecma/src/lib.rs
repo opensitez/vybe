@@ -39,6 +39,7 @@ pub mod regexp; // §22.2  RegExp + String.prototype regex methods
 pub mod set; // §24.2  Set
 pub mod string; // §22.1  String + String.prototype
 pub mod symbol; // §20.4  Symbol + well-knowns
+pub mod timezone; // §ECMA-402  IANA time zone data (normative reference)
 pub mod typedarray; // §23.2  TypedArray family
 pub mod weakmap; // §24.3/§24.4  WeakMap + WeakSet (co-located)
 pub mod weakref; // §26.1/§26.2  WeakRef + FinalizationRegistry (co-located)
@@ -85,6 +86,7 @@ pub fn register(vm: &mut VM) {
     function::register(vm);
     global_this::register(vm);
     iterator::register(vm);
+    timezone::register(vm);
     json::register(vm);
     map::register(vm);
     math::register(vm);

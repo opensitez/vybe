@@ -23,6 +23,7 @@ icu_relativetime = { version = "0.1", features = ["compiled_data"] }
 icu_displaynames = { version = "0.11", features = ["compiled_data"] }
 icu_locid = "1"
 fixed_decimal = "0.5"
+chrono-tz = "0.10.4"
 
 [dev-dependencies]
 vybe_compiler = { workspace = true }

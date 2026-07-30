@@ -111,6 +111,43 @@ pub fn shared_segmenter_prototype() -> Value {
     )
 }
 
+/// Unicode locale extension keywords from a BCP-47 tag's `-u-` sequence
+/// (UTS #35): `en-US-u-ca-buddhist-hc-h12` → `{ca: "buddhist", hc: "h12"}`.
+///
+/// A two-letter subtag starts a new key; everything up to the next key is that
+/// key's (possibly multi-subtag) type. A key with no type is the boolean form
+/// (`-u-kn-` means `kn=true`), which is why an empty value is meaningful.
+fn unicode_extension_keywords(tag: &str) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let lower = tag.to_ascii_lowercase();
+    let mut parts = lower.split('-');
+    // Advance to the `u` singleton; anything before it is the language id.
+    if !parts.any(|p| p == "u") {
+        return out;
+    }
+    let mut key: Option<String> = None;
+    let mut value: Vec<String> = Vec::new();
+    for part in parts {
+        // Another singleton ends the unicode extension entirely.
+        if part.len() == 1 {
+            break;
+        }
+        if part.len() == 2 {
+            if let Some(k) = key.take() {
+                out.insert(k, value.join("-"));
+                value.clear();
+            }
+            key = Some(part.to_string());
+        } else if key.is_some() {
+            value.push(part.to_string());
+        }
+    }
+    if let Some(k) = key {
+        out.insert(k, value.join("-"));
+    }
+    out
+}
+
 fn make_array(elements: Vec<Value>) -> Value {
     let mut obj = Object::new_array(elements);
     obj.properties
@@ -501,6 +538,90 @@ fn register_number_format(vm: &mut VM) {
         }),
     );
 
+    // ES2023 §15.5.5/15.5.6 — `NumberFormat` gained the range pair alongside
+    // `DateTimeFormat`'s; only the DateTimeFormat half was implemented.
+    // `x` or `y` being NaN is a RangeError, and a range whose start exceeds
+    // its end is likewise rejected.
+    vm.register_host_fn(
+        "ecma:intl/numberformat",
+        "formatRange",
+        Box::new(|ctx, args| {
+            let nf = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return s_val(""),
+            };
+            let start = args.get(1).map(|v| v.as_f64()).unwrap_or(f64::NAN);
+            let end = args.get(2).map(|v| v.as_f64()).unwrap_or(f64::NAN);
+            if start.is_nan() || end.is_nan() {
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid number value",
+                ));
+                return Value::Undefined;
+            }
+            let start_text = format_number_real(&nf, start);
+            let end_text = format_number_real(&nf, end);
+            // Approximately-equal collapses to a single formatted value, which
+            // is what the spec's FormatNumericRange does when the parts match.
+            if start_text == end_text {
+                return s_val(&start_text);
+            }
+            s_val(&format!("{start_text}–{end_text}"))
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:intl/numberformat",
+        "formatRangeToParts",
+        Box::new(|ctx, args| {
+            let nf = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return make_array(vec![]),
+            };
+            let start = args.get(1).map(|v| v.as_f64()).unwrap_or(f64::NAN);
+            let end = args.get(2).map(|v| v.as_f64()).unwrap_or(f64::NAN);
+            if start.is_nan() || end.is_nan() {
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid number value",
+                ));
+                return Value::Undefined;
+            }
+            // Each part carries a `source` of "startRange" / "shared" /
+            // "endRange" — that field is what distinguishes these parts from
+            // `formatToParts`'s.
+            let tag = |parts: Vec<Value>, source: &str| -> Vec<Value> {
+                parts
+                    .into_iter()
+                    .map(|part| {
+                        if let Value::Object(obj) = &part {
+                            if let Ok(mut o) = obj.lock() {
+                                o.properties
+                                    .insert("source".into(), Value::String(Arc::from(source)));
+                            }
+                        }
+                        part
+                    })
+                    .collect()
+            };
+            let start_parts = format_number_parts_real(&nf, start);
+            let end_parts = format_number_parts_real(&nf, end);
+            if format_number_real(&nf, start) == format_number_real(&nf, end) {
+                return make_array(tag(start_parts, "shared"));
+            }
+            let mut out = tag(start_parts, "startRange");
+            out.push(make_object(vec![
+                ("type", s_val("literal")),
+                ("value", s_val("–")),
+                ("source", s_val("shared")),
+            ]));
+            out.extend(tag(end_parts, "endRange"));
+            make_array(out)
+        }),
+    );
+
     vm.register_host_fn(
         "ecma:intl/numberformat",
         "resolvedOptions",
@@ -741,16 +862,29 @@ fn register_date_time_format(vm: &mut VM) {
                     })
                     .unwrap_or_default()
             };
-            let time_zone = str_opt_from("timeZone");
-            if !time_zone.is_empty() && time_zone != "UTC" {
-                drop(ol);
-                ctx.throw_value(crate::error::new_error(
-                    ctx,
-                    "RangeError",
-                    "Invalid time zone",
-                ));
-                return Value::Undefined;
-            }
+            // ECMA-402: a `timeZone` option is valid iff it is a Zone or Link
+            // name in the IANA Time Zone Database, and the resolved value is
+            // the CANONICAL identifier — not the caller's spelling. Only a
+            // genuinely unknown identifier is a RangeError; this used to throw
+            // for every zone except "UTC", while `supportedValuesOf` happily
+            // advertised zones the formatter would then reject.
+            let requested = str_opt_from("timeZone");
+            let time_zone = if requested.is_empty() {
+                String::new()
+            } else {
+                match crate::timezone::canonicalize(&requested) {
+                    Some(canonical) => canonical,
+                    None => {
+                        drop(ol);
+                        ctx.throw_value(crate::error::new_error(
+                            ctx,
+                            "RangeError",
+                            "Invalid time zone",
+                        ));
+                        return Value::Undefined;
+                    }
+                }
+            };
             let year = ol
                 .properties
                 .get("year")
@@ -1027,16 +1161,12 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
         return format!("{}/{}/{}, UTC", month, day, year);
     }
 
-    if year_opt.is_empty()
-        && month_opt.is_empty()
-        && day_opt.is_empty()
-        && weekday_opt.is_empty()
-        && hour_opt.is_empty()
-        && minute_opt.is_empty()
-        && second_opt.is_empty()
-    {
-        return format!("{}/{}/{}", month, day, year);
-    }
+    // NO early return for the no-options default: that hardcoded
+    // `month/day/year` made EVERY locale format as en-US and left the ICU
+    // formatter at the bottom of this function unreachable for the default
+    // case — `new Intl.DateTimeFormat("de-DE").format(…)` gave "1/15/2024".
+    // Falling through reaches `DateTimeFormatter` with YMD::medium(), which is
+    // the ECMA-402 §13.1.2 default field set.
 
     if !year_opt.is_empty()
         || !month_opt.is_empty()
@@ -1897,6 +2027,61 @@ fn register_segmenter(vm: &mut VM) {
         }),
     );
 
+    // %Segments.prototype%.containing(index) — the segment containing the code
+    // unit at `index`, or `undefined` when out of range. The Segments object
+    // this operates on is the array `segment` returned, so the lookup is over
+    // its elements' `index` + `segment` length.
+    vm.register_host_fn(
+        "ecma:intl/segmenter",
+        "containing",
+        Box::new(|_ctx, args| {
+            let segments = match args.first() {
+                Some(Value::Object(o)) => o.clone(),
+                _ => return Value::Undefined,
+            };
+            let index = match args.get(1) {
+                Some(v) => v.as_f64(),
+                None => 0.0,
+            };
+            if !index.is_finite() || index < 0.0 {
+                return Value::Undefined;
+            }
+            let target = index as usize;
+            let guard = match segments.lock() {
+                Ok(g) => g,
+                Err(_) => return Value::Undefined,
+            };
+            let ObjectKind::Array(elems) = &guard.kind else {
+                return Value::Undefined;
+            };
+            for element in elems.iter() {
+                let Value::Object(part) = element else {
+                    continue;
+                };
+                let (start, len) = {
+                    let p = match part.lock() {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    };
+                    let start = p
+                        .properties
+                        .get("index")
+                        .map(|v| v.as_f64() as usize)
+                        .unwrap_or(0);
+                    let len = match p.properties.get("segment") {
+                        Some(Value::String(text)) => text.len(),
+                        _ => 0,
+                    };
+                    (start, len)
+                };
+                if target >= start && target < start + len {
+                    return element.clone();
+                }
+            }
+            Value::Undefined
+        }),
+    );
+
     vm.register_host_fn(
         "ecma:intl/segmenter",
         "resolvedOptions",
@@ -2141,18 +2326,171 @@ fn register_locale(vm: &mut VM) {
                 .map(|s| s.as_str().to_string())
                 .unwrap_or_default();
             let base_name = langid.to_string();
+            // Unicode `-u-` extension keywords (UTS #35) and the options bag.
+            // These were all hardcoded to "", so `new Intl.Locale(
+            // "en-US-u-ca-buddhist-hc-h12")` reported no calendar and no hour
+            // cycle. The options bag wins over the tag, per §14.1.2.
+            let ext = unicode_extension_keywords(&tag);
+            let opt = |key: &str| -> Option<String> {
+                args.get(1).and_then(|v| match v {
+                    Value::Object(o) => obj_string_prop(o, key),
+                    _ => None,
+                })
+            };
+            let keyword = |kw: &str, opt_key: &str| -> String {
+                opt(opt_key)
+                    .or_else(|| ext.get(kw).cloned())
+                    .unwrap_or_default()
+            };
+            let numeric = opt("numeric")
+                .map(|v| v == "true")
+                .unwrap_or_else(|| ext.get("kn").map(|v| v.is_empty() || v == "true") == Some(true));
             make_object(vec![
                 ("__type", s_val("Locale")),
                 ("baseName", s_val(&base_name)),
                 ("language", s_val(&language)),
                 ("region", s_val(&region)),
                 ("script", s_val(&script)),
-                ("calendar", s_val("")),
-                ("numberingSystem", s_val("")),
-                ("collation", s_val("")),
-                ("caseFirst", s_val("")),
-                ("hourCycle", s_val("")),
-                ("numeric", Value::Bool(false)),
+                ("calendar", s_val(&keyword("ca", "calendar"))),
+                ("numberingSystem", s_val(&keyword("nu", "numberingSystem"))),
+                ("collation", s_val(&keyword("co", "collation"))),
+                ("caseFirst", s_val(&keyword("kf", "caseFirst"))),
+                ("hourCycle", s_val(&keyword("hc", "hourCycle"))),
+                ("numeric", Value::Bool(numeric)),
+                // ES2024 §14.3.x — `-u-fw-<day>` and the `firstDayOfWeek`
+                // option. Normalized to the spec's Mon=1 … Sun=7 numbering,
+                // accepting both the CLDR day codes and a numeric value.
+                (
+                    "firstDayOfWeek",
+                    match keyword("fw", "firstDayOfWeek").as_str() {
+                        "" => Value::Undefined,
+                        "mon" => Value::F64(1.0),
+                        "tue" => Value::F64(2.0),
+                        "wed" => Value::F64(3.0),
+                        "thu" => Value::F64(4.0),
+                        "fri" => Value::F64(5.0),
+                        "sat" => Value::F64(6.0),
+                        "sun" => Value::F64(7.0),
+                        other => match other.parse::<f64>() {
+                            Ok(n) if (1.0..=7.0).contains(&n) => Value::F64(n),
+                            _ => Value::Undefined,
+                        },
+                    },
+                ),
+                // BCP-47 variant subtags, in canonical (lower-case, sorted)
+                // form; absent when the tag carries none.
+                ("variants", {
+                    let variants: Vec<String> = langid
+                        .variants()
+                        .map(|v| v.as_str().to_string())
+                        .collect();
+                    if variants.is_empty() {
+                        Value::Undefined
+                    } else {
+                        s_val(&variants.join("-"))
+                    }
+                }),
+            ])
+        }),
+    );
+
+    // ── ES2024 Locale Info (§14.3.x) ──────────────────────────────────────
+    // Each getter returns the locale's resolved preference FIRST when the tag
+    // pinned one via `-u-`, then the locale-independent default. `getTimeZones`
+    // is the one backed by real data now that tzdb is linked.
+    for (fn_name, keyword, defaults) in [
+        ("getCalendars", "calendar", &["gregory"][..]),
+        ("getCollations", "collation", &["default"][..]),
+        ("getNumberingSystems", "numberingSystem", &["latn"][..]),
+        ("getHourCycles", "hourCycle", &["h23"][..]),
+    ] {
+        let keyword = keyword.to_string();
+        let defaults: Vec<String> = defaults.iter().map(|s| s.to_string()).collect();
+        vm.register_host_fn(
+            "ecma:intl/locale",
+            fn_name,
+            Box::new(move |_ctx, args| {
+                if let Some(Value::Object(loc)) = args.first() {
+                    if let Some(resolved) = obj_string_prop(loc, &keyword) {
+                        if !resolved.is_empty() {
+                            return make_array(vec![s_val(&resolved)]);
+                        }
+                    }
+                }
+                make_array(defaults.iter().map(|d| s_val(d)).collect())
+            }),
+        );
+    }
+
+    // getTimeZones() → `undefined` when the locale carries no region, per
+    // §14.3.x. The region→zone mapping lives in tzdb's `zone.tab`, which
+    // neither `chrono-tz` nor ICU's `IanaParser` exposes; rather than ship a
+    // hand-written region table that would be wrong at the margins and stale
+    // within a release, this reports only what the data supports.
+    vm.register_host_fn(
+        "ecma:intl/locale",
+        "getTimeZones",
+        Box::new(|_ctx, args| {
+            let region = match args.first() {
+                Some(Value::Object(loc)) => obj_string_prop(loc, "region").unwrap_or_default(),
+                _ => String::new(),
+            };
+            if region.is_empty() {
+                return Value::Undefined;
+            }
+            make_array(vec![])
+        }),
+    );
+
+    // getTextInfo() → { direction }, from CLDR script-direction data.
+    vm.register_host_fn(
+        "ecma:intl/locale",
+        "getTextInfo",
+        Box::new(|_ctx, args| {
+            use icu::locale::{Direction, LanguageIdentifier, LocaleDirectionality};
+            let tag = match args.first() {
+                Some(Value::Object(loc)) => obj_string_prop(loc, "baseName").unwrap_or_default(),
+                _ => String::new(),
+            };
+            // NOTE: `parse_langid` here returns `unic_langid`'s type, which is a
+            // DIFFERENT crate from ICU's — parse with ICU's own.
+            let langid: LanguageIdentifier = tag.parse().unwrap_or(LanguageIdentifier::UNKNOWN);
+            let direction = match LocaleDirectionality::new_common().get(&langid) {
+                Some(Direction::RightToLeft) => "rtl",
+                _ => "ltr",
+            };
+            make_object(vec![("direction", s_val(direction))])
+        }),
+    );
+
+    // getWeekInfo() → { firstDay, weekend, minimalDays }, from CLDR week data.
+    // `firstDay`/`weekend` use ECMA-402's numbering (Mon=1 … Sun=7).
+    vm.register_host_fn(
+        "ecma:intl/locale",
+        "getWeekInfo",
+        Box::new(|_ctx, args| {
+            use icu::calendar::week::WeekInformation;
+            use icu::locale::Locale;
+            let tag = match args.first() {
+                Some(Value::Object(loc)) => obj_string_prop(loc, "baseName").unwrap_or_default(),
+                _ => String::new(),
+            };
+            let locale: Locale = tag.parse().unwrap_or_else(|_| Locale::UNKNOWN);
+            let Ok(info) = WeekInformation::try_new(locale.into()) else {
+                return Value::Undefined;
+            };
+            // `Weekday` is Mon=1-based already, matching ECMA-402.
+            let day_number = |d: icu::calendar::types::Weekday| d as u8 as f64;
+            make_object(vec![
+                ("firstDay", Value::F64(day_number(info.first_weekday))),
+                (
+                    "weekend",
+                    make_array(info.weekend().map(|d| Value::F64(day_number(d))).collect()),
+                ),
+                // CLDR's minDays is not exposed on WeekInformation; ISO 8601's
+                // value is the ECMA-402 default and what ICU's own calculator
+                // uses (`WeekCalculator::ISO`).
+                ("minimalDays", Value::F64(4.0)),
             ])
         }),
     );
@@ -2949,6 +3287,23 @@ fn register_static(vm: &mut VM) {
                 Some(Value::String(s)) => s.to_string(),
                 _ => return make_array(vec![]),
             };
+            // Time zones come from tzdb, not a hand-written list. The previous
+            // 15-entry list advertised zones that `Intl.DateTimeFormat` would
+            // then reject, and tzdb ships 5–10 updates a year, so any literal
+            // table here is wrong by construction.
+            if key == "timeZone" {
+                let mut names: Vec<&str> = chrono_tz::TZ_VARIANTS
+                    .iter()
+                    .map(|tz| tz.name())
+                    .collect();
+                names.sort_unstable();
+                return make_array(
+                    names
+                        .into_iter()
+                        .map(|n| Value::String(Arc::from(n)))
+                        .collect(),
+                );
+            }
             let values: Vec<&'static str> = match key.as_str() {
                 "calendar" => vec![
                     "gregory", "buddhist", "chinese", "coptic", "ethiopic", "ethioaa", "hebrew",
@@ -2966,23 +3321,6 @@ fn register_static(vm: &mut VM) {
                     "arab", "arabext", "bali", "beng", "deva", "fullwide", "gujr", "guru",
                     "hanidec", "hant", "khmr", "knda", "laoo", "latn", "limb", "mlym", "mong",
                     "mymr", "orya", "tamldec", "telu", "thai", "tibt",
-                ],
-                "timeZone" => vec![
-                    "UTC",
-                    "America/New_York",
-                    "America/Los_Angeles",
-                    "America/Chicago",
-                    "America/Denver",
-                    "Europe/London",
-                    "Europe/Paris",
-                    "Europe/Berlin",
-                    "Europe/Moscow",
-                    "Asia/Tokyo",
-                    "Asia/Shanghai",
-                    "Asia/Hong_Kong",
-                    "Asia/Singapore",
-                    "Asia/Dubai",
-                    "Australia/Sydney",
                 ],
                 "unit" => vec![
                     "acre",
