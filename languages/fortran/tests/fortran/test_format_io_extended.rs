@@ -261,6 +261,21 @@ fortran_cases! {
         ["L     R"]
     };
 
+    fmt_tab_absolute_position => {
+        "program t\nprint '(A, T6, A)', 'left', 'right'\nend program t\n",
+        ["left right"]
+    };
+
+    fmt_tab_relative_position => {
+        "program t\nprint '(A, TR3, A)', 'ab', 'cd'\nend program t\n",
+        ["ab   cd"]
+    };
+
+    fmt_record_advance_with_slash => {
+        "program t\nprint '(A, /, A)', 'top', 'bottom'\nend program t\n",
+        ["top\nbottom"]
+    };
+
     fmt_a_e_combined_spacing => {
         "program t\nprint '(A, E10.2)', 'val=', 3.14\nend program t\n",
         ["val= 3.14e+0"]

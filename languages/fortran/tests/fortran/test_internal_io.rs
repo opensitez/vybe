@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── WRITE to character variable (internal file) ───────────────
 
@@ -362,4 +362,82 @@ contains
 end program test
 "#,
     );
+}
+
+#[test]
+fn internal_write_and_read_integer_roundtrip() {
+    let out = run_prints(
+        r#"
+program test
+    character(len=10) :: buf
+    integer :: n
+    write(buf, '(I0)') 87
+    read(buf, '(I0)') n
+    print *, n
+end program test
+"#,
+    );
+
+    assert_eq!(out, vec!["87"]);
+}
+
+#[test]
+fn internal_write_logical_and_array() {
+    let out = run_prints(
+        r#"
+program test
+    character(len=20) :: buf
+    logical :: flag
+    integer :: i
+    flag = .true.
+    write(buf, '(L1, 1X, I0)') flag, 3
+    read(buf, '(L1, 1X, I0)') flag, i
+    print *, i
+end program test
+"#,
+    );
+
+    assert_eq!(out, vec!["3"]);
+}
+
+#[test]
+fn internal_read_iostat_success_and_fail() {
+    let out = run_prints(
+        r#"
+program test
+    character(len=8) :: ok = ' 12'
+    character(len=8) :: bad = 'abc'
+    integer :: x
+    integer :: ios_ok, ios_bad
+    read(ok, *, iostat=ios_ok) x
+    read(bad, *, iostat=ios_bad) x
+    print *, ios_ok
+    if (ios_bad /= 0) then
+        print *, 1
+    else
+        print *, 0
+    end if
+end program test
+"#,
+    );
+
+    assert_eq!(out, vec!["0", "1"]);
+}
+
+#[test]
+fn internal_write_csv_loop() {
+    let out = run_prints(
+        r#"
+program test
+    character(len=40) :: row
+    integer :: i
+    do i = 1, 3
+        write(row, '(I0, ",", I0, ",", I0)') i, i+1, i+2
+        print *, trim(row)
+    end do
+end program test
+"#,
+    );
+
+    assert_eq!(out, vec!["1,2,3", "2,3,4", "3,4,5"]);
 }

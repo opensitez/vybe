@@ -379,3 +379,61 @@ end program array_elemental_lowering_elemental_reshape_replay
     );
     assert_eq!(out, vec!["2", "3", "7", "21"]);
 }
+
+#[test]
+fn array_elemental_lowering_modular_remainder_vector() {
+    let out = run_prints(
+        r#"
+program array_elemental_lowering_modular_remainder_vector
+    integer, allocatable :: values(:)
+    integer, allocatable :: rems(:)
+    values = (/ 8, 9, 10, 11, 12 /)
+    rems = mod(values, 5)
+    print *, size(rems)
+    print *, sum(rems)
+    print *, rems(2)
+    print *, rems(5)
+end program array_elemental_lowering_modular_remainder_vector
+"#,
+    );
+    assert_eq!(out, vec!["5", "10", "4", "2"]);
+}
+
+#[test]
+fn array_elemental_lowering_overlapping_section_with_rhs_temp_semantics() {
+    let out = run_prints(
+        r#"
+program array_elemental_lowering_overlapping_section_with_rhs_temp_semantics
+    integer, allocatable :: values(:)
+    values = (/ 1, 2, 3, 4, 5, 6 /)
+    values(2:5) = values(1:4) + values(2:5)
+    print *, size(values)
+    print *, sum(values)
+    print *, values(1)
+    print *, values(2)
+    print *, values(5)
+end program array_elemental_lowering_overlapping_section_with_rhs_temp_semantics
+"#,
+    );
+    assert_eq!(out, vec!["6", "31", "1", "3", "9"]);
+}
+
+#[test]
+fn array_elemental_lowering_real_where_numeric_to_logical() {
+    let out = run_prints(
+        r#"
+program array_elemental_lowering_real_where_numeric_to_logical
+    real, allocatable :: values(:)
+    logical, allocatable :: flags(:)
+    values = (/ -1.0, 0.5, 2.25, -0.2 /)
+    flags = values > 0.0
+    print *, size(flags)
+    print *, count(flags)
+    print *, merge(1, 0, all(flags(1:2)))
+    print *, merge(1, 0, any(flags))
+    print *, merge(1, 0, flags(3))
+end program array_elemental_lowering_real_where_numeric_to_logical
+"#,
+    );
+    assert_eq!(out, vec!["4", "2", "0", "1", "1"]);
+}

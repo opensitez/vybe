@@ -1,7 +1,7 @@
 //! Extended subroutine and function procedure coverage: internal procedures,
 //! INTENT semantics, optional arguments, recursion, pure/elemental calls.
 
-use super::helpers::compile_ok;
+use super::helpers::run_prints;
 
 fortran_cases! {
     // ── Internal subroutines ─────────────────────────────────────────
@@ -284,7 +284,7 @@ fortran_cases! {
 
 #[test]
 fn compile_mutual_recursive_even_odd() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program t
     print *, is_even(6)
@@ -311,11 +311,12 @@ contains
 end program t
 "#,
     );
+    assert_eq!(out, vec!["true"]);
 }
 
 #[test]
 fn compile_optional_three_parameter_subroutine() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program t
     call tagged(1)
@@ -325,16 +326,21 @@ contains
     subroutine tagged(a, b, c)
         integer, intent(in) :: a
         integer, intent(in), optional :: b, c
-        print *, a
+        integer :: total
+        total = a
+        if (present(b)) total = total + b
+        if (present(c)) total = total + c
+        print *, total
     end subroutine tagged
 end program t
 "#,
     );
+    assert_eq!(out, vec!["1", "3", "6"]);
 }
 
 #[test]
 fn compile_nested_contains_many_procedures() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program t
     print *, f1(1) + f2(2) + f3(3)
@@ -355,15 +361,16 @@ contains
         r = x
     end function f3
     subroutine noop()
-    end subroutine noop
+end subroutine noop
 end program t
 "#,
     );
+    assert_eq!(out, vec!["6"]);
 }
 
 #[test]
 fn compile_pure_elemental_function_signature() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program t
     integer :: a(2) = [1, 2]
@@ -373,18 +380,20 @@ contains
         integer, intent(in) :: x, bias
         integer :: r
         r = x + bias
-    end function blend
+end function blend
 end program t
 "#,
     );
+    assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn compile_intent_mixed_subroutine_signature() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program t
     integer :: x, y(2)
+    y = [4, 5]
     call mixer(3, x, y)
 contains
     subroutine mixer(n, s, arr)
@@ -397,11 +406,12 @@ contains
 end program t
 "#,
     );
+    assert_eq!(out, vec!["3", "15"]);
 }
 
 #[test]
 fn compile_recursive_function_with_result_clause() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program t
     print *, len_num(12345)
@@ -418,4 +428,111 @@ contains
 end program t
 "#,
     );
+    assert_eq!(out, vec!["5"]);
+}
+
+#[test]
+fn mutual_recursive_even_odd_runtime_paths() {
+    let out = run_prints(
+        r#"
+program t
+    print *, is_even(7)
+    print *, is_odd(8)
+contains
+    recursive function is_even(n) result(b)
+        integer, intent(in) :: n
+        logical :: b
+        if (n == 0) then
+            b = .true.
+        else
+            b = is_odd(n - 1)
+        end if
+    end function is_even
+
+    recursive function is_odd(n) result(b)
+        integer, intent(in) :: n
+        logical :: b
+        if (n == 0) then
+            b = .false.
+        else
+            b = is_even(n - 1)
+        end if
+    end function is_odd
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["False", "False"]);
+}
+
+#[test]
+fn optional_parameter_coverage_for_third_argument_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    call tagged(1)
+    call tagged(1, 2)
+    call tagged(1, 2, 3)
+contains
+    subroutine tagged(a, b, c)
+        integer, intent(in) :: a
+        integer, intent(in), optional :: b, c
+        integer :: total
+        total = a
+        if (present(b)) then
+            total = total + b
+        end if
+        if (present(c)) then
+            total = total + c
+        end if
+        print *, total
+    end subroutine tagged
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["1", "3", "6"]);
+}
+
+#[test]
+fn mixed_intent_signature_runtime_results() {
+    let out = run_prints(
+        r#"
+program t
+    integer :: x
+    integer :: y(2)
+    y = [4, 5]
+    call mixer(3, x, y)
+    print *, x
+    print *, sum(y)
+contains
+    subroutine mixer(n, s, arr)
+        integer, intent(in) :: n
+        integer, intent(out) :: s
+        integer, intent(inout) :: arr(2)
+        s = n
+        arr = arr + n
+    end subroutine mixer
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["3", "15"]);
+}
+
+#[test]
+fn elemental_signature_for_arrays_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    integer :: a(2) = [1, 2]
+    print *, sum(blend(a, 0))
+    print *, sum(blend(a, 4))
+contains
+    elemental function blend(x, bias) result(r)
+        integer, intent(in) :: x, bias
+        integer :: r
+        r = x + bias
+    end function blend
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["3", "11"]);
 }

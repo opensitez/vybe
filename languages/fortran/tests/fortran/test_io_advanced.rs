@@ -529,6 +529,64 @@ end program test
     assert_eq!(out, vec!["99"]);
 }
 
+#[test]
+fn read_err_label_path() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: n, ios
+    character(len=12) :: buf
+    n = -1
+    read('bad', '(I0)', iostat=ios, err=100, end=200) n
+    print *, n
+    goto 300
+100 print *, ios
+    goto 300
+200 print *, -1
+300 continue
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["-1"]);
+}
+
+#[test]
+fn write_err_label_path() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: ios
+    write(999, *, err=10, iostat=ios) 42
+    print *, 0
+10 continue
+    if (ios /= 0) print *, 1
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["1"]);
+}
+
+#[test]
+fn io_position_and_backspace_reseek() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: a, b
+    open(unit=10, file='adv_pos.bin', status='replace', action='readwrite')
+    write(10, '(I0)') 11
+    write(10, '(I0)') 22
+    backspace(10)
+    read(10, '(I0)') a
+    rewind(10)
+    read(10, '(I0)') b
+    close(10)
+    print *, a + b
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["33"]);
+}
+
 // ── PRINT with formatting ──────────────────────────────────────
 
 #[test]

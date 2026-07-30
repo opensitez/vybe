@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 macro_rules! c {
     ($name:ident,$src:expr) => {
         #[test]
@@ -127,3 +127,75 @@ c!(
     alloc_nullify_ptr_30,
     "program p\ninteger, pointer :: p(:)\nnullify(p)\nend program p\n"
 );
+
+#[test]
+fn allocate_scalar_runtime_can_store_and_print() {
+    assert_eq!(
+        run_prints(
+            "program t\n\
+integer, allocatable :: x\n\
+allocate(x)\n\
+x = 17\n\
+print *, x\n\
+deallocate(x)\n\
+end program t\n"
+        ),
+        vec!["17"]
+    );
+}
+
+#[test]
+fn allocate_pointer_runtime_populates_array() {
+    assert_eq!(
+        run_prints(
+            "program t\n\
+integer, pointer :: p(:)\n\
+allocate(p(3))\n\
+p = [1, 2, 3]\n\
+print *, p(1)\n\
+print *, p(3)\n\
+deallocate(p)\n\
+end program t\n"
+        ),
+        vec!["1", "3"]
+    );
+}
+
+#[test]
+fn allocate_allocatable_component_runtime() {
+    assert_eq!(
+        run_prints(
+            "type :: t\n\
+integer :: x = 11\n\
+integer, allocatable :: b(:)\n\
+end type t\n\
+program t\n\
+type(t), allocatable :: obj\n\
+allocate(obj)\n\
+allocate(obj%b(3))\n\
+obj%b = [2, 4, 6]\n\
+print *, obj%x\n\
+print *, sum(obj%b)\n\
+deallocate(obj%b)\n\
+deallocate(obj)\n\
+end program t\n"
+        ),
+        vec!["11", "12"]
+    );
+}
+
+#[test]
+fn allocate_character_payload_after_alloc_then_assign() {
+    assert_eq!(
+        run_prints(
+            "program t\n\
+character(len=:), allocatable :: s\n\
+allocate(character(len=4) :: s)\n\
+s = 'rust'\n\
+print *, len(s)\n\
+print *, s\n\
+end program t\n"
+        ),
+        vec!["4", "rust"]
+    );
+}

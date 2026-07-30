@@ -82,9 +82,10 @@ fn verify_not_in_set() {
 
 #[test]
 fn adjustr_basic() {
-    compile_ok(
+    let out = run_prints(
         "program t\ncharacter(len=10) :: s = 'hello'\ncharacter(len=10) :: r\nr = adjustr(s)\nprint *, len_trim(r)\nend program t\n",
     );
+    assert_eq!(out, ["5"]);
 }
 
 #[test]
@@ -99,23 +100,26 @@ fn adjustl_result() {
 
 #[test]
 fn char_slice_range() {
-    compile_ok(
+    let out = run_prints(
         "program t\ncharacter(len=10) :: s = 'abcdefgh'\ncharacter(len=3) :: sub\nsub = s(2:4)\nprint *, sub\nend program t\n",
     );
+    assert_eq!(out, ["bcd"]);
 }
 
 #[test]
 fn char_slice_from_start() {
-    compile_ok(
+    let out = run_prints(
         "program t\ncharacter(len=10) :: s = 'hello'\ncharacter(len=3) :: sub\nsub = s(:3)\nprint *, sub\nend program t\n",
     );
+    assert_eq!(out, ["hel"]);
 }
 
 #[test]
 fn char_slice_to_end() {
-    compile_ok(
+    let out = run_prints(
         "program t\ncharacter(len=10) :: s = 'hello'\ncharacter(len=5) :: sub\nsub = s(3:)\nprint *, trim(sub)\nend program t\n",
     );
+    assert_eq!(out, ["llo"]);
 }
 
 #[test]
@@ -229,26 +233,54 @@ fn shared_str_getcsv_direct_runtime() {
     assert_eq!(out, ["5"]);
 }
 
+#[test]
+fn str_split_with_empty_fields() {
+    let out = run_prints(
+        "program t\ncharacter(len=10), allocatable :: tokens(:)\ntokens = str_split('a,,b', ',')\nprint *, size(tokens)\nprint *, trim(tokens(1))\nprint *, len_trim(trim(tokens(2)))\nprint *, trim(tokens(3))\nend program t\n",
+    );
+    assert_eq!(out, ["3", "a", "0", "b"]);
+}
+
+#[test]
+fn str_split_multi_char_delimiter_chain() {
+    let out = run_prints(
+        "program t\ncharacter(len=20), allocatable :: parts(:)\nparts = str_split('x--y--z--', '--')\nprint *, size(parts)\nprint *, trim(parts(1))\nprint *, trim(parts(2))\nprint *, len_trim(trim(parts(4)))\nend program t\n",
+    );
+    assert_eq!(out, ["4", "x", "y", "0"]);
+}
+
+#[test]
+fn string_slice_len_trim_chain() {
+    let out = run_prints(
+        "program t\ncharacter(len=12) :: s\ns = '  trim_me  '\nprint *, len_trim(s(3:))\nprint *, len_trim(s(:4))\nprint *, len_trim(s(3:6))\nend program t\n",
+    );
+    assert_eq!(out, ["7", "4", "4"]);
+}
+
 // ── Lexicographic comparison ──────────────────────────────────
 
 #[test]
 fn lge_equal() {
-    compile_ok("program t\nlogical :: b\nb = lge('abc', 'abc')\nprint *, b\nend program t\n");
+    let out = run_prints("program t\nlogical :: b\nb = lge('abc', 'abc')\nprint *, b\nend program t\n");
+    assert_eq!(out, ["true"]);
 }
 
 #[test]
 fn lgt_greater() {
-    compile_ok("program t\nlogical :: b\nb = lgt('b', 'a')\nprint *, b\nend program t\n");
+    let out = run_prints("program t\nlogical :: b\nb = lgt('b', 'a')\nprint *, b\nend program t\n");
+    assert_eq!(out, ["true"]);
 }
 
 #[test]
 fn lle_less_equal() {
-    compile_ok("program t\nlogical :: b\nb = lle('a', 'b')\nprint *, b\nend program t\n");
+    let out = run_prints("program t\nlogical :: b\nb = lle('a', 'b')\nprint *, b\nend program t\n");
+    assert_eq!(out, ["true"]);
 }
 
 #[test]
 fn llt_less() {
-    compile_ok("program t\nlogical :: b\nb = llt('a', 'b')\nprint *, b\nend program t\n");
+    let out = run_prints("program t\nlogical :: b\nb = llt('a', 'b')\nprint *, b\nend program t\n");
+    assert_eq!(out, ["true"]);
 }
 
 // ── String concatenation ─────────────────────────────────────
@@ -305,32 +337,37 @@ fn trim_result() {
 
 #[test]
 fn char_compare_eq() {
-    compile_ok(
+    let out = run_prints(
         "program t\ncharacter(len=5) :: a = 'hello'\ncharacter(len=5) :: b = 'hello'\nprint *, a == b\nend program t\n",
     );
+    assert_eq!(out, ["true"]);
 }
 
 #[test]
 fn char_compare_ne() {
-    compile_ok(
+    let out = run_prints(
         "program t\ncharacter(len=5) :: a = 'hello'\ncharacter(len=5) :: b = 'world'\nprint *, a /= b\nend program t\n",
     );
+    assert_eq!(out, ["true"]);
 }
 
 #[test]
 fn char_compare_lt() {
-    compile_ok(
-        "program t\ncharacter(len=5) :: a = 'apple'\ncharacter(len=5) :: b = 'banana'\nprint *, a < b\nend program t\n",
+    let out = run_prints(
+        "program t\ncharacter(len=5) :: a = 'apple'\ncharacter(len=6) :: b = 'banana'\nprint *, a < b\nend program t\n",
     );
+    assert_eq!(out, ["true"]);
 }
 
 // ── Assumed-length character parameters ───────────────────────
 
 #[test]
 fn char_assumed_len_arg() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
+    call print_it('alice')
+    call print_it('bob')
 contains
     subroutine print_it(s)
         character(len=*), intent(in) :: s
@@ -339,11 +376,12 @@ contains
 end program test
 "#,
     );
+    assert_eq!(out, ["alice", "bob"]);
 }
 
 #[test]
 fn char_len_star_function() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     call show('hello')
@@ -355,6 +393,7 @@ contains
 end program test
 "#,
     );
+    assert_eq!(out, ["hello"]);
 }
 
 // ── String in derived type ────────────────────────────────────

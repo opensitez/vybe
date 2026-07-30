@@ -14,4 +14,5 @@ end program test_ieee_variable_rounding_state
     );
 
     assert_eq!(out.len(), 1);
+    assert!(matches!(out[0].as_str(), "0" | "1" | "2" | "3" | "4" | "5"));
 }

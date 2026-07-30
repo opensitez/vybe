@@ -309,6 +309,30 @@ end program test
 }
 
 #[test]
+fn polymorphic_arg_in_runtime() {
+    let out = run_prints(
+        r#"
+program test
+    type :: Animal
+        character(len=20) :: name = 'unknown'
+    end type Animal
+    type, extends(Animal) :: Dog
+    end type Dog
+    type(Dog) :: d
+    d%name = 'Rex'
+    call show_name(d)
+contains
+    subroutine show_name(a)
+        class(Animal), intent(in) :: a
+        print *, trim(a%name)
+    end subroutine show_name
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["Rex"]);
+}
+
+#[test]
 fn polymorphic_allocatable() {
     compile_ok(
         r#"
@@ -327,6 +351,25 @@ end program test
 }
 
 #[test]
+fn polymorphic_allocatable_runtime() {
+    let out = run_prints(
+        r#"
+program test
+    type :: Vehicle
+        integer :: wheels = 4
+    end type Vehicle
+    type, extends(Vehicle) :: Bike
+    end type Bike
+    class(Vehicle), allocatable :: v
+    allocate(Bike :: v)
+    print *, v%wheels
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["4"]);
+}
+
+#[test]
 fn polymorphic_array() {
     compile_ok(
         r#"
@@ -341,6 +384,32 @@ program test
 end program test
 "#,
     );
+}
+
+#[test]
+fn select_type_runtime_class_default() {
+    let out = run_prints(
+        r#"
+program test
+    type :: Base
+    end type Base
+    type, extends(Base) :: Derived
+        integer :: n = 7
+    end type Derived
+
+    class(Base), allocatable :: item
+    allocate(Derived :: item)
+    select type (item)
+    type is (Derived)
+        print *, item%n
+    class default
+        print *, -1
+    end select
+end program test
+"#,
+    );
+
+    assert_eq!(out, vec!["7"]);
 }
 
 // ── TYPE_IS vs CLASS_IS in SELECT TYPE ───────────────────────

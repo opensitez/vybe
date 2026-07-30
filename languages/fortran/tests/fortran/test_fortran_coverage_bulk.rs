@@ -14,7 +14,7 @@ end program fortran_bulk_array_section_mass
 "#,
     );
 
-    assert_eq!(out, (1..=100).map(|i| (11 * (2 * i + 9) / 2).to_string()).collect::<Vec<_>>());
+    assert_eq!(out, (1..=100).map(|i| (11 * (2 * i + 9) / 2).to_string()).collect::<Vec<String>>());
 }
 
 #[test]
@@ -34,7 +34,7 @@ end program fortran_bulk_array_shape_casts
 "#,
     );
 
-    assert_eq!(out, (1..=10).map(|i| i.to_string()).collect::<Vec<_>>());
+    assert_eq!(out, (1..=10).map(|i| i.to_string()).collect::<Vec<String>>());
 }
 
 #[test]
@@ -61,7 +61,7 @@ end program fortran_bulk_string_intrinsics_chain
                 let t = format!("item-{}-{}", i, i);
                 (t.len()).to_string()
             })
-            .collect::<Vec<_>>(),
+            .collect::<Vec<String>>(),
     );
 }
 
@@ -95,7 +95,7 @@ end program fortran_bulk_select_case_mixed
                 "hi".to_string()
             }
         })
-        .collect();
+        .collect::<Vec<String>>();
     assert_eq!(out, expected);
 }
 
@@ -124,7 +124,7 @@ end program fortran_bulk_select_case_character_ranges
     let expected: Vec<String> = (1..=100)
         .map(|i| if ((i - 1) % 26 + 1) <= 13 { "first" } else { "second" })
         .map(|x| x.to_string())
-        .collect();
+        .collect::<Vec<String>>();
     assert_eq!(out, expected);
 }
 
@@ -151,7 +151,7 @@ end program fortran_bulk_subroutine_optionals_flow
 "#,
     );
 
-    assert_eq!(out, (1..=100).map(|i| i.to_string()).collect::<Vec<_>>());
+    assert_eq!(out, (1..=100).map(|i| i.to_string()).collect::<Vec<String>>());
 }
 
 #[test]
@@ -174,7 +174,7 @@ end program fortran_bulk_pointer_reassociation
 "#,
     );
 
-    assert_eq!(out, (1..=100).map(|i| i.to_string()).collect::<Vec<_>>());
+    assert_eq!(out, (1..=100).map(|i| i.to_string()).collect::<Vec<String>>());
 }
 
 #[test]
@@ -215,7 +215,7 @@ end program fortran_bulk_procedure_pointer_dispatch
         out,
         (1..=50)
             .map(|i| if i % 2 == 0 { (2 * i).to_string() } else { (3 * i).to_string() })
-            .collect(),
+            .collect::<Vec<String>>(),
     );
 }
 
@@ -250,7 +250,7 @@ end program fortran_bulk_recursive_factorials
             }
             r.to_string()
         })
-        .collect();
+        .collect::<Vec<String>>();
     assert_eq!(out, expected);
 }
 
@@ -285,7 +285,7 @@ end program fortran_bulk_logical_parentheses
             }
         })
         .map(|s| s.to_string())
-        .collect();
+        .collect::<Vec<String>>();
     assert_eq!(out, expected);
 }
 
@@ -303,7 +303,7 @@ end program fortran_bulk_implicit_none_recovery
 "#,
     );
 
-    assert_eq!(out, (3..=102).map(|v| v.to_string()).collect::<Vec<_>>());
+    assert_eq!(out, (3..=102).map(|v| v.to_string()).collect::<Vec<String>>());
 }
 
 #[test]
@@ -333,7 +333,7 @@ end program fortran_bulk_namespace_and_modules
         out,
         (1..=50)
             .map(|v| (3 * v).to_string())
-            .collect(),
+            .collect::<Vec<String>>(),
     );
 }
 
@@ -354,7 +354,7 @@ end program fortran_bulk_array_bounds_edges
 "#,
     );
 
-    assert_eq!(out, (8..=12).map(|v| v.to_string()).collect::<Vec<_>>());
+    assert_eq!(out, (8..=12).map(|v| v.to_string()).collect::<Vec<String>>());
 }
 
 #[test]
@@ -376,7 +376,7 @@ end program fortran_bulk_associative_pointer_lifetimes
 "#,
     );
 
-    assert_eq!(out, (1..=20).map(|v| v.to_string()).collect::<Vec<_>>());
+    assert_eq!(out, (1..=20).map(|v| v.to_string()).collect::<Vec<String>>());
 }
 
 #[test]
@@ -399,7 +399,7 @@ end program fortran_bulk_derived_type_defaults
 "#,
     );
 
-    assert_eq!(out, (3..=102).map(|v| (v + 2).to_string()).collect::<Vec<_>>());
+    assert_eq!(out, (3..=102).map(|v| (v + 2).to_string()).collect::<Vec<String>>());
 }
 
 #[test]
@@ -425,7 +425,7 @@ end program fortran_bulk_do_construct_progress
             acc
         })
         .map(|v| v.to_string())
-        .collect::<Vec<_>>();
+        .collect::<Vec<String>>();
 
     assert_eq!(out, expected);
 }
@@ -460,7 +460,7 @@ end program fortran_bulk_select_type_class
 
     let expected: Vec<String> = (1..=100)
         .map(|i| if i % 2 == 0 { "2" } else { "1" }.to_string())
-        .collect();
+        .collect::<Vec<String>>();
     assert_eq!(out, expected);
 }
 
@@ -487,7 +487,7 @@ end program fortran_bulk_optional_keywords
 "#,
     );
 
-    assert_eq!(out, (1..=100).map(|i| i.to_string()).collect::<Vec<_>>());
+    assert_eq!(out, (1..=100).map(|i| i.to_string()).collect::<Vec<String>>());
 }
 
 #[test]
@@ -535,7 +535,7 @@ end program fortran_bulk_file_unit_style
 "#,
     );
 
-    assert_eq!(out, (1..=20).map(|i| i.to_string()).collect::<Vec<_>>());
+    assert_eq!(out, (1..=20).map(|i| i.to_string()).collect::<Vec<String>>());
 }
 
 #[test]
@@ -558,8 +558,14 @@ end program fortran_bulk_stop_error_paths
     assert_eq!(
         out,
         (1..=100)
-            .map(|i| if i % 25 == 0 { "0" } else { "1" }.to_string())
-            .collect(),
+            .map(|i| {
+                if i % 25 == 0 {
+                    "0".to_string()
+                } else {
+                    "1".to_string()
+                }
+            })
+            .collect::<Vec<String>>(),
     );
 }
 
@@ -579,7 +585,7 @@ end program fortran_bulk_static_init_chain
 "#,
     );
 
-    assert_eq!(out, (1..=100).map(|i| (i + 6).to_string()).collect::<Vec<_>>());
+    assert_eq!(out, (1..=100).map(|i| (i + 6).to_string()).collect::<Vec<String>>());
 }
 
 #[test]
@@ -597,6 +603,194 @@ end program fortran_bulk_floating_point_rounding_like
 "#,
     );
 
-    let expected: Vec<String> = (1..=100).map(|i| (10.0 / i as f64).round() as i32).map(|v| v.to_string()).collect();
+    let expected: Vec<String> = (1..=100)
+        .map(|i| (10.0 / i as f64).round() as i32)
+        .map(|v| v.to_string())
+        .collect::<Vec<String>>();
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn fortran_bulk_associate_array_aliasing() {
+    let out = run_prints(
+        r#"
+program fortran_bulk_associate_array_aliasing
+    integer :: values(4)
+    integer :: i
+    values = (/ 11, 22, 33, 44 /)
+
+    associate (middle => values(2:3))
+        middle = middle * 2
+    end associate
+
+    do i = 1, 4
+        print *, values(i)
+    end do
+end program fortran_bulk_associate_array_aliasing
+"#,
+    );
+
+    assert_eq!(out, vec!["11".to_string(), "44".to_string(), "66".to_string(), "44".to_string()]);
+}
+
+#[test]
+fn fortran_bulk_forall_masked_transform() {
+    let out = run_prints(
+        r#"
+program fortran_bulk_forall_masked_transform
+    integer :: values(10)
+    integer :: i
+    values = (/ (i, i = 1, 10) /)
+
+    forall (i = 1:10, mod(i, 2) == 0)
+        values(i) = values(i) + 100
+    end forall
+
+    do i = 1, 10
+        print *, values(i)
+    end do
+end program fortran_bulk_forall_masked_transform
+"#,
+    );
+
+    let expected = (1..=10)
+        .map(|i| {
+            if i % 2 == 0 {
+                (i + 100).to_string()
+            } else {
+                i.to_string()
+            }
+        })
+        .collect::<Vec<String>>();
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn fortran_bulk_where_elsewhere_mix() {
+    let out = run_prints(
+        r#"
+program fortran_bulk_where_elsewhere_mix
+    integer :: source(1:8)
+    integer :: transformed(1:8)
+    integer :: i
+    do i = 1, 8
+        source(i) = i
+    end do
+
+    where (mod(source, 3) == 0)
+        transformed = source * 10
+    elsewhere
+        transformed = source + 1
+    end where
+
+    do i = 1, 8
+        print *, transformed(i)
+    end do
+end program fortran_bulk_where_elsewhere_mix
+"#,
+    );
+
+    let expected: Vec<String> = (1..=8)
+        .map(|i| if i % 3 == 0 { i * 10 } else { i + 1 })
+        .map(|v| v.to_string())
+        .collect::<Vec<String>>();
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn fortran_bulk_nested_associate_array_aliasing() {
+    let out = run_prints(
+        r#"
+program fortran_bulk_nested_associate_array_aliasing
+    integer :: buffer(4)
+    integer :: base
+
+    base = 5
+
+    associate (whole => buffer)
+        whole = (/ 1, 2, 3, 4 /)
+        associate (edge => whole(2:3))
+            edge = edge + base
+        end associate
+        print *, whole(1), whole(2), whole(3), whole(4)
+    end associate
+end program fortran_bulk_nested_associate_array_aliasing
+"#,
+    );
+
+    assert_eq!(out, vec!["1", "7", "8", "4"]);
+}
+
+#[test]
+fn fortran_bulk_forall_multi_index_matrix() {
+    let out = run_prints(
+        r#"
+program fortran_bulk_forall_multi_index_matrix
+    integer :: m(4,3)
+    integer :: i, j
+
+    do i = 1, 4
+        do j = 1, 3
+            m(i, j) = 10 * i + j
+        end do
+    end do
+
+    forall (i = 1:4, j = 1:3, i == j)
+        m(i, j) = m(i, j) + 100
+    end forall
+
+    do i = 1, 4
+        do j = 1, 3
+            print *, m(i, j)
+        end do
+    end do
+end program fortran_bulk_forall_multi_index_matrix
+"#,
+    );
+
+    let expected = vec![
+        "111", "12", "13", //
+        "21", "122", "23", //
+        "31", "32", "133", //
+        "41", "42", "43",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect::<Vec<String>>();
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn fortran_bulk_where_logical_mask_array() {
+    let out = run_prints(
+        r#"
+program fortran_bulk_where_logical_mask_array
+    integer :: a(1:8)
+    integer :: b(1:8)
+    logical :: is_even(1:8)
+    integer :: i
+
+    do i = 1, 8
+        a(i) = i
+        is_even(i) = mod(i, 2) == 0
+    end do
+
+    where (is_even)
+        b = a * 3
+    elsewhere
+        b = a + 10
+    end where
+
+    do i = 1, 8
+        print *, b(i)
+    end do
+end program fortran_bulk_where_logical_mask_array
+"#,
+    );
+
+    let expected = (1..=8)
+        .map(|i| if i % 2 == 0 { (i * 3) } else { (i + 10) })
+        .map(|v| v.to_string())
+        .collect::<Vec<String>>();
     assert_eq!(out, expected);
 }

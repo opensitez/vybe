@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 macro_rules! c {
     ($name:ident, $src:expr) => {
@@ -191,3 +191,70 @@ print *, a
 print *, b
 end program p"
 );
+
+#[test]
+fn json_payload_length_runtime() {
+    let out = run_prints(
+        r#"
+program p
+    character(len=64) :: s
+    s = '{"a":1}'
+    print *, len_trim(s)
+end program p
+"#,
+    );
+    assert_eq!(out, vec!["7"]);
+}
+
+#[test]
+fn json_key_presence_runtime() {
+    let out = run_prints(
+        r#"
+program p
+    character(len=64) :: s
+    s = '{"user":"fortran"}'
+    print *, index(s, '"user"')
+    print *, index(s, 'fortran')
+end program p
+"#,
+    );
+    assert_eq!(out, vec!["2", "10"]);
+}
+
+#[test]
+fn xml_tag_scan_runtime() {
+    let out = run_prints(
+        r#"
+    program p
+    character(len=64) :: s
+    integer :: i
+    s = '<msg><id>7</id></msg>'
+    i = index(s, '<id>')
+    print *, i
+    print *, len_trim(trim(s(i:)))
+    print *, index(s(i:), '</id>')
+end program p
+"#,
+    );
+    assert_eq!(out, vec!["6", "16", "6"]);
+}
+
+#[test]
+fn xml_and_json_concat_runtime() {
+    let out = run_prints(
+        r#"
+    program p
+    character(len=128) :: xml
+    character(len=128) :: json
+    character(len=256) :: combined
+    xml = '<row><id>1</id></row>'
+    json = '{"id":1}'
+    combined = trim(xml) // trim(json)
+    print *, index(combined, '{')
+    print *, trim(combined(1:5))
+    print *, trim(combined(22:25))
+end program p
+"#,
+    );
+    assert_eq!(out, vec!["22", "<row>", "{\"id"]);
+}

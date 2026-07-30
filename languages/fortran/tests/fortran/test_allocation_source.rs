@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 macro_rules! c {
     ($n:ident,$s:expr) => {
         #[test]
@@ -90,3 +90,48 @@ allocate(a(2,2,1), source=reshape([1,2,3,4],[2,2,1]))
 end program p
 "
 );
+
+#[test]
+fn allocation_source_copies_array_payload_to_destination() {
+    assert_eq!(
+        run_prints(
+            "program t\n\
+integer, allocatable :: a(:)\n\
+allocate(a(3), source=[1,2,3])\n\
+print *, a(1)\n\
+print *, a(2)\n\
+print *, a(3)\n\
+end program t\n"
+        ),
+        vec!["1", "2", "3"]
+    );
+}
+
+#[test]
+fn allocation_source_copies_scalar_payload() {
+    assert_eq!(
+        run_prints(
+            "program t\n\
+integer, allocatable :: x\n\
+allocate(x, source=5)\n\
+print *, x\n\
+end program t\n"
+        ),
+        vec!["5"]
+    );
+}
+
+#[test]
+fn allocation_source_copies_character_payload_and_length() {
+    assert_eq!(
+        run_prints(
+            "program t\n\
+character(len=:), allocatable :: s\n\
+allocate(character(len=3) :: s, source='abc')\n\
+print *, len(s)\n\
+print *, s\n\
+end program t\n"
+        ),
+        vec!["3", "abc"]
+    );
+}

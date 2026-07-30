@@ -250,4 +250,29 @@ fortran_cases! {
         "program t\nreal, parameter :: pi = acos(-1.0)\nreal :: s, c\ns = sin(pi/4.0)\nc = cos(pi/4.0)\nprint *, nint((s*s + c*c)*100)\nend program t\n",
         ["100"]
     };
+
+    asinh_zero => {
+        "program t\nprint *, nint(asinh(0.0)*100)\nend program t\n",
+        ["0"]
+    };
+
+    asinh_roundtrip_from_sinh => {
+        "program t\nreal :: x\nreal :: y\nx = 1.0\ny = asinh(sinh(x))\nprint *, nint(y*1000)\nend program t\n",
+        ["1000"]
+    };
+
+    acosh_roundtrip_from_cosh => {
+        "program t\nreal :: x\nreal :: y\nx = 1.0\ny = acosh(cosh(x))\nprint *, nint(y*1000)\nend program t\n",
+        ["1000"]
+    };
+
+    atanh_roundtrip_from_tanh => {
+        "program t\nreal :: x\nreal :: y\nx = 0.5\ny = atanh(tanh(x))\nprint *, nint(y*1000)\nend program t\n",
+        ["500"]
+    };
+
+    sin_array_elemental => {
+        "program t\nreal, parameter :: pi = acos(-1.0)\nreal :: angles(2)\nreal :: ys(2)\nangles = [0.0, pi/6.0]\nys = sin(angles)\nprint *, nint(ys(1)*1000)\nprint *, nint(ys(2)*1000)\nend program t\n",
+        ["0", "500"]
+    };
 }

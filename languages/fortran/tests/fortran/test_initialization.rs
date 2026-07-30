@@ -187,3 +187,86 @@ print *,a
 end program p
 "
 );
+
+c!(
+    init_component_array_21,
+    "type::t
+integer :: a(3) = [1,2,3]
+end type t
+program p
+type(t)::v
+print *, v%a(2)
+end program p
+"
+);
+
+c!(
+    init_component_char_22,
+    "type::t
+character(len=4) :: tag = 'init'
+logical :: active = .true.
+end type t
+program p
+type(t)::v
+print *, v%tag
+print *, v%active
+end program p
+"
+);
+
+c!(
+    init_parameter_expression_23,
+    "program p
+integer, parameter :: one = 1
+integer, parameter :: two = one + 1
+integer, parameter :: three = two + one
+print *, three
+end program p
+"
+);
+
+c!(
+    init_array_with_implied_shape_24,
+    "program p
+integer, dimension(2,3) :: m = reshape([1,2,3,4,5,6], [2,3])
+print *, m(2,2)
+end program p
+"
+);
+
+c!(
+    init_pointer_target_default_25,
+    "program p
+integer, target :: t = 7
+integer, pointer :: p => t
+print *, p
+end program p
+"
+);
+
+c!(
+    init_allocatable_default_26,
+    "program p
+integer, allocatable :: a(:)
+a = [1,2,3]
+print *, a(1)
+end program p
+"
+);
+
+c!(
+    init_derived_optional_component_27,
+    "type::inner
+integer :: x = 10
+end type inner
+type::outer
+type(inner) :: c
+integer :: y = 4
+end type outer
+program p
+type(outer)::v
+print *, v%c%x
+print *, v%y
+end program p
+"
+);

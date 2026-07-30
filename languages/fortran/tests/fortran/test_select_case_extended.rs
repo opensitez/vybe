@@ -243,7 +243,7 @@ fortran_cases! {
 
     case_on_product => {
         "program t\ninteger :: a = 3, b = 4\nselect case (a * b)\ncase (1:10)\nprint *, \"small product\"\ncase (11:20)\nprint *, \"large product\"\nend select\nend program t\n",
-        ["small product"]
+        ["large product"]
     };
 
     // ── No fall-through (each case independent) ────────────────────
@@ -271,5 +271,106 @@ fortran_cases! {
     case_independent_per_iteration => {
         "program t\ninteger :: i\ndo i = 1, 4\nselect case (i)\ncase (1)\nprint *, \"alpha\"\ncase (2)\nprint *, \"beta\"\ncase (3)\nprint *, \"gamma\"\ncase default\nprint *, \"omega\"\nend select\nend do\nend program t\n",
         ["alpha", "beta", "gamma", "omega"]
+    };
+
+    case_first_match_wins_on_overlap => {
+        "program t\ninteger :: n\nn = 7\nselect case (n)\ncase (1:10)\nprint *, \"first\"\ncase (5:20)\nprint *, \"second\"\ncase default\nprint *, \"other\"\nend select\nend program t\n",
+        ["first"]
+    };
+
+    case_lower_open_range_match => {
+        "program t\ninteger :: n\nn = -99\nselect case (n)\ncase (-200:-100)\nprint *, \"too small\"\ncase (-99:0)\nprint *, \"small\"\ncase (1:200)\nprint *, \"large\"\nend select\nend program t\n",
+        ["too small"]
+    };
+
+    case_upper_open_range_match => {
+        "program t\ninteger :: n\nn = 99\nselect case (n)\ncase (-200:-100)\nprint *, \"too small\"\ncase (0:50)\nprint *, \"small\"\ncase (51:200)\nprint *, \"large\"\nend select\nend program t\n",
+        ["large"]
+    };
+
+    case_singleton_range_exact => {
+        "program t\ninteger :: n\nn = 6\nselect case (n)\ncase (6:6)\nprint *, \"singleton\"\ncase (7:7)\nprint *, \"also\"\ncase default\nprint *, \"other\"\nend select\nend program t\n",
+        ["singleton"]
+    };
+
+    case_open_bounds_runtime => {
+        "program t\ninteger :: n\nn = 0\nselect case (n)\ncase (:0)\nprint *, \"non-positive\"\ncase (1:)\nprint *, \"positive\"\nend select\nend program t\n",
+        ["non-positive"]
+    };
+
+    case_overlap_values_before_range => {
+        "program t\ninteger :: n\nn = 4\nselect case (n)\ncase (1, 4, 9)\nprint *, \"list\"\ncase (1:10)\nprint *, \"range\"\ncase default\nprint *, \"fallback\"\nend select\nend program t\n",
+        ["list"]
+    };
+
+    case_no_match_with_default_output_suppressed => {
+        "program t\ninteger :: n\nn = 12\nselect case (n)\ncase (1:4)\nprint *, \"small\"\ncase (5:8)\nprint *, \"mid\"\ncase default\nprint *, \"default\"\nend select\nend program t\n",
+        ["default"]
+    };
+
+    case_char_space_padded_match => {
+        "program t\ncharacter(len=3) :: c\nc = 'abc'\nselect case (c)\ncase ('abc')\nprint *, \"exact\"\ncase ('def')\nprint *, \"other\"\ncase default\nprint *, \"fallback\"\nend select\nend program t\n",
+        ["exact"]
+    };
+
+    // keep future padding-sensitive behavior separate for parser/runtime follow-up
+    case_char_trimmed_match => {
+        "program t\ncharacter(len=3) :: c\nc = 'a'\nselect case (trim(c))\ncase ('a')\nprint *, \"trimmed\"\ncase default\nprint *, \"other\"\nend select\nend program t\n",
+        ["trimmed"]
+    };
+
+    case_char_case_mix => {
+        "program t\ncharacter(len=1) :: c\nc = 'C'\nselect case (c)\ncase ('a':'z')\nprint *, \"lower\"\ncase ('A':'Z')\nprint *, \"upper\"\ncase default\nprint *, \"other\"\nend select\nend program t\n",
+        ["upper"]
+    };
+
+    case_logical_true_case => {
+        "program t\nlogical :: ok\nok = .true.\nselect case (ok)\ncase (.true.)\nprint *, \"on\"\ncase (.false.)\nprint *, \"off\"\ncase default\nprint *, \"other\"\nend select\nend program t\n",
+        ["on"]
+    };
+
+    case_logical_false_case => {
+        "program t\nlogical :: ok\nok = .false.\nselect case (ok)\ncase (.true.)\nprint *, \"on\"\ncase (.false.)\nprint *, \"off\"\ncase default\nprint *, \"other\"\nend select\nend program t\n",
+        ["off"]
+    };
+
+    case_computed_selector_with_offset => {
+        "program t\ninteger :: i, n\ni = 8\nn = i + 1\nselect case (n)\ncase (1:5)\nprint *, \"low\"\ncase (6:10)\nprint *, \"mid\"\ncase default\nprint *, \"high\"\nend select\nend program t\n",
+        ["mid"]
+    };
+
+    case_no_default_in_nested => {
+        "program t\ninteger :: i, j\ni = 2\nj = 1\nselect case (i)\ncase (1)\nselect case (j)\ncase (1)\nprint *, \"one\"\ncase default\nprint *, \"inner-default\"\nend select\ncase (2)\nselect case (j)\ncase (0)\nprint *, \"zero\"\ncase (2)\nprint *, \"two\"\ncase default\nprint *, \"inner-default-two\"\nend select\ncase default\nprint *, \"outer-default\"\nend select\nend program t\n",
+        ["inner-default-two"]
+    };
+
+    case_nested_no_match_inner_outer_print => {
+        "program t\ninteger :: i\ni = 10\nselect case (i)\ncase (1)\nprint *, \"inner\"\ncase default\nselect case (i)\ncase (1)\nprint *, \"one\"\ncase default\nprint *, \"deep-default\"\nend select\nprint *, \"outer-default\"\nend select\nend program t\n",
+        ["deep-default", "outer-default"]
+    };
+
+    case_range_singleton_edge => {
+        "program t\ninteger :: n\nn = 5\nselect case (n)\ncase (5)\nprint *, \"only\"\ncase (3:7)\nprint *, \"range\"\ncase default\nprint *, \"none\"\nend select\nend program t\n",
+        ["only"]
+    };
+
+    case_multi_values_with_default_gap => {
+        "program t\ninteger :: n\nn = 4\nselect case (n)\ncase (1)\nprint *, \"one\"\ncase (2, 4, 6)\nprint *, \"evens\"\ncase (8)\nprint *, \"eight\"\ncase default\nprint *, \"none\"\nend select\nend program t\n",
+        ["evens"]
+    };
+
+    case_overlap_string_without_overlap => {
+        "program t\ncharacter(len=4) :: c\nc = 'ab'\nselect case (c)\ncase ('ab', 'cd')\nprint *, 'set-one'\ncase ('a':'e')\nprint *, 'set-two'\ncase default\nprint *, 'other'\nend select\nend program t\n",
+        ["set-one"]
+    };
+
+    case_real_band => {
+        "program t\nreal :: r\nr = 2.5\nselect case (r)\ncase (0.0)\nprint *, 'zero'\ncase (1.0:3.0)\nprint *, 'mid'\ncase default\nprint *, 'other'\nend select\nend program t\n",
+        ["mid"]
+    };
+
+    case_character_literal_padded_match => {
+        "program t\ncharacter(len=4) :: c = 'ab  '\nselect case (c)\ncase ('ab')\nprint *, 'match'\ncase default\nprint *, 'default'\nend select\nend program t\n",
+        ["match"]
     };
 }

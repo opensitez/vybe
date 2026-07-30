@@ -161,6 +161,66 @@ end program test
     );
 }
 
+#[test]
+fn selected_int_kind_and_kind_runtime() {
+    let out = run_prints(
+        r#"
+program test
+    print *, kind(1)
+    print *, selected_int_kind(9)
+    print *, selected_real_kind(15, 307)
+end program test
+"#,
+    );
+    assert_eq!(out, ["8", "8", "8"]);
+}
+
+#[test]
+fn kind_queries_for_multiple_types() {
+    let out = run_prints(
+        r#"
+program test
+    logical :: l
+    complex :: c
+    character(len=5) :: s
+    integer(kind=4) :: i
+    real(kind=8) :: r
+    l = .true.
+    c = (1.0, 2.0)
+    s = "abc"
+    i = 5
+    r = 3.0
+    print *, kind(l)
+    print *, kind(c)
+    print *, kind(s)
+    print *, kind(i)
+    print *, kind(r)
+end program test
+"#,
+    );
+    assert_eq!(out, ["8", "8", "8", "4", "8"]);
+}
+
+#[test]
+fn kind_aliases_with_arrays_and_procedure() {
+    let out = run_prints(
+        r#"
+program test
+    integer, parameter :: ki = selected_int_kind(9)
+    real, parameter :: kr = selected_real_kind(6, 37)
+    integer(kind=ki), dimension(4) :: a = [1, 2, 3, 4]
+    real(kind=kr), dimension(3) :: b = [1.0, 2.0, 3.0]
+    print *, size(a)
+    print *, size(b)
+    print *, kind(a)
+    print *, kind(b)
+    print *, sum(a)
+end program test
+"#,
+    );
+    assert_eq!(out, ["4", "3", "8", "8", "10"]);
+}
+
 // ── Kind in derived types ─────────────────────────────────────
 
 #[test]

@@ -140,8 +140,8 @@ c!(
     cics_handle_cond_18,
     "program p
 implicit none
-EXEC CICS HANDLE CONDITION ERROR(L1) END-EXEC
-L1 continue
+EXEC CICS HANDLE CONDITION ERROR(10) END-EXEC
+10 continue
 end program p"
 );
 c!(
@@ -157,6 +157,71 @@ c!(
     sql_dynamic_20,
     "program p
 implicit none
+character(len=40) :: stmt
 EXEC SQL PREPARE S1 FROM :stmt END-EXEC
+end program p"
+);
+c!(
+    sql_cursor_close_21,
+    "program p
+implicit none
+integer :: rc
+EXEC SQL CLOSE C1 INTO :rc END-EXEC
+end program p"
+);
+c!(
+    sql_commit_work_release_22,
+    "program p
+implicit none
+EXEC SQL COMMIT WORK RELEASE END-EXEC
+end program p"
+);
+c!(
+    sql_rollback_work_23,
+    "program p
+implicit none
+EXEC SQL ROLLBACK WORK END-EXEC
+end program p"
+);
+c!(
+    sql_prepare_execute_24,
+    "program p
+implicit none
+character(len=40) :: stmt
+integer :: rc
+stmt = 'INSERT INTO T(ID) VALUES(:id)'
+EXEC SQL PREPARE S2 FROM :stmt END-EXEC
+EXEC SQL EXECUTE S2 USING SQLCA END-EXEC
+EXEC SQL GET DIAGNOSTICS :rc = RETURN_STATUS END-EXEC
+end program p"
+);
+c!(
+    sql_connect_25,
+    "program p
+implicit none
+character(len=20) :: dsn
+integer :: ret
+EXEC SQL CONNECT TO :dsn USER 'SYS' USING 'pass' END-EXEC
+EXEC SQL GET DIAGNOSTICS :ret = RETURN_STATUS END-EXEC
+end program p"
+);
+c!(
+    cics_syncpoint_26,
+    "program p
+implicit none
+EXEC CICS SYNCPOINT
+EXEC CICS SYNCPOINT ROLLBACK
+EXEC CICS SYNCPOINT ROLLBACK(YES)
+EXEC CICS SYNCPOINT KEEP
+end program p"
+);
+c!(
+    cics_handle_cond_multi_27,
+    "program p
+implicit none
+EXEC CICS HANDLE CONDITION LTERM(10) INVALIDP(20) ENDPGM(30) END-EXEC
+10 continue
+20 continue
+30 continue
 end program p"
 );

@@ -2,7 +2,7 @@
 //! logical/character/kind-8 results, optional args, and nested interface-only
 //! child submodules. Distinct from `test_submodules_advanced.rs`.
 
-use super::helpers::compile_ok;
+use super::helpers::run_prints;
 
 fortran_cases! {
     // ── Runnable: submodule units compile; program uses parent symbols ─
@@ -20,6 +20,16 @@ fortran_cases! {
     submodule_nested_units_parent_anchor_constant => {
         "module anchor_iface\nimplicit none\ninteger, parameter :: ANCHOR = 77\ninterface\nmodule function lift(x) result(r)\ninteger, intent(in) :: x\ninteger :: r\nend function lift\nend interface\nend module anchor_iface\nsubmodule (anchor_iface) mid_iface\ninterface\nmodule function helper(x) result(r)\ninteger, intent(in) :: x\ninteger :: r\nend function helper\nend interface\nend submodule mid_iface\nsubmodule (anchor_iface:mid_iface) bot_impl\ncontains\nmodule function lift(x) result(r)\ninteger, intent(in) :: x\ninteger :: r\nr = x + ANCHOR\nend function lift\nmodule function helper(x) result(r)\ninteger, intent(in) :: x\ninteger :: r\nr = x + 1\nend function helper\nend submodule bot_impl\nprogram t\nuse anchor_iface\nprint *, ANCHOR\nend program t\n",
         ["77"]
+    };
+
+    submodule_use_rename_binding_from_submodule => {
+        "module scale_iface\nimplicit none\ninterface\nmodule function scale(x) result(r)\ninteger, intent(in) :: x\ninteger :: r\nend function scale\nend interface\nend module scale_iface\nsubmodule (scale_iface) scale_impl\ncontains\nmodule function scale(x) result(r)\ninteger, intent(in) :: x\ninteger :: r\nr = x * 3\nend function scale\nend submodule scale_impl\nprogram t\nuse scale_iface, only: triple => scale\nprint *, triple(4)\nend program t\n",
+        ["12"]
+    };
+
+    submodule_parent_contained_helper_callable_in_submodule => {
+        "module helper_iface\nimplicit none\ninterface\nmodule function boosted(x) result(r)\ninteger, intent(in) :: x\ninteger :: r\nend function boosted\nend interface\ncontains\ninteger function local_offset()\nlocal_offset = 2\nend function local_offset\nend module helper_iface\nsubmodule (helper_iface) helper_impl\ncontains\nmodule function boosted(x) result(r)\ninteger, intent(in) :: x\ninteger :: r\nr = x + local_offset()\nend function boosted\nend submodule helper_impl\nprogram t\nuse helper_iface\nprint *, boosted(5)\nend program t\n",
+        ["7"]
     };
 
     submodule_parent_type_ctor_without_calling_iface => {
@@ -42,7 +52,7 @@ fortran_cases! {
 
 #[test]
 fn submodule_uses_parent_parameter_in_body() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module scale_iface
     implicit none
@@ -71,11 +81,12 @@ program t
 end program t
 "#,
     );
+    assert_eq!(out, vec!["40"]);
 }
 
 #[test]
 fn submodule_mutates_parent_public_variable() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module bank_iface
     implicit none
@@ -102,11 +113,12 @@ program t
 end program t
 "#,
     );
+    assert_eq!(out, vec!["150"]);
 }
 
 #[test]
 fn submodule_reads_parent_module_variable() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module mult_iface
     implicit none
@@ -134,13 +146,14 @@ program t
 end program t
 "#,
     );
+    assert_eq!(out, vec!["42"]);
 }
 
 // ── INTENT, optional, and result types (compile-only) ───────────────
 
 #[test]
 fn submodule_intent_out_fills_vector() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module fill_iface
     implicit none
@@ -172,11 +185,12 @@ program t
 end program t
 "#,
     );
+    assert_eq!(out, vec!["4"]);
 }
 
 #[test]
 fn submodule_three_intent_in_arguments() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module sum3_iface
     implicit none
@@ -203,11 +217,12 @@ program t
 end program t
 "#,
     );
+    assert_eq!(out, vec!["9"]);
 }
 
 #[test]
 fn submodule_optional_second_argument_default() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module opt_iface
     implicit none
@@ -241,11 +256,12 @@ program t
 end program t
 "#,
     );
+    assert_eq!(out, vec!["6", "8"]);
 }
 
 #[test]
 fn submodule_logical_result_function() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module even_iface
     implicit none
@@ -273,11 +289,12 @@ program t
 end program t
 "#,
     );
+    assert_eq!(out, vec!["true", "false"]);
 }
 
 #[test]
 fn submodule_character_scalar_result() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module char_iface
     implicit none
@@ -304,11 +321,12 @@ program t
 end program t
 "#,
     );
+    assert_eq!(out, vec!["d"]);
 }
 
 #[test]
 fn submodule_kind8_real_result() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module dbl_iface
     implicit none
@@ -335,13 +353,14 @@ program t
 end program t
 "#,
     );
+    assert_eq!(out, vec!["4"]);
 }
 
 // ── Submodule-local state and array logic (compile-only) ─────────────
 
 #[test]
 fn submodule_array_reduction_over_argument() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module peak_iface
     implicit none
@@ -372,11 +391,12 @@ program t
 end program t
 "#,
     );
+    assert_eq!(out, vec!["11"]);
 }
 
 #[test]
 fn submodule_reset_subroutine_clears_state() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module acc_iface
     implicit none
@@ -418,13 +438,14 @@ program t
 end program t
 "#,
     );
+    assert_eq!(out, vec!["1"]);
 }
 
 // ── Nested interface-only child; PURE; INTENT(inout); allocatable ───
 
 #[test]
 fn submodule_child_interface_grandchild_implements() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module top_iface
     implicit none
@@ -464,11 +485,12 @@ program t
 end program t
 "#,
     );
+    assert_eq!(out, vec!["10"]);
 }
 
 #[test]
 fn submodule_pure_module_procedure() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module pure_iface
     implicit none
@@ -496,11 +518,12 @@ program t
 end program t
 "#,
     );
+    assert_eq!(out, vec!["7"]);
 }
 
 #[test]
 fn submodule_intent_inout_argument() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module io_iface
     implicit none
@@ -527,11 +550,137 @@ program t
 end program t
 "#,
     );
+    assert_eq!(out, vec!["12"]);
+}
+
+#[test]
+fn submodule_optional_and_out_arguments_fill_defaults() {
+    let out = run_prints(
+        r#"
+module out_iface
+    implicit none
+    interface
+        module subroutine fill_pair(base, a, b, result_out)
+            integer, intent(in) :: base
+            integer, optional, intent(in) :: a, b
+            integer, intent(out) :: result_out
+        end subroutine fill_pair
+    end interface
+end module out_iface
+
+submodule (out_iface) out_impl
+contains
+    module subroutine fill_pair(base, a, b, result_out)
+        integer, intent(in) :: base
+        integer, optional, intent(in) :: a, b
+        integer, intent(out) :: result_out
+        if (present(a) .and. present(b)) then
+            result_out = base + a + b
+        else
+            result_out = base + 1
+        end if
+    end subroutine fill_pair
+end submodule out_impl
+
+program t
+    use out_iface
+    integer :: x
+    call fill_pair(6, result_out=x)
+    print *, x
+    call fill_pair(6, a=2, b=3, result_out=x)
+    print *, x
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["7", "11"]);
+}
+
+#[test]
+fn submodule_can_reference_parent_implementation_helper() {
+    let out = run_prints(
+        r#"
+module base_iface
+    implicit none
+contains
+    integer function offset_base()
+        offset_base = 20
+    end function offset_base
+    interface
+        module function apply_offset(x) result(r)
+            integer, intent(in) :: x
+            integer :: r
+        end function apply_offset
+    end interface
+end module base_iface
+
+submodule (base_iface) base_impl
+contains
+    module function apply_offset(x) result(r)
+        integer, intent(in) :: x
+        integer :: r
+        r = x + offset_base()
+    end function apply_offset
+end submodule base_impl
+
+program t
+    use base_iface
+    print *, apply_offset(3)
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["23"]);
+}
+
+#[test]
+fn submodule_nested_interface_chain_with_child_helper() {
+    let out = run_prints(
+        r#"
+module chain_iface
+    implicit none
+    interface
+        module function top(x) result(r)
+            integer, intent(in) :: x
+            integer :: r
+        end function top
+    end interface
+end module chain_iface
+
+submodule (chain_iface) chain_mid
+    interface
+        module function helper(x) result(r)
+            integer, intent(in) :: x
+            integer :: r
+        end function helper
+    end interface
+end submodule chain_mid
+
+submodule (chain_iface:chain_mid) chain_leaf
+    contains
+    module function top(x) result(r)
+        integer, intent(in) :: x
+        integer :: r
+        r = helper(x) + 3
+    end function top
+
+    module function helper(x) result(r)
+        integer, intent(in) :: x
+        integer :: r
+        r = x * 2
+    end function helper
+end submodule chain_leaf
+
+program t
+    use chain_iface
+    print *, top(4)
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["11"]);
 }
 
 #[test]
 fn submodule_allocatable_local_workspace() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module grow_iface
     implicit none
@@ -562,4 +711,5 @@ program t
 end program t
 "#,
     );
+    assert_eq!(out, vec!["5"]);
 }

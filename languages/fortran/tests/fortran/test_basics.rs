@@ -1,4 +1,4 @@
-use super::helpers::{compile_ok, run_prints};
+use super::helpers::run_prints;
 
 // ═══════════════════════════════════════════════════════════
 // Fortran: Basic programs, variables, assignment
@@ -131,7 +131,7 @@ end program test
 
 #[test]
 fn implicit_none() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     implicit none
@@ -141,6 +141,7 @@ program test
 end program test
 "#,
     );
+    assert_eq!(out, vec!["42"]);
 }
 
 #[test]
@@ -167,4 +168,41 @@ end program test
 "#,
     );
     assert_eq!(out, vec!["100"]);
+}
+
+#[test]
+fn implicit_none_multiple_assignment_steps() {
+    let out = run_prints(
+        r#"
+program test
+    implicit none
+    integer :: a
+    integer :: b
+    a = 1
+    b = 2
+    a = a + b
+    print *, a
+    print *, a * b
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["3", "6"]);
+}
+
+#[test]
+fn basics_logical_expression_true_false() {
+    let out = run_prints(
+        r#"
+program test
+    implicit none
+    integer :: x
+    logical :: is_big
+    x = 7
+    is_big = (x > 5)
+    print *, is_big
+    print *, .not. is_big
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["true", "false"]);
 }

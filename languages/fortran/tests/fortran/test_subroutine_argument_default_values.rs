@@ -204,3 +204,78 @@ end program subroutine_argument_default_values_optional_out_with_default_mode
     );
     assert_eq!(out, vec!["99"]);
 }
+
+#[test]
+fn subroutine_argument_default_values_optional_inout_defaults() {
+    let out = run_prints(
+        r#"
+program subroutine_argument_default_values_optional_inout_defaults
+    integer :: x
+    x = 8
+    call scale_default(x)
+    print *, x
+    call scale_default(x, addend=5)
+    print *, x
+contains
+    subroutine scale_default(value, addend)
+        integer, intent(inout) :: value
+        integer, intent(in), optional :: addend
+        if (present(addend)) then
+            value = value + addend
+        else
+            value = value * 2
+        end if
+    end subroutine scale_default
+end program subroutine_argument_default_values_optional_inout_defaults
+"#,
+    );
+    assert_eq!(out, vec!["16", "21"]);
+}
+
+#[test]
+fn subroutine_argument_default_values_keyword_skip_with_optional_tail() {
+    let out = run_prints(
+        r#"
+program subroutine_argument_default_values_keyword_skip_with_optional_tail
+    print *, combine(a=2, c=7)
+    print *, combine(a=2, b=4, c=7)
+contains
+    integer function combine(a, b, c)
+        integer, intent(in) :: a
+        integer, intent(in), optional :: b, c
+        combine = a
+        if (present(b)) combine = combine + b
+        if (present(c)) combine = combine + c
+    end function combine
+end program subroutine_argument_default_values_keyword_skip_with_optional_tail
+"#,
+    );
+    assert_eq!(out, vec!["9", "13"]);
+}
+
+#[test]
+fn subroutine_argument_default_values_module_context_optional_argument_defaults() {
+    let out = run_prints(
+        r#"
+module opt_default_module
+contains
+    integer function weighted(value, bonus)
+        integer, intent(in) :: value
+        integer, intent(in), optional :: bonus
+        if (present(bonus)) then
+            weighted = value + bonus
+        else
+            weighted = value + 10
+        end if
+    end function weighted
+end module opt_default_module
+
+program subroutine_argument_default_values_module_context_optional_argument_defaults
+    use opt_default_module
+    print *, weighted(7)
+    print *, weighted(7, 2)
+end program subroutine_argument_default_values_module_context_optional_argument_defaults
+"#,
+    );
+    assert_eq!(out, vec!["17", "9"]);
+}

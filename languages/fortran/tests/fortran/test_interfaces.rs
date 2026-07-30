@@ -412,3 +412,114 @@ call f()
 end subroutine apply
 "
 );
+
+c!(
+    if_optional_three_41,
+    "subroutine s(x, y, z)
+integer, optional :: x, y, z
+end subroutine s
+"
+);
+
+c!(
+    if_bind_c_optional_42,
+    "subroutine s(x) bind(c, name='s_bind')
+integer, intent(in) :: x
+end subroutine s
+"
+);
+
+c!(
+    if_proc_pointer_generic_43,
+    "module m
+abstract interface
+subroutine fn(x, y)
+integer, intent(in) :: x
+real, intent(in) :: y
+end subroutine fn
+end interface
+end module m
+"
+);
+
+c!(
+    if_intrinsic_assignment_wrapper_44,
+    "module m
+interface assignment(=)
+module procedure asg
+end interface
+contains
+subroutine asg(a, b)
+integer, intent(out) :: a
+real, intent(in) :: b
+a = int(b)
+end subroutine asg
+end module m
+"
+);
+
+c!(
+    if_operator_concat_45,
+    "module m
+interface operator(//)
+module procedure concat_i
+end interface
+contains
+character(len=20) function concat_i(a, b)
+integer, intent(in) :: a, b
+character(len=20) :: sa, sb
+write(sa, '(I0)') a
+write(sb, '(I0)') b
+concat_i = trim(sa) // trim(sb)
+end function concat_i
+end module m
+"
+);
+
+c!(
+    if_generic_result_type_46,
+    "module m
+interface g
+module procedure gi, gr
+end interface
+contains
+integer function gi(x)
+integer, intent(in) :: x
+gi = x
+end function gi
+real function gr(x)
+real, intent(in) :: x
+gr = x
+end function gr
+end module m
+"
+);
+
+c!(
+    if_generic_optional_47,
+    "module m
+interface g
+module procedure g_int, g_real
+end interface
+contains
+integer function g_int(x, flag)
+integer, intent(in) :: x
+integer, intent(in), optional :: flag
+g_int = x
+end function g_int
+real function g_real(x, flag)
+real, intent(in) :: x
+logical, intent(in), optional :: flag
+g_real = x
+end function g_real
+end module m
+"
+);
+
+c!(
+    if_proc_pointer_informational_48,
+    "program p
+procedure(), pointer :: fp
+end program p
+"
+);

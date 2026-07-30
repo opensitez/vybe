@@ -185,3 +185,64 @@ end program variable_shadowing_resolution_rules_do_index_shadowing
     );
     assert_eq!(out, vec!["1", "2", "2"]);
 }
+
+#[test]
+fn variable_shadowing_resolution_rules_named_block_scope() {
+    let out = run_prints(
+        r#"
+program variable_shadowing_resolution_rules_named_block_scope
+    integer :: tally
+    tally = 1
+    block named_block
+        integer :: tally
+        tally = 10
+        print *, tally
+    end block named_block
+    print *, tally
+end program variable_shadowing_resolution_rules_named_block_scope
+"#,
+    );
+    assert_eq!(out, vec!["10", "1"]);
+}
+
+#[test]
+fn variable_shadowing_resolution_rules_if_block_scope() {
+    let out = run_prints(
+        r#"
+program variable_shadowing_resolution_rules_if_block_scope
+    integer :: level
+    level = 3
+    if (level > 0) then
+        integer :: level
+        level = 11
+        print *, level
+    end if
+    print *, level
+end program variable_shadowing_resolution_rules_if_block_scope
+"#,
+    );
+    assert_eq!(out, vec!["11", "3"]);
+}
+
+#[test]
+fn variable_shadowing_resolution_rules_module_procedure_argument_same_name() {
+    let out = run_prints(
+        r#"
+module shadow_args_mod
+    integer :: value = 13
+contains
+    subroutine emit(value)
+        integer, intent(in) :: value
+        print *, value
+    end subroutine emit
+end module shadow_args_mod
+
+program variable_shadowing_resolution_rules_module_procedure_argument_same_name
+    use shadow_args_mod
+    call emit(99)
+    print *, value
+end program variable_shadowing_resolution_rules_module_procedure_argument_same_name
+"#,
+    );
+    assert_eq!(out, vec!["99", "13"]);
+}

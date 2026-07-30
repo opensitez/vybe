@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 macro_rules! c {
     ($n:ident,$s:expr) => {
         #[test]
@@ -101,3 +101,41 @@ allocate(a(2,2), stat=st)
 end program p
 "
 );
+
+#[test]
+fn allocation_status_records_zero_for_successful_alloc() {
+    assert_eq!(
+        run_prints(
+            "program t\n\
+integer, allocatable :: a(:)\n\
+integer :: st\n\
+allocate(a(3), stat=st)\n\
+if (st == 0) then\n\
+  print *, 'ok'\n\
+else\n\
+  print *, 'bad'\n\
+end if\n\
+end program t\n"
+        ),
+        vec!["ok"]
+    );
+}
+
+#[test]
+fn allocation_status_deallocate_unallocated_reports_nonzero_in_stat() {
+    assert_eq!(
+        run_prints(
+            "program t\n\
+integer, allocatable :: a(:)\n\
+integer :: st\n\
+deallocate(a, stat=st)\n\
+if (st == 0) then\n\
+  print *, 'ok'\n\
+else\n\
+  print *, 'bad'\n\
+end if\n\
+end program t\n"
+        ),
+        vec!["bad"]
+    );
+}

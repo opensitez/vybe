@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 macro_rules! c {
     ($n:ident,$s:expr) => {
         #[test]
@@ -183,3 +183,55 @@ allocate(integer :: x)
 end program p
 "
 );
+
+#[test]
+fn allocation_semantics_runtime_move_alloc_transfers_allocation() {
+    assert_eq!(
+        run_prints(
+            "program t\n\
+integer, allocatable :: src(:), dst(:)\n\
+allocate(src(2))\nsrc = [8, 9]\n\
+call move_alloc(src, dst)\n\
+print *, dst(1)\n\
+print *, dst(2)\n\
+print *, allocated(src)\n\
+print *, allocated(dst)\n\
+end program t\n"
+        ),
+        vec!["8", "9", "false", "true"]
+    );
+}
+
+#[test]
+fn allocation_semantics_runtime_zero_extent_returns_size_zero() {
+    assert_eq!(
+        run_prints(
+            "program t\n\
+integer, allocatable :: a(:)\n\
+allocate(a(0))\n\
+print *, size(a)\n\
+deallocate(a)\n\
+end program t\n"
+        ),
+        vec!["0"]
+    );
+}
+
+#[test]
+fn allocation_semantics_runtime_allocates_derived_component_field() {
+    assert_eq!(
+        run_prints(
+            "type :: holder\n\
+character(len=:), allocatable :: s\n\
+end type holder\n\
+program t\n\
+type(holder) :: h\n\
+allocate(character(len=5) :: h%s)\n\
+h%s = 'abcde'\n\
+print *, len(h%s)\n\
+print *, h%s\n\
+end program t\n"
+        ),
+        vec!["5", "abcde"]
+    );
+}

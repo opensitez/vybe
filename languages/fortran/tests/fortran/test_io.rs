@@ -105,3 +105,86 @@ end program test
 "#,
     );
 }
+
+#[test]
+fn print_char_array_join() {
+    let out = run_prints(
+        r#"
+program test
+    character(len=5) :: words(2)
+    words(1) = "one"
+    words(2) = "two"
+    print *, words
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["one two"]);
+}
+
+#[test]
+fn write_formatted_integer_width() {
+    let out = run_prints(
+        r#"
+program test
+    write(*, '(I4)') 7
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["   7"]);
+}
+
+#[test]
+fn print_logical_and_integer_combo() {
+    let out = run_prints(
+        r#"
+program test
+    print *, "alive="
+    print *, .true.
+    print *, "count="
+    print *, 3
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["alive=", "true", "count=", "3"]);
+}
+
+#[test]
+fn print_real_and_character_concat() {
+    let out = run_prints(
+        r#"
+program test
+    character(len=8) :: buf
+    real :: x
+    x = 2.5
+    write(buf, '(A,F4.1)') "x=", x
+    print *, trim(buf)
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["x= 2.5"]);
+}
+
+#[test]
+fn print_array_comma_separated() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: a(3) = [1,2,3]
+    print '(3(I0, ","))', a
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["1,2,3"]);
+}
+
+#[test]
+fn write_character_padding_retained() {
+    let out = run_prints(
+        r#"
+program test
+    write(*, '(A4)') 'abc'
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["abc "]);
+}

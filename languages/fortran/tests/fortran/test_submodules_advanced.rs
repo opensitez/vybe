@@ -1,10 +1,8 @@
-use super::helpers::compile_ok;
-
-// ── Multiple submodules for the same parent ───────────────────
+use super::helpers::run_prints;
 
 #[test]
-fn two_submodules_same_parent() {
-    compile_ok(
+fn two_submodules_same_parent_runtime() {
+    let out = run_prints(
         r#"
 module math_iface
     implicit none
@@ -47,11 +45,12 @@ program test
 end program test
 "#,
     );
+    assert_eq!(out, vec!["15", "5"]);
 }
 
 #[test]
-fn three_submodules_same_parent() {
-    compile_ok(
+fn three_submodules_same_parent_runtime() {
+    let out = run_prints(
         r#"
 module ops_iface
     implicit none
@@ -106,13 +105,199 @@ program test
 end program test
 "#,
     );
+    assert_eq!(out, vec!["42", "5", "2"]);
+}
+
+#[test]
+fn submodule_private_state_runtime() {
+    let out = run_prints(
+        r#"
+module counter_iface
+    implicit none
+    interface
+        module subroutine increment()
+        end subroutine increment
+        module function get_count() result(n)
+            integer :: n
+        end function get_count
+    end interface
+end module counter_iface
+
+submodule (counter_iface) counter_impl
+    implicit none
+    integer :: count = 0
+contains
+    module subroutine increment()
+        count = count + 1
+    end subroutine increment
+
+    module function get_count() result(n)
+        integer :: n
+        n = count
+    end function get_count
+end submodule counter_impl
+
+program test
+    use counter_iface
+    call increment()
+    call increment()
+    call increment()
+    print *, get_count()
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["3"]);
+}
+
+#[test]
+fn submodule_with_protected_parent_var_runtime() {
+    let out = run_prints(
+        r#"
+module cfg_iface
+    implicit none
+    integer, protected :: max_size = 100
+    interface
+        module subroutine set_max(n)
+            integer, intent(in) :: n
+        end subroutine set_max
+    end interface
+end module cfg_iface
+
+submodule (cfg_iface) cfg_impl
+    implicit none
+contains
+    module subroutine set_max(n)
+        integer, intent(in) :: n
+        max_size = n
+    end subroutine set_max
+end submodule cfg_impl
+
+program test
+    use cfg_iface
+    print *, max_size
+    call set_max(200)
+    print *, max_size
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["100", "200"]);
+}
+
+// ── Multiple submodules for the same parent ───────────────────
+
+#[test]
+fn two_submodules_same_parent() {
+    let out = run_prints(
+        r#"
+module math_iface
+    implicit none
+    interface
+        module function add(a, b) result(r)
+            integer, intent(in) :: a, b
+            integer :: r
+        end function add
+        module function sub(a, b) result(r)
+            integer, intent(in) :: a, b
+            integer :: r
+        end function sub
+    end interface
+end module math_iface
+
+submodule (math_iface) math_add
+    implicit none
+contains
+    module function add(a, b) result(r)
+        integer, intent(in) :: a, b
+        integer :: r
+        r = a + b
+    end function add
+end submodule math_add
+
+submodule (math_iface) math_sub
+    implicit none
+contains
+    module function sub(a, b) result(r)
+        integer, intent(in) :: a, b
+        integer :: r
+        r = a - b
+    end function sub
+end submodule math_sub
+
+program test
+    use math_iface
+    print *, add(10, 5)
+    print *, sub(10, 5)
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["15", "5"]);
+}
+
+#[test]
+fn three_submodules_same_parent() {
+    let out = run_prints(
+        r#"
+module ops_iface
+    implicit none
+    interface
+        module function mul(a, b) result(r)
+            integer, intent(in) :: a, b
+            integer :: r
+        end function mul
+        module function div(a, b) result(r)
+            integer, intent(in) :: a, b
+            integer :: r
+        end function div
+        module function modulo_op(a, b) result(r)
+            integer, intent(in) :: a, b
+            integer :: r
+        end function modulo_op
+    end interface
+end module ops_iface
+
+submodule (ops_iface) ops_mul
+contains
+    module function mul(a, b) result(r)
+        integer, intent(in) :: a, b
+        integer :: r
+        r = a * b
+    end function mul
+end submodule ops_mul
+
+submodule (ops_iface) ops_div
+contains
+    module function div(a, b) result(r)
+        integer, intent(in) :: a, b
+        integer :: r
+        r = a / b
+    end function div
+end submodule ops_div
+
+submodule (ops_iface) ops_mod
+contains
+    module function modulo_op(a, b) result(r)
+        integer, intent(in) :: a, b
+        integer :: r
+        r = mod(a, b)
+    end function modulo_op
+end submodule ops_mod
+
+program test
+    use ops_iface
+    print *, mul(6, 7)
+    print *, div(20, 4)
+    print *, modulo_op(17, 5)
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["42", "5", "2"]);
 }
 
 // ── Nested submodule (grandchild) ─────────────────────────────
 
 #[test]
 fn nested_submodule_grandchild() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module base_mod
     implicit none
@@ -156,13 +341,14 @@ program test
 end program test
 "#,
     );
+    assert_eq!(out, vec!["12"]);
 }
 
 // ── Submodule using parent module types ───────────────────────
 
 #[test]
 fn submodule_uses_parent_type() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module geometry_iface
     implicit none
@@ -192,17 +378,18 @@ program test
     type(Point) :: p1, p2
     p1 = Point(0.0, 0.0)
     p2 = Point(3.0, 4.0)
-    print *, distance(p1, p2)
+    print *, int(distance(p1, p2))
 end program test
 "#,
     );
+    assert_eq!(out, vec!["5"]);
 }
 
 // ── Submodule with private module variables ───────────────────
 
 #[test]
 fn submodule_private_state() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module counter_iface
     implicit none
@@ -238,13 +425,14 @@ program test
 end program test
 "#,
     );
+    assert_eq!(out, vec!["3"]);
 }
 
 // ── Submodule with multiple procedures + helpers ──────────────
 
 #[test]
 fn submodule_with_internal_helpers() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module stats_iface
     implicit none
@@ -281,18 +469,19 @@ end submodule stats_impl
 program test
     use stats_iface
     real :: data(5) = [1.0, 2.0, 3.0, 4.0, 5.0]
-    print *, mean(data)
-    print *, variance(data)
+    print *, int(mean(data))
+    print *, int(variance(data))
 end program test
 "#,
     );
+    assert_eq!(out, vec!["3", "2"]);
 }
 
 // ── Submodule with subroutine and function ────────────────────
 
 #[test]
 fn submodule_mixed_sub_and_func() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module io_iface
     implicit none
@@ -329,17 +518,18 @@ program test
     use io_iface
     real :: u(3) = [1.0, 2.0, 3.0]
     real :: v(3) = [4.0, 5.0, 6.0]
-    print *, dot(u, v)
+    print *, int(dot(u, v))
 end program test
 "#,
     );
+    assert_eq!(out, vec!["32"]);
 }
 
 // ── Submodule with DEFAULT ACCESSIBILITY ─────────────────────
 
 #[test]
 fn submodule_with_protected_parent_var() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module cfg_iface
     implicit none
@@ -368,13 +558,14 @@ program test
 end program test
 "#,
     );
+    assert_eq!(out, vec!["100", "200"]);
 }
 
 // ── Submodule USE of parent exported generic ──────────────────
 
 #[test]
 fn submodule_with_generic_interface() {
-    compile_ok(
+    let out = run_prints(
         r#"
 module generic_iface
     implicit none
@@ -409,8 +600,9 @@ end submodule generic_impl
 program test
     use generic_iface
     real :: v(3) = [3.0, 4.0, 0.0]
-    print *, norm(v)
+    print *, int(norm(v))
 end program test
 "#,
     );
+    assert_eq!(out, vec!["5"]);
 }

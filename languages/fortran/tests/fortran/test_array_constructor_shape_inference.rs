@@ -361,3 +361,62 @@ end program test_array_constructor_shape_inference_20_character_vector_shape_inf
     );
     assert_eq!(out, vec!["3", "4", "3", "1"]);
 }
+
+#[test]
+fn array_constructor_shape_inference_21_zero_repetition_yields_empty_array() {
+    let out = run_prints(
+        r#"
+program test_array_constructor_shape_inference_21_zero_repetition_yields_empty_array
+    integer, allocatable :: values(:)
+    values = (/ 0 * 17 /)
+    print *, size(values)
+    if (size(values) == 0) then
+        print *, 1
+    else
+        print *, 0
+    end if
+end program test_array_constructor_shape_inference_21_zero_repetition_yields_empty_array
+"#,
+    );
+    assert_eq!(out, vec!["0", "1"]);
+}
+
+#[test]
+fn array_constructor_shape_inference_22_descending_implied_do_with_variables() {
+    let out = run_prints(
+        r#"
+program test_array_constructor_shape_inference_22_descending_implied_do_with_variables
+    integer :: start_idx
+    integer :: stop_idx
+    integer :: step
+    integer, allocatable :: values(:)
+    start_idx = 9
+    stop_idx = 1
+    step = -2
+    values = (/ (i, i = start_idx, stop_idx, step) /)
+    print *, size(values)
+    print *, sum(values)
+    print *, values(1)
+    print *, values(size(values))
+end program test_array_constructor_shape_inference_22_descending_implied_do_with_variables
+"#,
+    );
+    assert_eq!(out, vec!["5", "25", "9", "1"]);
+}
+
+#[test]
+fn array_constructor_shape_inference_23_mixed_kind_literals_promote_to_real() {
+    let out = run_prints(
+        r#"
+program test_array_constructor_shape_inference_23_mixed_kind_literals_promote_to_real
+    real, allocatable :: values(:)
+    values = (/ 1, 2.25, 4 /)
+    print *, size(values)
+    print *, nint(sum(values))
+    print *, ceiling(values(2))
+    print *, floor(values(1))
+end program test_array_constructor_shape_inference_23_mixed_kind_literals_promote_to_real
+"#,
+    );
+    assert_eq!(out, vec!["3", "7", "3", "1"]);
+}

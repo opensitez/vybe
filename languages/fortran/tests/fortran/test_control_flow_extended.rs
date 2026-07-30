@@ -25,6 +25,11 @@ fortran_cases! {
         ["two"]
     };
 
+    computed_goto_index_out_of_range_falls_through => {
+        "program t\ninteger :: n = 4\ngo to (10, 20), n\nprint *, 'fallthrough'\n10 print *, 'one'\n20 print *, 'two'\nend program t\n",
+        ["fallthrough"]
+    };
+
     go_to_spelling_variant_reaches_label => {
         "program t\ngo to 20\n10 print *, 'miss'\n20 print *, 'hit'\nend program t\n",
         ["hit"]
@@ -43,6 +48,11 @@ fortran_cases! {
     goto_chain_through_intermediate_label => {
         "program t\ngoto 10\nprint *, 'start'\n10 goto 20\nprint *, 'mid'\n20 print *, 'end'\nend program t\n",
         ["end"]
+    };
+
+    goto_nested_label_after_if => {
+        "program t\ninteger :: x\nx = 0\nif (x == 0) goto 10\nx = 7\n10 print *, x\nend program t\n",
+        ["0"]
     };
 
     // ── STOP / END / RETURN ──────────────────────────────────────────────
@@ -70,6 +80,11 @@ fortran_cases! {
     return_inside_if_skips_trailing_code => {
         "program t\ninteger :: flag = 1\nif (flag == 1) then\nprint *, 'in'\nreturn\nend if\nprint *, 'out'\nend program t\n",
         ["in"]
+    };
+
+    return_inside_nested_do_skips_rest => {
+        "program t\ninteger :: i\ninteger :: s = 0\ni = 0\ndo while (i < 5)\ni = i + 1\ns = s + i\nif (i == 2) return\nend do\nprint *, 'after'\nprint *, s\nend program t\n",
+        []
     };
 
     stop_after_true_guard_in_if => {
@@ -245,6 +260,11 @@ fortran_cases! {
         ["25"]
     };
 
+    nested_cycle_skips_named_inner_and_keeps_outer_count => {
+        "program t\ninteger :: i, j, s\ns = 0\nouter: do i = 1, 4\ninner: do j = 1, 4\nif (mod(j, 2) == 0) cycle inner\ns = s + 1\nend do inner\nend do outer\nprint *, s\nend program t\n",
+        ["8"]
+    };
+
     tiered_threshold_picks_middle_band => {
         "program t\ninteger :: val = 45\nif (val < 20) then\nprint *, 'low'\nelse if (val < 60) then\nprint *, 'mid'\nelse\nprint *, 'high'\nend if\nend program t\n",
         ["mid"]
@@ -263,5 +283,50 @@ fortran_cases! {
     loop_exit_on_target_value_found => {
         "program t\ninteger :: i\ndo i = 10, 99\nif (mod(i, 13) == 0 .and. mod(i, 7) == 0) exit\nend do\nprint *, i\nend program t\n",
         ["91"]
+    };
+
+    loop_exit_on_named_outer_target_hit => {
+        "program t\ninteger :: i, j\nouter_loop: do i = 1, 4\ninner_loop: do j = 1, 6\nif (i == 3 .and. j == 2) exit outer_loop\nend do inner_loop\nend do outer_loop\nprint *, i\nprint *, j\nend program t\n",
+        ["3", "1"]
+    };
+
+    assigned_goto_selects_assigned_label => {
+        "program t\ninteger :: n, x\nx = 0\nassign 20 to n\ngo to n\nx = 99\n20 x = 20\nprint *, x\nend program t\n",
+        ["20"]
+    };
+
+    arithmetic_if_positive_label_1 => {
+        "program t\ninteger :: x, y\nx = 5\ny = 0\nif (x) 10,20,30\n10 y = 10\ngoto 40\n20 y = 20\ngoto 40\n30 y = 30\n40 continue\nprint *, y\nend program t\n",
+        ["10"]
+    };
+
+    arithmetic_if_zero_label_1 => {
+        "program t\ninteger :: x, y\nx = 0\ny = 0\nif (x) 10,20,30\n10 y = 10\ngoto 40\n20 y = 20\ngoto 40\n30 y = 30\n40 continue\nprint *, y\nend program t\n",
+        ["20"]
+    };
+
+    arithmetic_if_negative_label_1 => {
+        "program t\ninteger :: x, y\nx = -1\ny = 0\nif (x) 10,20,30\n10 y = 10\ngoto 40\n20 y = 20\ngoto 40\n30 y = 30\n40 continue\nprint *, y\nend program t\n",
+        ["10"]
+    };
+
+    select_type_integer_allocation_prints_int => {
+        "program t\nclass(*), allocatable :: x\nallocate(integer::x)\nselect type(x)\n type is(integer)\n  print *, 'int'\n class default\n  print *, 'other'\nend select\nend program t\n",
+        ["int"]
+    };
+
+    select_type_character_defaults_to_class_default => {
+        "program t\nclass(*), allocatable :: x\nallocate(character(len=4)::x)\nselect type(x)\n type is(integer)\n  print *, 'int'\n type is(real)\n  print *, 'real'\n class default\n  print *, 'other'\nend select\nend program t\n",
+        ["other"]
+    };
+
+    select_case_range_branches => {
+        "program t\ninteger :: day = 15\nselect case (day)\ncase (1:7)\n print *, 'week'\ncase (8:14)\n print *, 'half'\ncase (15:21)\n print *, 'three'\ncase default\n print *, 'other'\nend select\nend program t\n",
+        ["three"]
+    };
+
+    where_elsewhere_masked_update => {
+        "program t\ninteger :: a(5), b(5)\na = 0\nb = 1\nwhere (mod(a, 2) == 0)\n  b = b + 10\nelsewhere (a < 0)\n  b = 99\nelsewhere\n  b = 7\nend where\nprint *, b(1)\nprint *, b(3)\nprint *, b(5)\nend program t\n",
+        ["11", "11", "11"]
     };
 }

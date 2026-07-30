@@ -99,3 +99,53 @@ print *, i
 end program p
 "
 );
+c!(
+    kind_conversion_11,
+    "program p
+integer*4 :: i
+real*8 :: r
+i = int(1.5, 4)
+r = real(i, 8)
+print *, i
+print *, r
+end program p
+"
+);
+c!(
+    kind_conversion_12,
+    "program p
+real, dimension(3) :: r
+integer, dimension(3) :: i
+i = int(r)
+r = real(i)
+print *, i(1)
+print *, i(2)
+print *, i(3)
+print *, r(1)
+end program p
+"
+);
+c!(
+    kind_conversion_13,
+    "program p
+integer, parameter :: k_int = selected_int_kind(2)
+real :: r
+r = real(3)
+print *, int(r, k_int)
+end program p
+"
+);
+c!(
+    kind_conversion_14,
+    "program p
+character(len=1) :: c
+integer :: i
+real :: r
+c = 'A'
+i = iachar(c)
+r = real(i)
+print *, i
+print *, r
+end program p
+"
+);

@@ -488,3 +488,100 @@ end program test
 "#,
     );
 }
+
+#[test]
+fn block_scope_shadow_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    integer :: i = 10
+    block
+        integer :: i
+        i = 99
+        print *, i
+    end block
+    print *, i
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["99", "10"]);
+}
+
+#[test]
+fn do_concurrent_locality_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    integer :: a(5), b(5)
+    integer :: i
+    b = [1, 2, 3, 4, 5]
+    do concurrent (i = 1:5) local(tmp)
+        integer :: tmp
+        tmp = b(i) * 2
+        a(i) = tmp
+    end do
+    print *, a(1)
+    print *, a(5)
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["2", "10"]);
+}
+
+#[test]
+fn do_concurrent_shared_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    integer :: a(5)
+    integer :: factor
+    integer :: i
+    factor = 3
+    do concurrent (i = 1:5) shared(factor)
+        a(i) = i * factor
+    end do
+    print *, a(1)
+    print *, a(5)
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["3", "15"]);
+}
+
+#[test]
+fn findloc_back_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    integer :: a(6) = [1, 2, 1, 2, 1, 2]
+    integer :: loc(1)
+    loc = findloc(a, 1, back=.true.)
+    print *, loc(1)
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["5"]);
+}
+
+#[test]
+fn pack_unpack_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    integer :: a(5) = [1, 2, 3, 4, 5]
+    logical :: mask(5) = [.true., .false., .true., .false., .true.]
+    integer :: b(3)
+    integer :: c(5)
+    integer :: fill(5) = [0, 0, 0, 0, 0]
+    b = pack(a, mask)
+    c = unpack(b, mask, fill)
+    print *, b(1)
+    print *, b(2)
+    print *, b(3)
+    print *, c(1)
+    print *, c(5)
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["1", "3", "5", "1", "5"]);
+}

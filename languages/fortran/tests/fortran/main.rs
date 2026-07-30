@@ -105,6 +105,7 @@ mod test_floating_point_rounding_modes;
 mod test_floating_point_roundtrip_text_io;
 mod test_forall_advanced;
 mod test_forall_construct_extended;
+mod test_fortran_coverage_bulk;
 mod test_format_descriptors;
 mod test_format_io_extended;
 mod test_formatting;

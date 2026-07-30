@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 macro_rules! c {
     ($n:ident,$s:expr) => {
         #[test]
@@ -101,3 +101,55 @@ allocate(a, mold=b)
 end program p
 "
 );
+
+#[test]
+fn allocation_mold_copies_array_payload_and_shape() {
+    assert_eq!(
+        run_prints(
+            "program t\n\
+integer, allocatable :: a(:), b(:)\n\
+allocate(b(3))\n\
+b = [2, 4, 6]\n\
+allocate(a, mold=b)\n\
+print *, size(a)\n\
+print *, a(1)\n\
+print *, a(2)\n\
+print *, a(3)\n\
+end program t\n"
+        ),
+        vec!["3", "2", "4", "6"]
+    );
+}
+
+#[test]
+fn allocation_mold_copies_scalar_payload() {
+    assert_eq!(
+        run_prints(
+            "program t\n\
+integer, allocatable :: a, b\n\
+allocate(b)\n\
+b = 17\n\
+allocate(a, mold=b)\n\
+print *, a\n\
+end program t\n"
+        ),
+        vec!["17"]
+    );
+}
+
+#[test]
+fn allocation_mold_copies_character_payload() {
+    assert_eq!(
+        run_prints(
+            "program t\n\
+character(len=:), allocatable :: a, b\n\
+allocate(character(len=5) :: b)\n\
+b = 'moldx'\n\
+allocate(a, mold=b)\n\
+print *, len(a)\n\
+print *, a\n\
+end program t\n"
+        ),
+        vec!["5", "moldx"]
+    );
+}

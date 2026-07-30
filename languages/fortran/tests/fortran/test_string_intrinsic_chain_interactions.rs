@@ -144,3 +144,83 @@ end program string_intrinsic_chain_interactions_replace_and_trim
     );
     assert_eq!(out, vec!["the fast brown fox", "17"]);
 }
+
+#[test]
+fn string_intrinsic_chain_interactions_ltrim_rtrim_adjustl_chain() {
+    let out = run_prints(
+        r#"
+program string_intrinsic_chain_interactions_ltrim_rtrim_adjustl_chain
+    character(len=12) :: text
+    text = '   abc  '
+    print *, len_trim(text)
+    print *, len_trim(ltrim(text))
+    print *, len_trim(rtrim(text))
+    print *, len_trim(adjustl(text))
+    print *, trim(adjustl(text))
+end program string_intrinsic_chain_interactions_ltrim_rtrim_adjustl_chain
+"#,
+    );
+    assert_eq!(out, vec!["8", "3", "6", "3", "abc"]);
+}
+
+#[test]
+fn string_intrinsic_chain_interactions_scan_from_back_chain() {
+    let out = run_prints(
+        r#"
+program string_intrinsic_chain_interactions_scan_from_back_chain
+    character(len=16) :: text
+    text = '  one, two, three  '
+    print *, trim(adjustl(trim(text)))
+    print *, scan(trim(adjustl(trim(text))), ' ,', .true.)
+    print *, index(text, 'three')
+end program string_intrinsic_chain_interactions_scan_from_back_chain
+"#,
+    );
+    assert_eq!(out, vec!["one, two, three", "10", "13"]);
+}
+
+#[test]
+fn string_intrinsic_chain_interactions_merge_adjustl_chain() {
+    let out = run_prints(
+        r#"
+program string_intrinsic_chain_interactions_merge_adjustl_chain
+    print *, trim(merge(adjustl('  x  '), adjustr('  y  '), len_trim('  x  ') > 0))
+    print *, trim(merge(adjustl('  x  '), adjustr('  y  '), .false.))
+    print *, len_trim(adjustl(merge('  xx  ', '  yy  ', .false.)))
+end program string_intrinsic_chain_interactions_merge_adjustl_chain
+"#,
+    );
+    assert_eq!(out, vec!["x", "y", "2"]);
+}
+
+#[test]
+fn string_intrinsic_chain_interactions_transfer_case_chain() {
+    let out = run_prints(
+        r#"
+program string_intrinsic_chain_interactions_transfer_case_chain
+    character(len=18) :: source
+    source = '  Mixed CASE Data  '
+    print *, verify(adjustl(source), ' ', .false.)
+    print *, adjustl(transfer(source, ''))
+    print *, len_trim(transfer(trim(adjustl(source)), ''))
+end program string_intrinsic_chain_interactions_transfer_case_chain
+"#,
+    );
+    assert_eq!(out, vec!["1", "Mixed CASE Data", "16"]);
+}
+
+#[test]
+fn string_intrinsic_chain_interactions_trim_scan_conditional() {
+    let out = run_prints(
+        r#"
+program string_intrinsic_chain_interactions_trim_scan_conditional
+    character(len=20) :: base
+    base = 'alpha;beta;gamma'
+    print *, index(trim(base), ';')
+    print *, scan(trim(base), ';', .false.)
+    print *, verify(merge(base, 'fallback', len(base) > 10), 'abcdefghijklmnopqrstuvwxyz', .false.)
+end program string_intrinsic_chain_interactions_trim_scan_conditional
+"#,
+    );
+    assert_eq!(out, vec!["6", "6", "6"]);
+}

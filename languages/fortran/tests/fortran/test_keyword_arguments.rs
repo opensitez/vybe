@@ -209,3 +209,77 @@ call s(x=1,z=3,y=2)
 end program p
 "
 );
+
+c!(
+    kw_21,
+    "subroutine s(x,y,z,w)
+integer::x, y, z, w
+end
+program p
+call s(1, 2, w=4, z=3)
+end program p
+"
+);
+
+c!(
+    kw_22,
+    "subroutine s(name, value, scale)
+character(len=*)::name
+integer::value, scale
+end
+program p
+call s(name='abc', value=3, scale=2)
+end program p
+"
+);
+
+c!(
+    kw_23,
+    "subroutine s(arr, n)
+integer::arr(:)\ninteger::n
+end
+program p
+call s(arr=[1,2,3], n=3)
+end program p
+"
+);
+
+c!(
+    kw_24,
+    "subroutine s(x,y,z)
+integer, optional :: x, y, z
+end
+program p
+call s(x=1, z=3)
+end program p
+"
+);
+
+c!(
+    kw_25,
+    "subroutine s(x, y)
+real, intent(in) :: x
+integer, intent(out) :: y
+end
+program p
+integer :: y
+call s(3.14, y)
+end program p
+"
+);
+
+c!(
+    kw_26,
+    "module m
+interface
+subroutine s(x, y)
+integer::x,y
+end subroutine
+end interface
+end module m
+program p
+use m
+call s(y=2, x=1)
+end program p
+"
+);

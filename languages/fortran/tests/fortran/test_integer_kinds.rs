@@ -85,3 +85,52 @@ print *, mod(a,3_4)
 end program p
 "
 );
+
+c!(
+    integer_kinds_11,
+    "program p
+integer(kind=selected_int_kind(4)) :: x = 12
+print *, x
+end program p
+"
+);
+
+c!(
+    integer_kinds_12,
+    "program p
+integer(kind=selected_int_kind(9)) :: x = 34
+integer :: y
+y = x + 1
+print *, y
+end program p
+"
+);
+
+c!(
+    integer_kinds_13,
+    "program p
+integer(kind=selected_int_kind(10)) :: x = 0
+print *, x
+end program p
+"
+);
+
+c!(
+    integer_kinds_14,
+    "program p
+integer :: k
+k = selected_int_kind(15)
+print *, k >= 1 .or. k == -1
+end program p
+"
+);
+
+c!(
+    integer_kinds_15,
+    "program p
+integer(kind=8) :: a = 1_8
+integer(kind=8) :: b = 2_8
+print *, merge(a * b, -1, a == 1_8 .and. b == 2_8)
+end program p
+"
+);

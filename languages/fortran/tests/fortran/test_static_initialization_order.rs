@@ -160,3 +160,54 @@ end program static_initialization_order_multiple_saves
     );
     assert_eq!(out, vec!["1", "2", "3"]);
 }
+
+#[test]
+fn static_initialization_order_parameterized_save_dependency() {
+    let out = run_prints(
+        r#"
+module static_init_param_dependency
+    integer, parameter :: scale = 2
+    integer, save :: base = scale
+    integer, save :: doubled = base * scale
+end module static_init_param_dependency
+
+program static_initialization_order_parameterized_save_dependency
+    use static_init_param_dependency
+    print *, base
+    print *, doubled
+end program static_initialization_order_parameterized_save_dependency
+"#,
+    );
+    assert_eq!(out, vec!["2", "4"]);
+}
+
+#[test]
+fn static_initialization_order_array_constructor_default() {
+    let out = run_prints(
+        r#"
+program static_initialization_order_array_constructor_default
+    integer, save :: values(4) = (/1, 2, 3, 4/)
+    integer :: i
+    i = values(1) + values(4)
+    print *, values(2)
+    print *, i
+end program static_initialization_order_array_constructor_default
+"#,
+    );
+    assert_eq!(out, vec!["2", "5"]);
+}
+
+#[test]
+fn static_initialization_order_character_len_from_constant() {
+    let out = run_prints(
+        r#"
+program static_initialization_order_character_len_from_constant
+    integer, parameter :: name_len = 5
+    character(len=name_len) :: tag = 'abc'
+    print *, len(tag)
+    print *, trim(tag)
+end program static_initialization_order_character_len_from_constant
+"#,
+    );
+    assert_eq!(out, vec!["5", "abc"]);
+}

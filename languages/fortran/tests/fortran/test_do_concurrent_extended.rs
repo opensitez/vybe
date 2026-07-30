@@ -326,4 +326,29 @@ fortran_cases! {
         "program t\ninteger :: a(5)\ndo concurrent (i = 1:5)\na(i) = 6 - i\nend do\nprint *, a(3)\nend program t\n",
         ["3"]
     };
+
+    do_concurrent_variable_bounds => {
+        "program t\ninteger :: a(9), n\nn = 9\ndo concurrent (i = 1:n)\na(i) = i + 1\nend do\nprint *, a(5)\nend program t\n",
+        ["6"]
+    };
+
+    do_concurrent_variable_stride => {
+        "program t\ninteger :: a(10), stride\na = 0\nstride = 3\ndo concurrent (i = 1:10:stride)\na(i) = i\nend do\nprint *, a(7)\nend program t\n",
+        ["7"]
+    };
+
+    do_concurrent_variable_mask_limit => {
+        "program t\ninteger :: a(10), limit\na = 0\nlimit = 6\ndo concurrent (i = 1:10, i <= limit)\na(i) = 1\nend do\nprint *, sum(a)\nend program t\n",
+        ["6"]
+    };
+
+    do_concurrent_bounds_mutation_is_ignored => {
+        "program t\ninteger :: a(12), n\nn = 12\na = 0\ndo concurrent (i = 1:n)\na(i) = 1\nif (i == 4) n = 3\nend do\nprint *, sum(a)\nend program t\n",
+        ["12"]
+    };
+
+    do_concurrent_named_with_variable_bounds => {
+        "program t\ninteger :: a(7), n\nn = 7\nfill: do concurrent (i = 1:n)\na(i) = 2 * i\nend do fill\nprint *, a(4)\nend program t\n",
+        ["8"]
+    };
 }

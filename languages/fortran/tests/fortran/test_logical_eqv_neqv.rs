@@ -245,4 +245,14 @@ fortran_cases! {
         "program t\nprint *, (.true. .eqv. .false.) .neqv. (.false. .eqv. .true.)\nend program t\n",
         ["false"]
     };
+
+    eqv_case_insensitive_logical_literals => {
+        "program t\nprint *, .TRUE. .and. .FALSE.\nprint *, .true. .or. .FALSE.\nend program t\n",
+        ["false", "true"]
+    };
+
+    neqv_with_not_keyword_case_mix => {
+        "program t\nprint *, .FALSE. .neqv. .NOT. .TRUE.\nend program t\n",
+        ["true"]
+    };
 }

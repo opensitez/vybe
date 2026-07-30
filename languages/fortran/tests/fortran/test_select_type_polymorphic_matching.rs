@@ -151,6 +151,79 @@ end program select_type_polymorphic_matching_nested_selector_fallthrough
 }
 
 #[test]
+fn select_type_polymorphic_matching_type_is_exact_child_expected_miss() {
+    let out = run_prints(
+        r#"
+program select_type_polymorphic_matching_type_is_exact_child_expected_miss
+    type :: Base
+        integer :: a = 1
+    end type Base
+    type, extends(Base) :: Child
+        integer :: b = 5
+    end type Child
+
+    class(Base), allocatable :: payload
+    allocate(Child :: payload)
+    select type (payload)
+    type is (Base)
+        print *, payload%a
+    class default
+        print *, 0
+    end select
+end program select_type_polymorphic_matching_type_is_exact_child_expected_miss
+"#,
+    );
+    assert_eq!(out, vec!["0"]);
+}
+
+#[test]
+fn select_type_polymorphic_matching_class_is_ordered_base_first() {
+    let out = run_prints(
+        r#"
+program select_type_polymorphic_matching_class_is_ordered_base_first
+    type :: Base
+        integer :: a = 10
+    end type Base
+    type, extends(Base) :: Child
+        integer :: b = 20
+    end type Child
+
+    class(Base), allocatable :: payload
+    allocate(Child :: payload)
+    select type (payload)
+    class is (Base)
+        print *, payload%a
+    class is (Child)
+        print *, payload%b
+    class default
+        print *, 0
+    end select
+end program select_type_polymorphic_matching_class_is_ordered_base_first
+"#,
+    );
+    assert_eq!(out, vec!["10"]);
+}
+
+#[test]
+fn select_type_polymorphic_matching_no_match_no_default_no_output() {
+    let out = run_prints(
+        r#"
+program select_type_polymorphic_matching_no_match_no_default_no_output
+    class(*), allocatable :: value
+    allocate(real :: value)
+    select type (value)
+    type is (integer)
+        print *, 1
+    class is (character(*))
+        print *, 2
+    end select
+end program select_type_polymorphic_matching_no_match_no_default_no_output
+"#,
+    );
+    assert_eq!(out, Vec::<&str>::new());
+}
+
+#[test]
 fn select_type_polymorphic_matching_default_only() {
     let out = run_prints(
         r#"

@@ -268,4 +268,34 @@ fortran_cases! {
         "program t\ninteger :: r\nif ((2 * 3) > 5) then\nr = 1\nelse\nr = 0\nend if\nprint *, r\nend program t\n",
         ["1"]
     };
+
+    chained_unary_plus_minus_chain => {
+        "program t\nprint *, 10 - -5\nend program t\n",
+        ["15"]
+    };
+
+    unary_minus_after_parentheses_with_real_multiplication => {
+        "program t\nprint *, -(2.0 * 3.0) + 1\nend program t\n",
+        ["-5"]
+    };
+
+    unary_minus_covers_parenthesized_power_operand => {
+        "program t\nprint *, -(2 ** 3)\nend program t\n",
+        ["-8"]
+    };
+
+    mixed_real_fractional_roundtrip => {
+        "program t\nprint *, 7 / 2 + 0.5\nend program t\n",
+        ["3.5"]
+    };
+
+    left_associative_additive_with_unary_chain => {
+        "program t\nprint *, 20 - 5 + -3\nend program t\n",
+        ["12"]
+    };
+
+    unary_plus_noop_preserves_variable_sign => {
+        "program t\ninteger :: x\nx = -9\nprint *, +x\nend program t\n",
+        ["-9"]
+    };
 }

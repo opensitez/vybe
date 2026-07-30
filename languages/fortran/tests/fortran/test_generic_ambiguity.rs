@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 macro_rules! c {
     ($n:ident,$s:expr) => {
         #[test]
@@ -183,3 +183,93 @@ end
 end module m
 "
 );
+
+#[test]
+fn generic_ambiguity_function_call_runtime_dispatch() {
+    let out = run_prints(
+        r#"
+module m
+    interface g
+        module procedure gi, gr
+    end interface
+contains
+    integer function gi(i)
+        integer, intent(in) :: i
+        gi = i + 10
+    end function
+
+    real function gr(r)
+        real, intent(in) :: r
+        gr = r + 1.5
+    end function
+end module m
+
+program test_generic_ambiguity_function_call_runtime_dispatch
+    use m
+    print *, g(4)
+    print *, nint(g(2.0))
+end program test_generic_ambiguity_function_call_runtime_dispatch
+"#,
+    );
+    assert_eq!(out, vec!["14", "4"]);
+}
+
+#[test]
+fn generic_ambiguity_subroutine_call_runtime_dispatch() {
+    let out = run_prints(
+        r#"
+module m
+    interface g
+        module procedure si, sr
+    end interface
+contains
+    subroutine si(i)
+        integer, intent(in) :: i
+        print *, i + 10
+    end subroutine
+
+    subroutine sr(r)
+        real, intent(in) :: r
+        print *, nint(r) + 20
+    end subroutine
+end module m
+
+program test_generic_ambiguity_subroutine_call_runtime_dispatch
+    use m
+    call g(2)
+    call g(3.0)
+end program test_generic_ambiguity_subroutine_call_runtime_dispatch
+"#,
+    );
+    assert_eq!(out, vec!["12", "23"]);
+}
+
+#[test]
+fn generic_ambiguity_function_like_dispatch_with_result_types() {
+    let out = run_prints(
+        r#"
+module m
+    interface g
+        module procedure i2, r2
+    end interface
+contains
+    integer function i2(i)
+        integer, intent(in) :: i
+        i2 = i * 2
+    end function
+
+    real function r2(r)
+        real, intent(in) :: r
+        r2 = r * 3.0
+    end function
+end module m
+
+program test_generic_ambiguity_function_like_dispatch_with_result_types
+    use m
+    print *, g(3)
+    print *, nint(g(1.5))
+end program test_generic_ambiguity_function_like_dispatch_with_result_types
+"#,
+    );
+    assert_eq!(out, vec!["6", "5"]);
+}

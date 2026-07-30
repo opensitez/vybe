@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn stop_error_status_signaling_simple_stop_form() {
@@ -10,6 +10,16 @@ fn stop_error_status_signaling_simple_stop_form() {
             print *, 'unreachable'\n\
         end program stop_error_status_signaling_simple_stop_form\n",
     );
+}
+
+#[test]
+fn stop_error_status_signaling_simple_stop_form_runtime() {
+    let out = run_prints(
+        "program stop_error_status_signaling_simple_stop_form_runtime\n\
+integer :: x\nx = 0\nif (x > 0) stop 0\nprint *, x\n\
+end program stop_error_status_signaling_simple_stop_form_runtime\n",
+    );
+    assert_eq!(out, vec!["0"]);
 }
 
 #[test]
@@ -72,6 +82,17 @@ fn stop_error_status_signaling_error_stop_in_subroutine() {
 }
 
 #[test]
+fn stop_error_status_signaling_error_stop_in_subroutine_runtime_guarded() {
+    let out = run_prints(
+        "program stop_error_status_signaling_error_stop_in_subroutine_runtime_guarded\n\
+    call guard(.false.)\n\
+    print *, 'after'\n\
+contains\n+    subroutine guard(flag)\n+        logical, intent(in) :: flag\n+        if (flag) error stop 2\n+    end subroutine guard\n+end program stop_error_status_signaling_error_stop_in_subroutine_runtime_guarded\n",
+    );
+    assert_eq!(out, vec!["after"]);
+}
+
+#[test]
 fn stop_error_status_signaling_stop_with_zero_code_is_terminal() {
     compile_ok(
         "program stop_error_status_signaling_stop_with_zero_code_is_terminal\n\
@@ -90,5 +111,33 @@ fn stop_error_status_signaling_error_stop_with_guard_variable() {
             if (do_stop) error stop 99\n\
             print *, 1\n\
         end program stop_error_status_signaling_error_stop_with_guard_variable\n",
+    );
+}
+
+#[test]
+fn stop_error_status_signaling_error_stop_message_with_quiet_false() {
+    compile_ok(
+        "program stop_error_status_signaling_error_stop_message_with_quiet_false\n\
+            integer :: flag\n\
+            flag = 0\n\
+            if (flag == 0) then\n\
+                error stop 'status ok', quiet = .false.\n\
+            else\n\
+                print *, 'not triggered'\n\
+            end if\n\
+            print *, 'end'\n\
+        end program stop_error_status_signaling_error_stop_message_with_quiet_false\n",
+    );
+}
+
+#[test]
+fn stop_error_status_signaling_error_stop_with_identifier_code() {
+    compile_ok(
+        "program stop_error_status_signaling_error_stop_with_identifier_code\n\
+            integer :: status\n\
+            status = 3\n\
+            if (status > 0) error stop status\n\
+            print *, status\n\
+        end program stop_error_status_signaling_error_stop_with_identifier_code\n",
     );
 }

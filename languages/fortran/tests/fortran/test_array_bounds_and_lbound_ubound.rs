@@ -272,3 +272,43 @@ end program array_bounds_and_lbound_ubound_zero_to_negative_extent
     );
     assert_eq!(out, vec!["-2", "-2"]);
 }
+
+#[test]
+fn array_bounds_and_lbound_ubound_result_vector_without_dim() {
+    let out = run_prints(
+        r#"
+program array_bounds_and_lbound_ubound_result_vector_without_dim
+    integer :: a(-3:0, 10:12)
+    integer :: lb(2), ub(2)
+    lb = lbound(a)
+    ub = ubound(a)
+    print *, size(lb)
+    print *, lb(1)
+    print *, lb(2)
+    print *, size(ub)
+    print *, ub(1)
+    print *, ub(2)
+end program array_bounds_and_lbound_ubound_result_vector_without_dim
+"#,
+    );
+    assert_eq!(out, vec!["2", "-3", "10", "2", "0", "12"]);
+}
+
+#[test]
+fn array_bounds_and_lbound_ubound_slice_pointer_no_dim() {
+    let out = run_prints(
+        r#"
+program array_bounds_and_lbound_ubound_slice_pointer_no_dim
+    integer, target :: source(-4:4)
+    integer, pointer :: alias(:)
+    integer :: lb(1), ub(1)
+    alias => source(2:4)
+    lb = lbound(alias)
+    ub = ubound(alias)
+    print *, lb(1)
+    print *, ub(1)
+end program array_bounds_and_lbound_ubound_slice_pointer_no_dim
+"#,
+    );
+    assert_eq!(out, vec!["2", "4"]);
+}

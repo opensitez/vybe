@@ -346,6 +346,41 @@ end program array_constructor_repetition_counts_even_odd_parity_mix
 }
 
 #[test]
+fn array_constructor_repetition_counts_parameterized_repeat_count() {
+    let out = run_prints(
+        r#"
+program array_constructor_repetition_counts_parameterized_repeat_count
+    integer, parameter :: n = 4
+    integer, allocatable :: values(:)
+    values = (/ n * 3, 2 * 1 /)
+    print *, size(values)
+    print *, sum(values)
+    print *, values(1)
+    print *, values(n + 1)
+end program array_constructor_repetition_counts_parameterized_repeat_count
+"#,
+    );
+    assert_eq!(out, vec!["6", "14", "3", "1"]);
+}
+
+#[test]
+fn array_constructor_repetition_counts_fixed_shape_2d_fill() {
+    let out = run_prints(
+        r#"
+program array_constructor_repetition_counts_fixed_shape_2d_fill
+    integer :: values(2, 3)
+    values = (/ 1 * 5, 3 * 2, 2 * 1 /)
+    print *, values(1, 1)
+    print *, values(2, 1)
+    print *, values(2, 3)
+    print *, sum(values)
+end program array_constructor_repetition_counts_fixed_shape_2d_fill
+"#,
+    );
+    assert_eq!(out, vec!["5", "2", "1", "13"]);
+}
+
+#[test]
 fn array_constructor_repetition_counts_character_repeat_vector() {
     let out = run_prints(
         r#"

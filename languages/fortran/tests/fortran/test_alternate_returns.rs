@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, parse_ok, run_prints};
 macro_rules! c {
     ($n:ident,$s:expr) => {
         #[test]
@@ -108,3 +108,72 @@ return 2
 end
 "
 );
+
+#[test]
+fn alternate_returns_runtime_first_alternate_is_taken_on_return_1() {
+    assert_eq!(
+        run_prints(
+            "program p\n\
+integer :: x\n\
+x = 0\n\
+call s(*10,*20)\n\
+print *, x\n\
+10 x = 2\n\
+print *, x\n\
+20 continue\n\
+end program p\n\
+subroutine s(*,*)\n\
+return 1\n\
+end"
+        ),
+        vec!["2"]
+    );
+}
+
+#[test]
+fn alternate_returns_runtime_second_alternate_is_taken_on_return_2() {
+    assert_eq!(
+        run_prints(
+            "program p\n\
+integer :: x\n\
+x = 0\n\
+call s(*10,*20)\n\
+print *, x\n\
+10 x = 2\n\
+print *, x\n\
+20 x = 3\n\
+print *, x\n\
+end program p\n\
+subroutine s(*,*)\n\
+return 2\n\
+end"
+        ),
+        vec!["3"]
+    );
+}
+
+#[test]
+fn alternate_returns_runtime_plain_return_defaults_to_call_fallthrough() {
+    assert_eq!(
+        run_prints(
+            "program p\n\
+integer :: x\n\
+x = 0\n\
+call s(*10,*20)\n\
+x = 1\n\
+print *, x\n\
+10 print *, x\n\
+20 continue\n\
+end program p\n\
+subroutine s(*,*)\n\
+return\n\
+end"
+        ),
+        vec!["1"]
+    );
+}
+
+#[test]
+fn alternate_returns_syntax_rejects_malformed_formal_list() {
+    assert!(!parse_ok("subroutine s(*,\nend"));
+}

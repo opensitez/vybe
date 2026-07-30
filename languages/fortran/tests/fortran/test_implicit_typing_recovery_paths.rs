@@ -18,3 +18,40 @@ end program test_implicit_typing_recovery_paths
 
     assert_eq!(out, vec!["10", "5"]);
 }
+
+#[test]
+fn test_implicit_typing_recovery_paths_defaults_by_name() {
+    let out = run_prints(
+        r#"
+program test_implicit_typing_recovery_paths_defaults_by_name
+    x = 1.0
+    y = 2.0
+    z = x + y
+    i = 7
+    print *, nint(z)
+    print *, i
+end program test_implicit_typing_recovery_paths_defaults_by_name
+"#,
+    );
+
+    assert_eq!(out, vec!["3", "7"]);
+}
+
+#[test]
+fn test_implicit_typing_recovery_paths_overrides_with_explicit_implicit() {
+    let out = run_prints(
+        r#"
+program test_implicit_typing_recovery_paths_overrides
+    implicit integer(a-h, o-z)
+    implicit real(i-n)
+    i = 3
+    r = 5.0
+    x = i + r
+    print *, i
+    print *, x
+end program test_implicit_typing_recovery_paths_overrides
+"#,
+    );
+
+    assert_eq!(out, vec!["3", "8"]);
+}

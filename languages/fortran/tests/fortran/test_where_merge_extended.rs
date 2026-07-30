@@ -212,4 +212,24 @@ fortran_cases! {
         "program t\ninteger :: a(3)=[1,2,3]\ninteger :: b(3)=0\nwhere (a>0)\nb=a*2\nend where\nprint *,b(2)\nprint *,sum(b)\nend program t\n",
         ["4", "12"]
     };
+
+    merge_mask_from_scalar_flag => {
+        "program t\nlogical :: flag\ninteger :: x\nflag = .true.\nx = merge(10, 20, flag)\nprint *, x\nflag = .false.\nx = merge(10, 20, flag)\nprint *, x\nend program t\n",
+        ["10", "20"]
+    };
+
+    merge_kind1_integer_arrays => {
+        "program t\ninteger(kind=1) :: a(3)=[1_1, 2_1, 3_1]\ninteger(kind=1) :: b(3)=[4_1, 5_1, 6_1]\nlogical :: m(3)=[.true., .false., .true.]\ninteger(kind=1) :: c(3)\nc = merge(a, b, m)\nprint *, c(1)\nprint *, c(2)\nprint *, c(3)\nend program t\n",
+        ["1", "5", "3"]
+    };
+
+    nested_where_with_merge_mask => {
+        "program t\ninteger :: a(4)=[1,2,3,4]\ninteger :: b(4)=[4,3,2,1]\nlogical :: m(4)\nm = merge((/ .true., .false., .false., .true. /), (/ .false., .true., .true., .false. /), a > 2)\nwhere (m)\nb = a * 10\nelsewhere\nb = b - a\nend where\nprint *, b(1)\nprint *, b(2)\nprint *, b(3)\nprint *, b(4)\nend program t\n",
+        ["3", "1", "30", "-3"]
+    };
+
+    where_with_char_arrays => {
+        "program t\ncharacter(len=2) :: src(3)=[\"aa\", \"bb\", \"cc\"]\ncharacter(len=2) :: dst(3)\nwhere (src /= \"bb\")\ndst = src\nelsewhere\ndst = \"--\"\nend where\nprint *, trim(dst(1))\nprint *, trim(dst(2))\nprint *, trim(dst(3))\nend program t\n",
+        ["aa", "--", "cc"]
+    };
 }

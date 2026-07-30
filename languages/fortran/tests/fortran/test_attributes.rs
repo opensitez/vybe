@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 macro_rules! c {
     ($name:ident,$src:expr) => {
         #[test]
@@ -121,3 +121,167 @@ c!(
     attr_assumed_rank_30,
     "subroutine s(a)\ninteger :: a(..)\nend subroutine s\n"
 );
+
+#[test]
+fn attr_allocatable_runtime_value_flow() {
+    let out = run_prints(
+        r#"
+program attr_allocatable_runtime_value_flow
+    integer, allocatable :: values(:)
+    allocate(values(2))
+    values = (/10, 20/)
+    print *, values(1)
+    print *, values(2)
+end program attr_allocatable_runtime_value_flow
+"#,
+    );
+    assert_eq!(out, vec!["10", "20"]);
+}
+
+#[test]
+fn attr_pointer_runtime_aliasing() {
+    let out = run_prints(
+        r#"
+program attr_pointer_runtime_aliasing
+    integer, target :: storage
+    integer, pointer :: p
+    storage = 33
+    p => storage
+    print *, p
+    p = 44
+    print *, storage
+end program attr_pointer_runtime_aliasing
+"#,
+    );
+    assert_eq!(out, vec!["33", "44"]);
+}
+
+#[test]
+fn attr_save_runtime_default_stable() {
+    let out = run_prints(
+        r#"
+program attr_save_runtime_default_stable
+    integer, save :: counter = 0
+    counter = counter + 1
+    print *, counter
+    counter = counter + 1
+    print *, counter
+end program attr_save_runtime_default_stable
+"#,
+);
+    assert_eq!(out, vec!["1", "2"]);
+}
+
+#[test]
+fn attr_protected_module_accessor() {
+    let out = run_prints(
+        r#"
+module protected_access_mod
+    integer, protected :: value = 9
+contains
+    integer function get_value()
+        get_value = value
+    end function get_value
+end module protected_access_mod
+
+program attr_protected_module_accessor
+    use protected_access_mod
+    print *, get_value()
+end program attr_protected_module_accessor
+"#,
+    );
+    assert_eq!(out, vec!["9"]);
+}
+
+#[test]
+fn attr_sequence_and_extends_values() {
+    let out = run_prints(
+        r#"
+program attr_sequence_and_extends_values
+    type :: Base
+        integer :: base_field = 5
+    end type Base
+
+    type, extends(Base) :: Child
+        integer :: child_field = 7
+    end type Child
+
+    type(Child) :: c
+    print *, c%base_field
+    print *, c%child_field
+    print *, c%base_field + c%child_field
+end program attr_sequence_and_extends_values
+"#,
+    );
+    assert_eq!(out, vec!["5", "7", "12"]);
+}
+
+#[test]
+fn attr_intent_optional_value_flow() {
+    let out = run_prints(
+        r#"
+program attr_intent_optional_value_flow
+    call with_attributes(10, .true.)
+contains
+    subroutine with_attributes(x, flag)
+        integer, optional, intent(in) :: x
+        logical, intent(in) :: flag
+        print *, present(x)
+        print *, flag
+    end subroutine with_attributes
+end program attr_intent_optional_value_flow
+"#,
+    );
+    assert_eq!(out, vec!["true", "true"]);
+}
+
+#[test]
+fn attr_intent_optional_can_be_absent() {
+    let out = run_prints(
+        r#"
+program attr_intent_optional_can_be_absent
+    call with_optional_arg()
+    call with_optional_arg(4)
+contains
+    subroutine with_optional_arg(x)
+        integer, optional, intent(inout) :: x
+        if (present(x)) then
+            print *, x
+        else
+            print *, -1
+        end if
+    end subroutine with_optional_arg
+end program attr_intent_optional_can_be_absent
+"#,
+    );
+    assert_eq!(out, vec!["-1", "4"]);
+}
+
+#[test]
+fn attr_parameter_is_compile_time_constant_used_at_runtime() {
+    let out = run_prints(
+        r#"
+program attr_parameter_is_compile_time_constant_used_at_runtime
+    integer, parameter :: n = 4
+    integer :: a(n)
+    a = [1, 2, 3, 4]
+    print *, a(n)
+end program attr_parameter_is_compile_time_constant_used_at_runtime
+"#,
+    );
+    assert_eq!(out, vec!["4"]);
+}
+
+#[test]
+fn attr_dimension_declared_array_behaves_like_fixed_shape() {
+    let out = run_prints(
+        r#"
+program attr_dimension_declared_array_behaves_like_fixed_shape
+    integer, dimension(3) :: a
+    a = [5, 6, 7]
+    print *, a(1) + a(2) + a(3)
+end program attr_dimension_declared_array_behaves_like_fixed_shape
+"#,
+    );
+    assert_eq!(out, vec!["18"]);
+}

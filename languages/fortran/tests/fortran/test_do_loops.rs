@@ -129,3 +129,114 @@ fn bare_do_loop_exits() {
     );
     assert_eq!(out, vec!["3"]);
 }
+
+#[test]
+fn do_descending_step() {
+    let out = run_prints(
+        "program t\ninteger :: i, s\ns = 0\ndo i = 6, 2, -2\ns = s + i\nend do\nprint *, s\nend program t\n",
+    );
+    assert_eq!(out, vec!["12"]);
+}
+
+#[test]
+fn do_empty_range_skips_body() {
+    let out = run_prints(
+        "program t\ninteger :: i, s\ns = 0\ndo i = 5, 1\ns = s + 1\nend do\nprint *, s\nend program t\n",
+    );
+    assert_eq!(out, vec!["0"]);
+}
+
+#[test]
+fn do_named_loop_exit() {
+    let out = run_prints(
+        "program t\ninteger :: i, s\ns = 0\nouter: do i = 1, 5\n    if (i == 3) exit outer\n    s = s + 1\nend do outer\nprint *, s\nend program t\n",
+    );
+    assert_eq!(out, vec!["2"]);
+}
+
+#[test]
+fn do_start_equals_end_runs_once() {
+    let out = run_prints(
+        "program t\ninteger :: i, s\ns = 0\ndo i = 4, 4\ns = s + i\nend do\nprint *, s\nend program t\n",
+    );
+    assert_eq!(out, vec!["4"]);
+}
+
+#[test]
+fn do_start_equals_end_negative_step_runs_once() {
+    let out =
+        run_prints("program t\ninteger :: i, s\ns = 0\ndo i = -3, -3, -2\ns = s + i\nend do\nprint *, s\nend program t\n");
+    assert_eq!(out, vec!["-3"]);
+}
+
+#[test]
+fn do_bound_mutation_is_ignored() {
+    let out = run_prints(
+        "program t\ninteger :: i, s, bound\nbound = 4\ns = 0\ndo i = 1, bound\nif (i == 2) bound = 10\ns = s + i\nend do\nprint *, s\nend program t\n",
+    );
+    assert_eq!(out, vec!["10"]);
+}
+
+#[test]
+fn do_step_mutation_is_ignored() {
+    let out = run_prints(
+        "program t\ninteger :: i, s, step\nstep = 2\ns = 0\ndo i = 1, 10, step\nif (i == 3) step = 1\ns = s + i\nend do\nprint *, s\nend program t\n",
+    );
+    assert_eq!(out, vec!["25"]);
+}
+
+#[test]
+fn do_labeled_continue_syntax() {
+    let out = run_prints(
+        "program t\ninteger :: i, s\ns = 0\ndo 55 i = 1, 4\ns = s + i\n55 continue\nprint *, s\nend program t\n",
+    );
+    assert_eq!(out, vec!["10"]);
+}
+
+#[test]
+fn do_loop_var_value_after_completion() {
+    let out = run_prints(
+        "program t\ninteger :: i, s\ns = 0\ndo i = 1, 4\ns = s + i\nend do\nprint *, i\nprint *, s\nend program t\n",
+    );
+    assert_eq!(out, vec!["5", "10"]);
+}
+
+#[test]
+fn do_named_cycle_skips_named_iteration() {
+    let out = run_prints(
+        "program t\ninteger :: i, s\ns = 0\nouter: do i = 1, 5\n    if (i == 3) cycle outer\n    s = s + i\nend do outer\nprint *, s\nprint *, i\nend program t\n",
+    );
+    assert_eq!(out, vec!["12", "6"]);
+}
+
+#[test]
+fn do_with_expression_bounds_and_step() {
+    let out = run_prints(
+        "program t\ninteger :: i, s\ninteger :: first, last, jump\nfirst = 1\nlast = 10\njump = 3\ns = 0\ndo i = first + 1, last - 1, 1 + jump\ns = s + i\nend do\nprint *, s\nend program t\n",
+    );
+    assert_eq!(out, vec!["15"]);
+}
+
+#[test]
+fn do_start_is_mutated_inside_loop_but_ignored() {
+    let out = run_prints(
+        "program t\ninteger :: i, s, start, finish\nstart = 1\nfinish = 3\ns = 0\ndo i = start, finish\n    if (i == 1) start = 99\n    s = s + i\nend do\nprint *, s\nend program t\n",
+    );
+    assert_eq!(out, vec!["6"]);
+}
+
+#[test]
+fn do_negative_step_with_descending_bounds() {
+    let out = run_prints(
+        "program t\ninteger :: i, s\ns = 0\ndo i = 5, 2, -1\ns = s + i\nend do\nprint *, s\nend program t\n",
+    );
+    assert_eq!(out, vec!["14"]);
+}
+
+#[test]
+fn do_positive_step_with_negative_direction_is_ignored() {
+    let out = run_prints(
+        "program t\ninteger :: i, s\ns = 0\ndo i = 1, 4, -1\ns = s + i\nend do\nprint *, s\nend program t\n",
+    );
+    assert_eq!(out, vec!["0"]);
+}

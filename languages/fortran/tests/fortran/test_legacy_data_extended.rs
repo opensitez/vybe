@@ -2,7 +2,7 @@
 //! multi-variable COMMON, SAVE, and ENTRY. Distinct from `test_legacy.rs`
 //! (basic DATA, EQUIVALENCE, COMMON, BLOCK DATA, SAVE, ENTRY).
 
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 fortran_cases! {
     // ── COMMON: multi-variable blank and named blocks ────────────────
@@ -135,6 +135,20 @@ program t
 end program t
 "#,
     );
+}
+
+#[test]
+fn data_implied_do_with_step_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    integer :: a(5)
+    data (a(i), i = 1, 5, 2) /10, 20, 30/
+    print *, a(1), a(2), a(3), a(4), a(5)
+end program t
+"#,
+    );
+    assert_eq!(out, ["10", "0", "20", "0", "30"]);
 }
 
 #[test]
@@ -386,6 +400,30 @@ end program t
 }
 
 #[test]
+fn common_shared_accumulator_subprogram_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    integer :: total
+    common /acc/ total
+    total = 0
+    call bump(4)
+    call bump(6)
+    print *, total
+contains
+    subroutine bump(n)
+        integer, intent(in) :: n
+        integer :: total
+        common /acc/ total
+        total = total + n
+    end subroutine bump
+end program t
+"#,
+    );
+    assert_eq!(out, ["10"]);
+}
+
+#[test]
 fn common_function_and_program_slots() {
     compile_ok(
         r#"
@@ -452,6 +490,92 @@ contains
 end program t
 "#,
     );
+}
+
+#[test]
+fn save_persists_across_calls_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    call tick()
+    call tick()
+    call tick()
+contains
+    subroutine tick()
+        integer, save :: n = 0
+        n = n + 1
+        print *, n
+    end subroutine tick
+end program t
+"#,
+    );
+    assert_eq!(out, ["1", "2", "3"]);
+}
+
+#[test]
+fn save_in_function_result_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    print *, counter()
+    print *, counter()
+contains
+    function counter()
+        integer, save :: n = 0
+        integer :: counter
+        n = n + 1
+        counter = n
+    end function counter
+end program t
+"#,
+    );
+    assert_eq!(out, ["1", "2"]);
+}
+
+#[test]
+fn entry_with_dummy_arguments_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    call master(5)
+contains
+    subroutine master(x)
+        integer, intent(in) :: x
+        print *, x
+        return
+    entry slave(y)
+        integer :: y
+        print *, y + 1
+    end subroutine master
+end program t
+"#,
+    );
+    assert_eq!(out, ["5"]);
+}
+
+#[test]
+fn block_data_two_common_blocks_runtime() {
+    let out = run_prints(
+        r#"
+block data setup
+    integer :: ix
+    real :: rx
+    common /ints/ ix
+    common /reals/ rx
+    data ix /42/, rx /3.5/
+end block data setup
+
+program t
+    integer :: ix
+    real :: rx
+    common /ints/ ix
+    common /reals/ rx
+    print *, ix
+    print *, rx
+end program t
+"#,
+    );
+    assert_eq!(out, ["42", "3.5"]);
 }
 
 #[test]

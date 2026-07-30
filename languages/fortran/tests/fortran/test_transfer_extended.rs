@@ -213,6 +213,21 @@ fortran_cases! {
         ["97"]
     };
 
+    transfer_size_expand_kind1_scalar => {
+        "program t\ninteger(kind=1) :: source = 42_1\ninteger :: target(2)\ntarget = transfer(source, target, 2)\nprint *, target(1)\nprint *, target(2)\nend program t\n",
+        ["42", "0"]
+    };
+
+    transfer_logical_scalar_to_integer => {
+        "program t\ninteger :: true_bits\ninteger :: false_bits\ntrue_bits = transfer(.true., 0)\nfalse_bits = transfer(.false., 0)\nprint *, true_bits\nprint *, false_bits\nend program t\n",
+        ["1", "0"]
+    };
+
+    transfer_char_kind1_to_integer_kind2 => {
+        "program t\ninteger(kind=2) :: n\nn = transfer('Q', 0_2)\nprint *, n\nend program t\n",
+        ["81"]
+    };
+
     // ── Array-level transfers ───────────────────────────────────────────
 
     transfer_array_int_two_elements => {

@@ -11,6 +11,17 @@ fn assert_double_i64_print(src: String, expected: (i64, i64)) {
     );
 }
 
+fn assert_triple_i64_print(src: String, expected: (i64, i64, i64)) {
+    assert_eq!(
+        run_prints(&src),
+        vec![
+            expected.0.to_string(),
+            expected.1.to_string(),
+            expected.2.to_string(),
+        ],
+    );
+}
+
 #[test]
 fn fortran_matrix_arithmetic_expressions() {
     for n in 1..=100 {
@@ -560,5 +571,120 @@ end program fortran_matrix_minmax_pairing
 "#,
         );
         assert_double_i64_print(src, (expected_min, expected_max));
+    }
+}
+
+#[test]
+fn fortran_matrix_transpose_row_sums() {
+    for n in 1..=100 {
+        let expected = ((2 * n + 3) as i64, (2 * n + 5) as i64);
+        let src = format!(
+            r#"
+program fortran_matrix_transpose_row_sums
+    integer :: n
+    integer :: a(2, 3)
+    integer :: t(3, 2)
+    n = {n}
+    a = reshape((/n, n + 1, n + 2, n + 3, n + 4, n + 5/), shape(a))
+    t = transpose(a)
+    print *, sum(t(1, :))
+    print *, sum(t(2, :))
+end program fortran_matrix_transpose_row_sums
+"#,
+        );
+        assert_double_i64_print(src, expected);
+    }
+}
+
+#[test]
+fn fortran_matrix_forall_increment_profile() {
+    for n in 1..=100 {
+        let expected = (15 + 5 * n) as i64;
+        let src = format!(
+            r#"
+program fortran_matrix_forall_increment_profile
+    integer :: n
+    integer :: arr(1:5)
+    integer :: i
+    n = {n}
+    forall (i = 1:5)
+        arr(i) = i + n
+    end forall
+    print *, sum(arr)
+end program fortran_matrix_forall_increment_profile
+"#,
+        );
+        assert_single_i64_print(src, expected);
+    }
+}
+
+#[test]
+fn fortran_matrix_pack_mask_constant_cardinality() {
+    for n in 1..=100 {
+        let expected = (3i64, (3 * n + 12) as i64);
+        let src = format!(
+            r#"
+program fortran_matrix_pack_mask_constant_cardinality
+    integer :: n
+    integer :: src(1:6)
+    integer :: packed(3)
+    n = {n}
+    src = (/n, n + 1, n + 2, n + 3, n + 4, n + 5/)
+    packed = pack(src, src > n + 2)
+    print *, size(packed)
+    print *, sum(packed)
+end program fortran_matrix_pack_mask_constant_cardinality
+"#,
+        );
+        assert_double_i64_print(src, expected);
+    }
+}
+
+#[test]
+fn fortran_matrix_all_any_predicate_profiles() {
+    for n in 1..=100 {
+        let expected_all = if n > 6 { 1 } else { 0 };
+        let expected_any = if n > 1 { 1 } else { 0 };
+        let src = format!(
+            r#"
+program fortran_matrix_all_any_predicate_profiles
+    integer :: n
+    integer :: i
+    logical :: pred(1:6)
+    n = {n}
+    do i = 1, 6
+        pred(i) = i < n
+    end do
+    print *, merge(1, 0, all(pred))
+    print *, merge(1, 0, any(pred))
+end program fortran_matrix_all_any_predicate_profiles
+"#,
+        );
+        assert_double_i64_print(src, (expected_all, expected_any));
+    }
+}
+
+#[test]
+fn fortran_matrix_spread_repeat_vector() {
+    for n in 1..=100 {
+        let expected_sum = (12 * n + 12) as i64;
+        let expected_a = n as i64;
+        let expected_b = (n + 2) as i64;
+        let src = format!(
+            r#"
+program fortran_matrix_spread_repeat_vector
+    integer :: n
+    integer :: base(3)
+    integer :: table(3, 4)
+    n = {n}
+    base = (/ n, n + 1, n + 2 /)
+    table = spread(base, 2, 4)
+    print *, sum(table)
+    print *, table(1, 3)
+    print *, table(3, 2)
+end program fortran_matrix_spread_repeat_vector
+"#,
+        );
+        assert_triple_i64_print(src, (expected_sum, expected_a, expected_b));
     }
 }

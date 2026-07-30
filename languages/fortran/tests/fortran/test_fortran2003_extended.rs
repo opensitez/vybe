@@ -2,7 +2,7 @@
 //! deferred/abstract types, allocatable components, flush, and stream I/O.
 //! Distinct from `test_fortran2003.rs` (core F2003) and `test_io_advanced.rs`.
 
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 fortran_cases! {
     // ── Type-bound procedures ────────────────────────────────────────
@@ -592,4 +592,78 @@ program t
 end program t
 "#,
     );
+}
+
+#[test]
+fn runtime_flush_stream_write_then_read() {
+    let out = run_prints(
+        r#"
+program t
+    integer :: u
+    integer :: value
+
+    open(newunit=u, status='scratch')
+    write(u, '(I0)') 123
+    flush(u)
+    rewind(u)
+    read(u, '(I0)') value
+    close(u)
+    print *, value
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["123"]);
+}
+
+#[test]
+fn runtime_stream_mixed_type_roundtrip() {
+    let out = run_prints(
+        r#"
+program t
+    integer :: u
+    integer :: i
+    real :: r
+    open(newunit=u, status='scratch', access='stream', form='unformatted')
+    write(u) 4, 2.5
+    rewind(u)
+    read(u) i, r
+    close(u)
+    print *, i
+    print *, int(r)
+end program t
+"#,
+    );
+
+    assert_eq!(out, vec!["4", "2"]);
+}
+
+#[test]
+fn runtime_polymorphic_select_type_default_path() {
+    let out = run_prints(
+        r#"
+program t
+    type :: Base
+        integer :: n = 1
+    end type Base
+    type, extends(Base) :: Derived
+        integer :: m = 3
+    end type Derived
+    type, extends(Base) :: Alt
+        integer :: m = 5
+    end type Alt
+
+    class(Base), allocatable :: obj
+    allocate(Derived :: obj)
+    select type (obj)
+    class is (Derived)
+        print *, obj%m
+    type is (Alt)
+        print *, -1
+    class default
+        print *, 0
+    end select
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["3"]);
 }

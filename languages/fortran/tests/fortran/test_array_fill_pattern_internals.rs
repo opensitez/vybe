@@ -397,3 +397,61 @@ end program array_fill_pattern_internals_fill_with_conditional_offsets
     );
     assert_eq!(out, vec!["42", "16", "65"]);
 }
+
+#[test]
+fn array_fill_pattern_internals_fill_strided_section() {
+    let out = run_prints(
+        r#"
+program array_fill_pattern_internals_fill_strided_section
+    integer :: values(1:7)
+    values = 0
+    values(1:7:2) = 3
+    values(2:6:2) = 5
+    print *, sum(values)
+    print *, values(1)
+    print *, values(2)
+    print *, values(7)
+    print *, values(6)
+end program array_fill_pattern_internals_fill_strided_section
+"#,
+    );
+    assert_eq!(out, vec!["27", "3", "5", "3", "5"]);
+}
+
+#[test]
+fn array_fill_pattern_internals_fill_via_pointer_alias() {
+    let out = run_prints(
+        r#"
+program array_fill_pattern_internals_fill_via_pointer_alias
+    integer, target :: base(3)
+    integer, pointer :: alias(:)
+    base = (/ 1, 2, 3 /)
+    alias => base
+    alias = 9
+    alias(2:3) = 11
+    print *, sum(base)
+    print *, base(1)
+    print *, alias(3)
+end program array_fill_pattern_internals_fill_via_pointer_alias
+"#,
+    );
+    assert_eq!(out, vec!["31", "9", "11"]);
+}
+
+#[test]
+fn array_fill_pattern_internals_fill_zero_sized_allocation() {
+    let out = run_prints(
+        r#"
+program array_fill_pattern_internals_fill_zero_sized_allocation
+    integer, allocatable :: values(:)
+    integer :: expected_size
+    allocate(values(0))
+    values = 4
+    expected_size = size(values)
+    print *, expected_size
+    if (expected_size == 0) print *, sum(values)
+end program array_fill_pattern_internals_fill_zero_sized_allocation
+"#,
+    );
+    assert_eq!(out, vec!["0", "0"]);
+}

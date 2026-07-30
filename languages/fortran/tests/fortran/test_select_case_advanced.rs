@@ -1,10 +1,10 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Range selectors ───────────────────────────────────────────
 
 #[test]
 fn case_range_low() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: n = 3
@@ -17,11 +17,13 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["low"]);
 }
 
 #[test]
 fn case_range_high() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: n = 8
@@ -34,11 +36,13 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["high"]);
 }
 
 #[test]
 fn case_open_upper() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: n = 100
@@ -51,11 +55,13 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["positive"]);
 }
 
 #[test]
 fn case_open_lower() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: n = -5
@@ -68,6 +74,8 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["non-positive"]);
 }
 
 #[test]
@@ -190,7 +198,7 @@ end program test
 
 #[test]
 fn case_char_range() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     character :: c = 'm'
@@ -203,6 +211,8 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["first half"]);
 }
 
 #[test]
@@ -243,7 +253,7 @@ end program test
 
 #[test]
 fn case_char_string() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     character(len=3) :: s = 'foo'
@@ -260,6 +270,8 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["foo"]);
 }
 
 // ── Nested SELECT CASE ────────────────────────────────────────
@@ -355,6 +367,89 @@ end program test
 }
 
 #[test]
+fn case_advanced_open_bounds_runtime_low_high() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: n = -7
+    select case (n)
+    case (:0)
+        print *, 'non-positive'
+    case (1:)
+        print *, 'positive'
+    end select
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["non-positive"]);
+}
+
+#[test]
+fn case_advanced_overlap_precedence_list_before_range() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: n = 3
+    select case (n)
+    case (1, 3, 5)
+        print *, 'list'
+    case (2:6)
+        print *, 'range'
+    case default
+        print *, 'default'
+    end select
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["list"]);
+}
+
+#[test]
+fn case_advanced_no_default_and_post_statement() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: n = 99
+    select case (n)
+    case (1)
+        print *, 'one'
+    case (2)
+        print *, 'two'
+    end select
+    print *, 'after'
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["after"]);
+}
+
+#[test]
+fn case_advanced_nested_no_match_preserves_outer_default() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: i, j
+    i = 10
+    j = 0
+    select case (i)
+    case (10)
+        select case (j)
+        case (1)
+            print *, 'inner-one'
+        case default
+            print *, 'inner-default'
+        end select
+        print *, 'outer-after-inner'
+    case default
+        print *, 'outer-default'
+    end select
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["inner-default", "outer-after-inner"]);
+}
+
+#[test]
 fn case_on_mod_result() {
     compile_ok(
         r#"
@@ -446,4 +541,136 @@ program test
 end program test
 "#,
     );
+}
+
+#[test]
+fn case_advanced_range_and_list_precedence() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: n = 7
+    select case (n)
+    case (1, 5, 7)
+        print *, 'list'
+    case (6:10)
+        print *, 'range'
+    case default
+        print *, 'default'
+    end select
+end program test
+"#,
+    );
+
+    assert_eq!(out, vec!["list"]);
+}
+
+#[test]
+fn case_advanced_no_default_skips_print() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: n = 99
+    select case (n)
+    case (1)
+        print *, 'one'
+    case (2)
+        print *, 'two'
+    end select
+    print *, 'after'
+end program test
+"#,
+    );
+
+    assert_eq!(out, vec!["after"]);
+}
+
+#[test]
+fn case_advanced_character_default_only() {
+    let out = run_prints(
+        r#"
+program test
+    character(len=4) :: c = "zulu"
+    select case (trim(c))
+    case ("alpha")
+        print *, 'alpha'
+    case ("beta")
+        print *, 'beta'
+    case default
+        print *, 'other'
+    end select
+end program test
+"#,
+    );
+
+    assert_eq!(out, vec!["other"]);
+}
+
+#[test]
+fn case_advanced_nested_default_visibility() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: x, y
+    x = 3
+    y = 2
+    select case (x)
+    case (1, 2)
+        print *, 'outer-low'
+    case default
+        select case (y)
+        case (1)
+            print *, 'inner-one'
+        case default
+            print *, 'inner-default'
+        end select
+        print *, 'outer-default'
+    end select
+end program test
+"#,
+    );
+
+    assert_eq!(out, vec!["inner-default", "outer-default"]);
+}
+
+#[test]
+fn case_advanced_character_open_ended_ranges() {
+    let out = run_prints(
+        r#"
+program test
+    character(len=1) :: c = 'c'
+    select case (c)
+    case (:'m')
+        print *, 'prefix'
+    case ('n':)
+        print *, 'suffix'
+    end select
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["prefix"]);
+}
+
+#[test]
+fn case_advanced_select_in_do_while() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: i
+    i = 1
+    do while (i <= 3)
+        select case (i)
+        case (1)
+            print *, 'one'
+        case (2)
+            print *, 'two'
+        case default
+            print *, 'other'
+        end select
+        i = i + 1
+    end do
+end program test
+"#,
+    );
+
+    assert_eq!(out, vec!["one", "two", "other"]);
 }

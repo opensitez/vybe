@@ -28,6 +28,21 @@ fortran_cases! {
         ["8"]
     };
 
+    kind_character_variable => {
+        "program t\ncharacter(len=12) :: s\ns = 'abc'\nprint *, kind(s)\nend program t\n",
+        ["8"]
+    };
+
+    kind_complex_literal => {
+        "program t\nprint *, kind((1.0, 2.0))\nend program t\n",
+        ["8"]
+    };
+
+    kind_complex_variable => {
+        "program t\ncomplex :: c\nc = (1.0, 2.0)\nprint *, kind(c)\nend program t\n",
+        ["8"]
+    };
+
     // ── selected_int_kind ─────────────────────────────────────────
     selected_int_kind_range_four => {
         "program t\nprint *, selected_int_kind(4)\nend program t\n",
@@ -83,6 +98,16 @@ fortran_cases! {
     selected_real_kind_p7_r37 => {
         "program t\nprint *, selected_real_kind(7, 37)\nend program t\n",
         ["8"]
+    };
+
+    selected_int_kind_unavailable => {
+        "program t\nprint *, selected_int_kind(123)\nend program t\n",
+        ["-1"]
+    };
+
+    selected_real_kind_unavailable => {
+        "program t\nprint *, selected_real_kind(999)\nend program t\n",
+        ["-1"]
     };
 
     // ── kind on typed variables ───────────────────────────────────
@@ -190,6 +215,11 @@ fortran_cases! {
         ["53"]
     };
 
+    precision_array_real => {
+        "program t\nreal, dimension(3) :: x\nx = [1.0, 2.0, 3.0]\nprint *, precision(x)\nend program t\n",
+        ["53"]
+    };
+
     precision_real_kind_eight_variable => {
         "program t\nreal(kind=8) :: x = 0.0_8\nprint *, precision(x)\nend program t\n",
         ["53"]
@@ -219,6 +249,11 @@ fortran_cases! {
     range_int_kind_two_variable => {
         "program t\ninteger(kind=2) :: x = 0_2\nprint *, range(x)\nend program t\n",
         ["4"]
+    };
+
+    range_int_kind_four_variable => {
+        "program t\ninteger(kind=4) :: x = 0_4\nprint *, range(x)\nend program t\n",
+        ["9"]
     };
 
     range_default_real_variable => {
@@ -257,6 +292,11 @@ fortran_cases! {
         ["6"]
     };
 
+    digits_logical_kind => {
+        "program t\nlogical :: l\nprint *, kind(l)\nprint *, kind(bit_size(l))\nend program t\n",
+        ["8", "8"]
+    };
+
     // ── cross-kind consistency checks ─────────────────────────────
     selected_int_kind_matches_kind_of_literal => {
         "program t\ninteger, parameter :: k = selected_int_kind(9)\nprint *, k\nend program t\n",
@@ -276,6 +316,16 @@ fortran_cases! {
     precision_real_kind_four_less_than_default => {
         "program t\nreal(kind=4) :: s = 0.0_4\nreal :: d = 0.0\nprint *, precision(s) < precision(d)\nend program t\n",
         ["true"]
+    };
+
+    storage_size_array_and_scalar_equivalent => {
+        "program t\ninteger :: s = 0\ninteger :: a(4) = [1,2,3,4]\nprint *, storage_size(s), storage_size(a)\nend program t\n",
+        ["32", "32"]
+    };
+
+    kind_array_vs_scalar_equivalent => {
+        "program t\ninteger :: s = 0\ninteger :: a(4) = [1,2,3,4]\nprint *, kind(s), kind(a)\nend program t\n",
+        ["8", "8"]
     };
 
     bit_size_logical_literal => {

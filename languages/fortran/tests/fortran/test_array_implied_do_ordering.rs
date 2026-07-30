@@ -344,3 +344,58 @@ end program array_implied_do_ordering_stride_then_masked_fill
     );
     assert_eq!(out, vec!["6", "2", "0", "0", "0"]);
 }
+
+#[test]
+fn array_implied_do_ordering_runtime_empty_sequence() {
+    let out = run_prints(
+        r#"
+program array_implied_do_ordering_runtime_empty_sequence
+    integer, allocatable :: values(:)
+    values = (/ (i, i = 3, 1, 2) /)
+    print *, size(values)
+    print *, merge(1, 0, size(values) == 0)
+    print *, sum(values)
+end program array_implied_do_ordering_runtime_empty_sequence
+"#,
+    );
+    assert_eq!(out, vec!["0", "1", "0"]);
+}
+
+#[test]
+fn array_implied_do_ordering_nested_runtime_bounds() {
+    let out = run_prints(
+        r#"
+program array_implied_do_ordering_nested_runtime_bounds
+    integer, allocatable :: values(:)
+    integer :: i_start
+    integer :: j_end
+    i_start = 1
+    j_end = 4
+    values = (/ (i + j, i = i_start, 2, j = 1, j_end) /)
+    print *, size(values)
+    print *, sum(values)
+    print *, values(1)
+    print *, values(size(values))
+    print *, values(5)
+end program array_implied_do_ordering_nested_runtime_bounds
+"#,
+    );
+    assert_eq!(out, vec!["8", "32", "2", "6", "3"]);
+}
+
+#[test]
+fn array_implied_do_ordering_character_code_generation() {
+    let out = run_prints(
+        r#"
+program array_implied_do_ordering_character_code_generation
+    character(len=1), allocatable :: values(:)
+    values = (/ (achar(iachar('a') + i), i = 0, 3) /)
+    print *, size(values)
+    print *, len(values(1))
+    print *, iachar(values(1))
+    print *, iachar(values(4))
+end program array_implied_do_ordering_character_code_generation
+"#,
+    );
+    assert_eq!(out, vec!["4", "1", "97", "100"]);
+}

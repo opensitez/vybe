@@ -45,6 +45,26 @@ fortran_cases! {
         "program t\nlogical :: err = .false.\nprint *, 'check'\nif (err) error stop 7\nprint *, 'ok'\nend program t\n",
         ["check", "ok"]
     };
+
+    stop_in_loop_with_conditional_halt => {
+        "program t\ninteger :: i\ninteger :: n\nn = 1\n do i = 1, 3\n    if (i == n) stop 'stop-on-first'\n    print *, i\n end do\n print *, 'tail'\nend program t\n",
+        []
+    };
+
+    stop_with_code_expression => {
+        "program t\ninteger :: code = 2\nif (code > 1) then\n    stop code\nelse\n    print *, 'continue'\nend if\nprint *, 'never'\nend program t\n",
+        []
+    };
+
+    error_stop_in_nested_control_not_taken => {
+        "program t\nlogical :: fail = .false.\nlogical :: inner = .false.\nif (fail) then\n    print *, 'bad'\nelse if (inner) then\n    error stop 'nested bad'\nelse\n    print *, 'ok'\nend if\nprint *, 'done'\nend program t\n",
+        ["ok", "done"]
+    };
+
+    stop_or_error_goto_like_fallthrough => {
+        "program t\ninteger :: code\ncode = 0\nif (code /= 0) stop code\nif (code == 0) then\n    print *, 'ok'\nelse\n    error stop 'bad'\nend if\nprint *, 'done'\nend program t\n",
+        ["ok", "done"]
+    };
 }
 
 // ── Pure STOP / ERROR STOP (compile-only) ─────────────────────────
@@ -79,6 +99,32 @@ fn error_stop_variable_code() {
 program t
     integer :: code = 0
     if (code /= 0) error stop code
+    print *, 'ok'
+end program t
+"#,
+    );
+}
+
+#[test]
+fn error_stop_message_form() {
+    compile_ok(
+        r#"
+program t
+    logical :: bad = .false.
+    if (bad) error stop 'fatal condition'
+    print *, 'clear'
+end program t
+"#,
+    );
+}
+
+#[test]
+fn error_stop_with_quiet_clause() {
+    compile_ok(
+        r#"
+program t
+    logical :: bad = .false.
+    if (bad) error stop 9, quiet = .true.
     print *, 'ok'
 end program t
 "#,

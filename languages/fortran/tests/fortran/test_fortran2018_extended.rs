@@ -98,6 +98,24 @@ end program t
 }
 
 #[test]
+fn sort_integer_vector_ascending_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    integer :: a(5) = [3, 1, 4, 1, 5]
+    call sort(a)
+    print *, a(1)
+    print *, a(2)
+    print *, a(3)
+    print *, a(4)
+    print *, a(5)
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["1", "1", "3", "4", "5"]);
+}
+
+#[test]
 fn sort_integer_vector_descending() {
     compile_ok(
         r#"
@@ -108,6 +126,23 @@ program t
 end program t
 "#,
     );
+}
+
+#[test]
+fn sort_integer_vector_descending_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    integer :: a(4) = [3, 1, 4, 2]
+    call sort(a, reverse=.true.)
+    print *, a(1)
+    print *, a(2)
+    print *, a(3)
+    print *, a(4)
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["4", "3", "2", "1"]);
 }
 
 #[test]
@@ -390,4 +425,44 @@ program t
 end program t
 "#,
     );
+}
+
+#[test]
+fn reduce_ordered_with_mask_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    integer :: a(6) = [6, 5, 4, 3, 2, 1]
+    logical :: mask(6) = [.true., .false., .true., .false., .true., .false.]
+    integer :: r
+    r = reduce(a, operator(+), mask=mask, ordered=.true.)
+    print *, r
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["12"]);
+}
+
+#[test]
+fn select_rank_explicit_rank3_branch_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    call inspect(reshape([(i, i = 1, 24)], [2, 3, 4]))
+contains
+    subroutine inspect(x)
+        integer, intent(in) :: x(..)
+        select rank(x)
+        rank(3)
+            print *, size(x, 1)
+            print *, size(x, 2)
+            print *, size(x, 3)
+        rank default
+            print *, rank(x)
+        end select
+    end subroutine inspect
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["2", "3", "4"]);
 }

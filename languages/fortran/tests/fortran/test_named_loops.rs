@@ -1,10 +1,10 @@
-use super::helpers::compile_ok;
+use super::helpers::run_prints;
 
 // ── Basic named DO loop ───────────────────────────────────────
 
 #[test]
 fn named_do_basic() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i, s
@@ -16,11 +16,13 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["15"]);
 }
 
 #[test]
 fn named_do_while() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: n = 0
@@ -31,11 +33,13 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn named_do_nested_both() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i, j, s
@@ -49,13 +53,15 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["9"]);
 }
 
 // ── EXIT with loop name ───────────────────────────────────────
 
 #[test]
 fn exit_named_outer() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i, j
@@ -69,11 +75,13 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["3", "3"]);
 }
 
 #[test]
 fn exit_named_inner() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i, j, count
@@ -88,11 +96,13 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["9"]);
 }
 
 #[test]
 fn exit_outer_from_deep_nest() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i, j, k
@@ -107,11 +117,13 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["2", "1", "7"]);
 }
 
 #[test]
 fn exit_named_vs_unnamed() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i, j
@@ -125,13 +137,14 @@ program test
 end program test
 "#,
     );
+    assert_eq!(out, vec!["1", "done"]);
 }
 
 // ── CYCLE with loop name ──────────────────────────────────────
 
 #[test]
 fn cycle_named_outer() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i, j, count
@@ -146,11 +159,13 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["10"]);
 }
 
 #[test]
 fn cycle_named_inner() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i, j, count
@@ -165,11 +180,13 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["12"]);
 }
 
 #[test]
 fn cycle_outer_skip_rest_of_inner() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i, j
@@ -182,11 +199,12 @@ program test
 end program test
 "#,
     );
+    assert_eq!(out, vec!["1 1", "2 1", "3 1"]);
 }
 
 #[test]
 fn cycle_preserves_state() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i, j, sum_j
@@ -201,13 +219,14 @@ program test
 end program test
 "#,
     );
+    assert_eq!(out, vec!["16"]);
 }
 
 // ── Three-level named loops ───────────────────────────────────
 
 #[test]
 fn three_level_exit_outer() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i, j, k
@@ -222,11 +241,12 @@ program test
 end program test
 "#,
     );
+    assert_eq!(out, vec!["24"]);
 }
 
 #[test]
 fn three_level_cycle_middle() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i, j, k, count
@@ -243,11 +263,12 @@ program test
 end program test
 "#,
     );
+    assert_eq!(out, vec!["9"]);
 }
 
 #[test]
 fn three_level_exit_middle() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i, j, k, count
@@ -264,13 +285,14 @@ program test
 end program test
 "#,
     );
+    assert_eq!(out, vec!["16"]);
 }
 
 // ── Named DO CONCURRENT ───────────────────────────────────────
 
 #[test]
 fn named_do_concurrent() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: a(10)
@@ -281,13 +303,14 @@ program test
 end program test
 "#,
     );
+    assert_eq!(out, vec!["25"]);
 }
 
 // ── Named loops with subroutine calls inside ─────────────────
 
 #[test]
 fn named_loop_with_call() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i, total
@@ -302,17 +325,18 @@ contains
         integer, intent(inout) :: acc
         integer, intent(in)    :: n
         acc = acc + n
-    end subroutine add
+end subroutine add
 end program test
 "#,
     );
+    assert_eq!(out, vec!["37"]);
 }
 
 // ── Edge cases ────────────────────────────────────────────────
 
 #[test]
 fn named_loop_zero_iterations() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i
@@ -323,11 +347,13 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["done"]);
 }
 
 #[test]
 fn exit_at_start_of_loop() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i
@@ -338,11 +364,13 @@ program test
 end program test
 "#,
     );
+
+    assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn nested_exit_and_cycle_mix() {
-    compile_ok(
+    let out = run_prints(
         r#"
 program test
     integer :: i, j, s
@@ -359,4 +387,62 @@ program test
 end program test
 "#,
     );
+    assert_eq!(out, vec!["6"]);
+}
+
+#[test]
+fn named_do_named_loop_value_accumulates() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: i, s
+    s = 0
+    outer: do i = 1, 4
+        s = s + i
+    end do outer
+    print *, s
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["10"]);
+}
+
+#[test]
+fn named_do_named_while_runs_and_leaves_value() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: n
+    integer :: count
+    n = 0
+    count = 0
+    counting: do while (n < 3)
+        n = n + 1
+        count = count + n
+    end do counting
+    print *, count
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["6"]);
+}
+
+#[test]
+fn named_do_outer_cycle_skips_to_next_outer_iteration() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: i, j, s
+    s = 0
+    outer: do i = 1, 3
+        inner: do j = 1, 4
+            if (j == 2) cycle outer
+            s = s + 1
+        end do inner
+    end do outer
+    print *, s
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["3"]);
 }

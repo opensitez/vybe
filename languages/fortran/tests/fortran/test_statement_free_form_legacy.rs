@@ -1,4 +1,4 @@
-use super::helpers::run_prints;
+use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn statement_free_form_legacy_line_continuation_with_ampersand() {
@@ -123,4 +123,89 @@ end program statement_free_form_legacy_continue_and_labeled_do
 "#,
     );
     assert_eq!(out, vec!["1", "2"]);
+}
+
+#[test]
+fn statement_free_form_legacy_assigned_goto() {
+    let out = run_prints(
+        "
+    program statement_free_form_legacy_assigned_goto
+    integer :: target
+    assign 10 to target
+    goto target
+    print *, 'unexpected'
+10  print *, 'assigned'
+end program statement_free_form_legacy_assigned_goto
+",
+    );
+    assert_eq!(out, vec!["assigned"]);
+}
+
+#[test]
+fn statement_free_form_legacy_computed_goto() {
+    let out = run_prints(
+        "
+program statement_free_form_legacy_computed_goto
+    integer :: pick
+    pick = 2
+    goto (10,20,30), pick
+10  print *, 'first'
+    stop
+20  print *, 'second'
+    stop
+30  print *, 'third'
+    stop
+end program statement_free_form_legacy_computed_goto
+",
+    );
+    assert_eq!(out, vec!["second"]);
+}
+
+#[test]
+fn statement_free_form_legacy_common_block_and_data() {
+    let out = run_prints(
+        "
+    program statement_free_form_legacy_common_block_and_data
+    integer :: a, b, idx
+    common /legacy_com/ a, b
+    data a, b /1, 2/
+    idx = a + b
+    print *, idx
+end program statement_free_form_legacy_common_block_and_data
+",
+    );
+    assert_eq!(out, vec!["3"]);
+}
+
+#[test]
+fn statement_free_form_legacy_associated_goto_and_arithmetic_if() {
+    let out = run_prints(
+        "
+  program statement_free_form_legacy_associated_goto_and_arithmetic_if
+    integer :: x
+    integer, save :: seen = 0
+    x = -1
+    if (x) 10, 20, 30
+10  seen = seen + 1
+20  seen = seen + 2
+30  seen = seen + 3
+    print *, seen
+end program statement_free_form_legacy_associated_goto_and_arithmetic_if
+",
+    );
+    assert_eq!(out, vec!["1"]);
+}
+
+#[test]
+fn statement_free_form_legacy_hollerith_data_literal() {
+    let out = run_prints(
+        "
+program statement_free_form_legacy_hollerith_data_literal
+    character*4 c
+    data c /4hABCD/
+    print *, c
+end program statement_free_form_legacy_hollerith_data_literal
+",
+    );
+    assert_eq!(out, vec!["ABCD"]);
 }

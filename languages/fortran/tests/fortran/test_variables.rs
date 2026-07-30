@@ -90,10 +90,30 @@ fn reassign_variable() {
 
 #[test]
 fn double_precision_var() {
-    compile_ok("program t\ndouble precision :: d = 1.23456789\nprint *, d\nend program t\n");
+    let out = run_prints("program t\ndouble precision :: d = 1.23456789d0\nprint *, nint(d*1_8)\nend program t\n");
+    assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn implicit_none_compiles() {
-    compile_ok("program t\nimplicit none\ninteger :: x = 1\nprint *, x\nend program t\n");
+    let out = run_prints("program t\nimplicit none\ninteger :: x = 1\nprint *, x\nend program t\n");
+    assert_eq!(out, vec!["1"]);
+}
+
+#[test]
+fn complex_variable_runtime() {
+    let out = run_prints("program t\ncomplex :: c = (1.25, -2.5)\nprint *, nint(real(c)*10)\nprint *, nint(aimag(c)*10)\nend program t\n");
+    assert_eq!(out, vec!["12", "-25"]);
+}
+
+#[test]
+fn character_length_truncation_runtime() {
+    let out = run_prints("program t\ncharacter(len=3) :: s = 'hello'\nprint *, s\nend program t\n");
+    assert_eq!(out, vec!["hel"]);
+}
+
+#[test]
+fn integer_kind8_runtime() {
+    let out = run_prints("program t\ninteger(kind=8) :: k = 123456789012_8\nprint *, k\nend program t\n");
+    assert_eq!(out, vec!["123456789012"]);
 }

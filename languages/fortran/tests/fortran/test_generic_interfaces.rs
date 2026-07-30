@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 macro_rules! c {
     ($n:ident,$s:expr) => {
         #[test]
@@ -286,3 +286,88 @@ end
 end module m
 "
 );
+
+#[test]
+fn test_generic_interfaces_character_concat_operator() {
+    let out = run_prints(
+        r#"
+module m
+    interface operator(//)
+        module procedure mcat
+    end interface
+contains
+    character(len=2) function mcat(a, b)
+        character(len=*), intent(in) :: a, b
+        mcat = a // b
+    end function
+end module m
+
+program test_generic_interfaces_character_concat_operator
+    use m
+    print *, 'a' // 'b'
+end program test_generic_interfaces_character_concat_operator
+"#,
+    );
+    assert_eq!(out, vec!["ab"]);
+}
+
+#[test]
+fn test_generic_interfaces_dispatched_subroutines() {
+    let out = run_prints(
+        r#"
+module m
+    interface g
+        module procedure si, sr
+    end interface
+contains
+    subroutine si(v)
+        integer, intent(in) :: v
+        print *, v + 1
+    end subroutine
+
+    subroutine sr(v)
+        real, intent(in) :: v
+        print *, nint(v) + 1
+    end subroutine
+end module m
+
+program test_generic_interfaces_dispatched_subroutines
+    use m
+    call g(3)
+    call g(4.0)
+end program test_generic_interfaces_dispatched_subroutines
+"#,
+    );
+    assert_eq!(out, vec!["4", "5"]);
+}
+
+#[test]
+fn test_generic_interfaces_overloaded_generic_function() {
+    let out = run_prints(
+        r#"
+module m
+    interface val
+        module procedure vi
+        module procedure vr
+    end interface
+contains
+    integer function vi(v)
+        integer, intent(in) :: v
+        vi = v * 2
+    end function
+
+    real function vr(v)
+        real, intent(in) :: v
+        vr = v * 2.0
+    end function
+end module m
+
+program test_generic_interfaces_overloaded_generic_function
+    use m
+    print *, val(4)
+    print *, nint(val(2.5))
+end program test_generic_interfaces_overloaded_generic_function
+"#,
+    );
+    assert_eq!(out, vec!["8", "5"]);
+}

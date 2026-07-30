@@ -96,17 +96,37 @@ fn triangle_area() {
 
 #[test]
 fn circle_circumference() {
-    let _out = run_prints(
+    let out = run_prints(
         "program t\nreal, parameter :: PI = 3.14159\nreal :: r, c\nr = 5.0\nc = 2.0 * PI * r\nprint *, c\nend program t\n",
     );
     // 2 * 3.14159 * 5 = 31.4159
-    assert!(run_prints("program t\nreal, parameter :: PI = 3.14159\nreal :: r, c\nr = 5.0\nc = 2.0 * PI * r\nprint *, c\nend program t\n")[0].starts_with("31.4"));
+    assert!(out[0].starts_with("31.4"));
 }
 
 #[test]
 fn fizzbuzz() {
-    compile_ok(
+    let out = run_prints(
         "program t\ninteger :: i\ndo i = 1, 15\nif (mod(i, 15) == 0) then\nprint *, \"FizzBuzz\"\nelse if (mod(i, 3) == 0) then\nprint *, \"Fizz\"\nelse if (mod(i, 5) == 0) then\nprint *, \"Buzz\"\nelse\nprint *, i\nend if\nend do\nend program t\n",
+    );
+    assert_eq!(
+        out,
+        vec![
+            "1",
+            "2",
+            "Fizz",
+            "4",
+            "Buzz",
+            "Fizz",
+            "7",
+            "8",
+            "Fizz",
+            "10",
+            "11",
+            "Fizz",
+            "13",
+            "14",
+            "FizzBuzz",
+        ],
     );
 }
 
@@ -120,9 +140,26 @@ fn sum_even_numbers() {
 
 #[test]
 fn quadratic_discriminant() {
-    compile_ok(
+    let out = run_prints(
         "program t\nreal :: a, b, c, d\na = 1.0\nb = -5.0\nc = 6.0\nd = b**2 - 4.0*a*c\nif (d >= 0.0) then\nprint *, \"real roots\"\nelse\nprint *, \"complex roots\"\nend if\nend program t\n",
     );
+    assert_eq!(out[0].to_lowercase(), "real roots");
+}
+
+#[test]
+fn full_program_internal_procedures() {
+    let out = run_prints(
+        "program full_program_internal_procedures\n    integer :: x\n    x = 7\n    print *, adjust(x)\n    print *, total(x)\ncontains\n    integer function adjust(v)\n        integer, intent(in) :: v\n        adjust = v + 3\n    end function adjust\n\n    integer function total(v)\n        integer, intent(in) :: v\n        integer :: i\n        total = 0\n        do i = 1, v\n            total = total + i\n        end do\n    end function total\nend program full_program_internal_procedures\n",
+    );
+    assert_eq!(out, vec!["10", "28"]);
+}
+
+#[test]
+fn full_program_module_state_and_calling() {
+    let out = run_prints(
+        "module full_program_counter\n    integer :: steps = 0\ncontains\n    subroutine advance(by)\n        integer, intent(in) :: by\n        steps = steps + by\n    end subroutine advance\n\n    subroutine reset_counter()\n        steps = 0\n    end subroutine reset_counter\nend module full_program_counter\n\nprogram full_program_module_state_and_calling\n    use full_program_counter\n    call advance(4)\n    call advance(3)\n    print *, steps\n    call reset_counter()\n    print *, steps\nend program full_program_module_state_and_calling\n",
+    );
+    assert_eq!(out, vec!["7", "0"]);
 }
 
 #[test]

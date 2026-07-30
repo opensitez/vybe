@@ -273,4 +273,19 @@ fortran_cases! {
         "program t\ninteger :: i, s\ns = 0\ndown: do i = 10, 1, -1\ns = s + i\nif (i == 6) exit down\nend do down\nprint *, s\nend program t\n",
         ["40"]
     };
+
+    named_do_while_cycles_before_sum => {
+        "program t\ninteger :: n, total\nn = 0\ntotal = 0\ncount: do while (n < 6)\nn = n + 1\nif (mod(n, 2) == 0) cycle count\ntotal = total + n\nend do count\nprint *, total\nend program t\n",
+        ["9"]
+    };
+
+    named_do_while_exit_stops_at_target => {
+        "program t\ninteger :: n, total\nn = 0\ntotal = 0\nwatch: do while (n < 10)\nn = n + 1\nif (n == 4) exit watch\ntotal = total + n\nend do watch\nprint *, n\nprint *, total\nend program t\n",
+        ["4", "6"]
+    };
+
+    named_do_while_nested_exit_outer => {
+        "program t\ninteger :: outer_i, inner_i, total\nouter_i = 0\ntotal = 0\nouter_loop: do while (outer_i < 5)\nouter_i = outer_i + 1\ninner: do inner_i = 1, 10\nif (inner_i == 3 .and. outer_i == 2) exit outer_loop\ntotal = total + 1\nend do inner\nend do outer_loop\nprint *, outer_i\nprint *, total\nend program t\n",
+        ["2", "4"]
+    };
 }

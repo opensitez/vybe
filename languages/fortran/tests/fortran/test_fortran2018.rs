@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── REDUCE intrinsic (Fortran 2018) ──────────────────────────
 
@@ -822,4 +822,86 @@ program test
 end program test
 "#,
     );
+}
+
+#[test]
+fn fortran_2018_reduce_runtime_sum_and_mask() {
+    let out = run_prints(
+        r#"
+program t
+    integer :: a(6) = [1, 2, 3, 4, 5, 6]
+    integer :: total
+    logical :: mask(6) = [.true., .false., .true., .false., .true., .false.]
+    total = reduce(a, operator(+))
+    print *, total
+    print *, reduce(a, operator(+), mask=mask)
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["21", "9"]);
+}
+
+#[test]
+fn fortran_2018_select_rank_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    call handle([1, 2, 3])
+    call inspect(42)
+contains
+    subroutine handle(x)
+        integer, intent(in) :: x(..)
+        select rank(x)
+        rank(1)
+            print *, 1
+        rank default
+            print *, 0
+        end select
+    end subroutine handle
+
+    subroutine inspect(x)
+        integer, intent(in) :: x(..)
+        select rank(x)
+        rank(0)
+            print *, 0
+        rank default
+            print *, -1
+        end select
+    end subroutine inspect
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["1", "0"]);
+}
+
+#[test]
+fn fortran_2018_out_of_range_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    integer(kind=4) :: small = 100
+    print *, out_of_range(small, 0_2)
+    print *, out_of_range(3.14, 0)
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["0", "0"]);
+}
+
+#[test]
+fn fortran_2018_is_contiguous_runtime() {
+    let out = run_prints(
+        r#"
+program t
+    real, target :: a(10)
+    real, pointer :: full(:)
+    real, pointer :: stride(:)
+    full => a
+    stride => a(1:10:2)
+    print *, is_contiguous(full)
+    print *, is_contiguous(stride)
+end program t
+"#,
+    );
+    assert_eq!(out, vec!["1", "0"]);
 }

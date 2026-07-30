@@ -285,6 +285,11 @@ fortran_cases! {
         ["3", "5"]
     };
 
+    select_type_unmatched_no_default => {
+        "program t\nclass(*), allocatable :: val\nallocate(real :: val)\nval = 1.5\nselect type(val)\ntype is (integer)\nprint *, 7\ntype is (logical)\nprint *, 8\nend select\nend program t\n",
+        []
+    };
+
     select_rank2_integer_sum_all => {
         "program t\ncall total(reshape([1,2,3,4,5,6],[2,3]))\ncontains\nsubroutine total(x)\ninteger, intent(in) :: x(..)\nselect rank(x)\nrank(2)\nprint *, sum(x)\nrank(1)\nprint *, sum(x)\nrank default\nprint *, x\nend select\nend subroutine total\nend program t\n",
         ["21"]
@@ -303,6 +308,11 @@ fortran_cases! {
     select_rank_character_vector_len => {
         "program t\ncall tag(['a', 'bb', 'ccc'])\ncontains\nsubroutine tag(x)\ncharacter(len=*), intent(in) :: x(..)\nselect rank(x)\nrank(1)\nprint *, size(x)\nrank default\nprint *, 0\nend select\nend subroutine tag\nend program t\n",
         ["3"]
+    };
+
+    select_rank_unmatched_no_default => {
+        "program t\ncall tag([1, 2, 3])\ncontains\nsubroutine tag(x)\ninteger, intent(in) :: x(..)\nselect rank(x)\nrank(0)\nprint *, x\nend select\nend subroutine tag\nend program t\n",
+        []
     };
 
     select_rank_logical_vector_any => {

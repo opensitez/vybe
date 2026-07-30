@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 macro_rules! c {
     ($n:ident,$s:expr) => {
         #[test]
@@ -158,3 +158,63 @@ end
 end module m
 "
 );
+
+#[test]
+fn test_generic_resolution_runtime_calls() {
+    let out = run_prints(
+        r#"
+module m
+    interface g
+        module procedure si, sr
+    end interface
+contains
+    integer function si(i)
+        integer, intent(in) :: i
+        si = i + 10
+    end function
+
+    real function sr(r)
+        real, intent(in) :: r
+        sr = r + 1.0
+    end function
+end module m
+
+program test_generic_resolution_runtime_calls
+    use m
+    print *, g(1)
+    print *, nint(g(3.0))
+end program test_generic_resolution_runtime_calls
+"#,
+    );
+    assert_eq!(out, vec!["11", "4"]);
+}
+
+#[test]
+fn test_generic_resolution_subroutine_dispatch_chain() {
+    let out = run_prints(
+        r#"
+module m
+    interface g
+        module procedure ss, sr
+    end interface
+contains
+    subroutine ss(n)
+        integer, intent(in) :: n
+        print *, n * 2
+    end subroutine
+
+    subroutine sr(r)
+        real, intent(in) :: r
+        print *, nint(r * 2.0)
+    end subroutine
+end module m
+
+program test_generic_resolution_subroutine_dispatch_chain
+    use m
+    call g(5)
+    call g(6.0)
+end program test_generic_resolution_subroutine_dispatch_chain
+"#,
+    );
+    assert_eq!(out, vec!["10", "12"]);
+}

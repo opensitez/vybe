@@ -108,9 +108,19 @@ fortran_cases! {
         ["30"]
     };
 
+    dimension_non_unit_lower_bound => {
+        "program t\nimplicit none\ninteger, dimension(-2:2) :: v\nv(-2) = -2\nv(-1) = -1\nv(0) = 0\nv(1) = 1\nv(2) = 2\nprint *, v(-2)\nprint *, v(2)\nend program t\n",
+        ["-2", "2"]
+    };
+
     dimension_2d_corner_element => {
         "program t\nimplicit none\ninteger, dimension(2, 3) :: m\nm(2, 3) = 42\nprint *, m(2, 3)\nend program t\n",
         ["42"]
+    };
+
+    dimension_constructor_initializer => {
+        "program t\nimplicit none\ninteger, dimension(3) :: v = (/ 10, 20, 30 /)\nprint *, v(1)\nprint *, v(2)\nprint *, v(3)\nend program t\n",
+        ["10", "20", "30"]
     };
 
     dimension_shorthand_real_vector => {
@@ -138,11 +148,21 @@ fortran_cases! {
         ["true"]
     };
 
+    save_initialized_scalar => {
+        "program t\nimplicit none\ninteger, save :: counter = 99\nprint *, counter\nend program t\n",
+        ["99"]
+    };
+
     // ── Parameter statements ───────────────────────────────────────────
 
     parameter_integer_expression => {
         "program t\nimplicit none\ninteger, parameter :: n = 2 + 3\nprint *, n\nend program t\n",
         ["5"]
+    };
+
+    parameter_derived_integer_expression => {
+        "program t\nimplicit none\ninteger, parameter :: base = 4\ninteger, parameter :: doubled = base * 2\nprint *, doubled\nend program t\n",
+        ["8"]
     };
 
     parameter_real_expression => {
@@ -175,6 +195,11 @@ fortran_cases! {
     init_integer_negative => {
         "program t\nimplicit none\ninteger :: x = -12\nprint *, x\nend program t\n",
         ["-12"]
+    };
+
+    init_multiple_attributes_same_stmt => {
+        "program t\nimplicit none\ninteger :: a = 5, b = 7\nprint *, a + b\nend program t\n",
+        ["12"]
     };
 
     init_real_from_integer => {

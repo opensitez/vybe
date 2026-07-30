@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 macro_rules! c {
     ($n:ident,$s:expr) => {
         #[test]
@@ -168,3 +168,25 @@ write(*,100) x
 end program p
 "
 );
+
+#[test]
+fn fmt_runtime_binary_descriptor() {
+    let out = run_prints(
+        "program p
+write(*,'(B8)') 255
+end program p
+",
+    );
+    assert_eq!(out, vec!["11111111".to_string()]);
+}
+
+#[test]
+fn fmt_runtime_tab_position() {
+    let out = run_prints(
+        "program p
+write(*,'(A, T6, A)') 'x', 'y'
+end program p
+",
+    );
+    assert_eq!(out, vec!["x     y".to_string()]);
+}

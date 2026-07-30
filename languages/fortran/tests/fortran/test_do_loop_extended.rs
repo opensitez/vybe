@@ -219,6 +219,16 @@ fortran_cases! {
         ["21"]
     };
 
+    do_step_expression_freeze => {
+        "program t\ninteger :: i, s\ninteger :: step\nstep = 2\ns = 0\ndo i = 1, 10, step\nif (i == 1) step = 10\ns = s + i\nend do\nprint *, s\nend program t\n",
+        ["16"]
+    };
+
+    do_bound_expression_freeze => {
+        "program t\ninteger :: i, s, bound\nbound = 5\ns = 0\ndo i = 1, bound\nif (i == 2) bound = 10\ns = s + i\nend do\nprint *, s\nend program t\n",
+        ["15"]
+    };
+
     // ── Labeled DO loops ───────────────────────────────────────────────
 
     labeled_do_sum_1_to_4 => {
@@ -258,6 +268,11 @@ fortran_cases! {
         ["52"]
     };
 
+    do_step_non_unit_start_neq_end => {
+        "program t\ninteger :: i, s\ns = 0\ndo i = 2, 9, 3\ns = s + i\nend do\nprint *, s\nend program t\n",
+        ["20"]
+    };
+
     do_neg_step_exit_at_5 => {
         "program t\ninteger :: i, s\ns = 0\ndo i = 10, 1, -1\nif (i == 5) exit\ns = s + i\nend do\nprint *, s\nend program t\n",
         ["30"]
@@ -266,5 +281,60 @@ fortran_cases! {
     do_step_3_cycle_at_4 => {
         "program t\ninteger :: i, s\ns = 0\ndo i = 1, 13, 3\nif (i == 4) cycle\ns = s + i\nend do\nprint *, s\nend program t\n",
         ["28"]
+    };
+
+    do_var_bounds_1_to_5 => {
+        "program t\ninteger :: a, b, c, s\ninteger :: i\na = 1\nb = 5\ns = 0\ndo i = a, b\ns = s + i\nend do\nprint *, s\nend program t\n",
+        ["15"]
+    };
+
+    do_var_bounds_negative_to_zero_step_2 => {
+        "program t\ninteger :: a, b, i, s\ninteger :: start, finish\nstart = -5\nfinish = 1\ns = 0\ndo i = start, finish, 2\ns = s + i\nend do\nprint *, s\nend program t\n",
+        ["-4"]
+    };
+
+    do_var_bounds_descending_expr => {
+        "program t\ninteger :: a, i, s\ninteger :: n\nn = 8\ns = 0\ndo i = n, 1, -2\ns = s + i\nend do\nprint *, s\nend program t\n",
+        ["20"]
+    };
+
+    do_var_bounds_expr_step => {
+        "program t\ninteger :: i, n, s\ninteger :: step\nn = 7\nstep = 3\ns = 0\ndo i = 1, n, step\ns = s + i\nend do\nprint *, s\nend program t\n",
+        ["12"]
+    };
+
+    do_empty_range_with_negative_step_and_start_less => {
+        "program t\ninteger :: i, s\ns = 0\ndo i = -1, 1, -1\ns = s + 1\nend do\nprint *, s\nend program t\n",
+        ["0"]
+    };
+
+    do_zero_to_zero_positive_step => {
+        "program t\ninteger :: i, s\ns = 0\ndo i = 0, 0, 2\ns = s + i\nend do\nprint *, s\nend program t\n",
+        ["0"]
+    };
+
+    do_zero_to_zero_negative_step => {
+        "program t\ninteger :: i, s\ns = 0\ndo i = 0, 0, -1\ns = s + i\nend do\nprint *, s\nend program t\n",
+        ["0"]
+    };
+
+    do_end_bound_mutation_is_ignored => {
+        "program t\ninteger :: i, s, stop\ns = 0\nstop = 5\ndo i = 1, stop\ns = s + i\nif (i == 3) stop = 10\nend do\nprint *, s\nend program t\n",
+        ["15"]
+    };
+
+    do_start_mutation_is_ignored_in_loop => {
+        "program t\ninteger :: i, s\ninteger :: start\nstart = 1\ns = 0\ndo i = start, 5, 1\nif (i == 1) start = 10\ns = s + i\nend do\nprint *, s\nend program t\n",
+        ["15"]
+    };
+
+    do_concurrent_with_variable_bounds => {
+        "program t\ninteger :: n, i, s\ns = 0\nn = 5\ndo concurrent (i = 1:n)\ns = s + i\nend do\nprint *, s\nend program t\n",
+        ["15"]
+    };
+
+    do_concurrent_zero_iterations => {
+        "program t\ninteger :: i, s\ns = 99\ndo concurrent (i = 3:1)\ns = s + 1\nend do\nprint *, s\nend program t\n",
+        ["99"]
     };
 }

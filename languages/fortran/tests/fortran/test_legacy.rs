@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── GOTO and statement labels ─────────────────────────────────
 
@@ -48,6 +48,25 @@ program test
 end program test
 "#,
     );
+}
+
+#[test]
+fn goto_in_loop_runtime_sum() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: i, s
+    i = 1
+    s = 0
+10  if (i > 5) goto 20
+    s = s + i
+    i = i + 1
+    goto 10
+20  print *, s
+end program test
+"#,
+    );
+    assert_eq!(out, ["15"]);
 }
 
 #[test]
@@ -132,6 +151,23 @@ end program test
     );
 }
 
+#[test]
+fn arithmetic_if_selection_outputs() {
+    let out = run_prints(
+        r#"
+program test
+    real :: x
+    x = -3.0
+    if (x) 10, 20, 30
+10  print *, -1
+20  print *, 0
+30  print *, 1
+end program test
+"#,
+    );
+    assert_eq!(out, ["-1"]);
+}
+
 // ── Labeled DO loops ──────────────────────────────────────────
 
 #[test]
@@ -148,6 +184,23 @@ program test
 end program test
 "#,
     );
+}
+
+#[test]
+fn labeled_do_basic_runtime() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: i, s
+    s = 0
+    do 100 i = 1, 5
+        s = s + i
+100 continue
+    print *, s
+end program test
+"#,
+    );
+    assert_eq!(out, ["15"]);
 }
 
 #[test]
@@ -256,6 +309,29 @@ end program test
     );
 }
 
+#[test]
+fn common_shared_subprogram_runtime() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: total
+    common /result/ total
+    total = 0
+    call accumulate(5)
+    print *, total
+contains
+    subroutine accumulate(n)
+        integer, intent(in) :: n
+        integer :: total
+        common /result/ total
+        total = total + n
+    end subroutine accumulate
+end program test
+"#,
+    );
+    assert_eq!(out, ["5"]);
+}
+
 // ── EQUIVALENCE ───────────────────────────────────────────────
 
 #[test]
@@ -286,6 +362,65 @@ program test
 end program test
 "#,
     );
+}
+
+#[test]
+fn equivalence_array_scalar_runtime() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: arr(4)
+    integer :: first
+    equivalence (arr(1), first)
+    arr(1) = 99
+    print *, first
+end program test
+"#,
+    );
+    assert_eq!(out, ["99"]);
+}
+
+#[test]
+fn block_data_with_common_and_data_runtime() {
+    let out = run_prints(
+        r#"
+block data init_data
+    integer :: x, y
+    common /shared/ x, y
+    data x /10/, y /20/
+end block data init_data
+
+program test
+    integer :: x, y
+    common /shared/ x, y
+    print *, x + y
+end program test
+"#,
+    );
+    assert_eq!(out, ["30"]);
+}
+
+#[test]
+fn save_array_runtime() {
+    let out = run_prints(
+        r#"
+program test
+    call store(42)
+    call retrieve()
+contains
+    subroutine store(val)
+        integer, intent(in) :: val
+        integer, save :: stored
+        stored = val
+    end subroutine store
+    subroutine retrieve()
+        integer, save :: stored
+        print *, stored
+    end subroutine retrieve
+end program test
+"#,
+    );
+    assert_eq!(out, ["42"]);
 }
 
 // ── DATA statements ───────────────────────────────────────────

@@ -218,6 +218,39 @@ c!(
 implicit none
 end subroutine s"
 );
+
+c!(
+    spec_bindc_named,
+    "subroutine s() bind(c, name='c_entry')
+implicit none
+end subroutine s"
+);
+
+c!(
+    spec_recursive_subprogram,
+    "recursive function fac(n) result(r)
+implicit none
+integer, intent(in) :: n
+integer :: r
+if (n <= 1) then
+ r = 1
+else
+ r = n * fac(n - 1)
+end if
+end function fac"
+);
+
+c!(
+    spec_abstract_interface,
+    "module m
+implicit none
+abstract interface
+ integer function f(x)
+  integer, intent(in) :: x
+ end function f
+end interface
+end module m"
+);
 c!(
     spec_volatile_26,
     "program p

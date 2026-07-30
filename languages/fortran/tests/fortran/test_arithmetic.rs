@@ -93,3 +93,57 @@ fn assign_expression() {
     let out = run_prints("program t\ninteger :: x\nx = 2 + 3 * 4\nprint *, x\nend program t\n");
     assert_eq!(out, vec!["14"]);
 }
+
+#[test]
+fn unary_plus_keeps_sign() {
+    let out = run_prints("program t\ninteger :: x\nx = +7\nprint *, x\nend program t\n");
+    assert_eq!(out, vec!["7"]);
+}
+
+#[test]
+fn integer_division_truncates_toward_zero() {
+    let out = run_prints("program t\nprint *, 7 / 2\nprint *, -17 / 5\nend program t\n");
+    assert_eq!(out, vec!["3", "-3"]);
+}
+
+#[test]
+fn mixed_int_real_expression_promotes_to_real() {
+    let out = run_prints("program t\nprint *, 10 - 3 * 2.0 + 1\nend program t\n");
+    assert_eq!(out, vec!["5"]);
+}
+
+#[test]
+fn exponentiation_takes_priority_before_parenthesized_addition() {
+    let out = run_prints("program t\nprint *, (2 + 1) ** 3\nend program t\n");
+    assert_eq!(out, vec!["27"]);
+}
+
+#[test]
+fn complex_expr_with_unary_minus_and_power() {
+    let out = run_prints("program t\nprint *, -2 ** 3 + 1\nend program t\n");
+    assert_eq!(out, vec!["-7"]);
+}
+
+#[test]
+fn power_is_right_associative_for_exponent_chain() {
+    let out = run_prints("program t\nprint *, 2 ** 3 ** 2\nend program t\n");
+    assert_eq!(out, vec!["512"]);
+}
+
+#[test]
+fn division_is_left_associative_in_chain() {
+    let out = run_prints("program t\nprint *, 100 / 10 / 2\nend program t\n");
+    assert_eq!(out, vec!["5"]);
+}
+
+#[test]
+fn unary_minus_parenthesized_takes_precedence() {
+    let out = run_prints("program t\nprint *, -(2 + 3)\nend program t\n");
+    assert_eq!(out, vec!["-5"]);
+}
+
+#[test]
+fn integer_arithmetic_preserves_sign_and_mod_like_remainder() {
+    let out = run_prints("program t\nprint *, 7 / 2\nprint *, 5 - 2 * 2\nend program t\n");
+    assert_eq!(out, vec!["3", "1"]);
+}

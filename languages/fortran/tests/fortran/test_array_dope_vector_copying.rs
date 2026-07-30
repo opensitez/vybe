@@ -412,3 +412,64 @@ end program array_dope_vector_copying_copy_between_arrays_with_different_lower_b
     );
     assert_eq!(out, vec!["-1", "10", "1", "6"]);
 }
+
+#[test]
+fn array_dope_vector_copying_descending_section_to_allocable_target() {
+    let out = run_prints(
+        r#"
+program array_dope_vector_copying_descending_section_to_allocable_target
+    integer, allocatable :: source(:), target(:)
+    source = (/ 1, 2, 3, 4, 5, 6 /)
+    target = source(6:3:-1)
+    print *, size(target)
+    print *, sum(target)
+    print *, target(1)
+    print *, target(size(target))
+end program array_dope_vector_copying_descending_section_to_allocable_target
+"#,
+    );
+    assert_eq!(out, vec!["4", "18", "6", "3"]);
+}
+
+#[test]
+fn array_dope_vector_copying_empty_section_to_allocatable_target() {
+    let out = run_prints(
+        r#"
+program array_dope_vector_copying_empty_section_to_allocatable_target
+    integer, allocatable :: source(:), target(:)
+    source = (/ 9, 8, 7 /)
+    target = source(3:2)
+    print *, size(target)
+    print *, merge(1, 0, size(target) == 0)
+end program array_dope_vector_copying_empty_section_to_allocatable_target
+"#,
+    );
+    assert_eq!(out, vec!["0", "1"]);
+}
+
+#[test]
+fn array_dope_vector_copying_section_copy_via_assumed_shape_argument() {
+    let out = run_prints(
+        r#"
+program array_dope_vector_copying_section_copy_via_assumed_shape_argument
+    integer, allocatable :: source(:)
+    integer, allocatable :: target(:)
+    source = (/ 10, 20, 30, 40, 50 /)
+    call copy_middle(source, 2, 4, target)
+    print *, size(target)
+    print *, sum(target)
+    print *, target(1)
+    print *, target(size(target))
+contains
+    subroutine copy_middle(values, i_start, i_end, out_values)
+        integer, intent(in) :: values(:)
+        integer, intent(in) :: i_start
+        integer, intent(in) :: i_end
+        integer, allocatable, intent(out) :: out_values(:)
+        out_values = values(i_start:i_end)
+    end subroutine copy_middle
+end program array_dope_vector_copying_section_copy_via_assumed_shape_argument
+"#,
+    );
+    assert_eq!(out, vec!["3", "90", "20", "40"]);
+}

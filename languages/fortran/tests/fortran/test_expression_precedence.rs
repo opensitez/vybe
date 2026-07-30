@@ -128,4 +128,24 @@ fortran_cases! {
         "program t\nprint *, 4 / 2 + 1.0\nend program t\n",
         ["3"]
     };
+
+    not_binds_before_and => {
+        "program t\nprint *, .not. .false. .and. .false.\nend program t\n",
+        ["false"]
+    };
+
+    unary_plus_is_neutral => {
+        "program t\nprint *, +(-2)\nend program t\n",
+        ["-2"]
+    };
+
+    comparison_before_logical_and => {
+        "program t\nprint *, 1 + 2 == 3 .and. .true.\nend program t\n",
+        ["true"]
+    };
+
+    negative_division_with_parentheses => {
+        "program t\nprint *, -(7 / 2)\nprint *, (7 / 2)\nend program t\n",
+        ["-3", "3"]
+    };
 }

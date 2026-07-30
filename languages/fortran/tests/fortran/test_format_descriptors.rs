@@ -213,4 +213,33 @@ fortran_cases! {
         "program t\nprint '(BZ,F6.2)', 1.5\nend program t\n",
         ["1.5"]
     };
+
+    // ── Tab positioning ────────────────────────────────────────────
+
+    desc_t5_absolute_position => {
+        "program t\nprint '(A, T5, A)', 'a', 'b'\nend program t\n",
+        ["a   b"]
+    };
+
+    desc_tr3_relative_position => {
+        "program t\nprint '(A, TR3, A)', 'left', 'right'\nend program t\n",
+        ["left  right"]
+    };
+
+    // ── Non-decimal integer formats ───────────────────────────────
+
+    desc_binary_field => {
+        "program t\nprint '(B8)', 255\nend program t\n",
+        ["11111111"]
+    };
+
+    desc_octal_field => {
+        "program t\nprint '(O4)', 8\nend program t\n",
+        ["0010"]
+    };
+
+    desc_hex_field => {
+        "program t\nprint '(Z4)', 255\nend program t\n",
+        ["00FF"]
+    };
 }

@@ -24,6 +24,11 @@ fortran_cases! {
         ["other"]
     };
 
+    if_elif_chain_keeps_first_true => {
+        "program t\ninteger :: code = 2\nif (code == 1) then\nprint *, \"one\"\nelse if (code == 2) then\nprint *, \"two\"\nelse if (code == 2 .or. code == 3) then\nprint *, \"also-two\"\nelse\nprint *, \"other\"\nend if\nend program t\n",
+        ["two"]
+    };
+
     if_elif_temperature_freezing_branch => {
         "program t\nreal :: t = -5.0\nif (t < 0.0) then\nprint *, \"freezing\"\nelse if (t < 15.0) then\nprint *, \"cool\"\nelse if (t < 25.0) then\nprint *, \"mild\"\nelse\nprint *, \"warm\"\nend if\nend program t\n",
         ["freezing"]
@@ -158,6 +163,16 @@ fortran_cases! {
         ["outer"]
     };
 
+    if_nested_true_outer_false_else => {
+        "program t\ninteger :: x = -4\nif (x > 0) then\nif (x > 10) then\nprint *, \"deep\"\nend if\nprint *, \"outer-true\"\nelse\nprint *, \"outer-false\"\nif (x == -4) then\nprint *, \"inner-match\"\nelse\nprint *, \"inner-miss\"\nend if\nend if\nend program t\n",
+        ["outer-false", "inner-match"]
+    };
+
+    if_nested_if_with_else_branch_only => {
+        "program t\ninteger :: y = 7\nif (y < 0) then\nprint *, \"negative\"\nelse\nif (y > 10) then\nprint *, \"double-digits\"\nelse if (y == 7) then\nprint *, \"lucky\"\nelse\nprint *, \"small\"\nend if\nend if\nend program t\n",
+        ["lucky"]
+    };
+
     // ── Compound logical conditions ─────────────────────────────────────
 
     if_compound_and_or_first_clause_true => {
@@ -205,9 +220,29 @@ fortran_cases! {
         ["joint"]
     };
 
+    if_compound_eqv_false_hits_else => {
+        "program t\nif (.true. .eqv. .false.) then\nprint *, \"same\"\nelse\nprint *, \"diff\"\nend if\nend program t\n",
+        ["diff"]
+    };
+
+    if_compound_neqv_true_hits_then => {
+        "program t\nif (.true. .neqv. .false.) then\nprint *, \"xor\"\nelse\nprint *, \"same\"\nend if\nend program t\n",
+        ["xor"]
+    };
+
     if_compound_nested_not_and_or => {
         "program t\nif (.not. ((1 > 2) .and. (.not. (3 < 4)))) then\nprint *, \"open\"\nelse\nprint *, \"shut\"\nend if\nend program t\n",
         ["open"]
+    };
+
+    if_compound_grouped_precedence => {
+        "program t\nif ((1 < 2 .and. 2 < 3) .or. (4 < 1 .and. 9 < 10)) then\nprint *, \"yes\"\nelse\nprint *, \"no\"\nend if\nend program t\n",
+        ["yes"]
+    };
+
+    if_compound_precedence_false_branch => {
+        "program t\nif ((1 > 2 .or. 3 > 4) .and. .not. (5 < 6)) then\nprint *, \"bad\"\nelse\nprint *, \"good\"\nend if\nend program t\n",
+        ["good"]
     };
 
     // ── Character comparisons in IF ─────────────────────────────────────
@@ -262,5 +297,25 @@ fortran_cases! {
     arith_if_integer_expression_zero => {
         "program t\ninteger :: n = 0\nif (n) 10, 20, 30\n10 print *, \"neg\"; goto 99\n20 print *, \"zer\"; goto 99\n30 print *, \"pos\"\n99 continue\nend program t\n",
         ["zer"]
+    };
+
+    if_single_line_if_true_path => {
+        "program t\nif (1 == 1) print *, 'single-true'\nprint *, 'after'\nend program t\n",
+        ["single-true", "after"]
+    };
+
+    if_single_line_if_false_path => {
+        "program t\nif (1 == 2) print *, 'single-false'\nprint *, 'after'\nend program t\n",
+        ["after"]
+    };
+
+    if_nested_three_level_guard_chain => {
+        "program t\ninteger :: x\nx = 10\nif (x > 0) then\n    if (x > 100) then\n        print *, 'big'\n    else if (x == 10) then\n        print *, 'exact-10'\n    else\n        print *, 'small-positive'\n    end if\nelse\n    print *, 'non-positive'\nend if\n",
+        ["exact-10"]
+    };
+
+    if_elif_chain_with_parenthesized_boundaries => {
+        "program t\ninteger :: n\nn = 4\nif ((n / 2) == 1) then\nprint *, 'one'\nelse if (n > 3 .and. n < 6) then\nprint *, 'mid'\nelse\nprint *, 'other'\nend if\nend program t\n",
+        ["mid"]
     };
 }

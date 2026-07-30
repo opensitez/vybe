@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── Hollerith in FORMAT statements ───────────────────────────
 // Hollerith nH... is F66/F77 legacy. Most F90+ compilers accept
@@ -210,4 +210,47 @@ program test
 end program test
 "#,
     );
+}
+
+#[test]
+fn hollerith_in_format_runtime() {
+    let out = run_prints(
+        r#"
+program test
+    write(*, 100)
+100 format(5Hhello)
+end program test
+"#,
+    );
+    assert_eq!(out, vec!["hello"]);
+}
+
+#[test]
+fn hollerith_with_integer_runtime() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: n = 42
+    write(*, 100) n
+100 format(5Hval= , I4)
+end program test
+"#,
+    );
+    assert!(out[0].contains("val="));
+    assert!(out[0].contains("42"));
+}
+
+#[test]
+fn hollerith_space_runtime() {
+    let out = run_prints(
+        r#"
+program test
+    integer :: a = 1, b = 2
+    write(*, 100) a, b
+100 format(I3, 1H , I3)
+end program test
+"#,
+    );
+    assert!(out[0].contains("1"));
+    assert!(out[0].contains("2"));
 }

@@ -1,182 +1,191 @@
-use super::helpers::compile_ok;
+fortran_cases! {
+    expr_add_01 => {
+        "program p\ninteger :: a=1,b=2,c\nc = a + b\nprint *, c\nend program p\n",
+        ["3"]
+    };
 
-macro_rules! c { ($name:ident, $src:expr) => { #[test] fn $name() { compile_ok($src); } }; }
+    expr_sub_02 => {
+        "program p\ninteger :: a=5,b=2,c\nc = a - b\nprint *, c\nend program p\n",
+        ["3"]
+    };
 
-c!(expr_add_01, "program p
-integer :: a=1,b=2,c
-c = a + b
-print *, c
-end program p
-");
-c!(expr_sub_02, "program p
-integer :: a=5,b=2,c
-c = a - b
-print *, c
-end program p
-");
-c!(expr_mul_03, "program p
-integer :: a=3,b=4,c
-c = a * b
-print *, c
-end program p
-");
-c!(expr_div_04, "program p
-real :: a=8.0,b=2.0,c
-c = a / b
-print *, c
-end program p
-");
-c!(expr_pow_05, "program p
-integer :: a=2,b
-a = 2
-b = a ** 3
-print *, b
-end program p
-");
-c!(expr_unary_06, "program p
-integer :: a
-a = -5
-print *, a
-end program p
-");
-c!(expr_paren_07, "program p
-integer :: x
-x = (2 + 3) * 4
-print *, x
-end program p
-");
-c!(expr_prec_08, "program p
-integer :: x
-x = 2 + 3 * 4
-print *, x
-end program p
-");
-c!(expr_logical_and_09, "program p
-logical :: x
-x = .true. .and. .false.
-print *, x
-end program p
-");
-c!(expr_logical_or_10, "program p
-logical :: x
-x = .true. .or. .false.
-print *, x
-end program p
-");
-c!(expr_logical_not_11, "program p
-logical :: x
-x = .not. .false.
-print *, x
-end program p
-");
-c!(expr_eq_12, "program p
-logical :: x
-x = 1 == 1
-print *, x
-end program p
-");
-c!(expr_ne_13, "program p
-logical :: x
-x = 1 /= 2
-print *, x
-end program p
-");
-c!(expr_lt_14, "program p
-logical :: x
-x = 1 < 2
-print *, x
-end program p
-");
-c!(expr_le_15, "program p
-logical :: x
-x = 1 <= 2
-print *, x
-end program p
-");
-c!(expr_gt_16, "program p
-logical :: x
-x = 2 > 1
-print *, x
-end program p
-");
-c!(expr_ge_17, "program p
-logical :: x
-x = 2 >= 1
-print *, x
-end program p
-");
-c!(expr_concat_18, "program p
-character(len=2) :: s
-s = 'a'//'b'
-print *, s
-end program p
-");
-c!(expr_char_rel_19, "program p
-logical :: x
-x = 'a' < 'b'
-print *, x
-end program p
-");
-c!(expr_complex_add_20, "program p
-complex :: a=(1.0,2.0), b=(3.0,4.0), c
-c = a + b
-print *, c
-end program p
-");
-c!(expr_array_constructor_21, "program p
-integer :: a(3)
-a = [1,2,3]
-print *, a
-end program p
-");
-c!(expr_section_22, "program p
-integer :: a(4)
-a = [1,2,3,4]
-print *, a(2:3)
-end program p
-");
-c!(expr_index_23, "program p
-integer :: a(3)
-a = [1,2,3]
-print *, a(2)
-end program p
-");
-c!(expr_func_call_24, "program p
-print *, abs(-3)
-end program p
-");
-c!(expr_nested_call_25, "program p
-print *, max(1, min(2,3))
-end program p
-");
-c!(expr_kind_conv_26, "program p
-integer :: i
-real :: r=1.5
-i = int(r)
-print *, i
-end program p
-");
-c!(expr_real_conv_27, "program p
-real :: r
-r = real(3)
-print *, r
-end program p
-");
-c!(expr_merge_28, "program p
-integer :: x
-x = merge(1,2,.true.)
-print *, x
-end program p
-");
-c!(expr_implied_do_29, "program p
-integer :: a(3)
-a = [(i, i=1,3)]
-print *, a
-end program p
-");
-c!(expr_masked_where_30, "program p
-integer :: a(3)=[1,2,3]
-where (a > 1) a = a + 1
-print *, a
-end program p
-");
+    expr_mul_03 => {
+        "program p\ninteger :: a=3,b=4,c\nc = a * b\nprint *, c\nend program p\n",
+        ["12"]
+    };
+
+    expr_div_04 => {
+        "program p\nreal :: a=8.0,b=2.0,c\nc = a / b\nprint *, c\nend program p\n",
+        ["4"]
+    };
+
+    expr_pow_05 => {
+        "program p\ninteger :: a=2,b\nb = a ** 3\nprint *, b\nend program p\n",
+        ["8"]
+    };
+
+    expr_unary_06 => {
+        "program p\ninteger :: a\na = -5\nprint *, a\nend program p\n",
+        ["-5"]
+    };
+
+    expr_paren_07 => {
+        "program p\ninteger :: x\nx = (2 + 3) * 4\nprint *, x\nend program p\n",
+        ["20"]
+    };
+
+    expr_prec_08 => {
+        "program p\ninteger :: x\nx = 2 + 3 * 4\nprint *, x\nend program p\n",
+        ["14"]
+    };
+
+    expr_logical_and_09 => {
+        "program p\nlogical :: x\nx = .true. .and. .false.\nprint *, x\nend program p\n",
+        ["false"]
+    };
+
+    expr_logical_or_10 => {
+        "program p\nlogical :: x\nx = .true. .or. .false.\nprint *, x\nend program p\n",
+        ["true"]
+    };
+
+    expr_logical_not_11 => {
+        "program p\nlogical :: x\nx = .not. .false.\nprint *, x\nend program p\n",
+        ["true"]
+    };
+
+    expr_eq_12 => {
+        "program p\nlogical :: x\nx = 1 == 1\nprint *, x\nend program p\n",
+        ["true"]
+    };
+
+    expr_ne_13 => {
+        "program p\nlogical :: x\nx = 1 /= 2\nprint *, x\nend program p\n",
+        ["true"]
+    };
+
+    expr_lt_14 => {
+        "program p\nlogical :: x\nx = 1 < 2\nprint *, x\nend program p\n",
+        ["true"]
+    };
+
+    expr_le_15 => {
+        "program p\nlogical :: x\nx = 1 <= 2\nprint *, x\nend program p\n",
+        ["true"]
+    };
+
+    expr_gt_16 => {
+        "program p\nlogical :: x\nx = 2 > 1\nprint *, x\nend program p\n",
+        ["true"]
+    };
+
+    expr_ge_17 => {
+        "program p\nlogical :: x\nx = 2 >= 1\nprint *, x\nend program p\n",
+        ["true"]
+    };
+
+    expr_concat_18 => {
+        "program p\ncharacter(len=2) :: s\ns = 'a'//'b'\nprint *, s\nend program p\n",
+        ["ab"]
+    };
+
+    expr_char_rel_19 => {
+        "program p\nlogical :: x\nx = 'a' < 'b'\nprint *, x\nend program p\n",
+        ["true"]
+    };
+
+    expr_complex_add_20 => {
+        "program p\ncomplex :: a=(1.0,2.0), b=(3.0,4.0), c\nc = a + b\nprint *, real(c)\nprint *, aimag(c)\nend program p\n",
+        ["4", "6"]
+    };
+
+    expr_array_constructor_21 => {
+        "program p\ninteger :: a(3)\na = [1,2,3]\nprint *, a(1) + a(2) + a(3)\nend program p\n",
+        ["6"]
+    };
+
+    expr_section_22 => {
+        "program p\ninteger :: a(4)\na = [1,2,3,4]\nprint *, a(2) + a(3)\nend program p\n",
+        ["5"]
+    };
+
+    expr_index_23 => {
+        "program p\ninteger :: a(3)\na = [1,2,3]\nprint *, a(2)\nend program p\n",
+        ["2"]
+    };
+
+    expr_func_call_24 => {
+        "program p\nprint *, abs(-3)\nend program p\n",
+        ["3"]
+    };
+
+    expr_nested_call_25 => {
+        "program p\nprint *, max(1, min(2,3))\nend program p\n",
+        ["2"]
+    };
+
+    expr_kind_conv_26 => {
+        "program p\ninteger :: i\nreal :: r=1.5\ni = int(r)\nprint *, i\nend program p\n",
+        ["1"]
+    };
+
+    expr_real_conv_27 => {
+        "program p\nreal :: r\nr = real(3)\nprint *, r\nend program p\n",
+        ["3"]
+    };
+
+    expr_merge_28 => {
+        "program p\ninteger :: x\nx = merge(1,2,.true.)\nprint *, x\nend program p\n",
+        ["1"]
+    };
+
+    expr_implied_do_29 => {
+        "program p\ninteger :: a(3)\na = [(i, i=1,3)]\nprint *, a(1) + a(2) + a(3)\nend program p\n",
+        ["6"]
+    };
+
+    expr_masked_where_30 => {
+        "program p\ninteger :: a(3)=[1,2,3]\nwhere (a > 1) a = a + 1\nprint *, sum(a)\nend program p\n",
+        ["8"]
+    };
+
+    expr_unary_plus_31 => {
+        "program p\ninteger :: a\na = +7\nprint *, a\nend program p\n",
+        ["7"]
+    };
+
+    expr_nested_parens_32 => {
+        "program p\ninteger :: a\na = (10 - 4) * (3 + 1)\nprint *, a\nend program p\n",
+        ["24"]
+    };
+
+    expr_power_precedence_33 => {
+        "program p\ninteger :: a\na = -2 ** 3\nprint *, a\nend program p\n",
+        ["-8"]
+    };
+
+    expr_power_assoc_34 => {
+        "program p\ninteger :: a\na = 2 ** 3 ** 2\nprint *, a\nend program p\n",
+        ["512"]
+    };
+
+    expr_mixed_type_sub_add_35 => {
+        "program p\nprint *, 1 + 2.0 + 3\nend program p\n",
+        ["6"]
+    };
+
+    expr_char_concat_chain_36 => {
+        "program p\ncharacter(len=3) :: s\ns = 'a'//'b'//'c'\nprint *, s\nend program p\n",
+        ["abc"]
+    };
+
+    expr_logical_group_37 => {
+        "program p\nlogical :: x\nx = .true. .and. (.false. .or. .true.)\nprint *, x\nend program p\n",
+        ["true"]
+    };
+
+    expr_int_division_trunc_38 => {
+        "program p\nprint *, 7 / 2\nprint *, -17 / 5\nend program p\n",
+        ["3", "-3"]
+    };
+}

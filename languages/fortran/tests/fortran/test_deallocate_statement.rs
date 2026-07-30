@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, parse_ok, run_prints};
 macro_rules! c {
     ($n:ident,$s:expr) => {
         #[test]
@@ -100,3 +100,44 @@ deallocate(z)
 end program p
 "
 );
+
+#[test]
+fn deallocate_statement_runtime_frees_allocated_scalar() {
+    assert_eq!(
+        run_prints(
+            "program t\n\
+integer, allocatable :: x\n\
+allocate(x)\n\
+x = 11\n\
+deallocate(x)\n\
+print *, 'deallocated'\n\
+end program t\n"
+        ),
+        vec!["deallocated"]
+    );
+}
+
+#[test]
+fn deallocate_statement_runtime_pointer_is_releaseable() {
+    assert_eq!(
+        run_prints(
+            "program t\n\
+integer, pointer :: p(:)\n\
+allocate(p(3))\np = [1, 2, 3]\n\
+deallocate(p)\n\
+print *, 'done'\n\
+end program t\n"
+        ),
+        vec!["done"]
+    );
+}
+
+#[test]
+fn deallocate_statement_parse_rejects_empty_argument_list() {
+    assert!(!parse_ok(
+        "program t\n\
+integer, allocatable :: a(:)\n\
+deallocate()\n\
+end program t\n"
+    ));
+}
