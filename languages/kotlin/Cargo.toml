@@ -1,0 +1,27 @@
+[package]
+name = "vybe_language_kotlin"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "vybe_language_kotlin"
+
+[dependencies]
+vybe_compiler = { workspace = true }
+inventory = { workspace = true }
+vybe_ast = { workspace = true }
+vybe_runtime = { workspace = true }
+vybe_platform_vybe = { workspace = true, features = ["gui"] }
+pest = { workspace = true }
+pest_derive = { workspace = true }
+
+[dev-dependencies]
+vybe_compiler = { workspace = true }
+vybe_runtime = { workspace = true }
+vybe_ast = { workspace = true }
+
+[[test]]
+name = "kotlin"
+path = "tests/kotlin/main.rs"

@@ -1,0 +1,313 @@
+// Kotlin PEG Grammar for Vybe (Kotlin over WASM/ECMA)
+
+WHITESPACE = _{ " " | "\t" | "\r" }
+NEWLINE = { "\n" | "\r\n" }
+COMMENT = _{ "//" ~ (!"\n" ~ ANY)* | "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+eat_terminators = _{ (";" | NEWLINE)* }
+
+// Keywords (atomic for proper word boundaries)
+fun_kw         = @{ "fun" ~ !(ASCII_ALPHANUMERIC | "_") }
+val_kw         = @{ "val" ~ !(ASCII_ALPHANUMERIC | "_") }
+var_kw         = @{ "var" ~ !(ASCII_ALPHANUMERIC | "_") }
+class_kw       = @{ "class" ~ !(ASCII_ALPHANUMERIC | "_") }
+enum_kw        = @{ "enum" ~ !(ASCII_ALPHANUMERIC | "_") }
+open_kw        = @{ "open" ~ !(ASCII_ALPHANUMERIC | "_") }
+data_kw        = @{ "data" ~ !(ASCII_ALPHANUMERIC | "_") }
+abstract_kw    = @{ "abstract" ~ !(ASCII_ALPHANUMERIC | "_") }
+override_kw    = @{ "override" ~ !(ASCII_ALPHANUMERIC | "_") }
+companion_kw   = @{ "companion" ~ !(ASCII_ALPHANUMERIC | "_") }
+interface_kw   = @{ "interface" ~ !(ASCII_ALPHANUMERIC | "_") }
+object_kw      = @{ "object" ~ !(ASCII_ALPHANUMERIC | "_") }
+package_kw     = @{ "package" ~ !(ASCII_ALPHANUMERIC | "_") }
+import_kw      = @{ "import" ~ !(ASCII_ALPHANUMERIC | "_") }
+when_kw        = @{ "when" ~ !(ASCII_ALPHANUMERIC | "_") }
+if_kw          = @{ "if" ~ !(ASCII_ALPHANUMERIC | "_") }
+else_kw        = @{ "else" ~ !(ASCII_ALPHANUMERIC | "_") }
+for_kw         = @{ "for" ~ !(ASCII_ALPHANUMERIC | "_") }
+while_kw       = @{ "while" ~ !(ASCII_ALPHANUMERIC | "_") }
+do_kw          = @{ "do" ~ !(ASCII_ALPHANUMERIC | "_") }
+return_kw      = @{ "return" ~ !(ASCII_ALPHANUMERIC | "_") }
+break_kw       = @{ "break" ~ !(ASCII_ALPHANUMERIC | "_") }
+continue_kw    = @{ "continue" ~ !(ASCII_ALPHANUMERIC | "_") }
+is_kw          = @{ "is" ~ !(ASCII_ALPHANUMERIC | "_") }
+not_is_kw      = @{ "!is" ~ !(ASCII_ALPHANUMERIC | "_") }
+as_kw          = @{ "as" ~ !(ASCII_ALPHANUMERIC | "_") }
+safe_as_kw     = @{ "as?" ~ !(ASCII_ALPHANUMERIC | "_") }
+in_kw          = @{ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
+not_in_kw      = @{ "!in" ~ !(ASCII_ALPHANUMERIC | "_") }
+null_kw        = @{ "null" ~ !(ASCII_ALPHANUMERIC | "_") }
+true_kw        = @{ "true" ~ !(ASCII_ALPHANUMERIC | "_") }
+false_kw       = @{ "false" ~ !(ASCII_ALPHANUMERIC | "_") }
+this_kw        = @{ "this" ~ !(ASCII_ALPHANUMERIC | "_") }
+super_kw       = @{ "super" ~ !(ASCII_ALPHANUMERIC | "_") }
+private_kw     = @{ "private" ~ !(ASCII_ALPHANUMERIC | "_") }
+protected_kw   = @{ "protected" ~ !(ASCII_ALPHANUMERIC | "_") }
+public_kw      = @{ "public" ~ !(ASCII_ALPHANUMERIC | "_") }
+internal_kw    = @{ "internal" ~ !(ASCII_ALPHANUMERIC | "_") }
+vararg_kw      = @{ "vararg" ~ !(ASCII_ALPHANUMERIC | "_") }
+try_kw         = @{ "try" ~ !(ASCII_ALPHANUMERIC | "_") }
+catch_kw       = @{ "catch" ~ !(ASCII_ALPHANUMERIC | "_") }
+finally_kw     = @{ "finally" ~ !(ASCII_ALPHANUMERIC | "_") }
+throw_kw       = @{ "throw" ~ !(ASCII_ALPHANUMERIC | "_") }
+const_kw       = @{ "const" ~ !(ASCII_ALPHANUMERIC | "_") }
+sealed_kw      = @{ "sealed" ~ !(ASCII_ALPHANUMERIC | "_") }
+get_kw         = @{ "get" ~ !(ASCII_ALPHANUMERIC | "_") }
+set_kw         = @{ "set" ~ !(ASCII_ALPHANUMERIC | "_") }
+to_kw          = @{ "to" ~ !(ASCII_ALPHANUMERIC | "_") }
+by_kw          = @{ "by" ~ !(ASCII_ALPHANUMERIC | "_") }
+constructor_kw = @{ "constructor" ~ !(ASCII_ALPHANUMERIC | "_") }
+typealias_kw   = @{ "typealias" ~ !(ASCII_ALPHANUMERIC | "_") }
+infix_kw       = @{ "infix" ~ !(ASCII_ALPHANUMERIC | "_") }
+inline_kw      = @{ "inline" ~ !(ASCII_ALPHANUMERIC | "_") }
+inner_kw       = @{ "inner" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+keyword = @{
+    fun_kw | val_kw | var_kw | class_kw | enum_kw | open_kw | data_kw | abstract_kw | override_kw
+  | companion_kw | interface_kw | object_kw | package_kw | import_kw | when_kw | if_kw
+  | else_kw | for_kw | while_kw | do_kw | return_kw | break_kw | continue_kw | is_kw
+  | not_is_kw | as_kw | safe_as_kw | in_kw | not_in_kw | null_kw | true_kw | false_kw
+  | this_kw | super_kw | private_kw | protected_kw | public_kw | internal_kw | vararg_kw
+  | try_kw | catch_kw | finally_kw | throw_kw | const_kw | sealed_kw | get_kw | set_kw | to_kw
+  | by_kw | constructor_kw | typealias_kw | infix_kw | inline_kw | inner_kw
+}
+
+identifier = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+dotted_name = @{ identifier ~ ("." ~ identifier)* }
+
+// Program structure
+program = { SOI ~ eat_terminators ~ package_decl? ~ eat_terminators ~ (import_decl ~ eat_terminators)* ~ (top_level_decl ~ eat_terminators)* ~ EOI }
+
+package_decl = { package_kw ~ dotted_name ~ (";" | NEWLINE) }
+import_decl  = { import_kw ~ dotted_name ~ ("." ~ "*")? ~ (as_kw ~ identifier)? ~ (";" | NEWLINE) }
+
+top_level_decl = { label_decl? ~ (typealias_decl | interface_decl | enum_decl | function_decl | class_decl | object_decl | destructuring_decl | var_decl | statement) }
+
+// Typealias
+typealias_decl = { modifier* ~ typealias_kw ~ identifier ~ "=" ~ type_ref }
+
+// Labels
+label_decl = { identifier ~ "@" }
+
+// Annotations
+annotation = { "@" ~ type_ref ~ ("(" ~ arg_list? ~ ")")? ~ eat_terminators }
+
+// Types (including function types)
+type_ref = {
+    "(" ~ (type_ref ~ ("," ~ type_ref)*)? ~ ")" ~ "->" ~ type_ref
+  | dotted_name ~ ("<" ~ type_ref ~ ("," ~ type_ref)* ~ ">")? ~ "?"?
+}
+
+// Modifiers
+modifier = { open_kw | data_kw | abstract_kw | override_kw | private_kw | protected_kw | public_kw | internal_kw | const_kw | sealed_kw | infix_kw | inline_kw | inner_kw }
+
+// Receiver prefix for extension functions
+receiver_prefix = { identifier ~ "." }
+
+// Functions
+function_decl = {
+    annotation* ~ modifier* ~ fun_kw ~ receiver_prefix? ~ identifier ~ parameter_list ~ (":" ~ type_ref)? ~ (function_body_expr | block)?
+}
+function_body_expr = { "=" ~ expr }
+
+parameter_list = { "(" ~ (parameter ~ ("," ~ parameter)* ~ ","?)? ~ ")" }
+parameter = { annotation* ~ vararg_kw? ~ identifier ~ ":" ~ type_ref ~ ("=" ~ expr)? }
+
+// Variables, Properties & Destructuring
+var_decl = {
+    annotation* ~ modifier* ~ (val_kw | var_kw) ~ identifier ~ (":" ~ type_ref)? ~ ("=" ~ expr | by_kw ~ expr)? ~ eat_terminators ~ property_accessor*
+}
+
+property_accessor = {
+    (get_kw | set_kw) ~ ("(" ~ identifier? ~ ")")? ~ (function_body_expr | block)
+}
+
+destructuring_decl = {
+    modifier* ~ (val_kw | var_kw) ~ "(" ~ identifier ~ ("," ~ identifier)* ~ ")" ~ ("=" ~ expr)?
+}
+
+// Enums
+enum_decl = {
+    annotation* ~ modifier* ~ enum_kw ~ class_kw ~ identifier ~ primary_constructor? ~ (":" ~ inheritance_list)? ~ "{" ~ eat_terminators ~ (enum_entry ~ (","? ~ eat_terminators ~ enum_entry)* ~ ","?)? ~ eat_terminators ~ (";" ~ eat_terminators ~ (class_member ~ eat_terminators)*)? ~ "}"
+}
+enum_entry = { identifier ~ ("(" ~ arg_list? ~ ")")? }
+
+// Interfaces
+interface_decl = {
+    annotation* ~ modifier* ~ interface_kw ~ identifier ~ (":" ~ inheritance_list)? ~ class_body?
+}
+
+// Classes & Secondary Constructors
+class_decl = {
+    annotation* ~ modifier* ~ class_kw ~ identifier ~ primary_constructor? ~ (":" ~ inheritance_list)? ~ class_body?
+}
+
+primary_constructor = { "(" ~ (class_parameter ~ ("," ~ class_parameter)* ~ ","?)? ~ ")" }
+class_parameter = { modifier* ~ (val_kw | var_kw)? ~ identifier ~ ":" ~ type_ref ~ ("=" ~ expr)? }
+
+inheritance_list = { inheritance_specifier ~ ("," ~ inheritance_specifier)* }
+inheritance_specifier = { type_ref ~ ("(" ~ arg_list? ~ ")")? ~ (by_kw ~ expr)? }
+
+class_body = { "{" ~ eat_terminators ~ (class_member ~ eat_terminators)* ~ "}" }
+class_member = { init_block | secondary_constructor | companion_object | function_decl | var_decl | class_decl | object_decl | interface_decl }
+init_block = { "init" ~ block }
+
+secondary_constructor = { modifier* ~ constructor_kw ~ parameter_list ~ (":" ~ (this_kw | super_kw) ~ "(" ~ arg_list? ~ ")")? ~ (block | eat_terminators) }
+
+companion_object = { companion_kw ~ object_kw ~ identifier? ~ (":" ~ inheritance_list)? ~ class_body }
+object_decl = { object_kw ~ identifier ~ (":" ~ inheritance_list)? ~ class_body }
+
+// Block
+block = { "{" ~ eat_terminators ~ (statement ~ eat_terminators)* ~ "}" }
+
+// Statements
+statement = {
+    label_decl? ~ (
+      typealias_decl
+    | enum_decl
+    | interface_decl
+    | function_decl
+    | class_decl
+    | object_decl
+    | destructuring_decl
+    | var_decl
+    | if_expr
+    | when_expr
+    | try_expr
+    | throw_stmt
+    | for_stmt
+    | while_stmt
+    | do_while_stmt
+    | return_stmt
+    | break_stmt
+    | continue_stmt
+    | expr_stmt
+    )
+}
+
+return_stmt = { return_kw ~ ("@" ~ identifier)? ~ expr? }
+break_stmt = { break_kw ~ ("@" ~ identifier)? }
+continue_stmt = { continue_kw ~ ("@" ~ identifier)? }
+throw_stmt = { throw_kw ~ expr }
+expr_stmt = { expr }
+
+for_stmt = { for_kw ~ "(" ~ (for_destructure | identifier) ~ in_kw ~ expr ~ ")" ~ (block | statement) }
+for_destructure = { "(" ~ identifier ~ ("," ~ identifier)* ~ ")" }
+
+while_stmt = { while_kw ~ "(" ~ expr ~ ")" ~ (block | statement) }
+do_while_stmt = { do_kw ~ (block | statement) ~ while_kw ~ "(" ~ expr ~ ")" }
+
+// Expressions (Precedence chain)
+expr = { assignment }
+
+assignment = { infix_expr ~ compound_op ~ expr | elvis }
+compound_op = { "=" | "+=" | "-=" | "*=" | "/=" | "%=" }
+
+elvis = { logical_or ~ (elvis_op ~ logical_or)* }
+elvis_op = { "?:" }
+
+logical_or = { logical_and ~ (or_op ~ logical_and)* }
+or_op = { "||" }
+
+logical_and = { equality ~ (and_op ~ equality)* }
+and_op = { "&&" }
+
+equality = { comparison ~ (eq_op ~ comparison)* }
+eq_op = { "===" | "!==" | "==" | "!=" }
+
+comparison = { range_expr ~ (comp_op ~ range_expr)* }
+comp_op = { in_kw | not_in_kw | is_kw | not_is_kw | "<=" | ">=" | "<" | ">" }
+
+range_expr = { additive ~ (range_op ~ additive)* }
+range_op = { ".." }
+
+additive = { multiplicative ~ (add_op ~ multiplicative)* }
+add_op = { "+" | "-" }
+
+multiplicative = { type_cast ~ (mult_op ~ type_cast)* }
+mult_op = { "*" | "/" | "%" }
+
+type_cast = { infix_expr ~ (cast_op ~ type_ref)* }
+cast_op = { safe_as_kw | as_kw }
+
+infix_expr = { unary ~ (infix_op ~ unary)* }
+infix_op = { to_kw | identifier }
+
+unary = { prefix_op* ~ postfix }
+prefix_op = { "!" | "-" | "+" | "++" | "--" }
+
+postfix = { primary ~ postfix_suffix* }
+postfix_suffix = { call_suffix | index_suffix | safe_call_suffix | member_suffix | null_assert_suffix }
+
+call_suffix = { "(" ~ arg_list? ~ ")" ~ lambda_literal? }
+index_suffix = { "[" ~ arg_list ~ "]" }
+safe_call_suffix = { "?." ~ identifier }
+member_suffix = { "." ~ identifier }
+null_assert_suffix = { "!!" }
+
+arg_list = { arg ~ ("," ~ arg)* ~ ","? }
+arg = { (identifier ~ "=")? ~ spread_op? ~ expr }
+spread_op = { "*" }
+
+// Primary expressions
+primary = {
+    if_expr
+  | when_expr
+  | try_expr
+  | object_expr
+  | lambda_literal
+  | "(" ~ expr ~ ")"
+  | literal
+  | identifier
+  | this_kw
+  | super_kw
+}
+
+object_expr = { object_kw ~ (":" ~ inheritance_list)? ~ class_body }
+
+// If expression / statement
+if_expr = { if_kw ~ "(" ~ expr ~ ")" ~ (block | statement) ~ (else_kw ~ (if_expr | block | statement))? }
+
+// When expression / statement
+when_expr = { when_kw ~ ("(" ~ expr ~ ")")? ~ "{" ~ eat_terminators ~ (when_entry ~ eat_terminators)* ~ "}" }
+when_entry = { (when_condition ~ ("," ~ when_condition)* | else_kw) ~ "->" ~ (block | statement) }
+when_condition = {
+    (is_kw | not_is_kw) ~ type_ref
+  | (in_kw | not_in_kw) ~ expr
+  | range_condition
+  | comparison_condition
+  | expr
+}
+
+range_condition = { expr ~ ".." ~ expr }
+comparison_condition = { (">=" | "<=" | ">" | "<" | "==" | "!=") ~ expr }
+
+// Try expression / statement
+try_expr = { try_kw ~ block ~ catch_clause* ~ finally_clause? }
+catch_clause = { catch_kw ~ "(" ~ identifier ~ (":" ~ type_ref)? ~ ")" ~ block }
+finally_clause = { finally_kw ~ block }
+
+// Lambdas
+lambda_literal = { "{" ~ lambda_params? ~ eat_terminators ~ (statement ~ eat_terminators)* ~ "}" }
+lambda_params = { lambda_param ~ ("," ~ lambda_param)* ~ "->" }
+lambda_param = { identifier ~ (":" ~ type_ref)? }
+
+// Literals
+literal = {
+    null_kw
+  | true_kw
+  | false_kw
+  | string_literal
+  | float_literal
+  | int_literal
+}
+
+int_literal = @{ ASCII_DIGIT+ ~ ("L" | "l")? }
+float_literal = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ ("f" | "F")? }
+
+string_literal = ${ "\"" ~ string_content* ~ "\"" }
+string_content = ${ str_escaped | str_interpolated_expr | str_interpolated_var | str_text }
+str_escaped = @{ "\\" ~ ANY }
+str_interpolated_var = ${ "$" ~ identifier }
+str_interpolated_expr = ${ "${" ~ WHITESPACE* ~ expr ~ WHITESPACE* ~ "}" }
+str_text = @{ (!"\"" ~ !"\\" ~ !"$") ~ ANY }
