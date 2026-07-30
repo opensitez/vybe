@@ -1044,6 +1044,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let source = normalize_dart_expression_source(source);
     // Record the program's own declared types up front so Flutter named-ctor
     // desugaring respects user shadowing.
+    DART_CONST_POOL.with(|pool| pool.borrow_mut().clear());
     let (declared_types, declared_classes) = collect_user_declared_types(&source);
     USER_DECLARED_TYPES.with(|s| *s.borrow_mut() = declared_types);
     USER_DECLARED_CLASSES.with(|s| *s.borrow_mut() = declared_classes);
@@ -1093,6 +1094,32 @@ pub fn parse(source: &str) -> Result<Module, String> {
     apply_inherited_concrete_members(&mut body, &mixin_names);
     rewrite_inherited_instance_member_idents(&mut body, &mixin_names);
     rewrite_user_add_methods(&mut body);
+    // Route failed member access on a `dynamic` receiver to the object's
+    // `noSuchMethod`. Runs last: it reads the finished class list to decide
+    // whether the program uses the hook at all, and the mixin passes above can
+    // still be what puts `noSuchMethod` on a class.
+    apply_no_such_method(&mut body);
+
+    // Const bindings go after the last top-level DECLARATION, not at the very
+    // top: `const Token(1)` constructs a user class, and hoisting it above
+    // `class Token` ran the constructor before the class existed.
+    let const_decls = dart_const_pool_declarations();
+    if !const_decls.is_empty() {
+        let after_declarations = body
+            .iter()
+            .rposition(|stmt| {
+                matches!(
+                    stmt.kind,
+                    StmtKind::ClassDecl { .. }
+                        | StmtKind::EnumDecl { .. }
+                        | StmtKind::InterfaceDecl { .. }
+                        | StmtKind::StructDecl { .. }
+                        | StmtKind::FunctionDecl { .. }
+                )
+            })
+            .map_or(0, |idx| idx + 1);
+        body.splice(after_declarations..after_declarations, const_decls);
+    }
 
     Ok(Module {
         name: String::new(),
@@ -1113,8 +1140,15 @@ fn normalize_parenthesized_is_ternary(source: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] != b'(' {
-            out.push(bytes[i] as char);
-            i += 1;
+            // Copy a whole UTF-8 CHARACTER. `bytes[i] as char` is a Latin-1
+            // decode — it turned each byte of `é` into a separate char, so
+            // EVERY non-ASCII Dart source reached the parser as mojibake:
+            // `'café'` became `cafÃ©`, which is why `.length` was 5,
+            // `codeUnitAt(3)` was 195 (the first UTF-8 byte) instead of 233,
+            // and every runes/codeUnits test disagreed with Dart.
+            let ch = source[i..].chars().next().expect("index is a char boundary");
+            out.push(ch);
+            i += ch.len_utf8();
             continue;
         }
         let start = i;
@@ -1130,7 +1164,7 @@ fn normalize_parenthesized_is_ternary(source: &str) -> String {
             j += 1;
         }
         if j + 2 > bytes.len() || &source[j..j + 2] != "is" {
-            out.push(bytes[start] as char);
+            out.push('(');
             i = start + 1;
             continue;
         }
@@ -1138,7 +1172,7 @@ fn normalize_parenthesized_is_ternary(source: &str) -> String {
         if after_is < bytes.len()
             && (bytes[after_is].is_ascii_alphanumeric() || bytes[after_is] == b'_')
         {
-            out.push(bytes[start] as char);
+            out.push('(');
             i = start + 1;
             continue;
         }
@@ -1160,7 +1194,7 @@ fn normalize_parenthesized_is_ternary(source: &str) -> String {
             out.push_str(&source[after_type..=j]);
             i = j + 1;
         } else {
-            out.push(bytes[start] as char);
+            out.push('(');
             i = start + 1;
         }
         let _ = after_subject;
@@ -2588,6 +2622,88 @@ fn rewrite_user_add_calls_in_expr(
     }
 }
 
+/// Tags a `dart:io` handle record with which of `File`/`Directory`/`Link` it
+/// is. Must match `emitter::io_adapter::DART_IO_KIND_KEY`.
+const DART_IO_KIND_KEY: &str = "__dart_io";
+
+/// The `dart:io` filesystem handles. Each is a path plus a kind; the kind is
+/// what tells `existsSync` to ask about a file rather than a directory, and
+/// what `is Directory` tests against.
+fn dart_io_handle_kind(callee: &Expression) -> Option<&'static str> {
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    match name.as_str() {
+        "File" => Some("file"),
+        "Directory" => Some("directory"),
+        "Link" => Some("link"),
+        _ => None,
+    }
+}
+
+/// `{ path: <p>, __dart_io: "file" }` — a plain record, so `.path` is an
+/// ordinary field read and the io adapter can pull the path off the receiver
+/// without any type inference at the call site.
+fn dart_io_handle(kind: &str, path: Expression) -> Expression {
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string("path"),
+            value: path,
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string(DART_IO_KIND_KEY),
+            value: Expression::string(kind),
+        },
+    ]))
+}
+
+/// `(t = receiver, t == null ? null : <use(t)>)` — evaluates the receiver once
+/// and performs the access only when it is non-null. Dart's `?.`/`?[]` short-
+/// circuit the WHOLE access, so the guard has to wrap the use, not just mark it.
+fn dart_null_guarded(
+    receiver: Expression,
+    use_receiver: impl FnOnce(Expression) -> Expression,
+) -> Expression {
+    let tmp = nsm_tmp("nullsafe");
+    let held = || Expression::ident(&tmp);
+    let save = Expression::new(ExprKind::Assign {
+        target: Box::new(held()),
+        value: Box::new(receiver),
+    });
+    let guard = Expression::new(ExprKind::Binary {
+        op: BinOp::Eq,
+        left: Box::new(held()),
+        right: Box::new(Expression::null()),
+    });
+    Expression::new(ExprKind::Sequence(vec![
+        save,
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(guard),
+            then: Box::new(Expression::null()),
+            else_: Box::new(use_receiver(held())),
+        }),
+    ]))
+}
+
+/// `FileMode.append` — matched on the enum member however it reached the AST:
+/// the walker may have folded it to the string `"FileMode.append"`, or left it
+/// as a member access.
+fn dart_expr_mentions_file_mode(expr: &Expression, member: &str) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(text)) => text == &format!("FileMode.{member}"),
+        ExprKind::Member { object, field, .. } => {
+            field == member && matches!(&object.kind, ExprKind::Ident(n) if n == "FileMode")
+        }
+        ExprKind::Ident(name) => name == &format!("FileMode.{member}"),
+        // The spelling the walker actually produces for `FileMode.append`.
+        ExprKind::StaticAccess { class, member: m } => {
+            matches!(&class.kind, ExprKind::Ident(n) if n == "FileMode")
+                && matches!(&m.kind, ExprKind::Ident(n) if n == member)
+        }
+        _ => false,
+    }
+}
+
 fn dart_user_binary_operator_method(op: &BinOp) -> Option<&'static str> {
     match op {
         BinOp::Add => Some("operator+"),
@@ -2960,6 +3076,204 @@ fn inheritable_concrete_member(member: &ClassMember) -> Option<ClassMember> {
             ..
         } if !modifiers.is_static && (getter.is_some() || setter.is_some()) => Some(member.clone()),
         _ => None,
+    }
+}
+
+/// Dart falls through an EMPTY case body and only an empty one — verified
+/// against the SDK:
+///
+/// ```dart
+/// switch (10) { case 10: case 20: print('tens'); break; }   // prints tens
+/// switch (5)  { case 5: default: print('via-default'); }    // prints via-default
+/// ```
+///
+/// A case that DOES have a body breaks implicitly; Dart 3 rejects falling out
+/// of one. So this is not JS's `switch_fallthrough` (which would also chain
+/// non-empty bodies) — it is a syntactic grouping, and it normalizes away here:
+///
+/// - an empty case's conditions join the NEXT case's condition list;
+/// - an empty case with no following case is DROPPED, so its value matches
+///   nothing and reaches `default` — which is exactly where Dart sends it.
+///
+/// Without this an empty case matched, did nothing, and exited: `case 10:`
+/// above swallowed the value and printed nothing at all.
+fn merge_empty_fallthrough_cases(cases: &mut Vec<SwitchCase>) {
+    let mut pending: Vec<CaseCondition> = Vec::new();
+    let mut merged: Vec<SwitchCase> = Vec::new();
+    for case in cases.drain(..) {
+        // `conditions: vec![]` IS the default arm — never merge into it, or a
+        // value would stop reaching the arms after it.
+        if case.conditions.is_empty() {
+            merged.push(case);
+            continue;
+        }
+        if case.body.is_empty() {
+            pending.extend(case.conditions);
+            continue;
+        }
+        let mut case = case;
+        if !pending.is_empty() {
+            let mut conditions = std::mem::take(&mut pending);
+            conditions.append(&mut case.conditions);
+            case.conditions = conditions;
+        }
+        merged.push(case);
+    }
+    // Trailing empty cases are dropped on purpose: unmatched reaches `default`.
+    *cases = merged;
+}
+
+/// Backing storage for a field that overrides an inherited getter.
+fn dart_override_storage_name(field: &str) -> String {
+    format!("__dart_ovr_{field}")
+}
+
+/// In Dart a subclass FIELD overrides an inherited GETTER — `class Toggle {
+/// Object get state => false; }` / `class Sub extends Toggle { bool state =
+/// true; }` reads `true`. Emitted naively that is a plain `this.state = true`
+/// against an accessor the parent installed with no setter, so the write is
+/// dropped and the read still runs the parent's getter: every such program
+/// silently returned the SUPERCLASS's value.
+///
+/// So the field is re-expressed as what it means — a property override backed
+/// by its own storage. That is ordinary walker normalisation: the class-level
+/// machinery then installs the accessor on the subclass, which shadows the
+/// parent's the way any override does, and no shared code changes.
+///
+/// Only fires when an ancestor really declares that name as a property; a
+/// field with no inherited counterpart stays a plain field.
+fn override_inherited_getter_fields(body: &mut [Statement]) {
+    let mut properties: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut parents_of: HashMap<String, Vec<String>> = HashMap::new();
+    for stmt in body.iter() {
+        if let StmtKind::ClassDecl {
+            name,
+            parents,
+            members,
+            ..
+        } = &stmt.kind
+        {
+            parents_of.insert(name.clone(), parents.clone());
+            properties.insert(
+                name.clone(),
+                members
+                    .iter()
+                    .filter_map(|m| match m {
+                        ClassMember::Property {
+                            name,
+                            getter: Some(_),
+                            modifiers,
+                            ..
+                        } if !modifiers.is_static => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            );
+        }
+    }
+
+    for stmt in body.iter_mut() {
+        let StmtKind::ClassDecl {
+            name,
+            parents,
+            members,
+            ..
+        } = &mut stmt.kind
+        else {
+            continue;
+        };
+        // Ancestor property names, walking the chain. `seen` keeps a cyclic
+        // `extends` from looping.
+        let mut inherited: HashSet<String> = HashSet::new();
+        let mut queue: Vec<String> = parents.clone();
+        let mut seen: HashSet<String> = HashSet::from([name.clone()]);
+        while let Some(ancestor) = queue.pop() {
+            if !seen.insert(ancestor.clone()) {
+                continue;
+            }
+            if let Some(names) = properties.get(&ancestor) {
+                inherited.extend(names.iter().cloned());
+            }
+            if let Some(grandparents) = parents_of.get(&ancestor) {
+                queue.extend(grandparents.iter().cloned());
+            }
+        }
+        if inherited.is_empty() {
+            continue;
+        }
+
+        let mut rewritten = Vec::new();
+        for member in members.iter() {
+            let ClassMember::Field {
+                name: fname,
+                type_hint,
+                init,
+                modifiers,
+                ..
+            } = member
+            else {
+                continue;
+            };
+            if modifiers.is_static || !inherited.contains(fname) {
+                continue;
+            }
+            rewritten.push((
+                fname.clone(),
+                type_hint.clone(),
+                init.clone(),
+                modifiers.clone(),
+            ));
+        }
+        if rewritten.is_empty() {
+            continue;
+        }
+        let replaced: HashSet<String> = rewritten.iter().map(|(n, ..)| n.clone()).collect();
+        members.retain(|m| !matches!(m, ClassMember::Field { name, .. } if replaced.contains(name)));
+
+        for (fname, type_hint, init, modifiers) in rewritten {
+            let storage = dart_override_storage_name(&fname);
+            let storage_ref = || {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::This)),
+                    field: storage.clone(),
+                    null_safe: false,
+                })
+            };
+            members.push(ClassMember::Field {
+                name: storage.clone(),
+                type_hint: type_hint.clone(),
+                init,
+                modifiers: modifiers.clone(),
+                with_events: false,
+                array_bounds: None,
+            });
+            let value_param = Param {
+                name: "__dart_ovr_value".to_string(),
+                type_hint: type_hint.clone(),
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false,
+            };
+            members.push(ClassMember::Property {
+                name: fname,
+                type_hint,
+                getter: Some(vec![Statement::new(StmtKind::Return(Some(storage_ref())))]),
+                setter: Some(PropertySetter {
+                    param: value_param.clone(),
+                    body: vec![Statement::new(StmtKind::Expr(Expression::new(
+                        ExprKind::Assign {
+                            target: Box::new(storage_ref()),
+                            value: Box::new(Expression::ident(&value_param.name)),
+                        },
+                    )))],
+                }),
+                is_auto: false,
+                modifiers,
+            });
+        }
     }
 }
 
@@ -4207,6 +4521,25 @@ fn rewrite_static_idents_expr(expr: &mut Expression, class_name: &str, static_fi
                 }
             }
         }
+        // Constructor ARGUMENTS only — the constructee is a type name, and
+        // rewriting it would rebind a class that happens to share a field's
+        // spelling. Missing this arm is why every operator overload that
+        // builds its result (`operator +(o) => A(v + o.v)`, the shape all of
+        // them use) read an unqualified `v` as a global: `return v` was
+        // rewritten, `return A(v)` was not, so the body produced NaN.
+        ExprKind::New { args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_static_idents_expr(&mut arg.value, class_name, static_fields);
+            }
+        }
+        ExprKind::Await(inner) | ExprKind::Spread(inner) => {
+            rewrite_static_idents_expr(inner, class_name, static_fields)
+        }
+        ExprKind::Tuple(items) | ExprKind::Sequence(items) => {
+            for item in items.iter_mut() {
+                rewrite_static_idents_expr(item, class_name, static_fields);
+            }
+        }
         // Descend into closures: a lambda inside an instance method (an event
         // handler, a `setState(() {...})` body) may reference sibling members
         // unqualified too. Inside a closure `this` is the DYNAMIC call-time
@@ -4515,6 +4848,647 @@ fn rewrite_this_to_self_ident_expr(expr: &mut Expression) {
         }
         _ => {}
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// noSuchMethod — Dart's missing-member hook
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Which access shape produced an `Invocation`.
+#[derive(Clone, Copy, PartialEq)]
+enum NsmAccess {
+    Method,
+    Getter,
+    Setter,
+}
+
+/// Dart sends a failed member access on a `dynamic` receiver to that object's
+/// `noSuchMethod(Invocation)` instead of throwing. This lowers it the same way
+/// PHP already lowers `__call` — `php/src/walker.rs::build_magic_call_rewrite`
+/// — as a runtime test at the access site whose miss branch invokes the hook.
+///
+/// It is walker work, not shared-compiler work. The `CallMissing` protocol slot
+/// that Dart, PHP and Ruby all register is a compile-time *role*; nothing in
+/// the emitter reads it, and the lowering here is plain AST (a sequence, a
+/// ternary, a `typeof`), so the shared compiler is untouched.
+///
+/// Inert unless some class in the program declares `noSuchMethod`: a Dart
+/// program that never uses the feature comes out of this pass unchanged.
+fn apply_no_such_method(body: &mut [Statement]) {
+    if !nsm_module_declares_hook(body) {
+        return;
+    }
+    let mut dynamic_vars: HashSet<String> = HashSet::new();
+    nsm_rewrite_stmts(body, &mut dynamic_vars);
+}
+
+fn nsm_module_declares_hook(body: &[Statement]) -> bool {
+    body.iter().any(|stmt| match &stmt.kind {
+        StmtKind::ClassDecl { members, .. } => members.iter().any(|m| match m {
+            ClassMember::Method(inner) => {
+                matches!(&inner.kind, StmtKind::FunctionDecl { name, .. } if name == "noSuchMethod")
+            }
+            _ => false,
+        }),
+        _ => false,
+    })
+}
+
+/// `#name` and a member's own spelling both render as Dart renders a `Symbol`:
+/// `Symbol("name")`. Keeping them as that exact string is what makes
+/// `inv.memberName == #doubleIt`, `inv.memberName.toString()` and
+/// `inv.namedArguments[#mode]` all agree without a Symbol value type.
+fn nsm_symbol(name: &str) -> String {
+    format!("Symbol(\"{name}\")")
+}
+
+fn nsm_tmp(prefix: &str) -> String {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    format!(
+        "__dart_nsm_{prefix}{}",
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// A receiver is `dynamic` when it was declared so, or when it is the result of
+/// a member access on something that is — Dart types both a missing-member call
+/// and its result `dynamic`, which is what makes `c.next().end()` chain through
+/// the hook and back out again.
+fn nsm_is_dynamic(expr: &Expression, dynamic_vars: &HashSet<String>) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(name) => dynamic_vars.contains(name),
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Member { object, .. } => nsm_is_dynamic(object, dynamic_vars),
+            _ => false,
+        },
+        ExprKind::Member { object, .. } => nsm_is_dynamic(object, dynamic_vars),
+        _ => false,
+    }
+}
+
+/// The `Invocation` handed to the hook. Dart's `Invocation` is a class, but
+/// every member the program can read off it is a plain field, so an object
+/// literal carries it exactly — verified against the Dart SDK:
+/// `Symbol("run") m=true g=false s=false pos=[1, 2] named={Symbol("mode"): fast}`.
+fn nsm_invocation(member: &str, access: NsmAccess, args: &[Argument]) -> Expression {
+    let mut positional = Vec::new();
+    let mut named = Vec::new();
+    for arg in args {
+        match &arg.name {
+            // Dart keys `namedArguments` by Symbol, and prints those keys as
+            // `Symbol("mode")` — the same spelling `#mode` lowers to, so an
+            // index by either finds the entry.
+            Some(name) => named.push(ObjectProperty::KeyValue {
+                key: Expression::string(&nsm_symbol(name)),
+                value: arg.value.clone(),
+            }),
+            None => positional.push(ArrayElement {
+                key: None,
+                value: arg.value.clone(),
+                spread: false,
+                by_ref: false,
+            }),
+        }
+    }
+    // A setter's member name carries the `=`: real Dart reports `Symbol("value=")`
+    // for `p.value = 1`, not `Symbol("value")`.
+    let member_name = if access == NsmAccess::Setter {
+        nsm_symbol(&format!("{member}="))
+    } else {
+        nsm_symbol(member)
+    };
+    let field = |name: &str, value: Expression| ObjectProperty::KeyValue {
+        key: Expression::string(name),
+        value,
+    };
+    Expression::new(ExprKind::Object(vec![
+        field("memberName", Expression::string(&member_name)),
+        field("isMethod", Expression::bool(access == NsmAccess::Method)),
+        field("isGetter", Expression::bool(access == NsmAccess::Getter)),
+        field("isSetter", Expression::bool(access == NsmAccess::Setter)),
+        field("isAccessor", Expression::bool(access != NsmAccess::Method)),
+        field(
+            "positionalArguments",
+            Expression::new(ExprKind::Array(positional)),
+        ),
+        field("namedArguments", Expression::new(ExprKind::Object(named))),
+    ]))
+}
+
+fn nsm_member(object: Expression, field: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(object),
+        field: field.to_string(),
+        null_safe: false,
+    })
+}
+
+fn nsm_hook_call(receiver: Expression, invocation: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(nsm_member(receiver, "noSuchMethod")),
+        args: vec![Argument::positional(invocation)],
+        optional: false,
+    })
+}
+
+fn nsm_typeof_is(expr: Expression, type_name: &str) -> Expression {
+    Expression::new(ExprKind::Binary {
+        op: BinOp::StrictEq,
+        left: Box::new(Expression::new(ExprKind::TypeOf(Box::new(expr)))),
+        right: Box::new(Expression::string(type_name)),
+    })
+}
+
+/// `(t = obj, typeof t.m === "function" ? t.m(args) : t.noSuchMethod(inv))`
+fn nsm_call_rewrite(object: Expression, field: &str, args: Vec<Argument>) -> Expression {
+    let tmp = nsm_tmp("recv");
+    let receiver = || Expression::ident(&tmp);
+    let save = Expression::new(ExprKind::Assign {
+        target: Box::new(receiver()),
+        value: Box::new(object),
+    });
+    let direct = Expression::new(ExprKind::Call {
+        callee: Box::new(nsm_member(receiver(), field)),
+        args: args.clone(),
+        optional: false,
+    });
+    let miss = nsm_hook_call(
+        receiver(),
+        nsm_invocation(field, NsmAccess::Method, &args),
+    );
+    Expression::new(ExprKind::Sequence(vec![
+        save,
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(nsm_typeof_is(nsm_member(receiver(), field), "function")),
+            then: Box::new(direct),
+            else_: Box::new(miss),
+        }),
+    ]))
+}
+
+/// `(t = obj, typeof t.p === "undefined" ? t.noSuchMethod(inv) : t.p)`
+fn nsm_get_rewrite(object: Expression, field: &str) -> Expression {
+    let tmp = nsm_tmp("recv");
+    let receiver = || Expression::ident(&tmp);
+    let save = Expression::new(ExprKind::Assign {
+        target: Box::new(receiver()),
+        value: Box::new(object),
+    });
+    let miss = nsm_hook_call(receiver(), nsm_invocation(field, NsmAccess::Getter, &[]));
+    Expression::new(ExprKind::Sequence(vec![
+        save,
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(nsm_typeof_is(nsm_member(receiver(), field), "undefined")),
+            then: Box::new(miss),
+            else_: Box::new(nsm_member(receiver(), field)),
+        }),
+    ]))
+}
+
+/// `(t = obj, v = val, typeof t.p === "undefined" ? t.noSuchMethod(inv) : (t.p = v))`
+///
+/// The value goes into its own temp so it is evaluated exactly once and in
+/// source order, before the branch that decides where it lands.
+fn nsm_set_rewrite(object: Expression, field: &str, value: Expression) -> Expression {
+    let recv_tmp = nsm_tmp("recv");
+    let value_tmp = nsm_tmp("val");
+    let receiver = || Expression::ident(&recv_tmp);
+    let held = || Expression::ident(&value_tmp);
+    let save_receiver = Expression::new(ExprKind::Assign {
+        target: Box::new(receiver()),
+        value: Box::new(object),
+    });
+    let save_value = Expression::new(ExprKind::Assign {
+        target: Box::new(held()),
+        value: Box::new(value),
+    });
+    let miss = nsm_hook_call(
+        receiver(),
+        nsm_invocation(
+            field,
+            NsmAccess::Setter,
+            &[Argument::positional(held())],
+        ),
+    );
+    let direct = Expression::new(ExprKind::Assign {
+        target: Box::new(nsm_member(receiver(), field)),
+        value: Box::new(held()),
+    });
+    Expression::new(ExprKind::Sequence(vec![
+        save_receiver,
+        save_value,
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(nsm_typeof_is(nsm_member(receiver(), field), "undefined")),
+            then: Box::new(miss),
+            else_: Box::new(direct),
+        }),
+    ]))
+}
+
+fn nsm_rewrite_stmts(stmts: &mut [Statement], dynamic_vars: &mut HashSet<String>) {
+    for stmt in stmts.iter_mut() {
+        nsm_rewrite_stmt(stmt, dynamic_vars);
+    }
+}
+
+/// A nested body gets its own copy of the dynamic set: a `dynamic` local in one
+/// function must not make a same-named local in another function dynamic.
+fn nsm_rewrite_body(
+    body: &mut [Statement],
+    params: &[Param],
+    dynamic_vars: &HashSet<String>,
+) {
+    let mut inner = dynamic_vars.clone();
+    for param in params {
+        if param.type_hint.as_deref() == Some("dynamic") {
+            inner.insert(param.name.clone());
+        }
+    }
+    nsm_rewrite_stmts(body, &mut inner);
+}
+
+fn nsm_rewrite_stmt(stmt: &mut Statement, dynamic_vars: &mut HashSet<String>) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            nsm_rewrite_expr(expr, dynamic_vars)
+        }
+        StmtKind::Throw { expr, cause } => {
+            for e in expr.iter_mut().chain(cause.iter_mut()) {
+                nsm_rewrite_expr(e, dynamic_vars);
+            }
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations.iter_mut() {
+                if let Some(init) = &mut decl.init {
+                    nsm_rewrite_expr(init, dynamic_vars);
+                }
+                if decl.type_hint.as_deref() == Some("dynamic") {
+                    if let BindingPattern::Ident(name) = &decl.pattern {
+                        // Recorded for the rest of the enclosing body. A later
+                        // non-dynamic binding of the same name only costs a
+                        // redundant runtime test — the direct branch still
+                        // wins whenever the member exists.
+                        dynamic_vars.insert(name.clone());
+                    }
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            nsm_rewrite_expr(value, dynamic_vars);
+            // `p.field = v` on a dynamic receiver is a setter invocation, and
+            // the whole statement becomes the rewritten expression.
+            if targets.len() == 1 {
+                if let ExprKind::Member {
+                    object,
+                    field,
+                    null_safe: false,
+                } = &targets[0].kind
+                {
+                    if nsm_is_dynamic(object, dynamic_vars) {
+                        let mut receiver = (**object).clone();
+                        nsm_rewrite_expr(&mut receiver, dynamic_vars);
+                        stmt.kind = StmtKind::Expr(nsm_set_rewrite(
+                            receiver,
+                            field,
+                            value.clone(),
+                        ));
+                        return;
+                    }
+                }
+            }
+            for target in targets.iter_mut() {
+                nsm_rewrite_expr(target, dynamic_vars);
+            }
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            nsm_rewrite_expr(target, dynamic_vars);
+            nsm_rewrite_expr(value, dynamic_vars);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            nsm_rewrite_expr(cond, dynamic_vars);
+            nsm_rewrite_stmts(then_body, dynamic_vars);
+            for (elif_cond, body) in elifs.iter_mut() {
+                nsm_rewrite_expr(elif_cond, dynamic_vars);
+                nsm_rewrite_stmts(body, dynamic_vars);
+            }
+            if let Some(body) = else_body {
+                nsm_rewrite_stmts(body, dynamic_vars);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+            ..
+        } => {
+            if let Some(init) = init.as_deref_mut() {
+                nsm_rewrite_stmt(init, dynamic_vars);
+            }
+            if let Some(cond) = cond {
+                nsm_rewrite_expr(cond, dynamic_vars);
+            }
+            if let Some(update) = update {
+                nsm_rewrite_expr(update, dynamic_vars);
+            }
+            nsm_rewrite_stmts(body, dynamic_vars);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            nsm_rewrite_expr(iter, dynamic_vars);
+            nsm_rewrite_stmts(body, dynamic_vars);
+        }
+        StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
+            nsm_rewrite_expr(cond, dynamic_vars);
+            nsm_rewrite_stmts(body, dynamic_vars);
+        }
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => {
+            nsm_rewrite_expr(expr, dynamic_vars);
+            for case in cases.iter_mut() {
+                nsm_rewrite_stmts(&mut case.body, dynamic_vars);
+            }
+            if let Some(body) = default {
+                nsm_rewrite_stmts(body, dynamic_vars);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            nsm_rewrite_stmts(body, dynamic_vars);
+            for catch in catches.iter_mut() {
+                nsm_rewrite_stmts(&mut catch.body, dynamic_vars);
+            }
+            for extra in else_body.iter_mut().chain(finally.iter_mut()) {
+                nsm_rewrite_stmts(extra, dynamic_vars);
+            }
+        }
+        StmtKind::Block(body) => nsm_rewrite_stmts(body, dynamic_vars),
+        StmtKind::FunctionDecl { params, body, .. } => {
+            nsm_rewrite_body(body, params, dynamic_vars)
+        }
+        StmtKind::ClassDecl { members, .. } => {
+            for member in members.iter_mut() {
+                match member {
+                    ClassMember::Method(inner) => nsm_rewrite_stmt(inner, dynamic_vars),
+                    ClassMember::Constructor { params, body, .. } => {
+                        nsm_rewrite_body(body, params, dynamic_vars)
+                    }
+                    ClassMember::Property { getter, setter, .. } => {
+                        if let Some(body) = getter {
+                            nsm_rewrite_body(body, &[], dynamic_vars);
+                        }
+                        if let Some(setter) = setter {
+                            nsm_rewrite_body(&mut setter.body, &[], dynamic_vars);
+                        }
+                    }
+                    ClassMember::Field { init: Some(e), .. } => {
+                        nsm_rewrite_expr(e, dynamic_vars)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn nsm_rewrite_expr(expr: &mut Expression, dynamic_vars: &HashSet<String>) {
+    // A call on a dynamic receiver is decided BEFORE descending into the
+    // callee — otherwise the `Member` inside `c.next()` would be rewritten as
+    // a getter first and the call would never be seen.
+    if let ExprKind::Call { callee, args, .. } = &expr.kind {
+        if let ExprKind::Member {
+            object,
+            field,
+            null_safe: false,
+        } = &callee.kind
+        {
+            if nsm_is_dynamic(object, dynamic_vars) {
+                let mut receiver = (**object).clone();
+                let field = field.clone();
+                let mut args = args.clone();
+                nsm_rewrite_expr(&mut receiver, dynamic_vars);
+                for arg in args.iter_mut() {
+                    nsm_rewrite_expr(&mut arg.value, dynamic_vars);
+                }
+                *expr = nsm_call_rewrite(receiver, &field, args);
+                return;
+            }
+        }
+    }
+    if let ExprKind::Assign { target, value } = &expr.kind {
+        if let ExprKind::Member {
+            object,
+            field,
+            null_safe: false,
+        } = &target.kind
+        {
+            if nsm_is_dynamic(object, dynamic_vars) {
+                let mut receiver = (**object).clone();
+                let field = field.clone();
+                let mut held = (**value).clone();
+                nsm_rewrite_expr(&mut receiver, dynamic_vars);
+                nsm_rewrite_expr(&mut held, dynamic_vars);
+                *expr = nsm_set_rewrite(receiver, &field, held);
+                return;
+            }
+        }
+    }
+    if let ExprKind::Member {
+        object,
+        field,
+        null_safe: false,
+    } = &expr.kind
+    {
+        if nsm_is_dynamic(object, dynamic_vars) {
+            let mut receiver = (**object).clone();
+            let field = field.clone();
+            nsm_rewrite_expr(&mut receiver, dynamic_vars);
+            *expr = nsm_get_rewrite(receiver, &field);
+            return;
+        }
+    }
+
+    match &mut expr.kind {
+        ExprKind::Binary { left, right, .. } => {
+            nsm_rewrite_expr(left, dynamic_vars);
+            nsm_rewrite_expr(right, dynamic_vars);
+        }
+        ExprKind::Unary { expr: inner, .. }
+        | ExprKind::TypeOf(inner)
+        | ExprKind::Await(inner)
+        | ExprKind::Spread(inner) => nsm_rewrite_expr(inner, dynamic_vars),
+        ExprKind::Call { callee, args, .. } => {
+            nsm_rewrite_expr(callee, dynamic_vars);
+            for arg in args.iter_mut() {
+                nsm_rewrite_expr(&mut arg.value, dynamic_vars);
+            }
+        }
+        ExprKind::New { class, args } => {
+            nsm_rewrite_expr(class, dynamic_vars);
+            for arg in args.iter_mut() {
+                nsm_rewrite_expr(&mut arg.value, dynamic_vars);
+            }
+        }
+        ExprKind::Member { object, .. } => nsm_rewrite_expr(object, dynamic_vars),
+        ExprKind::Index { object, index, .. } => {
+            nsm_rewrite_expr(object, dynamic_vars);
+            nsm_rewrite_expr(index, dynamic_vars);
+        }
+        ExprKind::Assign { target, value } => {
+            nsm_rewrite_expr(target, dynamic_vars);
+            nsm_rewrite_expr(value, dynamic_vars);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            nsm_rewrite_expr(cond, dynamic_vars);
+            nsm_rewrite_expr(then, dynamic_vars);
+            nsm_rewrite_expr(else_, dynamic_vars);
+        }
+        ExprKind::Array(elements) => {
+            for element in elements.iter_mut() {
+                nsm_rewrite_expr(&mut element.value, dynamic_vars);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props.iter_mut() {
+                match prop {
+                    ObjectProperty::KeyValue { key, value } => {
+                        nsm_rewrite_expr(key, dynamic_vars);
+                        nsm_rewrite_expr(value, dynamic_vars);
+                    }
+                    ObjectProperty::Spread(value) => nsm_rewrite_expr(value, dynamic_vars),
+                    _ => {}
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Sequence(items) => {
+            for item in items.iter_mut() {
+                nsm_rewrite_expr(item, dynamic_vars);
+            }
+        }
+        ExprKind::Lambda { body, params, .. } => {
+            let mut inner = dynamic_vars.clone();
+            for param in params.iter() {
+                if param.type_hint.as_deref() == Some("dynamic") {
+                    inner.insert(param.name.clone());
+                }
+            }
+            match body {
+                LambdaBody::Expr(e) => nsm_rewrite_expr(e, &inner),
+                LambdaBody::Block(stmts) => nsm_rewrite_stmts(stmts, &mut inner),
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The value half of a `const` expression, built with no canonicalization —
+/// the caller has already decided that THIS occurrence is the one that gets
+/// built, and every other occurrence becomes a reference to it.
+thread_local! {
+    /// Canonicalized `const` expressions for the program being parsed, in
+    /// creation order: `(source key, lowered value, binding name)`.
+    static DART_CONST_POOL: std::cell::RefCell<Vec<(String, Expression, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Collapse whitespace so `const [1,2]` and `const [1, 2]` are one constant.
+fn dart_const_key(src: &str) -> String {
+    src.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn dart_const_pool_lookup(src: &str) -> Option<String> {
+    let key = dart_const_key(src);
+    DART_CONST_POOL.with(|pool| {
+        pool.borrow()
+            .iter()
+            .find(|(k, _, _)| *k == key)
+            .map(|(_, _, name)| name.clone())
+    })
+}
+
+fn dart_const_pool_insert(src: String, value: Expression) -> String {
+    let key = dart_const_key(&src);
+    DART_CONST_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        let name = format!("__dart_const_{}", pool.len());
+        pool.push((key, value, name.clone()));
+        name
+    })
+}
+
+/// `var __dart_const_N = <value>;` for each canonicalized const, in creation
+/// order — an inner const is pooled before the outer one that contains it, so
+/// creation order is already dependency order.
+fn dart_const_pool_declarations() -> Vec<Statement> {
+    DART_CONST_POOL.with(|pool| {
+        pool.borrow()
+            .iter()
+            .map(|(_, value, name)| {
+                Statement::new(StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(name.clone()),
+                        type_hint: None,
+                        init: Some(value.clone()),
+                        array_bounds: None,
+                        with_events: false,
+                    }],
+                    kind: VarDeclKind::Let,
+                })
+            })
+            .collect()
+    })
+}
+
+fn walk_const_expression_value(pair: Pair<Rule>) -> Result<ExprKind, String> {
+    // const ClassName(args) — treat same as new
+    let mut class_parts: Vec<String> = Vec::new();
+    let mut args = Vec::new();
+    for p in pair.into_inner() {
+        match p.as_rule() {
+            // `const [...]` / `const {...}` — the collection literal IS the
+            // value; `const` only decides that it is canonicalized.
+            Rule::list_literal | Rule::map_or_set_literal => {
+                return walk_expr_kind(p);
+            }
+            Rule::ident_name => class_parts.push(p.as_str().to_string()),
+            Rule::type_args => {}
+            Rule::argument_list => args = walk_arguments(p)?,
+            Rule::const_kw => {}
+            _ => {}
+        }
+    }
+    let class_name = class_parts.join(".");
+    if let Some((ty, ctor)) = class_name.split_once('.') {
+        if let Some(kind) = dart_flutter_named_ctor(ty, ctor, &args) {
+            return Ok(kind);
+        }
+    }
+    if let Some(alias) = dart_exception_constructor_alias(&class_name) {
+        return Ok(ExprKind::Call {
+            callee: Box::new(Expression::ident(alias)),
+            args,
+            optional: false,
+        });
+    }
+    inject_flutter_defaults(&class_name, &mut args);
+    Ok(ExprKind::New {
+        class: Box::new(Expression::ident(&class_name)),
+        args,
+    })
 }
 
 fn walk_mixin_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -6306,6 +7280,7 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     if !needs_pattern_lowering {
+        merge_empty_fallthrough_cases(&mut simple_cases);
         return Ok(StmtKind::Switch {
             expr: subject,
             cases: simple_cases,
@@ -7019,7 +7994,14 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             walk_string_literal(inner)
         }
 
-        Rule::symbol_literal => Ok(ExprKind::Lit(Literal::Str(pair.as_str().to_string()))),
+        // `#name` is a Symbol, and Dart renders a Symbol as `Symbol("name")` —
+        // that rendering IS the value here, so `#mode` compares equal to an
+        // `Invocation.memberName` and indexes `namedArguments` without a
+        // separate Symbol value type. Carrying the raw `#name` text instead
+        // made both of those silently miss.
+        Rule::symbol_literal => Ok(ExprKind::Lit(Literal::Str(nsm_symbol(
+            pair.as_str().trim_start_matches('#'),
+        )))),
 
         Rule::raw_string => {
             let s = pair.as_str();
@@ -7412,41 +8394,25 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
 
         Rule::const_expression => {
-            // const ClassName(args) — treat same as new
-            let mut class_parts: Vec<String> = Vec::new();
-            let mut args = Vec::new();
-            for p in pair.into_inner() {
-                match p.as_rule() {
-                    // `const [...]` / `const {...}` — `const` is inert in the
-                    // dynamic runtime; lower the collection literal directly.
-                    Rule::list_literal | Rule::map_or_set_literal => {
-                        return walk_expr_kind(p);
-                    }
-                    Rule::ident_name => class_parts.push(p.as_str().to_string()),
-                    Rule::type_args => {}
-                    Rule::argument_list => args = walk_arguments(p)?,
-                    Rule::const_kw => {}
-                    _ => {}
-                }
+            // Dart CANONICALIZES const values: two const expressions that
+            // denote the same value ARE the same object, which is what makes
+            // `identical(const [1, 2], const [1, 2])` true. Lowering each
+            // occurrence inline built a fresh object every time, so every
+            // `identical` over consts answered false.
+            //
+            // So each distinct const expression is built ONCE, hoisted to a
+            // top-level binding, and every occurrence becomes a reference to
+            // it. Identity of const expressions is keyed on their source text
+            // with whitespace collapsed — `const [1,2]` and `const [1, 2]`
+            // canonicalize together. Two spellings of the same VALUE
+            // (`const Token(1)` vs `const Token(0 + 1)`) do not; Dart would
+            // canonicalize those too, and that needs const evaluation.
+            if let Some(name) = dart_const_pool_lookup(pair.as_str()) {
+                return Ok(ExprKind::Ident(name));
             }
-            let class_name = class_parts.join(".");
-            if let Some((ty, ctor)) = class_name.split_once('.') {
-                if let Some(kind) = dart_flutter_named_ctor(ty, ctor, &args) {
-                    return Ok(kind);
-                }
-            }
-            if let Some(alias) = dart_exception_constructor_alias(&class_name) {
-                return Ok(ExprKind::Call {
-                    callee: Box::new(Expression::ident(alias)),
-                    args,
-                    optional: false,
-                });
-            }
-            inject_flutter_defaults(&class_name, &mut args);
-            Ok(ExprKind::New {
-                class: Box::new(Expression::ident(&class_name)),
-                args,
-            })
+            let key = pair.as_str().to_string();
+            let lowered = Expression::new(walk_const_expression_value(pair)?);
+            return Ok(ExprKind::Ident(dart_const_pool_insert(key, lowered)));
         }
 
         // ── Primary ─────────────────────────────────────────────────────
@@ -8544,10 +9510,27 @@ fn dart_expr_prints_as_double(expr: &Expression) -> bool {
             }
             _ => false,
         },
-        ExprKind::Call { callee, .. } => dart_call_prints_as_double(callee),
+        ExprKind::Call { callee, args, .. } => {
+            // `math.max(18.5, 22.0)` is `22.0`; `math.max(1, 2)` is `2`. The
+            // result takes the arguments' type, so ask them.
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && matches!(&object.kind, ExprKind::Ident(name) if name == "math")
+                && matches!(field.as_str(), "max" | "min")
+            {
+                return args.iter().any(|a| dart_expr_prints_as_double(&a.value));
+            }
+            dart_call_prints_as_double(callee)
+        }
         _ => false,
     }
 }
+
+/// `dart:math` functions whose result is a `double` whatever the arguments
+/// are — `sqrt(16)` is `4.0`, not `4`. Named, not blanket: `max`/`min` return
+/// the ARGUMENT type, so they are handled separately below.
+const DART_MATH_ALWAYS_DOUBLE: &[&str] = &[
+    "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "exp", "log",
+];
 
 fn dart_call_prints_as_double(callee: &Expression) -> bool {
     match &callee.kind {
@@ -8560,6 +9543,8 @@ fn dart_call_prints_as_double(callee: &Expression) -> bool {
                 || (field == "abs" && dart_expr_prints_as_double(object))
                 || (matches!(&object.kind, ExprKind::Ident(name) if name == "double")
                     && matches!(field.as_str(), "parse" | "tryParse"))
+                || (matches!(&object.kind, ExprKind::Ident(name) if name == "math")
+                    && DART_MATH_ALWAYS_DOUBLE.contains(&field.as_str()))
         }
         ExprKind::StaticAccess { class, member } => {
             matches!(&class.kind, ExprKind::Ident(name) if name == "double")
@@ -9092,6 +10077,22 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         _ => {}
                     }
                 }
+                // `f?.call(a)` on a function value: Dart's `call` on a closure
+                // IS invoking it, so the guarded form invokes the receiver
+                // directly. Routing it as a null-safe MEMBER instead looked for
+                // a `call` property on a function and read undefined.
+                if name == "call" && (has_call || call_args.is_some()) {
+                    let mut invoke_args = call_args.unwrap_or_default();
+                    normalize_dart_call_args(&expr, &mut invoke_args);
+                    expr = dart_null_guarded(expr, |receiver| {
+                        Expression::new(ExprKind::Call {
+                            callee: Box::new(receiver),
+                            args: invoke_args,
+                            optional: false,
+                        })
+                    });
+                    continue;
+                }
                 expr = Expression::new(ExprKind::Member {
                     object: Box::new(expr),
                     field: name.clone(),
@@ -9208,6 +10209,32 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         }
                     }
                 }
+                // `Directory.systemTemp` / `Directory.current` are the two
+                // handle-valued statics of `dart:io`. They are properties, not
+                // calls, so they never reached the `File(path)` construction
+                // path and every program that used one died before its first
+                // print.
+                if call_args.is_none() && !has_call {
+                    if let ExprKind::Ident(type_name) = &expr.kind {
+                        if type_name == "Directory" {
+                            if let Some(source) = match name.as_str() {
+                                "systemTemp" => Some("__dart_io_temp_dir"),
+                                "current" => Some("__dart_io_current_dir"),
+                                _ => None,
+                            } {
+                                expr = dart_io_handle(
+                                    "directory",
+                                    Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident(source)),
+                                        args: Vec::new(),
+                                        optional: false,
+                                    }),
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                }
                 // Flutter enum constant (`Clip.antiAlias`): fold to its
                 // canonical `"Enum.value"` spelling — Dart's own `toString()`
                 // — so `==`, printing and defaults all line up.
@@ -9228,6 +10255,23 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 // Dart `arr.fold(initial, combine)` → `arr.reduce(combine, initial)`
                 // — JS-shape, args reversed. Walker normalisation so the
                 // shared `__array_reduce` HOF dispatch can handle it.
+                // `writeAsStringSync(s, mode: FileMode.append)` appends
+                // rather than truncates. The profile keys a value method on
+                // its NAME only, so the mode selects the method here and the
+                // named argument is consumed — otherwise every append silently
+                // overwrote the file.
+                if matches!(name.as_str(), "writeAsStringSync" | "writeAsBytesSync") {
+                    if let Some(args) = &mut call_args {
+                        let appends = args.iter().any(|arg| {
+                            arg.name.as_deref() == Some("mode")
+                                && dart_expr_mentions_file_mode(&arg.value, "append")
+                        });
+                        args.retain(|arg| arg.name.as_deref() != Some("mode"));
+                        if appends {
+                            name = "appendAsStringSync".to_string();
+                        }
+                    }
+                }
                 if name == "fold" {
                     if let Some(ref mut args) = call_args {
                         if args.len() == 2 {
@@ -9547,6 +10591,20 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     .map(walk_arguments)
                     .transpose()?
                     .unwrap_or_default();
+                // `dart:io` handles. A `File`/`Directory`/`Link` is a value
+                // whose entire state is its path — Dart's own constructors do
+                // no I/O — so it lowers to a tagged record and every `*Sync`
+                // method reads the path back off it. Before this, the profile's
+                // `esm_default` alias made `File` a NAMESPACE, so `File('t.txt')`
+                // failed with "Not a function" and no dart:io program ran at all.
+                if let Some(kind) = dart_io_handle_kind(&expr) {
+                    let path = args
+                        .first()
+                        .map(|arg| arg.value.clone())
+                        .unwrap_or_else(|| Expression::string(""));
+                    expr = dart_io_handle(kind, path);
+                    continue;
+                }
                 if is_ident_expr(&expr, "RegExp") {
                     args = normalize_regexp_args(args);
                 } else if is_ident_expr(&expr, "Duration") {
@@ -9662,6 +10720,27 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     object: Box::new(expr),
                     index: Box::new(index_expr),
                     null_safe: false,
+                });
+            }
+            Rule::null_safe_index_access => {
+                let ia = chain_inner.into_iter().next().unwrap();
+                let index_expr = ia
+                    .into_inner()
+                    .next()
+                    .map(walk_expression)
+                    .transpose()?
+                    .unwrap_or(Expression::int(0));
+                // `m?[k]` → `(t = m, t == null ? null : t[k])`. Lowered here
+                // rather than through `Index.null_safe`, which the shared
+                // compiler only reads to skip the user-indexer fast path — it
+                // emits no null short-circuit, so the flag alone would still
+                // index a null receiver.
+                expr = dart_null_guarded(expr, |receiver| {
+                    Expression::new(ExprKind::Index {
+                        object: Box::new(receiver),
+                        index: Box::new(index_expr),
+                        null_safe: false,
+                    })
                 });
             }
             Rule::null_assert => {

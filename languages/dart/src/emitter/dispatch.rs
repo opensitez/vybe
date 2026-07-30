@@ -5,6 +5,19 @@ use vybe_runtime::Chunk;
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     match name {
+        // dart:io filesystem — see emitter/io_adapter.rs
+        "dart.io_read_as_string_sync" => crate::emitter::io_adapter::emit_read_as_string_sync(chunks, current, argc, line),
+        "dart.io_read_as_bytes_sync" => crate::emitter::io_adapter::emit_read_as_bytes_sync(chunks, current, argc, line),
+        "dart.io_read_as_lines_sync" => crate::emitter::io_adapter::emit_read_as_lines_sync(chunks, current, argc, line),
+        "dart.io_write_as_string_sync" => crate::emitter::io_adapter::emit_write_as_string_sync(chunks, current, argc, line),
+        "dart.io_append_as_string_sync" => crate::emitter::io_adapter::emit_append_as_string_sync(chunks, current, argc, line),
+        "dart.io_exists_sync" => crate::emitter::io_adapter::emit_exists_sync(chunks, current, argc, line),
+        "dart.io_delete_sync" => crate::emitter::io_adapter::emit_delete_sync(chunks, current, argc, line),
+        "dart.io_length_sync" => crate::emitter::io_adapter::emit_length_sync(chunks, current, argc, line),
+        "dart.io_create_sync" => crate::emitter::io_adapter::emit_create_sync(chunks, current, argc, line),
+        "dart.io_rename_sync" => crate::emitter::io_adapter::emit_rename_sync(chunks, current, argc, line),
+        "dart.io_copy_sync" => crate::emitter::io_adapter::emit_copy_sync(chunks, current, argc, line),
+        "dart.io_list_sync" => crate::emitter::io_adapter::emit_list_sync(chunks, current, argc, line),
         "dart.is_empty" => {
             crate::emitter::string_adapter::emit_dart_is_empty(chunks, current, line)
         }

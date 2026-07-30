@@ -5,35 +5,45 @@ dart_cases! {
         r#"void main() {
   print(math.sqrt(81));
 }"#,
-        ["9"]
+        // Corrected against the Dart SDK: this program prints
+        // ['9.0'].
+        ["9.0"]
     };
 
     math_sqrt_of_zero => {
         r#"void main() {
   print(math.sqrt(0));
 }"#,
-        ["0"]
+        // Corrected against the Dart SDK: this program prints
+        // ['0.0'].
+        ["0.0"]
     };
 
     math_sqrt_of_one => {
         r#"void main() {
   print(math.sqrt(1));
 }"#,
-        ["1"]
+        // Corrected against the Dart SDK: this program prints
+        // ['1.0'].
+        ["1.0"]
     };
 
     math_sqrt_of_four => {
         r#"void main() {
   print(math.sqrt(4));
 }"#,
-        ["2"]
+        // Corrected against the Dart SDK: this program prints
+        // ['2.0'].
+        ["2.0"]
     };
 
     math_sqrt_for_pythagorean_triple => {
         r#"void main() {
   print(math.sqrt(3 * 3 + 4 * 4));
 }"#,
-        ["5"]
+        // Corrected against the Dart SDK: this program prints
+        // ['5.0'].
+        ["5.0"]
     };
 
     math_pow_squares_small_integer => {
@@ -124,28 +134,36 @@ dart_cases! {
         r#"void main() {
   print(math.sin(0));
 }"#,
-        ["0"]
+        // Corrected against the Dart SDK: this program prints
+        // ['0.0'].
+        ["0.0"]
     };
 
     math_cos_of_zero => {
         r#"void main() {
   print(math.cos(0));
 }"#,
-        ["1"]
+        // Corrected against the Dart SDK: this program prints
+        // ['1.0'].
+        ["1.0"]
     };
 
     math_sin_of_pi_over_six => {
         r#"void main() {
   print(math.sin(math.pi / 6));
 }"#,
-        ["0.5"]
+        // Corrected against the Dart SDK: this program prints
+        // ['0.49999999999999994'].
+        ["0.49999999999999994"]
     };
 
     math_cos_of_pi_over_three => {
         r#"void main() {
   print(math.cos(math.pi / 3));
 }"#,
-        ["0.5"]
+        // Corrected against the Dart SDK: this program prints
+        // ['0.5000000000000001'].
+        ["0.5000000000000001"]
     };
 
     math_sin_of_pi_over_two_near_one => {
@@ -166,28 +184,36 @@ dart_cases! {
         r#"void main() {
   print(math.tan(0));
 }"#,
-        ["0"]
+        // Corrected against the Dart SDK: this program prints
+        // ['0.0'].
+        ["0.0"]
     };
 
     math_asin_of_zero => {
         r#"void main() {
   print(math.asin(0));
 }"#,
-        ["0"]
+        // Corrected against the Dart SDK: this program prints
+        // ['0.0'].
+        ["0.0"]
     };
 
     math_acos_of_one => {
         r#"void main() {
   print(math.acos(1));
 }"#,
-        ["0"]
+        // Corrected against the Dart SDK: this program prints
+        // ['0.0'].
+        ["0.0"]
     };
 
     math_atan_of_zero => {
         r#"void main() {
   print(math.atan(0));
 }"#,
-        ["0"]
+        // Corrected against the Dart SDK: this program prints
+        // ['0.0'].
+        ["0.0"]
     };
 
     math_atan2_first_quadrant => {
@@ -208,14 +234,18 @@ dart_cases! {
         r#"void main() {
   print(math.exp(0));
 }"#,
-        ["1"]
+        // Corrected against the Dart SDK: this program prints
+        // ['1.0'].
+        ["1.0"]
     };
 
     math_log_of_one => {
         r#"void main() {
   print(math.log(1));
 }"#,
-        ["0"]
+        // Corrected against the Dart SDK: this program prints
+        // ['0.0'].
+        ["0.0"]
     };
 
     math_log_of_e_is_one => {
@@ -327,7 +357,9 @@ dart_cases! {
         r#"void main() {
   print(math.sqrt(math.pow(6, 2)));
 }"#,
-        ["6"]
+        // Corrected against the Dart SDK: this program prints
+        // ['6.0'].
+        ["6.0"]
     };
 
     math_sin_cos_pythagorean_on_unit_circle => {
@@ -343,7 +375,9 @@ dart_cases! {
         r#"void main() {
   print(math.sqrt(math.pow(11, 2)));
 }"#,
-        ["11"]
+        // Corrected against the Dart SDK: this program prints
+        // ['11.0'].
+        ["11.0"]
     };
 
     math_pow_then_min_with_smaller_value => {
@@ -364,14 +398,18 @@ dart_cases! {
         r#"void main() {
   print(math.sin(-0.0));
 }"#,
-        ["0"]
+        // Corrected against the Dart SDK: this program prints
+        // ['-0.0'].
+        ["-0.0"]
     };
 
     math_cos_negative_zero => {
         r#"void main() {
   print(math.cos(-0.0));
 }"#,
-        ["1"]
+        // Corrected against the Dart SDK: this program prints
+        // ['1.0'].
+        ["1.0"]
     };
 
     math_sqrt_of_fraction => {
@@ -385,7 +423,9 @@ dart_cases! {
         r#"void main() {
   print(math.log(math.pow(2, 8)) > 5.99);
 }"#,
-        ["true"]
+        // Corrected against the Dart SDK: this program prints
+        // ['false'].
+        ["false"]
     };
 
     math_atan2_on_negative_axis => {

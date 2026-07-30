@@ -115,8 +115,12 @@ class_member = _{
 // ── Class member modifiers ──────────────────────────────────────────────────
 
 member_modifiers = {
-    static_kw? ~ abstract_kw? ~ override_kw? ~ const_kw? ~ factory_kw?
-    ~ late_kw? ~ final_kw? ~ late_kw?
+    // `covariant` narrows a member's declared type in a subclass. It is a
+    // STATIC soundness marker — it changes no runtime behaviour — but it may
+    // precede a field or setter, and without it here `covariant bool state`
+    // failed to parse and took the whole program with it.
+    static_kw? ~ abstract_kw? ~ override_kw? ~ covariant_kw? ~ const_kw? ~ factory_kw?
+    ~ late_kw? ~ final_kw? ~ late_kw? ~ covariant_kw?
 }
 
 // ── Constructor ─────────────────────────────────────────────────────────────
@@ -572,6 +576,9 @@ const_expression = {
 call_chain = {
     cascade_chain
     | null_safe_member_access
+    // Before `null_assert`, which would otherwise take the `?`, and before
+    // `index_access`, which cannot see the `?` at all.
+    | null_safe_index_access
     | member_access
     | call_args
     | index_access
@@ -600,6 +607,8 @@ null_safe_member_access = { "?." ~ ident_or_keyword ~ ("(" ~ argument_list? ~ ")
 member_access = { "." ~ ident_or_keyword ~ type_args? ~ ("(" ~ argument_list? ~ ")")? }
 call_args = { "(" ~ argument_list? ~ ")" }
 index_access = { "[" ~ expression ~ "]" }
+// Dart `map?[key]` — index only if the receiver is non-null.
+null_safe_index_access = { "?[" ~ expression ~ "]" }
 // Postfix `!` (null-assert). Negative lookahead on `=` keeps `!=`
 // (binary not-equal) from being eaten here.
 null_assert = { "!" ~ !"=" }

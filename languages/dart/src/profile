@@ -186,8 +186,14 @@ jsonDecode          = { emit = "host:ecma:json:parse",            min_args = 1, 
 
 # ── File I/O (dart:io) ──────────────────────────────────────────────────────
 
-"File.readAsString"     = { emit = "host:wasi:filesystem:readFile",   min_args = 1, max_args = 1 }
-"File.writeAsString"    = { emit = "host:wasi:filesystem:writeFile",  min_args = 2, max_args = 2 }
+# `File`/`Directory`/`Link` are INSTANCE handles in Dart — the synchronous
+# methods live in [value_methods] below, routed through emitter/io_adapter.rs.
+# The two dotted entries that used to live here (`File.readAsString`,
+# `File.writeAsString`) matched no real Dart spelling and nothing called them.
+
+# `Directory.systemTemp` / `Directory.current` — the path behind the handle.
+__dart_io_temp_dir      = { emit = "host:node:os:tmpdir",           min_args = 0, max_args = 0 }
+__dart_io_current_dir   = { emit = "host:node:process:cwd",         min_args = 0, max_args = 0 }
 
 # ── Environment ─────────────────────────────────────────────────────────────
 
@@ -198,6 +204,22 @@ jsonDecode          = { emit = "host:ecma:json:parse",            min_args = 1, 
 # ────────────────────────────────────────────────────────────────────────────
 
 [value_methods]
+
+# ── dart:io synchronous filesystem (emitter/io_adapter.rs) ──────────────────
+# argc INCLUDES the receiver handle, which is where the path comes from.
+readAsStringSync  = { emit = "common:dart.io_read_as_string_sync",  min_args = 0, max_args = 2 }
+readAsBytesSync   = { emit = "common:dart.io_read_as_bytes_sync",   min_args = 0, max_args = 1 }
+readAsLinesSync   = { emit = "common:dart.io_read_as_lines_sync",   min_args = 0, max_args = 2 }
+appendAsStringSync = { emit = "common:dart.io_append_as_string_sync", min_args = 1, max_args = 4 }
+writeAsStringSync = { emit = "common:dart.io_write_as_string_sync", min_args = 1, max_args = 4 }
+writeAsBytesSync  = { emit = "common:dart.io_write_as_string_sync", min_args = 1, max_args = 4 }
+existsSync        = { emit = "common:dart.io_exists_sync",          min_args = 0, max_args = 1 }
+deleteSync        = { emit = "common:dart.io_delete_sync",          min_args = 0, max_args = 2 }
+lengthSync        = { emit = "common:dart.io_length_sync",          min_args = 0, max_args = 1 }
+createSync        = { emit = "common:dart.io_create_sync",          min_args = 0, max_args = 2 }
+renameSync        = { emit = "common:dart.io_rename_sync",          min_args = 1, max_args = 1 }
+copySync          = { emit = "common:dart.io_copy_sync",            min_args = 1, max_args = 1 }
+listSync          = { emit = "common:dart.io_list_sync",            min_args = 0, max_args = 2 }
 
 # String instance methods
 toUpperCase   = { emit = "common:strings.to_upper",   min_args = 0, max_args = 0 }
@@ -216,7 +238,10 @@ substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 
 padLeft       = { emit = "host:ecma:string:padStart",  min_args = 1, max_args = 2 }
 padRight      = { emit = "host:ecma:string:padEnd",    min_args = 1, max_args = 2 }
 toString      = { emit = "common:dart.to_string",      min_args = 0, max_args = 0 }
-codeUnitAt    = { emit = "common:str_char_code_at",    min_args = 1, max_args = 1 }
+# UTF-16 code unit, not a UTF-8 byte: `common:str_char_code_at` is
+# `wasm:js-string.charCodeAt` and returned 195 (the first byte of `é`)
+# where Dart specifies 233.
+codeUnitAt    = { emit = "host:ecma:string:charCodeAt", min_args = 1, max_args = 1 }
 codeUnits     = { emit = "common:dart.string_code_units", min_args = 0, max_args = 0 }
 isEmpty       = { emit = "common:dart.is_empty",       min_args = 0, max_args = 0 }
 isNotEmpty    = { emit = "common:dart.is_not_empty",   min_args = 0, max_args = 0 }
@@ -396,16 +421,6 @@ module = "ecma:json"
 kind = "namespace"
 alias = "http"
 module = "node:http"
-
-[[esm_default]]
-kind = "namespace"
-alias = "File"
-module = "wasi:filesystem"
-
-[[esm_default]]
-kind = "namespace"
-alias = "Directory"
-module = "wasi:filesystem"
 
 [[esm_default]]
 kind = "namespace"

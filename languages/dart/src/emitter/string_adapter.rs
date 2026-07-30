@@ -67,7 +67,10 @@ fn stamp_runtime_type(
     emit_string_field(chunk, reflection::FIELD_KIND, kind.as_str(), line);
 }
 
-fn emit_dart_exception_new(
+/// Shared by every Dart exception emit, including `io_adapter`'s — one place
+/// builds the object, stamps `__exception_type`, and wires the instanceof
+/// chain, so `on FileSystemException` catches what the io adapter throws.
+pub(crate) fn emit_dart_exception_new(
     chunks: &mut [Chunk],
     current: usize,
     argc: u8,
@@ -665,7 +668,7 @@ pub fn emit_dart_stream_value(chunks: &mut [Chunk], current: usize, line: u32) {
     let value_slot = reserve_slot(&mut chunks[current]);
     let out_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW, 0, line);
+    collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
@@ -675,7 +678,7 @@ pub fn emit_dart_stream_value(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_dart_stream_empty(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op_u16(Op::ARRAY_NEW, 0, line);
+    collections::emit_array_new(chunks, current, 0, line);
 }
 
 pub fn emit_dart_stream_error(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -961,13 +964,22 @@ pub fn emit_dart_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
     let receiver_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, index_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    // A STRING receiver must not go through `ecma:array.get` — it returned
+    // undefined for every index, so `"café"[3]` and even `"abc"[1]` were null.
+    // Dart indexes a string by UTF-16 code unit and yields a one-character
+    // String, which is `ecma:string.charAt`.
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
+    host::emit(&mut chunks[current], "ecma:number", "Number", 1, line);
+    host::emit(&mut chunks[current], "ecma:string", "charAt", 2, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+    host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
@@ -977,6 +989,7 @@ pub fn emit_dart_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
     collections::emit_get(chunks, current, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     emit_undefined_to_null(&mut chunks[current], line);
 }
@@ -1300,7 +1313,12 @@ pub fn emit_dart_length(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    strings::emit_length(&mut chunks[current], line);
+    // Dart's `String.length` is a count of UTF-16 CODE UNITS, so it goes
+    // through `ecma:string.length` (`encode_utf16().count()`) rather than
+    // `strings::emit_length`, which is `wasm:js-string.length` and counts
+    // UTF-8 bytes — that made `'café'.length` 5 and every non-ASCII string
+    // test wrong. PHP wants the byte count and keeps the shared helper.
+    host::emit(&mut chunks[current], "ecma:string", "length", 1, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
@@ -2983,7 +3001,7 @@ pub fn emit_dart_string_code_units(chunks: &mut [Chunk], current: usize, line: u
     let idx_slot = reserve_slot(&mut chunks[current]);
     let len_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, str_slot, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW, 0, line);
+    collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, str_slot, line);
     strings::emit_length(&mut chunks[current], line);
@@ -2994,7 +3012,14 @@ pub fn emit_dart_string_code_units(chunks: &mut [Chunk], current: usize, line: u
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunks[current].emit_op(Op::I32_GE_S, line);
+    // The length is a DYNAMIC (f64-boxed) value, not a raw i32, so `I32_GE_S`
+    // compared an i32 counter against a boxed number and the guard fired on
+    // the first iteration — `s.runes` and `s.codeUnits` returned an empty
+    // array for every non-literal receiver. Compare dynamically, the way
+    // `emit_dart_list_generate` below already does.
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, str_slot, line);
@@ -3021,7 +3046,7 @@ pub fn emit_dart_string_runes(chunks: &mut [Chunk], current: usize, line: u32) {
     let len_slot = reserve_slot(&mut chunks[current]);
     host::emit(&mut chunks[current], "ecma:array", "from", 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, chars_slot, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW, 0, line);
+    collections::emit_array_new(chunks, current, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, chars_slot, line);
     collections::emit_len(chunks, current, line);
@@ -3032,7 +3057,14 @@ pub fn emit_dart_string_runes(chunks: &mut [Chunk], current: usize, line: u32) {
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
-    chunks[current].emit_op(Op::I32_GE_S, line);
+    // The length is a DYNAMIC (f64-boxed) value, not a raw i32, so `I32_GE_S`
+    // compared an i32 counter against a boxed number and the guard fired on
+    // the first iteration — `s.runes` and `s.codeUnits` returned an empty
+    // array for every non-literal receiver. Compare dynamically, the way
+    // `emit_dart_list_generate` below already does.
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, chars_slot, line);

@@ -12,5 +12,6 @@
 
 pub mod core_adapter;
 pub mod dispatch;
+pub mod io_adapter;
 pub mod reflection_adapter;
 pub mod string_adapter;

@@ -663,7 +663,12 @@ dart_cases! {
   }
   print(total);
 }"#,
-        ["5"]
+        // A case WITH a body breaks implicitly — Dart 3 rejects falling out of
+        // one, so `case 2` does not continue into `case 3`. Verified against
+        // the Dart SDK: this program prints 2. Only an EMPTY case falls
+        // through, which `switch_first_empty_case_falls_into_second_with_action`
+        // covers.
+        ["2"]
     };
 
     switch_break_inside_switch_does_not_continue_outer_loop => {

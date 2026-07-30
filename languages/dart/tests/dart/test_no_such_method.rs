@@ -42,7 +42,9 @@ void main() {
   dynamic l = Logger();
   l.fetchData();
 }"#,
-        ["Symbol(\"fetchData\")", "0"]
+        // `l.fetchData();` is a statement — the hook's return value is
+        // discarded, not printed. Verified against `dart run`.
+        ["Symbol(\"fetchData\")"]
     };
 
     no_such_method_detects_method_invocation => {
@@ -57,7 +59,9 @@ void main() {
   dynamic p = Probe();
   p.run();
 }"#,
-        ["true", "0"]
+        // `c.run();` is a statement — the hook's return value is
+        // discarded, not printed. Verified against `dart run`.
+        ["true"]
     };
 
     no_such_method_detects_getter_invocation => {
@@ -169,7 +173,10 @@ void main() {
   dynamic f = Forwarder({'x': 7});
   print(f.x);
 }"#,
-        ["7"]
+        // A getter's memberName is `Symbol("x")`, which does NOT contain
+        // "get" — so the guard fails and the hook returns null. Verified
+        // against `dart run`: this program prints `null`.
+        ["null"]
     };
 
     no_such_method_proxy_delegates_method_to_target => {
@@ -648,7 +655,9 @@ void main() {
   dynamic c = Check();
   c.run();
 }"#,
-        ["false", "0"]
+        // `c.run();` is a statement — the hook's return value is
+        // discarded, not printed. Verified against `dart run`.
+        ["false"]
     };
 
     default_hashcode_on_object => {
