@@ -1,9 +1,68 @@
 //! Kotlin `ClassDecl` → `NormalClass` normalization pass.
 
 use vybe_ast::{
-    ClassMember, ClassModifiers, ConstructorInitializerTarget, Span, StmtKind,
+    ClassMember, ClassModifiers, ConstructorInitializerTarget, Modifiers, PropertySetter, Span,
+    StmtKind,
 };
-use vybe_ast::class_normalize::{from_method_stmt, types::*, NormalMembers};
+use vybe_ast::class_normalize::{build_normal_method, from_method_stmt, types::*, NormalMembers};
+
+/// Kotlin's `by` delegation, stated once.
+///
+/// `AfterOwn` — a member the class declares itself overrides the delegated one,
+/// which is Kotlin's rule (`override fun` beside `by`). `FirstWins` — a class
+/// may delegate several interfaces, and the first one listed answers, since
+/// Kotlin requires an explicit override for a genuine clash rather than
+/// rejecting the declaration. `OwnParent` — `super` in a delegating class still
+/// means its own superclass; the delegate is not in the chain.
+/// A plain `: I` — the interface's DEFAULT implementations become the class's.
+///
+/// `Copy`, not `Chain`: Kotlin resolves a default at compile time and a class
+/// implementing two interfaces with the same default must override it, so there
+/// is no lookup order to preserve. `AfterOwn` — the class's own `override fun`
+/// always wins. `Ambiguous` — two interfaces supplying the same default IS the
+/// error Kotlin reports, and silently picking one would compile a program
+/// `kotlinc` rejects.
+fn kotlin_interface_defaults() -> AugmentationPolicy {
+    AugmentationPolicy {
+        mode: AugmentationMode::Copy,
+        position: AugmentationPosition::AfterOwn,
+        conflict: AugmentationConflict::Ambiguous,
+        super_target: AugmentationSuper::OwnParent,
+        contributes: AugmentationContributes {
+            methods: true,
+            // An interface holds no state, so it has no fields to give.
+            fields: false,
+            statics: false,
+            constructors: false,
+            // An abstract declaration is a REQUIREMENT, not an implementation;
+            // copying the bodiless stub in would shadow whatever supplies it.
+            abstract_members: false,
+        },
+    }
+}
+
+fn kotlin_delegation() -> AugmentationPolicy {
+    AugmentationPolicy {
+        mode: AugmentationMode::Promote,
+        position: AugmentationPosition::AfterOwn,
+        conflict: AugmentationConflict::FirstWins,
+        super_target: AugmentationSuper::OwnParent,
+        contributes: AugmentationContributes {
+            methods: true,
+            // The delegate keeps its own state — copying its fields onto the
+            // outer class would give it separate storage and silently
+            // desynchronise the two.
+            fields: false,
+            statics: false,
+            constructors: false,
+            // The augmenting type is almost always an INTERFACE, whose members
+            // are all abstract. Those declarations are the only record of WHAT
+            // to forward — the forwarder's body is generated to call the
+            // delegate — so excluding them leaves nothing to promote at all.
+            abstract_members: true,
+        },
+    }
+}
 
 /// A copy of `stmt` whose `FunctionDecl` name is `name`.
 ///
@@ -60,9 +119,6 @@ pub fn normalize_class(
 
                 let (canonical, special_kind) = crate::protocol::canonical_method(src_name);
                 let access = Access::from(m.visibility);
-                if m.is_abstract {
-                    continue;
-                }
                 // The walker marks a member operator by prefixing its name with
                 // `"operator "` so `protocol::canonical_method` can tell it from
                 // a plain method of the same name. That marker must NOT reach
@@ -129,6 +185,75 @@ pub fn normalize_class(
                     named_name: None,
                 };
                 out.push_constructor(normalized);
+            }
+            ClassMember::Property {
+                name: pname,
+                getter,
+                setter,
+                is_auto,
+                modifiers: m,
+                ..
+            } => {
+                // Kotlin is case-sensitive and a property is reached by member
+                // access, which resolves `__get_<Name>` / `__set_<Name>` by the
+                // EXACT source spelling — so the canonical name keeps its case.
+                let access = Access::from(m.visibility);
+                let getter_method = getter.as_ref().map(|body| {
+                    build_normal_method(
+                        span.clone(),
+                        pname,
+                        pname,
+                        vec![],
+                        None,
+                        body.clone(),
+                        access,
+                        false,
+                        false,
+                        false,
+                        Modifiers::default(),
+                    )
+                });
+                let setter_method = setter.as_ref().map(|s: &PropertySetter| {
+                    build_normal_method(
+                        span.clone(),
+                        pname,
+                        pname,
+                        vec![s.param.clone()],
+                        None,
+                        s.body.clone(),
+                        access,
+                        false,
+                        false,
+                        false,
+                        Modifiers::default(),
+                    )
+                });
+                out.properties.push(NormalProperty {
+                    span: span.clone(),
+                    canonical_name: pname.clone(),
+                    source_name: pname.clone(),
+                    is_static: m.is_static,
+                    getter: getter_method,
+                    setter: setter_method,
+                    auto_field: if *is_auto { Some(pname.clone()) } else { None },
+                });
+            }
+            // `class C(d: I) : I by d` — the members of `I` become available on
+            // `C`, running on the DELEGATE. That is exactly `Promote`, the mode
+            // Go embedding uses: the receiver rebinds to the field named by
+            // `via_field`. Declared here as DATA; the shared
+            // `class_augmentation` pass applies it once, for every language.
+            ClassMember::Augment(decl) => {
+                // Two different clauses reach the same AST node. `: I by d` names
+                // a delegate FIELD and forwards to it; a bare `: I` names no
+                // field and copies the interface's default implementations in.
+                // `via_field` is what tells them apart.
+                let policy = if decl.via_field.is_some() {
+                    kotlin_delegation()
+                } else {
+                    kotlin_interface_defaults()
+                };
+                out.push_augment_decl(decl, policy);
             }
             other => {
                 out.raw_extra_members.push(other.clone());

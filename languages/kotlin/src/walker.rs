@@ -109,6 +109,17 @@ fn walk_annotation(pair: Pair<Rule>) -> Expression {
     })
 }
 
+/// True when `expr` is a bare dotted chain of identifiers (`java.util`), which
+/// is what distinguishes a package-qualified type name from member access on a
+/// value.
+fn is_ident_chain(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(_) => true,
+        ExprKind::Member { object, .. } => is_ident_chain(object),
+        _ => false,
+    }
+}
+
 fn walk_import(pair: Pair<Rule>) -> Option<Import> {
     let mut path = String::new();
     let mut alias = None;
@@ -129,6 +140,13 @@ fn walk_import(pair: Pair<Rule>) -> Option<Import> {
     let kind = if is_wildcard {
         ImportKind::Wildcard { path, alias }
     } else {
+        // Kotlin's import binds the SIMPLE NAME (`import java.time.Instant`
+        // makes `Instant` mean `java.time.Instant`), so an import with no
+        // `as` clause still carries an alias — its last segment. Without it
+        // the import was inert: `Instant.parse(…)` resolved to nothing and
+        // trapped "undefined is not callable". Java's `walk_import` has done
+        // this all along; it is what populates `source_type_aliases`.
+        let alias = alias.or_else(|| path.rsplit('.').next().map(str::to_string));
         ImportKind::Simple { path, alias }
     };
 
@@ -286,7 +304,17 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Option<Statement> {
                     if spec.as_rule() == Rule::inheritance_specifier {
                         for sub in spec.into_inner() {
                             if sub.as_rule() == Rule::type_ref {
-                                parents.push(sub.as_str().to_string());
+                                let base = sub.as_str().trim().to_string();
+                                // `interface B : A` — B carries A's defaults, so
+                                // a class implementing only B still gets them.
+                                // The fold order resolves the chain, so B is
+                                // augmented before any class that implements it.
+                                members.push(ClassMember::Augment(AugmentDecl {
+                                    from: base.clone(),
+                                    via_field: None,
+                                    adjustments: vec![],
+                                }));
+                                parents.push(base);
                             }
                         }
                     }
@@ -298,28 +326,41 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Option<Statement> {
                         if let Some(inner_member) = member_pair.into_inner().next() {
                             match inner_member.as_rule() {
                                 Rule::function_decl => {
-                                    if let Some(stmt) = walk_function_decl(inner_member) {
-                                        if let StmtKind::FunctionDecl { name, params, return_type, is_sub, .. } = stmt.kind {
-                                            members.push(InterfaceMember::Method {
-                                                name,
-                                                params,
-                                                return_type,
-                                                is_sub,
-                                                signature_source: None,
-                                            });
+                                    if let Some(mut stmt) = walk_function_decl(inner_member) {
+                                        // A Kotlin interface method with no
+                                        // block is abstract; one WITH a block is
+                                        // a default implementation, and the body
+                                        // has to survive — `InterfaceMember`
+                                        // had nowhere to put it, so every
+                                        // default method was silently emptied.
+                                        if let StmtKind::FunctionDecl { body, modifiers, .. } =
+                                            &mut stmt.kind
+                                        {
+                                            modifiers.is_abstract = body.is_empty();
                                         }
+                                        members.push(ClassMember::Method(Box::new(stmt)));
                                     }
                                 }
                                 Rule::var_decl => {
+                                    if let Some(prop) = walk_class_property(inner_member.clone()) {
+                                        members.push(prop);
+                                        continue;
+                                    }
                                     if let Some(stmt) = walk_var_decl(inner_member) {
                                         if let StmtKind::VarDecl { declarations, kind } = stmt.kind {
                                             for decl in declarations {
                                                 if let BindingPattern::Ident(pname) = decl.pattern {
-                                                    members.push(InterfaceMember::Property {
+                                                    members.push(ClassMember::Field {
                                                         name: pname,
                                                         type_hint: decl.type_hint,
-                                                        is_readonly: kind == VarDeclKind::Const,
-                                                        is_writeonly: false,
+                                                        init: decl.init,
+                                                        modifiers: Modifiers {
+                                                            visibility: Visibility::Public,
+                                                            is_readonly: kind == VarDeclKind::Const,
+                                                            ..Default::default()
+                                                        },
+                                                        with_events: false,
+                                                        array_bounds: None,
                                                     });
                                                 }
                                             }
@@ -336,10 +377,23 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Option<Statement> {
         }
     }
 
-    Some(Statement::new(StmtKind::InterfaceDecl {
+    // An interface is a CLASS DECLARATION whose `declared_kind` says
+    // `Interface` — flexclassplan §0.1's one class model, and the shape
+    // `ClassKind` exists for. As a `StmtKind::InterfaceDecl` it never entered
+    // `normalized_classes`, so `class W(d: I) : I by d` could not find `I`'s
+    // members to promote and delegation resolved to nothing.
+    Some(Statement::new(StmtKind::ClassDecl {
         name,
-        parents,
+        parents: Vec::new(),
+        // A Kotlin interface's supertypes are other interfaces, never a
+        // superclass — so they are the interface list, not `parents`.
+        interfaces: parents,
         members,
+        modifiers: ClassModifiers {
+            is_abstract: true,
+            kind: ClassKind::Interface,
+            ..Default::default()
+        },
         decorators,
     }))
 }
@@ -727,6 +781,147 @@ fn walk_var_decl(pair: Pair<Rule>) -> Option<Statement> {
     }))
 }
 
+/// Is this expression a STRING by construction, so `+` on it is
+/// `kotlin.String.plus` (concatenation) rather than arithmetic?
+///
+/// Only syntactic evidence counts — a literal, a template, or a concatenation
+/// already decided. Anything requiring the operand's runtime type is left to
+/// the shared path, so this never claims a `+` it cannot prove.
+fn kt_is_string_expr(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(_)) => true,
+        ExprKind::Binary { op: BinOp::Concat, .. } => true,
+        // `"$a$b".trimIndent()` and friends keep the template's type.
+        ExprKind::Member { object, .. } => kt_is_string_expr(object),
+        _ => false,
+    }
+}
+
+/// A class-body `val`/`var` that declares `get()` / `set(v)` accessors.
+///
+/// Kotlin's properties are not fields: `val area: Int get() = w * h` has no
+/// storage at all, and `var celsius` with a custom setter must run the setter
+/// on assignment. The walker used to drop the accessors on the floor and emit a
+/// plain `ClassMember::Field`, so the getter never ran and the property read as
+/// `undefined`. `ClassMember::Property` is the model's own shape for this —
+/// C# `{ get; set; }` and Pascal properties already use it, and the compiler
+/// installs `__get_`/`__set_` accessors from it.
+///
+/// Returns `None` for a plain stored property, which stays a field.
+fn walk_class_property(pair: Pair<Rule>) -> Option<ClassMember> {
+    let inners: Vec<_> = pair.into_inner().collect();
+    // `var x = 1` + `private set` declares an ORDINARY stored property whose
+    // setter is restricted — the accessor has no body, so there is nothing to
+    // run and the backing storage is the whole implementation. Only an accessor
+    // WITH a body replaces the storage; treating a bodyless one as a computed
+    // property left the field unreadable (`undefined`).
+    let has_accessor_body = inners.iter().any(|p| {
+        p.as_rule() == Rule::property_accessor
+            && p.clone()
+                .into_inner()
+                .any(|part| matches!(part.as_rule(), Rule::function_body_expr | Rule::block))
+    });
+    if !has_accessor_body {
+        return None;
+    }
+
+    let mut name = String::new();
+    let mut type_hint = None;
+    let mut init = None;
+    let mut is_readonly = false;
+    let mut getter = None;
+    let mut setter = None;
+
+    for inner in inners {
+        match inner.as_rule() {
+            Rule::val_kw => is_readonly = true,
+            Rule::identifier if name.is_empty() => name = inner.as_str().to_string(),
+            Rule::type_ref => type_hint = Some(type_hint_text(inner.as_str())),
+            Rule::expr => init = Some(walk_expr(inner)),
+            Rule::property_accessor => {
+                let mut is_get = false;
+                let mut param_name = None;
+                let mut body = Vec::new();
+                for part in inner.into_inner() {
+                    match part.as_rule() {
+                        Rule::get_kw => is_get = true,
+                        Rule::set_kw => is_get = false,
+                        Rule::identifier => param_name = Some(part.as_str().to_string()),
+                        // `get() = expr` is an expression body; the model wants
+                        // statements, and the value of the accessor IS its
+                        // result.
+                        Rule::function_body_expr => {
+                            if let Some(e) = part.into_inner().next() {
+                                body = vec![Statement::new(StmtKind::Return(Some(walk_expr(e))))];
+                            }
+                        }
+                        Rule::block => body = walk_block_statements(part),
+                        _ => {}
+                    }
+                }
+                if is_get {
+                    getter = Some(body);
+                } else {
+                    setter = Some(PropertySetter {
+                        param: Param {
+                            // Kotlin's implicit setter parameter is `value`.
+                            name: param_name.unwrap_or_else(|| "value".to_string()),
+                            type_hint: None,
+                            default: None,
+                            pass_by: PassBy::Value,
+                            is_rest: false,
+                            is_kwargs: false,
+                            is_optional: false,
+                            is_nullable: false,
+                        },
+                        body,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if name.is_empty() {
+        return None;
+    }
+    // `var x: Int = 0  get() = field` still has backing storage; a property with
+    // no initializer and a computed getter has none.
+    let is_auto = init.is_some();
+    Some(ClassMember::Property {
+        name,
+        type_hint,
+        getter,
+        setter,
+        is_auto,
+        modifiers: Modifiers {
+            visibility: Visibility::Public,
+            is_readonly,
+            ..Default::default()
+        },
+    })
+}
+
+/// `this.<name>` — the read a synthesized `data class` member does.
+fn this_field(name: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(Expression::new(ExprKind::This)),
+        field: name.to_string(),
+        null_safe: false,
+    })
+}
+
+/// Render a value the way Kotlin does, through the shared renderer rather than
+/// by concatenating it raw. `emitter/tostring.rs` dispatches on the VALUE, so a
+/// nested collection or data class renders as Kotlin spells it.
+fn kt_render(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__kt_tostring")),
+        args: vec![Argument::positional(expr)],
+        optional: false,
+    })
+}
+
 fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
     let mut name = String::new();
     let mut is_interface = false;
@@ -752,9 +947,21 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                     let mut parent_name = String::new();
                     let mut spec_base_args = Vec::new();
                     let mut by_expr = None;
+                    // Kotlin marks the SUPERCLASS by calling its constructor:
+                    // `class D : B(n), I` extends `B` and implements `I`. An
+                    // interface is never constructed, so parentheses are the
+                    // whole distinction — and `B()` with no arguments has to
+                    // count too, which an empty `arg_list` cannot express.
+                    // Taking the FIRST supertype as the parent instead made
+                    // `class C : A, B` extend `A`, so `B`'s members vanished.
+                    let calls_constructor = spec.as_str().contains('(');
                     for sub in spec.into_inner() {
                         match sub.as_rule() {
-                            Rule::type_ref => parent_name = sub.as_str().to_string(),
+                            // `type_ref` is non-atomic, so its span carries any
+                            // trailing whitespace before `by` / `(`. The name is
+                            // a LOOKUP KEY — `available.get("Greeter ")` misses
+                            // every time — so it has to be trimmed here.
+                            Rule::type_ref => parent_name = sub.as_str().trim().to_string(),
                             Rule::arg_list => {
                                 for arg_p in sub.into_inner() {
                                     let mut arg_expr = None;
@@ -779,13 +986,27 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                 via_field: by_expr,
                                 adjustments: vec![],
                             }));
-                        } else if parents.is_empty() && !is_interface {
+                        } else if calls_constructor && parents.is_empty() && !is_interface {
                             parents.push(parent_name);
                             if !spec_base_args.is_empty() {
                                 base_args = Some(spec_base_args);
                             }
                         } else {
-                            interfaces.push(parent_name);
+                            // An implemented interface contributes its DEFAULT
+                            // methods. `interfaces` alone cannot do that — the
+                            // model's own doc says that list is for identity
+                            // checks and "method dispatch never walks it" — so
+                            // the contribution is declared as an augmentation
+                            // and the shared `class_augmentation` pass applies
+                            // it, which is flexclassplan §4c's "Java interface
+                            // default methods" arriving as one model rather
+                            // than a fifth walker fold.
+                            interfaces.push(parent_name.clone());
+                            members.push(ClassMember::Augment(AugmentDecl {
+                                from: parent_name,
+                                via_field: None,
+                                adjustments: vec![],
+                            }));
                         }
                     }
                 }
@@ -816,6 +1037,11 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                         let mut is_readonly = false;
                         let mut pname = String::new();
                         let mut type_hint = None;
+                        // `class Point(val x: Int = 0)` — the default is part of
+                        // the primary constructor's signature, and `copy()`
+                        // re-states it. Dropping it made every call that omitted
+                        // the argument bind `undefined`.
+                        let mut default = None;
                         for p in param.into_inner() {
                             match p.as_rule() {
                                 Rule::val_kw => {
@@ -828,19 +1054,21 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                 }
                                 Rule::identifier => pname = p.as_str().to_string(),
                                 Rule::type_ref => type_hint = Some(type_hint_text(p.as_str())),
+                                Rule::expr => default = Some(walk_expr(p.clone())),
                                 _ => {}
                             }
                         }
                         if !pname.is_empty() {
                             primary_prop_names.push(pname.clone());
+                            let is_optional = default.is_some();
                             ctor_params.push(Param {
                                 name: pname.clone(),
                                 type_hint: type_hint.clone(),
-                                default: None,
+                                default,
                                 pass_by: PassBy::Value,
                                 is_rest: false,
                                 is_kwargs: false,
-                                is_optional: false,
+                                is_optional,
                                 is_nullable: false,
                             });
                             if param_is_prop {
@@ -946,6 +1174,13 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                     }
                                 }
                                 Rule::var_decl => {
+                                    // `val area: Int get() = w * h` is a
+                                    // PROPERTY, not a field — it has no storage
+                                    // and the accessor has to run on each read.
+                                    if let Some(prop) = walk_class_property(inner_member.clone()) {
+                                        members.push(prop);
+                                        continue;
+                                    }
                                     if let Some(stmt) = walk_var_decl(inner_member) {
                                         if let StmtKind::VarDecl { declarations, kind } = stmt.kind {
                                             for decl in declarations {
@@ -1022,15 +1257,15 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
         }
 
         if !primary_prop_names.is_empty() {
+            // `Box(value=42)` — and each PART is rendered by the value renderer
+            // rather than concatenated raw. A nested `data class` field prints
+            // as its own `toString` this way instead of `[object]`, and a field
+            // whose static type is unknown is never coerced toward a number.
             let mut str_expr = Expression::string(&format!("{}({}=", name, primary_prop_names[0]));
             str_expr = Expression::new(ExprKind::Binary {
                 op: BinOp::Concat,
                 left: Box::new(str_expr),
-                right: Box::new(Expression::new(ExprKind::Member {
-                    object: Box::new(Expression::new(ExprKind::This)),
-                    field: primary_prop_names[0].clone(),
-                    null_safe: false,
-                })),
+                right: Box::new(kt_render(this_field(&primary_prop_names[0]))),
             });
             for pname in primary_prop_names.iter().skip(1) {
                 str_expr = Expression::new(ExprKind::Binary {
@@ -1041,11 +1276,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                 str_expr = Expression::new(ExprKind::Binary {
                     op: BinOp::Concat,
                     left: Box::new(str_expr),
-                    right: Box::new(Expression::new(ExprKind::Member {
-                        object: Box::new(Expression::new(ExprKind::This)),
-                        field: pname.clone(),
-                        null_safe: false,
-                    })),
+                    right: Box::new(kt_render(this_field(pname))),
                 });
             }
             str_expr = Expression::new(ExprKind::Binary {
@@ -1098,6 +1329,78 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                 handles: vec![],
                 is_sub: false,
             }))));
+
+            // `equals` / `hashCode` — Kotlin generates both for a `data class`,
+            // over the PRIMARY-CONSTRUCTOR properties only. `protocol.rs` maps
+            // the two spellings onto the `Eq` and `Hash` slots, so declaring
+            // them as members is all it takes for `==`, `Set` membership and
+            // `Map` keys to become structural. Without them a data class fell
+            // back to reference identity and `P(1,2) == P(1,2)` was `false`.
+            let other = "__kt_other";
+            let mut eq_expr = Expression::new(ExprKind::IsType {
+                expr: Box::new(Expression::ident(other)),
+                type_name: name.clone(),
+            });
+            for pname in &primary_prop_names {
+                eq_expr = Expression::new(ExprKind::Binary {
+                    op: BinOp::And,
+                    left: Box::new(eq_expr),
+                    right: Box::new(Expression::new(ExprKind::Binary {
+                        op: BinOp::Eq,
+                        left: Box::new(this_field(pname)),
+                        right: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(other)),
+                            field: pname.clone(),
+                            null_safe: false,
+                        })),
+                    })),
+                });
+            }
+            members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+                name: "equals".to_string(),
+                params: vec![Param {
+                    name: other.to_string(),
+                    type_hint: None,
+                    default: None,
+                    pass_by: PassBy::Value,
+                    is_rest: false,
+                    is_kwargs: false,
+                    is_optional: false,
+                    is_nullable: true,
+                }],
+                body: vec![Statement::new(StmtKind::Return(Some(eq_expr)))],
+                return_type: None,
+                modifiers: Modifiers { visibility: Visibility::Public, ..Default::default() },
+                is_async: false,
+                is_generator: false,
+                handles: vec![],
+                is_sub: false,
+            }))));
+
+            // Kotlin's own shape: `result = 31 * result + field.hashCode()`.
+            // The per-field term is the string hash of the RENDERED field, since
+            // that is the one function every value answers — and it keeps the
+            // contract that matters: equal values render alike, so they hash
+            // alike.
+            members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+                name: "hashCode".to_string(),
+                params: vec![],
+                body: vec![Statement::new(StmtKind::Return(Some(Expression::new(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::ident("__kt_hash")),
+                        args: vec![Argument::positional(kt_render(Expression::new(
+                            ExprKind::This,
+                        )))],
+                        optional: false,
+                    },
+                ))))],
+                return_type: None,
+                modifiers: Modifiers { visibility: Visibility::Public, ..Default::default() },
+                is_async: false,
+                is_generator: false,
+                handles: vec![],
+                is_sub: false,
+            }))));
         }
     }
 
@@ -1119,6 +1422,17 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
         modifiers: ClassModifiers {
             is_abstract: is_abstract || is_interface,
             is_sealed,
+            // What this declaration DECLARES. `emit_class_from_ast` copies it
+            // into `NormalClass.declared_kind` and the compiler stamps it on
+            // the class object — which is what answers `interface_exists` and
+            // keeps an interface from being treated as an instantiable class.
+            // Left at the `Class` default, every Kotlin `interface` claimed to
+            // be one.
+            kind: if is_interface {
+                ClassKind::Interface
+            } else {
+                ClassKind::Class
+            },
             ..Default::default()
         },
         decorators,
@@ -1718,6 +2032,16 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
             while let Some(op_pair) = inner.next() {
                 let next_expr = walk_expr(inner.next().unwrap());
                 let op = match op_pair.as_str() {
+                    // `"a" + x` resolves to `kotlin.String.plus` — CONCATENATION
+                    // for every right operand, whatever its type. Emitting a
+                    // generic `Add` left the decision to whatever the shared
+                    // type inference could see, and an operand it could not
+                    // classify (a member read on a user object, a call result)
+                    // was coerced toward a number: `"x=" + this.n` trapped in
+                    // `toF64` even though `n` held a string. Left-associativity
+                    // carries the answer along a chain, so testing the LEFT
+                    // operand covers `"a" + x + y`.
+                    "+" if kt_is_string_expr(&current) => BinOp::Concat,
                     "+" => BinOp::Add,
                     "-" => BinOp::Sub,
                     _ => BinOp::Add,
@@ -1736,28 +2060,23 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
             while let Some(op_pair) = inner.next() {
                 let next_expr = walk_expr(inner.next().unwrap());
                 let op_str = op_pair.as_str();
-                if op_str == "/" {
-                    current = Expression::new(ExprKind::Binary {
-                        op: BinOp::BitOr,
-                        left: Box::new(Expression::new(ExprKind::Binary {
-                            op: BinOp::Div,
-                            left: Box::new(current),
-                            right: Box::new(next_expr),
-                        })),
-                        right: Box::new(Expression::int(0)),
-                    });
-                } else {
-                    let op = match op_str {
-                        "*" => BinOp::Mul,
-                        "%" => BinOp::Mod,
-                        _ => BinOp::Mul,
-                    };
-                    current = Expression::new(ExprKind::Binary {
-                        op,
-                        left: Box::new(current),
-                        right: Box::new(next_expr),
-                    });
-                }
+                // `/` used to be rewritten to `(a / b) | 0` here — the JS
+                // integer-truncation idiom, applied UNCONDITIONALLY. Kotlin
+                // truncates only when BOTH operands are integers, so this made
+                // `7.0 / 2.0` answer 3. The shared emitter decides now, from
+                // `integer_division_on_slash` plus this language's
+                // `[builtin_types] int` spellings (builtinslotplan.md §3i).
+                let op = match op_str {
+                    "*" => BinOp::Mul,
+                    "/" => BinOp::Div,
+                    "%" => BinOp::Mod,
+                    _ => BinOp::Mul,
+                };
+                current = Expression::new(ExprKind::Binary {
+                    op,
+                    left: Box::new(current),
+                    right: Box::new(next_expr),
+                });
             }
             current
         }
@@ -2452,10 +2771,30 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                             }
                         }
 
+                        // Kotlin has no `new`, so a call whose callee names a
+                        // TYPE is a construction. That is true of a qualified
+                        // spelling too — `java.util.ArrayList()`,
+                        // `java.math.BigInteger("1")` — which stayed an
+                        // ordinary member call and trapped, while the
+                        // `import`ed form worked. Same rule, applied to the
+                        // last segment of the chain.
+                        let is_type_spelling = |name: &str| {
+                            name.chars().next().is_some_and(char::is_uppercase)
+                                && !matches!(
+                                    name,
+                                    "Exception"
+                                        | "IllegalArgumentException"
+                                        | "IllegalStateException"
+                                        | "NullPointerException"
+                                        | "IndexOutOfBoundsException"
+                                )
+                        };
                         let is_class_name = match &current.kind {
-                            ExprKind::Ident(name) => {
-                                name.chars().next().map_or(false, |c| c.is_uppercase())
-                                    && !matches!(name.as_str(), "Exception" | "IllegalArgumentException" | "IllegalStateException" | "NullPointerException" | "IndexOutOfBoundsException")
+                            ExprKind::Ident(name) => is_type_spelling(name),
+                            // Only a chain of plain idents is a qualified type
+                            // name; `expr.Foo()` is a method call on a value.
+                            ExprKind::Member { object, field, .. } => {
+                                is_type_spelling(field) && is_ident_chain(object)
                             }
                             _ => false,
                         };
@@ -2505,22 +2844,32 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     continue;
                                 }
                             }
-                            // `println`/`print` used to have their ARGUMENT
-                            // EXPRESSION rewritten here into string
-                            // concatenation, which rendered `println(listOf(…))`
-                            // and left `val xs = listOf(…); println(xs)` — the
-                            // same value — printing the console form. Rendering
-                            // dispatches on the VALUE now, in
-                            // `emitter/tostring.rs`.
-                            if matches!(current.kind, ExprKind::Binary { op: BinOp::Concat, .. }) {
-                                // Handled by .toString
-                            } else {
-                                current = Expression::new(ExprKind::Call {
-                                    callee: Box::new(current),
-                                    args,
-                                    optional: false,
-                                });
+                            // `super.f(a)` — `member_suffix` already turned
+                            // `super.f` into a `SuperCall`, which IS the call.
+                            // Wrapping it again called the RESULT ("string is
+                            // not callable"), so the arguments land on the node
+                            // that already exists instead of a second one.
+                            if let ExprKind::SuperCall {
+                                args: super_args, ..
+                            } = &mut current.kind
+                            {
+                                if super_args.is_empty() {
+                                    *super_args = args;
+                                    continue;
+                                }
                             }
+                            // `.toString` used to be rewritten into `"" + x`
+                            // here, so the `()` that follows it had to be
+                            // swallowed. That rewrite is gone: `toString` is a
+                            // MEMBER, a class may override it, and the built-in
+                            // rendering is declared as a value method
+                            // (`common:kotlin.tostring`) instead. Rendering
+                            // dispatches on the VALUE, in `emitter/tostring.rs`.
+                            current = Expression::new(ExprKind::Call {
+                                callee: Box::new(current),
+                                args,
+                                optional: false,
+                            });
                         }
                     }
                     Rule::member_suffix => {
@@ -2532,28 +2881,31 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                             });
                         } else {
                             match field_id.as_str() {
-                                "toString" => {
-                                    current = Expression::new(ExprKind::Binary {
-                                        op: BinOp::Concat,
-                                        left: Box::new(Expression::string("")),
-                                        right: Box::new(current),
-                                    });
-                                }
-                                "first" | "component1" => {
+                                // `first`/`second`/`third` are PROPERTIES on
+                                // `Pair`/`Triple`, which lower to an array
+                                // (`common:collections.new`), so the positional
+                                // read is the whole meaning. `componentN` is
+                                // deliberately NOT here: it is a FUNCTION, and a
+                                // `data class` declares its own — rewriting the
+                                // member turned `u.component1()` into `u[0]()`
+                                // ("string is not callable") and made the
+                                // synthesized member unreachable. It resolves as
+                                // an ordinary member call now, like any other.
+                                "first" => {
                                     current = Expression::new(ExprKind::Index {
                                         object: Box::new(current),
                                         index: Box::new(Expression::int(0)),
                                         null_safe: false,
                                     });
                                 }
-                                "second" | "component2" => {
+                                "second" => {
                                     current = Expression::new(ExprKind::Index {
                                         object: Box::new(current),
                                         index: Box::new(Expression::int(1)),
                                         null_safe: false,
                                     });
                                 }
-                                "third" | "component3" => {
+                                "third" => {
                                     current = Expression::new(ExprKind::Index {
                                         object: Box::new(current),
                                         index: Box::new(Expression::int(2)),
@@ -2673,6 +3025,13 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                 Rule::literal => walk_literal(inner),
                 Rule::this_kw => Expression::new(ExprKind::This),
                 Rule::super_kw => Expression::new(ExprKind::Super),
+                // `this@Outer` / `super<Base>` / `super@Outer`. The label and
+                // the explicit supertype are RESOLUTION hints; the receiver
+                // itself is still `this` / `super`, so the concept node is the
+                // same one an unqualified occurrence produces and no downstream
+                // path has to learn a second shape.
+                Rule::this_expr => Expression::new(ExprKind::This),
+                Rule::super_expr => Expression::new(ExprKind::Super),
                 Rule::lambda_literal => walk_lambda(inner),
                 Rule::object_expr => {
                     let mut parent = None;
@@ -2940,16 +3299,34 @@ fn walk_string_literal(pair: Pair<Rule>) -> Expression {
     let mut parts = Vec::new();
     collect_string_parts(pair, &mut parts);
 
-    if parts.is_empty() {
+    // `str_text` matches ONE character, so `"x="` arrives as two parts and a
+    // plain literal was never a `Lit(Str)` at all — it was a `Binary` tree one
+    // node per character. Everything downstream that asks "is this a string?"
+    // (the `+` decision below, `[builtin_types]` classification, constant
+    // folding) answered no for every literal longer than one char. Fold the
+    // adjacent literal runs back into the single literal the source wrote.
+    let mut folded: Vec<Expression> = Vec::new();
+    for part in parts {
+        match (&part.kind, folded.last_mut().map(|last| &mut last.kind)) {
+            (ExprKind::Lit(Literal::Str(text)), Some(ExprKind::Lit(Literal::Str(acc)))) => {
+                acc.push_str(text);
+            }
+            _ => folded.push(part),
+        }
+    }
+
+    if folded.is_empty() {
         Expression::string("")
-    } else if parts.len() == 1 {
-        parts.remove(0)
+    } else if folded.len() == 1 {
+        folded.remove(0)
     } else {
-        let mut iter = parts.into_iter();
+        // A template IS concatenation — `"a${x}b"` never means arithmetic, and
+        // each interpolated part is already rendered by `__kt_tostring`.
+        let mut iter = folded.into_iter();
         let mut acc = iter.next().unwrap();
         for p in iter {
             acc = Expression::new(ExprKind::Binary {
-                op: BinOp::Add,
+                op: BinOp::Concat,
                 left: Box::new(acc),
                 right: Box::new(p),
             });

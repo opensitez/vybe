@@ -25,6 +25,15 @@ pub fn profile_source() -> &'static str {
 
 /// Register this language with the shared plugin registry.
 pub fn register() {
+    // The JDK is a PLATFORM Kotlin consumes — same relationship csharp/vb have
+    // with dotnet. Kotlin declares NO `java.*` names of its own; it declares
+    // tree data in its profile and the common resolver does the rest.
+    vybe_platform_jvm::register();
+    // The declarations point at `common:java.*` emit targets, which still live
+    // in Java's emitter and dispatch through its LanguageDef. That coupling is
+    // real and temporary — javakotlinmigration.md Phases 3-6 move the adapters
+    // into the platform, and this line goes away with the last one.
+    vybe_language_java::register();
     vybe_runtime::registry::register_language(vybe_runtime::registry::LanguageDef {
         name: "kotlin",
         parse,

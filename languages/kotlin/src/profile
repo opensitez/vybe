@@ -16,7 +16,13 @@ entry_point = "main"
 uses_normalize_class = true
 uses_common_resolver = true
 dynamic_add = true
-dynamic_member_access = true
+# `dynamic_member_access` is deliberately NOT set. Kotlin declares its classes,
+# so a member read resolves against the class model the way Java, Dart and C#
+# do. On the dynamic path `this.n` compiled to the JS member sequence, whose
+# `set_js_this_from_stack` is a no-op for a profile without
+# `ambient_this_binding` — so the receiver it pushed was never consumed and
+# stayed on the stack. `"x=" + this.n` then concatenated the RECEIVER with the
+# field (`[object C]A`), and any arithmetic use trapped in `toF64`.
 supports_spread_arguments = true
 ecma_array_method_dispatch = false
 ecma_in_operator = true
@@ -25,6 +31,11 @@ has_undefined_value = true
 # raw WASM i32 condition: `println(1 == 1)` must print `true`, not `1`. Same
 # reason Go and C# declare it.
 materialize_bool_results = true
+# `7 / 2` is 3 but `7.0 / 2.0` is 3.5 — Kotlin truncates only when BOTH operands
+# are integers. The walker used to force `(a / b) | 0` on every division, which
+# made every result an integer; the shared emitter now decides from this flag
+# plus the `[builtin_types] int` spellings below.
+integer_division_on_slash = true
 has_ecma_globals = true
 ecma_object_literals = true
 tuple_literals_tagged = true
@@ -105,6 +116,9 @@ __dict_items  = { emit = "common:dict.items",       min_args = 1, max_args = 1 }
 # NOT what `+` coercion does — a `Boolean` concatenates as `1`, a `List` as
 # `1,2,3`. The walker wraps every interpolated part in this.
 __kt_tostring = { emit = "common:kotlin.tostring", min_args = 1, max_args = 1 }
+# The hash a `data class`'s synthesized `hashCode` returns. Shared primitive —
+# `object.hash_code` is the same one Java's `Objects.hashCode` rides on.
+__kt_hash     = { emit = "common:object.hash_code", min_args = 1, max_args = 1 }
 
 # Common Host Helpers
 __object_keys = { emit = "ecma:object.keys", min_args = 1, max_args = 1 }
@@ -178,6 +192,14 @@ IndexOutOfBoundsException  = { emit = "common:errors.index_out_of_bounds", min_a
 
 [value_methods]
 
+# ── kotlin.Any.toString ─────────────────────────────────────────────────────
+# Every value answers `toString()`. This used to be a WALKER rewrite of the
+# member `.toString` into `"" + x`, which meant a class could not override it:
+# `data class U(...)`'s synthesized `toString` was unreachable and the call's
+# `()` had to be swallowed. Declared as a value method, the shared member path
+# prefers a user class's own member and falls back to the renderer here.
+toString   = { emit = "common:kotlin.tostring", min_args = 0, max_args = 0 }
+
 # ── Double / Float classification (kotlin.Double) ───────────────────────────
 # `min_args`/`max_args` count the arguments AFTER the receiver, which these take
 # none of — `x.isNaN()` is a predicate on `x` alone. Measured: declaring 1 made
@@ -211,12 +233,18 @@ isInfinite = { emit = "common:kotlin.is_infinite", min_args = 0, max_args = 0 }
 # and stores the bare type name, so `String?` and `String` are one spelling.
 [builtin_types]
 string = ["charsequence"]
+# Which spellings name an INTEGER, for the `/`-truncates decision above. The
+# platform table already carries `int`/`long`/`short`/`byte`/`uint`/`ulong`/
+# `ushort`; only Kotlin's unsigned byte is missing from it.
+int    = ["ubyte"]
 array  = [
     "list", "list<*", "mutablelist", "mutablelist<*",
     "array", "array<*", "collection", "collection<*", "iterable", "iterable<*",
     "intarray", "longarray", "doublearray", "floatarray",
     "booleanarray", "chararray", "shortarray",
 ]
+
+
 
 # `ByteArray` is deliberately NOT listed under `array`: the platform table
 # already classifies `bytearray` as `Bytes`, and a profile spelling wins over
@@ -243,3 +271,35 @@ set    = [
 # renders it the ordinary way.
 [builtin_slots.double]
 to_string = "common:kotlin.print_double"
+
+# ── `in` is `contains()`, NOT a key/index test — NOT YET FIXED ──────────────
+#
+# `ecma_in_operator = true` above routes `in` to `ecma:object.hasIn`, which
+# walks properties, so `x in list` is an INDEX test: `0 in listOf(5,6,7)`
+# answers true and `5 in listOf(5,6,7)` answers false. Kotlin's `in` is
+# `contains()` on every receiver, and `walker.rs:2009` rewrites BOTH
+# `.contains(x)` and `.containsKey(x)` into `BinOp::In`, so all three share one
+# path.
+#
+# Declaring `[builtin_slots.string|array|map] contains` makes the shared §2c
+# probe fire and fixes the list cases — but measured 2026-07-31 it then takes
+# the ARRAY leg for every receiver: `"a" in map` and `"ell" in "hello"` both
+# break, and `containsKey` regresses from true to false. Root cause not yet
+# understood; `dict.new` builds a plain Object with a `__keys` array (not an
+# ECMA Map), so `isArray` should be false and the map leg should win.
+#
+# Left undeclared deliberately rather than shipped half-working.
+
+
+
+# ── JDK surface, via the COMMON RESOLVER ────────────────────────────────────
+#
+# Kotlin can use every Java class library, and declares NOTHING to get them.
+# `platforms/jvm` registers the `java` root; this one line names the tree root
+# to resolve platform types against — the same single line csharp has as
+# `type_scopes = ["dotnet"]`. `lookup_type_static_member` /
+# `lookup_type_ctor_target` fold case on both the class and the member, so
+# every JDK spelling resolves without per-language mount or ambient data.
+
+[namespaces]
+type_scopes = ["java"]

@@ -691,10 +691,21 @@ fn test_while_loop_with_labeled_break() {
 
 #[test]
 fn test_while_loop_with_labeled_continue() {
+    // The outer loop must be BOUNDED. `continue@outer` re-enters the outer
+    // body, which re-runs `var inner = 0`, so `inner` never gets past 2 and a
+    // trailing `break` is unreachable — the previous version of this test was
+    // an infinite loop in real Kotlin too, and its expected "134" was the
+    // answer for an UNLABELED `continue` (which stays in the inner loop).
+    //
+    // "111" is the discriminating answer: each round records `1`, then
+    // `continue@outer` abandons the rest of the INNER loop *and* the rest of
+    // the outer body. If the label were ignored this would print "134134134".
     let out = run_prints(r#"
         fun main() {
             var trace = ""
-            outer@ while (true) {
+            var rounds = 0
+            outer@ while (rounds < 3) {
+                rounds += 1
                 var inner = 0
                 while (inner < 4) {
                     inner += 1
@@ -703,12 +714,12 @@ fn test_while_loop_with_labeled_continue() {
                     }
                     trace += inner.toString()
                 }
-                break
+                trace += "x"
             }
             println(trace)
         }
     "#);
-    assert_eq!(out, &["134"]);
+    assert_eq!(out, &["111"]);
 }
 
 #[test]

@@ -14,6 +14,8 @@ inventory = { workspace = true }
 vybe_ast = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_platform_vybe = { workspace = true, features = ["gui"] }
+vybe_platform_jvm = { workspace = true }
+vybe_language_java = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }
 
@@ -25,3 +27,7 @@ vybe_ast = { workspace = true }
 [[test]]
 name = "kotlin"
 path = "tests/kotlin/main.rs"
+
+[[test]]
+name = "jvm_probe"
+path = "tests/jvm_probe.rs"

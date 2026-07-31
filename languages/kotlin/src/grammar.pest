@@ -80,8 +80,27 @@ keyword = @{
   | try_kw | catch_kw | finally_kw | throw_kw | const_kw | sealed_kw
 }
 
+// `out` and `where` are SOFT keywords in Kotlin — legal identifiers everywhere
+// except the one position that gives them meaning. They are deliberately absent
+// from `keyword` above: tests bind `val out = …`, and reserving the word would
+// break every one of them.
+out_kw         = @{ "out" ~ !(ASCII_ALPHANUMERIC | "_") }
+where_kw       = @{ "where" ~ !(ASCII_ALPHANUMERIC | "_") }
+
 identifier = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 dotted_name = @{ identifier ~ ("." ~ identifier)* }
+
+// ── Generics ────────────────────────────────────────────────────────────────
+// Declaration side (`class Box<T : Comparable<T>>`, `fun <T> id(x: T)`) and the
+// `where` clause, which is the only way to state more than one bound per
+// parameter. Erased at runtime — the walker records the NAMES so a type
+// reference to `T` resolves, and drops the bounds.
+type_params = !{ "<" ~ eat_terminators ~ type_param ~ (eat_terminators ~ "," ~ eat_terminators ~ type_param)* ~ eat_terminators ~ ">" }
+type_param  = { annotation* ~ modifier* ~ variance? ~ identifier ~ (":" ~ type_ref)? }
+variance    = { in_kw | out_kw }
+
+where_clause    = { where_kw ~ type_constraint ~ ("," ~ type_constraint)* }
+type_constraint = { identifier ~ ":" ~ type_ref }
 
 // Program structure
 program = { SOI ~ eat_terminators ~ package_decl? ~ eat_terminators ~ (import_decl ~ eat_terminators)* ~ (top_level_decl ~ eat_terminators)* ~ EOI }
@@ -106,6 +125,10 @@ type_ref = !{
   | dotted_name ~ type_args? ~ "?"?
 }
 
+// A type ARGUMENT is not a type: `List<*>` is a star projection and
+// `Array<out T>` carries use-site variance. Both were unparseable.
+type_arg = { "*" | variance? ~ type_ref }
+
 // Modifiers
 modifier = {
     open_kw | data_kw | abstract_kw | override_kw | private_kw | protected_kw | public_kw
@@ -119,7 +142,7 @@ receiver_prefix = { identifier ~ "." }
 
 // Functions
 function_decl = {
-    annotation* ~ modifier* ~ fun_kw ~ receiver_prefix? ~ identifier ~ parameter_list ~ (":" ~ type_ref)? ~ (function_body_expr | block)?
+    annotation* ~ modifier* ~ fun_kw ~ type_params? ~ receiver_prefix? ~ identifier ~ parameter_list ~ (":" ~ type_ref)? ~ where_clause? ~ (function_body_expr | block)?
 }
 function_body_expr = { "=" ~ expr }
 
@@ -133,8 +156,11 @@ var_decl = !{
 
 destructuring_target = !{ "(" ~ eat_terminators ~ identifier ~ (eat_terminators ~ "," ~ eat_terminators ~ identifier)* ~ eat_terminators ~ ")" }
 
+// An accessor may carry its own visibility and may have NO body at all —
+// `var x = 1` + `private set` is how Kotlin spells a publicly-readable,
+// privately-writable property. Requiring a body rejected that outright.
 property_accessor = {
-    (get_kw | set_kw) ~ ("(" ~ identifier? ~ ")")? ~ (function_body_expr | block)
+    modifier* ~ (get_kw | set_kw) ~ ("(" ~ (identifier ~ (":" ~ type_ref)?)? ~ ")")? ~ (":" ~ type_ref)? ~ (function_body_expr | block)?
 }
 
 destructuring_decl = !{
@@ -145,32 +171,40 @@ destructuring_decl = !{
 enum_decl = {
     annotation* ~ modifier* ~ enum_kw ~ class_kw ~ identifier ~ primary_constructor? ~ (":" ~ inheritance_list)? ~ "{" ~ eat_terminators ~ (enum_entry ~ (","? ~ eat_terminators ~ enum_entry)* ~ ","?)? ~ eat_terminators ~ (";" ~ eat_terminators ~ (class_member ~ eat_terminators)*)? ~ "}"
 }
-enum_entry = { identifier ~ ("(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? }
+// An entry may override members for itself — `A { override fun f() = 1 }`.
+enum_entry = { annotation* ~ identifier ~ ("(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ class_body? }
 
-// Interfaces
+// Interfaces. `fun interface` is a SAM conversion — `fun` is not a modifier, so
+// it is spelled out here rather than added to `modifier` (which would let it
+// prefix a class).
 interface_decl = {
-    annotation* ~ modifier* ~ interface_kw ~ identifier ~ (":" ~ inheritance_list)? ~ class_body?
+    annotation* ~ modifier* ~ fun_kw? ~ interface_kw ~ identifier ~ type_params? ~ (":" ~ inheritance_list)? ~ where_clause? ~ class_body?
 }
 
 // Classes & Secondary Constructors
 class_decl = {
-    annotation* ~ modifier* ~ class_kw ~ identifier ~ primary_constructor? ~ (":" ~ inheritance_list)? ~ class_body?
+    annotation* ~ modifier* ~ class_kw ~ identifier ~ type_params? ~ primary_constructor? ~ (":" ~ inheritance_list)? ~ where_clause? ~ class_body?
 }
 
-primary_constructor = { "(" ~ eat_terminators ~ (class_parameter ~ (eat_terminators ~ "," ~ eat_terminators ~ class_parameter)* ~ eat_terminators ~ ","?)? ~ eat_terminators ~ ")" }
-class_parameter = { modifier* ~ (val_kw | var_kw)? ~ identifier ~ ":" ~ type_ref ~ ("=" ~ expr)? }
+// `class C private constructor(x: Int)` / `class C @Inject constructor(…)` —
+// the primary constructor takes its own annotations, visibility and the
+// `constructor` keyword. Only the parameter list is mandatory.
+primary_constructor = { (annotation* ~ modifier* ~ constructor_kw)? ~ "(" ~ eat_terminators ~ (class_parameter ~ (eat_terminators ~ "," ~ eat_terminators ~ class_parameter)* ~ eat_terminators ~ ","?)? ~ eat_terminators ~ ")" }
+class_parameter = { annotation* ~ modifier* ~ vararg_kw? ~ (val_kw | var_kw)? ~ identifier ~ ":" ~ type_ref ~ ("=" ~ expr)? }
 
 inheritance_list = { inheritance_specifier ~ ("," ~ inheritance_specifier)* }
 inheritance_specifier = { type_ref ~ ("(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ (by_kw ~ expr)? }
 
 class_body = { "{" ~ eat_terminators ~ (class_member ~ eat_terminators)* ~ "}" }
-class_member = { init_block | secondary_constructor | companion_object | function_decl | var_decl | class_decl | object_decl | interface_decl }
+class_member = { init_block | secondary_constructor | companion_object | enum_decl | function_decl | var_decl | class_decl | object_decl | interface_decl }
 init_block = { "init" ~ block }
 
-secondary_constructor = { modifier* ~ constructor_kw ~ parameter_list ~ (":" ~ (this_kw | super_kw) ~ "(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ (block | eat_terminators) }
+secondary_constructor = { annotation* ~ modifier* ~ constructor_kw ~ parameter_list ~ (":" ~ (this_kw | super_kw) ~ "(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ (block | eat_terminators) }
 
-companion_object = { companion_kw ~ object_kw ~ identifier? ~ (":" ~ inheritance_list)? ~ class_body }
-object_decl = { object_kw ~ identifier ~ (":" ~ inheritance_list)? ~ class_body }
+// `private companion object`, and a body is optional on every object form —
+// `object Empty` and `data object Singleton` are complete declarations.
+companion_object = { annotation* ~ modifier* ~ companion_kw ~ object_kw ~ identifier? ~ (":" ~ inheritance_list)? ~ class_body? }
+object_decl = { annotation* ~ modifier* ~ object_kw ~ identifier ~ (":" ~ inheritance_list)? ~ class_body? }
 
 // Block
 block = { "{" ~ eat_terminators ~ (statement ~ eat_terminators)* ~ "}" }
@@ -254,7 +288,7 @@ prefix_op = { "!" | "-" | "+" | "++" | "--" }
 postfix = { primary ~ postfix_suffix* }
 postfix_suffix = { type_args | call_suffix | index_suffix | safe_call_suffix | member_suffix | null_assert_suffix | inc_suffix }
 
-type_args = !{ "<" ~ eat_terminators ~ type_ref ~ (eat_terminators ~ "," ~ eat_terminators ~ type_ref)* ~ eat_terminators ~ ">" }
+type_args = !{ "<" ~ eat_terminators ~ type_arg ~ (eat_terminators ~ "," ~ eat_terminators ~ type_arg)* ~ eat_terminators ~ ">" }
 
 // A trailing lambda may replace the argument list entirely — `xs.filter { … }`,
 // `forEach { … }`, `run { … }` are calls, not a member access followed by a
@@ -289,9 +323,15 @@ primary = {
   | "(" ~ expr ~ ")"
   | literal
   | identifier
-  | this_kw
-  | super_kw
+  | this_expr
+  | super_expr
 }
+
+// `this@Outer` reaches an outer receiver from an inner class or a scope
+// function; `super<Base>.f()` picks WHICH supertype's default implementation to
+// call when a class inherits two. Both are ordinary Kotlin and neither parsed.
+this_expr  = { this_kw ~ ("@" ~ identifier)? }
+super_expr = { super_kw ~ ("<" ~ type_ref ~ ">")? ~ ("@" ~ identifier)? }
 
 object_expr = { object_kw ~ (":" ~ inheritance_list)? ~ class_body }
 
