@@ -37,6 +37,18 @@ impl Compiler {
             == Some(vybe_ast::builtin_slots::BuiltinType::Set)
     }
 
+    /// Whether `hint` names a `string` ACCORDING TO THE LANGUAGE.
+    ///
+    /// Distinct from `Self::is_string_type_hint`, which consults the PLATFORM
+    /// table only. Pascal's `char` holds a character — its default value is
+    /// `""` and `Ord`/`Chr` round-trip through it — where the C family's `char`
+    /// is an 8-bit integer. Pascal says so with `[builtin_types] string =
+    /// ["char"]` rather than the shared compiler naming it (§3c).
+    pub(super) fn hint_is_builtin_string(&self, hint: &str) -> bool {
+        vybe_ast::builtin_types::classify_with(&self.profile.builtin_type_spellings, hint)
+            == Some(vybe_ast::builtin_slots::BuiltinType::String)
+    }
+
     /// Whether `expr` is statically known to be a set.
     ///
     /// Carries NO language name. It used to open with `profile.name !=

@@ -997,9 +997,12 @@ impl Compiler {
             StmtKind::DoWhile { body, cond, until } => {
                 let line = self.line;
                 let lp = common::loops::emit_do_loop_start(&mut self.chunks, self.current, line);
+                // Three nesting levels now: break-block, loop, body-block.
+                // `continue` targets the INNERMOST (the body block) so control
+                // reaches the condition; `break` targets the outermost.
                 let break_depth = self.label_depth + 1;
-                let continue_depth = self.label_depth + 2;
-                self.label_depth += 2;
+                let continue_depth = self.label_depth + 3;
+                self.label_depth += 3;
                 self.loop_states.push(lp);
                 self.loops.push(LoopCtx {
                     label: self.pending_label.take(),
@@ -1013,6 +1016,15 @@ impl Compiler {
                 for s in body {
                     self.compile_stmt(s)?;
                 }
+                // Close the body block first — everything after it is the
+                // condition, which is where `continue` must land.
+                let body_block = self.loop_states.last().unwrap().body_block_patch;
+                let line = self.line;
+                if let Some(patch) = body_block {
+                    self.chunks[self.current].emit_end(line);
+                    self.chunks[self.current].patch_block(patch);
+                }
+                self.label_depth -= 1;
                 self.compile_expr(cond)?;
                 self.emit_condition_truthiness_from_stack();
                 self.loops.pop();

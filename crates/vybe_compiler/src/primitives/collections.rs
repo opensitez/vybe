@@ -207,9 +207,71 @@ pub fn emit_push(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:array", "push", 2, line);
 }
 
-/// Array pop. Stack: [array] → [value] via `ecma:array.pop`.
+/// Pop the LAST entry. Stack: [collection] → [value].
+///
+/// Polymorphic over the two shapes an ordered collection takes at runtime, for
+/// the same reason `emit_get`/`emit_set` are: a packed list is an
+/// `ObjectKind::Array`, a keyed one is a `Map`, and every language that has
+/// insertion-ordered maps (PHP arrays, Python dicts, Ruby hashes) lands on both
+/// through this one call. `ecma:array.pop` is ECMA-262 §23.1.3.21 and correctly
+/// understands only the former — on a Map it returned `undefined` and removed
+/// nothing, SILENTLY. The Map arm composes `ecma:map` operations rather than
+/// widening the array method, so neither spec surface is bent.
 pub fn emit_pop(chunks: &mut [Chunk], current: usize, line: u32) {
+    let src = chunks[current].alloc_scratch(1);
+    let keys = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, src, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    let is_array = chunks[current].add_import("ecma:array", "isArray");
+    chunks[current].emit_call(is_array, 1, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
     emit_import_call(chunks, current, "ecma:array", "pop", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+
+    chunks[current].emit_else(line);
+
+    // Keyed: take the last insertion-ordered key, read it, drop it.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    emit_import_call(chunks, current, "ecma:map", "keys", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    emit_import_call(chunks, current, "ecma:map", "get", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    emit_import_call(chunks, current, "ecma:map", "delete", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_else(line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
 /// Iteration primitives — polymorphic over `Array`, `Map`, and
@@ -542,7 +604,59 @@ pub fn emit_concat(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// Array shift (remove first). Stack: [array] → [value] via `ecma:array.shift`.
 pub fn emit_shift(chunks: &mut [Chunk], current: usize, line: u32) {
+    // Polymorphic for the same reason as `emit_pop` — see the note there.
+    // `ecma:array.shift` (§23.1.3.25) understands only a packed list; a keyed
+    // collection loses its FIRST insertion-ordered entry instead.
+    let src = chunks[current].alloc_scratch(1);
+    let keys = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, src, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    let is_array = chunks[current].add_import("ecma:array", "isArray");
+    chunks[current].emit_call(is_array, 1, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
     emit_import_call(chunks, current, "ecma:array", "shift", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    emit_import_call(chunks, current, "ecma:map", "keys", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, keys, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    emit_import_call(chunks, current, "ecma:map", "get", 2, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    emit_import_call(chunks, current, "ecma:map", "delete", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_else(line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
 
 /// Array fill. Stack: [array, value, start, end] → [array] via `vybe:js-array.fill`.

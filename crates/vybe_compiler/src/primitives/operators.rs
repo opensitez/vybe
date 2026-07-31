@@ -230,19 +230,33 @@ impl Compiler {
             .map(str::to_string)
     }
 
-    /// Emit a membership test for stack `[value, collection]` → bool.
+    /// Emit a `[builtin_slots.*]` target against `argc` operands already on the
+    /// stack. `what` names the binding for the panic message.
     ///
-    /// The target is called `(collection, value)` — receiver first, which is the
-    /// order `ecma:object.hasOwn` already uses on the generic path below and the
-    /// order `ecma:set.has` wants. The operand stack is the other way round, so
-    /// this spills both and reloads them swapped.
-    pub(super) fn emit_contains(&mut self, target: &str) {
-        let t_collection = self.define_local("__contains_collection");
-        let t_value = self.define_local("__contains_value");
-        self.emit_u16(Op::LOCAL_SET, t_collection);
-        self.emit_u16(Op::LOCAL_SET, t_value);
-        self.emit_u16(Op::LOCAL_GET, t_collection);
-        self.emit_u16(Op::LOCAL_GET, t_value);
+    /// Panics on a shape it cannot emit — emitting nothing would strand the
+    /// operands on the stack, surfacing far from the profile typo that caused
+    /// it. An unknown `common:` NAME is reported by `emit_common` itself.
+    pub(super) fn emit_slot_target(&mut self, target: &str, argc: u8, line: u32, what: &str) {
+        if let Some(name) = target.strip_prefix("common:") {
+            // `Compiler::emit_common`, not the free `dispatch::emit_common`:
+            // it also tries the import-needing flavour and, crucially, calls
+            // `sync_scope_slots_with_chunk` afterwards, so scratch slots the
+            // target allocated cannot collide with later locals.
+            self.emit_common(name, argc, line);
+        } else if let Some(rest) = target.strip_prefix("host:") {
+            let (module, func) = rest.rsplit_once(':').unwrap_or_else(|| {
+                panic!("[builtin_slots] {what} target `{target}` is not `host:<module>:<fn>`")
+            });
+            let idx = self.import(module, func);
+            self.emit_host_call(idx, argc);
+        } else {
+            panic!("[builtin_slots] {what} target `{target}` must be `common:…` or `host:…`");
+        }
+    }
+
+    /// Call a 2-argument `Contains` target on operands already on the stack in
+    /// `(collection, value)` order.
+    fn emit_contains_target_call(&mut self, target: &str) {
         let line = self.line;
         if let Some(name) = target.strip_prefix("common:") {
             self.emit_common(name, 2, line);
@@ -255,6 +269,107 @@ impl Compiler {
         } else {
             panic!("[builtin_slots] contains target `{target}` must be `common:…` or `host:…`");
         }
+    }
+
+    /// Membership test over two SLOTS — the shape the runtime probe needs,
+    /// which holds its operands in locals so it can test the container and then
+    /// reuse both in whichever leg wins.
+    fn emit_contains_from_slots(&mut self, collection: u16, value: u16, target: &str) {
+        self.emit_u16(Op::LOCAL_GET, collection);
+        self.emit_u16(Op::LOCAL_GET, value);
+        self.emit_contains_target_call(target);
+    }
+
+    /// The language's STRUCTURAL equality target for composite built-ins —
+    /// `[builtin_slots.array] eq`.
+    ///
+    /// Housed on the `array` row because that is the shape both implementations
+    /// actually probe for: Python's is order-independent SET equality and
+    /// Dart's is record/tuple equality, and a tuple IS an array here. §3g
+    /// corrected this plan's earlier claim that `value_eq` was a STRING slot —
+    /// neither implementation touches strings.
+    ///
+    /// LANGUAGE table only. The platform fallback for `==` is reference /
+    /// primitive equality (`ops::emit_dyn_eq`), and a language that wants deep
+    /// equality for its composites declares it.
+    fn structural_eq_target(&self) -> Option<String> {
+        self.profile
+            .builtin_slots
+            .get(
+                vybe_ast::builtin_slots::BuiltinType::Array,
+                vybe_ast::ProtocolSlot::Eq,
+            )
+            .map(str::to_string)
+    }
+
+    /// Emit a membership test for stack `[value, collection]` → bool.
+    ///
+    /// The target is called `(collection, value)` — receiver first, which is the
+    /// order `ecma:object.hasOwn` already uses on the generic path below and the
+    /// order `ecma:set.has` wants. The operand stack is the other way round, so
+    /// this spills both and reloads them swapped.
+    pub(super) fn emit_contains(&mut self, target: &str) {
+        let t_collection = self.define_local("__contains_collection");
+        let t_value = self.define_local("__contains_value");
+        self.emit_u16(Op::LOCAL_SET, t_collection);
+        self.emit_u16(Op::LOCAL_SET, t_value);
+        self.emit_contains_from_slots(t_collection, t_value, target);
+    }
+
+    /// The language's `Contains` targets for the three container shapes a
+    /// RUNTIME probe can tell apart. `Some` only when all three are declared.
+    ///
+    /// This is `builtinslotplan.md` §2c's runtime path, and Python is why it
+    /// exists: §3b measured that idiomatic Python resolves NO receiver type
+    /// statically, so `x in y` cannot pick a binding at compile time and has to
+    /// test `y` at run time. The three answers are the language's own, and they
+    /// genuinely differ from the platform defaults — Python's dict leg is
+    /// `hasIn`, which walks the prototype chain, where the default for
+    /// `Map`/`Contains` is own-only `dict.has`. Requiring all three to be
+    /// declared rather than defaulting the gaps is what makes replacing the old
+    /// `is_python_profile()` branch behaviour-preserving.
+    fn contains_probe_targets(&self) -> Option<(String, String, String)> {
+        use vybe_ast::ProtocolSlot::Contains;
+        use vybe_ast::builtin_slots::BuiltinType as T;
+        let slots = &self.profile.builtin_slots;
+        Some((
+            slots.get(T::String, Contains)?.to_string(),
+            slots.get(T::Array, Contains)?.to_string(),
+            slots.get(T::Map, Contains)?.to_string(),
+        ))
+    }
+
+    /// `value in collection` where the collection's type is known only at run
+    /// time: test the container, then dispatch to that type's `Contains`
+    /// binding. String first, then array, then everything else.
+    pub(super) fn emit_contains_probe_from_locals(
+        &mut self,
+        collection: u16,
+        value: u16,
+        targets: &(String, String, String),
+    ) {
+        let (string_target, array_target, other_target) = targets.clone();
+        let line = self.line;
+
+        self.emit_u16(Op::LOCAL_GET, collection);
+        fn_call!(self, "wasm:js-string", "test", 1);
+        self.chunk().emit_if_value(line);
+        self.emit_contains_from_slots(collection, value, &string_target);
+        self.chunk().emit_else(line);
+
+        self.emit_u16(Op::LOCAL_GET, collection);
+        let is_array = self.import("ecma:array", "isArray");
+        self.chunk().emit_call(is_array, 1, line);
+        inst!(self, core_wasm::i32_const, 0);
+        crate::primitives::ops::emit_dyn_ne(self.chunk(), line);
+        let array_line = self.line;
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), array_line);
+        self.chunk().emit_if_value(array_line);
+        self.emit_contains_from_slots(collection, value, &array_target);
+        self.chunk().emit_else(array_line);
+        self.emit_contains_from_slots(collection, value, &other_target);
+        self.chunk().emit_end(array_line);
+        self.chunk().emit_end(line);
     }
 
     /// `a <op> b` derived from the sign of the three-way compare — §2f: bind
@@ -316,43 +431,6 @@ impl Compiler {
             crate::primitives::ops::emit_dyn_add(self.chunk(), line);
         };
         self.chunk().emit_end(rhs_line);
-        self.chunk().emit_end(line);
-    }
-
-    pub(super) fn emit_python_contains_from_locals(
-        &mut self,
-        container_slot: u16,
-        needle_slot: u16,
-    ) {
-        let line = self.line;
-        self.emit_u16(Op::LOCAL_GET, container_slot);
-        fn_call!(self, "wasm:js-string", "test", 1);
-        self.chunk().emit_if_value(line);
-        self.emit_u16(Op::LOCAL_GET, container_slot);
-        self.emit_u16(Op::LOCAL_GET, needle_slot);
-        fn_call!(self, "ecma:string", "includes", 2);
-        self.chunk().emit_else(line);
-
-        self.emit_u16(Op::LOCAL_GET, container_slot);
-        let is_array = self.import("ecma:array", "isArray");
-        self.chunk().emit_call(is_array, 1, line);
-        inst!(self, core_wasm::i32_const, 0);
-        {
-            let line = self.line;
-            crate::primitives::ops::emit_dyn_ne(self.chunk(), line);
-        };
-        let array_line = self.line;
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), array_line);
-        self.chunk().emit_if_value(array_line);
-        self.emit_u16(Op::LOCAL_GET, container_slot);
-        self.emit_u16(Op::LOCAL_GET, needle_slot);
-        common::collections::emit_contains(&mut self.chunks, self.current, line);
-        self.chunk().emit_else(array_line);
-        self.emit_u16(Op::LOCAL_GET, container_slot);
-        self.emit_u16(Op::LOCAL_GET, needle_slot);
-        let has_in = self.import("ecma:object", "hasIn");
-        self.chunk().emit_call(has_in, 2, line);
-        self.chunk().emit_end(array_line);
         self.chunk().emit_end(line);
     }
 
@@ -480,14 +558,22 @@ impl Compiler {
                         let line = self.line;
                         crate::primitives::ops::emit_dyn_add(self.chunk(), line);
                     };
-                } else if let Some(emit_add) =
-                    vybe_runtime::registry::hooks(&self.profile.name).arith_add
+                } else if let Some(target) = self
+                    .profile
+                    .builtin_slots
+                    .get(
+                        vybe_ast::builtin_slots::BuiltinType::Array,
+                        vybe_ast::ProtocolSlot::Add,
+                    )
+                    .map(str::to_string)
                 {
                     // A language whose `+` is overloaded on collections as well
-                    // as numbers (PHP's array union) owns that decision in its
-                    // own adapter — same arrangement as `relational_compare`.
+                    // as numbers (PHP's array UNION) declares
+                    // `[builtin_slots.array] add`. Was
+                    // `LanguageHooks::arith_add`, looked up by language NAME
+                    // (builtinslotplan.md §3c).
                     let line = self.line;
-                    emit_add(&mut self.chunks, self.current, line);
+                    self.emit_slot_target(&target, 2, line, "array add");
                 } else {
                     self.emit(Op::F64_ADD);
                 }
@@ -534,8 +620,30 @@ impl Compiler {
             }
             BinOp::Mod => {
                 let l = self.line;
-                if self.is_python_profile() {
-                    common::math::emit_python_floor_mod(self.chunk(), l);
+                // `[builtin_slots.int] mod` — was `is_python_profile()`,
+                // i.e. `profile.name == "python"` (builtinslotplan.md §3c).
+                // LANGUAGE table only: the platform's `%` truncates, and a
+                // language whose `%` floors says so.
+                if let Some(target) = self
+                    .profile
+                    .builtin_slots
+                    .get(
+                        vybe_ast::builtin_slots::BuiltinType::Int,
+                        vybe_ast::ProtocolSlot::Mod,
+                    )
+                    .map(str::to_string)
+                {
+                    if let Some(name) = target.strip_prefix("common:") {
+                        self.emit_common(name, 2, l);
+                    } else if let Some(rest) = target.strip_prefix("host:") {
+                        let (module, func) = rest.rsplit_once(':').unwrap_or_else(|| {
+                            panic!("[builtin_slots.int] mod `{target}` is not `host:<m>:<fn>`")
+                        });
+                        let idx = self.import(module, func);
+                        self.emit_host_call(idx, 2);
+                    } else {
+                        panic!("[builtin_slots.int] mod `{target}` must be `common:…` or `host:…`");
+                    }
                 } else if self.profile.dynamic_numeric_dispatch {
                     self.emit_js_dynamic_arith("rem", NumberArith::Mod);
                 } else {
@@ -563,15 +671,23 @@ impl Compiler {
                     // equality — Python tuples/dicts, Dart records), else plain
                     // reference/primitive equality. Hook presence is the property;
                     // never a profile-name check.
-                    let eq_fallback = vybe_runtime::registry::hooks(&self.profile.name)
-                        .value_eq
-                        .unwrap_or(crate::primitives::ops::emit_dyn_eq);
+                    // The language's STRUCTURAL equality for composite
+                    // built-ins, from `[builtin_slots.array] eq`. Was
+                    // `registry::hooks(&self.profile.name).value_eq` — a
+                    // callback looked up by language NAME (§3c).
+                    let eq_target = self.structural_eq_target();
                     common::expressions::emit_rich_compare_locals(
-                        self.chunk(),
+                        &mut self.chunks,
+                        self.current,
                         left_slot,
                         right_slot,
                         &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Eq),
-                        eq_fallback,
+                        match &eq_target {
+                            Some(t) => common::expressions::RichFallback::Target(t),
+                            None => common::expressions::RichFallback::Op(
+                                crate::primitives::ops::emit_dyn_eq,
+                            ),
+                        },
                         line,
                     );
                     if self.profile.materialize_bool_results {
@@ -603,15 +719,23 @@ impl Compiler {
                     // equality — Python tuples/dicts, Dart records), else plain
                     // reference/primitive equality. Hook presence is the property;
                     // never a profile-name check.
-                    let eq_fallback = vybe_runtime::registry::hooks(&self.profile.name)
-                        .value_eq
-                        .unwrap_or(crate::primitives::ops::emit_dyn_eq);
+                    // The language's STRUCTURAL equality for composite
+                    // built-ins, from `[builtin_slots.array] eq`. Was
+                    // `registry::hooks(&self.profile.name).value_eq` — a
+                    // callback looked up by language NAME (§3c).
+                    let eq_target = self.structural_eq_target();
                     common::expressions::emit_rich_compare_locals(
-                        self.chunk(),
+                        &mut self.chunks,
+                        self.current,
                         left_slot,
                         right_slot,
                         &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Eq),
-                        eq_fallback,
+                        match &eq_target {
+                            Some(t) => common::expressions::RichFallback::Target(t),
+                            None => common::expressions::RichFallback::Op(
+                                crate::primitives::ops::emit_dyn_eq,
+                            ),
+                        },
                         line,
                     );
                     crate::primitives::ops::emit_dyn_not(self.chunk(), line);
@@ -685,11 +809,14 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, left_slot);
                     let line = self.line;
                     common::expressions::emit_rich_compare_locals(
-                        self.chunk(),
+                        &mut self.chunks,
+                        self.current,
                         left_slot,
                         right_slot,
                         &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Lt),
-                        crate::primitives::ops::emit_dyn_lt,
+                        common::expressions::RichFallback::Op(
+                            crate::primitives::ops::emit_dyn_lt,
+                        ),
                         line,
                     );
                     if self.profile.materialize_bool_results {
@@ -724,11 +851,14 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, left_slot);
                     let line = self.line;
                     common::expressions::emit_rich_compare_locals(
-                        self.chunk(),
+                        &mut self.chunks,
+                        self.current,
                         left_slot,
                         right_slot,
                         &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Gt),
-                        crate::primitives::ops::emit_dyn_gt,
+                        common::expressions::RichFallback::Op(
+                            crate::primitives::ops::emit_dyn_gt,
+                        ),
                         line,
                     );
                     if self.profile.materialize_bool_results {
@@ -763,11 +893,14 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, left_slot);
                     let line = self.line;
                     common::expressions::emit_rich_compare_locals(
-                        self.chunk(),
+                        &mut self.chunks,
+                        self.current,
                         left_slot,
                         right_slot,
                         &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Le),
-                        crate::primitives::ops::emit_dyn_le,
+                        common::expressions::RichFallback::Op(
+                            crate::primitives::ops::emit_dyn_le,
+                        ),
                         line,
                     );
                     if self.profile.materialize_bool_results {
@@ -802,11 +935,14 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, left_slot);
                     let line = self.line;
                     common::expressions::emit_rich_compare_locals(
-                        self.chunk(),
+                        &mut self.chunks,
+                        self.current,
                         left_slot,
                         right_slot,
                         &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Ge),
-                        crate::primitives::ops::emit_dyn_ge,
+                        common::expressions::RichFallback::Op(
+                            crate::primitives::ops::emit_dyn_ge,
+                        ),
                         line,
                     );
                     if self.profile.materialize_bool_results {
@@ -944,12 +1080,15 @@ impl Compiler {
                 common::strings::emit_str_concat_coercing(self.chunk(), l);
             }
             BinOp::In => {
-                if self.is_python_profile() {
-                    let t_y = self.define_local("__py_in_y");
-                    let t_x = self.define_local("__py_in_x");
+                // §2c RUNTIME path: the language declares a `Contains` for
+                // each container shape and the probe picks one at run time.
+                // Was `is_python_profile()`, i.e. `profile.name == "python"`.
+                if let Some(targets) = self.contains_probe_targets() {
+                    let t_y = self.define_local("__in_probe_y");
+                    let t_x = self.define_local("__in_probe_x");
                     self.emit_u16(Op::LOCAL_SET, t_y);
                     self.emit_u16(Op::LOCAL_SET, t_x);
-                    self.emit_python_contains_from_locals(t_y, t_x);
+                    self.emit_contains_probe_from_locals(t_y, t_x, &targets);
                     return;
                 }
 
@@ -1002,16 +1141,15 @@ impl Compiler {
                 // hasIn/hasOwn return Value::Bool — already correct for ECMA display.
             }
             BinOp::NotIn => {
-                if self.is_python_profile() {
-                    let t_y = self.define_local("__py_nin_y");
-                    let t_x = self.define_local("__py_nin_x");
+                // The negation of `In`'s runtime probe — see there.
+                if let Some(targets) = self.contains_probe_targets() {
+                    let t_y = self.define_local("__nin_probe_y");
+                    let t_x = self.define_local("__nin_probe_x");
                     self.emit_u16(Op::LOCAL_SET, t_y);
                     self.emit_u16(Op::LOCAL_SET, t_x);
-                    self.emit_python_contains_from_locals(t_y, t_x);
-                    {
-                        let line = self.line;
-                        crate::primitives::ops::emit_dyn_not(self.chunk(), line);
-                    };
+                    self.emit_contains_probe_from_locals(t_y, t_x, &targets);
+                    let line = self.line;
+                    crate::primitives::ops::emit_dyn_not(self.chunk(), line);
                     return;
                 }
 

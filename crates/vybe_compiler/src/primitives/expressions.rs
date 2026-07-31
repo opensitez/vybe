@@ -1269,12 +1269,25 @@ impl Compiler {
                 // shared `to_string` is the default.
                 if self.profile.concat_stringifies_operands && *op == BinOp::Concat {
                     let line = self.line;
-                    let stringify =
-                        vybe_runtime::registry::hooks(&self.profile.name).concat_stringify;
+                    // `[builtin_slots.string] to_string` — was
+                    // `LanguageHooks::concat_stringify`, looked up by language
+                    // NAME (builtinslotplan.md §3c). Undeclared falls back to
+                    // the shared ECMA `String()` coercion, so a language that
+                    // declares nothing is unaffected.
+                    let stringify = self
+                        .profile
+                        .builtin_slots
+                        .get(
+                            vybe_ast::builtin_slots::BuiltinType::String,
+                            vybe_ast::ProtocolSlot::ToString,
+                        )
+                        .map(str::to_string);
                     for operand in [left, right] {
                         self.compile_expr(operand)?;
-                        match stringify {
-                            Some(emit) => emit(&mut self.chunks, self.current, line),
+                        match &stringify {
+                            Some(target) => {
+                                self.emit_slot_target(target, 1, line, "string to_string")
+                            }
                             None => common::strings::emit_to_string(self.chunk(), line),
                         }
                     }
@@ -7713,14 +7726,62 @@ pub fn emit_rich_compare(
 /// Stack before: []  Stack after: [bool_result]
 ///
 /// Emits: check left.__lt__ → if found, call it(right) → else dyn_lt(left, right)
+/// What `emit_rich_compare_locals` falls back to when no user method matched.
+///
+/// `Op` is a plain chunk-only emitter — every relational operator uses one.
+/// `Target` is an emit target from a `[builtin_slots.*] eq` binding, which is
+/// how a language declares STRUCTURAL equality for its composite built-ins
+/// (Python's order-independent set equality, Dart's record/tuple equality).
+/// Those two used to arrive as `LanguageHooks::value_eq`, looked up by language
+/// NAME in shared code — builtinslotplan.md §3c.
+///
+/// A target needs the whole chunk vector to dispatch, which is the only reason
+/// this function takes `chunks`/`current` rather than a single chunk.
+pub enum RichFallback<'a> {
+    Op(fn(&mut Chunk, u32)),
+    Target(&'a str),
+}
+
+impl RichFallback<'_> {
+    fn emit(&self, chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+        match self {
+            RichFallback::Op(f) => f(&mut chunks[current], line),
+            RichFallback::Target(target) => {
+                if let Some(name) = target.strip_prefix("common:") {
+                    // A miss emits NOTHING, stranding both operands on the
+                    // stack for whatever consumes the result next — the same
+                    // silent corruption the `compare` targets guard against.
+                    assert!(
+                        crate::primitives::dispatch::emit_common(name, chunks, current, 2, line),
+                        "[builtin_slots] eq target `common:{name}` is not dispatched"
+                    );
+                } else if let Some(rest) = target.strip_prefix("host:") {
+                    let (module, func) = rest.rsplit_once(':').unwrap_or_else(|| {
+                        panic!("[builtin_slots] eq target `{target}` is not `host:<m>:<fn>`")
+                    });
+                    let idx = chunks[current].add_import(module, func);
+                    chunks[current].emit_call(idx, 2, line);
+                } else {
+                    panic!("[builtin_slots] eq target `{target}` must be `common:…` or `host:…`");
+                }
+            }
+        }
+    }
+}
+
 pub fn emit_rich_compare_locals(
-    chunk: &mut Chunk,
+    chunks: &mut Vec<Chunk>,
+    current: usize,
     left_slot: u16,
     right_slot: u16,
     dunder: &str,
-    fallback_fn: fn(&mut Chunk, u32),
+    fallback: RichFallback<'_>,
     line: u32,
 ) {
+    // Re-ASSIGNED (not shadowed) around each `fallback.emit`, which needs the
+    // whole vector: shadowing would leave the outer borrow live across the
+    // loop's next iteration.
+    let mut chunk = &mut chunks[current];
     let method_slot = chunk.local_count;
     chunk.local_count = chunk.local_count.max(method_slot + 1);
     if chunk.local_count > chunk.scratch_high_water {
@@ -7761,14 +7822,16 @@ pub fn emit_rich_compare_locals(
         chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
         chunk.emit_op_u8(Op::CALL_REF, 2, line);
         core_wasm::i32_const(chunk, line, 0);
-        fallback_fn(chunk, line);
+        fallback.emit(chunks, current, line);
+        chunk = &mut chunks[current];
         chunk.emit_br(1, line);
         chunk.emit_end(line);
     }
 
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    fallback_fn(chunk, line);
+    fallback.emit(chunks, current, line);
+    chunk = &mut chunks[current];
 
     chunk.emit_end(line);
     chunk.patch_block(done);

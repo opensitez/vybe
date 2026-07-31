@@ -181,6 +181,35 @@ impl Default for DateTimePolicy {
 
 use crate::{BinOp, ExprKind, Expression};
 
+/// The proleptic-Gregorian leap rule EVALUATED, for callers that have the year
+/// as a plain number rather than as bytecode or AST.
+///
+/// This is the third rendering of the one rule (see [`leap_year_expr`] for why
+/// several exist). It serves the layer the other two cannot reach: a walker
+/// folding a *literal* date at parse time, and host-side runtime code doing
+/// calendar arithmetic in Rust. Both previously kept private copies.
+pub fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+/// Days in `month` of `year`, months numbered 1..=12.
+///
+/// One-based because that is how a calendar is written and how every source
+/// language spells it; the zero-based form belongs to the JS `Date` API and is
+/// handled by [`MonthIndexing`] on the bytecode side. Out-of-range months
+/// return 30 — matching what the language copies of this did, so folding an
+/// already-invalid date stays a validation decision for the caller rather than
+/// a panic here.
+pub fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 30,
+    }
+}
+
 /// The proleptic-Gregorian leap rule as an AST EXPRESSION:
 /// `y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)`.
 ///

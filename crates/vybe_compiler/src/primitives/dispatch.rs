@@ -393,6 +393,13 @@ pub fn emit_common(
         "collections.get" => collections::emit_get(chunks, current, line),
         "collections.set" => collections::emit_set(chunks, current, line),
         "collections.contains" => collections::emit_contains(chunks, current, line),
+        // Floored modulo — the result takes the DIVISOR's sign, so `-7 % 3` is
+        // 2 and not -1. Python's `%` and Dart's both work this way; C's and
+        // JS's `%` truncate instead. Reached as the `Mod` slot binding.
+        "math.floor_mod" => crate::primitives::math::emit_python_floor_mod(
+            &mut chunks[current],
+            line,
+        ),
         "collections.index_of" => collections::emit_index_of(chunks, current, line),
         "collections.last_index_of" => collections::emit_last_index_of(chunks, current, line),
         "collections.remove_at" => collections::emit_remove_at(chunks, current, line),

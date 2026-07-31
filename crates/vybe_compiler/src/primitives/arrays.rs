@@ -711,7 +711,10 @@ impl Compiler {
                 let line = self.line;
                 crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
             }
-            "char" if self.profile.name == "pascal" => {}
+            // A language whose `char` holds a CHARACTER, not an 8-bit
+            // integer, must not get the modular byte coercion below. Was
+            // `profile.name == "pascal"` (builtinslotplan.md §3c).
+            "char" if self.hint_is_builtin_string(&normalized) => {}
             "char" | "uint8" | "unsigned char" | "byte" => {
                 self.emit(Op::F64_TRUNC);
                 self.emit_const(Value::F64(256.0));

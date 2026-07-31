@@ -137,6 +137,7 @@ impl Compiler {
                 return Some(Resolution::Tree(target));
             }
         }
+
         None
     }
 

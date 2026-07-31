@@ -246,7 +246,10 @@ impl Compiler {
             | Some("int64") | Some("short") | Some("int16") | Some("uint") | Some("uint32")
             | Some("ulong") | Some("uint64") | Some("ushort") | Some("uint16") | Some("byte")
             | Some("sbyte") => inst!(self, core_wasm::f64_const, 0.0),
-            Some("char") if self.profile.name == "pascal" => {
+            // Same question as the coercion arm in `arrays.rs`: a `char` that
+            // holds a character defaults to `""`, one that is an 8-bit integer
+            // defaults to 0. The language answers via `[builtin_types]`.
+            Some("char") if self.hint_is_builtin_string("char") => {
                 self.emit_const(Value::String(Arc::from("")))
             }
             Some("char") => inst!(self, core_wasm::f64_const, 0.0),

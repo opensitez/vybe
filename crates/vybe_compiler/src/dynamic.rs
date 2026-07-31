@@ -791,6 +791,69 @@ impl PhpIncludeRuntime {
 }
 
 impl JsDynamicRuntime {
+    /// Run an eval'd bundle in the CALLER's VM so its definitions persist.
+    ///
+    /// Same assembly as [`Self::handle_dynamic_include`]: compile against the
+    /// live VM's modules, append the chunks, install their globals, swap the
+    /// active import tables for the child's, run, restore. That is what makes a
+    /// class or function defined inside `eval` a real global rather than a
+    /// value stranded in a throwaway VM's chunk table.
+    fn eval_in_live_vm(
+        &mut self,
+        ctx: &mut HostContext,
+        bundle: &Bundle,
+        completion_capture: Option<&'static str>,
+    ) -> Value {
+        let vm = unsafe { &mut *self.vm };
+        let compiled = match bundle.compile_full_with_modules(&vm.modules) {
+            Ok(compiled) => compiled,
+            Err(e) => return throw_eval_error(ctx, "SyntaxError", &e),
+        };
+
+        let base_chunk_index = vm.chunks.len();
+        crate::host_imports::install(vm, &compiled.host_imports);
+        install_chunk_globals(vm, &compiled.chunks, base_chunk_index);
+
+        let child_active_imports = compiled
+            .chunks
+            .first()
+            .map(|chunk| chunk.imports.clone())
+            .unwrap_or_default();
+        let child_active_resolved_imports = match resolve_imports(vm, &child_active_imports) {
+            Ok(resolved) => resolved,
+            Err(e) => return throw_eval_error(ctx, "EvalError", &e.to_string()),
+        };
+        let saved_active_imports =
+            std::mem::replace(&mut self.active_imports, child_active_imports);
+        let saved_active_resolved_imports = std::mem::replace(
+            &mut self.active_resolved_imports,
+            child_active_resolved_imports.clone(),
+        );
+
+        let result = vm.run_linked_nested(compiled.chunks, child_active_resolved_imports);
+
+        self.active_imports = saved_active_imports;
+        self.active_resolved_imports = saved_active_resolved_imports;
+
+        let run_value = match result {
+            Ok(value) => value,
+            Err(e) => return throw_eval_error(ctx, "SyntaxError", &e.to_string()),
+        };
+
+        // An uncaught throw inside eval'd code propagates to the caller.
+        if let Some(exc) = vm.last_exception.take() {
+            ctx.throw_value(exc);
+            return Value::Undefined;
+        }
+
+        // Python's `eval` binds its expression value to a temp; read it back
+        // and drop it so it does not linger as a caller global.
+        match completion_capture {
+            Some(name) => vm.globals.remove(name).unwrap_or(Value::Undefined),
+            None => run_value,
+        }
+    }
+
     fn new(caps: Capabilities) -> Self {
         Self {
             caps,
@@ -1088,6 +1151,33 @@ impl JsDynamicRuntime {
         };
 
         let bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
+
+        // No explicit namespace dict → compile into the LIVE VM, exactly as
+        // `handle_dynamic_include` does.
+        //
+        // The mini-VM path below can only carry SCALARS back to the caller: it
+        // deliberately skips every `ObjectKind::Function`, because a function's
+        // `chunk_index` refers to the mini-VM's chunk table. A class IS a
+        // constructor-function global, so `eval('class Foo {}')` could never
+        // define anything — `class_exists('Foo')` stayed false, and so did
+        // `function_exists` for an eval'd function. Running in the live VM
+        // gives those definitions a real chunk table to belong to.
+        //
+        // Python's `eval(code, ns)` / `exec(code, ns)` keep the mini-VM route:
+        // that form binds names FROM the dict and writes back INTO it, which is
+        // isolation by definition rather than caller-global mutation.
+        // Python's expression `eval()` also stays on the mini-VM: it wants a
+        // VALUE, and its result may be an object whose repr helper resolves
+        // against the chunk table it was built in. Definitions arrive through
+        // `exec()`, which sets no completion capture — so the live-VM route
+        // covers exactly the cases that need to define something.
+        let has_namespace_dict = args
+            .get(2)
+            .and_then(|a| object_get_prop(a, "namespace"))
+            .is_some_and(|v| matches!(v, Value::Object(_)));
+        if !has_namespace_dict && completion_capture.is_none() {
+            return self.eval_in_live_vm(ctx, &bundle, completion_capture);
+        }
 
         let mut eval_vm = VM::new();
         crate::primitives::platforms::register_platforms_all(&mut eval_vm);

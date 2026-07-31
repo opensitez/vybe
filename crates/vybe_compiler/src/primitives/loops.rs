@@ -103,10 +103,25 @@ pub fn emit_loop_end(chunks: &mut [Chunk], current: usize, state: LoopState, lin
 pub fn emit_do_loop_start(chunks: &mut [Chunk], current: usize, line: u32) -> LoopState {
     let block_patch = chunks[current].emit_block(line);
     let (loop_patch, _) = chunks[current].emit_loop_s(line);
+    // A third, innermost block wraps the BODY so that `continue` lands on the
+    // condition rather than the top of the body. Branching to the loop label
+    // would re-enter the body without testing the condition — `do { … continue;
+    // … } while (cond)` must still evaluate `cond` on every iteration, in every
+    // language that has the form.
+    let body_block_patch = chunks[current].emit_block(line);
     LoopState {
         block_patch,
         loop_patch,
-        body_block_patch: None,
+        body_block_patch: Some(body_block_patch),
+    }
+}
+
+/// Close the do-loop's body block. Call after the body and BEFORE compiling the
+/// condition, so `continue` (a branch out of that block) arrives exactly here.
+pub fn emit_do_loop_body_end(chunks: &mut [Chunk], current: usize, state: &LoopState, line: u32) {
+    if let Some(patch) = state.body_block_patch {
+        chunks[current].emit_end(line);
+        chunks[current].patch_block(patch);
     }
 }
 

@@ -272,24 +272,26 @@ pub struct VariableNamespace {
 }
 
 #[derive(Clone, Copy, Default)]
+/// # Four value-semantics hooks were REMOVED, 2026-07-31
+///
+/// `value_eq`, `relational_compare`, `arith_add` and `concat_stringify` all
+/// answered "what does this operator do to built-in operands", and all were
+/// looked up as `hooks(&self.profile.name)` — dispatch keyed by language name,
+/// in shared code. They are now `[builtin_slots.*]` bindings declared by the
+/// language's own profile and emitted through its own `emit_dispatch`:
+///
+/// | was | now |
+/// |---|---|
+/// | `relational_compare` (php) | `[builtin_slots.string] compare` |
+/// | `value_eq` (python, dart) | `[builtin_slots.array] eq` |
+/// | `arith_add` (php) | `[builtin_slots.array] add` |
+/// | `concat_stringify` (php) | `[builtin_slots.string] to_string` |
+///
+/// See `builtinslotplan.md` §3i. Do not re-add a hook for a question of the
+/// form "what does operator X do to built-in type Y" — that is a slot.
 pub struct LanguageHooks {
-    pub value_eq: Option<fn(&mut Chunk, u32)>,
     /// See [`VariableNamespace`]. `None` (the default) = one namespace.
     pub variable_namespace: Option<&'static VariableNamespace>,
-    pub relational_compare: Option<fn(&mut Chunk, fn(&mut Chunk, u32), u32)>,
-    /// `+` where the language overloads it on a COLLECTION as well as on
-    /// numbers — PHP's array union. Same shape as `relational_compare`: the
-    /// core cannot decide this from the operator alone, and the decision is a
-    /// property of the language's `+`, not of any operand the compiler can see.
-    /// Stack: `[l, r] → [result]`.
-    pub arith_add: Option<fn(&mut Vec<Chunk>, usize, u32)>,
-    /// How ONE operand of a string-concatenation operator becomes a string,
-    /// for the languages whose concat coerces both sides up front
-    /// (`profile.concat_stringifies_operands`). Only needed where that
-    /// spelling differs from the shared `to_string` — PHP renders `true` as
-    /// `"1"`, `null` as `""`, an array as `"Array"`. Leave it `None` to get
-    /// the shared coercion. Stack: `[value] → [string]`.
-    pub concat_stringify: Option<fn(&mut Vec<Chunk>, usize, u32)>,
     pub constructor_ref_autoload: Option<fn(&mut Chunk, &str, &str, u32)>,
     pub dynamic_constructor_ref_autoload: Option<fn(&mut Chunk, &str, Option<&str>, &str, u32)>,
     pub proxy_get: Option<fn(&mut [Chunk], usize, u32)>,
