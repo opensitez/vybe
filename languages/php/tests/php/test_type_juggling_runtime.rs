@@ -358,3 +358,101 @@ echo ((bool)'0' === false) ? 'f1' : 'f0';
         ["t0|c1|e1|f1"]
     };
 }
+
+// ── PHP 8 comparison: numeric ONLY when both operands are numeric ──────────
+//
+// `<`, `<=`, `>`, `>=` are the sign of the three-way `<=>` against 0 — one
+// primitive, not four (builtinslotplan.md §3i, `[builtin_slots.string]
+// compare`). The old lowering tested numericness with `parseFloat`, and
+// `parseFloat("9a")` is 9, so `"9a"` was compared as the NUMBER 9.
+//
+// Every expected value below was measured against the real `php` binary.
+crate::php_cases! {
+    // `"9a"` is not numeric, so both sides are compared as strings: "1" < "9".
+    relational_numeric_string_vs_non_numeric_string_is_lexicographic => {
+        r#"<?php
+echo ("10" < "9a") ? 'lt' : 'ge';
+"#,
+        ["lt"]
+    };
+
+    // PHP 8: a number against a non-numeric string casts the NUMBER to string.
+    relational_int_vs_non_numeric_string_casts_int_to_string => {
+        r#"<?php
+echo (5 < "abc") ? 'lt' : 'ge';
+"#,
+        ["lt"]
+    };
+
+    spaceship_numeric_string_vs_non_numeric_string => {
+        r#"<?php
+echo "10" <=> "9a";
+"#,
+        ["-1"]
+    };
+
+    spaceship_int_vs_non_numeric_string => {
+        r#"<?php
+echo 5 <=> "abc";
+"#,
+        ["-1"]
+    };
+
+    // Zero is the case a coercing comparison gets wrong most quietly:
+    // pre-PHP-8 this was 0, because "abc" cast to the number 0.
+    spaceship_zero_vs_non_numeric_string => {
+        r#"<?php
+echo 0 <=> "abc";
+"#,
+        ["-1"]
+    };
+
+    // Comparison-table row 1: null against a STRING becomes "" and compares
+    // lexicographically — NOT the bool rule, which would call both falsy.
+    spaceship_null_vs_numeric_string_is_lexicographic => {
+        r#"<?php
+echo null <=> "0";
+"#,
+        ["-1"]
+    };
+
+    spaceship_null_vs_empty_string_is_equal => {
+        r#"<?php
+echo null <=> "";
+"#,
+        ["0"]
+    };
+
+    // Row 2: bool on either side casts BOTH to bool, so a non-empty string is
+    // simply true. A string comparison would have said "1" <=> "abc".
+    spaceship_true_vs_non_empty_string_compares_as_bool => {
+        r#"<?php
+echo true <=> "abc";
+"#,
+        ["0"]
+    };
+
+    // The bool cast is PHP's, not JS's: "0" is FALSY in PHP.
+    spaceship_false_vs_zero_string_compares_as_bool => {
+        r#"<?php
+echo false <=> "0";
+"#,
+        ["0"]
+    };
+
+    // Both numeric strings, so a NUMERIC comparison: 100 == 100.
+    spaceship_two_numeric_strings_compares_numerically => {
+        r#"<?php
+echo "1e2" <=> "100";
+"#,
+        ["0"]
+    };
+
+    // Leading whitespace is numeric per `is_numeric`.
+    spaceship_leading_space_numeric_string_equals_bare => {
+        r#"<?php
+echo " 1" <=> "1";
+"#,
+        ["0"]
+    };
+}

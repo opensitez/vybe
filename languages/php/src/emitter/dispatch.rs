@@ -52,6 +52,17 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // The three-way primitive. `<`/`<=`/`>`/`>=` are its sign against 0,
         // so the four `php.compare_*` arms below are legacy shapes kept for any
         // direct caller; the operator path goes through this one.
+        // PHP `+` is overloaded: arithmetic on numbers, UNION on arrays (keys
+        // present on the left win). Reached as `[builtin_slots.array] add`;
+        // used to be the `LanguageHooks::arith_add` callback, keyed by name.
+        "php.add" => super::array_adapter::emit_php_add(chunks, current, line),
+        // The operand cast `.` applies before concatenating — PHP renders
+        // `true` as "1", `null` and `false` as "", an array as "Array", none of
+        // which is the ECMA `String()` coercion. Reached as
+        // `[builtin_slots.string] to_string`; was `LanguageHooks::concat_stringify`.
+        "php.concat_stringify" => {
+            super::string_adapter::emit_concat_stringify(chunks, current, line)
+        }
         "php.compare3" => {
             super::relational_adapter::emit_compare3(chunks, current, line)
         }

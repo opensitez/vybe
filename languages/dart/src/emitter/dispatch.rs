@@ -5,6 +5,13 @@ use vybe_runtime::Chunk;
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     match name {
+        // Structural equality for composite built-ins — Dart records/tuples
+        // compare by VALUE. Reached as `[builtin_slots.array] eq`; used to be
+        // the `LanguageHooks::value_eq` callback, keyed by language name.
+        "dart.value_eq" => vybe_compiler::primitives::tuples::emit_tuple_value_eq(
+            &mut chunks[current],
+            line,
+        ),
         // dart:io filesystem — see emitter/io_adapter.rs
         "dart.io_read_as_string_sync" => crate::emitter::io_adapter::emit_read_as_string_sync(chunks, current, argc, line),
         "dart.io_read_as_bytes_sync" => crate::emitter::io_adapter::emit_read_as_bytes_sync(chunks, current, argc, line),

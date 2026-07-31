@@ -43,3 +43,47 @@ c_cases! {
     modulo_after_multiplication_uses_product => { body: "printf(\"%d\\n\", 3 * 5 % 7);\nreturn 0;", expect: ["1"] },
     arithmetic_chain_with_negative_terms => { body: "printf(\"%d\\n\", 10 + -3 - 4);\nreturn 0;", expect: ["3"] }
 }
+
+// ── `/` on integral VARIABLES, across C's type spellings ───────────────────
+//
+// Every division case above divides two LITERALS, and a literal short-circuits
+// the integral check before any type hint is read. So the spellings themselves
+// were untested — including the multi-word ones (`unsigned int`, `long long`)
+// that only a substring match resolves, and `char`, which is an integer type in
+// C however unlike one it looks.
+//
+// Expected values measured by compiling and running the same program with the
+// system `cc`, not derived from the standard.
+c_cases! {
+    integer_division_on_int_variables_truncates => {
+        body: "int a = 7, b = 2;\nprintf(\"%d\\n\", a / b);\nreturn 0;",
+        expect: ["3"]
+    },
+    integer_division_on_long_variables_truncates => {
+        body: "long a = 17, b = 5;\nprintf(\"%ld\\n\", a / b);\nreturn 0;",
+        expect: ["3"]
+    },
+    integer_division_on_unsigned_int_variables_truncates => {
+        body: "unsigned int a = 9, b = 4;\nprintf(\"%u\\n\", a / b);\nreturn 0;",
+        expect: ["2"]
+    },
+    integer_division_on_long_long_variables_truncates => {
+        body: "long long a = 22, b = 7;\nprintf(\"%lld\\n\", a / b);\nreturn 0;",
+        expect: ["3"]
+    },
+    integer_division_on_short_variables_truncates => {
+        body: "short a = 9, b = 2;\nprintf(\"%d\\n\", a / b);\nreturn 0;",
+        expect: ["4"]
+    },
+    // `char` is an integer type in C: 7 / 2 is 3, not 3.5.
+    integer_division_on_char_variables_truncates => {
+        body: "char a = 7, b = 2;\nprintf(\"%d\\n\", a / b);\nreturn 0;",
+        expect: ["3"]
+    },
+    // The other side of the gate — widening the integral spellings must not
+    // make real division truncate.
+    division_on_double_variables_does_not_truncate => {
+        body: "double a = 7.0, b = 2.0;\nprintf(\"%.1f\\n\", a / b);\nreturn 0;",
+        expect: ["3.5"]
+    },
+}

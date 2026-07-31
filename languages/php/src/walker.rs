@@ -8158,15 +8158,42 @@ fn spl_ctor_for_class_or_parent(name: &str) -> Option<&'static str> {
 }
 
 /// All interfaces implemented by `name` or any of its ancestors.
+/// Every interface a class implements, TRANSITIVELY — `class_implements()`
+/// reports inherited interfaces, not just the ones named on the class.
+///
+/// Two edges have to be followed, because `interface Mid extends Root` records
+/// `Root` as Mid's **parent** (the decl walker puts the first qualified name
+/// after `extends` into `parents`), while `class C implements I` records `I` in
+/// `interfaces`. Walking only the second edge returned just the directly-named
+/// interface.
 fn class_all_interfaces(name: &str) -> Vec<String> {
     let mut names = vec![name.to_string()];
     names.extend(class_parent_chain(name));
-    let mut result = Vec::new();
-    for n in &names {
-        let ifaces = CLASS_REGISTRY
+
+    let direct_interfaces = |n: &str| -> Vec<String> {
+        CLASS_REGISTRY
             .with(|r| r.borrow().get(n).map(|m| m.interfaces.clone()))
-            .unwrap_or_default();
-        for i in ifaces {
+            .unwrap_or_default()
+    };
+
+    let mut result: Vec<String> = Vec::new();
+    for n in &names {
+        for i in direct_interfaces(n) {
+            if !result.contains(&i) {
+                result.push(i);
+            }
+        }
+    }
+    // Index-based so newly discovered interfaces are expanded in turn while
+    // declaration order is preserved.
+    let mut idx = 0;
+    while idx < result.len() {
+        let current = result[idx].clone();
+        idx += 1;
+        for i in class_parent_chain(&current)
+            .into_iter()
+            .chain(direct_interfaces(&current))
+        {
             if !result.contains(&i) {
                 result.push(i);
             }
@@ -8177,6 +8204,14 @@ fn class_all_interfaces(name: &str) -> Vec<String> {
 
 fn class_is_registered(name: &str) -> bool {
     CLASS_REGISTRY.with(|r| r.borrow().contains_key(name))
+}
+
+/// Registered AND actually a class — `class_exists()` is false for an interface
+/// or a trait. `CLASS_REGISTRY` holds all three kinds (they share the metadata
+/// shape so method/constant lookup works uniformly), so the kind has to be
+/// checked separately via `TYPE_KINDS`.
+fn class_is_registered_as_class(name: &str) -> bool {
+    class_is_registered(name) && !type_kind_is(name, "interface") && !type_kind_is(name, "trait")
 }
 
 fn php_resolve_registered_class_ref(raw: &str) -> Option<String> {
@@ -9202,6 +9237,23 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
     pop_class_context();
     walk_result?;
 
+    // Register the interface's metadata like a class/trait. Without this an
+    // interface was absent from CLASS_REGISTRY entirely, so `class_parents()`
+    // and `class_implements()` could not follow an `interface X extends Y`
+    // edge — `class_implements()` returned only the directly-named interface.
+    // `parents` carries the `extends` list (see `class_all_interfaces`).
+    let meta = extract_class_meta(
+        &name,
+        &parents,
+        &[],
+        &ClassModifiers {
+            kind: ClassKind::Interface,
+            ..ClassModifiers::default()
+        },
+        &class_members,
+        false,
+    );
+    CLASS_REGISTRY.with(|r| r.borrow_mut().insert(name.clone(), meta));
     register_type_kind(&name, "interface");
     Ok(StmtKind::ClassDecl {
         name,
@@ -23634,14 +23686,10 @@ fn php_dateperiod_excludes_start(expr: &Expression) -> bool {
     )
 }
 
+/// PHP's compile-time date folding uses the SHARED calendar rule, so a literal
+/// date folded in the walker and one computed at runtime cannot disagree.
 fn php_days_in_month(y: i64, m: i64) -> i64 {
-    match m {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
-        2 => 28,
-        _ => 30,
-    }
+    vybe_ast::datetime::days_in_month(y, m)
 }
 
 fn php_add_months_overflow(mut y: i64, mut m: i64, d: i64, add: i64) -> (i64, i64, i64) {
@@ -24743,21 +24791,48 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 ));
                 arr_names.push(name);
             }
-            // len = arr0.length
+            // len = max(count($arr0), count($arr1), ...)
+            //
+            // TWO fixes here. `$arr->length` is a MEMBER access, and a PHP
+            // array has no members — it evaluated to undefined and the whole
+            // IIFE died with "undefined is not callable". `count()` is how PHP
+            // spells this. And the bound is the LONGEST input, not the first:
+            // `array_map` pads shorter arrays with null rather than truncating.
+            let count_of = |name: &String| {
+                Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::with_span(
+                            ExprKind::Ident("count".to_string()),
+                            span.clone(),
+                        )),
+                        args: vec![Argument::positional(Expression::with_span(
+                            ExprKind::Ident(name.clone()),
+                            span.clone(),
+                        ))],
+                        optional: false,
+                    },
+                    span.clone(),
+                )
+            };
+            let len_value = if arr_names.len() == 1 {
+                count_of(&arr_names[0])
+            } else {
+                Expression::with_span(
+                    ExprKind::Call {
+                        callee: Box::new(Expression::with_span(
+                            ExprKind::Ident("max".to_string()),
+                            span.clone(),
+                        )),
+                        args: arr_names.iter().map(|n| Argument::positional(count_of(n))).collect(),
+                        optional: false,
+                    },
+                    span.clone(),
+                )
+            };
             init_stmts.push(Statement::with_span(
                 StmtKind::Assign {
                     targets: vec![len_ident()],
-                    value: Expression::with_span(
-                        ExprKind::Member {
-                            object: Box::new(Expression::with_span(
-                                ExprKind::Ident(arr_names[0].clone()),
-                                span.clone(),
-                            )),
-                            field: "length".to_string(),
-                            null_safe: false,
-                        },
-                        span.clone(),
-                    ),
+                    value: len_value,
                 },
                 span.clone(),
             ));
@@ -24801,17 +24876,20 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 },
                 span.clone(),
             );
+            // `array_push($out, v)`, not `$out->push(v)` — a PHP array has no
+            // member methods, so the Member form evaluated to undefined and the
+            // IIFE died before producing anything. Same defect as the
+            // `$arr->length` bound above.
             let push_call = Expression::with_span(
                 ExprKind::Call {
                     callee: Box::new(Expression::with_span(
-                        ExprKind::Member {
-                            object: Box::new(out_ident()),
-                            field: "push".to_string(),
-                            null_safe: false,
-                        },
+                        ExprKind::Ident("array_push".to_string()),
                         span.clone(),
                     )),
-                    args: vec![Argument::positional(cb_call)],
+                    args: vec![
+                        Argument::positional(out_ident()),
+                        Argument::positional(cb_call),
+                    ],
                     optional: false,
                 },
                 span.clone(),
@@ -26082,8 +26160,8 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                         | "IntlCalendar"
                         | "Transliterator"
                     )
-                    || class_is_registered(bare)
-                    || class_is_registered(&normalized)
+                    || class_is_registered_as_class(bare)
+                    || class_is_registered_as_class(&normalized)
                 {
                     return Some(ExprKind::Lit(Literal::Bool(true)));
                 }
@@ -26497,6 +26575,18 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
         }
         // PHP `property_exists($obj, "p")` → `"p" in $obj` (hasOwn).
         "property_exists" if args.len() == 2 => {
+            // A CLASS-NAME receiver has no instance to probe, and `in` on the
+            // class string is always false — resolve declared fields from
+            // CLASS_REGISTRY instead. This also sees `private` properties,
+            // which `property_exists()` reports and an instance probe cannot.
+            if let (Some(c), Some(p)) = (
+                class_name_from_arg(&args[0].value),
+                php_literal_string(&args[1].value),
+            ) {
+                if class_is_registered(&c) {
+                    return Some(ExprKind::Lit(Literal::Bool(class_has_field(&c, &p))));
+                }
+            }
             if let ExprKind::Lit(Literal::Str(_)) = &args[1].value.kind {
                 ExprKind::Binary {
                     op: BinOp::In,
@@ -27724,6 +27814,33 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             }
             _ => return None,
         },
+        // PHP's ENGINE interfaces are always present. Folding these to `true`
+        // is safe in a way folding to `false` is not (see the note below): a
+        // built-in cannot fail to exist, whereas absence proves nothing until
+        // runtime. Every one of these previously answered `false`, because
+        // nothing declares them and the runtime `__kind` probe found no stamp.
+        "interface_exists" if !args.is_empty() => {
+            if let ExprKind::Lit(Literal::Str(n)) = &args[0].value.kind {
+                let bare = n.trim_start_matches('\\');
+                if matches!(
+                    bare,
+                    "Stringable"
+                        | "Countable"
+                        | "ArrayAccess"
+                        | "Traversable"
+                        | "Iterator"
+                        | "IteratorAggregate"
+                        | "Serializable"
+                        | "JsonSerializable"
+                        | "Throwable"
+                        | "UnitEnum"
+                        | "BackedEnum"
+                ) {
+                    return Some(ExprKind::Lit(Literal::Bool(true)));
+                }
+            }
+            return None;
+        }
         // `interface_exists` / `trait_exists` deliberately DO NOT fold here.
         // They resolve through `intrinsic:symbol_exists:<kind>` in the profile,
         // which reads the stamped `__kind` annotation at runtime — the only way

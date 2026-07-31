@@ -4,7 +4,6 @@ include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
 pub mod emitter;
 pub mod normalize_class;
 pub mod protocol;
-pub mod tree_register;
 mod walker;
 
 use pest_derive::Parser;
@@ -26,13 +25,22 @@ pub fn profile_source() -> &'static str {
 /// (vybex) calls this at startup; when the crate becomes a dylib this is the
 /// exported entry point the host invokes after `dlopen`.
 pub fn register() {
+    // The JDK class libraries are a PLATFORM this language consumes — same
+    // relationship csharp/vb have with `vybe_platform_dotnet` and dart has with
+    // `vybe_platform_flutter`. Registering it here mounts the `java.*` root at
+    // language-registration time, so it exists before the first compile.
+    vybe_platform_jvm::register();
     vybe_runtime::registry::register_language(vybe_runtime::registry::LanguageDef {
         name: "java",
         parse,
         profile_source,
         emit_dispatch: Some(emitter::dispatch::dispatch),
         normalize_class: Some(normalize_class::normalize_class),
-        register_tree: Some(tree_register::register_namespace_tree),
+        // The `java.*` root is a PLATFORM capability, not this frontend's
+        // property: `vybe_platform_jvm` registers it from its own
+        // `Plugin::init`, so every language that links the platform benefits
+        // without asking Java for anything.
+        register_tree: None,
     });
 }
 

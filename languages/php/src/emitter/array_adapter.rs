@@ -353,11 +353,69 @@ fn emit_json_stringify_slots(
     call_import(chunks, current, "ecma:json", "stringify", 3, line);
 }
 
+/// The KEYS of a PHP array, with PHP's key types.
+///
+/// `ecma:object.keys` returns the correct key SET — notably it skips holes, so
+/// a list that has been `unset` at an index does not report that index — but it
+/// follows JS and returns property NAMES, i.e. strings. PHP list keys are
+/// integers, and `"0" === 0` is false, so every downstream comparison
+/// (`array_search`, `in_array`, `array_key_exists`, `array_flip`) saw the wrong
+/// type. Convert numeric-looking keys back to numbers and leave the rest alone.
 fn emit_php_key_list_from_slot(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
-    let chunk = &mut chunks[current];
-    lget(chunk, value_slot, line);
-    let _ = chunk;
+    let keys_slot = alloc_local(&mut chunks[current]);
+    let out_slot = alloc_local(&mut chunks[current]);
+    let i_slot = alloc_local(&mut chunks[current]);
+    let n_slot = alloc_local(&mut chunks[current]);
+    let k_slot = alloc_local(&mut chunks[current]);
+
+    lget(&mut chunks[current], value_slot, line);
     call_import(chunks, current, "ecma:object", "keys", 1, line);
+    lset(&mut chunks[current], keys_slot, line);
+
+    // Only a packed list needs the conversion; a keyed array is a Map whose
+    // keys are already real Values of the right type.
+    lget(&mut chunks[current], value_slot, line);
+    call_import(chunks, current, "ecma:array", "isArray", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+
+    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    lset(&mut chunks[current], out_slot, line);
+    lget(&mut chunks[current], keys_slot, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    lset(&mut chunks[current], n_slot, line);
+    push_const(&mut chunks[current], Value::F64(0.0), line);
+    lset(&mut chunks[current], i_slot, line);
+
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    lget(&mut chunks[current], i_slot, line);
+    lget(&mut chunks[current], n_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+
+    lget(&mut chunks[current], keys_slot, line);
+    lget(&mut chunks[current], i_slot, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    call_import(chunks, current, "ecma:number", "Number", 1, line);
+    lset(&mut chunks[current], k_slot, line);
+
+    lget(&mut chunks[current], out_slot, line);
+    lget(&mut chunks[current], k_slot, line);
+    call_import(chunks, current, "ecma:array", "push", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    lget(&mut chunks[current], i_slot, line);
+    push_const(&mut chunks[current], Value::F64(1.0), line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    lset(&mut chunks[current], i_slot, line);
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
+
+    chunks[current].emit_else(line);
+    lget(&mut chunks[current], keys_slot, line);
+    lset(&mut chunks[current], out_slot, line);
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], out_slot, line);
 }
 
 pub fn emit_array_key_exists(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -1123,8 +1181,14 @@ pub fn emit_php_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let chunk = &mut chunks[current];
     chunk.emit_if_value(line);
 
-    // Sequential array → element count.
-    lget(chunk, value_slot, line);
+    // Sequential array → number of PRESENT elements. `ARRAY_LENGTH` is the
+    // JS `.length`, which still spans holes: after `unset($a[1])` on `[1,2,3]`
+    // the length is 3 but PHP counts 2. `ecma:object.keys` skips holes, so its
+    // length is the PHP count.
+    let _ = chunk;
+    lget(&mut chunks[current], value_slot, line);
+    call_import(chunks, current, "ecma:object", "keys", 1, line);
+    let chunk = &mut chunks[current];
     chunk.emit_op(Op::ARRAY_LENGTH, line);
 
     chunk.emit_else(line);
@@ -1538,6 +1602,13 @@ fn emit_call_via_invoke_dispatch<F>(
 }
 
 pub fn emit_array_map(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    // `array_map($cb, $a, $b, ...)` — with MORE THAN ONE array PHP switches
+    // semantics entirely: it zips by POSITION up to the longest input, pads the
+    // short ones with null, and returns a LIST (keys are not preserved, because
+    // there is no single key set to preserve). The single-array form below is
+    // the key-preserving one. Previously the profile capped `max_args = 2`, so
+    // the multi-array call did not resolve at all and failed with "undefined is
+    // not callable".
     let chunk = &mut chunks[current];
     let arr_slot = alloc_local(chunk);
     let fn_slot = alloc_local(chunk);
@@ -6470,3 +6541,5 @@ pub fn emit_php_print_r(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_end(line);
 }
+
+

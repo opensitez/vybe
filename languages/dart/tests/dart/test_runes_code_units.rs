@@ -363,4 +363,32 @@ dart_cases! {
 }"#,
         ["4"]
     };
+
+    // A non-BMP character ANYWHERE in the source used to panic the compiler
+    // before it ran: `normalize_parenthesized_is_ternary` scans BYTES and then
+    // sliced `&source[j..j + 2]`, which lands inside a 4-byte character.
+    // `print('😀');` on its own was enough. Values from real `dart`.
+    non_bmp_literal_in_source_compiles => {
+        r#"void main() {
+  print('😀');
+}"#,
+        ["😀"]
+    };
+
+    non_bmp_length_is_utf16_units => {
+        r#"void main() {
+  print('😀'.length);
+}"#,
+        ["2"]
+    };
+
+    // The `is`-ternary normalisation that the byte scan exists FOR must still
+    // fire in a source that also contains a non-BMP character.
+    is_ternary_still_normalised_beside_non_bmp => {
+        r#"void main() {
+  Object o = 5;
+  print((o is int) ? 'a😀b' : 'no');
+}"#,
+        ["a😀b"]
+    };
 }

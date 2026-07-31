@@ -346,3 +346,57 @@ end."#
         &["0"]
     );
 }
+
+// ── `xor` resolves by OPERAND TYPE, not by spelling ────────────────────────
+//
+// Pascal has one `xor` token with two meanings: bitwise when both operands are
+// integers, logical otherwise. The compiler emits the same bit-xor opcode for
+// both and materializes a Boolean only in the second case, which is why this is
+// a profile property (`xor_is_logical_for_non_integers`) rather than a choice
+// of emit target — see builtinslotplan.md §3i.
+//
+// The bitwise cases above all use integer LITERALS. These pin the other half:
+// the same operator on Boolean operands, and on integer VARIABLES, where the
+// decision is made from a type hint rather than the literal's shape.
+
+#[test]
+fn xor_on_boolean_literals_is_logical() {
+    assert_eq!(
+        run_pascal(r#"program T; begin WriteLn(true xor false); end."#),
+        &["true"]
+    );
+}
+
+#[test]
+fn xor_of_equal_booleans_is_false() {
+    assert_eq!(
+        run_pascal(r#"program T; begin WriteLn(true xor true); end."#),
+        &["false"]
+    );
+}
+
+#[test]
+fn xor_on_boolean_variables_is_logical() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var p, q: Boolean; begin p := True; q := False; WriteLn(p xor q); end."#
+        ),
+        &["true"]
+    );
+}
+
+#[test]
+fn xor_on_integer_variables_is_bitwise() {
+    assert_eq!(
+        run_pascal(r#"program T; var a, b: Integer; begin a := 12; b := 10; WriteLn(a xor b); end."#),
+        &["6"]
+    );
+}
+
+#[test]
+fn xor_on_comparison_results_is_logical() {
+    assert_eq!(
+        run_pascal(r#"program T; begin WriteLn((5 > 3) xor (3 > 5)); end."#),
+        &["true"]
+    );
+}

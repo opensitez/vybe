@@ -15,6 +15,7 @@ vybe_ast = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_platform_vybe = { workspace = true, features = ["gui"] }
 vybe_platform_dotnet = { workspace = true }
+vybe_platform_jvm = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }
 

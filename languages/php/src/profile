@@ -426,7 +426,7 @@ array_search        = { emit = "common:php.array_search",          min_args = 2,
 array_slice         = { emit = "common:php.array_slice",           min_args = 2, max_args = 4 }
 array_merge         = { emit = "common:php.array_merge",           min_args = 1, max_args = 255 }
 range               = { emit = "intrinsic:php_range",              min_args = 2, max_args = 3 }
-array_map           = { emit = "common:php.array_map",             min_args = 2, max_args = 2 }
+array_map           = { emit = "common:php.array_map",             min_args = 2, max_args = 255 }
 zip                 = { emit = "common:php.zip",                       min_args = 2, max_args = 255 }
 array_filter        = { emit = "common:php.array_filter",          min_args = 1, max_args = 3 }
 array_walk_recursive = { emit = "common:php.array_walk_recursive", min_args = 2, max_args = 3 }
@@ -899,7 +899,11 @@ mysqli = ["common", "php.mysqli_init"]
 [value_methods]
 
 toFixed          = { emit = "host:ecma:number:toFixed",           min_args = 0, max_args = 1 }
-shift            = { emit = "host:ecma:array:shift",              min_args = 0, max_args = 0 }
+# The walker lowers `array_shift($a)` to `$a.shift()`, so this entry — not
+# the `array_shift` builtin — is the live path. It must use the polymorphic
+# shared primitive: a PHP array is an `Array` only when packed, a `Map` when
+# keyed, and `ecma:array.shift` understands only the former.
+shift            = { emit = "common:array_shift",                 min_args = 0, max_args = 0 }
 unshift          = { emit = "host:ecma:array:unshift",            min_args = 1, max_args = 255 }
 splice           = { emit = "host:ecma:array:splice",             min_args = 1, max_args = 255 }
 
@@ -1071,3 +1075,13 @@ array  = ["array", "iterable"]
 # `<=>` out of two `<`/`>` calls.
 [builtin_slots.string]
 compare = "common:php.compare3"
+# The cast `.` applies to each operand before concatenating. PHP renders `true`
+# as "1", `false`/`null` as "", and an array as "Array" — none of which is the
+# ECMA `String()` coercion the platform defaults to.
+to_string = "common:php.concat_stringify"
+
+# `+` on two arrays is UNION, not concatenation: keys present on the left win,
+# so `[1,2,3] + [10,20,30,40]` is `[1,2,3,40]`. Arithmetic `+` on numbers is
+# unaffected — this binding is only consulted for the non-numeric case.
+[builtin_slots.array]
+add = "common:php.add"

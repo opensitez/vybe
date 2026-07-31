@@ -87,7 +87,10 @@ $b = [1, 2, 3];
 $res = array_map(fn($x, $y) => "$x-$y", $a, $b);
 echo json_encode($res);
 "#,
-        ["[]"]
+        // array_map walks the LONGEST input and pads the short ones with null,
+        // so an empty FIRST array does not truncate the result — same rule the
+        // unequal-lengths case above asserts.
+        ["[\"-1\",\"-2\",\"-3\"]"]
     };
 
     array_map_multiple_arrays_string_like_numeric_keys => {

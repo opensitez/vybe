@@ -433,15 +433,18 @@ echo $classes[0] === 'Exact\\Class' ? 'exact' : 'miss';
         r#"<?php
 $hit = [];
 spl_autoload_register(function (string $class) use (&$hit): void {
-    if ($class === 'Pre\\Service') { $hit[] = 'first'; eval('namespace Pre; class Service {}'); }
+    if ($class === 'Pre\\Service') { $hit[] = 'first'; }
 });
 $loader = function (string $class) use (&$hit): void {
-    if ($class === 'Pre\\Service') { $hit[] = 'second'; }
+    if ($class === 'Pre\\Service') { $hit[] = 'second'; eval('namespace Pre; class Service {}'); }
 };
 spl_autoload_register($loader, true, false);
 class_exists('Pre\\Service');
 echo implode('|', $hit);
 "#,
+        // The DEFINING loader has to be the appended one: the chain stops as
+        // soon as the class exists, so if the first loader defined it the
+        // second would never run and this would prove nothing about ordering.
         ["first|second"]
     };
 

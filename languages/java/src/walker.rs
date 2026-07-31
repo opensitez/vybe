@@ -3805,7 +3805,7 @@ fn java_enum_pattern_match_expr(value_name: &str, enum_name: &str) -> Option<Exp
 /// Java's intrinsic-backed types (`String`, `Integer`, `Boolean`, …) have no
 /// object to carry a `__type` stamp, so identity for them is a question about
 /// the value's runtime KIND. Which kinds could answer for a given query is
-/// data — `JAVA_TYPES` in `tree_register.rs`, the same table that registers
+/// data — `JAVA_TYPES` in `vybe_platform_jvm`, the same table that registers
 /// those types in the namespace tree — and the test each kind name selects is
 /// the shared one in `ExprKind::IsType`. Nothing Java-specific is emitted.
 ///
@@ -3829,7 +3829,7 @@ fn java_type_test_expr(subject: &Expression, stamped_name: &str) -> Expression {
         // first element when the element type is one the runtime distinguishes.
         // An empty array carries no evidence against the claim, so it passes.
         let is_array = is_type("list");
-        let Some(element) = crate::tree_register::array_element_intrinsic(stamped_name.trim_end())
+        let Some(element) = vybe_platform_jvm::emitter::tree_register::array_element_intrinsic(stamped_name.trim_end())
         else {
             return is_array;
         };
@@ -3857,10 +3857,15 @@ fn java_type_test_expr(subject: &Expression, stamped_name: &str) -> Expression {
             java_binary(BinOp::Or, empty, element_matches),
         );
     }
-    crate::tree_register::intrinsics_answering(java_type_simple_name(stamped_name))
+    // The ancestry table is keyed by SIMPLE name, and `stamped_name` may now be
+    // qualified (`java.lang.Integer`) because the walker preserves the
+    // resolver-visible path. Seed the fold with the simple name too, or every
+    // wrapper type answers `false`.
+    let simple = java_type_simple_name(stamped_name);
+    vybe_platform_jvm::emitter::tree_register::intrinsics_answering(simple)
         .into_iter()
         .map(is_type)
-        .fold(is_type(stamped_name), |acc, test| {
+        .fold(is_type(simple), |acc, test| {
             java_binary(BinOp::Or, acc, test)
         })
 }
@@ -6799,7 +6804,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return expr;
             }
         }
-        if type_name == "ThreadLocalRandom" {
+        if java_simple_type_name(&type_name) == "ThreadLocalRandom" {
             if method == "current" && args.is_empty() {
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__java_random_new")),
@@ -6975,7 +6980,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     return expr;
                 }
             }
-            if type_name == "ThreadLocalRandom" {
+            if java_simple_type_name(type_name) == "ThreadLocalRandom" {
                 if method == "current" && args.is_empty() {
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__java_random_new")),
@@ -8176,6 +8181,17 @@ fn java_comparator_then_comparing(comparator: Expression, next: Expression) -> E
     ))
 }
 
+/// The simple name of a possibly-qualified JDK type
+/// (`java.util.concurrent.ThreadLocalRandom` -> `ThreadLocalRandom`).
+///
+/// `java_qualified_static_type` now preserves the qualified path so the common
+/// resolver can answer it. The walker branches that still match a JDK class by
+/// name must therefore compare the LAST SEGMENT — each one that does not is a
+/// hardcoded class waiting to become a `platforms/jvm` declaration.
+pub(crate) fn java_simple_type_name(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
+}
+
 fn java_qualified_static_type(expr: &Expression) -> Option<String> {
     let mut parts = Vec::new();
     collect_member_chain(expr, &mut parts)?;
@@ -8198,11 +8214,15 @@ fn java_qualified_static_type(expr: &Expression) -> Option<String> {
         return None;
     }
     let type_name = parts.last().copied()?;
-    if is_java_type_or_util(type_name) {
-        Some(type_name.to_string())
-    } else {
-        None
+    if !is_java_type_or_util(type_name) {
+        return None;
     }
+    // Keep the QUALIFIED path. Collapsing `java.util.Arrays` to `Arrays` only
+    // worked while the JDK was declared as bare keys in THIS language's
+    // profile. The declarations now live in `platforms/jvm` as real `Type`
+    // nodes with statics, so the qualified chain is what the COMMON RESOLVER
+    // resolves — and it resolves for every language, not just Java.
+    Some(dotted)
 }
 
 fn collect_member_chain<'a>(expr: &'a Expression, parts: &mut Vec<&'a str>) -> Option<()> {

@@ -83,9 +83,6 @@ pub fn register() {
     vybe_runtime::registry::register_hooks(
         "php",
         vybe_runtime::registry::LanguageHooks {
-            relational_compare: Some(emitter::relational_adapter::emit_relational_compare),
-            arith_add: Some(emitter::array_adapter::emit_php_add),
-            concat_stringify: Some(emitter::string_adapter::emit_concat_stringify),
             variable_namespace: Some(&VARIABLE_NAMESPACE),
             constructor_ref_autoload: Some(
                 emitter::autoload_adapter::emit_constructor_ref_with_autoload,

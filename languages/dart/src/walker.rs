@@ -1163,7 +1163,12 @@ fn normalize_parenthesized_is_ternary(source: &str) -> String {
         while j < bytes.len() && bytes[j].is_ascii_whitespace() {
             j += 1;
         }
-        if j + 2 > bytes.len() || &source[j..j + 2] != "is" {
+        // `source.get(..)`, NOT `&source[..]`: `j` indexes BYTES, and the scans
+        // above stop at the first byte of whatever follows. When that is a
+        // multi-byte character, `j + 2` lands INSIDE it and slicing panics —
+        // `print('<emoji>')` was enough to kill the compiler. `get` returns
+        // `None` on a non-boundary, which folds the old length check in too.
+        if source.get(j..j + 2) != Some("is") {
             out.push('(');
             i = start + 1;
             continue;

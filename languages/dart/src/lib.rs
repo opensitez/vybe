@@ -43,7 +43,6 @@ pub fn register() {
     vybe_runtime::registry::register_hooks(
         "dart",
         vybe_runtime::registry::LanguageHooks {
-            value_eq: Some(vybe_compiler::primitives::tuples::emit_tuple_value_eq),
             ..Default::default()
         },
     );

@@ -420,3 +420,30 @@ fn set_membership_in_function() {
         &["false", "true"]
     );
 }
+
+// ── `in` on a NON-set receiver ─────────────────────────────────────────────
+//
+// Pascal's `in` reaches two different bindings depending on the receiver:
+// `[builtin_slots.set] contains` for a real set, `[builtin_slots.array]
+// contains` otherwise (builtinslotplan.md §3i). Every `in` case above uses a
+// set, so the second binding — and the type test that chooses between them —
+// had no coverage.
+#[test]
+fn in_on_array_is_value_membership() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var a: array[0..3] of Integer; begin a[0]:=10; a[1]:=20; a[2]:=30; a[3]:=40; WriteLn(Ord(30 in a)); WriteLn(Ord(35 in a)); end."#
+        ),
+        &["1", "0"]
+    );
+}
+
+#[test]
+fn not_in_on_array_negates_membership() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; var a: array[0..2] of Integer; begin a[0]:=1; a[1]:=2; a[2]:=3; WriteLn(Ord(99 in a)); end."#
+        ),
+        &["0"]
+    );
+}

@@ -608,3 +608,51 @@ csharp_case!(
     r#"int left = 2; int right = 5; Console.WriteLine(++left + right++); Console.WriteLine(left); Console.WriteLine(right);"#,
     ["8", "3", "6"]
 );
+
+// ── `/` on integral VARIABLES, not literals ────────────────────────────────
+//
+// Every division case above uses two literals, which is the one shape that
+// cannot regress: the lowering short-circuits on `ExprKind::Lit(Literal::Int)`
+// before it ever consults a type hint. So the spelling of an integral TYPE was
+// untested, and `Int32 a = 9, b = 4; a / b` returned 2.25 — the integral check
+// matched the eight bare keywords and not the framework names.
+//
+// Expected values measured against real `dotnet` (SDK 10.0.100), not derived.
+csharp_case!(
+    division_on_int32_framework_name_truncates,
+    r#"Int32 a = 9, b = 4; Console.WriteLine(a / b);"#,
+    ["2"]
+);
+
+csharp_case!(
+    division_on_int64_framework_name_truncates,
+    r#"Int64 a = 17, b = 5; Console.WriteLine(a / b);"#,
+    ["3"]
+);
+
+csharp_case!(
+    division_on_int16_framework_name_truncates,
+    r#"Int16 a = 9, b = 4; Console.WriteLine(a / b);"#,
+    ["2"]
+);
+
+csharp_case!(
+    division_on_uint32_framework_name_truncates,
+    r#"UInt32 a = 9, b = 4; Console.WriteLine(a / b);"#,
+    ["2"]
+);
+
+csharp_case!(
+    division_on_int_keyword_variables_truncates,
+    r#"int a = 9, b = 4; Console.WriteLine(a / b);"#,
+    ["2"]
+);
+
+// The other side of the same gate: `/` on non-integral variables must NOT
+// truncate, or widening the integral spellings would have silently made real
+// division integral.
+csharp_case!(
+    division_on_double_variables_does_not_truncate,
+    r#"double a = 9, b = 4; Console.WriteLine(a / b);"#,
+    ["2.25"]
+);

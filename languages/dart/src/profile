@@ -560,3 +560,9 @@ set    = ["set", "set<*"]
 # on a HIT, so this belongs in the language, not the shared table.
 [builtin_slots.map]
 get_item = "common:dart.index_get"
+
+# Dart records/tuples compare by VALUE, not identity. This is the fallback the
+# shared `==` uses when neither operand has a user `operator ==`; it was
+# `LanguageHooks::value_eq`, keyed by language NAME (builtinslotplan.md §3c).
+[builtin_slots.array]
+eq = "common:dart.value_eq"

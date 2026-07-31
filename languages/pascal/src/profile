@@ -325,6 +325,12 @@ use_dotnet = false
 # `trim().to_lowercase()`, so this is the same predicate, owned by the language.
 [builtin_types]
 set = ["set of *"]
+# Pascal's `char` holds a CHARACTER — its default value is `''`, `Ord`/`Chr`
+# round-trip through it, and `s[i]` yields one of them. The C family's `char` is
+# an 8-bit integer and gets a modular byte coercion the shared compiler used to
+# skip for Pascal by NAME. Listed first, so it wins over the platform table's
+# `char -> Char` row for this language only.
+string = ["char"]
 
 # ── Protocol slot bindings — builtinslotplan.md §2a ────────────────────────
 #
