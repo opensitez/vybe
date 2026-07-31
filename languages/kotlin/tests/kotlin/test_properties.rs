@@ -493,3 +493,276 @@ fn test_property_same_name_local_and_member_do_not_interfere() {
     "#);
     assert_eq!(out, &["local", "member"]);
 }
+
+#[test]
+fn test_property_with_custom_setter_enforces_range() {
+    let out = run_prints(r#"
+        class RangeTracker {
+            var value: Int = 0
+                set(next) {
+                    field = if (next < 0) 0 else next
+                }
+        }
+
+        fun main() {
+            val tracker = RangeTracker()
+            tracker.value = -1
+            println(tracker.value)
+            tracker.value = 3
+            println(tracker.value)
+        }
+    "#);
+    assert_eq!(out, &["0", "3"]);
+}
+
+#[test]
+fn test_computed_property_uses_other_state() {
+    let out = run_prints(r#"
+        class Holder {
+            var left = 2
+            var right = 5
+            val total: Int
+                get() = left + right
+        }
+
+        fun main() {
+            val value = Holder()
+            println(value.total)
+            value.left = 7
+            println(value.total)
+        }
+    "#);
+    assert_eq!(out, &["7", "12"]);
+}
+
+#[test]
+fn test_late_mutation_after_top_level_property_read() {
+    let out = run_prints(r#"
+        var current = 1
+
+        fun bump() {
+            current += 2
+        }
+
+        fun main() {
+            println(current)
+            bump()
+            println(current)
+            current = 10
+            println(current)
+        }
+    "#);
+    assert_eq!(out, &["1", "3", "10"]);
+}
+
+#[test]
+fn test_property_with_private_setter_is_not_mutable_outside_instance() {
+    let out = run_prints(r#"
+        class Counter {
+            var value: Int = 1
+                private set
+
+            fun add(next: Int) {
+                value += next
+            }
+        }
+
+        fun main() {
+            val counter = Counter()
+            counter.add(4)
+            println(counter.value)
+        }
+    "#);
+    assert_eq!(out, &["5"]);
+}
+
+#[test]
+fn test_property_private_setter_can_be_mutated_inside_initializer() {
+    let out = run_prints(r#"
+        class Counter {
+            var value: Int = 0
+                private set
+
+            init {
+                value = 7
+            }
+        }
+
+        fun main() {
+            println(Counter().value)
+        }
+    "#);
+    assert_eq!(out, &["7"]);
+}
+
+#[test]
+fn test_property_jvm_field_backing_name_stable_behavior() {
+    let out = run_prints(r#"
+        class Box {
+            var value: Int = 0
+            val computed: Int
+                get() = value + 1
+        }
+
+        fun main() {
+            val box = Box()
+            box.value = 9
+            println(box.computed)
+            box.value = 0
+            println(box.value)
+        }
+    "#);
+    assert_eq!(out, &["10", "0"]);
+}
+
+#[test]
+fn test_lateinit_property_initialized_lazily_and_checked() {
+    let out = run_prints(r#"
+        class Holder {
+            lateinit var label: String
+
+            fun initialize(value: String) {
+                label = value
+            }
+        }
+
+        fun main() {
+            val holder = Holder()
+            try {
+                println(holder.label)
+            } catch (error: UninitializedPropertyAccessException) {
+                println("not_ready")
+            }
+            holder.initialize("ok")
+            println(holder.label)
+        }
+    "#);
+    assert_eq!(out, &["not_ready", "ok"]);
+}
+
+#[test]
+fn test_lazy_property_initializes_once_across_multiple_accesses() {
+    let out = run_prints(r#"
+        class Cache {
+            var loads = 0
+            val value: String by lazy {
+                loads += 1
+                "loaded"
+            }
+        }
+
+        fun main() {
+            val cache = Cache()
+            println(cache.value)
+            println(cache.value)
+            println(cache.loads)
+        }
+    "#);
+    assert_eq!(out, &["loaded", "loaded", "1"]);
+}
+
+#[test]
+fn test_observed_property_updates_without_recompute() {
+    let out = run_prints(r#"
+        class Item {
+            private var count = 0
+            val snapshot: Int
+                get() = count
+
+            var value: Int
+                get() = count
+                set(next) { count = next + 1 }
+        }
+
+        fun main() {
+            val item = Item()
+            item.value = 7
+            println(item.snapshot)
+            item.value = 1
+            println(item.snapshot)
+            println(item.value)
+        }
+    "#);
+    assert_eq!(out, &["8", "2", "2"]);
+}
+
+#[test]
+fn test_property_reference_in_same_class_uses_backing_field() {
+    let out = run_prints(r#"
+        class Counter {
+            private var raw = 0
+
+            var value: Int
+                get() = raw
+                set(next) { raw = next }
+
+            fun bump() {
+                value++
+            }
+        }
+
+        fun main() {
+            val counter = Counter()
+            counter.bump()
+            counter.bump()
+            println(counter.value)
+        }
+    "#);
+    assert_eq!(out, &["2"]);
+}
+
+#[test]
+fn test_property_extension_on_instance_has_read_access_only() {
+    let out = run_prints(r#"
+        class Item(val name: String)
+
+        val Item.label: String
+            get() = name + "-tag"
+
+        fun main() {
+            val item = Item("x")
+            println(item.label)
+        }
+    "#);
+    assert_eq!(out, &["x-tag"]);
+}
+
+#[test]
+fn test_top_level_mutable_property_is_shared_across_calls() {
+    let out = run_prints(r#"
+        var total = 0
+
+        fun inc() {
+            total += 1
+        }
+
+        fun snapshot(): Int = total
+
+        fun main() {
+            println(snapshot())
+            inc()
+            println(snapshot())
+            inc()
+            println(snapshot())
+        }
+    "#);
+    assert_eq!(out, &["0", "1", "2"]);
+}
+
+#[test]
+fn test_property_shadowing_in_nested_function_does_not_mask_member() {
+    let out = run_prints(r#"
+        class Holder(var value: String)
+
+        fun main() {
+            val holder = Holder("member")
+            fun readLabel(value: String): String {
+                return holder.value + "-" + value
+            }
+            println(readLabel("arg"))
+            holder.value = "next"
+            println(readLabel("arg"))
+        }
+    "#);
+    assert_eq!(out, &["member-arg", "next-arg"]);
+}

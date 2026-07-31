@@ -517,3 +517,86 @@ fn test_while_loop_with_boolean_flag_and_loop_variable() {
     "#);
     assert_eq!(out, &["10"]);
 }
+
+#[test]
+fn test_for_over_empty_collection_keeps_accumulator_zero() {
+    let out = run_prints(r#"
+        fun main() {
+            val values = intArrayOf()
+            var seen = 0
+            for (value in values) {
+                seen += value
+            }
+            println(seen)
+        }
+    "#);
+    assert_eq!(out, &["0"]);
+}
+
+#[test]
+fn test_repeat_zero_iteration_is_noop() {
+    let out = run_prints(r#"
+        fun main() {
+            var total = 0
+            repeat(0) {
+                total += 1
+            }
+            println(total)
+        }
+    "#);
+    assert_eq!(out, &["0"]);
+}
+
+#[test]
+fn test_while_labeled_continue_targets_outer_loop() {
+    let out = run_prints(r#"
+        fun main() {
+            var i = 0
+            var total = 0
+            outer@ while (i < 3) {
+                i += 1
+                var j = 0
+                while (j < 3) {
+                    j += 1
+                    if (j == 2) continue@outer
+                    total += i * j
+                }
+                total += 10
+            }
+            println(i)
+            println(total)
+        }
+    "#);
+    assert_eq!(out, &["3", "6"]);
+}
+
+#[test]
+fn test_do_while_runs_once_before_condition_is_checked() {
+    let out = run_prints(r#"
+        fun main() {
+            var total = 0
+            var i = 9
+            do {
+                total += i
+                i -= 2
+            } while (i < 0)
+            println(total)
+            println(i)
+        }
+    "#);
+    assert_eq!(out, &["9", "7"]);
+}
+
+#[test]
+fn test_for_on_char_range_with_step_includes_expected_codepoints() {
+    let out = run_prints(r#"
+        fun main() {
+            var text = ""
+            for (c in 'a'..'f' step 2) {
+                text += c.toString()
+            }
+            println(text)
+        }
+    "#);
+    assert_eq!(out, &["ace"]);
+}

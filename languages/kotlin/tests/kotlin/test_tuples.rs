@@ -395,3 +395,119 @@ fn test_tuple_pair_values_replace_in_mutable_collection() {
     "#);
     assert_eq!(out, &["(1, 2)", "(5, 6)", "2"]);
 }
+
+#[test]
+fn test_pair_destructuring_captures_expected_values() {
+    let out = run_prints(r#"
+        fun main() {
+            val (left, right) = Pair(8, 13)
+            println(left)
+            println(right)
+        }
+    "#);
+    assert_eq!(out, &["8", "13"]);
+}
+
+#[test]
+fn test_triple_destructuring_skips_first_component() {
+    let out = run_prints(r#"
+        fun main() {
+            val (_, mid, last) = Triple("a", 14, 15)
+            println(mid)
+            println(last)
+        }
+    "#);
+    assert_eq!(out, &["14", "15"]);
+}
+
+#[test]
+fn test_destructuring_works_in_for_loop_over_pairs() {
+    let out = run_prints(r#"
+        fun main() {
+            val rows = listOf(Pair("a", 1), Pair("b", 2), Pair("c", 3))
+            var total = ""
+            for ((label, value) in rows) {
+                total += "$label$value-"
+            }
+            println(total)
+        }
+    "#);
+    assert_eq!(out, &["a1-b2-c3-"]);
+}
+
+#[test]
+fn test_destructuring_works_with_triple_in_while_like_rewrite() {
+    let out = run_prints(r#"
+        fun main() {
+            var index = 0
+            var total = ""
+            val values = listOf(Triple("a", 1, 10), Triple("b", 2, 20))
+            while (index < values.size) {
+                val (_, left, right) = values[index]
+                total += "$left:$right;"
+                index++
+            }
+            println(total)
+        }
+    "#);
+    assert_eq!(out, &["1:10;2:20;"]);
+}
+
+#[test]
+fn test_destructuring_assignment_uses_last_writer() {
+    let out = run_prints(r#"
+        fun main() {
+            var pair = Pair(1, 2)
+            var (first, second) = pair
+            first = 9
+            pair = Pair(first, second + 1)
+            println(pair)
+        }
+    "#);
+    assert_eq!(out, &["(9, 3)"]);
+}
+
+#[test]
+fn test_pair_projection_after_mutation_remains_value_copy() {
+    let out = run_prints(r#"
+        fun main() {
+            val source = mutableListOf(1, 2)
+            val (left, right) = Pair(source[0], source[1])
+            source[0] = 9
+            println(left)
+            println(right)
+        }
+    "#);
+    assert_eq!(out, &["1", "2"]);
+}
+
+#[test]
+fn test_tuple_with_nullable_components_in_destructure() {
+    let out = run_prints(r#"
+        fun main() {
+            val pair: Pair<String?, String?> = Pair(null, "x")
+            val (left, right) = pair
+            println(left == null)
+            println(right.length)
+        }
+    "#);
+    assert_eq!(out, &["true", "1"]);
+}
+
+#[test]
+fn test_triple_used_as_pair_like_in_map_with_projection() {
+    let out = run_prints(r#"
+        fun main() {
+            val points = listOf(
+                Triple("a", 1, 10),
+                Triple("b", 2, 20)
+            ).associateBy { it.first }
+            val first = "a"
+            val values = points[first]!!
+            println(first)
+            println(values.second)
+            println(values.third)
+        }
+    "#);
+    assert_eq!(out, &["a", "1", "10"]);
+}

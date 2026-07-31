@@ -668,7 +668,7 @@ fn test_set_zip_with_index_like_build() {
 }
 
 #[test]
-fn test_set_takeWhile_skipWhile_sequence_operators() {
+fn test_set_take_while_skip_while_sequence_operators() {
     let out = run_prints(r#"
         fun main() {
             val values = linkedSetOf(1, 2, 3, 4, 5)
@@ -677,6 +677,78 @@ fn test_set_takeWhile_skipWhile_sequence_operators() {
         }
     "#);
     assert_eq!(out, &["[1, 2, 3]", "[4, 5]"]);
+}
+
+#[test]
+fn test_set_lookup_with_mutated_element_hash_breaks() {
+    let out = run_prints(r#"
+        fun main() {
+            data class Item(var id: Int)
+            val item = Item(1)
+            val values = hashSetOf(item)
+            println(values.contains(item))
+            item.id = 99
+            println(values.contains(item))
+        }
+    "#);
+    assert_eq!(out, &["true", "false"]);
+}
+
+#[test]
+fn test_set_equals_by_value_on_data_class_instances() {
+    let out = run_prints(r#"
+        fun main() {
+            data class Label(val id: Int, val name: String)
+            val values = setOf(Label(1, "x"))
+            println(values.contains(Label(1, "x")))
+            println(values.contains(Label(1, "y")))
+        }
+    "#);
+    assert_eq!(out, &["true", "false"]);
+}
+
+#[test]
+fn test_set_reference_equality_with_plain_class() {
+    let out = run_prints(r#"
+        fun main() {
+            class Label(val id: Int)
+            val values = setOf(Label(1))
+            println(values.contains(Label(1)))
+        }
+    "#);
+    assert_eq!(out, &["false"]);
+}
+
+#[test]
+fn test_set_replace_element_after_remove_by_equal_shape() {
+    let out = run_prints(r#"
+        data class Box(val id: Int)
+
+        fun main() {
+            val values = mutableSetOf(Box(1), Box(2))
+            values.remove(Box(1))
+            values.add(Box(3))
+            println(values.size)
+            println(values.contains(Box(2)))
+            println(values.contains(Box(1)))
+            println(values.contains(Box(3)))
+        }
+    "#);
+    assert_eq!(out, &["2", "true", "false", "true"]);
+}
+
+#[test]
+fn test_set_retain_all_with_self_is_noop() {
+    let out = run_prints(r#"
+        fun main() {
+            val values = mutableSetOf(1, 2, 3)
+            println(values.retainAll(values.toSet()))
+            println(values.size)
+            println(values.contains(1))
+            println(values.contains(3))
+        }
+    "#);
+    assert_eq!(out, &["false", "3", "true", "true"]);
 }
 
 #[test]

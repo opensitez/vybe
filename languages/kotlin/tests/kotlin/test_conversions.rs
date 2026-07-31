@@ -283,7 +283,7 @@ fn test_boolean_case_insensitive_parse() {
 }
 
 #[test]
-fn test_boolean_toString_and_nullable_toBoolean() {
+fn test_boolean_to_string_and_nullable_to_boolean() {
     let out = run_prints(r#"
         fun main() {
             val a = false.toString()
@@ -575,7 +575,7 @@ fn test_string_to_long_or_null_radix_boundary() {
 }
 
 #[test]
-fn test_character_toInt_and_toString_is_roundtrip() {
+fn test_character_to_int_and_to_string_is_roundtrip() {
     let out = run_prints(r#"
         fun main() {
             val ch = 'z'
@@ -589,7 +589,7 @@ fn test_character_toInt_and_toString_is_roundtrip() {
 }
 
 #[test]
-fn test_toBoolean_or_null_distinguishes_truthy_and_garbage() {
+fn test_to_boolean_or_null_distinguishes_truthy_and_garbage() {
     let out = run_prints(r#"
         fun main() {
             println("true".toBooleanOrNull() ?: "null")

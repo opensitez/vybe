@@ -1,4 +1,4 @@
-use crate::helpers::run_prints;
+use crate::helpers::{run_prints};
 
 #[test]
 fn test_generic_identity_function() {
@@ -651,4 +651,215 @@ fn test_generic_factory_function_with_variadic_tuple_emulation() {
         }
     "#);
     assert_eq!(out, &["1", "k", "true3.2"]);
+}
+
+#[test]
+fn test_generic_method_type_argument_overload_resolution() {
+    let out = run_prints(r#"
+        fun <T> format(value: T): String = value.toString()
+
+        fun <T> format(value: T, prefix: String): String {
+            return prefix + ":" + value
+        }
+
+        fun main() {
+            println(format(9))
+            println(format(9, "num"))
+        }
+    "#);
+    assert_eq!(out, &["9", "num:9"]);
+}
+
+#[test]
+fn test_generic_covariant_readonly_collection_can_receive_concrete_subtype() {
+    let out = run_prints(r#"
+        fun <T> countValues(values: List<T>): Int {
+            return values.size
+        }
+
+        fun main() {
+            val ints: MutableList<Int> = mutableListOf(1, 2, 3)
+            val numbers: List<Number> = ints
+            println(countValues(numbers))
+            println(countValues(ints))
+        }
+    "#);
+    assert_eq!(out, &["3", "3"]);
+}
+
+#[test]
+fn test_generic_recursive_data_structure_preserves_type() {
+    let out = run_prints(r#"
+        data class Node<T>(val value: T, val next: Node<T>? = null)
+
+        fun <T> collect(values: Node<T>): String {
+            var cursor: Node<T>? = values
+            var out = ""
+            while (cursor != null) {
+                out += cursor.value.toString()
+                cursor = cursor.next
+                if (cursor != null) out += "-"
+            }
+            return out
+        }
+
+        fun main() {
+            val chain = Node("a", Node("b", Node("c")))
+            println(collect(chain))
+        }
+    "#);
+    assert_eq!(out, &["a-b-c"]);
+}
+
+#[test]
+fn test_generic_class_with_shadowed_type_parameter() {
+    let out = run_prints(r#"
+        class Holder<T>(val value: T) {
+            fun <R> map(transform: (T) -> R): Holder<R> {
+                return Holder(transform(value))
+            }
+        }
+
+        fun main() {
+            val holder = Holder("7")
+            val number = holder.map { it.toInt() }
+            val text = holder.map { it + it }
+            println(number.value + 1)
+            println(text.value)
+        }
+    "#);
+    assert_eq!(out, &["8", "77"]);
+}
+
+#[test]
+fn test_generic_two_way_variance_contract() {
+    let out = run_prints(r#"
+        interface Converter<in S, out T> {
+            fun convert(value: S): T
+        }
+
+        class StringToInt : Converter<String, Number> {
+            override fun convert(value: String): Number = value.length
+        }
+
+        fun emit(any: Converter<CharSequence, Number>, value: CharSequence): String {
+            return any.convert(value).toString()
+        }
+
+        fun main() {
+            val converter: Converter<Any, Number> = StringToInt()
+            println(emit(converter, "abc"))
+        }
+    "#);
+    assert_eq!(out, &["3"]);
+}
+
+#[test]
+fn test_generic_projection_of_list_producer_consumer() {
+    let out = run_prints(r#"
+        interface Producer<out T> {
+            fun produce(): T
+        }
+
+        interface Consumer<in T> {
+            fun consume(value: T)
+        }
+
+        class StringProducer : Producer<String> {
+            var value = "go"
+            override fun produce(): String = value
+        }
+
+        class AnyConsumer : Consumer<Any> {
+            var last: Any? = null
+            override fun consume(value: Any) { last = value }
+            fun seen(): String = last.toString()
+        }
+
+        fun pipe(source: Producer<String>, sink: Consumer<CharSequence>) {
+            sink.consume(source.produce())
+        }
+
+        fun main() {
+            val producer: Producer<String> = StringProducer()
+            val consumer = AnyConsumer()
+            pipe(producer, consumer)
+            println(consumer.seen())
+        }
+    "#);
+    assert_eq!(out, &["go"]);
+}
+
+#[test]
+fn test_generic_where_clause_with_number_and_serializable() {
+    let out = run_prints(r#"
+        import java.io.Serializable
+
+        fun <T> describe(value: T): String
+        where T : Number, T : Serializable {
+            return value.toString()
+        }
+
+        fun main() {
+            println(describe(12))
+            println(describe(3.4))
+        }
+    "#);
+    assert_eq!(out, &["12", "3.4"]);
+}
+
+#[test]
+fn test_generic_function_rejects_incompatible_constraints_by_type_inference() {
+    let out = run_prints(r#"
+        fun <T> pairSize(left: T, right: T): Int {
+            return 2
+        }
+
+        class Item
+
+        fun main() {
+            println(pairSize(Item(), Item()))
+            val left = Item()
+            val right = Item()
+            println(pairSize(left, right))
+        }
+    "#);
+    assert_eq!(out, &["2", "2"]);
+}
+
+#[test]
+fn test_generic_nested_generic_function_chain() {
+    let out = run_prints(r#"
+        fun <T> wrap(value: T): Box<T> = Box(value)
+        class Box<T>(val value: T)
+
+        fun <T, R> wrapChain(value: T, op: (T) -> R): Box<R> {
+            return wrap(op(value))
+        }
+
+        fun main() {
+            val boxed = wrapChain(3, { it + 1 })
+            val text = wrapChain("ok", { it + "!" })
+            println(boxed.value)
+            println(text.value)
+        }
+    "#);
+    assert_eq!(out, &["4", "ok!"]);
+}
+
+#[test]
+fn test_generic_map_projection_of_collections() {
+    let out = run_prints(r#"
+        fun <T> toStringMap(values: Map<String, T>): Map<String, String> {
+            return values.mapValues { it.value.toString() }
+        }
+
+        fun main() {
+            val input: Map<String, Int> = mapOf("a" to 1, "b" to 2)
+            val projected = toStringMap(input)
+            println(projected["a"])
+            println(projected["b"])
+        }
+    "#);
+    assert_eq!(out, &["1", "2"]);
 }

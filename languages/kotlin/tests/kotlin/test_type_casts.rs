@@ -779,3 +779,122 @@ fn test_as_with_null_coalescing_is_non_throwing_for_nullable_source() {
     "#);
     assert_eq!(out, &["kotlin", "missing"]);
 }
+
+#[test]
+fn test_safe_cast_respects_function_type_arity_and_parameter_types() {
+    let out = run_prints(r#"
+        fun main() {
+            val handler: Any = { value: Int -> value.toString() }
+            val unary = handler as? (Int) -> String
+            val binary = handler as? (Int, Int) -> String
+            println(unary != null)
+            println(binary == null)
+        }
+    "#);
+    assert_eq!(out, &["true", "true"]);
+}
+
+#[test]
+fn test_unsafe_cast_to_incompatible_function_type_is_caught() {
+    let out = run_prints(r#"
+        fun main() {
+            val handler: Any = { value: String -> value + "!" }
+            try {
+                val bad = handler as (Int) -> String
+                println("bad:" + bad(3))
+            } catch (e: Exception) {
+                println("caught")
+            }
+        }
+    "#);
+    assert_eq!(out, &["caught"]);
+}
+
+#[test]
+fn test_is_check_for_number_interface_vs_concrete_numeric_type() {
+    let out = run_prints(r#"
+        fun main() {
+            val intValue: Any = 12
+            val longValue: Any = 12L
+            val doubleValue: Any = 12.0
+
+            println(intValue is Number)
+            println(longValue is Int)
+            println(doubleValue is Long)
+            println(longValue is Number)
+            println(intValue as? Int != null)
+            println(longValue as? Int == null)
+        }
+    "#);
+    assert_eq!(out, &["true", "false", "false", "true", "true", "true"]);
+}
+
+#[test]
+fn test_as_list_to_mutable_list_preserves_reference_when_possible() {
+    let out = run_prints(r#"
+        fun main() {
+            val readonly: List<Int> = listOf(1, 2, 3)
+            try {
+                val mutable = readonly as MutableList<Int>
+                mutable.add(4)
+                println("mutated")
+            } catch (e: Exception) {
+                println("rejected")
+            }
+        }
+    "#);
+    assert_eq!(out, &["rejected"]);
+}
+
+#[test]
+fn test_casting_array_to_primitive_array_projection_is_type_checked() {
+    let out = run_prints(r#"
+        fun main() {
+            val values: Any = arrayOf(5, 6, 7)
+            val primitive = values as? IntArray
+            val boxed = values as? Array<Int>
+            println(primitive == null)
+            println(boxed != null)
+            println(boxed?.size)
+        }
+    "#);
+    assert_eq!(out, &["true", "true", "3"]);
+}
+
+#[test]
+fn test_smart_cast_lost_after_reassignment_in_the_same_scope() {
+    let out = run_prints(r#"
+        fun main() {
+            var value: Any = "start"
+            if (value is String) {
+                println(value.length)
+                value = 9
+            }
+            if (value is String) {
+                println("after-string")
+            } else {
+                println("after-not-string")
+            }
+        }
+    "#);
+    assert_eq!(out, &["5", "after-not-string"]);
+}
+
+#[test]
+fn test_casting_nullable_to_non_nullable_is_forced_and_throws() {
+    let out = run_prints(r#"
+        fun main() {
+            val source: Any? = null
+            val direct: String? = source as String?
+            println(direct == null)
+
+            try {
+                val strict: String = source as String
+                println(strict)
+            } catch (e: Exception) {
+                println("caught")
+            }
+        }
+    "#);
+    assert_eq!(out, &["true", "caught"]);
+}

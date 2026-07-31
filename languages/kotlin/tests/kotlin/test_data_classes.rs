@@ -514,3 +514,184 @@ fn test_data_class_copy_uses_named_and_positional_semantics_together() {
     "#);
     assert_eq!(out, &["Range(start=1, end=10)", "Range(start=2, end=10)"]);
 }
+
+#[test]
+fn test_data_class_default_values_preserve_when_copying_subset() {
+    let out = run_prints(r#"
+        data class Flag(val enabled: Boolean = true, val count: Int = 1)
+
+        fun main() {
+            val base = Flag()
+            val copied = base.copy(count = 7)
+            println(base.enabled)
+            println(base.count)
+            println(copied.enabled)
+            println(copied.count)
+        }
+    "#);
+    assert_eq!(out, &["true", "1", "true", "7"]);
+}
+
+#[test]
+fn test_data_class_var_mutation_changes_equality_result() {
+    let out = run_prints(r#"
+        data class Box(var text: String, val id: Int)
+
+        fun main() {
+            val a = Box("a", 1)
+            val b = Box("a", 1)
+            val sameBefore = (a == b)
+            a.text = "b"
+            println(sameBefore)
+            println(a == b)
+            println(a.text)
+        }
+    "#);
+    assert_eq!(out, &["true", "false", "b"]);
+}
+
+#[test]
+fn test_data_class_list_field_round_trips_through_copy() {
+    let out = run_prints(r#"
+        data class Bucket(val values: MutableList<Int>)
+
+        fun main() {
+            val base = Bucket(mutableListOf(1, 2))
+            val copy = base.copy()
+            copy.values.add(3)
+            println(base.values.size)
+            println(copy.values.size)
+            println(base.values[2])
+        }
+    "#);
+    assert_eq!(out, &["3", "3", "3"]);
+}
+
+#[test]
+fn test_data_class_in_set_with_mutated_var_field_can_change_lookup() {
+    let out = run_prints(r#"
+        data class Packet(var id: Int, val payload: String)
+
+        fun main() {
+            val one = Packet(1, "x")
+            val set = mutableSetOf(one)
+            println(set.contains(Packet(1, "x")))
+            one.id = 2
+            println(set.contains(Packet(2, "x")))
+            println(set.contains(Packet(1, "x")))
+        }
+    "#);
+    assert_eq!(out, &["true", "false", "false"]);
+}
+
+#[test]
+fn test_data_class_in_map_for_hash_lookup_after_copy() {
+    let out = run_prints(r#"
+        data class Key(val id: Int, val label: String)
+
+        fun main() {
+            val original = Key(1, "a")
+            val map = mutableMapOf(original to "first")
+            val copy = original.copy()
+            original.label = "b"
+            println(map[original] == null)
+            println(map[copy])
+        }
+    "#);
+    assert_eq!(out, &["true", "first"]);
+}
+
+#[test]
+fn test_data_class_destructuring_with_nested_components_in_expression() {
+    let out = run_prints(r#"
+        data class Range(val start: Int, val end: Int)
+        data class Window(val left: Range, val right: Range)
+
+        fun size(window: Window): Int {
+            val (first, second) = window
+            return (first.end - first.start) + (second.end - second.start)
+        }
+
+        fun main() {
+            val window = Window(Range(1, 4), Range(10, 20))
+            println(size(window))
+        }
+    "#);
+    assert_eq!(out, &["13"]);
+}
+
+#[test]
+fn test_data_class_copy_with_expression_args() {
+    let out = run_prints(r#"
+        data class Point(val x: Int, val y: Int, val z: Int = 0)
+
+        fun main() {
+            val a = Point(1, 2)
+            val b = a.copy(z = a.x + a.y)
+            println(b.z)
+            println(b.x + b.y + b.z)
+        }
+    "#);
+    assert_eq!(out, &["3", "6"]);
+}
+
+#[test]
+fn test_data_class_components_power_for_map_key_projection() {
+    let out = run_prints(r#"
+        data class Tile(val row: Int, val col: Int)
+
+        fun main() {
+            val tiles = listOf(Tile(0, 1), Tile(2, 3))
+            val labels = tiles
+                .map { it.component1() to it.component2() }
+                .joinToString(";") { "${it.first},${it.second}" }
+            println(labels)
+        }
+    "#);
+    assert_eq!(out, &["0,1;2,3"]);
+}
+
+#[test]
+fn test_data_class_to_string_exposes_field_names() {
+    let out = run_prints(r#"
+        data class Trace(val action: String, val count: Int)
+
+        fun main() {
+            val item = Trace("run", 3)
+            println(item.toString())
+        }
+    "#);
+    assert_eq!(out, &["Trace(action=run, count=3)"]);
+}
+
+#[test]
+fn test_data_class_copy_chain_preserves_immutability_surface() {
+    let out = run_prints(r#"
+        data class Node(val id: Int, val next: Node?)
+
+        fun main() {
+            val a = Node(1, Node(2, null))
+            val b = a.copy(id = 10)
+            println(a.id)
+            println(a.next?.id)
+            println(b.id)
+            println(b.next?.id)
+        }
+    "#);
+    assert_eq!(out, &["1", "2", "10", "2"]);
+}
+
+#[test]
+fn test_data_class_array_is_equal_by_structural_values() {
+    let out = run_prints(r#"
+        data class Record(val values: IntArray)
+
+        fun main() {
+            val a = Record(intArrayOf(1, 2))
+            val b = Record(intArrayOf(1, 2))
+            println(a == b)
+            println(a.values.contentToString())
+        }
+    "#);
+    assert_eq!(out, &["false", "[1, 2]"]);
+}

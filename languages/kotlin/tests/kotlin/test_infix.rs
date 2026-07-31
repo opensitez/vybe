@@ -300,7 +300,7 @@ fun main() { val inRange = (-3..3); println(0 in inRange); println(4 in inRange)
 }
 
 #[test]
-fn test_infix_downTo_then_step() {
+fn test_infix_down_to_then_step() {
     let out = run_prints(r#"
 fun main() { var total = 0; for (i in 9 downTo 1 step 2) { total += i }; println(total) }
 "#);

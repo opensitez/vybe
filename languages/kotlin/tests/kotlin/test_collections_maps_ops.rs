@@ -725,3 +725,168 @@ fn test_map_get_or_put_without_recomputing_for_present_key() {
     "#);
     assert_eq!(out, &["1", "77", "1"]);
 }
+
+#[test]
+fn test_map_associate_by_to_populates_destination() {
+    let out = run_prints(r#"
+        fun main() {
+            val words = listOf("k", "ka", "kb")
+            val byLength = mutableMapOf<Int, String>()
+            words.associateByTo(byLength, { it.length })
+            println(byLength[1])
+            println(byLength[2])
+        }
+    "#);
+    assert_eq!(out, &["k", "kb"]);
+}
+
+#[test]
+fn test_map_group_by_to_destination_merges_duplicates() {
+    let out = run_prints(r#"
+        fun main() {
+            val words = listOf("a", "bb", "cc", "ddd", "eee")
+            val groups = mutableMapOf<Int, MutableList<String>>()
+            words.groupByTo(groups, { it.length })
+            println(groups[1]?.size)
+            println(groups[2]?.size)
+            println(groups[3]?.size)
+        }
+    "#);
+    assert_eq!(out, &["1", "2", "2"]);
+}
+
+#[test]
+fn test_map_associate_with_duplicate_keys_keeps_last_entry() {
+    let out = run_prints(r#"
+        fun main() {
+            val source = listOf("a" to 1, "b" to 2, "a" to 3, "b" to 4)
+            val map = source.associate { it.first to it.second }
+            println(map["a"])
+            println(map["b"])
+            println(map.size)
+        }
+    "#);
+    assert_eq!(out, &["3", "4", "2"]);
+}
+
+#[test]
+fn test_map_to_mutable_map_is_snapshot_insertion_independent() {
+    let out = run_prints(r#"
+        fun main() {
+            val base = mapOf("x" to 1, "y" to 2)
+            val copied = base.toMutableMap()
+            copied["z"] = 3
+            println(base["z"])
+            println(copied["z"])
+            println(copied.size)
+            println(base.size)
+        }
+    "#);
+    assert_eq!(out, &["null", "3", "3", "2"]);
+}
+
+#[test]
+fn test_map_iterator_remove_during_iteration() {
+    let out = run_prints(r#"
+        fun main() {
+            val map = mutableMapOf("a" to 1, "b" to 2, "c" to 3, "d" to 4)
+            val iter = map.entries.iterator()
+            while (iter.hasNext()) {
+                val current = iter.next()
+                if (current.value % 2 == 0) {
+                    iter.remove()
+                }
+            }
+            println(map.size)
+            println(map["b"])
+            println(map["d"])
+            println(map["a"] + map["c"])
+        }
+    "#);
+    assert_eq!(out, &["2", "null", "null", "4"]);
+}
+
+#[test]
+fn test_map_filter_values_retains_only_matching_and_preserves_order() {
+    let out = run_prints(r#"
+        fun main() {
+            val map = linkedMapOf("a" to 1, "b" to 2, "c" to 3)
+            val filtered = map.filterValues { it >= 2 }
+            println(filtered.keys.joinToString(","))
+            println(filtered.values.joinToString(","))
+        }
+    "#);
+    assert_eq!(out, &["b,c", "2,3"]);
+}
+
+#[test]
+fn test_map_map_values_then_filter_keys_chain() {
+    let out = run_prints(r#"
+        fun main() {
+            val map = mapOf("a" to 1, "bb" to 2, "ccc" to 3)
+            val result = map
+                .mapValues { it.value * 2 }
+                .filterKeys { it.length <= 2 }
+            println(result["a"])
+            println(result["bb"])
+            println(result["ccc"] ?: -1)
+        }
+    "#);
+    assert_eq!(out, &["2", "4", "-1"]);
+}
+
+#[test]
+fn test_map_count_and_sum_from_entries_projection() {
+    let out = run_prints(r#"
+        fun main() {
+            val map = mapOf("a" to 1, "b" to 2, "c" to 3)
+            val sum = map.entries.map { it.value }.sum()
+            val count = map.entries.filter { it.key != "b" }.count()
+            println(sum)
+            println(count)
+        }
+    "#);
+    assert_eq!(out, &["6", "2"]);
+}
+
+#[test]
+fn test_map_join_to_string_with_entry_shape() {
+    let out = run_prints(r#"
+        fun main() {
+            val map = mapOf("a" to 1, "b" to 2)
+            val formatted = map.entries.joinToString("|") { "${it.key}:${it.value}" }
+            println(formatted)
+        }
+    "#);
+    assert_eq!(out, &["a:1|b:2"]);
+}
+
+#[test]
+fn test_map_merge_without_overwrite_keeps_existing() {
+    let out = run_prints(r#"
+        fun main() {
+            val base = linkedMapOf("a" to 1, "b" to 2)
+            val extras = mapOf("b" to 20, "c" to 3)
+            val merged = extras + base
+            println(merged["a"])
+            println(merged["b"])
+            println(merged["c"])
+        }
+    "#);
+    assert_eq!(out, &["1", "2", "3"]);
+}
+
+#[test]
+fn test_map_plus_assign_and_minus_assign_stability() {
+    let out = run_prints(r#"
+        fun main() {
+            val map = mutableMapOf("a" to 1, "b" to 2, "c" to 3)
+            map += mapOf("d" to 4)
+            map -= "b"
+            println(map.size)
+            println(map["a"] + (map["c"] ?: 0) + (map["d"] ?: 0))
+            println(map["b"] ?: -1)
+        }
+    "#);
+    assert_eq!(out, &["3", "8", "-1"]);
+}

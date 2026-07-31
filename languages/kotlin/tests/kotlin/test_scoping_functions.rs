@@ -392,3 +392,462 @@ fn test_apply_and_run_builder_style() {
     "#);
     assert_eq!(out, &["ab"]);
 }
+
+#[test]
+fn test_run_reads_and_transforms_receiver() {
+    let out = run_prints(r#"
+        class Holder {
+            var value = 2
+        }
+
+        fun main() {
+            val result = Holder().run {
+                value *= 3
+                value + 1
+            }
+            println(result)
+        }
+    "#);
+    assert_eq!(out, &["7"]);
+}
+
+#[test]
+fn test_also_keeps_original_receiver_for_further_use() {
+    let out = run_prints(r#"
+        class Holder(var text: String)
+
+        fun main() {
+            val item = Holder("x")
+                .also { it.text = it.text + "y" }
+                .also { it.text = it.text + "z" }
+            println(item.text)
+        }
+    "#);
+    assert_eq!(out, &["xyz"]);
+}
+
+#[test]
+fn test_with_block_scopes_multiple_property_updates() {
+    let out = run_prints(r#"
+        class Holder {
+            var value = 1
+            fun add(step: Int) { value += step }
+        }
+
+        fun main() {
+            val out = with(Holder()) {
+                add(3)
+                add(2)
+                value
+            }
+            println(out)
+        }
+    "#);
+    assert_eq!(out, &["6"]);
+}
+
+#[test]
+fn test_let_returns_receiver_when_no_transformation() {
+    let out = run_prints(r#"
+        fun main() {
+            val value = "kotlin"
+            val result = value.let { it }
+            println(result)
+            println(result === value)
+        }
+    "#);
+    assert_eq!(out, &["kotlin", "true"]);
+}
+
+#[test]
+fn test_apply_keeps_reference_and_allows_multiple_mutations() {
+    let out = run_prints(r#"
+        class Box(var value: Int = 0)
+
+        fun main() {
+            val box = Box()
+                .apply { value += 1 }
+                .apply { value += 2 }
+                .apply { value *= 2 }
+            println(box.value)
+        }
+    "#);
+    assert_eq!(out, &["6"]);
+}
+
+#[test]
+fn test_run_can_catch_and_continue_from_exception_in_scope() {
+    let out = run_prints(r#"
+        fun main() {
+            val out = try {
+                run {
+                    throw RuntimeException("boom")
+                }
+            } catch (error: RuntimeException) {
+                "caught"
+            }
+            println(out)
+        }
+    "#);
+    assert_eq!(out, &["caught"]);
+}
+
+#[test]
+fn test_also_preserves_identity_with_side_effect_chain() {
+    let out = run_prints(r#"
+        fun main() {
+            val first = mutableListOf(1)
+            val second = first
+                .also { it.add(2) }
+                .also { it.add(3) }
+            println(first === second)
+            println(second.joinToString("|"))
+        }
+    "#);
+    assert_eq!(out, &["true", "1|2|3"]);
+}
+
+#[test]
+fn test_with_supports_reassigning_outer_mutable_state() {
+    let out = run_prints(r#"
+        class Holder(var value: Int)
+
+        fun main() {
+            var mutable = Holder(4)
+            val label = with(mutable) {
+                value *= 3
+                "v" + value
+            }
+            println(label)
+            println(mutable.value)
+        }
+    "#);
+    assert_eq!(out, &["v12", "12"]);
+}
+
+#[test]
+fn test_take_if_predicate_called_before_returning_value() {
+    let out = run_prints(r#"
+        fun main() {
+            var checks = 0
+            val value = 7.takeIf {
+                checks++
+                it == 7
+            }
+            println(value)
+            println(checks)
+        }
+    "#);
+    assert_eq!(out, &["7", "1"]);
+}
+
+#[test]
+fn test_take_unless_predicate_not_called_for_null_receiver() {
+    let out = run_prints(r#"
+        fun main() {
+            val value: Int? = null
+            val result = value?.takeUnless {
+                println("should-not-see-this")
+                false
+            }
+            println(result == null)
+        }
+    "#);
+    assert_eq!(out, &["true"]);
+}
+
+#[test]
+fn test_let_can_be_used_for_conditional_mapping() {
+    let out = run_prints(r#"
+        fun main() {
+            val value = 8
+            val result = if (value > 5) {
+                value.let { it * 2 }
+            } else {
+                0
+            }
+            println(result)
+        }
+    "#);
+    assert_eq!(out, &["16"]);
+}
+
+#[test]
+fn test_let_shadowed_name_does_not_escape_scope() {
+    let out = run_prints(r#"
+        fun main() {
+            val value = "outer"
+            val projected = value.let { value ->
+                value.uppercase()
+            }
+            println(projected)
+            println(value)
+        }
+    "#);
+    assert_eq!(out, &["OUTER", "outer"]);
+}
+
+#[test]
+fn test_let_with_nullable_receiver_preserves_null_short_circuit() {
+    let out = run_prints(r#"
+        fun main() {
+            val value: String? = null
+            val projected = value?.let {
+                "inside"
+            }
+            println(projected == null)
+            println(value)
+        }
+    "#);
+    assert_eq!(out, &["true", "null"]);
+}
+
+#[test]
+fn test_with_returns_its_block_value_not_context_object() {
+    let out = run_prints(r#"
+        class Holder(var count: Int)
+
+        fun main() {
+            val out = with(Holder(1)) {
+                count += 9
+                "count:" + count
+            }
+            println(out)
+        }
+    "#);
+    assert_eq!(out, &["count:10"]);
+}
+
+#[test]
+fn test_run_keeps_outer_reference_unchanged_after_block() {
+    let out = run_prints(r#"
+        class State(var value: Int)
+
+        fun main() {
+            val state = State(4)
+            val block = state.run {
+                value = value * 3
+                value + 1
+            }
+            println(state.value)
+            println(block)
+        }
+    "#);
+    assert_eq!(out, &["12", "13"]);
+}
+
+#[test]
+fn test_apply_mutates_and_returns_receiver_with_multiple_property_writes() {
+    let out = run_prints(r#"
+        class Packet {
+            var head: String = ""
+            var tail: String = ""
+        }
+
+        fun main() {
+            val packet = Packet().apply {
+                head = "h"
+                tail = "t"
+                head += "+"
+            }
+            println(packet.head)
+            println(packet.tail)
+        }
+    "#);
+    assert_eq!(out, &["h+", "t"]);
+}
+
+#[test]
+fn test_also_allows_side_effect_without_mutation() {
+    let out = run_prints(r#"
+        class Logger {
+            val events = mutableListOf<String>()
+        }
+
+        fun main() {
+            val value = Logger().also {
+                it.events.add("created")
+                it.events.add("ready")
+            }
+            println(value.events.joinToString(","))
+        }
+    "#);
+    assert_eq!(out, &["created,ready"]);
+}
+
+#[test]
+fn test_also_keeps_original_object_for_mutation_checks() {
+    let out = run_prints(r#"
+        class Holder(var total: Int)
+
+        fun main() {
+            val original = Holder(5)
+            val observed = original.also {
+                it.total += 10
+            }
+            println(original.total)
+            println(original === observed)
+        }
+    "#);
+    assert_eq!(out, &["15", "true"]);
+}
+
+#[test]
+fn test_take_if_mutable_object_returns_same_reference() {
+    let out = run_prints(r#"
+        class Box(var n: Int)
+
+        fun main() {
+            val box = Box(3)
+            val out = box.takeIf { it.n == 3 }
+            println(out === box)
+            println(out?.n)
+        }
+    "#);
+    assert_eq!(out, &["true", "3"]);
+}
+
+#[test]
+fn test_take_if_rejects_via_predicate_on_reference_state() {
+    let out = run_prints(r#"
+        class Box(var n: Int)
+
+        fun main() {
+            val value = Box(2)
+            val filtered = value.takeIf { it.n > 2 }
+            println(filtered == null)
+            println(value.n)
+        }
+    "#);
+    assert_eq!(out, &["true", "2"]);
+}
+
+#[test]
+fn test_take_unless_on_reference_predicate() {
+    let out = run_prints(r#"
+        class Box(var n: Int)
+
+        fun main() {
+            val value = Box(11)
+            val filtered = value.takeUnless { it.n % 2 == 1 }
+            println(filtered == null)
+            println(value.n)
+            val keep = Box(4).takeUnless { it.n % 2 == 1 }
+            println(keep?.n)
+        }
+    "#);
+    assert_eq!(out, &["true", "11", "4"]);
+}
+
+#[test]
+fn test_take_if_and_take_unless_chain_expresses_filtering_pipeline() {
+    let out = run_prints(r#"
+        class Box(var n: Int)
+
+        fun main() {
+            val value = Box(7)
+            val result = value
+                .takeIf { it.n > 5 }
+                ?.takeUnless { it.n % 2 == 0 }
+                ?.n ?: -1
+            println(result)
+        }
+    "#);
+    assert_eq!(out, &["7"]);
+}
+
+#[test]
+fn test_let_can_collect_predicate_outcome_count() {
+    let out = run_prints(r#"
+        fun main() {
+            var checks = 0
+            val value = 3
+            val doubled = value.let {
+                checks++
+                it * 2
+            }
+            println(doubled)
+            println(checks)
+        }
+    "#);
+    assert_eq!(out, &["6", "1"]);
+}
+
+#[test]
+fn test_run_supports_returning_receiver_after_mutation_with_lambda() {
+    let out = run_prints(r#"
+        class State(var value: Int)
+
+        fun main() {
+            val source = State(1)
+            val copy = source.run {
+                value = value + 4
+                this
+            }
+            println(source.value)
+            println(copy.value)
+            println(source === copy)
+        }
+    "#);
+    assert_eq!(out, &["5", "5", "true"]);
+}
+
+#[test]
+fn test_scoping_chain_handles_exception_and_recovers_via_try() {
+    let out = run_prints(r#"
+        fun main() {
+            val result = try {
+                5.let {
+                    if (it < 0) throw RuntimeException("x")
+                    it * 2
+                }
+            } catch (error: RuntimeException) {
+                -1
+            }
+            println(result)
+        }
+    "#);
+    assert_eq!(out, &["10"]);
+}
+
+#[test]
+fn test_nested_scoping_functions_show_receiver_visibility() {
+    let out = run_prints(r#"
+        class Counter(var value: Int)
+
+        fun main() {
+            val out = Counter(1).apply {
+                this.value += 1
+                val local = Counter(value).also {
+                    it.value += 4
+                }
+                this.value += local.value
+            }
+            println(out.value)
+        }
+    "#);
+    assert_eq!(out, &["7"]);
+}
+
+#[test]
+fn test_with_on_nested_type_reads_both_rece_ivers() {
+    let out = run_prints(r#"
+        class Holder {
+            var value = "h"
+        }
+
+        fun main() {
+            val list = mutableListOf("x", "y")
+            val result = with(list) {
+                with(Holder()) {
+                    list.add("z")
+                    value = list.first()
+                    value
+                }
+            }
+            println(result)
+            println(list.size)
+        }
+    "#);
+    assert_eq!(out, &["x", "3"]);
+}
