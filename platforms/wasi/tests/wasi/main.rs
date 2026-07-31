@@ -9,6 +9,8 @@ mod filesystem_stream_matrix;
 mod filesystem_symlink_matrix;
 mod http;
 mod http_spec_0_3;
+mod http_spec_0_3_behaviour;
+mod http_incoming_server;
 mod http_request_lifecycle;
 mod http_request_matrix;
 mod http_status_matrix;

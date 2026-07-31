@@ -29,6 +29,8 @@ const KIND_INCOMING_BODY: &str = "incoming-body";
 const KIND_FUTURE_TRAILERS: &str = "future-trailers";
 const KIND_OUTGOING_RESPONSE: &str = "outgoing-response";
 const KIND_OUTGOING_BODY: &str = "outgoing-body";
+const KIND_INCOMING_REQUEST: &str = "incoming-request";
+const KIND_RESPONSE_OUTPARAM: &str = "response-outparam";
 
 #[derive(Clone, Copy)]
 struct HttpTypeIds {
@@ -41,6 +43,8 @@ struct HttpTypeIds {
     future_trailers: usize,
     outgoing_response: usize,
     outgoing_body: usize,
+    incoming_request: usize,
+    response_outparam: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +55,9 @@ struct HeadersResource {
 #[derive(Debug, Clone)]
 struct OutgoingRequestResource {
     headers_id: u32,
+    /// 0.3 `request.new(headers, contents, trailers, options)` — `options` is
+    /// `option<request-options>`, surfaced again by `request.get-options`.
+    options_id: Option<u32>,
     method: String,
     path_with_query: Option<String>,
     scheme: Option<String>,
@@ -81,6 +88,37 @@ struct OutgoingResponseResource {
 #[derive(Debug, Clone)]
 struct OutgoingBodyResource {
     bytes: Vec<u8>,
+    /// §outgoing-body.finish must be called exactly once.
+    finished: bool,
+    /// Optional trailers supplied to `finish`.
+    trailers: Vec<(String, Vec<u8>)>,
+}
+
+/// A server-side request. Built by the host from whatever transport it is
+/// serving (hyper, in `vybex --serve`), then handed to guest code as the
+/// `incoming-request` resource of `wasi:http/incoming-handler`.
+#[derive(Debug, Clone)]
+struct IncomingRequestResource {
+    method: String,
+    path_with_query: Option<String>,
+    scheme: Option<String>,
+    authority: Option<String>,
+    headers_id: u32,
+    body: Vec<u8>,
+    /// §incoming-request.consume: "Will only return success at most once, and
+    /// subsequent calls will return error."
+    consumed: bool,
+}
+
+/// The write end of a server response. `response-outparam.set` stores the
+/// guest's `result<outgoing-response, error-code>` here; the host reads it back
+/// after the handler returns.
+#[derive(Debug, Clone, Default)]
+struct ResponseOutparamResource {
+    response_id: Option<u32>,
+    error: Option<String>,
+    informational: Vec<(u16, u32)>,
+    set: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +144,8 @@ struct Registry {
     incoming_bodies: HashMap<u32, IncomingBodyResource>,
     outgoing_responses: HashMap<u32, OutgoingResponseResource>,
     outgoing_bodies: HashMap<u32, OutgoingBodyResource>,
+    incoming_requests: HashMap<u32, IncomingRequestResource>,
+    response_outparams: HashMap<u32, ResponseOutparamResource>,
     next_id: u32,
 }
 
@@ -120,6 +160,8 @@ impl Registry {
             incoming_bodies: HashMap::new(),
             outgoing_responses: HashMap::new(),
             outgoing_bodies: HashMap::new(),
+            incoming_requests: HashMap::new(),
+            response_outparams: HashMap::new(),
             next_id: 1,
         }
     }
@@ -329,6 +371,8 @@ fn register_resource_types(vm: &mut VM) -> HttpTypeIds {
         future_trailers: resource(vm, "future-trailers", "HttpFutureTrailers"),
         outgoing_response: resource(vm, "outgoing-response", "HttpOutgoingResponse"),
         outgoing_body: resource(vm, "outgoing-body", "HttpOutgoingBody"),
+        incoming_request: resource(vm, "incoming-request", "HttpIncomingRequest"),
+        response_outparam: resource(vm, "response-outparam", "HttpResponseOutparam"),
     }
 }
 
@@ -430,6 +474,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             registry.outgoing_requests.insert(
                 id,
                 OutgoingRequestResource {
+                    options_id: None,
                     headers_id,
                     method: "GET".into(),
                     path_with_query: None,
@@ -829,7 +874,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             let body_id = registry.alloc_id();
             registry
                 .outgoing_bodies
-                .insert(body_id, OutgoingBodyResource { bytes: Vec::new() });
+                .insert(body_id, OutgoingBodyResource { bytes: Vec::new(), finished: false, trailers: Vec::new() });
             make_resource(KIND_OUTGOING_BODY, body_id, type_ids.outgoing_body)
         }),
     );
@@ -1067,12 +1112,19 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             let Some(id) = resource_id(&args[0], KIND_OUTGOING_RESPONSE) else {
                 return err("invalid-argument");
             };
-            let code = args.get(1).map(|v| v.as_f64() as u16).unwrap_or(200);
+            // §outgoing-response.set-status-code: "Fails if the status-code
+            // given is not a valid http status code." Same rule the 0.3
+            // `response.set-status-code` already enforced; this arm accepted
+            // anything, so 999 silently became the response status.
+            let code = args.get(1).map(|v| v.as_f64() as i64).unwrap_or(200);
+            if !(100..=599).contains(&code) {
+                return err("invalid-argument");
+            }
             let mut registry = registry().lock().unwrap();
             let Some(resp) = registry.outgoing_responses.get_mut(&id) else {
                 return err("invalid-argument");
             };
-            resp.status = code;
+            resp.status = code as u16;
             Value::Null
         }),
     );
@@ -1104,7 +1156,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             let body_id = registry.alloc_id();
             registry
                 .outgoing_bodies
-                .insert(body_id, OutgoingBodyResource { bytes: Vec::new() });
+                .insert(body_id, OutgoingBodyResource { bytes: Vec::new(), finished: false, trailers: Vec::new() });
             if let Some(resp) = registry.outgoing_responses.get_mut(&id) {
                 resp.body_id = Some(body_id);
             }
@@ -1141,7 +1193,37 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
     vm.register_host_fn(
         "wasi:http/types",
         "[static]outgoing-body.finish",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
+        // §outgoing-body.finish(this, trailers) -> result<_, error-code>.
+        // "This must be called to signal that the response is complete."
+        // Finishing twice is an error, matching the write-at-most-once rule on
+        // the same resource.
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let Some(body_id) = args.first().and_then(|a| resource_id(a, KIND_OUTGOING_BODY))
+            else {
+                return err("invalid-argument");
+            };
+            let mut registry = registry().lock().unwrap();
+            let Some(body) = registry.outgoing_bodies.get_mut(&body_id) else {
+                return err("invalid-argument");
+            };
+            if body.finished {
+                return err("invalid-argument");
+            }
+            body.finished = true;
+            // `trailers` is `option<trailers>`; when present it is a headers
+            // resource whose entries are appended to the body's trailer set.
+            if let Some(trailers_id) = args.get(1).and_then(|a| resource_id(a, KIND_HEADERS)) {
+                let entries = registry
+                    .headers
+                    .get(&trailers_id)
+                    .map(|h| h.entries.clone())
+                    .unwrap_or_default();
+                if let Some(body) = registry.outgoing_bodies.get_mut(&body_id) {
+                    body.trailers = entries;
+                }
+            }
+            Value::Null
+        }),
     );
 
     // http-error-code(err) → option<error-code>
@@ -1159,31 +1241,270 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         }),
     );
 
-    // Incoming request stubs — server-side; Vybe doesn't run an HTTP server yet.
-    // Registered so WASM modules that import them don't get link errors.
-    for fn_name in &[
-        "[method]incoming-request.method",
-        "[method]incoming-request.path-with-query",
-        "[method]incoming-request.scheme",
-        "[method]incoming-request.authority",
-        "[method]incoming-request.headers",
-        "[method]incoming-request.consume",
-    ] {
-        vm.register_host_fn(
-            "wasi:http/types",
-            fn_name,
-            Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
-        );
+    // ── incoming-request (server side) ─────────────────────────────────────
+    //
+    // wasi:http/types §incoming-request. The host builds one of these from the
+    // transport it is serving via `push_incoming_request`; guest code reads it
+    // through these accessors. Previously all six returned `Value::Null` as
+    // link padding.
+    fn with_incoming_request<T>(
+        args: &[Value],
+        f: impl FnOnce(&IncomingRequestResource) -> T,
+    ) -> Option<T> {
+        let id = resource_id(args.first()?, KIND_INCOMING_REQUEST)?;
+        let registry = registry().lock().unwrap();
+        registry.incoming_requests.get(&id).map(f)
     }
 
-    // [static]response-outparam.set — server-side; stubs for link compatibility.
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]incoming-request.method",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            match with_incoming_request(args, |r| r.method.clone()) {
+                Some(m) => Value::String(Arc::from(m.as_str())),
+                None => err("invalid-argument"),
+            }
+        }),
+    );
+
+    // `path-with-query`, `scheme` and `authority` are `option<...>` in the WIT:
+    // absent is null, not an error.
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]incoming-request.path-with-query",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            match with_incoming_request(args, |r| r.path_with_query.clone()) {
+                Some(Some(p)) => Value::String(Arc::from(p.as_str())),
+                Some(None) => Value::Null,
+                None => err("invalid-argument"),
+            }
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]incoming-request.scheme",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            match with_incoming_request(args, |r| r.scheme.clone()) {
+                Some(Some(v)) => Value::String(Arc::from(v.as_str())),
+                Some(None) => Value::Null,
+                None => err("invalid-argument"),
+            }
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]incoming-request.authority",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            match with_incoming_request(args, |r| r.authority.clone()) {
+                Some(Some(v)) => Value::String(Arc::from(v.as_str())),
+                Some(None) => Value::Null,
+                None => err("invalid-argument"),
+            }
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]incoming-request.headers",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            match with_incoming_request(args, |r| r.headers_id) {
+                Some(headers_id) => make_resource(KIND_HEADERS, headers_id, type_ids.headers),
+                None => err("invalid-argument"),
+            }
+        }),
+    );
+
+    // §incoming-request.consume: succeeds at most ONCE; later calls are errors.
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]incoming-request.consume",
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            let Some(request_id) = args.first().and_then(|a| resource_id(a, KIND_INCOMING_REQUEST))
+            else {
+                return err("invalid-argument");
+            };
+            let mut registry = registry().lock().unwrap();
+            let Some(request) = registry.incoming_requests.get(&request_id) else {
+                return err("invalid-argument");
+            };
+            if request.consumed {
+                return err("invalid-argument");
+            }
+            let body = request.body.clone();
+            if let Some(request) = registry.incoming_requests.get_mut(&request_id) {
+                request.consumed = true;
+            }
+            let body_id = registry.alloc_id();
+            registry.incoming_bodies.insert(
+                body_id,
+                IncomingBodyResource { body, position: 0 },
+            );
+            make_resource(KIND_INCOMING_BODY, body_id, type_ids.incoming_body)
+        }),
+    );
+
+    // ── response-outparam (server side) ────────────────────────────────────
+    //
+    // §response-outparam.set: "Set the value of the `response-outparam` to
+    // either send a response, or indicate an error. This method consumes the
+    // `response-outparam` to ensure that it is called at most once."
     vm.register_host_fn(
         "wasi:http/types",
         "[static]response-outparam.set",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let Some(param_id) = args.first().and_then(|a| resource_id(a, KIND_RESPONSE_OUTPARAM))
+            else {
+                return err("invalid-argument");
+            };
+            let mut registry = registry().lock().unwrap();
+            let Some(param) = registry.response_outparams.get(&param_id) else {
+                return err("invalid-argument");
+            };
+            if param.set {
+                return err("invalid-argument");
+            }
+            // arg1 is `result<outgoing-response, error-code>`: a response
+            // resource on success, anything else read as the error code.
+            let response_id = args.get(1).and_then(|a| resource_id(a, KIND_OUTGOING_RESPONSE));
+            let error = match (&response_id, args.get(1)) {
+                (None, Some(Value::String(code))) => Some(code.to_string()),
+                (None, _) => Some("internal-error".to_string()),
+                _ => None,
+            };
+            if let Some(param) = registry.response_outparams.get_mut(&param_id) {
+                param.response_id = response_id;
+                param.error = error;
+                param.set = true;
+            }
+            Value::Null
+        }),
+    );
+
+    // §response-outparam.send-informational — 1xx interim responses.
+    vm.register_host_fn(
+        "wasi:http/types",
+        "[method]response-outparam.send-informational",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let Some(param_id) = args.first().and_then(|a| resource_id(a, KIND_RESPONSE_OUTPARAM))
+            else {
+                return err("invalid-argument");
+            };
+            let status = match args.get(1) {
+                Some(Value::F64(n)) => *n as u16,
+                Some(Value::I32(n)) => *n as u16,
+                _ => return err("invalid-argument"),
+            };
+            // Only 1xx codes are informational (RFC 9110 §15.2).
+            if !(100..200).contains(&status) {
+                return err("invalid-argument");
+            }
+            let headers_id = args
+                .get(2)
+                .and_then(|a| resource_id(a, KIND_HEADERS))
+                .unwrap_or(0);
+            let mut registry = registry().lock().unwrap();
+            let Some(param) = registry.response_outparams.get_mut(&param_id) else {
+                return err("invalid-argument");
+            };
+            param.informational.push((status, headers_id));
+            Value::Null
+        }),
     );
 }
 
+// ── Host-side entry points ──────────────────────────────────────────────────
+//
+// The transport (hyper, in `vybex --serve`) has no WIT constructor for
+// `incoming-request` or `response-outparam` — per the spec those are produced
+// BY the host and handed TO the guest. These are that seam.
+
+/// Create an `incoming-request` resource and return its id.
+pub fn push_incoming_request(
+    method: &str,
+    path_with_query: Option<String>,
+    scheme: Option<String>,
+    authority: Option<String>,
+    headers: Vec<(String, Vec<u8>)>,
+    body: Vec<u8>,
+) -> u32 {
+    let mut registry = registry().lock().unwrap();
+    let headers_id = registry.alloc_id();
+    registry
+        .headers
+        .insert(headers_id, HeadersResource { entries: headers });
+    let id = registry.alloc_id();
+    registry.incoming_requests.insert(
+        id,
+        IncomingRequestResource {
+            method: method.to_string(),
+            path_with_query,
+            scheme,
+            authority,
+            headers_id,
+            body,
+            consumed: false,
+        },
+    );
+    id
+}
+
+/// Create a `response-outparam` for a request and return its id.
+pub fn push_response_outparam() -> u32 {
+    let mut registry = registry().lock().unwrap();
+    let id = registry.alloc_id();
+    registry
+        .response_outparams
+        .insert(id, ResponseOutparamResource::default());
+    id
+}
+
+/// What the guest set on a `response-outparam`: `Ok((status, headers, body))`
+/// or `Err(error-code)`. `None` if the guest never called `set`.
+pub type ResponseParts = (u16, Vec<(String, Vec<u8>)>, Vec<u8>);
+
+pub fn take_response_outparam(id: u32) -> Option<Result<ResponseParts, String>> {
+    let mut registry = registry().lock().unwrap();
+    let param = registry.response_outparams.remove(&id)?;
+    if !param.set {
+        return None;
+    }
+    if let Some(error) = param.error {
+        return Some(Err(error));
+    }
+    let response_id = param.response_id?;
+    let response = registry.outgoing_responses.get(&response_id)?.clone();
+    let headers = registry
+        .headers
+        .get(&response.headers_id)
+        .map(|h| h.entries.clone())
+        .unwrap_or_default();
+    let body = response
+        .body_id
+        .and_then(|bid| registry.outgoing_bodies.get(&bid))
+        .map(|b| b.bytes.clone())
+        .unwrap_or_default();
+    Some(Ok((response.status, headers, body)))
+}
+
+/// Build the guest-facing resource values for a served request.
+pub fn incoming_request_value(vm: &VM, request_id: u32) -> Option<Value> {
+    let type_id = vm
+        .type_registry
+        .get_id("HttpIncomingRequest")?;
+    Some(make_resource(KIND_INCOMING_REQUEST, request_id, type_id))
+}
+
+pub fn response_outparam_value(vm: &VM, param_id: u32) -> Option<Value> {
+    let type_id = vm
+        .type_registry
+        .get_id("HttpResponseOutparam")?;
+    Some(make_resource(KIND_RESPONSE_OUTPARAM, param_id, type_id))
+}
+
+/// `wasi:http/outgoing-handler` — send an `outgoing-request` and get back a
+/// `future-incoming-response`.
 fn register_outgoing_handler(vm: &mut VM, type_ids: HttpTypeIds) {
     vm.register_host_fn(
         "wasi:http/outgoing-handler",
@@ -1353,7 +1674,17 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
     vm.register_host_fn(
         "wasi:http/types",
         "[method]request.get-options",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
+        // §request.get-options -> option<request-options>: the options handed
+        // to `request.new`, or none.
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+            match with_request(args, |r| r.options_id) {
+                Some(Some(options_id)) => {
+                    make_resource(KIND_REQUEST_OPTIONS, options_id, type_ids.request_options)
+                }
+                Some(None) => Value::Null,
+                None => err("invalid-argument"),
+            }
+        }),
     );
 
     // ── fields (0.3 additions) ─────────────────────────────────────────
@@ -1671,11 +2002,21 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
         "[static]request.new",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let headers_id = resource_id(&args[0], KIND_HEADERS).unwrap_or(0);
+            // §request.new(headers, contents, trailers, options) — the 4th
+            // argument is `option<request-options>`, read back by
+            // `request.get-options`. Accept it in either the spec position or
+            // immediately after headers, since callers that pass no body still
+            // want options to land.
+            let options_id = args
+                .get(3)
+                .and_then(|a| resource_id(a, KIND_REQUEST_OPTIONS))
+                .or_else(|| args.get(1).and_then(|a| resource_id(a, KIND_REQUEST_OPTIONS)));
             let mut reg = registry().lock().unwrap();
             let id = reg.alloc_id();
             reg.outgoing_requests.insert(
                 id,
                 OutgoingRequestResource {
+                    options_id,
                     headers_id,
                     method: "GET".into(),
                     path_with_query: None,

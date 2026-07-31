@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 inventory = { workspace = true }
 vybe_runtime = { workspace = true }
+vybe_ast = { workspace = true }
 
 # ECMA-262 / Intl support crates (moved from vybe_host).
 regex = { workspace = true }

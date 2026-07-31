@@ -1395,8 +1395,10 @@ fn epoch_to_ymd(secs: i64) -> (i32, i32, i32) {
     (year, month, day)
 }
 
+/// Intl calendar maths uses the SHARED leap rule — a date the compiler folds
+/// and one this host computes must agree.
 fn is_leap(y: i32) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    vybe_ast::datetime::is_leap_year(y as i64)
 }
 
 // ── Intl.ListFormat (ECMA-402 §14) ───────────────────────────────────
