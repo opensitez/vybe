@@ -285,6 +285,7 @@ method_directive = {
     | ^"override"
     | ^"abstract"
     | ^"reintroduce"
+    | ^"final"
     | ^"overload"
     | ^"inline"
     | ^"static"

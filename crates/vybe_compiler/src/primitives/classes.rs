@@ -2129,7 +2129,7 @@ impl Compiler {
             };
             let storage_name = if !is_static
                 && !m.is_override
-                && m.raw_modifiers.is_not_overridable
+                && m.raw_modifiers.is_hiding
                 && cc.method_hides_ancestor(class.parent.as_deref(), &bound_name)
             {
                 format!("__hide_{}${}", cc.canon(&class.name), bound_name)

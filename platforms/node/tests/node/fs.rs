@@ -553,7 +553,7 @@ fn read_sync_returns_bytes_read_count() {
     let buf = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(
         vybe_runtime::value::Object {
             kind: ObjectKind::Array(vec![Value::I32(0); 10]),
-            properties: HashMap::new(),
+            properties: Default::default(),
             type_id: 0,
             fields: Vec::new(),
         },
@@ -1063,7 +1063,7 @@ fn write_sync_with_buffer_writes_bytes() {
     let buf = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(
         vybe_runtime::value::Object {
             kind: ObjectKind::Array(vec![Value::I32(0x41), Value::I32(0x42)]), // "AB"
-            properties: HashMap::new(),
+            properties: Default::default(),
             type_id: 0,
             fields: Vec::new(),
         },

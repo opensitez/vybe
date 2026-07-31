@@ -337,7 +337,7 @@ fn emit_wrap_ms_internal(
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, year_start_slot, line);
     chunk.emit_op(Op::F64_SUB, line);
-    push_const(chunk, Value::F64(86_400_000.0), line);
+    push_const(chunk, Value::F64(vybe_compiler::primitives::datetime::MS_PER_DAY), line);
     chunk.emit_op(Op::F64_DIV, line);
     chunk.emit_op(Op::F64_TRUNC, line);
     push_const(chunk, Value::I32(1), line);
@@ -368,7 +368,7 @@ fn emit_wrap_ms_internal(
         let chunk = &mut chunks[current];
         chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, hour_slot, line);
-        push_const(chunk, Value::F64(3_600_000.0), line);
+        push_const(chunk, Value::F64(vybe_compiler::primitives::datetime::MS_PER_HOUR), line);
         chunk.emit_op(Op::F64_MUL, line);
         chunk.emit_op_u16(Op::LOCAL_GET, minute_slot, line);
         push_const(chunk, Value::F64(60_000.0), line);
@@ -382,7 +382,7 @@ fn emit_wrap_ms_internal(
         struct_set_named_field_drop(chunk, "TimeOfDay", line);
         chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, hour_slot, line);
-        push_const(chunk, Value::F64(3_600_000.0), line);
+        push_const(chunk, Value::F64(vybe_compiler::primitives::datetime::MS_PER_HOUR), line);
         chunk.emit_op(Op::F64_MUL, line);
         chunk.emit_op_u16(Op::LOCAL_GET, minute_slot, line);
         push_const(chunk, Value::F64(60_000.0), line);
@@ -621,7 +621,7 @@ pub fn emit_datetime_add_days(chunks: &mut Vec<Chunk>, current: usize, line: u32
     chunk.emit_op_u16(Op::LOCAL_SET, date_slot, line);
     emit_datetime_time_from_obj(chunk, date_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    push_const(chunk, Value::F64(86_400_000.0), line);
+    push_const(chunk, Value::F64(vybe_compiler::primitives::datetime::MS_PER_DAY), line);
     chunk.emit_op(Op::F64_MUL, line);
     chunk.emit_op(Op::F64_ADD, line);
     emit_wrap_ms(chunks, current, line);
@@ -649,7 +649,7 @@ pub fn emit_datetime_add_hours(chunks: &mut Vec<Chunk>, current: usize, line: u3
     chunk.emit_op_u16(Op::LOCAL_SET, date_slot, line);
     emit_datetime_time_from_obj(chunk, date_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    push_const(chunk, Value::F64(3_600_000.0), line);
+    push_const(chunk, Value::F64(vybe_compiler::primitives::datetime::MS_PER_HOUR), line);
     chunk.emit_op(Op::F64_MUL, line);
     chunk.emit_op(Op::F64_ADD, line);
     emit_wrap_ms(chunks, current, line);
@@ -724,26 +724,15 @@ pub fn emit_datetime_add_months(chunks: &mut Vec<Chunk>, current: usize, line: u
 }
 
 pub fn emit_datetime_days_in_month(chunks: &mut [Chunk], current: usize, line: u32) {
-    let chunk = &mut chunks[current];
-    let month_slot = chunk.alloc_scratch(3);
-    let year_slot = month_slot + 1;
-    let ms_slot = month_slot + 2;
-    chunk.emit_op_u16(Op::LOCAL_SET, month_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, year_slot, line);
-
-    chunk.emit_op_u16(Op::LOCAL_GET, year_slot, line);
-    chunk.emit_op_u16(Op::LOCAL_GET, month_slot, line);
-    push_const(chunk, Value::I32(1), line);
-    push_const(chunk, Value::I32(0), line);
-    push_const(chunk, Value::I32(0), line);
-    push_const(chunk, Value::I32(0), line);
-    call_import(chunks, current, "ecma:date", "UTC", 6, line);
-    push_const(&mut chunks[current], Value::F64(86_400_000.0), line);
-    chunks[current].emit_op(Op::F64_SUB, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, ms_slot, line);
-    emit_dt_getter(chunks, current, ms_slot, "getUTCDate", line);
+    // Shared arithmetic. Was `UTC(y, m, 1, …) - 86_400_000` then getUTCDate —
+    // the day-0 rollover trick, correct but a host call plus a temporary Date
+    // to answer a question about two integers. .NET months are 1-based.
+    vybe_compiler::primitives::datetime::emit_days_in_month(
+        &mut chunks[current],
+        vybe_ast::datetime::MonthIndexing::OneBased,
+        line,
+    );
 }
-
 pub fn emit_datetime_is_leap_year(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let year_slot = chunk.alloc_scratch(1);
@@ -762,11 +751,13 @@ pub fn emit_datetime_is_leap_year(chunks: &mut [Chunk], current: usize, line: u3
     );
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
     chunk.emit_end(line);
+    // Rule is shared; the range guard above is .NET's own (`DateTime.IsLeapYear`
+    // throws for year < 1, which no other language does).
     chunk.emit_op_u16(Op::LOCAL_GET, year_slot, line);
-    push_const(chunk, Value::I32(2), line);
-    emit_datetime_days_in_month(chunks, current, line);
-    push_const(&mut chunks[current], Value::I32(29), line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::datetime::emit_is_leap_year(chunk, line);
+    // The shared emitter yields an i32 0/1; .NET's surface is `bool`, which
+    // renders "True"/"False" — lift it, exactly as Python's `isleap` does.
+    vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
 }
 
 pub fn emit_datetime_compare(chunks: &mut [Chunk], current: usize, line: u32) {

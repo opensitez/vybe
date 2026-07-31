@@ -28,7 +28,10 @@ pub(crate) fn continuation_entry_is_async(chunks: &[crate::chunk::Chunk], entry:
 }
 
 pub(crate) fn attach_continuation_protocols(
-    properties: &mut HashMap<String, Value>,
+    // Insertion-ordered — see `Object::properties`. `globals` stays a HashMap:
+    // global order is not observable through any ECMA surface, and
+    // `VM::globals_slot` holds a raw pointer to it (fixflakyhashmap.md §4).
+    properties: &mut indexmap::IndexMap<String, Value>,
     globals: &HashMap<String, Value>,
     is_async: bool,
 ) {
@@ -532,7 +535,7 @@ impl VM {
             args.reverse();
             // Re-wrap the Function value so entry can re-call it later.
             let fn_obj = Object {
-                properties: HashMap::new(),
+                properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Function(func.clone()),
                 type_id: 0,
                 fields: Vec::new(),
@@ -544,7 +547,7 @@ impl VM {
                 state: std::sync::Mutex::new(ContinuationPhase::Ready),
             };
             let mut cont = Object {
-                properties: HashMap::new(),
+                properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Continuation(state),
                 type_id: 0,
                 fields: Vec::new(),
@@ -554,7 +557,7 @@ impl VM {
             if !args.is_empty() {
                 // Stash bound args so the first RESUME can re-push them.
                 let bound = Object {
-                    properties: HashMap::new(),
+                    properties: indexmap::IndexMap::new(),
                     kind: ObjectKind::Array(args),
                     type_id: 0,
                     fields: Vec::new(),
@@ -800,7 +803,7 @@ impl VM {
                     chunk_index: *idx,
                     upvalues: Vec::new(),
                 };
-                let mut properties = HashMap::new();
+                let mut properties = indexmap::IndexMap::new();
                 properties.insert(RECEIVER_MARKER.into(), Value::Bool(true));
                 let obj = Object {
                     properties,

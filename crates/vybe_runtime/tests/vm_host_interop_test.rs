@@ -823,7 +823,7 @@ fn invoke_chunk_function_returns_value() {
 
     // Build a Function value pointing to chunk 1
     let func_val = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: HashMap::new(),
+        properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("return42".to_string()),
             arity: 0,
@@ -860,7 +860,7 @@ fn invoke_with_args_as_locals() {
     vm.run(vec![main_chunk, func]).unwrap();
 
     let func_val = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: HashMap::new(),
+        properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("add".to_string()),
             arity: 2,
@@ -900,7 +900,7 @@ fn invoke_clears_stack_between_calls() {
     vm.run(vec![main_chunk, func]).unwrap();
 
     let func_val = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: HashMap::new(),
+        properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("double".to_string()),
             arity: 1,
@@ -951,7 +951,7 @@ fn invoke_preserves_globals() {
     vm.run(vec![main_chunk, func]).unwrap();
 
     let func_val = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: HashMap::new(),
+        properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("inc".to_string()),
             arity: 0,
@@ -1006,7 +1006,7 @@ fn invoke_function_calls_host() {
     vm.run(vec![main_chunk, func]).unwrap();
 
     let func_val = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: HashMap::new(),
+        properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("square_plus_one".to_string()),
             arity: 1,
@@ -1056,7 +1056,7 @@ fn invoke_modifies_global() {
     vm.run(vec![main_chunk, func, reader]).unwrap();
 
     let set_fn = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: HashMap::new(),
+        properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("set_status".to_string()),
             arity: 0,
@@ -1068,7 +1068,7 @@ fn invoke_modifies_global() {
     })));
 
     let read_fn = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: HashMap::new(),
+        properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("read_status".to_string()),
             arity: 0,
@@ -1108,7 +1108,7 @@ fn invoke_host_function_object() {
 
     // Create a HostFunction object — index 0 is the first registered host fn
     let host_fn_val = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: HashMap::new(),
+        properties: indexmap::IndexMap::new(),
         kind: ObjectKind::HostFunction(0),
         type_id: 0,
         fields: Vec::new(),
@@ -1152,7 +1152,7 @@ fn invoke_twice_globals_updated() {
     vm.run(vec![main_chunk, func]).unwrap();
 
     let func_val = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: HashMap::new(),
+        properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("accumulate".to_string()),
             arity: 1,
@@ -1207,7 +1207,7 @@ fn invoke_function_calls_another_vm_function() {
     vm.run(vec![main_chunk, outer, inner]).unwrap();
 
     let outer_val = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: HashMap::new(),
+        properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("outer".to_string()),
             arity: 1,
@@ -1461,7 +1461,7 @@ fn callback_modifies_global_subsequent_reads() {
     vm.run(vec![main_chunk, cb, reader]).unwrap();
 
     let read_fn = Value::Object(Arc::new(std::sync::Mutex::new(Object {
-        properties: HashMap::new(),
+        properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(Function {
             name: Some("read_state".to_string()),
             arity: 0,

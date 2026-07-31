@@ -75,7 +75,7 @@ pub fn live_count() -> usize {
 /// re-wires the baseline graph and drops any script object a baseline object came
 /// to reference.
 struct ObjectContents {
-    properties: HashMap<String, Value>,
+    properties: indexmap::IndexMap<String, Value>,
     fields: Vec<Value>,
     type_id: usize,
     kind: ObjectKind,

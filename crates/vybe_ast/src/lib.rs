@@ -16,8 +16,10 @@
 //!   dotnet     → namespace resolution (profile-driven)
 
 pub mod builtin_slots;
+pub mod builtin_types;
 pub mod channels;
 pub mod class_normalize;
+pub mod datetime;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Module (top-level compilation unit)
@@ -2070,6 +2072,323 @@ impl ProtocolSlot {
     /// Stable because it is written out, not derived from declaration order: a
     /// variant inserted in the middle must not renumber the others, since the
     /// ids are emitted into bytecode. Add new slots at the END of this match.
+    /// Every slot, for exhaustive iteration.
+    ///
+    /// Generated from the same exhaustive `slot_id` match as
+    /// [`Self::as_key`], so it cannot drift from the enum without `slot_id`
+    /// failing to compile first.
+    pub const ALL: [ProtocolSlot; 93] = [
+        ProtocolSlot::Destructor,
+        ProtocolSlot::ToString,
+        ProtocolSlot::Repr,
+        ProtocolSlot::ValueOf,
+        ProtocolSlot::ToPrimitive,
+        ProtocolSlot::Iterator,
+        ProtocolSlot::AsyncIterator,
+        ProtocolSlot::Next,
+        ProtocolSlot::Add,
+        ProtocolSlot::Sub,
+        ProtocolSlot::Mul,
+        ProtocolSlot::Div,
+        ProtocolSlot::Mod,
+        ProtocolSlot::Pow,
+        ProtocolSlot::Neg,
+        ProtocolSlot::Eq,
+        ProtocolSlot::Compare,
+        ProtocolSlot::Lt,
+        ProtocolSlot::Le,
+        ProtocolSlot::Gt,
+        ProtocolSlot::Ge,
+        ProtocolSlot::And,
+        ProtocolSlot::Or,
+        ProtocolSlot::Xor,
+        ProtocolSlot::Not,
+        ProtocolSlot::LShift,
+        ProtocolSlot::RShift,
+        ProtocolSlot::Len,
+        ProtocolSlot::GetItem,
+        ProtocolSlot::SetItem,
+        ProtocolSlot::DelItem,
+        ProtocolSlot::Contains,
+        ProtocolSlot::Call,
+        ProtocolSlot::HasInstance,
+        ProtocolSlot::GetAttr,
+        ProtocolSlot::SetAttr,
+        ProtocolSlot::DelAttr,
+        ProtocolSlot::Enter,
+        ProtocolSlot::Exit,
+        ProtocolSlot::Hash,
+        ProtocolSlot::FloorDiv,
+        ProtocolSlot::Bool,
+        ProtocolSlot::Int,
+        ProtocolSlot::Float,
+        ProtocolSlot::Bytes,
+        ProtocolSlot::Format,
+        ProtocolSlot::Serialize,
+        ProtocolSlot::Deserialize,
+        ProtocolSlot::Clone,
+        ProtocolSlot::AsyncNext,
+        ProtocolSlot::Reversed,
+        ProtocolSlot::MatMul,
+        ProtocolSlot::Pos,
+        ProtocolSlot::Abs,
+        ProtocolSlot::Round,
+        ProtocolSlot::Floor,
+        ProtocolSlot::Ceil,
+        ProtocolSlot::Trunc,
+        ProtocolSlot::Index,
+        ProtocolSlot::Ne,
+        ProtocolSlot::HasItem,
+        ProtocolSlot::Missing,
+        ProtocolSlot::CallStatic,
+        ProtocolSlot::HasAttr,
+        ProtocolSlot::AsyncEnter,
+        ProtocolSlot::AsyncExit,
+        ProtocolSlot::IAdd,
+        ProtocolSlot::ISub,
+        ProtocolSlot::IMul,
+        ProtocolSlot::IDiv,
+        ProtocolSlot::IFloorDiv,
+        ProtocolSlot::IMod,
+        ProtocolSlot::IPow,
+        ProtocolSlot::IMatMul,
+        ProtocolSlot::IAnd,
+        ProtocolSlot::IOr,
+        ProtocolSlot::IXor,
+        ProtocolSlot::ILShift,
+        ProtocolSlot::IRShift,
+        ProtocolSlot::RAdd,
+        ProtocolSlot::RSub,
+        ProtocolSlot::RMul,
+        ProtocolSlot::RDiv,
+        ProtocolSlot::RFloorDiv,
+        ProtocolSlot::RMod,
+        ProtocolSlot::RPow,
+        ProtocolSlot::RMatMul,
+        ProtocolSlot::RAnd,
+        ProtocolSlot::ROr,
+        ProtocolSlot::RXor,
+        ProtocolSlot::RLShift,
+        ProtocolSlot::RRShift,
+        ProtocolSlot::CallMissing,
+    ];
+
+    /// The slot's stable STRING key, for profile declarations.
+    ///
+    /// `builtinslotplan.md` step 4b. A profile writes
+    /// `[value_methods] length = { emit = "...", slot = "len" }` to say which
+    /// protocol slot its method implements — so the language owns the mapping
+    /// from ITS spelling to the shared slot, and no method-name table ever
+    /// appears in shared code.
+    ///
+    /// Keys are the variant name in snake_case, generated mechanically from the
+    /// exhaustive [`ProtocolSlot::slot_id`] match rather than transcribed. All
+    /// 93 are present and all are distinct — [`Self::every_slot_key_roundtrips`]
+    /// pins both.
+    pub fn as_key(self) -> &'static str {
+        use ProtocolSlot::*;
+        match self {
+            Destructor => "destructor",
+            ToString => "to_string",
+            Repr => "repr",
+            ValueOf => "value_of",
+            ToPrimitive => "to_primitive",
+            Iterator => "iterator",
+            AsyncIterator => "async_iterator",
+            Next => "next",
+            Add => "add",
+            Sub => "sub",
+            Mul => "mul",
+            Div => "div",
+            Mod => "mod",
+            Pow => "pow",
+            Neg => "neg",
+            Eq => "eq",
+            Compare => "compare",
+            Lt => "lt",
+            Le => "le",
+            Gt => "gt",
+            Ge => "ge",
+            And => "and",
+            Or => "or",
+            Xor => "xor",
+            Not => "not",
+            LShift => "l_shift",
+            RShift => "r_shift",
+            Len => "len",
+            GetItem => "get_item",
+            SetItem => "set_item",
+            DelItem => "del_item",
+            Contains => "contains",
+            Call => "call",
+            HasInstance => "has_instance",
+            GetAttr => "get_attr",
+            SetAttr => "set_attr",
+            DelAttr => "del_attr",
+            Enter => "enter",
+            Exit => "exit",
+            Hash => "hash",
+            FloorDiv => "floor_div",
+            Bool => "bool",
+            Int => "int",
+            Float => "float",
+            Bytes => "bytes",
+            Format => "format",
+            Serialize => "serialize",
+            Deserialize => "deserialize",
+            Clone => "clone",
+            AsyncNext => "async_next",
+            Reversed => "reversed",
+            MatMul => "mat_mul",
+            Pos => "pos",
+            Abs => "abs",
+            Round => "round",
+            Floor => "floor",
+            Ceil => "ceil",
+            Trunc => "trunc",
+            Index => "index",
+            Ne => "ne",
+            HasItem => "has_item",
+            Missing => "missing",
+            CallStatic => "call_static",
+            HasAttr => "has_attr",
+            AsyncEnter => "async_enter",
+            AsyncExit => "async_exit",
+            IAdd => "i_add",
+            ISub => "i_sub",
+            IMul => "i_mul",
+            IDiv => "i_div",
+            IFloorDiv => "i_floor_div",
+            IMod => "i_mod",
+            IPow => "i_pow",
+            IMatMul => "i_mat_mul",
+            IAnd => "i_and",
+            IOr => "i_or",
+            IXor => "i_xor",
+            ILShift => "i_l_shift",
+            IRShift => "i_r_shift",
+            RAdd => "r_add",
+            RSub => "r_sub",
+            RMul => "r_mul",
+            RDiv => "r_div",
+            RFloorDiv => "r_floor_div",
+            RMod => "r_mod",
+            RPow => "r_pow",
+            RMatMul => "r_mat_mul",
+            RAnd => "r_and",
+            ROr => "r_or",
+            RXor => "r_xor",
+            RLShift => "r_l_shift",
+            RRShift => "r_r_shift",
+            CallMissing => "call_missing",
+        }
+    }
+
+    /// The slot a profile's `slot = "..."` names, or `None` if unrecognised.
+    ///
+    /// An unknown key is NOT an error: it means the profile names a slot this
+    /// build does not have, and the declaration is ignored so the method keeps
+    /// its existing emit. A profile from a newer toolchain must still load.
+    pub fn from_key(key: &str) -> Option<Self> {
+        use ProtocolSlot::*;
+        Some(match key {
+            "destructor" => Destructor,
+            "to_string" => ToString,
+            "repr" => Repr,
+            "value_of" => ValueOf,
+            "to_primitive" => ToPrimitive,
+            "iterator" => Iterator,
+            "async_iterator" => AsyncIterator,
+            "next" => Next,
+            "add" => Add,
+            "sub" => Sub,
+            "mul" => Mul,
+            "div" => Div,
+            "mod" => Mod,
+            "pow" => Pow,
+            "neg" => Neg,
+            "eq" => Eq,
+            "compare" => Compare,
+            "lt" => Lt,
+            "le" => Le,
+            "gt" => Gt,
+            "ge" => Ge,
+            "and" => And,
+            "or" => Or,
+            "xor" => Xor,
+            "not" => Not,
+            "l_shift" => LShift,
+            "r_shift" => RShift,
+            "len" => Len,
+            "get_item" => GetItem,
+            "set_item" => SetItem,
+            "del_item" => DelItem,
+            "contains" => Contains,
+            "call" => Call,
+            "has_instance" => HasInstance,
+            "get_attr" => GetAttr,
+            "set_attr" => SetAttr,
+            "del_attr" => DelAttr,
+            "enter" => Enter,
+            "exit" => Exit,
+            "hash" => Hash,
+            "floor_div" => FloorDiv,
+            "bool" => Bool,
+            "int" => Int,
+            "float" => Float,
+            "bytes" => Bytes,
+            "format" => Format,
+            "serialize" => Serialize,
+            "deserialize" => Deserialize,
+            "clone" => Clone,
+            "async_next" => AsyncNext,
+            "reversed" => Reversed,
+            "mat_mul" => MatMul,
+            "pos" => Pos,
+            "abs" => Abs,
+            "round" => Round,
+            "floor" => Floor,
+            "ceil" => Ceil,
+            "trunc" => Trunc,
+            "index" => Index,
+            "ne" => Ne,
+            "has_item" => HasItem,
+            "missing" => Missing,
+            "call_static" => CallStatic,
+            "has_attr" => HasAttr,
+            "async_enter" => AsyncEnter,
+            "async_exit" => AsyncExit,
+            "i_add" => IAdd,
+            "i_sub" => ISub,
+            "i_mul" => IMul,
+            "i_div" => IDiv,
+            "i_floor_div" => IFloorDiv,
+            "i_mod" => IMod,
+            "i_pow" => IPow,
+            "i_mat_mul" => IMatMul,
+            "i_and" => IAnd,
+            "i_or" => IOr,
+            "i_xor" => IXor,
+            "i_l_shift" => ILShift,
+            "i_r_shift" => IRShift,
+            "r_add" => RAdd,
+            "r_sub" => RSub,
+            "r_mul" => RMul,
+            "r_div" => RDiv,
+            "r_floor_div" => RFloorDiv,
+            "r_mod" => RMod,
+            "r_pow" => RPow,
+            "r_mat_mul" => RMatMul,
+            "r_and" => RAnd,
+            "r_or" => ROr,
+            "r_xor" => RXor,
+            "r_l_shift" => RLShift,
+            "r_r_shift" => RRShift,
+            "call_missing" => CallMissing,
+            _ => return None,
+        })
+    }
+
     pub fn slot_id(self) -> u16 {
         use ProtocolSlot::*;
         match self {
@@ -2182,7 +2501,31 @@ pub struct Modifiers {
     pub is_shared: bool,
     pub is_extension: bool,
     pub is_overloads: bool,
+    /// FINAL: no subclass may override this member. PHP `final`, Java `final`,
+    /// VB `NotOverridable`, Fortran `non_overridable`.
+    ///
+    /// This is about the FUTURE — what descendants may do — and says nothing
+    /// about an ancestor. Read by the compiler only to decide that a member can
+    /// never be virtual.
     pub is_not_overridable: bool,
+    /// HIDING: this member deliberately shadows an ancestor's member of the
+    /// same name rather than overriding it, so the two occupy DISTINCT slots
+    /// and a call resolves by the receiver's static type. C# `new`, VB
+    /// `Shadows`, Pascal `reintroduce`.
+    ///
+    /// The exact opposite direction from [`is_not_overridable`]: hiding looks
+    /// BACKWARD at an ancestor, final looks FORWARD at descendants. They were
+    /// one field until it became clear the compiler was reading it for both
+    /// meanings at once — as the hiding trigger and as "can never be virtual" —
+    /// so a PHP `final` method whose name collided with an ancestor's was
+    /// storage-renamed and its override silently broke, while a VB `Shadows`
+    /// method was wrongly devirtualized. Five languages rode that ambiguity.
+    ///
+    /// Only ever a HINT that the language marked it: whether a member actually
+    /// hides anything is answered by the compiler against `pending_classes`,
+    /// because the ancestor may be declared later or in another file — which is
+    /// why the walker cannot decide it alone.
+    pub is_hiding: bool,
     /// This member is the class's DESTRUCTOR / finaliser, not an ordinary
     /// method. Set by the walker, which is the only place that knows how its
     /// language spells one — Pascal and C# mark it syntactically (`destructor
@@ -2942,4 +3285,48 @@ fn normalize_array_subscript(index: Expression, semantics: ArrayIndexSemantics) 
         },
         span,
     )
+}
+
+#[cfg(test)]
+mod protocol_slot_key_tests {
+    use super::ProtocolSlot;
+
+    /// Every slot in the exhaustive `slot_id` match must round-trip through its
+    /// string key, and no two slots may share one.
+    ///
+    /// `as_key`/`from_key` were GENERATED from `slot_id`'s arms rather than
+    /// transcribed, precisely because 93 hand-written pairs is where a slip
+    /// hides — and a collision would silently alias two protocols, so a profile
+    /// declaring `slot = "eq"` could bind `Ne`. This is the check that makes
+    /// the generated pair trustworthy; it walks slot ids rather than a
+    /// `ProtocolSlot::ALL` rather than a hand-listed set, so a slot added later
+    /// is covered without editing it.
+    #[test]
+    fn every_slot_key_roundtrips_and_is_unique() {
+        let mut seen: std::collections::HashMap<&'static str, ProtocolSlot> =
+            std::collections::HashMap::new();
+        let mut count = 0;
+        for slot in ProtocolSlot::ALL {
+            count += 1;
+            let key = slot.as_key();
+            assert_eq!(
+                ProtocolSlot::from_key(key),
+                Some(slot),
+                "{slot:?} does not round-trip through key {key:?}"
+            );
+            if let Some(other) = seen.insert(key, slot) {
+                panic!("key {key:?} is shared by {other:?} and {slot:?}");
+            }
+        }
+        assert_eq!(count, 93, "ProtocolSlot::ALL lost a slot");
+    }
+
+    /// An unrecognised key is ignored, not an error: a profile written against
+    /// a newer toolchain must still load, with the unknown declaration simply
+    /// having no effect.
+    #[test]
+    fn an_unknown_slot_key_is_none() {
+        assert_eq!(ProtocolSlot::from_key("no_such_slot"), None);
+        assert_eq!(ProtocolSlot::from_key(""), None);
+    }
 }

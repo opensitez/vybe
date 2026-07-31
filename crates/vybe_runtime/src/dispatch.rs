@@ -68,7 +68,7 @@ impl VM {
             upvalues: Vec::new(),
         };
         let mut obj = Object {
-            properties: std::collections::HashMap::new(),
+            properties: indexmap::IndexMap::new(),
             kind: ObjectKind::Function(func),
             type_id: 0,
             fields: Vec::new(),
@@ -2377,7 +2377,7 @@ impl VM {
                         upvalues,
                     };
                     let mut obj = Object {
-                        properties: HashMap::new(),
+                        properties: indexmap::IndexMap::new(),
                         kind: ObjectKind::Function(func),
                         type_id: 0,
                         fields: Vec::new(),
@@ -4479,7 +4479,7 @@ impl VM {
                         state: std::sync::Mutex::new(crate::value::ContinuationPhase::Ready),
                     };
                     let obj = Object {
-                        properties: HashMap::new(),
+                        properties: indexmap::IndexMap::new(),
                         kind: ObjectKind::Continuation(state),
                         type_id: 0,
                         fields: Vec::new(),
@@ -4758,7 +4758,7 @@ impl VM {
                             // continuation's properties and apply them on
                             // first resume.
                             let mut new_obj = Object {
-                                properties: HashMap::new(),
+                                properties: indexmap::IndexMap::new(),
                                 kind: ObjectKind::Continuation(crate::value::ContinuationState {
                                     entry,
                                     saved: std::sync::Mutex::new(None),
@@ -4787,7 +4787,7 @@ impl VM {
                             // keyed `__bound_args`; RESUME sees this on
                             // first fire.
                             let bound = Object {
-                                properties: HashMap::new(),
+                                properties: indexmap::IndexMap::new(),
                                 kind: ObjectKind::Array(args),
                                 type_id: 0,
                                 fields: Vec::new(),

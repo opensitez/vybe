@@ -5638,6 +5638,13 @@ impl Compiler {
                 self.profile
                     .lookup_value_method(field, arg_exprs.len() as u8)
                     .cloned()
+                    // builtinslotplan.md step 5 — the table decides. Applies
+                    // ONLY when the profile declared `slot = "..."` on this
+                    // method AND the receiver's built-in type is statically
+                    // known AND that pair is bound; otherwise the def is
+                    // returned untouched, so a language that declares no slot
+                    // cannot be affected.
+                    .map(|def| self.apply_builtin_slot_binding(object, def))
             };
             // builtinslotplan.md step 3 — CENSUS, not a decision. Records which
             // `(built-in receiver type, method)` pairs actually reach

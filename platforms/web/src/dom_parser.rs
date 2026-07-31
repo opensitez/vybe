@@ -623,7 +623,7 @@ pub fn register(vm: &mut VM) {
             let attrs = elem_lock.properties.get("attributes").cloned();
             drop(elem_lock);
             if let Some(Value::Object(a)) = attrs {
-                a.lock().unwrap().properties.remove(&name);
+                a.lock().unwrap().properties.shift_remove(&name);
             }
             let mut elem_w = elem.lock().unwrap();
             if name == "id" {
@@ -945,7 +945,7 @@ pub fn register(vm: &mut VM) {
             };
             let attrs = elem.lock().unwrap().properties.get("attributes").cloned();
             if let Some(Value::Object(a)) = attrs {
-                a.lock().unwrap().properties.remove(&name);
+                a.lock().unwrap().properties.shift_remove(&name);
             }
             Value::Null
         }),

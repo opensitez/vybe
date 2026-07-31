@@ -29,7 +29,7 @@ pub fn emit_integer_of_date(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::CALL_IMPORT, parse_idx, line);
     chunks[current].emit(1, line);
-    emit_f64_const(chunks, current, 86_400_000.0, line);
+    emit_f64_const(chunks, current, vybe_compiler::primitives::datetime::MS_PER_DAY, line);
     chunks[current].emit_op(Op::F64_DIV, line);
     chunks[current].emit_op(Op::F64_TRUNC, line);
     // COBOL integer dates are 1-based from 1601-01-01, but the above yields days

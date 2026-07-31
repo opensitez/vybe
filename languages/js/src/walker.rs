@@ -422,7 +422,12 @@ fn validate_private_expr(expr: &Expression) -> Result<(), String> {
             }
             Ok(())
         }
-        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items)
+        | ExprKind::Zip {
+            iterables: items, ..
+        } => {
             for item in items {
                 validate_private_expr(item)?;
             }
@@ -718,7 +723,12 @@ fn expr_contains_await(expr: &Expression) -> bool {
         ExprKind::Array(items) => items.iter().any(|item| {
             item.key.as_ref().is_some_and(expr_contains_await) || expr_contains_await(&item.value)
         }),
-        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items)
+        | ExprKind::Zip {
+            iterables: items, ..
+        } => {
             items.iter().any(expr_contains_await)
         }
         ExprKind::NamedTuple { fields, .. } => {
@@ -1624,7 +1634,12 @@ fn rewrite_expression_keys(
                 rewrite_expression_keys(&mut element.value, consts);
             }
         }
-        ExprKind::Tuple(items) | ExprKind::Set(items) | ExprKind::Sequence(items) => {
+        ExprKind::Tuple(items)
+        | ExprKind::Set(items)
+        | ExprKind::Sequence(items)
+        | ExprKind::Zip {
+            iterables: items, ..
+        } => {
             for item in items.iter_mut() {
                 rewrite_expression_keys(item, consts);
             }

@@ -7069,6 +7069,20 @@ fn walk_postfix_chain(expr: Expression, chain: Pair<Rule>) -> Result<Expression,
                 return Ok(Expression::new(lit));
             }
 
+            if method_name == "zip"
+                && block_text.is_none()
+                && final_args.iter().all(|arg| arg.name.is_none() && !arg.spread)
+            {
+                let mut iterables = Vec::with_capacity(final_args.len() + 1);
+                iterables.push(expr);
+                iterables.extend(final_args.into_iter().map(|arg| arg.value));
+                return Ok(Expression::new(ExprKind::Zip {
+                    iterables,
+                    mode: ZipMode::First,
+                    strict: false,
+                }));
+            }
+
             if matches!(
                 method_name.as_str(),
                 "class_eval" | "module_eval" | "instance_eval"

@@ -89,12 +89,12 @@ fn wrap_duration_ms(chunk: &mut Chunk, line: u32) {
     set_field(chunk, "inMinutes", line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
-    chunk.emit_f64_const(3_600_000.0, line);
+    chunk.emit_f64_const(vybe_compiler::primitives::datetime::MS_PER_HOUR, line);
     chunk.emit_op(Op::F64_DIV, line);
     set_field(chunk, "inHours", line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
-    chunk.emit_f64_const(86_400_000.0, line);
+    chunk.emit_f64_const(vybe_compiler::primitives::datetime::MS_PER_DAY, line);
     chunk.emit_op(Op::F64_DIV, line);
     set_field(chunk, "inDays", line);
     core_wasm::dup(chunk, line);

@@ -27,6 +27,26 @@ Console.WriteLine(obj.Speak());"#
     );
 }
 
+/// The other half of `new`-hiding: the SAME object answers differently
+/// depending on the reference's static type, because the two methods occupy
+/// distinct slots rather than one overriding the other (ECMA-334 §15.6.7).
+/// Dispatching through `Base` alone cannot show this — a plain non-virtual
+/// override would give `base` there too.
+#[test]
+fn method_hiding_with_new_resolves_by_static_type_of_the_reference() {
+    assert_eq!(
+        run_csharp(
+            r#"class Base{public virtual string Speak()=>"base";}
+class Derived:Base{public new string Speak()=>"hidden";}
+Derived d=new Derived();
+Base b=d;
+Console.WriteLine(d.Speak());
+Console.WriteLine(b.Speak());"#
+        ),
+        &["hidden", "base"]
+    );
+}
+
 #[test]
 fn is_operator_succeeds_for_derived_held_as_base() {
     assert_eq!(

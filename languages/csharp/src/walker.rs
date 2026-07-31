@@ -8718,6 +8718,11 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                         s if s.starts_with("virtual") => mods.is_virtual = true,
                         s if s.starts_with("override") => mods.is_override = true,
                         s if s.starts_with("readonly") => mods.is_readonly = true,
+                        // `new` HIDES an inherited member (ECMA-334 §15.6.7):
+                        // the two occupy distinct slots and a call resolves by
+                        // the receiver's STATIC type. Parsed by the grammar but
+                        // dropped here, so a hiding method silently overrode.
+                        "new" => mods.is_hiding = true,
                         // C# `const` — implicitly static + readonly per ECMA-334 §15.4.
                         // Compile-time constant folded into class-level slot.
                         "const" => {

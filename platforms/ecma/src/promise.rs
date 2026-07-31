@@ -1145,7 +1145,7 @@ fn settle_and_drain(ctx: &mut HostContext, args: &[Value], state: &str) {
             .insert("__state".into(), Value::String(Arc::from(state)));
         o.properties.insert("__value".into(), value.clone());
         // Drain the reactions list before releasing the lock.
-        if let Some(Value::Object(arr)) = o.properties.remove("__pending_reactions") {
+        if let Some(Value::Object(arr)) = o.properties.shift_remove("__pending_reactions") {
             let mut a = arr.lock().unwrap();
             if let ObjectKind::Array(ref mut elems) = a.kind {
                 std::mem::take(elems)
@@ -1217,11 +1217,11 @@ fn mutate_promise_state(ctx: &mut HostContext, promise: &Value, state: &str, val
             if already {
                 return;
             }
-            o.properties.remove("__resolving_thenable");
+            o.properties.shift_remove("__resolving_thenable");
             o.properties
                 .insert("__state".into(), Value::String(Arc::from(state)));
             o.properties.insert("__value".into(), value.clone());
-            if let Some(Value::Object(arr)) = o.properties.remove("__pending_reactions") {
+            if let Some(Value::Object(arr)) = o.properties.shift_remove("__pending_reactions") {
                 let mut a = arr.lock().unwrap();
                 if let ObjectKind::Array(ref mut elems) = a.kind {
                     reactions = std::mem::take(elems);

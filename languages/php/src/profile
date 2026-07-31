@@ -588,7 +588,8 @@ strftime            = { emit = "common:php.strftime",            min_args = 1, m
 strtotime           = { emit = "common:php.strtotime",           min_args = 1, max_args = 2 }
 mktime              = { emit = "common:php.mktime",              min_args = 0, max_args = 6 }
 sleep               = { emit = "host:wasi:clocks:sleep",     min_args = 1, max_args = 1 }
-date_default_timezone_set = { emit = "intrinsic:php_date_default_timezone_set", min_args = 1, max_args = 1 }
+date_default_timezone_set = { emit = "intrinsic:default_timezone_set", min_args = 1, max_args = 1 }
+date_default_timezone_get = { emit = "intrinsic:default_timezone_get", min_args = 0, max_args = 0 }
 
 # ── String formatting ──────────────────────────────────────────────────────
 
@@ -804,6 +805,7 @@ __php_dt_get_timestamp = { emit = "common:php.datetime_get_timestamp",  min_args
 __php_dt_modify        = { emit = "common:php.datetime_modify",         min_args = 2, max_args = 2 }
 __php_dt_imm_modify    = { emit = "common:php.datetime_immutable_modify", min_args = 2, max_args = 2 }
 __php_dt_diff          = { emit = "common:php.datetime_diff",           min_args = 2, max_args = 3 }
+__php_dt_interval_format = { emit = "common:php.dateinterval_format",   min_args = 2, max_args = 2 }
 __php_dt_add           = { emit = "common:php.datetime_add",            min_args = 2, max_args = 2 }
 __php_dt_sub           = { emit = "common:php.datetime_sub",            min_args = 2, max_args = 2 }
 __php_dt_imm_add       = { emit = "common:php.datetime_immutable_add",  min_args = 2, max_args = 2 }
@@ -1043,3 +1045,13 @@ module_root = "wasi:"
 kind = "package-root"
 prefix = "wasm"
 module_root = "wasm:"
+
+# ── builtinslotplan.md step 4 ────────────────────────────────────────────
+# PHP's own spellings. Step 3's census measured `function g(array $xs)`
+# producing the hint `array`, which no shared classifier reads.
+[builtin_types]
+string = ["string"]
+int    = ["int"]
+double = ["float"]
+bool   = ["bool"]
+array  = ["array", "iterable"]

@@ -67,7 +67,10 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
 
     // ── map ─────────────────────────────────────────────────────────────
     b.insert(BuiltinType::Map, ProtocolSlot::Len, "common:dict.size");
-    b.insert(BuiltinType::Map, ProtocolSlot::GetItem, "common:dict.get_dynamic");
+    // GetItem is deliberately NOT bound — see `unbound_reason`. Measured
+    // 2026-07-31: binding it to `common:dict.get_dynamic` broke Dart's
+    // `json['body']` on an empty map, which must be `null` and became
+    // `undefined`.
     b.insert(BuiltinType::Map, ProtocolSlot::SetItem, "common:dict.set_dynamic");
     b.insert(BuiltinType::Map, ProtocolSlot::Contains, "common:dict.has");
 
@@ -98,6 +101,26 @@ pub fn unbound_reason(ty: BuiltinType, slot: ProtocolSlot) -> Option<&'static st
         (T::String, S::Hash) => {
             "Must land WITH `Eq` (§2g): binding one without the other yields \
              values that compare equal and miss in maps."
+        }
+        (T::Map, S::GetItem) => {
+            "Languages disagree on the MISS, and only on the miss. Measured \
+             2026-07-31 by binding it and watching Dart break: `json['body']` \
+             on an empty map must be `null`, and `common:dict.get_dynamic` \
+             returns `undefined`. Across languages the same lookup is \
+             `undefined` (JS `Map.get`), `null` (Dart), a raised `KeyError` \
+             (Python), and `null`-with-a-warning (PHP) — four different \
+             answers, so any central binding encodes one language's as \
+             everyone's. That is the mistake this slot's neighbour \
+             (`String`/`Iterator`) is unbound to avoid.\n\n\
+             Hit lookups agree, so this becomes bindable once a language can \
+             declare an override for the miss — i.e. the per-language \
+             `[builtin_slots.*]` table, which is not built yet. Until then the \
+             language's own emitter keeps deciding.\n\n\
+             `Array`/`GetItem` and `String`/`GetItem` carry the SAME hazard \
+             out of bounds (JS `undefined`, Dart `RangeError`, Python \
+             `IndexError`) and are bound only because in-range indexing was \
+             verified to agree. Treat an out-of-range failure there as this \
+             same finding, not a new one."
         }
         (T::String, S::Iterator) => {
             "Languages disagree on what iterating a string yields — code points \
@@ -312,19 +335,16 @@ impl Compiler {
     /// Those two predicates (plus `is_numeric_type_hint`) are precisely what
     /// step 4's profile section is chartered to replace; delegating keeps the
     /// eventual move a single-site change.
+    /// Step 4 made this a single table lookup. It consults the profile's
+    /// `[builtin_types]` spellings first, then the platform table — the same
+    /// language-first precedence as `BuiltinSlotBindings::get_or`.
+    ///
+    /// The numeric and array cases that step 3 recorded as unresolvable resolve
+    /// here now: `classify_with` returns WHICH built-in a hint names, where the
+    /// old `is_numeric_type_hint` could only say "some number".
     pub(crate) fn builtin_type_of(&self, expr: &Expression) -> Option<BuiltinType> {
         let hint = self.infer_expr_type_hint(expr)?;
-        let hint = hint.trim();
-        if Self::is_string_type_hint(hint) {
-            return Some(BuiltinType::String);
-        }
-        if Self::is_dictionary_type_hint(hint) {
-            return Some(BuiltinType::Map);
-        }
-        // Deliberately NOT falling through to a numeric or array guess — see
-        // `unbound_reason` for `Int`/`Double`/`Array`. Anything the platform
-        // cannot already classify stays unresolved and is recorded as such.
-        None
+        vybe_ast::builtin_types::classify_with(&self.profile.builtin_type_spellings, &hint)
     }
 
     /// The emit target bound for `(static type of expr, slot)`, or `None` when
@@ -346,6 +366,45 @@ impl Compiler {
 }
 
 impl Compiler {
+    /// Rewrite a matched value-method's emit target to the slot binding for its
+    /// receiver's built-in type — `builtinslotplan.md` step 5.
+    ///
+    /// This is the point where the table finally *decides* something. Everything
+    /// before it (steps 1–4) established that the table faithfully describes
+    /// current behaviour; this substitutes the table's answer for the profile's.
+    ///
+    /// Three conditions must all hold, and each is a deliberate gate:
+    ///
+    /// 1. the profile declared `slot = "..."` on the method — the LANGUAGE says
+    ///    which slot its spelling fills, so no method-name table exists here;
+    /// 2. the receiver's built-in type is statically known (§2c compile-time
+    ///    path);
+    /// 3. the `(type, slot)` pair is bound.
+    ///
+    /// Any one failing leaves `def` exactly as the profile wrote it, which is
+    /// why a language that declares nothing cannot be affected.
+    ///
+    /// Returns the def unchanged when the substitution does not apply.
+    pub(crate) fn apply_builtin_slot_binding(
+        &self,
+        object: &Expression,
+        mut def: vybe_runtime::profile::BuiltinDef,
+    ) -> vybe_runtime::profile::BuiltinDef {
+        let Some(slot) = def.slot else { return def };
+        let Some(ty) = self.builtin_type_of(object) else {
+            return def;
+        };
+        let Some(target) = defaults().get(ty, slot) else {
+            return def;
+        };
+        // Reuses the profile's own emit-target parser rather than a second
+        // interpreter: a slot binding is deliberately not a new vocabulary.
+        if let Some(emit) = vybe_runtime::profile::parse_emit_target(target) {
+            def.emit = emit;
+        }
+        def
+    }
+
     /// Record `(language, built-in receiver type, method, emit target)` for a
     /// value-method call whose receiver has a statically-known built-in type.
     ///

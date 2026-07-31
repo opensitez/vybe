@@ -20774,6 +20774,7 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut is_must_override = false;
     let mut is_shared = false;
     let mut is_not_overridable = false;
+    let mut is_hiding = false;
     let mut is_overloads = false;
 
     for p in inner {
@@ -20795,7 +20796,7 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     "mustoverride" => is_must_override = true,
                     "shared" => is_shared = true,
                     "notoverridable" => is_not_overridable = true,
-                    "shadows" => is_not_overridable = true,
+                    "shadows" => is_hiding = true,
                     "overloads" => is_overloads = true,
                     _ => {}
                 }
@@ -20862,6 +20863,7 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 is_extension,
                 is_overloads,
                 is_not_overridable,
+                is_hiding,
                 is_destructor: false,
                 protocol_slot: None,
                 decorators,
@@ -20894,6 +20896,7 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut is_must_override = false;
     let mut is_shared = false;
     let mut is_not_overridable = false;
+    let mut is_hiding = false;
     let mut is_overloads = false;
 
     for p in inner {
@@ -20917,7 +20920,7 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     "mustoverride" => is_must_override = true,
                     "shared" => is_shared = true,
                     "notoverridable" => is_not_overridable = true,
-                    "shadows" => is_not_overridable = true,
+                    "shadows" => is_hiding = true,
                     "overloads" => is_overloads = true,
                     _ => {}
                 }
@@ -20985,6 +20988,7 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 is_extension,
                 is_overloads,
                 is_not_overridable,
+                is_hiding,
                 is_destructor: false,
                 protocol_slot: None,
                 decorators,
@@ -21081,6 +21085,7 @@ fn parse_operator_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 is_extension: false,
                 is_overloads,
                 is_not_overridable: false,
+                is_hiding: false,
                 is_destructor: false,
                 protocol_slot,
                 decorators,
@@ -21353,7 +21358,7 @@ fn parse_property_modifiers(pair: &Pair<Rule>) -> Modifiers {
                 "overridable" | "virtual" => modifiers.is_virtual = true,
                 "mustoverride" => modifiers.is_abstract = true,
                 "notoverridable" => modifiers.is_not_overridable = true,
-                "shadows" => modifiers.is_not_overridable = true,
+                "shadows" => modifiers.is_hiding = true,
                 "overloads" => modifiers.is_overloads = true,
                 _ => {}
             },
@@ -28190,7 +28195,7 @@ fn parse_event_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, Str
                 "mustoverride" => modifiers.is_abstract = true,
                 "notoverridable" => modifiers.is_not_overridable = true,
                 "overloads" => modifiers.is_overloads = true,
-                "shadows" => {}
+                "shadows" => modifiers.is_hiding = true,
                 _ => {}
             },
             _ => {}

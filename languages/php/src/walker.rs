@@ -43,6 +43,7 @@ use pest::Parser;
 use pest::iterators::Pair;
 use std::cell::RefCell;
 use vybe_ast::*;
+use vybe_compiler::primitives::reflection;
 
 fn php_echo_expr(exprs: Vec<Expression>) -> Expression {
     let span = Span::default();
@@ -480,11 +481,91 @@ fn attribute_instance_props(attr: &AttributeMeta) -> Vec<ObjectProperty> {
     props
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct ParamReflectionMeta {
     attrs: Vec<AttributeMeta>,
     is_optional: bool,
     default: Option<Expression>,
+    /// Declared type hint, verbatim. `Param` carried this all along — it was
+    /// dropped when the full AST param was narrowed to three fields, which is
+    /// why `getType()` had nothing to return.
+    type_name: Option<String>,
+    is_nullable: bool,
+    pass_by_ref: bool,
+    is_variadic: bool,
+}
+
+/// PHP's built-in type names — `ReflectionNamedType::isBuiltin()` is false for
+/// everything else (a class / interface / enum name). The list is PHP's own
+/// spelling, so it lives in the PHP crate, never in shared code.
+fn php_type_is_builtin(name: &str) -> bool {
+    matches!(
+        name.trim_start_matches('?').to_ascii_lowercase().as_str(),
+        "int"
+            | "float"
+            | "string"
+            | "bool"
+            | "array"
+            | "object"
+            | "mixed"
+            | "void"
+            | "never"
+            | "null"
+            | "false"
+            | "true"
+            | "callable"
+            | "iterable"
+    )
+}
+
+/// A `ReflectionNamedType` surface object: `getName()`, `isBuiltin()`,
+/// `allowsNull()`. Built as an AST object literal like every other reflection
+/// surface here, and stamped with the shared `reflection::FIELD_TYPE` key.
+fn reflection_named_type_expr(type_name: &str, nullable: bool) -> Expression {
+    // Type hints reach here with surrounding whitespace (`"int "`) and a
+    // possible leading namespace separator — normalize once, here, so every
+    // caller and every derived answer (`isBuiltin`, `getName`) agrees.
+    let trimmed = type_name.trim();
+    let bare = trimmed
+        .trim_start_matches('?')
+        .trim()
+        .trim_start_matches('\\')
+        .to_string();
+    let allows_null = nullable || trimmed.starts_with('?') || bare.eq_ignore_ascii_case("null");
+    let lambda = |value: Expression| {
+        Expression::new(ExprKind::Lambda {
+            params: vec![mk_param_named("__this")],
+            body: LambdaBody::Expr(Box::new(value)),
+            is_async: false,
+            captures: vec![],
+        })
+    };
+    Expression::new(ExprKind::Object(vec![
+        ObjectProperty::KeyValue {
+            key: Expression::string(reflection::FIELD_TYPE),
+            value: Expression::string("ReflectionNamedType"),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__name"),
+            value: Expression::string(&bare),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("getname"),
+            value: lambda(Expression::string(&bare)),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("isbuiltin"),
+            value: lambda(Expression::bool(php_type_is_builtin(&bare))),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("allowsnull"),
+            value: lambda(Expression::bool(allows_null)),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("__tostring"),
+            value: lambda(Expression::string(&bare)),
+        },
+    ]))
 }
 
 fn reflection_param_expr(meta: &ParamReflectionMeta) -> Expression {
@@ -530,7 +611,47 @@ fn reflection_param_expr(meta: &ParamReflectionMeta) -> Expression {
             key: Expression::string("getdefaultvalue"),
             value: get_default_value,
         },
+        ObjectProperty::KeyValue {
+            key: Expression::string("gettype"),
+            value: simple_lambda(match &meta.type_name {
+                Some(name) => reflection_named_type_expr(name, meta.is_nullable),
+                None => Expression::null(),
+            }),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("hastype"),
+            value: simple_lambda(Expression::bool(meta.type_name.is_some())),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("ispassedbyreference"),
+            value: simple_lambda(Expression::bool(meta.pass_by_ref)),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("isvariadic"),
+            value: simple_lambda(Expression::bool(meta.is_variadic)),
+        },
+        ObjectProperty::KeyValue {
+            key: Expression::string("allowsnull"),
+            value: simple_lambda(Expression::bool(
+                meta.is_nullable
+                    || meta
+                        .type_name
+                        .as_deref()
+                        .is_none_or(|name| name.starts_with('?')),
+            )),
+        },
     ]))
+}
+
+/// `fn (__this) => <value>` — the shape every reflection surface method here
+/// uses, since the value is known at walk time.
+fn simple_lambda(value: Expression) -> Expression {
+    Expression::new(ExprKind::Lambda {
+        params: vec![mk_param_named("__this")],
+        body: LambdaBody::Expr(Box::new(value)),
+        is_async: false,
+        captures: vec![],
+    })
 }
 
 fn reflection_params_array_expr(params: Vec<ParamReflectionMeta>) -> Expression {
@@ -558,6 +679,10 @@ fn reflection_param_metas(
             attrs: attrs.get(idx).cloned().unwrap_or_default(),
             is_optional: param.default.is_some() || param.is_optional,
             default: param.default.clone(),
+            type_name: param.type_hint.clone(),
+            is_nullable: param.is_nullable,
+            pass_by_ref: matches!(param.pass_by, vybe_ast::PassBy::Ref),
+            is_variadic: param.is_rest,
         })
         .collect()
 }
@@ -648,6 +773,10 @@ struct FuncMeta {
     param_count: usize,
     required_params: usize,
     params: Vec<Param>,
+    /// Declared return type, RAW — `?` marker intact. `FUNCTION_RETURN_TYPES`
+    /// strips it (it exists to resolve class names), so `allowsNull()` cannot
+    /// be answered from that table.
+    return_type: Option<String>,
 }
 
 const PHP_LITERAL_OPEN_MASK: &str = "\u{E000}\u{E001}";
@@ -1403,7 +1532,12 @@ fn php_function_call_return_class(expr: &Expression) -> Option<String> {
         "__php_dt_imm_new" | "__php_dt_imm_create_from_format" => {
             return Some("DateTimeImmutable".to_string());
         }
-        "__php_dateinterval_components" => return Some("DateInterval".to_string()),
+        // `$a->diff($b)` yields a DateInterval. Without this the result infers
+        // as nothing, so `$diff->format(...)` never reaches the DateInterval
+        // rewrite and compiles to an undefined member call.
+        "__php_dateinterval_components" | "__php_dt_diff" => {
+            return Some("DateInterval".to_string());
+        }
         "__php_datetimezone_new" => return Some("DateTimeZone".to_string()),
         "__spl_new_splobjectstorage" => return Some("SplObjectStorage".to_string()),
         "__spl_new_weakmap" => return Some("WeakMap".to_string()),
@@ -3967,6 +4101,7 @@ fn pre_register_php_function_signatures(program: &Pair<Rule>) {
                     param_count,
                     required_params,
                     params: Vec::new(),
+                    return_type: None,
                 },
             );
             if let Some(ns) = ns.filter(|ns| !ns.is_empty()) {
@@ -3981,6 +4116,7 @@ fn pre_register_php_function_signatures(program: &Pair<Rule>) {
                         param_count,
                         required_params,
                         params: Vec::new(),
+                        return_type: None,
                     },
                 );
                 let mangled =
@@ -3992,6 +4128,7 @@ fn pre_register_php_function_signatures(program: &Pair<Rule>) {
                         param_count,
                         required_params,
                         params: Vec::new(),
+                        return_type: None,
                     },
                 );
             }
@@ -7090,6 +7227,7 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     param_count: params.len(),
                     required_params: required,
                     params: params.clone(),
+                    return_type: return_type.clone(),
                 },
             );
         }
@@ -7100,6 +7238,7 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 param_count: params.len(),
                 required_params: required,
                 params: params.clone(),
+                return_type: return_type.clone(),
             },
         );
         if !name.contains('.') {
@@ -7115,6 +7254,7 @@ fn walk_function_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         param_count: params.len(),
                         required_params: required,
                         params: params.clone(),
+                        return_type: return_type.clone(),
                     },
                 );
             }
@@ -14566,14 +14706,24 @@ fn apply_postfix(
                 && name == "format"
                 && php_object_class_from_expr(&receiver).as_deref() == Some("DateInterval")
             {
+                // ALL formats go to the adapter — literal or not. The walker
+                // used to expand literals itself, which meant the specifier
+                // table existed twice and the walker copy silently lacked
+                // `%R`/`%r`. One table, in the adapter.
                 if let Some(al) = arg_list_pair.clone() {
                     let fmt_args = walk_args(al)?;
                     if fmt_args.len() == 1 {
-                        if let ExprKind::Lit(Literal::Str(fmt)) = &fmt_args[0].value.kind {
-                            return Ok(php_dateinterval_format_literal_to_ast(
-                                fmt, &receiver, &span,
-                            ));
-                        }
+                        return Ok(Expression::with_span(
+                            ExprKind::Call {
+                                callee: Box::new(Expression::ident("__php_dt_interval_format")),
+                                args: vec![
+                                    Argument::positional(receiver.clone()),
+                                    fmt_args[0].clone(),
+                                ],
+                                optional: false,
+                            },
+                            span.clone(),
+                        ));
                     }
                 }
             }
@@ -19645,8 +19795,7 @@ fn build_reflection_class_call(args: Vec<Argument>, span: Span) -> Result<Expres
                 .into_iter()
                 .map(|attrs| ParamReflectionMeta {
                     attrs,
-                    is_optional: false,
-                    default: None,
+                    ..Default::default()
                 })
                 .collect(),
         )));
@@ -19819,14 +19968,21 @@ fn build_reflection_function_call(args: Vec<Argument>, span: Span) -> Result<Exp
                     .into_iter()
                     .map(|attrs| ParamReflectionMeta {
                         attrs,
-                        is_optional: false,
-                        default: None,
+                        ..Default::default()
                     })
                     .collect()
             } else {
                 reflection_param_metas(&fm.params, param_attrs)
             },
         )));
+        // 5th arg: the ReflectionNamedType surface for the declared return
+        // type, or null. `hasReturnType()` is then a null test on this.
+        call_args.push(Argument::positional(match fm.return_type.as_deref() {
+            Some(ret) if !ret.trim().is_empty() => {
+                reflection_named_type_expr(ret.trim(), ret.trim().starts_with('?'))
+            }
+            _ => Expression::null(),
+        }));
     } else {
         call_args.push(Argument::positional(mk_int(0)));
         call_args.push(Argument::positional(mk_int(0)));
@@ -28863,7 +29019,7 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             Expression::ident("__php_dt_set_timestamp"),
             vec![arg(0)?, arg(1)?],
         ),
-        "date_default_timezone_get" => ExprKind::Lit(Literal::Str("UTC".to_string())),
+
         "timezone_name_from_abbr" if args.len() >= 1 => {
             if let ExprKind::Lit(Literal::Str(s)) = &args[0].value.kind {
                 ExprKind::Lit(Literal::Str(match s.as_str() {

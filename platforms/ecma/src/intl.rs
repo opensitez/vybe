@@ -1074,7 +1074,13 @@ fn register_date_time_format(vm: &mut VM) {
         Box::new(|_ctx, args| {
             if let Some(Value::Object(dtf)) = args.first() {
                 let locale = obj_string_prop(dtf, "locale").unwrap_or_else(|| "en-US".into());
-                let time_zone = obj_string_prop(dtf, "timeZone").unwrap_or_else(|| "UTC".into());
+                // Defaults to the HOST ENVIRONMENT's zone, not "UTC" — ECMA-262
+                // SystemTimeZoneIdentifier(). Hardcoding UTC is only permitted
+                // "if the implementation only supports the UTC time zone",
+                // which stopped being true once tzdb was linked.
+                let time_zone = obj_string_prop(dtf, "timeZone")
+                    .filter(|z| !z.is_empty())
+                    .unwrap_or_else(crate::timezone::system_identifier);
                 let calendar = obj_string_prop(dtf, "calendar").unwrap_or_else(|| "gregory".into());
                 return make_object(vec![
                     ("locale", s_val(&locale)),
@@ -2422,11 +2428,10 @@ fn register_locale(vm: &mut VM) {
         );
     }
 
-    // getTimeZones() → `undefined` when the locale carries no region, per
-    // §14.3.x. The region→zone mapping lives in tzdb's `zone.tab`, which
-    // neither `chrono-tz` nor ICU's `IanaParser` exposes; rather than ship a
-    // hand-written region table that would be wrong at the margins and stale
-    // within a release, this reports only what the data supports.
+    // getTimeZones() → the IANA identifiers for the locale's region, or
+    // `undefined` when the locale carries no region, per §14.3.x. Backed by the
+    // vendored tzdb `zone.tab` (public domain) — the mapping exists in neither
+    // `chrono-tz` nor ICU.
     vm.register_host_fn(
         "ecma:intl/locale",
         "getTimeZones",
@@ -2438,7 +2443,12 @@ fn register_locale(vm: &mut VM) {
             if region.is_empty() {
                 return Value::Undefined;
             }
-            make_array(vec![])
+            make_array(
+                crate::timezone::identifiers_for_region(&region)
+                    .into_iter()
+                    .map(|zone| s_val(&zone))
+                    .collect(),
+            )
         }),
     );
 

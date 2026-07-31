@@ -656,9 +656,32 @@ impl fmt::Display for Value {
 }
 
 /// A heap-allocated object with named properties and an internal kind.
+/// An object's named properties, in INSERTION ORDER.
+///
+/// Exported so platform crates can name the type in signatures without taking
+/// an `indexmap` dependency of their own — `platforms/wasi`, `platforms/vybe`
+/// and friends do not depend on it, and adding it to each just to spell a
+/// parameter type would be gratuitous coupling.
+pub type Properties = indexmap::IndexMap<String, Value>;
+
 #[derive(Debug, Clone)]
 pub struct Object {
-    pub properties: HashMap<String, Value>,
+    /// Named properties, in INSERTION ORDER.
+    ///
+    /// `IndexMap`, not `HashMap`: `std`'s `RandomState` seeds per process, so
+    /// iteration order differed between two runs of the same program on the
+    /// same input. That violates ECMA-262 §10.1.11.1 `OrdinaryOwnPropertyKeys`
+    /// (integer keys ascending, then string keys in CREATION order) and made
+    /// every order-observing surface flaky — `Object.keys`, `JSON.stringify`,
+    /// `for…in`, Python `vars()`/`repr`, Dart's insertion-ordered `Map`.
+    ///
+    /// # `remove` is not what you want here
+    ///
+    /// `IndexMap::remove` is deprecated and behaves as `swap_remove`: it moves
+    /// the LAST entry into the vacated slot, destroying insertion order on
+    /// every delete — the exact property this type exists to provide. Use
+    /// `shift_remove`. See fixflakyhashmap.md §3.
+    pub properties: indexmap::IndexMap<String, Value>,
     pub kind: ObjectKind,
     /// WASM GC-style type reference. 0 = Object (untyped), >0 = specific type.
     pub type_id: usize,
@@ -870,7 +893,7 @@ impl Clone for ContinuationState {
 impl Object {
     pub fn new() -> Self {
         Object {
-            properties: HashMap::new(),
+            properties: indexmap::IndexMap::new(),
             kind: ObjectKind::Ordinary,
             type_id: 0,
             fields: Vec::new(),
@@ -879,7 +902,7 @@ impl Object {
 
     pub fn new_typed(type_id: usize) -> Self {
         Object {
-            properties: HashMap::new(),
+            properties: indexmap::IndexMap::new(),
             kind: ObjectKind::Ordinary,
             type_id,
             fields: Vec::new(),
@@ -889,7 +912,7 @@ impl Object {
     /// Create a typed object with pre-allocated indexed fields.
     pub fn new_typed_with_fields(type_id: usize, field_count: usize) -> Self {
         Object {
-            properties: HashMap::new(),
+            properties: indexmap::IndexMap::new(),
             kind: ObjectKind::Ordinary,
             type_id,
             fields: vec![Value::Null; field_count],
@@ -899,7 +922,7 @@ impl Object {
     pub fn new_array(elements: Vec<Value>) -> Self {
         let len = elements.len();
         let mut obj = Object {
-            properties: HashMap::new(),
+            properties: indexmap::IndexMap::new(),
             kind: ObjectKind::Array(elements),
             type_id: 0,
             fields: Vec::new(),

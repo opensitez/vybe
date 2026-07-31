@@ -7877,7 +7877,7 @@ fn emit_time_utc_from_slots(
     push_arg(chunks, current, slots, 5, 0, line);
     call_import(chunks, current, "ecma:date", "UTC", 6, line);
     if slots.len() >= 7 {
-        chunks[current].emit_f64_const(3_600_000.0, line);
+        chunks[current].emit_f64_const(vybe_compiler::primitives::datetime::MS_PER_HOUR, line);
         chunks[current].emit_op(Op::F64_SUB, line);
     }
     let ms_slot = chunks[current].alloc_scratch(1);
@@ -9722,7 +9722,7 @@ fn emit_ruby_date_step_from_slots(
         chunks[current].emit_f64_const(default_step, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, step_s, line);
-    chunks[current].emit_f64_const(86_400_000.0, line);
+    chunks[current].emit_f64_const(vybe_compiler::primitives::datetime::MS_PER_DAY, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, day_ms_s, line);
 
     let block = chunks[current].emit_block(line);

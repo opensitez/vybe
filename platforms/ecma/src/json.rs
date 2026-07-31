@@ -915,7 +915,7 @@ fn delete_holder_property(holder: &Value, key: &str) {
             }
         }
     }
-    guard.properties.remove(key);
+    guard.properties.shift_remove(key);
 }
 
 fn mark_array_hole(object: &mut Object, index: i32) {

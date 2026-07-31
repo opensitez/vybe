@@ -821,7 +821,7 @@ fn get_random_values_fills_typed_array() {
     use vybe_runtime::value::Object;
     let typed = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(Object {
         kind: ObjectKind::Array(vec![Value::I32(0); 8]),
-        properties: HashMap::new(),
+        properties: Default::default(),
         type_id: 0,
         fields: Vec::new(),
     })));

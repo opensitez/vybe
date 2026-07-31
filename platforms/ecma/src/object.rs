@@ -1356,8 +1356,8 @@ fn register_construction(vm: &mut VM) {
                         o.properties.insert(format!("__set_{}", k), s);
                     }
                     if let Some(v) = val {
-                        o.properties.remove(&format!("__get_{}", k));
-                        o.properties.remove(&format!("__set_{}", k));
+                        o.properties.shift_remove(&format!("__get_{}", k));
+                        o.properties.shift_remove(&format!("__set_{}", k));
                         o.properties.insert(k.clone(), v);
                         if matches!(writable, Some(false) | None) {
                             install_noop_setter(&mut o, &k);
@@ -1665,7 +1665,7 @@ fn register_access(vm: &mut VM) {
                             obj.lock()
                                 .unwrap()
                                 .properties
-                                .remove(ACCESSOR_SETTER_ACTIVE_MARK);
+                                .shift_remove(ACCESSOR_SETTER_ACTIVE_MARK);
                             return Value::Null;
                         }
                     }
@@ -1969,7 +1969,7 @@ fn register_access(vm: &mut VM) {
                 if is_nonconfig(&o, &key) {
                     return Value::Bool(false);
                 }
-                let existed = o.properties.remove(&key).is_some();
+                let existed = o.properties.shift_remove(&key).is_some();
                 // Drop the key from `__keys` so re-adding goes to the
                 // end (ECMA-262 §13.5.1 + §7.3.22 ordering — delete
                 // shifts a key out of insertion order; subsequent
@@ -2672,8 +2672,8 @@ fn register_descriptors(vm: &mut VM) {
                         // getters bind `__get_<name>` onto the instance, so
                         // `defineProperty(this, "value", { value: … })` in a
                         // subclass constructor hits exactly this case.
-                        o.properties.remove(&format!("__get_{}", key));
-                        o.properties.remove(&format!("__set_{}", key));
+                        o.properties.shift_remove(&format!("__get_{}", key));
+                        o.properties.shift_remove(&format!("__set_{}", key));
                         o.properties.insert(key.clone(), v);
                         // Non-writable data descriptor → install a
                         // no-op setter so subsequent writes via
@@ -2792,8 +2792,8 @@ fn register_descriptors(vm: &mut VM) {
                             o.properties.insert(format!("__set_{}", k), s);
                         }
                         if let Some(v) = val {
-                            o.properties.remove(&format!("__get_{}", k));
-                            o.properties.remove(&format!("__set_{}", k));
+                            o.properties.shift_remove(&format!("__get_{}", k));
+                            o.properties.shift_remove(&format!("__set_{}", k));
                             o.properties.insert(k.clone(), v);
                             if matches!(writable, Some(false) | None) {
                                 let noop_idx =
@@ -3198,7 +3198,7 @@ fn register_prototype(vm: &mut VM) {
                                 .properties
                                 .insert(NULL_PROTO_MARK.into(), Value::Bool(true));
                         } else {
-                            target_lock.properties.remove(NULL_PROTO_MARK);
+                            target_lock.properties.shift_remove(NULL_PROTO_MARK);
                         }
                         return Value::Object(t.clone());
                     }
@@ -3252,7 +3252,7 @@ fn register_prototype(vm: &mut VM) {
                     o.properties
                         .insert(NULL_PROTO_MARK.into(), Value::Bool(true));
                 } else {
-                    o.properties.remove(NULL_PROTO_MARK);
+                    o.properties.shift_remove(NULL_PROTO_MARK);
                 }
                 return Value::Object(obj.clone());
             }

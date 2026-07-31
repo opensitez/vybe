@@ -194,7 +194,7 @@ fn link_error_prototype(ctx: &HostContext, obj: &mut Object, kind: &str) {
     // wired above): `name` resolves through the prototype (§20.5.3.2 — it
     // is NOT an own property: `new Error("x").hasOwnProperty("name")` is
     // false). Languages without wired prototypes keep the own stamp.
-    obj.properties.remove("name");
+    obj.properties.shift_remove("name");
 }
 
 fn stamp_error_object(obj: &mut Object, kind: &str, message: &str, cause: Option<Value>) {

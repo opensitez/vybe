@@ -473,7 +473,7 @@ pub fn register(vm: &mut VM) {
                         {
                             return Value::Bool(false);
                         }
-                        o.properties.remove(&key);
+                        o.properties.shift_remove(&key);
                         return Value::Bool(true);
                     }
                 }
@@ -486,7 +486,7 @@ pub fn register(vm: &mut VM) {
                 {
                     return Value::Bool(false);
                 }
-                o.properties.remove(&key);
+                o.properties.shift_remove(&key);
                 return Value::Bool(true);
             }
             Value::Bool(true)

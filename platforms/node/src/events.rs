@@ -19,7 +19,7 @@ fn empty_array() -> Value {
 fn arr_val(elems: Vec<Value>) -> Value {
     Value::Object(vybe_runtime::heap::alloc(Object {
         kind: ObjectKind::Array(elems),
-        properties: std::collections::HashMap::new(),
+        properties: Default::default(),
         type_id: 0,
         fields: Vec::new(),
     }))
@@ -212,8 +212,8 @@ pub fn register(vm: &mut VM) {
             if let Some(mut em) = get_emitter_mut(args.first().unwrap_or(&Value::Undefined)) {
                 if let Some(Value::String(event)) = args.get(1) {
                     let ev = event.to_string();
-                    em.properties.remove(&ev_key(&ev));
-                    em.properties.remove(&evo_key(&ev));
+                    em.properties.shift_remove(&ev_key(&ev));
+                    em.properties.shift_remove(&evo_key(&ev));
                 } else {
                     let keys: Vec<String> = em
                         .properties
@@ -222,7 +222,7 @@ pub fn register(vm: &mut VM) {
                         .cloned()
                         .collect();
                     for k in keys {
-                        em.properties.remove(&k);
+                        em.properties.shift_remove(&k);
                     }
                 }
             }

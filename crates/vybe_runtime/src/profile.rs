@@ -336,7 +336,9 @@ pub struct LanguageProfile {
     /// `is_virtual`/`is_override`/`is_abstract` dispatches dynamically; every
     /// other method binds to the reference's DECLARED type — the same
     /// static-type rule [`field_hiding`] applies to fields, and what makes C#
-    /// `new`-hiding work.
+    /// `new`-hiding work. The member-level marker for that is `is_hiding`
+    /// (C# `new`, VB `Shadows`, Pascal `reintroduce`) — a DIFFERENT flag from
+    /// `is_not_overridable` below, which they were conflated with.
     ///
     /// Languages that opt in still exclude `is_static` and
     /// `is_not_overridable` members (VB `NotOverridable`, java `final`), which
@@ -510,6 +512,23 @@ pub struct LanguageProfile {
 
     /// Builtin function mappings: source name → emission action.
     pub builtins: HashMap<String, BuiltinDef>,
+
+    /// Source type names this language uses for the built-in types, from the
+    /// `[builtin_types]` section — `builtinslotplan.md` step 4.
+    ///
+    /// Consulted BEFORE the platform table in
+    /// `vybe_ast::builtin_types::classify_with`, so a language both extends it
+    /// (Python declaring `str`, which no shared list contains) and overrides it
+    /// (a language where `real` means something other than a float).
+    ///
+    /// Empty for every language that has declared nothing, which is the
+    /// neutral default: the platform table alone answers, exactly as before.
+    ///
+    /// This exists because step 3's census measured the platform's classifiers
+    /// to be the binding constraint on the whole plan — a slot binding only
+    /// ever applies where the receiver's type can be named, and PHP's `array`
+    /// and Python's `str` reached those classifiers and failed them.
+    pub builtin_type_spellings: Vec<vybe_ast::builtin_types::Spelling>,
 
     /// Multi-opcode intrinsic definitions referenced by `emit = "intrinsic:<name>"`.
     pub intrinsics: HashMap<String, String>,
@@ -717,6 +736,20 @@ pub struct BuiltinDef {
     pub emit: BuiltinEmit,
     pub min_args: u8,
     pub max_args: u8,
+
+    /// The protocol slot this method implements, from `slot = "len"` —
+    /// `builtinslotplan.md` step 4b.
+    ///
+    /// This is how the platform learns that Dart's `length`, Python's `__len__`
+    /// and PHP's `count` are all the same operation, WITHOUT a method-name
+    /// table in shared code: the language owns its spellings and declares which
+    /// shared slot each one fills. Step 3's census could only record method
+    /// names for exactly this reason — mapping name → slot centrally is the
+    /// anti-pattern the plan exists to remove.
+    ///
+    /// `None` — the overwhelming default — means the method keeps its declared
+    /// `emit` and no slot resolution is attempted.
+    pub slot: Option<vybe_ast::ProtocolSlot>,
 }
 
 /// What to emit for a builtin call.
@@ -870,6 +903,50 @@ pub fn register_dotnet_namespace_constants(mappings: Vec<(String, f64)>) {
 
 fn dotnet_namespace_constants() -> &'static [(String, f64)] {
     DOTNET_NS_CONSTANTS.get().map(Vec::as_slice).unwrap_or(&[])
+}
+
+/// Turn an emit-target string into a [`BuiltinEmit`].
+///
+/// The profile's emit-target vocabulary — `opcode:` / `intrinsic:` / `common:` /
+/// `host:` / `invoke:` / `mutate:` / `print` / `noop` — in one place.
+///
+/// Public because `builtinslotplan.md` step 4b resolves a slot binding to one
+/// of these same strings and needs to turn it into an emit. Sharing this parser
+/// is the point: a slot binding is deliberately NOT a new vocabulary, so it must
+/// not get a second, drifting interpreter.
+pub fn parse_emit_target(s: &str) -> Option<BuiltinEmit> {
+    match s {
+        "print" => Some(BuiltinEmit::Print),
+        "str_length" => Some(BuiltinEmit::StrLength),
+        "noop" => Some(BuiltinEmit::Noop),
+        _ if s.starts_with("host:") => {
+            let parts: Vec<&str> = s["host:".len()..].splitn(3, ':').collect();
+            if parts.len() == 3 {
+                Some(BuiltinEmit::HostCall(
+                    format!("{}:{}", parts[0], parts[1]),
+                    parts[2].to_string(),
+                ))
+            } else {
+                None
+            }
+        }
+        _ if s.starts_with("opcode:") => {
+            Some(BuiltinEmit::Opcode(s["opcode:".len()..].to_string()))
+        }
+        _ if s.starts_with("mutate:") => {
+            Some(BuiltinEmit::MutateVar(s["mutate:".len()..].to_string()))
+        }
+        _ if s.starts_with("intrinsic:") => {
+            Some(BuiltinEmit::Intrinsic(s["intrinsic:".len()..].to_string()))
+        }
+        _ if s.starts_with("common:") => {
+            Some(BuiltinEmit::Common(s["common:".len()..].to_string()))
+        }
+        _ if s.starts_with("invoke:") => {
+            Some(BuiltinEmit::Invoke(s["invoke:".len()..].to_string()))
+        }
+        _ => None,
+    }
 }
 
 pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
@@ -1281,6 +1358,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                         .get("max_args")
                         .and_then(|v| v.as_integer())
                         .unwrap_or(255) as u8;
+                    let slot = parse_slot(t);
                     if let Some(emit) = parse_emit(emit_str) {
                         map.insert(
                             name.clone(),
@@ -1288,6 +1366,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                                 emit,
                                 min_args,
                                 max_args,
+                                slot,
                             },
                         );
                     }
@@ -1297,39 +1376,82 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         map
     }
 
+    /// Read a `slot = "len"` declaration off a builtin/value-method entry —
+    /// `builtinslotplan.md` step 4b.
+    ///
+    /// An unrecognised name yields `None`, deliberately: a profile written
+    /// against a newer toolchain must still load, with the unknown declaration
+    /// simply having no effect. Failing the whole profile over one unknown slot
+    /// would make adding a slot a breaking change for every language.
+    fn parse_slot(t: &toml::value::Table) -> Option<vybe_ast::ProtocolSlot> {
+        t.get("slot")
+            .and_then(|v| v.as_str())
+            .and_then(vybe_ast::ProtocolSlot::from_key)
+    }
+
     fn parse_emit(s: &str) -> Option<BuiltinEmit> {
-        match s {
-            "print" => Some(BuiltinEmit::Print),
-            "str_length" => Some(BuiltinEmit::StrLength),
-            "noop" => Some(BuiltinEmit::Noop),
-            _ if s.starts_with("host:") => {
-                let parts: Vec<&str> = s["host:".len()..].splitn(3, ':').collect();
-                if parts.len() == 3 {
-                    Some(BuiltinEmit::HostCall(
-                        format!("{}:{}", parts[0], parts[1]),
-                        parts[2].to_string(),
-                    ))
-                } else {
-                    None
+        parse_emit_target(s)
+    }
+
+    /// Parse `[builtin_types]` — `builtinslotplan.md` step 4.
+    ///
+    /// ```toml
+    /// [builtin_types]
+    /// string = ["str"]                 # Python
+    /// array  = ["array", "list*"]      # PHP / a language with List<T>
+    /// map    = ["dict", "*dictionary*"]
+    /// ```
+    ///
+    /// The key is a `BuiltinType` key (`string`, `int`, `array`, …). Each entry
+    /// is a spelling, with `*` marking where it need not match:
+    ///
+    /// | written | matches |
+    /// |---|---|
+    /// | `str` | the whole hint equals `str` |
+    /// | `*.string` | the hint ENDS with `.string` |
+    /// | `list<*` | the hint STARTS with `list<` |
+    /// | `*dictionary*` | the hint CONTAINS `dictionary` |
+    ///
+    /// `*` is deliberately not a glob: three fixed shapes, matching the three
+    /// the platform table already uses, so a profile cannot express a matcher
+    /// the shared table has no way to run.
+    ///
+    /// An unknown type key or a bare `*` is skipped rather than failing the
+    /// profile — a profile that names a built-in this version does not have
+    /// should still load, and the type simply stays unresolvable.
+    fn parse_builtin_types(root: &Value) -> Vec<vybe_ast::builtin_types::Spelling> {
+        use vybe_ast::builtin_slots::BuiltinType;
+        use vybe_ast::builtin_types::{Match, Spelling};
+
+        let mut out = Vec::new();
+        let Some(table) = root.get("builtin_types").and_then(|v| v.as_table()) else {
+            return out;
+        };
+        for (type_key, entries) in table {
+            let Some(ty) = BuiltinType::from_key(type_key) else {
+                continue;
+            };
+            let Some(list) = entries.as_array() else {
+                continue;
+            };
+            for entry in list {
+                let Some(raw) = entry.as_str() else { continue };
+                let leading = raw.starts_with('*');
+                let trailing = raw.ends_with('*') && raw.len() > 1;
+                let core = raw.trim_start_matches('*').trim_end_matches('*');
+                if core.is_empty() {
+                    continue;
                 }
+                let how = match (leading, trailing) {
+                    (true, true) => Match::Contains,
+                    (true, false) => Match::Suffix,
+                    (false, true) => Match::Prefix,
+                    (false, false) => Match::Exact,
+                };
+                out.push(Spelling::owned(core, how, ty));
             }
-            _ if s.starts_with("opcode:") => {
-                Some(BuiltinEmit::Opcode(s["opcode:".len()..].to_string()))
-            }
-            _ if s.starts_with("mutate:") => {
-                Some(BuiltinEmit::MutateVar(s["mutate:".len()..].to_string()))
-            }
-            _ if s.starts_with("intrinsic:") => {
-                Some(BuiltinEmit::Intrinsic(s["intrinsic:".len()..].to_string()))
-            }
-            _ if s.starts_with("common:") => {
-                Some(BuiltinEmit::Common(s["common:".len()..].to_string()))
-            }
-            _ if s.starts_with("invoke:") => {
-                Some(BuiltinEmit::Invoke(s["invoke:".len()..].to_string()))
-            }
-            _ => None,
         }
+        out
     }
 
     fn parse_string_table(root: &Value, section: &str) -> HashMap<String, String> {
@@ -1359,11 +1481,13 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                                 .get("max_args")
                                 .and_then(|v| v.as_integer())
                                 .unwrap_or(255) as u8;
+                            let slot = parse_slot(t);
                             if let Some(emit) = parse_emit(emit_str) {
                                 map.entry(name.clone()).or_default().push(BuiltinDef {
                                     emit,
                                     min_args,
                                     max_args,
+                                    slot,
                                 });
                             }
                         }
@@ -1376,11 +1500,13 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                         .get("max_args")
                         .and_then(|v| v.as_integer())
                         .unwrap_or(255) as u8;
+                    let slot = parse_slot(t);
                     if let Some(emit) = parse_emit(emit_str) {
                         map.entry(name.clone()).or_default().push(BuiltinDef {
                             emit,
                             min_args,
                             max_args,
+                            slot,
                         });
                     }
                 }
@@ -1729,6 +1855,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         buffered_iterator_methods,
         uses_normalize_class,
         builtins,
+        builtin_type_spellings: parse_builtin_types(&root),
         intrinsics,
         namespaces,
         known_types,

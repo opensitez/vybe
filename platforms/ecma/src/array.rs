@@ -228,7 +228,7 @@ fn hole_indices(object: &Object) -> BTreeSet<usize> {
 
 pub fn store_hole_indices(object: &mut Object, holes: &BTreeSet<usize>) {
     if holes.is_empty() {
-        object.properties.remove("__holes");
+        object.properties.shift_remove("__holes");
         return;
     }
 

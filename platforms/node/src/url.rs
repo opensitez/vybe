@@ -18,7 +18,7 @@ fn empty_array() -> Value {
 fn arr_val(elems: Vec<Value>) -> Value {
     Value::Object(vybe_runtime::heap::alloc(Object {
         kind: ObjectKind::Array(elems),
-        properties: std::collections::HashMap::new(),
+        properties: Default::default(),
         type_id: 0,
         fields: Vec::new(),
     }))

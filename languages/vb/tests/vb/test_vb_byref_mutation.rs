@@ -396,3 +396,236 @@ End Module
 "#,
     ["18"]
 );
+
+vb_case!(
+    byref_can_mutate_structure_fields_in_place,
+    r#"
+Module M
+    Structure Point
+        Public X As Integer
+        Public Y As Integer
+    End Structure
+
+    Sub Move(ByRef point As Point)
+        point.X += 1
+        point.Y += 2
+    End Sub
+
+    Sub Main()
+        Dim point As Point
+        point.X = 2
+        point.Y = 3
+        Move(point)
+        Console.WriteLine(point.X.ToString() & "," & point.Y.ToString())
+    End Sub
+End Module
+"#,
+    ["3,5"]
+);
+
+vb_case!(
+    byref_can_rebind_reference_type_variable_in_caller,
+    r#"
+Module M
+    Class Holder
+        Public Value As String
+        Public Sub New(value As String)
+            Me.Value = value
+        End Sub
+    End Class
+
+    Sub Replace(ByRef holder As Holder)
+        holder = New Holder("replaced")
+    End Sub
+
+    Sub Main()
+        Dim value As Holder = New Holder("initial")
+        Replace(value)
+        Console.WriteLine(value.Value)
+    End Sub
+End Module
+"#,
+    ["replaced"]
+);
+
+vb_case!(
+    byref_reference_type_mutation_keeps_same_instance_without_rebinding,
+    r#"
+Module M
+    Class Holder
+        Public Value As Integer
+        Public Sub New(value As Integer)
+            Me.Value = value
+        End Sub
+    End Class
+
+    Sub Boost(ByRef holder As Holder)
+        holder.Value = holder.Value + 3
+    End Sub
+
+    Sub Main()
+        Dim value As Holder = New Holder(7)
+        Boost(value)
+        Console.WriteLine(value.Value)
+    End Sub
+End Module
+"#,
+    ["10"]
+);
+
+vb_case!(
+    byref_can_rebind_array_variable_not_only_element,
+    r#"
+Module M
+    Sub ReplaceNumbers(ByRef values() As Integer)
+        values = New Integer() {4, 5, 6}
+    End Sub
+
+    Sub Main()
+        Dim values() As Integer = New Integer() {1, 2, 3}
+        ReplaceNumbers(values)
+        Console.WriteLine(values.Length)
+        Console.WriteLine(values(0) + values(2))
+    End Sub
+End Module
+"#,
+    ["3", "10"]
+);
+
+vb_case!(
+    byref_can_increment_single_array_element_through_alias,
+    r#"
+Module M
+    Sub Increment(ByRef item As Integer)
+        item += 1
+    End Sub
+
+    Sub Main()
+        Dim values() As Integer = New Integer() {1, 2, 3}
+        Increment(values(1))
+        Console.WriteLine(values(1))
+    End Sub
+End Module
+"#,
+    ["3"]
+);
+
+vb_case!(
+    byref_swaps_array_elements_via_two_aliases,
+    r#"
+Module M
+    Sub Swap(ByRef left As Integer, ByRef right As Integer)
+        Dim saved As Integer = left
+        left = right
+        right = saved
+    End Sub
+
+    Sub Main()
+        Dim values() As Integer = New Integer() {8, 1}
+        Swap(values(0), values(1))
+        Console.WriteLine(values(0))
+        Console.WriteLine(values(1))
+    End Sub
+End Module
+"#,
+    ["1", "8"]
+);
+
+vb_case!(
+    byref_decimal_parameter_can_change_integral_shape,
+    r#"
+Module M
+    Sub SetTotal(ByRef total As Decimal)
+        total = total + 20D
+    End Sub
+
+    Sub Main()
+        Dim total As Decimal = CDec(22)
+        SetTotal(total)
+        Console.WriteLine(total)
+    End Sub
+End Module
+"#,
+    ["42"]
+);
+
+vb_case!(
+    byref_datetime_day_can_advance_one_and_preserve_caller,
+    r#"
+Module M
+    Sub Advance(ByRef value As Date)
+        value = value.AddDays(1)
+    End Sub
+
+    Sub Main()
+        Dim value As Date = New Date(2024, 7, 1)
+        Advance(value)
+        Console.WriteLine(value.Day.ToString())
+    End Sub
+End Module
+"#,
+    ["2"]
+);
+
+vb_case!(
+    byref_by_reference_nullable_integer_can_turn_to_nothing,
+    r#"
+Module M
+    Sub Clear(ByRef value As Integer?)
+        value = Nothing
+    End Sub
+
+    Sub Main()
+        Dim value As Integer? = 99
+        Clear(value)
+        Console.WriteLine(IsNothing(value))
+    End Sub
+End Module
+"#,
+    ["true"]
+);
+
+vb_case!(
+    byref_side_effect_survives_exception_path,
+    r#"
+Module M
+    Sub UpdateThenThrow(ByRef value As Integer)
+        value = value + 4
+        Throw New Exception("failed")
+    End Sub
+
+    Sub Main()
+        Dim value As Integer = 6
+        Try
+            UpdateThenThrow(value)
+        Catch ex As Exception
+            Console.WriteLine(value)
+        End Try
+    End Sub
+End Module
+"#,
+    ["10"]
+);
+
+vb_case!(
+    byref_nested_dispatch_chain_uses_same_alias_in_multiple_methods,
+    r#"
+Module M
+    Sub Multiply(ByRef value As Integer, multiplier As Integer)
+        value *= multiplier
+    End Sub
+
+    Sub Apply(ByRef value As Integer)
+        Multiply(value, 2)
+        Multiply(value, 3)
+    End Sub
+
+    Sub Main()
+        Dim value As Integer = 4
+        Apply(value)
+        Console.WriteLine(value)
+    End Sub
+End Module
+"#,
+    ["24"]
+);

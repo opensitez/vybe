@@ -31,6 +31,23 @@ fn build_bool_getter(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
     build_field_getter(chunks, name, field, line)
 }
 
+/// `() -> this.<field> !== null` — the `hasX()` half of an optional `getX()`
+/// surface, so the presence test and the value never disagree.
+fn build_has_field(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32) -> usize {
+    let mut c = Chunk::new(name);
+    c.arity = 1;
+    let k = sconst(&mut c, field);
+    c.emit_op_u16(Op::LOCAL_GET, 0, line);
+    c.emit_op_u16(Op::STRUCT_GET, k, line);
+    c.emit_op(Op::NULL, line);
+    vybe_compiler::primitives::ops::emit_js_strict_eq(&mut c, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(&mut c, line);
+    c.emit_op(Op::RETURN, line);
+    c.local_count = c.local_count.max(1);
+    chunks.push(c);
+    chunks.len() - 1
+}
+
 /// `getValue($obj)` → `Reflect.get($obj, this.prop)`.
 fn build_reflect_get(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32) -> usize {
     let mut c = Chunk::new(name);
@@ -482,13 +499,25 @@ pub fn emit_refl_function(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     let get_params_count = build_field_getter(chunks, "__refl_fn_nparams", "__param_count", line);
     let get_required = build_field_getter(chunks, "__refl_fn_nreq", "__required_params", line);
     let get_params = build_get_parameters(chunks, line);
+    let get_return_type = build_field_getter(chunks, "__refl_fn_rettype", "__return_type", line);
+    let has_return_type = build_has_field(chunks, "__refl_fn_hasret", "__return_type", line);
 
     let chunk = &mut chunks[current];
+    let return_type_slot = chunk.alloc_scratch(1);
     let params_slot = chunk.alloc_scratch(1);
     let required_slot = chunk.alloc_scratch(1);
     let param_count_slot = chunk.alloc_scratch(1);
     let name_slot = chunk.alloc_scratch(1);
     let this_slot = chunk.alloc_scratch(1);
+
+    // The return-type surface is the LAST positional arg, so every shorter
+    // call shape has to default it before reading the ones below it.
+    if argc >= 5 {
+        chunk.emit_op_u16(Op::LOCAL_SET, return_type_slot, line);
+    } else {
+        chunk.emit_op(Op::NULL, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, return_type_slot, line);
+    }
 
     if argc >= 4 {
         chunk.emit_op_u16(Op::LOCAL_SET, params_slot, line);
@@ -518,12 +547,15 @@ pub fn emit_refl_function(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
             ("__param_count", param_count_slot),
             ("__required_params", required_slot),
             ("__params", params_slot),
+            ("__return_type", return_type_slot),
         ],
         &[
             ("getname", getname),
             ("getnumberofparameters", get_params_count),
             ("getnumberofrequiredparameters", get_required),
             ("getparameters", get_params),
+            ("getreturntype", get_return_type),
+            ("hasreturntype", has_return_type),
         ],
         line,
     );

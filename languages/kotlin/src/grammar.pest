@@ -90,11 +90,11 @@ typealias_decl = { modifier* ~ typealias_kw ~ identifier ~ "=" ~ type_ref }
 label_decl = { identifier ~ "@" }
 
 // Annotations
-annotation = { "@" ~ type_ref ~ ("(" ~ arg_list? ~ ")")? ~ eat_terminators }
+annotation = { "@" ~ type_ref ~ ("(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ eat_terminators }
 
 // Types (including function types)
 type_ref = {
-    "(" ~ (type_ref ~ ("," ~ type_ref)*)? ~ ")" ~ "->" ~ type_ref
+    "(" ~ eat_terminators ~ (type_ref ~ (eat_terminators ~ "," ~ eat_terminators ~ type_ref)*)? ~ eat_terminators ~ ")" ~ "->" ~ type_ref
   | dotted_name ~ ("<" ~ type_ref ~ ("," ~ type_ref)* ~ ">")? ~ "?"?
 }
 
@@ -110,7 +110,7 @@ function_decl = {
 }
 function_body_expr = { "=" ~ expr }
 
-parameter_list = { "(" ~ (parameter ~ ("," ~ parameter)* ~ ","?)? ~ ")" }
+parameter_list = { "(" ~ eat_terminators ~ (parameter ~ (eat_terminators ~ "," ~ eat_terminators ~ parameter)* ~ eat_terminators ~ ","?)? ~ eat_terminators ~ ")" }
 parameter = { annotation* ~ vararg_kw? ~ identifier ~ ":" ~ type_ref ~ ("=" ~ expr)? }
 
 // Variables, Properties & Destructuring
@@ -123,14 +123,14 @@ property_accessor = {
 }
 
 destructuring_decl = {
-    modifier* ~ (val_kw | var_kw) ~ "(" ~ identifier ~ ("," ~ identifier)* ~ ")" ~ ("=" ~ expr)?
+    modifier* ~ (val_kw | var_kw) ~ "(" ~ eat_terminators ~ identifier ~ (eat_terminators ~ "," ~ eat_terminators ~ identifier)* ~ eat_terminators ~ ")" ~ ("=" ~ expr)?
 }
 
 // Enums
 enum_decl = {
     annotation* ~ modifier* ~ enum_kw ~ class_kw ~ identifier ~ primary_constructor? ~ (":" ~ inheritance_list)? ~ "{" ~ eat_terminators ~ (enum_entry ~ (","? ~ eat_terminators ~ enum_entry)* ~ ","?)? ~ eat_terminators ~ (";" ~ eat_terminators ~ (class_member ~ eat_terminators)*)? ~ "}"
 }
-enum_entry = { identifier ~ ("(" ~ arg_list? ~ ")")? }
+enum_entry = { identifier ~ ("(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? }
 
 // Interfaces
 interface_decl = {
@@ -142,17 +142,17 @@ class_decl = {
     annotation* ~ modifier* ~ class_kw ~ identifier ~ primary_constructor? ~ (":" ~ inheritance_list)? ~ class_body?
 }
 
-primary_constructor = { "(" ~ (class_parameter ~ ("," ~ class_parameter)* ~ ","?)? ~ ")" }
+primary_constructor = { "(" ~ eat_terminators ~ (class_parameter ~ (eat_terminators ~ "," ~ eat_terminators ~ class_parameter)* ~ eat_terminators ~ ","?)? ~ eat_terminators ~ ")" }
 class_parameter = { modifier* ~ (val_kw | var_kw)? ~ identifier ~ ":" ~ type_ref ~ ("=" ~ expr)? }
 
 inheritance_list = { inheritance_specifier ~ ("," ~ inheritance_specifier)* }
-inheritance_specifier = { type_ref ~ ("(" ~ arg_list? ~ ")")? ~ (by_kw ~ expr)? }
+inheritance_specifier = { type_ref ~ ("(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ (by_kw ~ expr)? }
 
 class_body = { "{" ~ eat_terminators ~ (class_member ~ eat_terminators)* ~ "}" }
 class_member = { init_block | secondary_constructor | companion_object | function_decl | var_decl | class_decl | object_decl | interface_decl }
 init_block = { "init" ~ block }
 
-secondary_constructor = { modifier* ~ constructor_kw ~ parameter_list ~ (":" ~ (this_kw | super_kw) ~ "(" ~ arg_list? ~ ")")? ~ (block | eat_terminators) }
+secondary_constructor = { modifier* ~ constructor_kw ~ parameter_list ~ (":" ~ (this_kw | super_kw) ~ "(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ (block | eat_terminators) }
 
 companion_object = { companion_kw ~ object_kw ~ identifier? ~ (":" ~ inheritance_list)? ~ class_body }
 object_decl = { object_kw ~ identifier ~ (":" ~ inheritance_list)? ~ class_body }
@@ -191,8 +191,8 @@ continue_stmt = { continue_kw ~ ("@" ~ identifier)? }
 throw_stmt = { throw_kw ~ expr }
 expr_stmt = { expr }
 
-for_stmt = { for_kw ~ "(" ~ (for_destructure | identifier) ~ in_kw ~ expr ~ ")" ~ (block | statement) }
-for_destructure = { "(" ~ identifier ~ ("," ~ identifier)* ~ ")" }
+for_stmt = { for_kw ~ "(" ~ eat_terminators ~ (for_destructure | identifier) ~ eat_terminators ~ in_kw ~ expr ~ ")" ~ (block | statement) }
+for_destructure = { "(" ~ eat_terminators ~ identifier ~ (eat_terminators ~ "," ~ eat_terminators ~ identifier)* ~ eat_terminators ~ ")" }
 
 while_stmt = { while_kw ~ "(" ~ expr ~ ")" ~ (block | statement) }
 do_while_stmt = { do_kw ~ (block | statement) ~ while_kw ~ "(" ~ expr ~ ")" }
@@ -231,22 +231,24 @@ type_cast = { infix_expr ~ (cast_op ~ type_ref)* }
 cast_op = { safe_as_kw | as_kw }
 
 infix_expr = { unary ~ (infix_op ~ unary)* }
-infix_op = { to_kw | identifier }
+infix_op = { to_kw | "until" | "downTo" | "step" | "and" | "or" | "xor" | "shl" | "shr" | "ushr" | "matches" | "zip" | "union" | "intersect" | "plus" | "minus" }
 
 unary = { prefix_op* ~ postfix }
 prefix_op = { "!" | "-" | "+" | "++" | "--" }
 
 postfix = { primary ~ postfix_suffix* }
-postfix_suffix = { call_suffix | index_suffix | safe_call_suffix | member_suffix | null_assert_suffix }
+postfix_suffix = { type_args | call_suffix | index_suffix | safe_call_suffix | member_suffix | null_assert_suffix }
 
-call_suffix = { "(" ~ arg_list? ~ ")" ~ lambda_literal? }
-index_suffix = { "[" ~ arg_list ~ "]" }
+type_args = { "<" ~ eat_terminators ~ type_ref ~ (eat_terminators ~ "," ~ eat_terminators ~ type_ref)* ~ eat_terminators ~ ">" }
+
+call_suffix = { "(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")" ~ eat_terminators ~ lambda_literal? }
+index_suffix = { "[" ~ eat_terminators ~ arg_list ~ eat_terminators ~ "]" }
 safe_call_suffix = { "?." ~ identifier }
 member_suffix = { "." ~ identifier }
 null_assert_suffix = { "!!" }
 
-arg_list = { arg ~ ("," ~ arg)* ~ ","? }
-arg = { (identifier ~ "=")? ~ spread_op? ~ expr }
+arg_list = { eat_terminators ~ arg ~ (eat_terminators ~ "," ~ eat_terminators ~ arg)* ~ eat_terminators ~ ","? ~ eat_terminators }
+arg = { (identifier ~ eat_terminators ~ "=") ~ eat_terminators ~ spread_op? ~ expr | spread_op? ~ expr }
 spread_op = { "*" }
 
 // Primary expressions

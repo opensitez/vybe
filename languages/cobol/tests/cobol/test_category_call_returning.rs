@@ -27,137 +27,22 @@ cobol_test!(
     vec!["Y"]
 );
 cobol_test!(
-    test_call_ret_parse_4,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
+    test_call_ret_character_value,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 R PIC X(3). PROCEDURE DIVISION. CALL 'S1' RETURNING R. DISPLAY R. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. S1. DATA DIVISION. LINKAGE SECTION. 01 RR PIC X(3). PROCEDURE DIVISION RETURNING RR. MOVE 'R1T' TO RR. EXIT PROGRAM. END PROGRAM S1.",
+    vec!["R1T"]
 );
 cobol_test!(
-    test_call_ret_parse_5,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
+    test_call_ret_compound_value,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 R PIC 9(2). PROCEDURE DIVISION. CALL 'S1' RETURNING R. DISPLAY R. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. S1. DATA DIVISION. LINKAGE SECTION. 01 RR PIC 9(2). PROCEDURE DIVISION RETURNING RR. MOVE 42 TO RR. EXIT PROGRAM. END PROGRAM S1.",
+    vec!["42"]
 );
 cobol_test!(
-    test_call_ret_parse_6,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
+    test_call_ret_return_reference,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. CALL 'S1' USING 'A' RETURNING R. DISPLAY R. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. S1. DATA DIVISION. LINKAGE SECTION. 01 R PIC X. PROCEDURE DIVISION USING R. PROCEDURE DIVISION RETURNING R. MOVE 'B' TO R. EXIT PROGRAM. END PROGRAM S1.",
+    vec!["B"]
 );
 cobol_test!(
-    test_call_ret_parse_7,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_8,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_9,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_10,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_11,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_12,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_13,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_14,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_15,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_16,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_17,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_18,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_19,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_20,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_21,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_22,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_23,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_24,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_25,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_26,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_27,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_28,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_29,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_call_ret_parse_30,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
+    test_call_ret_chained_returns,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 R1 PIC 99. 01 R2 PIC 99. PROCEDURE DIVISION. CALL 'S1' RETURNING R1. CALL 'S1' RETURNING R2. DISPLAY R1 R2. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. S1. DATA DIVISION. LINKAGE SECTION. 01 RR PIC 99. PROCEDURE DIVISION RETURNING RR. ADD 1 TO RR. MOVE 11 TO RR. EXIT PROGRAM. END PROGRAM S1.",
+    vec!["11", "11"]
 );

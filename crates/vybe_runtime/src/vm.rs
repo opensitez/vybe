@@ -252,7 +252,7 @@ impl<'a> HostContext<'a> {
         if let Some(ref el) = self.event_loop {
             let id = el.borrow_mut().create_future();
             let obj = Object {
-                properties: std::collections::HashMap::new(),
+                properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Future { id },
                 type_id: 0,
                 fields: Vec::new(),
@@ -294,7 +294,7 @@ impl<'a> HostContext<'a> {
         if let Some(ref el) = self.event_loop {
             let id = el.borrow_mut().create_stream();
             let obj = Object {
-                properties: std::collections::HashMap::new(),
+                properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Stream { id },
                 type_id: 0,
                 fields: Vec::new(),
@@ -2101,7 +2101,7 @@ impl VM {
                                 upvalues: Vec::new(),
                             };
                             let obj = crate::value::Object {
-                                properties: std::collections::HashMap::new(),
+                                properties: indexmap::IndexMap::new(),
                                 kind: crate::value::ObjectKind::Function(func),
                                 type_id: 0,
                                 fields: Vec::new(),
@@ -2151,7 +2151,7 @@ impl VM {
                                 upvalues: Vec::new(),
                             };
                             let obj = crate::value::Object {
-                                properties: std::collections::HashMap::new(),
+                                properties: indexmap::IndexMap::new(),
                                 kind: crate::value::ObjectKind::Function(func),
                                 type_id: 0,
                                 fields: Vec::new(),

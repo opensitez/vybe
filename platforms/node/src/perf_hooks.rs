@@ -32,7 +32,7 @@ fn time_origin_ms() -> f64 {
 fn empty_array() -> Value {
     Value::Object(vybe_runtime::heap::alloc(Object {
         kind: ObjectKind::Array(vec![]),
-        properties: std::collections::HashMap::new(),
+        properties: Default::default(),
         type_id: 0,
         fields: vec![],
     }))

@@ -632,6 +632,16 @@ fn walk_var_decl(pair: Pair<Rule>) -> Option<Statement> {
         }
     }
 
+    if type_hint.is_none() {
+        if let Some(ref expr) = init {
+            match expr.kind {
+                ExprKind::Array(_) => type_hint = Some("Array".to_string()),
+                ExprKind::Object(_) => type_hint = Some("Map".to_string()),
+                _ => {}
+            }
+        }
+    }
+
     Some(Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(name),
@@ -1497,22 +1507,84 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                 let next_expr = walk_expr(inner.next().unwrap());
                 let op_str = op_pair.as_str();
                 if op_str == "to" {
+                    // Kotlin `a to b` → Pair(a, b) as [a, b]
                     current = Expression::new(ExprKind::Array(vec![
-                        ArrayElement { value: current, spread: false },
-                        ArrayElement { value: next_expr, spread: false },
+                        ArrayElement { key: None, value: current, spread: false, by_ref: false },
+                        ArrayElement { key: None, value: next_expr, spread: false, by_ref: false },
                     ]));
                 } else if op_str == "until" {
+                    // a until b → exclusive ascending [a, a+1, ..., b-1]
                     current = Expression::new(ExprKind::Range {
                         start: Box::new(current),
                         end: Box::new(next_expr),
                         inclusive: false,
                     });
                 } else if op_str == "downTo" {
-                    current = Expression::new(ExprKind::Range {
-                        start: Box::new(current),
-                        end: Box::new(next_expr),
-                        inclusive: true,
+                    // a downTo b → descending [a, a-1, ..., b]
+                    // Map to __kt_step_desc(a, b, -1) → profile common:collections.range_step
+                    // emit_range(3, false) uses sign of step to pick < vs > comparison.
+                    current = Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__kt_step_desc")),
+                        args: vec![
+                            Argument::positional(current),
+                            Argument::positional(next_expr),
+                            Argument::positional(Expression::new(ExprKind::Unary {
+                                op: UnaryOp::Neg,
+                                expr: Box::new(Expression::int(1)),
+                            })),
+                        ],
+                        optional: false,
                     });
+                } else if op_str == "step" {
+                    // `range step n` — must convert range to 3-arg stepped form.
+                    match current.kind.clone() {
+                        // (a downTo b) step n  → replace -1 with -n
+                        ExprKind::Call { callee, mut args, optional }
+                            if matches!(&callee.kind, ExprKind::Ident(nm) if nm == "__kt_step_desc") =>
+                        {
+                            if args.len() == 3 {
+                                args[2] = Argument::positional(Expression::new(ExprKind::Unary {
+                                    op: UnaryOp::Neg,
+                                    expr: Box::new(next_expr),
+                                }));
+                            }
+                            current = Expression::new(ExprKind::Call { callee, args, optional });
+                        }
+                        // (a..b) step n  or  (a until b) step n
+                        ExprKind::Range { start, end, inclusive } => {
+                            let stop = if inclusive {
+                                // inclusive end+1 so the 3-arg exclusive loop includes end
+                                Expression::new(ExprKind::Binary {
+                                    op: BinOp::Add,
+                                    left: end,
+                                    right: Box::new(Expression::int(1)),
+                                })
+                            } else {
+                                *end
+                            };
+                            current = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("__kt_step_asc")),
+                                args: vec![
+                                    Argument::positional(*start),
+                                    Argument::positional(stop),
+                                    Argument::positional(next_expr),
+                                ],
+                                optional: false,
+                            });
+                        }
+                        _ => {
+                            // Fallback: pass through as method call
+                            current = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::new(ExprKind::Member {
+                                    object: Box::new(current),
+                                    field: "step".to_string(),
+                                    null_safe: false,
+                                })),
+                                args: vec![Argument::positional(next_expr)],
+                                optional: false,
+                            });
+                        }
+                    }
                 } else {
                     current = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::new(ExprKind::Member {
@@ -1560,6 +1632,9 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
             for suffix_pair in inner {
                 let suffix_inner = suffix_pair.into_inner().next().unwrap();
                 match suffix_inner.as_rule() {
+                    Rule::type_args => {
+                        continue;
+                    }
                     Rule::call_suffix => {
                         let mut args = Vec::new();
                         for item in suffix_inner.into_inner() {
@@ -1572,7 +1647,11 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                         for sub in arg_p.into_inner() {
                                             match sub.as_rule() {
                                                 Rule::spread_op => is_spread = true,
-                                                Rule::identifier => arg_name = Some(sub.as_str().to_string()),
+                                                Rule::identifier => {
+                                                    if arg_name.is_none() && arg_expr.is_none() {
+                                                        arg_name = Some(sub.as_str().to_string());
+                                                    }
+                                                }
                                                 Rule::expr => arg_expr = Some(walk_expr(sub)),
                                                 _ => {}
                                             }
@@ -1594,36 +1673,377 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                             }
                         }
 
+                        if let ExprKind::Member { ref object, ref field, null_safe: _ } = current.clone().kind {
+                            match field.as_str() {
+                                "put" if args.len() == 2 => {
+                                    current = Expression::new(ExprKind::Assign {
+                                        target: Box::new(Expression::new(ExprKind::Index {
+                                            object: object.clone(),
+                                            index: Box::new(args[0].value.clone()),
+                                            null_safe: false,
+                                        })),
+                                        value: Box::new(args[1].value.clone()),
+                                    });
+                                    continue;
+                                }
+                                "get" if args.len() == 1 => {
+                                    current = Expression::new(ExprKind::Index {
+                                        object: object.clone(),
+                                        index: Box::new(args[0].value.clone()),
+                                        null_safe: false,
+                                    });
+                                    continue;
+                                }
+                                "getOrDefault" if args.len() == 2 => {
+                                    current = Expression::new(ExprKind::NullCoalesce {
+                                        left: Box::new(Expression::new(ExprKind::Index {
+                                            object: object.clone(),
+                                            index: Box::new(args[0].value.clone()),
+                                            null_safe: false,
+                                        })),
+                                        right: Box::new(args[1].value.clone()),
+                                    });
+                                    continue;
+                                }
+                                "containsKey" | "contains" if args.len() == 1 => {
+                                    current = Expression::new(ExprKind::Binary {
+                                        op: BinOp::In,
+                                        left: Box::new(args[0].value.clone()),
+                                        right: object.clone(),
+                                    });
+                                    continue;
+                                }
+                                // NOTE: `.add(x)` for Set (dict) is handled in the second
+                                // Member block below via __coll_push, which works uniformly
+                                // for both list (array.push) and set (set semantics via
+                                // array.push on the keys array). Do NOT intercept it here.
+
+                                "remove" if args.len() == 1 => {
+                                    current = Expression::new(ExprKind::Delete(Box::new(Expression::new(ExprKind::Index {
+                                        object: object.clone(),
+                                        index: Box::new(args[0].value.clone()),
+                                        null_safe: false,
+                                    }))));
+                                    continue;
+                                }
+                                "clear" if args.is_empty() => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__dict_clear")),
+                                        args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "isEmpty" if args.is_empty() => {
+                                    let keys_len = Expression::new(ExprKind::Member {
+                                        object: object.clone(),
+                                        field: "length".to_string(),
+                                        null_safe: false,
+                                    });
+                                    current = Expression::new(ExprKind::Binary {
+                                        op: BinOp::Eq,
+                                        left: Box::new(keys_len),
+                                        right: Box::new(Expression::int(0)),
+                                    });
+                                    continue;
+                                }
+                                "isNotEmpty" if args.is_empty() => {
+                                    let keys_len = Expression::new(ExprKind::Member {
+                                        object: object.clone(),
+                                        field: "length".to_string(),
+                                        null_safe: false,
+                                    });
+                                    current = Expression::new(ExprKind::Binary {
+                                        op: BinOp::Gt,
+                                        left: Box::new(keys_len),
+                                        right: Box::new(Expression::int(0)),
+                                    });
+                                    continue;
+                                }
+                                _ => {}
+                            }
+                        }
+
                         let func_name = match &current.kind {
                             ExprKind::Ident(name) => Some(name.clone()),
                             _ => None,
                         };
 
                         if let Some(ref fn_name) = func_name {
-                            if matches!(fn_name.as_str(), "Pair" | "Triple") {
-                                let elems = args.into_iter().map(|a| ArrayElement { value: a.value, spread: false }).collect();
+                            if matches!(fn_name.as_str(), "Pair" | "Triple" | "listOf" | "mutableListOf" | "arrayOf" | "emptyList" | "intArrayOf" | "doubleArrayOf" | "booleanArrayOf" | "charArrayOf" | "longArrayOf" | "buildList" | "sequenceOf") {
+                                let elems = args.into_iter().map(|a| ArrayElement { key: None, value: a.value, spread: false, by_ref: false }).collect();
                                 current = Expression::new(ExprKind::Array(elems));
                                 continue;
-                            } else if matches!(fn_name.as_str(), "mapOf" | "mutableMapOf" | "linkedMapOf" | "hashMapOf") {
+                            }
+                            if matches!(fn_name.as_str(), "mapOf" | "mutableMapOf" | "linkedMapOf" | "hashMapOf" | "buildMap" | "emptyMap") {
                                 let mut props = Vec::new();
                                 for arg in args {
-                                    if let ExprKind::Array(ref elems) = arg.value.kind {
-                                        if elems.len() >= 2 {
-                                            props.push(ObjectProperty {
-                                                key: match &elems[0].value.kind {
-                                                    ExprKind::String(s) => PropertyKey::Ident(s.clone()),
-                                                    ExprKind::Ident(s) => PropertyKey::Ident(s.clone()),
-                                                    _ => PropertyKey::Ident("key".to_string()),
-                                                },
-                                                value: elems[1].value.clone(),
-                                                shorthand: false,
-                                                computed: false,
+                                    if let ExprKind::Array(ref pair_elems) = arg.value.kind {
+                                        if pair_elems.len() == 2 {
+                                            props.push(ObjectProperty::KeyValue {
+                                                key: pair_elems[0].value.clone(),
+                                                value: pair_elems[1].value.clone(),
                                             });
+                                            continue;
                                         }
                                     }
+                                    props.push(ObjectProperty::KeyValue {
+                                        key: Expression::new(ExprKind::Index {
+                                            object: Box::new(arg.value.clone()),
+                                            index: Box::new(Expression::int(0)),
+                                            null_safe: false,
+                                        }),
+                                        value: Expression::new(ExprKind::Index {
+                                            object: Box::new(arg.value.clone()),
+                                            index: Box::new(Expression::int(1)),
+                                            null_safe: false,
+                                        }),
+                                    });
                                 }
                                 current = Expression::new(ExprKind::Object(props));
                                 continue;
+                            }
+                            if matches!(fn_name.as_str(), "setOf" | "mutableSetOf" | "linkedSetOf" | "hashSetOf" | "buildSet" | "emptySet") {
+                                let props = args.into_iter().map(|a| ObjectProperty::KeyValue {
+                                    key: a.value,
+                                    value: Expression::bool(true),
+                                }).collect();
+                                current = Expression::new(ExprKind::Object(props));
+                                continue;
+                            }
+                            if matches!(fn_name.as_str(), "listOf" | "mutableListOf" | "arrayOf" | "emptyList" | "intArrayOf" | "doubleArrayOf" | "booleanArrayOf" | "charArrayOf" | "longArrayOf" | "sequenceOf") {
+                                let elements = args.into_iter().map(|a| ArrayElement {
+                                    key: None,
+                                    value: a.value,
+                                    spread: false,
+                                    by_ref: false,
+                                }).collect();
+                                current = Expression::new(ExprKind::Array(elements));
+                                continue;
+                            }
+                        }
+
+                        if let ExprKind::Member { ref object, ref field, .. } = current.kind {
+                            match field.as_str() {
+                                "put" if args.len() == 2 => {
+                                    current = Expression::new(ExprKind::Assign {
+                                        target: Box::new(Expression::new(ExprKind::Index {
+                                            object: object.clone(),
+                                            index: Box::new(args[0].value.clone()),
+                                            null_safe: false,
+                                        })),
+                                        value: Box::new(args[1].value.clone()),
+                                    });
+                                    continue;
+                                }
+                                "get" if args.len() == 1 => {
+                                    current = Expression::new(ExprKind::Index {
+                                        object: object.clone(),
+                                        index: Box::new(args[0].value.clone()),
+                                        null_safe: false,
+                                    });
+                                    continue;
+                                }
+                                "getOrDefault" if args.len() == 2 => {
+                                    let get_expr = Expression::new(ExprKind::Index {
+                                        object: object.clone(),
+                                        index: Box::new(args[0].value.clone()),
+                                        null_safe: false,
+                                    });
+                                    current = Expression::new(ExprKind::NullCoalesce {
+                                        left: Box::new(get_expr),
+                                        right: Box::new(args[1].value.clone()),
+                                    });
+                                    continue;
+                                }
+                                "containsKey" | "contains" if args.len() == 1 => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__dict_has")),
+                                        args: vec![
+                                            Argument::positional(*object.clone()),
+                                            Argument::positional(args[0].value.clone()),
+                                        ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "containsValue" if args.len() == 1 => {
+                                    let values_expr = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__dict_values")),
+                                        args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    });
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_contains")),
+                                        args: vec![
+                                            Argument::positional(values_expr),
+                                            Argument::positional(args[0].value.clone()),
+                                        ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "isEmpty" if args.is_empty() => {
+                                    let sz = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__dict_size")),
+                                        args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    });
+                                    current = Expression::new(ExprKind::Binary {
+                                        op: BinOp::Eq,
+                                        left: Box::new(sz),
+                                        right: Box::new(Expression::int(0)),
+                                    });
+                                    continue;
+                                }
+                                "isNotEmpty" if args.is_empty() => {
+                                    let sz = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__dict_size")),
+                                        args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    });
+                                    current = Expression::new(ExprKind::Binary {
+                                        op: BinOp::Gt,
+                                        left: Box::new(sz),
+                                        right: Box::new(Expression::int(0)),
+                                    });
+                                    continue;
+                                }
+                                "remove" if args.len() == 1 => {
+                                    current = Expression::new(ExprKind::Delete(Box::new(Expression::new(ExprKind::Index {
+                                        object: object.clone(),
+                                        index: Box::new(args[0].value.clone()),
+                                        null_safe: false,
+                                    }))));
+                                    continue;
+                                }
+                                "removeAt" if args.len() == 1 => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_removeAt")),
+                                        args: vec![
+                                            Argument::positional(*object.clone()),
+                                            Argument::positional(args[0].value.clone()),
+                                        ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "clear" if args.is_empty() => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__dict_clear")),
+                                        args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "add" if args.len() == 1 => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_push")),
+                                        args: vec![
+                                            Argument::positional(*object.clone()),
+                                            Argument::positional(args[0].value.clone()),
+                                        ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "add" if args.len() == 2 => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_insert")),
+                                        args: vec![
+                                            Argument::positional(*object.clone()),
+                                            Argument::positional(args[0].value.clone()),
+                                            Argument::positional(args[1].value.clone()),
+                                        ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "indexOf" if args.len() == 1 => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_indexOf")),
+                                        args: vec![
+                                            Argument::positional(*object.clone()),
+                                            Argument::positional(args[0].value.clone()),
+                                        ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "lastIndexOf" if args.len() == 1 => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_lastIndexOf")),
+                                        args: vec![
+                                            Argument::positional(*object.clone()),
+                                            Argument::positional(args[0].value.clone()),
+                                        ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "reversed" if args.is_empty() => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_reverse")),
+                                        args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "sorted" if args.is_empty() => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_sorted")),
+                                        args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "joinToString" if !args.is_empty() => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_join")),
+                                        args: vec![
+                                            Argument::positional(*object.clone()),
+                                            Argument::positional(args[0].value.clone()),
+                                        ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "joinToString" if args.is_empty() => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_join")),
+                                        args: vec![
+                                            Argument::positional(*object.clone()),
+                                            Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(", ".to_string())))),
+                                        ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "sum" if args.is_empty() => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_sum")),
+                                        args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "min" | "minOrNull" if args.is_empty() => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_min")),
+                                        args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "max" | "maxOrNull" if args.is_empty() => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_max")),
+                                        args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                _ => {}
                             }
                         }
 
@@ -1678,11 +2098,60 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                         null_safe: false,
                                     });
                                 }
-                                "size" => {
-                                    current = Expression::new(ExprKind::Member {
-                                        object: Box::new(current),
+                                "keys" => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__dict_keys")),
+                                        args: vec![Argument::positional(current)],
+                                        optional: false,
+                                    });
+                                }
+                                "values" => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__dict_values")),
+                                        args: vec![Argument::positional(current)],
+                                        optional: false,
+                                    });
+                                }
+                                "entries" => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__dict_items")),
+                                        args: vec![Argument::positional(current)],
+                                        optional: false,
+                                    });
+                                }
+                                "size" | "length" => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_length")),
+                                        args: vec![Argument::positional(current)],
+                                        optional: false,
+                                    });
+                                }
+                                "lastIndex" => {
+                                    let len_expr = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_length")),
+                                        args: vec![Argument::positional(current)],
+                                        optional: false,
+                                    });
+                                    current = Expression::new(ExprKind::Binary {
+                                        op: BinOp::Sub,
+                                        left: Box::new(len_expr),
+                                        right: Box::new(Expression::int(1)),
+                                    });
+                                }
+                                "indices" => {
+                                    let len_expr = Expression::new(ExprKind::Member {
+                                        object: Box::new(current.clone()),
                                         field: "length".to_string(),
                                         null_safe: false,
+                                    });
+                                    current = Expression::new(ExprKind::Range {
+                                        start: Box::new(Expression::int(0)),
+                                        end: Box::new(Expression::new(ExprKind::Binary {
+                                            op: BinOp::Sub,
+                                            left: Box::new(len_expr),
+                                            right: Box::new(Expression::int(1)),
+                                        })),
+                                        inclusive: true,
                                     });
                                 }
                                 _ => {

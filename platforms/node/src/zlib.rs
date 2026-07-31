@@ -31,7 +31,7 @@ fn buf_from_bytes(bytes: Vec<u8>) -> Value {
     let elems = bytes.into_iter().map(|b| Value::I32(b as i32)).collect();
     Value::Object(vybe_runtime::heap::alloc(Object {
         kind: ObjectKind::Array(elems),
-        properties: std::collections::HashMap::new(),
+        properties: Default::default(),
         type_id: 0,
         fields: Vec::new(),
     }))

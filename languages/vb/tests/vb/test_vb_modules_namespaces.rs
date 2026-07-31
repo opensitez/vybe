@@ -229,3 +229,53 @@ fn ns_root_namespace() {
         vec!["Parsed"]
     );
 }
+
+#[test]
+fn ns_nested_namespace_with_alias_import() {
+    assert_eq!(
+        run_vb(
+            "Namespace Domain\nNamespace Model\nPublic Class User\nPublic Id As Integer = 11\nEnd Class\nEnd Namespace\nEnd Namespace\nImports DomainAlias = Domain.Model\nModule M\nSub Main()\nDim user As New DomainAlias.User()\nConsole.WriteLine(user.Id)\nEnd Sub\nEnd Module"
+        ),
+        vec!["11"]
+    );
+}
+
+#[test]
+fn ns_module_member_access_via_full_qualifier() {
+    assert_eq!(
+        run_vb(
+            "Namespace Services\nPublic Module MathSvc\nPublic Function AddOne(v As Integer) As Integer\nReturn v + 1\nEnd Function\nEnd Module\nEnd Namespace\nModule M\nSub Main()\nConsole.WriteLine(Services.MathSvc.AddOne(6))\nEnd Sub\nEnd Module"
+        ),
+        vec!["7"]
+    );
+}
+
+#[test]
+fn ns_importing_namespace_brings_nested_type_members() {
+    assert_eq!(
+        run_vb(
+            "Namespace Domain\nNamespace Model\nPublic Class Profile\nPublic Name As String = \"ok\"\nEnd Class\nEnd Namespace\nEnd Namespace\nImports Domain.Model\nModule M\nSub Main()\nDim p As New Profile()\nConsole.WriteLine(p.Name)\nEnd Sub\nEnd Module"
+        ),
+        vec!["ok"]
+    );
+}
+
+#[test]
+fn ns_namespace_alias_to_type_reference() {
+    assert_eq!(
+        run_vb(
+            "Namespace Data\nPublic Class Packet\nPublic Status As String = \"ready\"\nEnd Class\nEnd Namespace\nImports PacketAlias = Data.Packet\nModule M\nSub Main()\nDim p As New PacketAlias()\nConsole.WriteLine(p.Status)\nEnd Sub\nEnd Module"
+        ),
+        vec!["ready"]
+    );
+}
+
+#[test]
+fn ns_namespace_blocks_share_symbols_across_fragments() {
+    assert_eq!(
+        run_vb(
+            "Namespace Bridge\nPublic Class Left\nPublic Value As Integer = 2\nEnd Class\nEnd Namespace\nNamespace Bridge\nPublic Module Builders\nPublic Function LeftValue() As Integer\nReturn New Left().Value\nEnd Function\nEnd Module\nEnd Namespace\nModule M\nSub Main()\nConsole.WriteLine(Bridge.Builders.LeftValue())\nEnd Sub\nEnd Module"
+        ),
+        vec!["2"]
+    );
+}

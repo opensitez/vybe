@@ -23,6 +23,7 @@ pub mod collections;
 pub mod complex;
 pub mod convert;
 pub mod delegates;
+pub mod datetime;
 pub mod dict;
 pub mod dispatch;
 pub mod builtin_slots;

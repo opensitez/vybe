@@ -32370,6 +32370,7 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
                             merged_modifiers.is_abstract |= mm.is_abstract;
                             merged_modifiers.is_overloads |= mm.is_overloads;
                             merged_modifiers.is_not_overridable |= mm.is_not_overridable;
+                            merged_modifiers.is_hiding |= mm.is_hiding;
                             merged_modifiers.is_readonly |= mm.is_readonly;
                             merged_modifiers.is_shared |= mm.is_shared;
                             merged_modifiers.is_extension |= mm.is_extension;
@@ -35617,7 +35618,10 @@ fn walk_method_directives(pair: Pair<Rule>, modifiers: &mut Modifiers) {
                 "abstract" => modifiers.is_abstract = true,
                 "overload" => modifiers.is_overloads = true,
                 "static" => modifiers.is_static = true,
-                "reintroduce" => modifiers.is_not_overridable = true,
+                // `reintroduce` HIDES an inherited virtual method; it does not
+                // seal this one. Pascal spells "may not be overridden" `final`.
+                "reintroduce" => modifiers.is_hiding = true,
+                "final" => modifiers.is_not_overridable = true,
                 "dynamic" => modifiers.is_virtual = true,
                 _ => {} // inline, cdecl, stdcall, register
             }
@@ -37836,15 +37840,13 @@ fn lower_pascal_datetime_builtin(name: &str, args: &[Argument]) -> Option<Expres
             Some(bin_expr(BinOp::Add, dow, int_expr(1)))
         }
         ("isleapyear", 1) => {
-            let year = arg(0)?;
-            let div4 = bin_expr(BinOp::Eq, bin_expr(BinOp::Mod, year.clone(), int_expr(4)), int_expr(0));
-            let div100 = bin_expr(BinOp::Eq, bin_expr(BinOp::Mod, year.clone(), int_expr(100)), int_expr(0));
-            let div400 = bin_expr(BinOp::Eq, bin_expr(BinOp::Mod, year, int_expr(400)), int_expr(0));
-            Some(pascal_bool_string_expr(bin_expr(
-                BinOp::And,
-                div4,
-                bin_expr(BinOp::Or, bin_expr(BinOp::Eq, div100, Expression::bool(false)), div400),
-            )))
+            // Shared proleptic-Gregorian rule. Pascal lowers this in the WALKER
+            // rather than an adapter, so it takes the AST rendering; the four
+            // object-based languages (PHP/Python/Java/.NET) take the bytecode
+            // one via `primitives::datetime::emit_is_leap_year`. Same rule.
+            Some(pascal_bool_string_expr(
+                vybe_ast::datetime::leap_year_expr(arg(0)?),
+            ))
         }
         ("daysinmonth", 1) => {
             let date = arg(0)?;

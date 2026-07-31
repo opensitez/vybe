@@ -436,3 +436,4 @@ mod test_variadic_bug;
 mod test_weakmap_weakset_patterns;
 mod test_weakref_finalization;
 mod test_weakref_weakmap_advanced;
+mod test_multi_source_linking;

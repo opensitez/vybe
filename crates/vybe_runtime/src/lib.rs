@@ -38,6 +38,7 @@ pub use event_loop::EventLoop;
 pub use module_record::{ExportEntry, ModuleKind, ModuleRecord, ModuleRequest, ModuleStatus};
 pub use opcode::Op;
 pub use typedef::{FieldDef, Method, ResourceTable, TypeDef, TypeRegistry};
+pub use value::Properties;
 pub use value::Value;
 pub use vm::{HostContext, HostFn, ImportTarget, VM, VmSnapshot};
 pub mod component;

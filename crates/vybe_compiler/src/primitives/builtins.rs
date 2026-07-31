@@ -947,6 +947,26 @@ impl Compiler {
         //
         // Argument 0 is the receiver for this shape. Emits nothing; off unless
         // VYBE_SLOT_AUDIT is set.
+        // builtinslotplan.md step 5, free-function shape. Languages that spell a
+        // built-in operation as a call rather than a method (`strlen($s)`,
+        // `len(s)`, Dart's desugared `__dart_index_get(recv, i)`) reach dispatch
+        // here, so the binding has to apply here too or those languages could
+        // never be flipped.
+        //
+        // Argument 0 is the receiver for this shape — the same assumption the
+        // census makes, and the same limitation: it is wrong for PHP builtins
+        // whose operand is not first (`str_replace(…, $subject)`). A profile
+        // only gets the substitution if it declared `slot`, so that limitation
+        // is opt-in per method rather than applied blindly.
+        let builtin = match (builtin, args.first()) {
+            (Some(def), Some(receiver)) => Some(self.apply_builtin_slot_binding(receiver, def)),
+            (other, _) => other,
+        };
+
+        // Census AFTER the substitution, matching the value-method site. It
+        // reports the EFFECTIVE emit — the one actually compiled — so the two
+        // sites answer the same question. Logging the pre-substitution emit
+        // here made a binding that had fired look like it had not.
         if let (Some(def), Some(receiver)) = (builtin.as_ref(), args.first()) {
             self.audit_builtin_slot_census(receiver, name, &def.emit);
         }
@@ -3309,12 +3329,35 @@ impl Compiler {
                 }
                 self.emit(Op::NULL);
             }
-            "php_date_default_timezone_set" => {
+            // The host environment's time zone — ONE clock shared by every
+            // language, so PHP's `date_default_timezone_set`, Java's
+            // `TimeZone.setDefault` and .NET's `TimeZoneInfo` all write the
+            // value `Intl`/`Date`/`SystemTimeZoneIdentifier` read back.
+            // Language-neutral names: any profile can bind these.
+            "default_timezone_set" => {
+                if args.is_empty() {
+                    self.emit_const(Value::Bool(false));
+                } else {
+                    self.compile_expr(&args[0])?;
+                    for arg in &args[1..] {
+                        self.compile_expr(arg)?;
+                        self.emit(Op::DROP);
+                    }
+                    let import = self
+                        .chunk()
+                        .add_import("ecma:intl/timezone", "setSystemIdentifier");
+                    self.chunk().emit_call(import, 1, 0);
+                }
+            }
+            "default_timezone_get" => {
                 for arg in args {
                     self.compile_expr(arg)?;
                     self.emit(Op::DROP);
                 }
-                self.emit_const(Value::Bool(true));
+                let import = self
+                    .chunk()
+                    .add_import("ecma:intl/timezone", "systemIdentifier");
+                self.chunk().emit_call(import, 0, 0);
             }
             "php_rsort" => {
                 // PHP `rsort($arr)` — descending in-place sort. Compose

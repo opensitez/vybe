@@ -191,7 +191,7 @@ fn target_delete(target: &Value, key: &str) -> bool {
         if crate::object::is_nonconfig(&o, key) {
             return false;
         }
-        o.properties.remove(key);
+        o.properties.shift_remove(key);
     }
     true
 }

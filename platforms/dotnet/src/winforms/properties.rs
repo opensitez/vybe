@@ -87,7 +87,7 @@ pub struct PropertyBag {
 impl PropertyBag {
     pub fn new() -> Self {
         Self {
-            properties: HashMap::new(),
+            properties: Default::default(),
         }
     }
 

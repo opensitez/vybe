@@ -84,7 +84,7 @@ impl GuiState {
             should_run: false,
             form_object: None,
             close_requested: false,
-            properties: HashMap::new(),
+            properties: Default::default(),
             needs_repaint: false,
             front_requested: false,
             overlay_canvases: HashMap::new(),

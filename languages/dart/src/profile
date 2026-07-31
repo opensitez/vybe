@@ -98,7 +98,9 @@ __dart_state_error  = { emit = "common:dart.state_error",        min_args = 0, m
 __dart_argument_error = { emit = "common:dart.argument_error",   min_args = 0, max_args = 1 }
 __dart_unimplemented_error = { emit = "common:dart.unimplemented_error", min_args = 0, max_args = 1 }
 __dart_stack_trace  = { emit = "common:dart.stack_trace",        min_args = 1, max_args = 1 }
-__dart_index_get    = { emit = "common:dart.index_get",          min_args = 2, max_args = 2 }
+# builtinslotplan.md step 5 — `dart.index_get` probes `wasm:js-string.test`
+# before every index. A statically-typed receiver skips the probe.
+__dart_index_get    = { emit = "common:dart.index_get",          min_args = 2, max_args = 2, slot = "get_item" }
 __dart_index_set    = { emit = "common:dart.index_set",          min_args = 3, max_args = 3 }
 __dart_set_from     = { emit = "common:dart.set_from",           min_args = 1, max_args = 1 }
 __dart_for_in_iterable = { emit = "common:dart.for_in_iterable", min_args = 1, max_args = 1 }
@@ -303,7 +305,15 @@ keys          = { emit = "common:dart.map_keys",       min_args = 0, max_args = 
 values        = { emit = "common:dart.map_values",     min_args = 0, max_args = 0 }
 entries       = { emit = "common:dart.map_entries",    min_args = 0, max_args = 0 }
 last          = { emit = "common:dart.list_last",      min_args = 0, max_args = 0 }
-length        = { emit = "common:dart.length",         min_args = 0, max_args = 0 }
+# builtinslotplan.md step 5 — the first live slot binding.
+# `slot = "len"` says Dart's `length` fills the shared Len slot. When the
+# receiver's type is statically known, the binding replaces `dart.length` with
+# the direct call for that type; otherwise `dart.length` still runs, and it
+# stays the answer for every dynamically-typed receiver.
+# `dart.length` is a FIVE-way runtime probe (string → array → generator →
+# StringBuilder → user `.length` getter), so a statically-typed receiver was
+# paying for four tests it could never need.
+length        = { emit = "common:dart.length",         min_args = 0, max_args = 0, slot = "len" }
 
 # Array/List instance methods
 removeLast    = { emit = "common:dart.list_remove_last", min_args = 0, max_args = 0 }
@@ -519,3 +529,19 @@ type_scopes = ["flutter"]
 use_dotnet = false
 roots = []
 extra_imports = []
+
+# ── builtinslotplan.md step 4 ────────────────────────────────────────────
+# Dart's own spellings. `String` already resolved through the platform
+# table; the generic collections did not — step 3's census recorded
+# `List<int>` and `Map<String,int>` reaching dispatch unresolved.
+#
+# `*` marks where a spelling need not match: `list<*` is a prefix, so it
+# catches `List<int>` and `List<Map<String,int>>` alike.
+[builtin_types]
+string = ["string"]
+int    = ["int"]
+double = ["double", "num"]
+bool   = ["bool"]
+array  = ["list", "list<*"]
+map    = ["map", "map<*"]
+set    = ["set", "set<*"]

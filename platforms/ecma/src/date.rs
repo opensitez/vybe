@@ -313,7 +313,16 @@ pub fn dispatch_date_method(method: &str, args: &[Value]) -> Option<Value> {
             getter!(|dt: &DateTime<Utc>| dt.timestamp_subsec_millis() as i32)
         }
         "getTime" | "valueOf" => Value::F64(ms_arg(args, 0)),
-        "getTimezoneOffset" => Value::F64(0.0),
+        // ECMA-262: minutes WEST of UTC for the host environment's zone —
+        // opposite sign AND different unit from tzdb's seconds-east. Returning
+        // a constant 0 is only permitted "if the implementation only supports
+        // the UTC time zone"; that exemption lapsed when tzdb was linked, and
+        // `GetNamedTimeZoneOffsetNanoseconds` must agree with
+        // `SystemTimeZoneIdentifier`, so both now read the same clock.
+        "getTimezoneOffset" => {
+            let seconds_east = crate::timezone::system_offset_seconds(ms_arg(args, 0));
+            Value::F64(-(seconds_east as f64) / 60.0)
+        }
         "toISOString" | "toJSON" => {
             let ms = ms_arg(args, 0);
             match dt_from_ms(ms) {

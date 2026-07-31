@@ -80,11 +80,142 @@ pub fn offset_seconds(name: &str, ms: f64) -> Option<i32> {
     Some(tz.offset_from_utc_datetime(&dt.naive_utc()).fix().local_minus_utc())
 }
 
+/// Whether daylight saving is in effect for `name` at `ms`.
+///
+/// Derived by comparing the zone's offset at the instant against its offset in
+/// January and July of the same year: DST is the LARGER of the two seasonal
+/// offsets, which works for both hemispheres without a per-region table.
+pub fn is_dst(name: &str, ms: f64) -> bool {
+    let Some(current) = offset_seconds(name, ms) else {
+        return false;
+    };
+    let Some(dt) = Utc.timestamp_millis_opt(ms as i64).single() else {
+        return false;
+    };
+    let year_start = Utc
+        .with_ymd_and_hms(dt.format("%Y").to_string().parse().unwrap_or(1970), 1, 15, 0, 0, 0)
+        .single();
+    let mid_year = Utc
+        .with_ymd_and_hms(dt.format("%Y").to_string().parse().unwrap_or(1970), 7, 15, 0, 0, 0)
+        .single();
+    let (Some(jan), Some(jul)) = (year_start, mid_year) else {
+        return false;
+    };
+    let jan_off = offset_seconds(name, jan.timestamp_millis() as f64).unwrap_or(current);
+    let jul_off = offset_seconds(name, jul.timestamp_millis() as f64).unwrap_or(current);
+    if jan_off == jul_off {
+        return false; // Zone observes no DST at all.
+    }
+    current == jan_off.max(jul_off)
+}
+
 /// Zone abbreviation in effect at an instant (`EST`, `BST`, `JST`, …).
 pub fn abbreviation(name: &str, ms: f64) -> Option<String> {
     let tz = resolve(name)?;
     let dt = Utc.timestamp_millis_opt(ms as i64).single()?;
     Some(tz.from_utc_datetime(&dt.naive_utc()).format("%Z").to_string())
+}
+
+/// IANA `zone.tab` — the ISO 3166-1 alpha-2 country code → zone identifier
+/// table. ECMA-402 names this file directly ("Any Link name that is present in
+/// the 'TZ' column of file zone.tab must be a primary time zone identifier"),
+/// and it is the ONLY source of the region mapping `Intl.Locale.getTimeZones`
+/// needs: `chrono-tz` vendors the tzdb rule files but not this table, and
+/// ICU's region data covers only Windows-zone disambiguation.
+///
+/// Public domain, per the tzdb LICENSE.
+const ZONE_TAB: &str = include_str!("../data/zone.tab");
+
+/// Zones for an ISO 3166-1 alpha-2 region, tzdb casing, sorted.
+///
+/// Entries are validated against `TZ_VARIANTS` because this table and
+/// `chrono-tz`'s rules are separate tzdb releases (2026b vs 2025b at time of
+/// writing). Without the check, a zone added in the newer release would be
+/// returned here and then fail to resolve in `offset_seconds` — the same
+/// module giving inconsistent answers.
+pub fn identifiers_for_region(region: &str) -> Vec<String> {
+    if region.len() != 2 || !region.chars().all(|c| c.is_ascii_alphabetic()) {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = ZONE_TAB
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .filter_map(|line| {
+            let mut cols = line.split('\t');
+            let codes = cols.next()?;
+            let _coordinates = cols.next()?;
+            let zone = cols.next()?.trim();
+            // zone.tab is one country per row; zone1970.tab uses a
+            // comma-separated list, so accept both shapes.
+            codes
+                .split(',')
+                .any(|code| code.eq_ignore_ascii_case(region))
+                .then(|| zone.to_string())
+        })
+        .filter(|zone| resolve(zone).is_some())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// VM global holding the host environment's current time zone — the ONE clock
+/// every layer reads.
+///
+/// ECMA-262 `SystemTimeZoneIdentifier()` is specified as "a String representing
+/// **the host environment's** current time zone", and JavaScript deliberately
+/// offers no way to set it (you change `TZ`, not a JS property). PHP
+/// (`date_default_timezone_set`), Java (`TimeZone.setDefault`) and .NET
+/// (`TimeZoneInfo`) all DO expose a setter — so the value is host-environment
+/// state that some languages may write and every language reads.
+///
+/// It therefore lives in one VM global rather than in any language's adapter:
+/// set it from PHP and Java, Python, .NET and `Intl` all observe it.
+pub const DEFAULT_TZ_GLOBAL: &str = "__vybe_system_timezone";
+
+/// The one clock. Process-level because the value it models IS process state —
+/// the same thing `TZ` is for a Unix process — so every VM, every language
+/// adapter and every host module observes one setting. A per-VM global would
+/// let PHP and Java disagree, which is the bug this exists to prevent.
+static SYSTEM_TZ: std::sync::OnceLock<std::sync::RwLock<String>> = std::sync::OnceLock::new();
+
+fn system_tz_cell() -> &'static std::sync::RwLock<String> {
+    SYSTEM_TZ.get_or_init(|| std::sync::RwLock::new("UTC".to_string()))
+}
+
+/// Set the host environment's zone. Returns false for an identifier tzdb does
+/// not know. Stores the CANONICAL spelling, so reads always yield a primary
+/// identifier as ECMA-262 requires.
+pub fn set_system_identifier(name: &str) -> bool {
+    match canonicalize(name) {
+        Some(canonical) => {
+            if let Ok(mut guard) = system_tz_cell().write() {
+                *guard = canonical;
+                return true;
+            }
+            false
+        }
+        None => false,
+    }
+}
+
+/// ECMA-262 `SystemTimeZoneIdentifier()` — the host environment's zone as a
+/// PRIMARY identifier, defaulting to `"UTC"`.
+///
+/// The spec permits returning `"UTC"` unconditionally only "if the
+/// implementation only supports the UTC time zone". Once tzdb is linked that
+/// exemption no longer applies, so this must reflect the real setting and
+/// `GetNamedTimeZoneOffsetNanoseconds` must agree with it.
+pub fn system_identifier() -> String {
+    system_tz_cell()
+        .read()
+        .map(|guard| guard.clone())
+        .unwrap_or_else(|_| "UTC".to_string())
+}
+
+/// Offset of the host environment's zone at an instant, in seconds EAST.
+pub fn system_offset_seconds(ms: f64) -> i32 {
+    offset_seconds(&system_identifier(), ms).unwrap_or(0)
 }
 
 fn s(value: &str) -> Value {
@@ -160,6 +291,39 @@ pub fn register(vm: &mut VM) {
                 Some(secs) => Value::I32(secs),
                 None => Value::Null,
             }
+        }),
+    );
+
+    // ECMA-262 SystemTimeZoneIdentifier() — read the one clock.
+    vm.register_host_fn(
+        "ecma:intl/timezone",
+        "systemIdentifier",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| s(&system_identifier())),
+    );
+
+    // Set the host environment's zone. NOT a JavaScript operation — JS changes
+    // this via `TZ`, not an API — but PHP/Java/.NET expose setters, and they
+    // must all write the value `SystemTimeZoneIdentifier` reads. Rejects an
+    // identifier tzdb does not know, and stores the CANONICAL spelling so the
+    // read side always returns a primary identifier.
+    vm.register_host_fn(
+        "ecma:intl/timezone",
+        "setSystemIdentifier",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| match arg_str(args, 0) {
+            Some(name) => Value::Bool(set_system_identifier(&name)),
+            None => Value::Bool(false),
+        }),
+    );
+
+    // isDst(name, msSinceEpoch) — whether daylight saving is in effect.
+    vm.register_host_fn(
+        "ecma:intl/timezone",
+        "isDst",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let Some(name) = arg_str(args, 0) else {
+                return Value::Bool(false);
+            };
+            Value::Bool(is_dst(&name, arg_ms(args, 1)))
         }),
     );
 

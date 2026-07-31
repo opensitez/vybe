@@ -414,6 +414,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.datetime_immutable_modify" => {
             crate::emitter::datetime_adapter::emit_datetime_immutable_modify(chunks, current, line)
         }
+        "php.dateinterval_format" => {
+            crate::emitter::datetime_adapter::emit_dateinterval_format(chunks, current, line)
+        }
         "php.datetime_diff" => {
             crate::emitter::datetime_adapter::emit_datetime_diff(chunks, current, argc, line)
         }

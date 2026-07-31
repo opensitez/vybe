@@ -6,9 +6,14 @@
 use super::*;
 
 impl Compiler {
+    /// Whether `type_hint` names a dictionary/map.
+    ///
+    /// Spellings moved to `vybe_ast::builtin_types` (`builtinslotplan.md`
+    /// step 4). Still narrow — it catches .NET's `Dictionary<K,V>` but not
+    /// Dart's `Map<K,V>` nor a Python dict — and that narrowness is now
+    /// visible in one table instead of buried in a predicate.
     pub(super) fn is_dictionary_type_hint(type_hint: &str) -> bool {
-        let normalized = Self::normalize_type_hint(type_hint);
-        normalized.contains("dictionary") || normalized.ends_with("hashtable")
+        vybe_ast::builtin_types::is(type_hint, vybe_ast::builtin_slots::BuiltinType::Map)
     }
 
     pub(super) fn is_sorted_dictionary_type_hint(type_hint: &str) -> bool {

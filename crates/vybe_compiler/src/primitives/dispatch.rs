@@ -408,6 +408,24 @@ pub fn emit_common(
         "collections.sum" => collections::emit_sum(chunks, current, line),
         "collections.min" => collections::emit_pymin(chunks, current, line),
         "collections.max" => collections::emit_pymax(chunks, current, line),
+        // Range materialisation (Kotlin/JVM style)
+        // `collections.range_inc`  – 2-arg inclusive:  [start..=end]  step +1
+        "collections.range_inc" => collections::emit_range(chunks, current, 2, true, line),
+        // `collections.range_desc` – 2-arg descending: (start downTo end) step -1
+        // Emitted as reversed(end..=start) to avoid duplicating loop logic.
+        "collections.range_desc" => {
+            // Stack: [start, end].  swap → [end, start], emit inclusive range,
+            // then reverse in-place so we get [start, start-1, …, end].
+            let tmp = chunks[current].alloc_scratch(2);
+            chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, tmp, line);
+            chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, tmp + 1, line);
+            chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, tmp, line);     // end
+            chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, tmp + 1, line); // start
+            collections::emit_range(chunks, current, 2, true, line);  // [end..=start]
+            collections::emit_reverse(chunks, current, line);          // reversed → [start..end]
+        }
+        // `collections.range_step` – 3-arg strided: (start, stop_exclusive, step)
+        "collections.range_step" => collections::emit_range(chunks, current, 3, false, line),
 
         // ── Shared heap / priority-queue primitives ──
         "heap.heapify" => heap::emit_heapify(chunks, current, argc, line),

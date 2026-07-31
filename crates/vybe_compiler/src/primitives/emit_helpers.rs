@@ -241,41 +241,28 @@ impl Compiler {
         }
     }
 
+    /// Whether `type_hint` names a string.
+    ///
+    /// The spellings moved to `vybe_ast::builtin_types` (`builtinslotplan.md`
+    /// step 4) so a profile can extend them; this stays as the shape its call
+    /// sites want. Same answers — `builtin_types::tests` transcribes the old
+    /// body's list and asserts every entry still classifies.
+    ///
+    /// Takes no `&self` deliberately: making it profile-aware here would change
+    /// behaviour inside a move. `Compiler::builtin_type_of` is the
+    /// profile-aware entry point.
     pub(super) fn is_string_type_hint(type_hint: &str) -> bool {
-        let normalized = Self::normalize_type_hint(type_hint);
-        normalized == "string"
-            || normalized == "system.string"
-            || normalized.ends_with(".string")
-            || normalized == "character"
-            || normalized.starts_with("character(")
-            || normalized.starts_with("character*")
+        vybe_ast::builtin_types::is(type_hint, vybe_ast::builtin_slots::BuiltinType::String)
     }
 
+    /// Whether `type_hint` names any numeric type.
+    ///
+    /// The table now records WHICH numeric — see
+    /// `builtin_types::PLATFORM_SPELLINGS` — which is what step 3 recorded as
+    /// unresolvable. This predicate keeps collapsing that back to a bool for
+    /// the call sites that only ask "is it a number".
     pub(super) fn is_numeric_type_hint(type_hint: &str) -> bool {
-        matches!(
-            Self::normalize_type_hint(type_hint).as_str(),
-            "integer"
-                | "int"
-                | "int32"
-                | "longint"
-                | "real"
-                | "double"
-                | "float"
-                | "single"
-                | "decimal"
-                | "long"
-                | "int64"
-                | "short"
-                | "int16"
-                | "uint"
-                | "uint32"
-                | "ulong"
-                | "uint64"
-                | "ushort"
-                | "uint16"
-                | "byte"
-                | "sbyte"
-        )
+        vybe_ast::builtin_types::is_numeric(type_hint)
     }
 
     pub(super) fn fortran_out_param_ctor_name(type_hint: &str) -> Option<String> {

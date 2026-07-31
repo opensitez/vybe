@@ -24,11 +24,11 @@ const TZ_KEY: &str = "__tz";
 /// The IANA/abbrev name a `DateTimeZone` carries (e.g. "UTC", "Europe/Paris").
 const TZNAME_KEY: &str = "__tzname";
 
-const MS_PER_SECOND: f64 = 1_000.0;
-const MS_PER_MINUTE: f64 = 60_000.0;
-const MS_PER_HOUR: f64 = 3_600_000.0;
-const MS_PER_DAY: f64 = 86_400_000.0;
-const MS_PER_WEEK: f64 = 604_800_000.0;
+// Millisecond spans come from the shared date primitive — these were one of
+// eighteen copies of `86_400_000` across eight adapter files.
+use vybe_compiler::primitives::datetime::{
+    MS_PER_DAY, MS_PER_HOUR, MS_PER_MINUTE, MS_PER_SECOND, MS_PER_WEEK,
+};
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -858,52 +858,30 @@ fn getter_to_slot(
 /// Uses the Feb-29 rollover trick: `UTC(year, 1, 29)` keeps month 1 in a
 /// leap year but rolls to month 2 (March) otherwise, so `2 - month` is the flag.
 fn emit_leap_flag(chunks: &mut [Chunk], current: usize, dt_slot: u16, line: u32) {
+    // Shared proleptic-Gregorian rule. This used to reach the same answer via a
+    // Feb-29 rollover (`Date.UTC(y, 1, 29)` then `2 - getMonth()`) — correct,
+    // but it spent a host call and a temporary Date object to answer a question
+    // about an integer.
     let year_slot = getter_to_slot(chunks, current, dt_slot, "getFullYear", line);
-    {
-        let chunk = &mut chunks[current];
-        local_get(chunk, year_slot, line);
-        push_const(chunk, Value::F64(1.0), line);
-        push_const(chunk, Value::F64(29.0), line);
-    }
-    call_import(chunks, current, "ecma:date", "UTC", 3, line);
-    let tmp = {
-        let chunk = &mut chunks[current];
-        emit_wrap_ms(chunk, "Date", line);
-        let tmp = alloc_local(chunk);
-        local_set(chunk, tmp, line);
-        tmp
-    };
-    emit_dt_getter(chunks, current, tmp, "getMonth", line);
     let chunk = &mut chunks[current];
-    // flag = 2 - month
-    push_const(chunk, Value::F64(-1.0), line);
-    chunk.emit_op(Op::F64_MUL, line);
-    push_const(chunk, Value::F64(2.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
+    local_get(chunk, year_slot, line);
+    vybe_compiler::primitives::datetime::emit_is_leap_year(chunk, line);
 }
 
 /// Push the number of days in `dt`'s month (28–31) via `UTC(y, m+1, 0)`,
 /// whose day-0 resolves to the last day of month `m`.
 fn emit_days_in_month(chunks: &mut [Chunk], current: usize, dt_slot: u16, line: u32) {
+    // Shared arithmetic; PHP reads the month from `getMonth`, which is 0-based.
     let year_slot = getter_to_slot(chunks, current, dt_slot, "getFullYear", line);
     let month_slot = getter_to_slot(chunks, current, dt_slot, "getMonth", line);
-    {
-        let chunk = &mut chunks[current];
-        local_get(chunk, year_slot, line);
-        local_get(chunk, month_slot, line);
-        push_const(chunk, Value::F64(1.0), line);
-        chunk.emit_op(Op::F64_ADD, line);
-        push_const(chunk, Value::F64(0.0), line);
-    }
-    call_import(chunks, current, "ecma:date", "UTC", 3, line);
-    let tmp = {
-        let chunk = &mut chunks[current];
-        emit_wrap_ms(chunk, "Date", line);
-        let tmp = alloc_local(chunk);
-        local_set(chunk, tmp, line);
-        tmp
-    };
-    emit_dt_getter(chunks, current, tmp, "getDate", line);
+    let chunk = &mut chunks[current];
+    local_get(chunk, year_slot, line);
+    local_get(chunk, month_slot, line);
+    vybe_compiler::primitives::datetime::emit_days_in_month(
+        chunk,
+        vybe_ast::datetime::MonthIndexing::ZeroBased,
+        line,
+    );
 }
 
 /// Push the 0-based day of the year (`0` = Jan 1) for `dt`.
@@ -2684,13 +2662,13 @@ fn emit_datetime_add_fixed_unit(chunks: &mut [Chunk], current: usize, ms_per_uni
     local_set(chunk, dt_slot, line);
     emit_clone_if_immutable(chunk, dt_slot, line);
 
-    // newMs = dt.__time + n * ms_per_unit
+    // newMs = dt.__time + n * ms_per_unit — shared scaling. The object shape
+    // (`__time`, clone-if-immutable) stays here because it is PHP's; only the
+    // arithmetic is common.
     local_get(chunk, dt_slot, line);
     struct_get(chunk, TIME_KEY, line);
     local_get(chunk, n_slot, line);
-    push_const(chunk, Value::F64(ms_per_unit), line);
-    chunk.emit_op(Op::F64_MUL, line);
-    chunk.emit_op(Op::F64_ADD, line);
+    vybe_compiler::primitives::datetime::emit_add_scaled(chunk, ms_per_unit, line);
     let new_ms_slot = alloc_local(chunk);
     local_set(chunk, new_ms_slot, line);
 
@@ -3504,6 +3482,148 @@ pub fn emit_dateinterval_components(chunks: &mut [Chunk], current: usize, line: 
     chunk.emit_dup(line);
     push_const(chunk, Value::F64(0.0), line);
     struct_set(chunk, "invert", line);
+}
+
+/// `DateInterval::format($fmt)` — the RUNTIME path, mirroring
+/// `emit_datetime_format`. Stack on entry: `[interval, fmt]`; on exit:
+/// `[string]`.
+///
+/// The walker also pre-folds *literal* formats, exactly as it does for
+/// `DateTime::format`. This is what makes a non-literal format work at all,
+/// and it is the single place the specifier table lives for the dynamic case.
+pub fn emit_dateinterval_format(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let fmt_slot = alloc_local(chunk);
+    let iv_slot = alloc_local(chunk);
+    local_set(chunk, fmt_slot, line);
+    local_set(chunk, iv_slot, line);
+
+    let result_slot = alloc_local(chunk);
+    let i_slot = alloc_local(chunk);
+    let len_slot = alloc_local(chunk);
+    let c_slot = alloc_local(chunk);
+
+    push_str(chunk, "", line);
+    local_set(chunk, result_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    local_set(chunk, i_slot, line);
+    local_get(chunk, fmt_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "length");
+        chunk.emit_call(idx, 1, line);
+    }
+    local_set(chunk, len_slot, line);
+
+    let lstate = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    let chunk = &mut chunks[current];
+    local_get(chunk, i_slot, line);
+    local_get(chunk, len_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_br_if(lstate.break_depth(0) as u32, line);
+
+    // c = fmt.charAt(i)
+    local_get(chunk, fmt_slot, line);
+    local_get(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    local_set(chunk, c_slot, line);
+
+    local_get(chunk, c_slot, line);
+    push_str(chunk, "%", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if(line);
+
+    // ── `%` seen: consume the specifier character ──
+    local_get(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    local_set(chunk, i_slot, line);
+    local_get(chunk, fmt_slot, line);
+    local_get(chunk, i_slot, line);
+    {
+        let idx = chunk.add_import("ecma:string", "charAt");
+        chunk.emit_call(idx, 2, line);
+    }
+    local_set(chunk, c_slot, line);
+
+    // Unpadded numeric fields, then the zero-padded upper-case forms.
+    // `%a` is total days; `%R`/`%r` are the sign specifiers.
+    for (code, field, width) in [
+        ('y', "y", 0u32),
+        ('m', "m", 0),
+        ('d', "d", 0),
+        ('h', "h", 0),
+        ('i', "i", 0),
+        ('s', "s", 0),
+        ('a', "days", 0),
+        ('Y', "y", 2),
+        ('M', "m", 2),
+        ('D', "d", 2),
+        ('H', "h", 2),
+        ('I', "i", 2),
+        ('S', "s", 2),
+    ] {
+        local_get(chunk, c_slot, line);
+        push_str(chunk, &code.to_string(), line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_if(line);
+        local_get(chunk, iv_slot, line);
+        struct_get(chunk, field, line);
+        if width > 0 {
+            emit_pad_to_width(chunk, width, line);
+        } else {
+            emit_stringify(chunk, line);
+        }
+        emit_append_to_result(chunk, result_slot, line);
+        chunk.emit_end(line);
+    }
+
+    // `%R` → "+"/"-", `%r` → ""/"-", keyed off `invert`.
+    for (code, positive) in [('R', "+"), ('r', "")] {
+        local_get(chunk, c_slot, line);
+        push_str(chunk, &code.to_string(), line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_if(line);
+        local_get(chunk, iv_slot, line);
+        struct_get(chunk, "invert", line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if(line);
+        push_str(chunk, "-", line);
+        emit_append_to_result(chunk, result_slot, line);
+        chunk.emit_else(line);
+        push_str(chunk, positive, line);
+        emit_append_to_result(chunk, result_slot, line);
+        chunk.emit_end(line);
+        chunk.emit_end(line);
+    }
+
+    // `%%` → a literal percent.
+    local_get(chunk, c_slot, line);
+    push_str(chunk, "%", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    chunk.emit_if(line);
+    push_str(chunk, "%", line);
+    emit_append_to_result(chunk, result_slot, line);
+    chunk.emit_end(line);
+
+    chunk.emit_else(line);
+    // ── ordinary character ──
+    local_get(chunk, c_slot, line);
+    emit_append_to_result(chunk, result_slot, line);
+    chunk.emit_end(line);
+
+    // i++
+    local_get(chunk, i_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    local_set(chunk, i_slot, line);
+
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, lstate, line);
+    let chunk = &mut chunks[current];
+    local_get(chunk, result_slot, line);
 }
 
 /// Parse a literal ISO 8601 duration string into (y, m, d, h, i, s)

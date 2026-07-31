@@ -17,15 +17,22 @@ dynamic_add = true
 materialize_bool_results = true
 dynamic_member_access = true
 supports_spread_arguments = true
+ecma_array_method_dispatch = false
+ecma_in_operator = true
+has_undefined_value = true
+has_ecma_globals = true
+ecma_object_literals = true
 
 [array_methods]
 map          = "__array_map"
 filter       = "__array_filter"
 forEach      = "__array_forEach"
 find         = "__array_find"
-findIndex    = "__array_findIndex"
-includes     = "__array_includes"
-contains     = "__array_includes"
+findIndex    = "indexOf"
+indexOf      = "indexOf"
+lastIndexOf  = "lastIndexOf"
+includes     = "includes"
+contains     = "includes"
 reduce       = "__array_reduce"
 sort         = "__array_sort"
 sorted       = "__array_sort"
@@ -33,32 +40,49 @@ some         = "__array_some"
 any          = "__array_some"
 every        = "__array_every"
 all          = "__array_every"
-none         = "__array_none"
-joinToString = "__array_joinToString"
-slice        = "__array_slice"
-first        = "__array_first"
-last         = "__array_last"
-count        = "__array_count"
-sum          = "__array_sum"
-maxOrNull    = "__array_max"
-minOrNull    = "__array_min"
-reversed     = "__array_reversed"
-distinct     = "__array_distinct"
-flatten      = "__array_flatten"
-flatMap      = "__array_flatMap"
-take         = "__array_take"
-drop         = "__array_drop"
-associate    = "__array_associate"
-associateBy  = "__array_associateBy"
-groupBy      = "__array_groupBy"
-toList       = "__array_toList"
-toSet        = "__array_toSet"
-asSequence   = "__array_asSequence"
+joinToString = "join"
+slice        = "slice"
 
 [builtins]
 # I/O & Printing
 println = { emit = "print" }
 print   = { emit = "print" }
+
+# Common Collections Primitives
+__len__           = { emit = "common:collections.length", min_args = 1, max_args = 1 }
+__coll_length     = { emit = "common:collections.length", min_args = 1, max_args = 1 }
+__coll_get        = { emit = "common:collections.get", min_args = 2, max_args = 2 }
+__coll_set        = { emit = "common:collections.set", min_args = 3, max_args = 3 }
+__coll_push       = { emit = "common:collections.push", min_args = 2, max_args = 2 }
+__coll_pop        = { emit = "common:collections.pop", min_args = 1, max_args = 1 }
+__coll_contains   = { emit = "common:collections.contains", min_args = 2, max_args = 2 }
+__coll_indexOf    = { emit = "common:collections.index_of", min_args = 2, max_args = 2 }
+__coll_lastIndexOf= { emit = "common:collections.last_index_of", min_args = 2, max_args = 2 }
+__coll_removeAt   = { emit = "common:collections.remove_at", min_args = 2, max_args = 2 }
+__coll_remove     = { emit = "common:collections.remove", min_args = 2, max_args = 2 }
+__coll_insert     = { emit = "common:collections.insert", min_args = 3, max_args = 3 }
+__coll_clear      = { emit = "common:collections.clear", min_args = 1, max_args = 1 }
+__coll_sorted     = { emit = "common:collections.sorted", min_args = 1, max_args = 1 }
+__coll_reverse    = { emit = "common:collections.reverse", min_args = 1, max_args = 1 }
+__coll_join       = { emit = "common:collections.join", min_args = 2, max_args = 2 }
+__coll_slice      = { emit = "common:collections.slice", min_args = 3, max_args = 3 }
+__coll_sum        = { emit = "common:collections.sum", min_args = 1, max_args = 1 }
+__coll_min        = { emit = "common:collections.min", min_args = 1, max_args = 1 }
+__coll_max        = { emit = "common:collections.max", min_args = 1, max_args = 1 }
+
+# Common Dict Primitives
+__dict_size   = { emit = "common:dict.size",        min_args = 1, max_args = 1 }
+__dict_get    = { emit = "common:dict.get_dynamic", min_args = 2, max_args = 2 }
+__dict_set    = { emit = "common:dict.set_dynamic", min_args = 3, max_args = 3 }
+__dict_has    = { emit = "common:dict.has",         min_args = 2, max_args = 2 }
+__dict_delete = { emit = "common:dict.delete",      min_args = 2, max_args = 2 }
+__dict_clear  = { emit = "common:dict.clear",       min_args = 1, max_args = 1 }
+__dict_keys   = { emit = "common:dict.keys",        min_args = 1, max_args = 1 }
+__dict_values = { emit = "common:dict.values",      min_args = 1, max_args = 1 }
+__dict_items  = { emit = "common:dict.items",       min_args = 1, max_args = 1 }
+
+# Common Host Helpers
+__object_keys = { emit = "ecma:object.keys", min_args = 1, max_args = 1 }
 
 # Collections - Lists & Arrays
 listOf          = { emit = "common:collections.new" }
@@ -95,9 +119,11 @@ Pair   = { emit = "common:collections.new", min_args = 2, max_args = 2 }
 Triple = { emit = "common:collections.new", min_args = 3, max_args = 3 }
 
 # Ranges
-rangeTo = { emit = "stdlib:range" }
-until   = { emit = "stdlib:range_until" }
-downTo  = { emit = "stdlib:range_downto" }
+rangeTo = { emit = "common:collections.range_inc", min_args = 2, max_args = 2 }
+until   = { emit = "common:collections.range_inc", min_args = 2, max_args = 2 }
+downTo  = { emit = "common:collections.range_desc", min_args = 2, max_args = 2 }
+__kt_step_asc  = { emit = "common:collections.range_step", min_args = 3, max_args = 3 }
+__kt_step_desc = { emit = "common:collections.range_step", min_args = 3, max_args = 3 }
 
 # Math Primitives
 max   = { emit = "host:ecma:math:maxOf", min_args = 1, max_args = 255 }

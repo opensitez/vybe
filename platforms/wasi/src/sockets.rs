@@ -1726,7 +1726,7 @@ fn parse_ip_socket_address(value: &Value) -> Option<(String, u16, String)> {
 }
 
 fn parse_ip_socket_record(
-    props: &HashMap<String, Value>,
+    props: &vybe_runtime::Properties,
     default_family: &str,
 ) -> Option<(String, u16, String)> {
     let port = props.get("port")?.as_f64() as u16;

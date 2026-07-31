@@ -60,7 +60,7 @@ fn set_buf_bytes(decoder: &Value, bytes: Vec<u8>) {
         let elems: Vec<Value> = bytes.into_iter().map(|b| Value::I32(b as i32)).collect();
         let buf = Value::Object(vybe_runtime::heap::alloc(Object {
             kind: ObjectKind::Array(elems),
-            properties: HashMap::new(),
+            properties: Default::default(),
             type_id: 0,
             fields: Vec::new(),
         }));
@@ -210,7 +210,7 @@ pub fn register(vm: &mut VM) {
                 "__buf".into(),
                 Value::Object(vybe_runtime::heap::alloc(Object {
                     kind: ObjectKind::Array(empty),
-                    properties: HashMap::new(),
+                    properties: Default::default(),
                     type_id: 0,
                     fields: Vec::new(),
                 })),

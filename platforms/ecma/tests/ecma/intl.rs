@@ -1270,3 +1270,22 @@ fn locale_first_day_of_week_and_variants() {
     assert_eq!(as_string(&obj_prop(&variant, "variants")), "1901");
     assert!(matches!(obj_prop(&plain, "variants"), Value::Undefined));
 }
+
+#[test]
+fn locale_get_time_zones_returns_region_zones() {
+    let zones = |tag: &str| {
+        let loc = invoke("ecma:intl/locale", "new", vec![s(tag)]);
+        invoke("ecma:intl/locale", "getTimeZones", vec![loc])
+    };
+    let us = array_strings(&zones("en-US"));
+    assert!(us.contains(&"America/New_York".to_string()), "{us:?}");
+    assert!(us.contains(&"America/Los_Angeles".to_string()), "{us:?}");
+    // Zones of other countries must not leak in.
+    assert!(!us.iter().any(|z| z == "Europe/London"), "{us:?}");
+
+    let gb = array_strings(&zones("en-GB"));
+    assert!(gb.contains(&"Europe/London".to_string()), "{gb:?}");
+
+    // No region → undefined, per §14.3.x.
+    assert!(matches!(zones("en"), Value::Undefined));
+}

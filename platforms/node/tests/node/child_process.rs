@@ -736,8 +736,13 @@ fn child_process_kill_function_exists() {
 #[allow(dead_code)]
 fn _force_object_kind(_: ObjectKind) {}
 
+/// Surface check: object properties are insertion-ordered.
+///
+/// This existed as `HashMap<String, Value>` to fail if the type ever moved.
+/// It did its job — fixflakyhashmap.md — and now pins the replacement, so a
+/// silent revert to a hash-ordered map breaks the build rather than the tests.
 #[allow(dead_code)]
-fn _force_hashmap(_: HashMap<String, Value>) {}
+fn _force_properties(_: vybe_runtime::Properties) {}
 
 #[test]
 fn proposal_node_child_process_surface_is_registered() {

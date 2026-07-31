@@ -1189,29 +1189,17 @@ pub fn emit_time_range_day(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_time_is_leap_year(chunks: &mut [Chunk], current: usize, line: u32) {
+    // Year extraction stays (the input is an Instant); the leap RULE is shared.
+    // This previously round-tripped through `Date.UTC(y, 2, 0, …)` + getUTCDate
+    // == 29 — the Feb-29 rollover, correct but two host calls and a temporary
+    // Date to decide an integer question.
     let inst = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], inst, line);
     emit_epoch_milli_from_slot(chunks, current, inst, line);
     host::emit(&mut chunks[current], "ecma:date", "new", 1, line);
     host::emit(&mut chunks[current], "ecma:date", "getUTCFullYear", 1, line);
-    let year = chunks[current].alloc_scratch(1);
-    set(&mut chunks[current], year, line);
-    get(&mut chunks[current], year, line);
-    core_wasm::i32_const(&mut chunks[current], line, 2);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    host::emit(&mut chunks[current], "ecma:date", "UTC", 7, line);
-    host::emit(&mut chunks[current], "ecma:date", "new", 1, line);
-    host::emit(&mut chunks[current], "ecma:date", "getUTCDate", 1, line);
-    core_wasm::i32_const(&mut chunks[current], line, 29);
-    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+    vybe_compiler::primitives::datetime::emit_is_leap_year(&mut chunks[current], line);
 }
-
 pub fn emit_time_day_of_year(chunks: &mut [Chunk], current: usize, line: u32) {
     let inst = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], inst, line);
@@ -1230,7 +1218,7 @@ pub fn emit_time_day_of_year(chunks: &mut [Chunk], current: usize, line: u32) {
     core_wasm::i32_const(&mut chunks[current], line, 0);
     host::emit(&mut chunks[current], "ecma:date", "UTC", 7, line);
     chunks[current].emit_op(Op::F64_SUB, line);
-    core_wasm::f64_const(&mut chunks[current], line, 86_400_000.0);
+    core_wasm::f64_const(&mut chunks[current], line, vybe_compiler::primitives::datetime::MS_PER_DAY);
     chunks[current].emit_op(Op::F64_DIV, line);
     host::emit(&mut chunks[current], "ecma:math", "floor", 1, line);
 }
