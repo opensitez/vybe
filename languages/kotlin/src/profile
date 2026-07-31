@@ -3,6 +3,8 @@ name = "kotlin"
 extensions = ["kt", "kts"]
 
 [compiler]
+# Kotlin `operator fun invoke` — an object is callable, so a call site probes the Call slot.
+callable_objects = true
 function_return = "explicit"
 self_keyword = "this"
 base_keyword = "super"
@@ -14,14 +16,18 @@ entry_point = "main"
 uses_normalize_class = true
 uses_common_resolver = true
 dynamic_add = true
-materialize_bool_results = true
 dynamic_member_access = true
 supports_spread_arguments = true
 ecma_array_method_dispatch = false
 ecma_in_operator = true
 has_undefined_value = true
+# `Boolean` is a real Kotlin type, so a comparison's RESULT is a value, not a
+# raw WASM i32 condition: `println(1 == 1)` must print `true`, not `1`. Same
+# reason Go and C# declare it.
+materialize_bool_results = true
 has_ecma_globals = true
 ecma_object_literals = true
+tuple_literals_tagged = true
 
 [array_methods]
 map          = "__array_map"
@@ -34,6 +40,7 @@ lastIndexOf  = "lastIndexOf"
 includes     = "includes"
 contains     = "includes"
 reduce       = "__array_reduce"
+fold         = "__array_reduce"
 sort         = "__array_sort"
 sorted       = "__array_sort"
 some         = "__array_some"
@@ -43,19 +50,32 @@ all          = "__array_every"
 joinToString = "join"
 slice        = "slice"
 
+
 [builtins]
 # I/O & Printing
-println = { emit = "print" }
-print   = { emit = "print" }
+#
+# NOT the shared `print` target: that renders through `Value::Display`, which is
+# ECMA console/inspect semantics (`listOf(1,2,3)` → `1,2,3`, a Map → `[object]`).
+# Kotlin's `println` calls the value's `toString`, so it renders first — see
+# `emitter/tostring.rs`.
+println = { emit = "common:kotlin.print", min_args = 0, max_args = 1, slot = "to_string" }
+print   = { emit = "common:kotlin.print", min_args = 0, max_args = 1, slot = "to_string" }
 
 # Common Collections Primitives
-__len__           = { emit = "common:collections.length", min_args = 1, max_args = 1 }
-__coll_length     = { emit = "common:collections.length", min_args = 1, max_args = 1 }
-__coll_get        = { emit = "common:collections.get", min_args = 2, max_args = 2 }
-__coll_set        = { emit = "common:collections.set", min_args = 3, max_args = 3 }
+#
+# `slot = "..."` says which shared `ProtocolSlot` Kotlin's spelling fills —
+# builtinslotplan.md §3e. Kotlin is a good fit for the COMPILE-TIME half of
+# §2c: `val v: Long`, `fun f(s: String)` and `List<Int>` all carry a static
+# hint, so `builtin_type_of` resolves the receiver and the binding substitutes
+# the emit target with no runtime probe. The declaration is what makes that
+# possible; without it `apply_builtin_slot_binding` returns at its first line.
+__len__           = { emit = "common:collections.length", min_args = 1, max_args = 1, slot = "len" }
+__coll_length     = { emit = "common:collections.length", min_args = 1, max_args = 1, slot = "len" }
+__coll_get        = { emit = "common:collections.get", min_args = 2, max_args = 2, slot = "get_item" }
+__coll_set        = { emit = "common:collections.set", min_args = 3, max_args = 3, slot = "set_item" }
 __coll_push       = { emit = "common:collections.push", min_args = 2, max_args = 2 }
 __coll_pop        = { emit = "common:collections.pop", min_args = 1, max_args = 1 }
-__coll_contains   = { emit = "common:collections.contains", min_args = 2, max_args = 2 }
+__coll_contains   = { emit = "common:collections.contains", min_args = 2, max_args = 2, slot = "contains" }
 __coll_indexOf    = { emit = "common:collections.index_of", min_args = 2, max_args = 2 }
 __coll_lastIndexOf= { emit = "common:collections.last_index_of", min_args = 2, max_args = 2 }
 __coll_removeAt   = { emit = "common:collections.remove_at", min_args = 2, max_args = 2 }
@@ -71,18 +91,24 @@ __coll_min        = { emit = "common:collections.min", min_args = 1, max_args = 
 __coll_max        = { emit = "common:collections.max", min_args = 1, max_args = 1 }
 
 # Common Dict Primitives
-__dict_size   = { emit = "common:dict.size",        min_args = 1, max_args = 1 }
-__dict_get    = { emit = "common:dict.get_dynamic", min_args = 2, max_args = 2 }
-__dict_set    = { emit = "common:dict.set_dynamic", min_args = 3, max_args = 3 }
-__dict_has    = { emit = "common:dict.has",         min_args = 2, max_args = 2 }
+__dict_size   = { emit = "common:dict.size",        min_args = 1, max_args = 1, slot = "len" }
+__dict_get    = { emit = "common:dict.get_dynamic", min_args = 2, max_args = 2, slot = "get_item" }
+__dict_set    = { emit = "common:dict.set_dynamic", min_args = 3, max_args = 3, slot = "set_item" }
+__dict_has    = { emit = "common:dict.has",         min_args = 2, max_args = 2, slot = "contains" }
 __dict_delete = { emit = "common:dict.delete",      min_args = 2, max_args = 2 }
 __dict_clear  = { emit = "common:dict.clear",       min_args = 1, max_args = 1 }
 __dict_keys   = { emit = "common:dict.keys",        min_args = 1, max_args = 1 }
 __dict_values = { emit = "common:dict.values",      min_args = 1, max_args = 1 }
 __dict_items  = { emit = "common:dict.items",       min_args = 1, max_args = 1 }
 
+# String templates: `"$x"` / `"${expr}"` call `toString()` on the part, which is
+# NOT what `+` coercion does — a `Boolean` concatenates as `1`, a `List` as
+# `1,2,3`. The walker wraps every interpolated part in this.
+__kt_tostring = { emit = "common:kotlin.tostring", min_args = 1, max_args = 1 }
+
 # Common Host Helpers
 __object_keys = { emit = "ecma:object.keys", min_args = 1, max_args = 1 }
+__coll_is_array = { emit = "common:ref_is_array", min_args = 1, max_args = 1 }
 
 # Collections - Lists & Arrays
 listOf          = { emit = "common:collections.new" }
@@ -144,7 +170,76 @@ require       = { emit = "common:errors.require", min_args = 1, max_args = 1 }
 check         = { emit = "common:errors.check", min_args = 1, max_args = 1 }
 checkNotNull  = { emit = "common:errors.check_not_null", min_args = 1, max_args = 1 }
 Exception                  = { emit = "common:errors.exception", min_args = 0, max_args = 1 }
+
 IllegalArgumentException   = { emit = "common:errors.illegal_argument", min_args = 0, max_args = 1 }
 IllegalStateException      = { emit = "common:errors.illegal_state", min_args = 0, max_args = 1 }
 NullPointerException       = { emit = "common:errors.null_pointer", min_args = 0, max_args = 1 }
 IndexOutOfBoundsException  = { emit = "common:errors.index_out_of_bounds", min_args = 0, max_args = 1 }
+
+[value_methods]
+
+# ── Double / Float classification (kotlin.Double) ───────────────────────────
+# `min_args`/`max_args` count the arguments AFTER the receiver, which these take
+# none of — `x.isNaN()` is a predicate on `x` alone. Measured: declaring 1 made
+# `4.9.toInt()` stop resolving entirely ("undefined is not callable").
+isNaN      = { emit = "host:ecma:number:isNaN",   min_args = 0, max_args = 0 }
+# ── Numeric conversions (kotlin.Number) ─────────────────────────────────────
+# Kotlin's `toInt()`/`toLong()` TRUNCATE toward zero (`4.9.toInt() == 4`,
+# `(-4.9).toInt() == -4`) — `Math.trunc`, not `floor`, which would answer -5.
+toInt      = { emit = "host:ecma:math:trunc",     min_args = 0, max_args = 0 }
+toLong     = { emit = "host:ecma:math:trunc",     min_args = 0, max_args = 0 }
+# Every number is an f64 at runtime, so widening is the identity. The
+# conversion still has to EXIST — `x.toDouble()` is how Kotlin code opts out of
+# integer division, and an absent method is an "undefined is not callable" trap.
+toDouble   = { emit = "host:ecma:number:Number",  min_args = 0, max_args = 0 }
+toFloat    = { emit = "host:ecma:number:Number",  min_args = 0, max_args = 0 }
+isFinite   = { emit = "host:ecma:number:isFinite", min_args = 0, max_args = 0 }
+# No host fn answers this one: ECMA has `isFinite` and `isNaN` but nothing for
+# "infinite", which is neither. Composed in `emitter/tostring.rs`' sibling.
+isInfinite = { emit = "common:kotlin.is_infinite", min_args = 0, max_args = 0 }
+
+# Kotlin's spellings of the shared built-in types — builtinslotplan.md step 4a.
+#
+# The platform table (`vybe_ast::builtin_types::PLATFORM_SPELLINGS`) knows
+# `string`, `int`, `long`, `double`, `float`, `boolean`, `char` already, so
+# only the spellings it CANNOT name are declared here. The generic containers
+# are the whole point: `List<Int>` / `Map<String, Int>` resolve to nothing in
+# the platform table, and an unresolved receiver means no slot binding can ever
+# fire (§3b's binding constraint).
+#
+# `?` never reaches here — the walker records nullability on the param/field
+# and stores the bare type name, so `String?` and `String` are one spelling.
+[builtin_types]
+string = ["charsequence"]
+array  = [
+    "list", "list<*", "mutablelist", "mutablelist<*",
+    "array", "array<*", "collection", "collection<*", "iterable", "iterable<*",
+    "intarray", "longarray", "doublearray", "floatarray",
+    "booleanarray", "chararray", "shortarray",
+]
+
+# `ByteArray` is deliberately NOT listed under `array`: the platform table
+# already classifies `bytearray` as `Bytes`, and a profile spelling wins over
+# the platform one — declaring it here would silently un-bind every
+# `(Bytes, slot)` pair for Kotlin.
+map    = [
+    "map", "map<*", "mutablemap", "mutablemap<*",
+    "hashmap", "hashmap<*", "linkedhashmap", "linkedhashmap<*",
+]
+set    = [
+    "set", "set<*", "mutableset", "mutableset<*",
+    "hashset", "hashset<*", "linkedhashset", "linkedhashset<*",
+]
+
+# Kotlin's OVERRIDE of the platform default slot table — builtinslotplan.md §2a.
+#
+# `Double.toString()` in Kotlin ALWAYS carries a fraction: `2.0 * 3` prints
+# `6.0`, not `6`. Nothing at runtime can produce that — every Kotlin number is
+# one f64 and `6.0 == 6` — so the answer only exists in the STATIC type, which
+# is precisely the compile-time half of §2c. `println` declares `slot =
+# "to_string"`, so when `builtin_type_of` resolves its argument to `double`
+# this binding replaces the generic renderer with the Double one; when the
+# argument's type is not statically known, `common:kotlin.print` still runs and
+# renders it the ordinary way.
+[builtin_slots.double]
+to_string = "common:kotlin.print_double"

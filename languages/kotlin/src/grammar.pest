@@ -61,15 +61,23 @@ typealias_kw   = @{ "typealias" ~ !(ASCII_ALPHANUMERIC | "_") }
 infix_kw       = @{ "infix" ~ !(ASCII_ALPHANUMERIC | "_") }
 inline_kw      = @{ "inline" ~ !(ASCII_ALPHANUMERIC | "_") }
 inner_kw       = @{ "inner" ~ !(ASCII_ALPHANUMERIC | "_") }
+operator_kw    = @{ "operator" ~ !(ASCII_ALPHANUMERIC | "_") }
+suspend_kw     = @{ "suspend" ~ !(ASCII_ALPHANUMERIC | "_") }
+tailrec_kw     = @{ "tailrec" ~ !(ASCII_ALPHANUMERIC | "_") }
+lateinit_kw    = @{ "lateinit" ~ !(ASCII_ALPHANUMERIC | "_") }
+final_kw       = @{ "final" ~ !(ASCII_ALPHANUMERIC | "_") }
+external_kw    = @{ "external" ~ !(ASCII_ALPHANUMERIC | "_") }
+noinline_kw    = @{ "noinline" ~ !(ASCII_ALPHANUMERIC | "_") }
+crossinline_kw = @{ "crossinline" ~ !(ASCII_ALPHANUMERIC | "_") }
+reified_kw     = @{ "reified" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 keyword = @{
-    fun_kw | val_kw | var_kw | class_kw | enum_kw | open_kw | data_kw | abstract_kw | override_kw
+    fun_kw | val_kw | var_kw | class_kw | enum_kw | open_kw | abstract_kw | override_kw
   | companion_kw | interface_kw | object_kw | package_kw | import_kw | when_kw | if_kw
   | else_kw | for_kw | while_kw | do_kw | return_kw | break_kw | continue_kw | is_kw
   | not_is_kw | as_kw | safe_as_kw | in_kw | not_in_kw | null_kw | true_kw | false_kw
   | this_kw | super_kw | private_kw | protected_kw | public_kw | internal_kw | vararg_kw
-  | try_kw | catch_kw | finally_kw | throw_kw | const_kw | sealed_kw | get_kw | set_kw | to_kw
-  | by_kw | constructor_kw | typealias_kw | infix_kw | inline_kw | inner_kw
+  | try_kw | catch_kw | finally_kw | throw_kw | const_kw | sealed_kw
 }
 
 identifier = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
@@ -93,13 +101,18 @@ label_decl = { identifier ~ "@" }
 annotation = { "@" ~ type_ref ~ ("(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ eat_terminators }
 
 // Types (including function types)
-type_ref = {
+type_ref = !{
     "(" ~ eat_terminators ~ (type_ref ~ (eat_terminators ~ "," ~ eat_terminators ~ type_ref)*)? ~ eat_terminators ~ ")" ~ "->" ~ type_ref
-  | dotted_name ~ ("<" ~ type_ref ~ ("," ~ type_ref)* ~ ">")? ~ "?"?
+  | dotted_name ~ type_args? ~ "?"?
 }
 
 // Modifiers
-modifier = { open_kw | data_kw | abstract_kw | override_kw | private_kw | protected_kw | public_kw | internal_kw | const_kw | sealed_kw | infix_kw | inline_kw | inner_kw }
+modifier = {
+    open_kw | data_kw | abstract_kw | override_kw | private_kw | protected_kw | public_kw
+  | internal_kw | const_kw | sealed_kw | infix_kw | inline_kw | inner_kw | operator_kw
+  | suspend_kw | tailrec_kw | lateinit_kw | final_kw | external_kw | noinline_kw
+  | crossinline_kw | reified_kw
+}
 
 // Receiver prefix for extension functions
 receiver_prefix = { identifier ~ "." }
@@ -114,16 +127,18 @@ parameter_list = { "(" ~ eat_terminators ~ (parameter ~ (eat_terminators ~ "," ~
 parameter = { annotation* ~ vararg_kw? ~ identifier ~ ":" ~ type_ref ~ ("=" ~ expr)? }
 
 // Variables, Properties & Destructuring
-var_decl = {
-    annotation* ~ modifier* ~ (val_kw | var_kw) ~ identifier ~ (":" ~ type_ref)? ~ ("=" ~ expr | by_kw ~ expr)? ~ eat_terminators ~ property_accessor*
+var_decl = !{
+    annotation* ~ modifier* ~ (val_kw | var_kw) ~ (destructuring_target | identifier) ~ (":" ~ type_ref)? ~ ("=" ~ expr | by_kw ~ expr)? ~ eat_terminators ~ property_accessor*
 }
+
+destructuring_target = !{ "(" ~ eat_terminators ~ identifier ~ (eat_terminators ~ "," ~ eat_terminators ~ identifier)* ~ eat_terminators ~ ")" }
 
 property_accessor = {
     (get_kw | set_kw) ~ ("(" ~ identifier? ~ ")")? ~ (function_body_expr | block)
 }
 
-destructuring_decl = {
-    modifier* ~ (val_kw | var_kw) ~ "(" ~ eat_terminators ~ identifier ~ (eat_terminators ~ "," ~ eat_terminators ~ identifier)* ~ eat_terminators ~ ")" ~ ("=" ~ expr)?
+destructuring_decl = !{
+    annotation* ~ modifier* ~ (val_kw | var_kw) ~ destructuring_target ~ (":" ~ type_ref)? ~ ("=" ~ expr)?
 }
 
 // Enums
@@ -237,15 +252,28 @@ unary = { prefix_op* ~ postfix }
 prefix_op = { "!" | "-" | "+" | "++" | "--" }
 
 postfix = { primary ~ postfix_suffix* }
-postfix_suffix = { type_args | call_suffix | index_suffix | safe_call_suffix | member_suffix | null_assert_suffix }
+postfix_suffix = { type_args | call_suffix | index_suffix | safe_call_suffix | member_suffix | null_assert_suffix | inc_suffix }
 
-type_args = { "<" ~ eat_terminators ~ type_ref ~ (eat_terminators ~ "," ~ eat_terminators ~ type_ref)* ~ eat_terminators ~ ">" }
+type_args = !{ "<" ~ eat_terminators ~ type_ref ~ (eat_terminators ~ "," ~ eat_terminators ~ type_ref)* ~ eat_terminators ~ ">" }
 
-call_suffix = { "(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")" ~ eat_terminators ~ lambda_literal? }
+// A trailing lambda may replace the argument list entirely — `xs.filter { … }`,
+// `forEach { … }`, `run { … }` are calls, not a member access followed by a
+// block. Without the second alternative `xs.filter { it > 2 }` parsed as
+// `xs.filter` and then a stray lambda, so `filter` was never called and the
+// result was empty.
+//
+// The lambda must start on the SAME LINE as the callee: `NEWLINE` is a real
+// token here rather than skipped whitespace, so a `{` on the next line cannot
+// be captured as an argument to the expression above it.
+call_suffix = {
+    "(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")"? ~ eat_terminators ~ lambda_literal?
+  | lambda_literal
+}
 index_suffix = { "[" ~ eat_terminators ~ arg_list ~ eat_terminators ~ "]" }
 safe_call_suffix = { "?." ~ identifier }
 member_suffix = { "." ~ identifier }
 null_assert_suffix = { "!!" }
+inc_suffix = { "++" | "--" }
 
 arg_list = { eat_terminators ~ arg ~ (eat_terminators ~ "," ~ eat_terminators ~ arg)* ~ eat_terminators ~ ","? ~ eat_terminators }
 arg = { (identifier ~ eat_terminators ~ "=") ~ eat_terminators ~ spread_op? ~ expr | spread_op? ~ expr }
@@ -292,7 +320,8 @@ finally_clause = { finally_kw ~ block }
 // Lambdas
 lambda_literal = { "{" ~ lambda_params? ~ eat_terminators ~ (statement ~ eat_terminators)* ~ "}" }
 lambda_params = { lambda_param ~ ("," ~ lambda_param)* ~ "->" }
-lambda_param = { identifier ~ (":" ~ type_ref)? }
+lambda_param = { (lambda_destructure | identifier) ~ (":" ~ type_ref)? }
+lambda_destructure = { "(" ~ identifier ~ ("," ~ identifier)* ~ ")" }
 
 // Literals
 literal = {
@@ -300,16 +329,46 @@ literal = {
   | true_kw
   | false_kw
   | string_literal
+  | char_literal
   | float_literal
   | int_literal
 }
 
-int_literal = @{ ASCII_DIGIT+ ~ ("L" | "l")? }
-float_literal = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ ("f" | "F")? }
+// Kotlin numeric literals: `_` grouping anywhere between digits, `0x`/`0b`
+// prefixes, `u`/`U` unsigned and `L` long suffixes, `e` exponents and the
+// `f`/`F` Float suffix. `float_literal` is tried first (see `literal`), so
+// every alternative here must FAIL on an integer rather than half-match it:
+// the fraction is mandatory in the first alternative so `1..3` stays a range
+// and `12.toString()` stays a member call.
+dec_digits = @{ ASCII_DIGIT ~ (ASCII_DIGIT | "_")* }
+exponent   = @{ ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+ }
 
-string_literal = ${ "\"" ~ string_content* ~ "\"" }
-string_content = ${ str_escaped | str_interpolated_expr | str_interpolated_var | str_text }
-str_escaped = @{ "\\" ~ ANY }
+int_literal = @{
+    ("0x" | "0X") ~ ASCII_HEX_DIGIT ~ (ASCII_HEX_DIGIT | "_")* ~ int_suffix?
+  | ("0b" | "0B") ~ ASCII_BIN_DIGIT ~ (ASCII_BIN_DIGIT | "_")* ~ int_suffix?
+  | dec_digits ~ int_suffix?
+}
+int_suffix = @{ ("u" | "U")? ~ ("L" | "l") | ("u" | "U") }
+
+float_literal = @{
+    dec_digits ~ "." ~ dec_digits ~ exponent? ~ ("f" | "F")?
+  | dec_digits ~ exponent ~ ("f" | "F")?
+  | dec_digits ~ ("f" | "F")
+}
+
+string_literal = ${ raw_string_literal | plain_string_literal }
+raw_string_literal = ${ "\"\"\"" ~ raw_string_content* ~ "\"\"\"" }
+raw_string_content = ${ str_interpolated_expr | str_interpolated_var | raw_str_text }
+raw_str_text = @{ !"\"\"\"" ~ ANY }
+
+plain_string_literal = ${ "\"" ~ string_content* ~ "\"" }
+string_content = ${ str_interpolated_expr | str_interpolated_var | str_escaped | str_text }
+str_escaped = @{ "\\u" ~ ASCII_HEX_DIGIT{4} | "\\" ~ ANY }
 str_interpolated_var = ${ "$" ~ identifier }
-str_interpolated_expr = ${ "${" ~ WHITESPACE* ~ expr ~ WHITESPACE* ~ "}" }
+str_interpolated_expr = ${ "${" ~ (!"}" ~ ANY)* ~ "}" }
 str_text = @{ (!"\"" ~ !"\\" ~ !"$") ~ ANY }
+
+char_literal = ${ "'" ~ (char_escaped | char_text) ~ "'" }
+char_escaped = @{ "\\u" ~ ASCII_HEX_DIGIT{4} | "\\" ~ ANY }
+char_text = @{ (!"'" ~ !"\\") ~ ANY }
+

@@ -1,3 +1,4 @@
+use crate::emitter::tostring::SET_MARKER;
 use pest::iterators::Pair;
 use pest::Parser;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -204,7 +205,7 @@ fn walk_statement(pair: Pair<Rule>) -> Option<Statement> {
         Rule::expr_stmt => {
             let expr_pair = inner_pair.into_inner().next()?;
             let expr = walk_expr(expr_pair);
-            Some(Statement::new(StmtKind::Expr(expr)))
+            Some(repeat_to_for_in(&expr).unwrap_or_else(|| Statement::new(StmtKind::Expr(expr))))
         }
         Rule::expr => {
             let expr = walk_expr(inner_pair);
@@ -220,6 +221,50 @@ fn walk_statement(pair: Pair<Rule>) -> Option<Statement> {
         })),
         (other, _) => other,
     }
+}
+
+/// `repeat(n) { … }` -> the `for` loop it stands for.
+///
+/// Kotlin spells this control structure as a function, but it IS a loop: the
+/// lambda runs `n` times and receives the 0-based index. Desugaring it here
+/// rather than adapting it to a call is what puts `break` and `continue` inside
+/// it on the shared loop machinery, and what makes a label on it mean what a
+/// label on any other Kotlin loop means.
+fn repeat_to_for_in(expr: &Expression) -> Option<Statement> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(n) if n == "repeat") || args.len() != 2 {
+        return None;
+    }
+    let ExprKind::Lambda { params, body, .. } = &args[1].value.kind else {
+        return None;
+    };
+    let var = params
+        .first()
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| "it".to_string());
+    let body = match body {
+        LambdaBody::Block(stmts) => stmts.clone(),
+        LambdaBody::Expr(e) => vec![Statement::new(StmtKind::Expr((**e).clone()))],
+    };
+    Some(Statement::new(StmtKind::ForIn {
+        var,
+        key: None,
+        iter: Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__kt_step_asc")),
+            args: vec![
+                Argument::positional(Expression::int(0)),
+                Argument::positional(args[0].value.clone()),
+                Argument::positional(Expression::int(1)),
+            ],
+            optional: false,
+        }),
+        body,
+        of: true,
+        else_body: None,
+        is_async: false,
+    }))
 }
 
 fn walk_interface_decl(pair: Pair<Rule>) -> Option<Statement> {
@@ -380,6 +425,13 @@ fn walk_destructuring_decl(pair: Pair<Rule>) -> Option<Statement> {
         match inner.as_rule() {
             Rule::val_kw => is_readonly = true,
             Rule::var_kw => is_readonly = false,
+            Rule::destructuring_target => {
+                for target_inner in inner.into_inner() {
+                    if target_inner.as_rule() == Rule::identifier {
+                        names.push(target_inner.as_str().to_string());
+                    }
+                }
+            }
             Rule::identifier => names.push(inner.as_str().to_string()),
             Rule::expr => init = Some(walk_expr(inner)),
             _ => {}
@@ -456,7 +508,7 @@ fn walk_try_stmt(pair: Pair<Rule>) -> Option<Statement> {
                 for csub in inner.into_inner() {
                     match csub.as_rule() {
                         Rule::identifier => param_name = csub.as_str().to_string(),
-                        Rule::type_ref => type_hint = Some(csub.as_str().to_string()),
+                        Rule::type_ref => type_hint = Some(type_hint_text(csub.as_str())),
                         Rule::block => catch_block_stmts = walk_block_statements(csub),
                         _ => {}
                     }
@@ -500,6 +552,7 @@ fn walk_function_decl(pair: Pair<Rule>) -> Option<Statement> {
     let mut body = Vec::new();
 
     let mut is_abstract = false;
+    let mut is_operator = false;
     let mut visibility = Visibility::Public;
 
     for inner in pair.into_inner() {
@@ -512,6 +565,8 @@ fn walk_function_decl(pair: Pair<Rule>) -> Option<Statement> {
                     visibility = Visibility::Private;
                 } else if m_str == "protected" {
                     visibility = Visibility::Protected;
+                } else if m_str == "operator" {
+                    is_operator = true;
                 }
             }
             Rule::receiver_prefix => {
@@ -521,7 +576,7 @@ fn walk_function_decl(pair: Pair<Rule>) -> Option<Statement> {
             }
             Rule::type_ref => {
                 if return_type.is_none() && !name.is_empty() {
-                    return_type = Some(inner.as_str().to_string());
+                    return_type = Some(type_hint_text(inner.as_str()));
                 }
             }
             Rule::identifier => {
@@ -541,6 +596,18 @@ fn walk_function_decl(pair: Pair<Rule>) -> Option<Statement> {
             }
             _ => {}
         }
+    }
+
+    // `operator fun plus` is a DIFFERENT declaration from a plain `fun plus`:
+    // only the former defines `+`. Kotlin's operator names are ordinary
+    // identifiers, so the modifier is the only thing that distinguishes them
+    // and it has to survive into `protocol.rs`, which decides slots. Encoded
+    // in the name — the same device Dart uses for `operator+` — because the
+    // slot mapping is a language-local decision and `Modifiers` is shared.
+    // Stripped back off by `protocol::canonical_method`, so the member is
+    // still stored under the name Kotlin code calls (`a.plus(b)` works).
+    if is_operator && receiver_type.is_none() {
+        name = format!("operator {}", name);
     }
 
     if receiver_type.is_some() {
@@ -583,17 +650,20 @@ fn walk_parameter_list(pair: Pair<Rule>) -> Vec<Param> {
             let mut name = String::new();
             let mut type_hint = None;
             let mut default = None;
+            let mut is_nullable = false;
             for p in inner.into_inner() {
                 match p.as_rule() {
                     Rule::vararg_kw => is_rest = true,
                     Rule::identifier => name = p.as_str().to_string(),
-                    Rule::type_ref => type_hint = Some(p.as_str().to_string()),
+                    Rule::type_ref => {
+                        is_nullable = type_ref_is_nullable(p.as_str());
+                        type_hint = Some(type_hint_text(p.as_str()));
+                    }
                     Rule::expr => default = Some(walk_expr(p)),
                     _ => {}
                 }
             }
             let is_optional = default.is_some();
-            let is_nullable = type_hint.as_ref().map_or(false, |t| t.ends_with('?'));
             params.push(Param {
                 name,
                 type_hint,
@@ -610,6 +680,9 @@ fn walk_parameter_list(pair: Pair<Rule>) -> Vec<Param> {
 }
 
 fn walk_var_decl(pair: Pair<Rule>) -> Option<Statement> {
+    if pair.clone().into_inner().any(|p| p.as_rule() == Rule::destructuring_target) {
+        return walk_destructuring_decl(pair);
+    }
     let mut is_readonly = false;
     let mut is_const = false;
     let mut name = String::new();
@@ -626,7 +699,7 @@ fn walk_var_decl(pair: Pair<Rule>) -> Option<Statement> {
             Rule::val_kw => is_readonly = true,
             Rule::var_kw => is_readonly = false,
             Rule::identifier => name = inner.as_str().to_string(),
-            Rule::type_ref => type_hint = Some(inner.as_str().to_string()),
+            Rule::type_ref => type_hint = Some(type_hint_text(inner.as_str())),
             Rule::expr => init = Some(walk_expr(inner)),
             _ => {}
         }
@@ -668,6 +741,9 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
     let mut init_stmts = Vec::new();
 
     let inner_pairs: Vec<_> = pair.into_inner().collect();
+
+    let mut is_data = false;
+    let mut primary_prop_names = Vec::new();
 
     for inner in &inner_pairs {
         if inner.as_rule() == Rule::inheritance_list {
@@ -725,6 +801,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                 match inner.as_str() {
                     "abstract" => is_abstract = true,
                     "sealed" => is_sealed = true,
+                    "data" => is_data = true,
                     _ => {}
                 }
             }
@@ -750,11 +827,12 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                     is_readonly = false;
                                 }
                                 Rule::identifier => pname = p.as_str().to_string(),
-                                Rule::type_ref => type_hint = Some(p.as_str().to_string()),
+                                Rule::type_ref => type_hint = Some(type_hint_text(p.as_str())),
                                 _ => {}
                             }
                         }
                         if !pname.is_empty() {
+                            primary_prop_names.push(pname.clone());
                             ctor_params.push(Param {
                                 name: pname.clone(),
                                 type_hint: type_hint.clone(),
@@ -783,6 +861,17 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                         target: Box::new(Expression::new(ExprKind::Member {
                                             object: Box::new(Expression::new(ExprKind::This)),
                                             field: pname.clone(),
+                                            null_safe: false,
+                                        })),
+                                        value: Box::new(Expression::ident(&pname)),
+                                    },
+                                ))));
+                                let prop_idx = (primary_prop_names.len() - 1) as i64;
+                                ctor_body.push(Statement::new(StmtKind::Expr(Expression::new(
+                                    ExprKind::Assign {
+                                        target: Box::new(Expression::new(ExprKind::Index {
+                                            object: Box::new(Expression::new(ExprKind::This)),
+                                            index: Box::new(Expression::int(prop_idx)),
                                             null_safe: false,
                                         })),
                                         value: Box::new(Expression::ident(&pname)),
@@ -909,6 +998,106 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                 }
             }
             _ => {}
+        }
+    }
+
+    if is_data {
+        for (idx, pname) in primary_prop_names.iter().enumerate() {
+            let comp_name = format!("component{}", idx + 1);
+            members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+                name: comp_name,
+                params: vec![],
+                body: vec![Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::This)),
+                    field: pname.clone(),
+                    null_safe: false,
+                }))))],
+                return_type: None,
+                modifiers: Modifiers { visibility: Visibility::Public, ..Default::default() },
+                is_async: false,
+                is_generator: false,
+                handles: vec![],
+                is_sub: false,
+            }))));
+        }
+
+        if !primary_prop_names.is_empty() {
+            let mut str_expr = Expression::string(&format!("{}({}=", name, primary_prop_names[0]));
+            str_expr = Expression::new(ExprKind::Binary {
+                op: BinOp::Concat,
+                left: Box::new(str_expr),
+                right: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::This)),
+                    field: primary_prop_names[0].clone(),
+                    null_safe: false,
+                })),
+            });
+            for pname in primary_prop_names.iter().skip(1) {
+                str_expr = Expression::new(ExprKind::Binary {
+                    op: BinOp::Concat,
+                    left: Box::new(str_expr),
+                    right: Box::new(Expression::string(&format!(", {}=", pname))),
+                });
+                str_expr = Expression::new(ExprKind::Binary {
+                    op: BinOp::Concat,
+                    left: Box::new(str_expr),
+                    right: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::new(ExprKind::This)),
+                        field: pname.clone(),
+                        null_safe: false,
+                    })),
+                });
+            }
+            str_expr = Expression::new(ExprKind::Binary {
+                op: BinOp::Concat,
+                left: Box::new(str_expr),
+                right: Box::new(Expression::string(")")),
+            });
+            members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+                name: "toString".to_string(),
+                params: vec![],
+                body: vec![Statement::new(StmtKind::Return(Some(str_expr)))],
+                return_type: None,
+                modifiers: Modifiers { visibility: Visibility::Public, ..Default::default() },
+                is_async: false,
+                is_generator: false,
+                handles: vec![],
+                is_sub: false,
+            }))));
+
+            let copy_params: Vec<_> = primary_prop_names.iter().map(|pname| Param {
+                name: pname.clone(),
+                type_hint: None,
+                default: Some(Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::This)),
+                    field: pname.clone(),
+                    null_safe: false,
+                })),
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: true,
+                is_nullable: false,
+            }).collect();
+            let copy_args: Vec<_> = primary_prop_names.iter().map(|pname| {
+                Argument::positional(Expression::ident(pname))
+            }).collect();
+            let new_inst = Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(&name)),
+                args: copy_args,
+                optional: false,
+            });
+            members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
+                name: "copy".to_string(),
+                params: copy_params,
+                body: vec![Statement::new(StmtKind::Return(Some(new_inst)))],
+                return_type: None,
+                modifiers: Modifiers { visibility: Visibility::Public, ..Default::default() },
+                is_async: false,
+                is_generator: false,
+                handles: vec![],
+                is_sub: false,
+            }))));
         }
     }
 
@@ -1150,7 +1339,7 @@ fn walk_for_stmt(pair: Pair<Rule>) -> Option<Statement> {
     if !destruct_names.is_empty() {
         let loop_tmp = gen_tmp_name();
         let mut prepended_stmts = Vec::new();
-        for (idx, name) in destruct_names.into_iter().enumerate() {
+        for (idx, name) in destruct_names.clone().into_iter().enumerate() {
             let read_expr = Expression::new(ExprKind::Index {
                 object: Box::new(Expression::ident(&loop_tmp)),
                 index: Box::new(Expression::int(idx as i64)),
@@ -1172,10 +1361,28 @@ fn walk_for_stmt(pair: Pair<Rule>) -> Option<Statement> {
         var_id = loop_tmp;
     }
 
+    let final_iter = if !destruct_names.is_empty() {
+        Expression::new(ExprKind::Ternary {
+            cond: Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__coll_is_array")),
+                args: vec![Argument::positional(iter_expr.clone())],
+                optional: false,
+            })),
+            then: Box::new(iter_expr.clone()),
+            else_: Box::new(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("__dict_items")),
+                args: vec![Argument::positional(iter_expr)],
+                optional: false,
+            })),
+        })
+    } else {
+        iter_expr
+    };
+
     Some(Statement::new(StmtKind::ForIn {
         var: var_id,
         key: None,
-        iter: iter_expr,
+        iter: final_iter,
         body,
         of: true,
         else_body: None,
@@ -1234,6 +1441,7 @@ fn walk_do_while_stmt(pair: Pair<Rule>) -> Option<Statement> {
 fn walk_lambda(pair: Pair<Rule>) -> Expression {
     let mut params = Vec::new();
     let mut body = Vec::new();
+    let mut prefix_stmts = Vec::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -1241,16 +1449,55 @@ fn walk_lambda(pair: Pair<Rule>) -> Expression {
                 for lp in inner.into_inner() {
                     if lp.as_rule() == Rule::lambda_param {
                         let mut name = String::new();
+                        let mut destruct_names = Vec::new();
                         let mut type_hint = None;
+                        let mut lambda_param_nullable = false;
                         for lsub in lp.into_inner() {
                             match lsub.as_rule() {
                                 Rule::identifier => name = lsub.as_str().to_string(),
-                                Rule::type_ref => type_hint = Some(lsub.as_str().to_string()),
+                                Rule::lambda_destructure => {
+                                    for sub in lsub.into_inner() {
+                                        if sub.as_rule() == Rule::identifier {
+                                            destruct_names.push(sub.as_str().to_string());
+                                        }
+                                    }
+                                }
+                                Rule::type_ref => {
+                                    lambda_param_nullable = type_ref_is_nullable(lsub.as_str());
+                                    type_hint = Some(type_hint_text(lsub.as_str()));
+                                }
                                 _ => {}
                             }
                         }
-                        if !name.is_empty() {
-                            let is_nullable = type_hint.as_ref().map_or(false, |t| t.ends_with('?'));
+                        if !destruct_names.is_empty() {
+                            let tmp_param = gen_tmp_name();
+                            params.push(Param {
+                                name: tmp_param.clone(),
+                                type_hint: None,
+                                default: None,
+                                pass_by: PassBy::Value,
+                                is_rest: false,
+                                is_kwargs: false,
+                                is_optional: false,
+                                is_nullable: false,
+                            });
+                            for (idx, dname) in destruct_names.into_iter().enumerate() {
+                                prefix_stmts.push(Statement::new(StmtKind::VarDecl {
+                                    declarations: vec![VarDeclarator {
+                                        pattern: BindingPattern::Ident(dname),
+                                        type_hint: None,
+                                        init: Some(Expression::new(ExprKind::Index {
+                                            object: Box::new(Expression::ident(&tmp_param)),
+                                            index: Box::new(Expression::int(idx as i64)),
+                                            null_safe: false,
+                                        })),
+                                        array_bounds: None,
+                                        with_events: false,
+                                    }],
+                                    kind: VarDeclKind::Const,
+                                }));
+                            }
+                        } else if !name.is_empty() {
                             params.push(Param {
                                 name,
                                 type_hint,
@@ -1259,11 +1506,12 @@ fn walk_lambda(pair: Pair<Rule>) -> Expression {
                                 is_rest: false,
                                 is_kwargs: false,
                                 is_optional: false,
-                                is_nullable,
+                                is_nullable: lambda_param_nullable,
                             });
                         }
                     }
                 }
+                // prefix_stmts stored in outer scope
             }
             Rule::statement => {
                 if let Some(s) = walk_statement(inner) {
@@ -1272,6 +1520,11 @@ fn walk_lambda(pair: Pair<Rule>) -> Expression {
             }
             _ => {}
         }
+    }
+
+    if !prefix_stmts.is_empty() {
+        prefix_stmts.extend(body);
+        body = prefix_stmts;
     }
 
     if params.is_empty() {
@@ -1324,7 +1577,15 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                     })
                 } else {
                     let bin_op = match op_str {
-                        "+=" => BinOp::Add,
+                        "+=" => {
+                            if matches!(rhs.kind, ExprKind::Binary { op: BinOp::Concat, .. } | ExprKind::Lit(Literal::Str(_)))
+                                || matches!(lhs.kind, ExprKind::Lit(Literal::Str(_)))
+                            {
+                                BinOp::Concat
+                            } else {
+                                BinOp::Add
+                            }
+                        }
                         "-=" => BinOp::Sub,
                         "*=" => BinOp::Mul,
                         "/=" => BinOp::Div,
@@ -1474,17 +1735,29 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
             let mut current = walk_expr(inner.next().unwrap());
             while let Some(op_pair) = inner.next() {
                 let next_expr = walk_expr(inner.next().unwrap());
-                let op = match op_pair.as_str() {
-                    "*" => BinOp::Mul,
-                    "/" => BinOp::Div,
-                    "%" => BinOp::Mod,
-                    _ => BinOp::Mul,
-                };
-                current = Expression::new(ExprKind::Binary {
-                    op,
-                    left: Box::new(current),
-                    right: Box::new(next_expr),
-                });
+                let op_str = op_pair.as_str();
+                if op_str == "/" {
+                    current = Expression::new(ExprKind::Binary {
+                        op: BinOp::BitOr,
+                        left: Box::new(Expression::new(ExprKind::Binary {
+                            op: BinOp::Div,
+                            left: Box::new(current),
+                            right: Box::new(next_expr),
+                        })),
+                        right: Box::new(Expression::int(0)),
+                    });
+                } else {
+                    let op = match op_str {
+                        "*" => BinOp::Mul,
+                        "%" => BinOp::Mod,
+                        _ => BinOp::Mul,
+                    };
+                    current = Expression::new(ExprKind::Binary {
+                        op,
+                        left: Box::new(current),
+                        right: Box::new(next_expr),
+                    });
+                }
             }
             current
         }
@@ -1507,11 +1780,8 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                 let next_expr = walk_expr(inner.next().unwrap());
                 let op_str = op_pair.as_str();
                 if op_str == "to" {
-                    // Kotlin `a to b` → Pair(a, b) as [a, b]
-                    current = Expression::new(ExprKind::Array(vec![
-                        ArrayElement { key: None, value: current, spread: false, by_ref: false },
-                        ArrayElement { key: None, value: next_expr, spread: false, by_ref: false },
-                    ]));
+                    // Kotlin `a to b` → Pair(a, b)
+                    current = create_pair_expr(current, next_expr);
                 } else if op_str == "until" {
                     // a until b → exclusive ascending [a, a+1, ..., b-1]
                     current = Expression::new(ExprKind::Range {
@@ -1520,14 +1790,20 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         inclusive: false,
                     });
                 } else if op_str == "downTo" {
-                    // a downTo b → descending [a, a-1, ..., b]
-                    // Map to __kt_step_desc(a, b, -1) → profile common:collections.range_step
-                    // emit_range(3, false) uses sign of step to pick < vs > comparison.
+                    // a downTo b → descending [a, a-1, ..., b], INCLUSIVE of b.
+                    // Maps to `__kt_step_desc(a, b - 1, -1)` → `collections.range_step`,
+                    // whose stop is EXCLUSIVE (it iterates while `i > stop` for a
+                    // negative step). Passing `b` straight through dropped the last
+                    // element: `5 downTo 2` yielded 5,4,3.
                     current = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__kt_step_desc")),
                         args: vec![
                             Argument::positional(current),
-                            Argument::positional(next_expr),
+                            Argument::positional(Expression::new(ExprKind::Binary {
+                                op: BinOp::Sub,
+                                left: Box::new(next_expr),
+                                right: Box::new(Expression::int(1)),
+                            })),
                             Argument::positional(Expression::new(ExprKind::Unary {
                                 op: UnaryOp::Neg,
                                 expr: Box::new(Expression::int(1)),
@@ -1585,6 +1861,18 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                             });
                         }
                     }
+                } else if let Some(op) = infix_bitwise_op(op_str) {
+                    // Kotlin spells the bitwise operators as infix functions
+                    // (`6 and 3`, `1 shl 2`). They are the SAME operators every
+                    // other language writes with punctuation, so they lower to
+                    // the shared `BinOp` and reach `primitives/operators.rs`
+                    // rather than becoming an `Int.and(…)` member call that no
+                    // primitive implements.
+                    current = Expression::new(ExprKind::Binary {
+                        op,
+                        left: Box::new(current),
+                        right: Box::new(next_expr),
+                    });
                 } else {
                     current = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::new(ExprKind::Member {
@@ -1770,14 +2058,45 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         };
 
                         if let Some(ref fn_name) = func_name {
-                            if matches!(fn_name.as_str(), "Pair" | "Triple" | "listOf" | "mutableListOf" | "arrayOf" | "emptyList" | "intArrayOf" | "doubleArrayOf" | "booleanArrayOf" | "charArrayOf" | "longArrayOf" | "buildList" | "sequenceOf") {
-                                let elems = args.into_iter().map(|a| ArrayElement { key: None, value: a.value, spread: false, by_ref: false }).collect();
-                                current = Expression::new(ExprKind::Array(elems));
+                            if fn_name == "Pair" && args.len() == 2 {
+                                current = create_pair_expr(args[0].value.clone(), args[1].value.clone());
+                                continue;
+                            }
+                            if fn_name == "Triple" && args.len() == 3 {
+                                current = create_triple_expr(args[0].value.clone(), args[1].value.clone(), args[2].value.clone());
                                 continue;
                             }
                             if matches!(fn_name.as_str(), "mapOf" | "mutableMapOf" | "linkedMapOf" | "hashMapOf" | "buildMap" | "emptyMap") {
                                 let mut props = Vec::new();
                                 for arg in args {
+                                    if let ExprKind::Object(ref pair_props) = arg.value.kind {
+                                        let mut k_expr = None;
+                                        let mut v_expr = None;
+                                        for p in pair_props {
+                                            if let ObjectProperty::KeyValue { key, value } = p {
+                                                if let ExprKind::Lit(Literal::Str(s)) = &key.kind {
+                                                    if s == "0" || s == "first" {
+                                                        if k_expr.is_none() { k_expr = Some(value.clone()); }
+                                                    } else if s == "1" || s == "second" {
+                                                        if v_expr.is_none() { v_expr = Some(value.clone()); }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if let (Some(k), Some(v)) = (k_expr, v_expr) {
+                                            props.push(ObjectProperty::KeyValue { key: k, value: v });
+                                            continue;
+                                        }
+                                    }
+                                    if let ExprKind::Tuple(ref pair_elems) = arg.value.kind {
+                                        if pair_elems.len() == 2 {
+                                            props.push(ObjectProperty::KeyValue {
+                                                key: pair_elems[0].clone(),
+                                                value: pair_elems[1].clone(),
+                                            });
+                                            continue;
+                                        }
+                                    }
                                     if let ExprKind::Array(ref pair_elems) = arg.value.kind {
                                         if pair_elems.len() == 2 {
                                             props.push(ObjectProperty::KeyValue {
@@ -1800,15 +2119,12 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                         }),
                                     });
                                 }
-                                current = Expression::new(ExprKind::Object(props));
+                                current = create_map_expr(props);
                                 continue;
                             }
                             if matches!(fn_name.as_str(), "setOf" | "mutableSetOf" | "linkedSetOf" | "hashSetOf" | "buildSet" | "emptySet") {
-                                let props = args.into_iter().map(|a| ObjectProperty::KeyValue {
-                                    key: a.value,
-                                    value: Expression::bool(true),
-                                }).collect();
-                                current = Expression::new(ExprKind::Object(props));
+                                let elems = args.into_iter().map(|a| a.value).collect();
+                                current = create_kotlin_set_expr(elems);
                                 continue;
                             }
                             if matches!(fn_name.as_str(), "listOf" | "mutableListOf" | "arrayOf" | "emptyList" | "intArrayOf" | "doubleArrayOf" | "booleanArrayOf" | "charArrayOf" | "longArrayOf" | "sequenceOf") {
@@ -2027,6 +2343,66 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
+                                "fold" if args.len() == 2 => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Member {
+                                            object: object.clone(),
+                                            field: "__array_reduce".to_string(),
+                                            null_safe: false,
+                                        })),
+                                        args: vec![
+                                            Argument::positional(args[1].value.clone()),
+                                            Argument::positional(args[0].value.clone()),
+                                        ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "take" if args.len() == 1 => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_slice")),
+                                        args: vec![
+                                            Argument::positional(*object.clone()),
+                                            Argument::positional(Expression::int(0)),
+                                            Argument::positional(args[0].value.clone()),
+                                        ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "drop" if args.len() == 1 => {
+                                    let len_expr = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_length")),
+                                        args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    });
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_slice")),
+                                        args: vec![
+                                            Argument::positional(*object.clone()),
+                                            Argument::positional(args[0].value.clone()),
+                                            Argument::positional(len_expr),
+                                        ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "first" | "firstOrNull" if args.is_empty() => {
+                                    current = Expression::new(ExprKind::Index {
+                                        object: object.clone(),
+                                        index: Box::new(Expression::int(0)),
+                                        null_safe: false,
+                                    });
+                                    continue;
+                                }
+                                "max" | "maxOrNull" if args.is_empty() => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_max")),
+                                        args: vec![Argument::positional(*object.clone())],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
                                 "min" | "minOrNull" if args.is_empty() => {
                                     current = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::ident("__coll_min")),
@@ -2035,10 +2411,39 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
-                                "max" | "maxOrNull" if args.is_empty() => {
+                                "filter" | "filterNot" | "map" | "forEach" if args.len() == 1 => {
+                                    let iter_target = Expression::new(ExprKind::Ternary {
+                                        cond: Box::new(Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__coll_is_array")),
+                                            args: vec![Argument::positional(*object.clone())],
+                                            optional: false,
+                                        })),
+                                        then: Box::new(*object.clone()),
+                                        else_: Box::new(Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__dict_items")),
+                                            args: vec![Argument::positional(*object.clone())],
+                                            optional: false,
+                                        })),
+                                    });
+                                    // Keep the SOURCE spelling. `[array_methods]`
+                                    // is keyed by it (`filter = "__array_filter"`),
+                                    // and `lookup_array_method` looks up the KEY —
+                                    // rewriting the field to `__array_filter` here
+                                    // meant the lookup missed, the higher-order
+                                    // dispatch never ran, and the call fell through
+                                    // to a member named `__array_filter` that does
+                                    // not exist ("undefined is not callable").
+                                    let emit_method = match field.as_str() {
+                                        "filterNot" => "filter",
+                                        other => other,
+                                    };
                                     current = Expression::new(ExprKind::Call {
-                                        callee: Box::new(Expression::ident("__coll_max")),
-                                        args: vec![Argument::positional(*object.clone())],
+                                        callee: Box::new(Expression::new(ExprKind::Member {
+                                            object: Box::new(iter_target),
+                                            field: emit_method.to_string(),
+                                            null_safe: false,
+                                        })),
+                                        args,
                                         optional: false,
                                     });
                                     continue;
@@ -2061,11 +2466,61 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                 args,
                             });
                         } else {
-                            current = Expression::new(ExprKind::Call {
-                                callee: Box::new(current),
-                                args,
-                                optional: false,
-                            });
+                            if let ExprKind::Member { ref object, ref field, .. } = current.kind {
+                                if matches!(field.as_str(), "filter" | "filterNot" | "map" | "forEach") && args.len() == 1 {
+                                    let iter_target = Expression::new(ExprKind::Ternary {
+                                        cond: Box::new(Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__coll_is_array")),
+                                            args: vec![Argument::positional(*object.clone())],
+                                            optional: false,
+                                        })),
+                                        then: Box::new(*object.clone()),
+                                        else_: Box::new(Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__dict_items")),
+                                            args: vec![Argument::positional(*object.clone())],
+                                            optional: false,
+                                        })),
+                                    });
+                                    // Keep the SOURCE spelling. `[array_methods]`
+                                    // is keyed by it (`filter = "__array_filter"`),
+                                    // and `lookup_array_method` looks up the KEY —
+                                    // rewriting the field to `__array_filter` here
+                                    // meant the lookup missed, the higher-order
+                                    // dispatch never ran, and the call fell through
+                                    // to a member named `__array_filter` that does
+                                    // not exist ("undefined is not callable").
+                                    let emit_method = match field.as_str() {
+                                        "filterNot" => "filter",
+                                        other => other,
+                                    };
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Member {
+                                            object: Box::new(iter_target),
+                                            field: emit_method.to_string(),
+                                            null_safe: false,
+                                        })),
+                                        args,
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                            }
+                            // `println`/`print` used to have their ARGUMENT
+                            // EXPRESSION rewritten here into string
+                            // concatenation, which rendered `println(listOf(…))`
+                            // and left `val xs = listOf(…); println(xs)` — the
+                            // same value — printing the console form. Rendering
+                            // dispatches on the VALUE now, in
+                            // `emitter/tostring.rs`.
+                            if matches!(current.kind, ExprKind::Binary { op: BinOp::Concat, .. }) {
+                                // Handled by .toString
+                            } else {
+                                current = Expression::new(ExprKind::Call {
+                                    callee: Box::new(current),
+                                    args,
+                                    optional: false,
+                                });
+                            }
                         }
                     }
                     Rule::member_suffix => {
@@ -2077,6 +2532,13 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                             });
                         } else {
                             match field_id.as_str() {
+                                "toString" => {
+                                    current = Expression::new(ExprKind::Binary {
+                                        op: BinOp::Concat,
+                                        left: Box::new(Expression::string("")),
+                                        right: Box::new(current),
+                                    });
+                                }
                                 "first" | "component1" => {
                                     current = Expression::new(ExprKind::Index {
                                         object: Box::new(current),
@@ -2185,6 +2647,18 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         current = Expression::new(ExprKind::Unary {
                             op: UnaryOp::Not,
                             expr: Box::new(current),
+                        });
+                    }
+                    Rule::inc_suffix => {
+                        let op_str = suffix_inner.as_str();
+                        let bin_op = if op_str == "++" { BinOp::Add } else { BinOp::Sub };
+                        current = Expression::new(ExprKind::Assign {
+                            target: Box::new(current.clone()),
+                            value: Box::new(Expression::new(ExprKind::Binary {
+                                op: bin_op,
+                                left: Box::new(current),
+                                right: Box::new(Expression::int(1)),
+                            })),
                         });
                     }
                     _ => {}
@@ -2361,62 +2835,110 @@ fn walk_binary_chain(pair: Pair<Rule>, op: BinOp) -> Expression {
     current
 }
 
+/// The type a `type_ref` names, with Kotlin's nullability marker removed.
+///
+/// `String?` and `String` are ONE type as far as the shared machinery is
+/// concerned — nullability is carried by `Param::is_nullable`, not by the
+/// hint's spelling. Stripping it here is what lets `[builtin_types]` declare
+/// each spelling once (`builtinslotplan.md` step 4a); leaving the `?` on would
+/// make every declared spelling need a nullable twin, and `String?` would
+/// resolve to no built-in at all.
+fn type_hint_text(raw: &str) -> String {
+    raw.trim().trim_end_matches('?').trim_end().to_string()
+}
+
+/// Whether a `type_ref`'s source text carries Kotlin's `?`.
+fn type_ref_is_nullable(raw: &str) -> bool {
+    raw.trim_end().ends_with('?')
+}
+
+/// Kotlin's infix spellings of the bitwise operators -> the shared `BinOp`.
+///
+/// `ushr` has no `BinOp` of its own; Kotlin's other shift is arithmetic, so
+/// `shr` takes `Shr` and `ushr` stays a member call until an unsigned shift
+/// exists to route it to.
+fn infix_bitwise_op(op: &str) -> Option<BinOp> {
+    match op {
+        "and" => Some(BinOp::BitAnd),
+        "or" => Some(BinOp::BitOr),
+        "xor" => Some(BinOp::BitXor),
+        "shl" => Some(BinOp::Shl),
+        "shr" => Some(BinOp::Shr),
+        _ => None,
+    }
+}
+
+/// `0xFF` / `0b1010` / `1_000_000` / `12L` / `7u` -> the integer value.
+///
+/// The `_` grouping is a lexical convenience with no value, and the `u`/`L`
+/// suffixes only pick the Kotlin static type; both are stripped before the
+/// radix parse so one function covers every spelling.
+fn parse_int_literal(raw: &str) -> i64 {
+    let cleaned: String = raw.chars().filter(|c| *c != '_').collect();
+    let body = cleaned.trim_end_matches(['L', 'l', 'u', 'U']);
+    let (digits, radix) = if let Some(rest) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        (rest, 16)
+    } else if let Some(rest) = body.strip_prefix("0b").or_else(|| body.strip_prefix("0B")) {
+        (rest, 2)
+    } else {
+        (body, 10)
+    };
+    i64::from_str_radix(digits, radix).unwrap_or(0)
+}
+
 fn walk_literal(pair: Pair<Rule>) -> Expression {
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
         Rule::null_kw => Expression::null(),
         Rule::true_kw => Expression::bool(true),
         Rule::false_kw => Expression::bool(false),
-        Rule::int_literal => {
-            let s = inner.as_str().trim_end_matches(['L', 'l']);
-            let val = s.parse::<i64>().unwrap_or(0);
-            Expression::int(val)
-        }
+        Rule::int_literal => Expression::int(parse_int_literal(inner.as_str())),
         Rule::float_literal => {
-            let s = inner.as_str().trim_end_matches(['f', 'F']);
-            let val = s.parse::<f64>().unwrap_or(0.0);
-            Expression::float(val)
+            let s: String = inner
+                .as_str()
+                .chars()
+                .filter(|c| *c != '_')
+                .collect::<String>()
+                .trim_end_matches(['f', 'F'])
+                .to_string();
+            Expression::float(s.parse::<f64>().unwrap_or(0.0))
         }
         Rule::string_literal => walk_string_literal(inner),
+        Rule::char_literal => {
+            let s = inner.as_str();
+            let content = &s[1..s.len().saturating_sub(1)];
+            let decoded = match content {
+                "\\n" => "\n".to_string(),
+                "\\t" => "\t".to_string(),
+                "\\r" => "\r".to_string(),
+                "\\\"" => "\"".to_string(),
+                "\\'" => "'".to_string(),
+                "\\\\" => "\\".to_string(),
+                "\\$" => "$".to_string(),
+                "\\b" => "\x08".to_string(),
+                "\\f" => "\x0C".to_string(),
+                s if s.starts_with("\\u") && s.len() == 6 => {
+                    if let Ok(code) = u32::from_str_radix(&s[2..], 16) {
+                        if let Some(ch) = char::from_u32(code) {
+                            ch.to_string()
+                        } else {
+                            s.to_string()
+                        }
+                    } else {
+                        s.to_string()
+                    }
+                }
+                s => s.to_string(),
+            };
+            Expression::string(&decoded)
+        }
         _ => Expression::null(),
     }
 }
 
 fn walk_string_literal(pair: Pair<Rule>) -> Expression {
     let mut parts = Vec::new();
-    for content in pair.into_inner() {
-        if content.as_rule() == Rule::string_content {
-            if let Some(inner) = content.into_inner().next() {
-                match inner.as_rule() {
-                    Rule::str_text => {
-                        parts.push(Expression::string(inner.as_str()));
-                    }
-                    Rule::str_escaped => {
-                        let esc = match inner.as_str() {
-                            "\\n" => "\n",
-                            "\\t" => "\t",
-                            "\\r" => "\r",
-                            "\\\"" => "\"",
-                            "\\\\" => "\\",
-                            s => s,
-                        };
-                        parts.push(Expression::string(esc));
-                    }
-                    Rule::str_interpolated_var => {
-                        if let Some(id_pair) = inner.into_inner().next() {
-                            parts.push(Expression::ident(id_pair.as_str()));
-                        }
-                    }
-                    Rule::str_interpolated_expr => {
-                        if let Some(expr_pair) = inner.into_inner().next() {
-                            parts.push(walk_expr(expr_pair));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
+    collect_string_parts(pair, &mut parts);
 
     if parts.is_empty() {
         Expression::string("")
@@ -2434,4 +2956,124 @@ fn walk_string_literal(pair: Pair<Rule>) -> Expression {
         }
         acc
     }
+}
+
+/// One `$x` / `${expr}` inside a string template.
+///
+/// Kotlin templates call `toString()` on the part — they do NOT lean on `+`
+/// coercion, and the two disagree: a `Boolean` concatenates as `1`, a `List` as
+/// `1,2,3`, a `Map` as `[object]`. Routing the part through the same renderer
+/// `println` uses is what makes `"v=$flag"` and `println(flag)` agree, which is
+/// the whole point of having one renderer.
+fn interpolated_part(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__kt_tostring")),
+        args: vec![Argument::positional(expr)],
+        optional: false,
+    })
+}
+
+fn collect_string_parts(pair: Pair<Rule>, parts: &mut Vec<Expression>) {
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::raw_string_literal | Rule::plain_string_literal | Rule::string_content | Rule::raw_string_content => {
+                collect_string_parts(child, parts);
+            }
+            Rule::str_text | Rule::raw_str_text => {
+                parts.push(Expression::string(child.as_str()));
+            }
+            Rule::str_escaped => {
+                let s = child.as_str();
+                let decoded = match s {
+                    "\\n" => "\n".to_string(),
+                    "\\t" => "\t".to_string(),
+                    "\\r" => "\r".to_string(),
+                    "\\\"" => "\"".to_string(),
+                    "\\'" => "'".to_string(),
+                    "\\\\" => "\\".to_string(),
+                    "\\$" => "$".to_string(),
+                    "\\b" => "\x08".to_string(),
+                    "\\f" => "\x0C".to_string(),
+                    s if s.starts_with("\\u") && s.len() == 6 => {
+                        if let Ok(code) = u32::from_str_radix(&s[2..], 16) {
+                            if let Some(ch) = char::from_u32(code) {
+                                ch.to_string()
+                            } else {
+                                s.to_string()
+                            }
+                        } else {
+                            s.to_string()
+                        }
+                    }
+                    _ => s.to_string(),
+                };
+                parts.push(Expression::string(&decoded));
+            }
+            Rule::str_interpolated_var => {
+                if let Some(id_pair) = child.into_inner().next() {
+                    parts.push(interpolated_part(Expression::ident(id_pair.as_str())));
+                }
+            }
+            Rule::str_interpolated_expr => {
+                let raw = child.as_str();
+                if raw.starts_with("${") && raw.ends_with('}') {
+                    let inner_str = raw[2..raw.len()-1].trim();
+                    let unescaped = inner_str.replace("\\\"", "\"");
+                    if let Ok(mut pairs) = KotlinParser::parse(Rule::expr, &unescaped) {
+                        if let Some(epair) = pairs.next() {
+                            parts.push(interpolated_part(walk_expr(epair)));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `a to b` / `Pair(a, b)`.
+///
+/// `ExprKind::Tuple`, not `ExprKind::Array`: a Pair and a two-element List are
+/// the same runtime array, and only the tuple TAG (`tuple_literals_tagged` in
+/// the profile) tells them apart — which is what lets `println` render one as
+/// `(3, x)` and the other as `[3, x]`.
+fn create_pair_expr(a: Expression, b: Expression) -> Expression {
+    Expression::new(ExprKind::Tuple(vec![a, b]))
+}
+
+/// `Triple(a, b, c)` — see [`create_pair_expr`].
+fn create_triple_expr(a: Expression, b: Expression, c: Expression) -> Expression {
+    Expression::new(ExprKind::Tuple(vec![a, b, c]))
+}
+
+/// `mapOf(…)` / a Kotlin map literal.
+///
+/// Plain data. This used to append a synthesised `toString` PROPERTY to the
+/// object, which made the map render itself — and put `toString` into the
+/// map's own `__keys`, so the map contained a member the program never put
+/// there (`{a=1, b=2, toString=…}` once the renderer stopped hiding it).
+/// Rendering is `emitter/tostring.rs`'s job; a map is just its entries.
+fn create_map_expr(props: Vec<ObjectProperty>) -> Expression {
+    Expression::new(ExprKind::Object(props))
+}
+
+/// `setOf(…)` / `mutableSetOf(…)`.
+///
+/// A Kotlin `Set` is a dict whose values are all `true` — the keys ARE the
+/// elements, which is what gives `in` its O(1) answer. It carries
+/// [`SET_MARKER`] because a `Set` and a `Map` are the same runtime shape and
+/// render differently: `[1, 2, 3]` versus `{a=1}`.
+fn create_kotlin_set_expr(elems: Vec<Expression>) -> Expression {
+    let mut props = Vec::with_capacity(elems.len() + 1);
+    props.push(ObjectProperty::KeyValue {
+        key: Expression::string(SET_MARKER),
+        value: Expression::bool(true),
+    });
+    for elem in elems {
+        props.push(ObjectProperty::KeyValue {
+            key: elem,
+            value: Expression::bool(true),
+        });
+    }
+    Expression::new(ExprKind::Object(props))
 }

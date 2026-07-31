@@ -64,7 +64,10 @@ fn test_printing_double_precision_output() {
             println(-2.0)
         }
     "#);
-    assert_eq!(out, &["3.5", "0.125", "-2"]);
+    // `Double.toString()` always carries a fraction in Kotlin — `-2.0`, never
+    // `-2`. The `-2` this asserted contradicted `test_numeric_literals`, which
+    // requires `6.0` and `15.0` from the same rule.
+    assert_eq!(out, &["3.5", "0.125", "-2.0"]);
 }
 
 #[test]
@@ -321,7 +324,9 @@ fn test_printing_nested_string_expression_and_number_format() {
             println("${label.length}")
         }
     "#);
-    assert_eq!(out, &["count=3", "6"]);
+    // `"count=3"` is seven characters: c-o-u-n-t-=-3. The `6` this asserted was
+    // simply miscounted.
+    assert_eq!(out, &["count=3", "7"]);
 }
 
 #[test]
