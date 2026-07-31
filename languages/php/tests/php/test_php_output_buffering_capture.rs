@@ -1,15 +1,21 @@
 use super::helpers::run_prints;
 
-fn assert_int(expr: &str, expected: i64) {
+// Every caller below passes a whole multi-statement PROGRAM, not a single
+// expression, so the source runs as-is. Prefixing `echo ` (as these helpers
+// used to) turned the leading `ob_start();` into `echo ob_start();`, which
+// echoes `true` INTO the buffer it just opened — an invisible extra "1" in
+// every expectation, visible only when the buffer was flushed rather than
+// discarded.
+fn assert_int(src: &str, expected: i64) {
     assert_eq!(
-        run_prints(&format!("<?php echo {}; ", expr)),
+        run_prints(&format!("<?php {} ", src)),
         vec![expected.to_string()]
     );
 }
 
-fn assert_str(expr: &str, expected: &str) {
+fn assert_str(src: &str, expected: &str) {
     assert_eq!(
-        run_prints(&format!("<?php echo {}; ", expr)),
+        run_prints(&format!("<?php {} ", src)),
         vec![expected.to_string()]
     );
 }
@@ -47,7 +53,7 @@ fn php_output_buffering_capture() {
 fn php_output_buffering_ob_get_contents_and_clean() {
     assert_str(
         "ob_start(); echo 'hello'; $inner = ob_get_contents(); ob_clean(); echo $inner; ob_end_flush();",
-        "hellohello",
+        "hello",
     );
 
     assert_str(
@@ -60,12 +66,12 @@ fn php_output_buffering_ob_get_contents_and_clean() {
 fn php_output_buffering_nested_levels_and_flush_flow() {
     assert_str(
         "ob_start(); echo 'a'; ob_start(); echo 'b'; $l1 = ob_get_level(); $inner = ob_get_clean(); echo $l1 . ':' . $inner . ':' . ob_get_contents(); ob_end_flush();",
-        "2:b:a",
+        "a2:b:a",
     );
 
     assert_str(
         "ob_start(); echo 'outer'; ob_start(); echo 'inner'; ob_end_flush(); echo ob_get_length();",
-        "10",
+        "outerinner10",
     );
 }
 
@@ -120,6 +126,6 @@ fn php_output_buffering_end_flush_returns_bool() {
 fn php_output_buffering_list_handlers_order() {
     assert_str(
         "ob_start(); echo 'A'; ob_start(); echo 'B'; $handlers = ob_list_handlers(); $size = count($handlers); ob_end_flush(); ob_end_flush(); echo $size;",
-        "2",
+        "AB2",
     );
 }

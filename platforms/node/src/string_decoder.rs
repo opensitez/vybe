@@ -5,7 +5,6 @@
 //! Stateful UTF-8 decoder that buffers incomplete multibyte sequences
 //! across `write()` calls. State is stored as Object properties.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use vybe_runtime::VM;
 use vybe_runtime::value::{Object, ObjectKind, Value};

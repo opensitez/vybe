@@ -646,6 +646,27 @@ impl Compiler {
                 is_async,
                 ..
             } => {
+                // Claim the enclosing label NOW, before anything below compiles
+                // the loop BODY.
+                //
+                // `for-in` has three lowerings — the generator gate, the custom
+                // `[Symbol.iterator]` gate, and the array-index loop — and the
+                // first two compile the body inside their gate, ahead of the
+                // third. Taking the label at the array path's `loops.push` (the
+                // path that actually runs for an ordinary range or list) meant
+                // whichever gate compiled first had already emptied
+                // `pending_label`, so the loop context was pushed with `None`
+                // and `break@outer` / `continue@outer` found no context —
+                // `continue_depth` returned `None` and NOTHING was emitted. A
+                // labelled jump out of a `for` was a silent no-op; the same
+                // label on a `while` worked, because `While` pushes its context
+                // before compiling anything.
+                //
+                // Taken (not cloned) so a nested inner loop does not inherit it,
+                // then re-armed immediately before each gate so all three
+                // lowerings of THIS loop still see it — the fix is that they
+                // stop competing for one `take()`, not that the gates lose it.
+                let this_loop_label = self.pending_label.take();
                 // Specialisation: if `iter` is a direct call to a
                 // function the pre-pass tagged as a true generator,
                 // emit a `GEN_NEXT`-driven loop rather than the
@@ -700,6 +721,7 @@ impl Compiler {
                         };
                         self.chunk().emit_br_if(0, line);
 
+                        self.pending_label = this_loop_label.clone();
                         self.compile_generator_for_in_cont(
                             var,
                             key.as_deref(),
@@ -707,6 +729,7 @@ impl Compiler {
                             body,
                             else_body.as_deref(),
                         )?;
+                        self.pending_label = None;
                         self.chunk().emit_br(1, line);
 
                         self.chunk().emit_end(line);
@@ -742,12 +765,14 @@ impl Compiler {
                         };
                         self.chunk().emit_br_if(0, line);
 
+                        self.pending_label = this_loop_label.clone();
                         self.compile_for_of_custom_iterator_lazy(
                             iter_slot,
                             &var.clone(),
                             body,
                             else_body.as_deref(),
                         )?;
+                        self.pending_label = None;
                         self.chunk().emit_br(1, line);
 
                         self.chunk().emit_end(line);
@@ -918,7 +943,7 @@ impl Compiler {
 
                     self.loop_states.push(lp);
                     self.loops.push(LoopCtx {
-                        label: self.pending_label.take(),
+                        label: this_loop_label,
                         break_label_depth: break_depth,
                         continue_label_depth: continue_depth,
                         did_break_slot,
@@ -5593,7 +5618,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, param_slot);
                     return Ok(());
                 }
-                if self.is_php_profile() {
+                if self.profile.unified_array_map {
                     if let ExprKind::Member {
                         object: recv,
                         field,
@@ -5630,8 +5655,12 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_SET, key_tmp);
                                 // Promote to an ordered Map on first string key;
                                 // native Map order, no `__keys`/CSV side-band.
-                                self.emit_php_promote_empty_array_for_string_key(
-                                    coll_tmp, key_tmp, line,
+                                common::collections::emit_promote_empty_array_for_string_key(
+                                    &mut self.chunks,
+                                    self.current,
+                                    coll_tmp,
+                                    key_tmp,
+                                    line,
                                 );
                                 self.emit_u16(Op::LOCAL_GET, coll_tmp);
                                 self.emit_u16(Op::LOCAL_GET, key_tmp);
@@ -5697,7 +5726,7 @@ impl Compiler {
                 }
                 // PHP auto-vivification: $x[$k][] = $v → ensure $x[$k]
                 // is an array before pushing. If undefined, create [].
-                if is_append && self.is_php_profile() {
+                if is_append && self.profile.unified_array_map {
                     if let ExprKind::Index {
                         object: parent,
                         index: key,
@@ -5912,7 +5941,7 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
                     self.compile_array_index_operand_for_owner(object, index)?;
-                    if self.is_php_profile() {
+                    if self.profile.unified_array_map {
                         let key_tmp = self.define_local("__php_idx_key");
                         let obj_tmp = self.define_local("__php_idx_obj");
                         self.emit_u16(Op::LOCAL_SET, key_tmp);
@@ -5925,7 +5954,13 @@ impl Compiler {
                         // band — that stamps an extra property onto the Map and
                         // makes `foreach`/`Object.keys` read the stale tracker
                         // instead of the Map's real order.
-                        self.emit_php_promote_empty_array_for_string_key(obj_tmp, key_tmp, line);
+                        common::collections::emit_promote_empty_array_for_string_key(
+                            &mut self.chunks,
+                            self.current,
+                            obj_tmp,
+                            key_tmp,
+                            line,
+                        );
 
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         self.emit_u16(Op::LOCAL_GET, key_tmp);

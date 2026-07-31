@@ -170,6 +170,10 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, callee_slot);
         let line = self.line;
         crate::primitives::common::strings::emit_to_lower(self.chunk(), line);
+        // Normalize the NEEDLE once, then compare against the canonical corpus.
+        // The alternative — expanding every known function back into every
+        // separator spelling — is the same work done once per known function.
+        crate::primitives::namespaces::emit_normalize_source_path(self.chunk(), line);
         let callee_name_slot = self.define_local("__source_string_callee_name");
         self.emit_u16(Op::LOCAL_SET, callee_name_slot);
 
@@ -177,7 +181,13 @@ impl Compiler {
         self.emit_const(Value::I32(0));
         self.emit_u16(Op::LOCAL_SET, matched_slot);
         for function_name in known_functions {
-            for lowered_name in Self::php_function_name_lookup_spellings(&function_name) {
+            // Lowercased to match the runtime needle, which `emit_to_lower`
+            // has already folded.
+            let canonical = crate::primitives::namespaces::normalize_source_path(
+                &function_name.to_ascii_lowercase(),
+            );
+            let rooted = crate::primitives::namespaces::rooted_lookup_key(&canonical);
+            for lowered_name in [canonical, rooted] {
                 self.emit_u16(Op::LOCAL_GET, matched_slot);
                 self.emit(Op::I32_EQZ);
                 let line = self.line;

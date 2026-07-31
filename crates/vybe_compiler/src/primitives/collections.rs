@@ -373,6 +373,63 @@ pub fn emit_map_new(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:map", "new", 0, line);
 }
 
+/// Promote a STILL-EMPTY sequential array to an ordered Map the first time a
+/// string key is written to it. Rewrites `obj_slot` in place; no stack effect.
+///
+/// A language whose array and map are one surface type — `$a[0]` and `$a['k']`
+/// on the same value — has to pick a backing representation at the first
+/// write. While the value is empty that choice is still free, so a string key
+/// settles it: the value becomes `ObjectKind::Map`, which is identity-equal on
+/// pass-around and insertion-ordered natively. The alternative is growing a
+/// parallel key side-band alongside a sequential array, which is what the
+/// removed `__keys`/`vybe$assoc_keys_csv` band did before it corrupted the
+/// stack.
+///
+/// Deliberately three-way guarded — array, string key, AND still empty. A
+/// populated sequential array keeps its representation, so `$a[0]=1; $a['k']=2`
+/// does not silently re-home the existing elements.
+pub fn emit_promote_empty_array_for_string_key(
+    chunks: &mut [Chunk],
+    current: usize,
+    obj_slot: u16,
+    key_slot: u16,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    {
+        let idx = chunks[current].add_import("ecma:array", "isArray");
+        chunks[current].emit_call(idx, 1, line);
+    }
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
+    crate::primitives::instructions::host::emit(
+        &mut chunks[current],
+        "wasm:js-string",
+        "test",
+        1,
+        line,
+    );
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    crate::primitives::ops::emit_dyn_ne(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+
+    emit_map_new(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
 /// Polymorphic indexed read. Stack: [collection, index] → [value].
 ///
 /// Emits the WASM GC `array.get` opcode (`Op::ARRAY_GET`, byte 0xFB 0x0B).

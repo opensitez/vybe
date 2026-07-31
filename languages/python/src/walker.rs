@@ -330,6 +330,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body = prelude;
     }
 
+    // `http.client` / `ssl` — surface, not transport (see the prelude note).
+    // Gated on either import; both share one prelude because `HTTPSConnection`
+    // and `ssl.wrap_socket` refer to each other.
+    if source.contains("import http") || source.contains("import ssl") {
+        let mut prelude = parse_python_prelude(HTTP_SSL_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
+
     // `ipaddress` — pure address arithmetic; a prelude because the addresses
     // and networks are classes.
     if source.contains("import ipaddress") {
@@ -1002,6 +1011,13 @@ class VybeSocketImpl:
         if not self._closed:
             self._closed = True
             _wasi_sock_shutdown(self._res, 2)
+    def dup(self):
+        return VybeSocketImpl(self.family, self.sock_kind, 0, self._res, self._rx, self._tx)
+    def detach(self):
+        self._closed = True
+        return 0
+    def makefile(self, mode="r", buffering=-1):
+        return self
     def __enter__(self):
         return self
     def __exit__(self, exc_type, exc, tb):
@@ -1013,6 +1029,79 @@ def create_connection(address, timeout=None):
         conn.settimeout(timeout)
     conn.connect(address)
     return conn
+
+class VybeSocketTimeout(OSError):
+    pass
+
+class VybeSocketGaiError(OSError):
+    pass
+
+def inet_pton(family, text):
+    return inet_aton(text)
+
+def inet_ntop(family, packed):
+    return inet_ntoa(packed)
+
+def _vybe_swap32(value):
+    parts = _vybe_ip4_octets(value)
+    return parts[3] * 16777216 + parts[2] * 65536 + parts[1] * 256 + parts[0]
+
+def ntohl(value):
+    return _vybe_swap32(value)
+
+def htonl(value):
+    return _vybe_swap32(value)
+
+def ntohs(value):
+    low = int(value / 256)
+    return (value - low * 256) * 256 + low
+
+def htons(value):
+    return ntohs(value)
+
+def getdefaulttimeout():
+    return None
+
+def setdefaulttimeout(value):
+    return None
+
+class VybeSocketModule:
+    AF_INET = 2
+    AF_INET6 = 10
+    AF_UNIX = 1
+    SOCK_STREAM = 1
+    SOCK_DGRAM = 2
+    SOL_SOCKET = 1
+    SO_REUSEADDR = 2
+    SO_KEEPALIVE = 9
+    SO_BROADCAST = 6
+    IPPROTO_TCP = 6
+    IPPROTO_UDP = 17
+    SHUT_RD = 0
+    SHUT_WR = 1
+    SHUT_RDWR = 2
+    has_ipv6 = True
+    socket = VybeSocketImpl
+    timeout = VybeSocketTimeout
+    error = OSError
+    gaierror = VybeSocketGaiError
+    create_connection = create_connection
+    gethostname = gethostname
+    gethostbyname = gethostbyname
+    getaddrinfo = getaddrinfo
+    getservbyname = getservbyname
+    inet_aton = inet_aton
+    inet_ntoa = inet_ntoa
+    inet_pton = inet_pton
+    inet_ntop = inet_ntop
+    ntohl = ntohl
+    htonl = htonl
+    ntohs = ntohs
+    htons = htons
+    getdefaulttimeout = getdefaulttimeout
+    setdefaulttimeout = setdefaulttimeout
+
+socket = VybeSocketModule()
 "#;
 
 /// `ipaddress` — pure address arithmetic, so no host surface is involved at
@@ -1170,6 +1259,179 @@ def ip_interface(value):
 
 def collapse_addresses(nets):
     return list(nets)
+"#;
+
+/// `http.client` and `ssl` — module SURFACE only.
+///
+/// Neither maps onto `wasi:sockets` or `ecma:*`, because neither does any
+/// networking here: what programs read from these modules is the status-code
+/// table, the connection and exception CLASSES, and the protocol constants.
+/// The transport, when one is needed, is the `socket` class above.
+const HTTP_SSL_PRELUDE: &str = r#"
+class VybeHTTPMessage:
+    def __init__(self, headers=None):
+        self._headers = headers if headers is not None else {}
+    def get(self, name, default=None):
+        key = str(name).lower()
+        if key in self._headers:
+            return self._headers[key]
+        return default
+    def items(self):
+        return list(self._headers.items())
+    def keys(self):
+        return list(self._headers.keys())
+
+class VybeHTTPResponse:
+    def __init__(self, status=200, reason="OK", body=""):
+        self.status = status
+        self.reason = reason
+        self._body = body
+        self.headers = VybeHTTPMessage()
+    def read(self, amt=-1):
+        return self._body
+    def getheader(self, name, default=None):
+        return self.headers.get(name, default)
+    def getheaders(self):
+        return self.headers.items()
+    def close(self):
+        return None
+
+class VybeHTTPConnection:
+    def __init__(self, host, port=80, timeout=None):
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.sock = None
+        self._response = None
+    def connect(self):
+        self.sock = VybeSocketImpl(2, 1)
+        self.sock.connect((self.host, self.port))
+    def request(self, method, url, body=None, headers=None):
+        self._response = VybeHTTPResponse(200, "OK", "")
+    def getresponse(self):
+        if self._response is None:
+            self._response = VybeHTTPResponse(200, "OK", "")
+        return self._response
+    def close(self):
+        if self.sock is not None:
+            self.sock.close()
+
+class VybeHTTPSConnection(VybeHTTPConnection):
+    def __init__(self, host, port=443, timeout=None):
+        VybeHTTPConnection.__init__(self, host, port, timeout)
+
+class VybeHTTPException(Exception):
+    pass
+
+class VybeBadStatusLine(VybeHTTPException):
+    pass
+
+class VybeIncompleteRead(VybeHTTPException):
+    pass
+
+def parse_headers(fp):
+    return VybeHTTPMessage()
+
+class VybeSSLContext:
+    def __init__(self, protocol=2):
+        self.protocol = protocol
+        self.verify_mode = 0
+        self.check_hostname = False
+    def get_ciphers(self):
+        return []
+    def set_ciphers(self, spec):
+        return None
+    def load_verify_locations(self, cafile=None, capath=None, cadata=None):
+        return None
+    def load_default_certs(self, purpose=None):
+        return None
+    def wrap_socket(self, sock, server_hostname=None, server_side=False):
+        return sock
+
+class VybeSSLError(OSError):
+    pass
+
+class VybeCertificateError(VybeSSLError):
+    pass
+
+class VybeTLSVersion:
+    TLSv1 = 769
+    TLSv1_1 = 770
+    TLSv1_2 = 771
+    TLSv1_3 = 772
+
+class VybeSSLPurpose:
+    SERVER_AUTH = "serverAuth"
+    CLIENT_AUTH = "clientAuth"
+
+def create_default_context(purpose=None, cafile=None, capath=None, cadata=None):
+    return VybeSSLContext(2)
+
+def ssl_wrap_socket(sock, keyfile=None, certfile=None, server_side=False):
+    return sock
+
+def match_hostname(cert, hostname):
+    return None
+
+def enum_certificates(store_name="ROOT"):
+    return []
+
+class VybeHttpClientModule:
+    OK = 200
+    CREATED = 201
+    ACCEPTED = 202
+    NO_CONTENT = 204
+    MOVED_PERMANENTLY = 301
+    FOUND = 302
+    NOT_MODIFIED = 304
+    BAD_REQUEST = 400
+    UNAUTHORIZED = 401
+    FORBIDDEN = 403
+    NOT_FOUND = 404
+    METHOD_NOT_ALLOWED = 405
+    REQUEST_TIMEOUT = 408
+    CONFLICT = 409
+    GONE = 410
+    INTERNAL_SERVER_ERROR = 500
+    NOT_IMPLEMENTED = 501
+    BAD_GATEWAY = 502
+    SERVICE_UNAVAILABLE = 503
+    GATEWAY_TIMEOUT = 504
+    HTTPConnection = VybeHTTPConnection
+    HTTPSConnection = VybeHTTPSConnection
+    HTTPResponse = VybeHTTPResponse
+    HTTPMessage = VybeHTTPMessage
+    HTTPException = VybeHTTPException
+    BadStatusLine = VybeBadStatusLine
+    IncompleteRead = VybeIncompleteRead
+    parse_headers = parse_headers
+    responses = {200: "OK", 201: "Created", 202: "Accepted", 204: "No Content", 301: "Moved Permanently", 302: "Found", 304: "Not Modified", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 408: "Request Timeout", 409: "Conflict", 410: "Gone", 500: "Internal Server Error", 501: "Not Implemented", 502: "Bad Gateway", 503: "Service Unavailable", 504: "Gateway Timeout"}
+
+class VybeHttpModule:
+    client = VybeHttpClientModule()
+
+class VybeSslModule:
+    CERT_NONE = 0
+    CERT_OPTIONAL = 1
+    CERT_REQUIRED = 2
+    PROTOCOL_TLS = 2
+    PROTOCOL_TLS_CLIENT = 16
+    PROTOCOL_TLS_SERVER = 17
+    OP_NO_SSLv2 = 16777216
+    OP_NO_SSLv3 = 33554432
+    HAS_TLSv1_3 = True
+    SSLContext = VybeSSLContext
+    SSLError = VybeSSLError
+    CertificateError = VybeCertificateError
+    TLSVersion = VybeTLSVersion
+    Purpose = VybeSSLPurpose
+    create_default_context = create_default_context
+    wrap_socket = ssl_wrap_socket
+    match_hostname = match_hostname
+    enum_certificates = enum_certificates
+
+http = VybeHttpModule()
+ssl = VybeSslModule()
 "#;
 
 const IO_PRELUDE: &str = r#"
@@ -12287,6 +12549,7 @@ fn py_static_type_name(e: &Expression) -> Option<&'static str> {
         ExprKind::Lit(Literal::Int(_)) => Some("int"),
         ExprKind::Lit(Literal::Float(_)) => Some("float"),
         ExprKind::Lit(Literal::Str(_)) => Some("str"),
+        ExprKind::Lit(Literal::Bytes(_)) => Some("bytes"),
         ExprKind::Lit(Literal::Null) => Some("NoneType"),
         ExprKind::Array(_) => Some("list"),
         ExprKind::Tuple(_) | ExprKind::NamedTuple { .. } => Some("tuple"),
@@ -18024,16 +18287,11 @@ fn is_bytes_prefix(s: &str) -> bool {
 }
 
 fn parse_bytes_literal(s: &str) -> ExprKind {
-    let elements = parse_python_bytes(s)
-        .into_iter()
-        .map(|b| ArrayElement {
-            key: None,
-            spread: false,
-            by_ref: false,
-            value: Expression::new(ExprKind::Lit(Literal::Int(i64::from(b)))),
-        })
-        .collect();
-    wrap_bytes(Expression::new(ExprKind::Array(elements))).kind
+    // `Literal::Bytes`, not a `__py_bytes_new__([…])` call: the AST node is what
+    // gives the value a static type, so `b[0]` resolves the `(Bytes, GetItem)`
+    // binding instead of sniffing the receiver's kind at runtime
+    // (unifiedstringplan.md §3c, builtinslotplan.md §2c).
+    ExprKind::Lit(Literal::Bytes(parse_python_bytes(s)))
 }
 
 /// Build a call to a named identifier with positional args.
@@ -18163,6 +18421,9 @@ const BYTES_METHODS_RETURN_SCALAR: &[&str] = &[
 /// True when `e` is statically known to evaluate to `bytes`.
 fn expr_is_python_bytes(e: &Expression) -> bool {
     match &e.kind {
+        // A `Literal::Bytes` is bytes by construction — the call shape below is
+        // the pre-literal spelling, kept for `bytes(...)` conversions.
+        ExprKind::Lit(Literal::Bytes(_)) => true,
         ExprKind::Call { callee, args, .. } => match &callee.kind {
             ExprKind::Ident(n) if n == "__py_bytes_new__" || n == "bytes" => true,
             // `+`/`*` lower to __pyadd__/__pymul__ — bytes if an operand is.
@@ -18181,6 +18442,9 @@ fn expr_is_python_bytes(e: &Expression) -> bool {
 }
 
 fn py_static_bytes_has_non_ascii(e: &Expression) -> bool {
+    if let ExprKind::Lit(Literal::Bytes(bytes)) = &e.kind {
+        return bytes.iter().any(|b| *b > 0x7f);
+    }
     let ExprKind::Call { callee, args, .. } = &e.kind else {
         return false;
     };

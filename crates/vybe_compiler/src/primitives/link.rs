@@ -776,7 +776,7 @@ impl Compiler {
             }
         }
 
-        self.defined_globals.insert(format!("{}$arity0", name));
+        self.defined_globals.insert(crate::primitives::classes::ctor_global_for(&name, 0));
         self.pending_classes
             .entry(name.to_string())
             .or_insert(PendingClass {

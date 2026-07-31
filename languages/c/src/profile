@@ -10,6 +10,10 @@ name = "c"
 extensions = ["c", "h"]
 
 [compiler]
+# `int / int` truncates. C# has always declared this; C reached the SAME shared
+# block through a `profile.name == "c"` check that carried a second copy of the
+# integer-spelling test (builtinslotplan.md §3c).
+integer_division_on_slash = true
 function_return = "explicit"
 self_keyword = "this"
 constructor_name = "constructor"
@@ -225,3 +229,14 @@ uses_common_resolver = true
 use_dotnet = false
 roots = []
 extra_imports = []
+
+# Which built-in each of this language's type spellings NAMES — step 4a.
+#
+# `Compiler` used to hold this list itself, as `hint.contains("int") ||
+# hint.contains("long") || ...` in shared code. `*x*` is a substring match, so
+# `unsigned int` and `long long` still resolve. `char` and `bool` are integer
+# types in C — `char a = 7, b = 2; a / b` is 3 — and listing them here shadows
+# the platform table's `char`/`bool` rows for C only, which is exactly what the
+# old predicate did.
+[builtin_types]
+int = ["*int*", "*long*", "*short*", "*char*", "bool", "_bool"]

@@ -53,6 +53,12 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
     // `s[i]` yields a one-character string. Verified against Dart 2026-07-30:
     // `"café"[3]` is `é`; routing this through `ecma:array.get` returned null
     // for every index.
+    //
+    // CAVEAT, same shape as `Map`/`GetItem`: languages disagree OUT OF RANGE
+    // (JS `undefined`, Dart `RangeError`, Python `IndexError`). Bound because
+    // in-range indexing was verified to agree; a language whose out-of-range
+    // answer differs declares `[builtin_slots.string] get_item`. Read an
+    // out-of-range failure as this caveat, not as a new finding.
     b.insert(BuiltinType::String, ProtocolSlot::GetItem, "common:str_char_at");
     b.insert(BuiltinType::String, ProtocolSlot::Contains, "common:str_contains");
     b.insert(BuiltinType::String, ProtocolSlot::Add, "common:str_concat");
@@ -60,6 +66,7 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
 
     // ── array ───────────────────────────────────────────────────────────
     b.insert(BuiltinType::Array, ProtocolSlot::Len, "common:collections.length");
+    // Same out-of-range caveat as `String`/`GetItem` above.
     b.insert(BuiltinType::Array, ProtocolSlot::GetItem, "common:collections.get");
     b.insert(BuiltinType::Array, ProtocolSlot::SetItem, "common:collections.set");
     b.insert(BuiltinType::Array, ProtocolSlot::Contains, "common:collections.contains");
@@ -67,10 +74,26 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
 
     // ── map ─────────────────────────────────────────────────────────────
     b.insert(BuiltinType::Map, ProtocolSlot::Len, "common:dict.size");
-    // GetItem is deliberately NOT bound — see `unbound_reason`. Measured
-    // 2026-07-31: binding it to `common:dict.get_dynamic` broke Dart's
-    // `json['body']` on an empty map, which must be `null` and became
-    // `undefined`.
+    // The ECMA answer: a missing key is `undefined`. Languages whose miss
+    // differs — Dart's `null`, Python's `KeyError`, PHP's `null`+warning —
+    // declare `[builtin_slots.map] get_item` and win by §2d precedence.
+    //
+    // This pair was UNBOUND from 2026-07-31 until the per-language override
+    // table existed, because binding it centrally made Dart's `json['body']`
+    // on an empty map return `undefined` where it must be `null`. That is the
+    // whole reason overrides exist, so the two landed together.
+    b.insert(BuiltinType::Map, ProtocolSlot::GetItem, "common:dict.get_dynamic");
+
+    // ── bytes ───────────────────────────────────────────────────────────
+    // Indexing a byte string yields the INTEGER byte in Python, Go and PHP 8
+    // alike, which is what `at` returns for a `Uint8Array`. The out-of-range
+    // caveat above applies here too, and a language that differs declares
+    // `[builtin_slots.bytes] get_item`.
+    b.insert(
+        BuiltinType::Bytes,
+        ProtocolSlot::GetItem,
+        "host:ecma:uint8array:at",
+    );
     b.insert(BuiltinType::Map, ProtocolSlot::SetItem, "common:dict.set_dynamic");
     b.insert(BuiltinType::Map, ProtocolSlot::Contains, "common:dict.has");
 
@@ -102,26 +125,6 @@ pub fn unbound_reason(ty: BuiltinType, slot: ProtocolSlot) -> Option<&'static st
             "Must land WITH `Eq` (§2g): binding one without the other yields \
              values that compare equal and miss in maps."
         }
-        (T::Map, S::GetItem) => {
-            "Languages disagree on the MISS, and only on the miss. Measured \
-             2026-07-31 by binding it and watching Dart break: `json['body']` \
-             on an empty map must be `null`, and `common:dict.get_dynamic` \
-             returns `undefined`. Across languages the same lookup is \
-             `undefined` (JS `Map.get`), `null` (Dart), a raised `KeyError` \
-             (Python), and `null`-with-a-warning (PHP) — four different \
-             answers, so any central binding encodes one language's as \
-             everyone's. That is the mistake this slot's neighbour \
-             (`String`/`Iterator`) is unbound to avoid.\n\n\
-             Hit lookups agree, so this becomes bindable once a language can \
-             declare an override for the miss — i.e. the per-language \
-             `[builtin_slots.*]` table, which is not built yet. Until then the \
-             language's own emitter keeps deciding.\n\n\
-             `Array`/`GetItem` and `String`/`GetItem` carry the SAME hazard \
-             out of bounds (JS `undefined`, Dart `RangeError`, Python \
-             `IndexError`) and are bound only because in-range indexing was \
-             verified to agree. Treat an out-of-range failure there as this \
-             same finding, not a new one."
-        }
         (T::String, S::Iterator) => {
             "Languages disagree on what iterating a string yields — code points \
              (JS, Dart), characters (Python), runes with byte offsets (Go), \
@@ -133,7 +136,9 @@ pub fn unbound_reason(ty: BuiltinType, slot: ProtocolSlot) -> Option<&'static st
              bound separately."
         }
         (T::Bytes, _) => {
-            "`Literal::Bytes` does not exist yet; see unifiedstringplan.md §3c."
+            "`Literal::Bytes` now exists (unifiedstringplan.md §3c) and \
+             `GetItem` is bound above; the remaining bytes slots are unmeasured, \
+             not blocked."
         }
         (T::Int, _) | (T::Double, _) | (T::BigInt, _) => {
             "No target chosen yet. The numeric slots were left out of the \
@@ -287,6 +292,45 @@ mod tests {
         }
     }
 
+    /// §2d precedence: a language's `[builtin_slots.*]` entry beats the
+    /// platform default, and a language that declares nothing is unaffected.
+    ///
+    /// This is the property the whole override mechanism rests on, and it is
+    /// worth pinning directly rather than only through a language's slices:
+    /// `Map`/`GetItem` is bound centrally to the ECMA answer (`undefined` on a
+    /// miss) ONLY because Dart can override it with its own `null`-returning
+    /// emitter. If `get_or` ever resolved default-first, that binding would
+    /// silently reintroduce the exact bug that kept the pair unbound.
+    #[test]
+    fn a_language_override_beats_the_platform_default() {
+        use vybe_ast::builtin_slots::BuiltinSlotBindings;
+
+        let mut lang = BuiltinSlotBindings::new();
+        lang.insert(
+            BuiltinType::Map,
+            ProtocolSlot::GetItem,
+            "common:dart.index_get",
+        );
+
+        // Declared → the language wins.
+        assert_eq!(
+            lang.get_or(defaults(), BuiltinType::Map, ProtocolSlot::GetItem),
+            Some("common:dart.index_get")
+        );
+        // Not declared → the platform default still answers.
+        assert_eq!(
+            lang.get_or(defaults(), BuiltinType::Map, ProtocolSlot::Len),
+            Some("common:dict.size")
+        );
+        // A language with an EMPTY table gets the default for everything, so a
+        // language that declares nothing cannot be affected by this mechanism.
+        let empty = BuiltinSlotBindings::new();
+        assert_eq!(
+            empty.get_or(defaults(), BuiltinType::Map, ProtocolSlot::GetItem),
+            Some("common:dict.get_dynamic")
+        );
+    }
+
     /// An unbound pair is either explained or absent-by-omission. This test
     /// pins the ones we have deliberately left unbound so that removing a
     /// reason without adding a binding is caught.
@@ -303,6 +347,23 @@ mod tests {
             assert!(
                 unbound_reason(ty, slot).is_some(),
                 "{ty:?}/{slot:?} is unbound with no reason"
+            );
+        }
+
+        // The other direction, for the pairs that GRADUATED from unbound to
+        // bound once per-language overrides existed. `a_bound_pair_never_claims_
+        // to_be_unbound` only catches re-adding a reason while still bound; this
+        // catches the reverse — unbinding one of these without noticing that a
+        // language's override is what makes the central answer safe.
+        for (ty, slot) in [
+            (BuiltinType::Map, ProtocolSlot::GetItem),
+            (BuiltinType::Array, ProtocolSlot::GetItem),
+            (BuiltinType::String, ProtocolSlot::GetItem),
+        ] {
+            assert!(
+                d.get(ty, slot).is_some(),
+                "{ty:?}/{slot:?} became unbound — if that is intended it needs \
+                 an `unbound_reason`, and any language override of it is now dead"
             );
         }
     }
@@ -350,18 +411,15 @@ impl Compiler {
     /// The emit target bound for `(static type of expr, slot)`, or `None` when
     /// the type is not a built-in or the pair is unbound.
     ///
-    /// Reads ONLY the platform defaults today. Step 4 adds the per-language
-    /// table in front of it via `BuiltinSlotBindings::get_or`, which is why the
-    /// lookup is already expressed as "a table answers", not "a match arm
-    /// decides".
+    /// Language table first, platform default second — §2d steps 2 and 3.
     #[allow(dead_code)]
     pub(crate) fn builtin_slot_target(
         &self,
         expr: &Expression,
         slot: ProtocolSlot,
-    ) -> Option<&'static str> {
+    ) -> Option<&str> {
         let ty = self.builtin_type_of(expr)?;
-        defaults().get(ty, slot)
+        self.profile.builtin_slots.get_or(defaults(), ty, slot)
     }
 }
 
@@ -394,7 +452,11 @@ impl Compiler {
         let Some(ty) = self.builtin_type_of(object) else {
             return def;
         };
-        let Some(target) = defaults().get(ty, slot) else {
+        // §2d precedence: the language's own `[builtin_slots.*]` entry wins over
+        // the platform default. This is what makes a slot bindable at all where
+        // languages genuinely disagree — `Map`/`GetItem`'s four different
+        // answers on a miss, `Eq`'s per-language structural rules.
+        let Some(target) = self.profile.builtin_slots.get_or(defaults(), ty, slot) else {
             return def;
         };
         // Reuses the profile's own emit-target parser rather than a second

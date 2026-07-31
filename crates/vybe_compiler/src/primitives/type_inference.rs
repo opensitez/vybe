@@ -229,6 +229,7 @@ impl Compiler {
             ExprKind::Lit(Literal::Float(_)) => Some("double".into()),
             ExprKind::Lit(Literal::BigInt(_)) => Some("bigint".into()),
             ExprKind::Lit(Literal::Str(_)) => Some("string".into()),
+            ExprKind::Lit(Literal::Bytes(_)) => Some("bytes".into()),
             ExprKind::Lit(Literal::Bool(_)) => Some("bool".into()),
             ExprKind::Lit(Literal::Char(_)) => Some("char".into()),
             ExprKind::Cast { type_name, .. } => Some(type_name.clone()),

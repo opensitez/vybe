@@ -148,47 +148,126 @@ impl Compiler {
         self.emit_to_primitive("number");
     }
 
-    pub(super) fn emit_pascal_relational_compare(&mut self, cmp_fn: fn(&mut Chunk, u32)) {
-        let t_b = self.define_local("__pas_cmp_b");
-        let t_a = self.define_local("__pas_cmp_a");
-        self.emit_u16(Op::LOCAL_SET, t_b);
-        self.emit_u16(Op::LOCAL_SET, t_a);
+    /// The language's three-way `Compare` target for strings, if it declares
+    /// one — `[builtin_slots.string] compare` (builtinslotplan.md §2a).
+    ///
+    /// Reads the LANGUAGE table only, deliberately not `get_or` with the
+    /// platform default. The default is `common:str_compare`, a pure string
+    /// compare that would mangle numeric operands; a language opts into
+    /// string-aware relational behaviour by declaring it, and one that declares
+    /// nothing keeps the plain dynamic comparison it has today.
+    ///
+    /// This one lookup replaces THREE mechanisms that all answered the same
+    /// question depending on who was asking: the `string_aware_relational`
+    /// profile bool, the name-keyed `LanguageHooks::relational_compare`
+    /// callback, and a literal `profile.name == "pascal"` check (§3c).
+    fn string_compare3_target(&self) -> Option<String> {
+        self.profile
+            .builtin_slots
+            .get(
+                vybe_ast::builtin_slots::BuiltinType::String,
+                vybe_ast::ProtocolSlot::Compare,
+            )
+            .map(str::to_string)
+    }
 
-        self.emit_u16(Op::LOCAL_GET, t_a);
-        fn_call!(self, "ecma:value", "typeof", 1);
-        self.emit_const(Value::String(Arc::from("string")));
-        {
-            let line = self.line;
-            crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-        };
+    /// Emit the language's three-way compare: `[a, b]` → `i32` in `{-1, 0, 1}`.
+    ///
+    /// Panics on an emit-target shape it cannot emit. Emitting nothing would
+    /// leave both operands stranded on the stack while the caller pushed a `0`
+    /// to compare against — silent stack corruption traceable only to a typo in
+    /// a profile. The `[builtin_slots.*]` parser is already fatal on a bad key;
+    /// this is the same contract one layer down.
+    fn emit_compare3(&mut self, target: &str) {
         let line = self.line;
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if_value(line);
+        if let Some(name) = target.strip_prefix("common:") {
+            self.emit_common(name, 2, line);
+        } else if let Some(rest) = target.strip_prefix("host:") {
+            // `host:<module>:<fn>` — the same shape the profile parser accepts.
+            let (module, func) = rest.rsplit_once(':').unwrap_or_else(|| {
+                panic!("[builtin_slots] compare target `{target}` is not `host:<module>:<fn>`")
+            });
+            let idx = self.import(module, func);
+            self.emit_host_call(idx, 2);
+        } else {
+            panic!(
+                "[builtin_slots] compare target `{target}` must be `common:…` or `host:…`; \
+                 a three-way compare has no opcode or stdlib form"
+            );
+        }
+    }
 
-        self.emit_u16(Op::LOCAL_GET, t_b);
-        fn_call!(self, "ecma:value", "typeof", 1);
-        self.emit_const(Value::String(Arc::from("string")));
-        crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-        self.chunk().emit_if_value(line);
+    /// The language's `Contains` target for sets, if it declares one —
+    /// `[builtin_slots.set] contains` (builtinslotplan.md §2a).
+    ///
+    /// LANGUAGE table only, for the same reason as [`Self::string_compare3_target`]:
+    /// the platform default for `Contains` is a collection membership test, while
+    /// the `in` operator on most profiles here is a KEY check
+    /// (`ecma:object.hasOwn`, ECMA-262 §13.10.1). Falling back to the default
+    /// would silently convert every language's `in` from "is this a key" to "is
+    /// this a value". A language that means membership declares it.
+    fn set_contains_target(&self) -> Option<String> {
+        self.profile
+            .builtin_slots
+            .get(
+                vybe_ast::builtin_slots::BuiltinType::Set,
+                vybe_ast::ProtocolSlot::Contains,
+            )
+            .map(str::to_string)
+    }
 
-        self.emit_u16(Op::LOCAL_GET, t_a);
-        self.emit_u16(Op::LOCAL_GET, t_b);
-        fn_call!(self, "wasm:js-string", "compare", 2);
+    /// The language's `Contains` target for arrays — `[builtin_slots.array]
+    /// contains`. Same LANGUAGE-only reasoning as [`Self::set_contains_target`]:
+    /// the platform default is a value-membership test, while `in` on the ECMA
+    /// profiles is a key test, so a language opts in by declaring.
+    pub(super) fn array_contains_target(&self) -> Option<String> {
+        self.profile
+            .builtin_slots
+            .get(
+                vybe_ast::builtin_slots::BuiltinType::Array,
+                vybe_ast::ProtocolSlot::Contains,
+            )
+            .map(str::to_string)
+    }
+
+    /// Emit a membership test for stack `[value, collection]` → bool.
+    ///
+    /// The target is called `(collection, value)` — receiver first, which is the
+    /// order `ecma:object.hasOwn` already uses on the generic path below and the
+    /// order `ecma:set.has` wants. The operand stack is the other way round, so
+    /// this spills both and reloads them swapped.
+    pub(super) fn emit_contains(&mut self, target: &str) {
+        let t_collection = self.define_local("__contains_collection");
+        let t_value = self.define_local("__contains_value");
+        self.emit_u16(Op::LOCAL_SET, t_collection);
+        self.emit_u16(Op::LOCAL_SET, t_value);
+        self.emit_u16(Op::LOCAL_GET, t_collection);
+        self.emit_u16(Op::LOCAL_GET, t_value);
+        let line = self.line;
+        if let Some(name) = target.strip_prefix("common:") {
+            self.emit_common(name, 2, line);
+        } else if let Some(rest) = target.strip_prefix("host:") {
+            let (module, func) = rest.rsplit_once(':').unwrap_or_else(|| {
+                panic!("[builtin_slots] contains target `{target}` is not `host:<module>:<fn>`")
+            });
+            let idx = self.import(module, func);
+            self.emit_host_call(idx, 2);
+        } else {
+            panic!("[builtin_slots] contains target `{target}` must be `common:…` or `host:…`");
+        }
+    }
+
+    /// `a <op> b` derived from the sign of the three-way compare — §2f: bind
+    /// `Compare`, and `Lt`/`Le`/`Gt`/`Ge` follow from it rather than each
+    /// carrying its own copy of the language's comparison rules.
+    fn emit_relational_from_compare3(&mut self, target: &str, cmp_fn: fn(&mut Chunk, u32)) {
+        self.emit_compare3(target);
         self.emit_const(Value::I32(0));
+        let line = self.line;
         cmp_fn(self.chunk(), line);
-
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, t_a);
-        self.emit_u16(Op::LOCAL_GET, t_b);
-        cmp_fn(self.chunk(), line);
-        self.chunk().emit_end(line);
-
-        self.chunk().emit_else(line);
-        self.emit_u16(Op::LOCAL_GET, t_a);
-        self.emit_u16(Op::LOCAL_GET, t_b);
-        cmp_fn(self.chunk(), line);
-        self.chunk().emit_end(line);
+        if self.profile.materialize_bool_results {
+            crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+        }
     }
 
     /// JS profile: ToPrimitive(hint=default) on both operands. Used
@@ -374,7 +453,7 @@ impl Compiler {
                 // string operands (`"2026" + 4 == 2030`). `F64_ADD`
                 // coerces both sides via `Value::as_f64()`; `DYN_ADD`
                 // has the JS-style string-concat special case.
-                if self.profile.dynamic_add && self.profile.name != "cobol" {
+                if self.profile.dynamic_add {
                     // JS profile: ECMA §13.15.4 — call ToPrimitive on
                     // both operands with hint "default" before adding.
                     // The polyfill returns the operand unchanged for
@@ -401,30 +480,14 @@ impl Compiler {
                         let line = self.line;
                         crate::primitives::ops::emit_dyn_add(self.chunk(), line);
                     };
-                } else if self.is_php_profile() {
-                    // PHP `+` on arrays = union (first-wins merge).
-                    // Check at runtime if both are objects → union.
-                    let a_slot = self.define_local("__php_add_a");
-                    let b_slot = self.define_local("__php_add_b");
-                    self.emit_u16(Op::LOCAL_SET, b_slot);
-                    self.emit_u16(Op::LOCAL_SET, a_slot);
-                    self.emit_u16(Op::LOCAL_GET, a_slot);
-                    inst!(self, recipes::is_object);
-                    self.emit_u16(Op::LOCAL_GET, b_slot);
-                    inst!(self, recipes::is_object);
-                    self.emit(Op::I32_AND);
+                } else if let Some(emit_add) =
+                    vybe_runtime::registry::hooks(&self.profile.name).arith_add
+                {
+                    // A language whose `+` is overloaded on collections as well
+                    // as numbers (PHP's array union) owns that decision in its
+                    // own adapter — same arrangement as `relational_compare`.
                     let line = self.line;
-                    self.chunk().emit_if_value(line);
-                    // Both objects → array union: iterate b's entries,
-                    // set on a copy of a only if key doesn't exist
-                    self.emit_u16(Op::LOCAL_GET, a_slot);
-                    self.emit_u16(Op::LOCAL_GET, b_slot);
-                    self.emit_common("php.array_union", 2, line);
-                    self.chunk().emit_else(line);
-                    self.emit_u16(Op::LOCAL_GET, a_slot);
-                    self.emit_u16(Op::LOCAL_GET, b_slot);
-                    self.emit(Op::F64_ADD);
-                    self.chunk().emit_end(line);
+                    emit_add(&mut self.chunks, self.current, line);
                 } else {
                     self.emit(Op::F64_ADD);
                 }
@@ -596,27 +659,25 @@ impl Compiler {
                 }
             }
             BinOp::Lt => {
-                if self.profile.ecma_operator_coercion {
-                    self.coerce_top_two_to_primitive();
-                } else if self.profile.string_aware_relational {
-                    let line = self.line;
-                    vybe_runtime::registry::hooks(&self.profile.name)
-                        .relational_compare
-                        .unwrap()(
-                        self.chunk(), crate::primitives::ops::emit_dyn_lt, line
+                // builtinslotplan.md §2f — the language's three-way `Compare`
+                // decides, and this operator is its sign. Checked BEFORE
+                // `ecma_operator_coercion` per §2d: a language's own binding
+                // outranks a platform-wide coercion default.
+                if let Some(target) = self.string_compare3_target() {
+                    self.emit_relational_from_compare3(
+                        &target,
+                        crate::primitives::ops::emit_dyn_lt,
                     );
                     return;
                 }
-                if self.profile.name == "pascal" {
-                    self.emit_pascal_relational_compare(crate::primitives::ops::emit_dyn_lt);
-                } else if self.profile.ecma_operator_coercion {
+                if self.profile.ecma_operator_coercion {
+                    self.coerce_top_two_to_primitive();
+                }
+                if self.profile.ecma_operator_coercion {
                     // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
                     let line = self.line;
                     crate::primitives::ops::emit_js_lt(self.chunk(), line);
                     crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-                } else if self.is_php_profile() {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_lt(self.chunk(), line);
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
@@ -637,27 +698,25 @@ impl Compiler {
                 }
             }
             BinOp::Gt => {
-                if self.profile.ecma_operator_coercion {
-                    self.coerce_top_two_to_primitive();
-                } else if self.profile.string_aware_relational {
-                    let line = self.line;
-                    vybe_runtime::registry::hooks(&self.profile.name)
-                        .relational_compare
-                        .unwrap()(
-                        self.chunk(), crate::primitives::ops::emit_dyn_gt, line
+                // builtinslotplan.md §2f — the language's three-way `Compare`
+                // decides, and this operator is its sign. Checked BEFORE
+                // `ecma_operator_coercion` per §2d: a language's own binding
+                // outranks a platform-wide coercion default.
+                if let Some(target) = self.string_compare3_target() {
+                    self.emit_relational_from_compare3(
+                        &target,
+                        crate::primitives::ops::emit_dyn_gt,
                     );
                     return;
                 }
-                if self.profile.name == "pascal" {
-                    self.emit_pascal_relational_compare(crate::primitives::ops::emit_dyn_gt);
-                } else if self.profile.ecma_operator_coercion {
+                if self.profile.ecma_operator_coercion {
+                    self.coerce_top_two_to_primitive();
+                }
+                if self.profile.ecma_operator_coercion {
                     // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
                     let line = self.line;
                     crate::primitives::ops::emit_js_gt(self.chunk(), line);
                     crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-                } else if self.is_php_profile() {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_gt(self.chunk(), line);
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
@@ -678,27 +737,25 @@ impl Compiler {
                 }
             }
             BinOp::LtEq => {
-                if self.profile.ecma_operator_coercion {
-                    self.coerce_top_two_to_primitive();
-                } else if self.profile.string_aware_relational {
-                    let line = self.line;
-                    vybe_runtime::registry::hooks(&self.profile.name)
-                        .relational_compare
-                        .unwrap()(
-                        self.chunk(), crate::primitives::ops::emit_dyn_le, line
+                // builtinslotplan.md §2f — the language's three-way `Compare`
+                // decides, and this operator is its sign. Checked BEFORE
+                // `ecma_operator_coercion` per §2d: a language's own binding
+                // outranks a platform-wide coercion default.
+                if let Some(target) = self.string_compare3_target() {
+                    self.emit_relational_from_compare3(
+                        &target,
+                        crate::primitives::ops::emit_dyn_le,
                     );
                     return;
                 }
-                if self.profile.name == "pascal" {
-                    self.emit_pascal_relational_compare(crate::primitives::ops::emit_dyn_le);
-                } else if self.profile.ecma_operator_coercion {
+                if self.profile.ecma_operator_coercion {
+                    self.coerce_top_two_to_primitive();
+                }
+                if self.profile.ecma_operator_coercion {
                     // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
                     let line = self.line;
                     crate::primitives::ops::emit_js_le(self.chunk(), line);
                     crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-                } else if self.is_php_profile() {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_le(self.chunk(), line);
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
@@ -719,27 +776,25 @@ impl Compiler {
                 }
             }
             BinOp::GtEq => {
-                if self.profile.ecma_operator_coercion {
-                    self.coerce_top_two_to_primitive();
-                } else if self.profile.string_aware_relational {
-                    let line = self.line;
-                    vybe_runtime::registry::hooks(&self.profile.name)
-                        .relational_compare
-                        .unwrap()(
-                        self.chunk(), crate::primitives::ops::emit_dyn_ge, line
+                // builtinslotplan.md §2f — the language's three-way `Compare`
+                // decides, and this operator is its sign. Checked BEFORE
+                // `ecma_operator_coercion` per §2d: a language's own binding
+                // outranks a platform-wide coercion default.
+                if let Some(target) = self.string_compare3_target() {
+                    self.emit_relational_from_compare3(
+                        &target,
+                        crate::primitives::ops::emit_dyn_ge,
                     );
                     return;
                 }
-                if self.profile.name == "pascal" {
-                    self.emit_pascal_relational_compare(crate::primitives::ops::emit_dyn_ge);
-                } else if self.profile.ecma_operator_coercion {
+                if self.profile.ecma_operator_coercion {
+                    self.coerce_top_two_to_primitive();
+                }
+                if self.profile.ecma_operator_coercion {
                     // ECMA-262 §7.2.13 — NaN-safe ToNumber on mixed operands.
                     let line = self.line;
                     crate::primitives::ops::emit_js_ge(self.chunk(), line);
                     crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-                } else if self.is_php_profile() {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_ge(self.chunk(), line);
                 } else {
                     let right_slot = self.define_local("__rich_cmp_rhs");
                     let left_slot = self.define_local("__rich_cmp_lhs");
@@ -760,6 +815,16 @@ impl Compiler {
                 }
             }
             BinOp::Spaceship => {
+                // `<=>` is ITS OWN operator, not three others stacked up.
+                // When the language declares a three-way `Compare`, emit it
+                // directly — one call, and the operands are evaluated once.
+                if let Some(target) = self.string_compare3_target() {
+                    self.emit_compare3(&target);
+                    return;
+                }
+                // No declared `Compare`: derive the sign from `<` then `>`.
+                // Two evaluations of each operand, which is why a language that
+                // cares declares the primitive instead.
                 let right_slot = self.define_local("__spaceship_rhs");
                 let left_slot = self.define_local("__spaceship_lhs");
                 self.emit_u16(Op::LOCAL_SET, right_slot);
@@ -769,15 +834,6 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, right_slot);
                 if self.profile.ecma_operator_coercion {
                     self.coerce_top_two_to_primitive();
-                } else if self.profile.string_aware_relational {
-                    let line = self.line;
-                    vybe_runtime::registry::hooks(&self.profile.name)
-                        .relational_compare
-                        .unwrap()(
-                        self.chunk(), crate::primitives::ops::emit_dyn_lt, line
-                    );
-                } else if self.profile.name == "pascal" {
-                    self.emit_pascal_relational_compare(crate::primitives::ops::emit_dyn_lt);
                 } else {
                     {
                         let line = self.line;
@@ -794,15 +850,6 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, right_slot);
                 if self.profile.ecma_operator_coercion {
                     self.coerce_top_two_to_primitive();
-                } else if self.profile.string_aware_relational {
-                    let line = self.line;
-                    vybe_runtime::registry::hooks(&self.profile.name)
-                        .relational_compare
-                        .unwrap()(
-                        self.chunk(), crate::primitives::ops::emit_dyn_gt, line
-                    );
-                } else if self.profile.name == "pascal" {
-                    self.emit_pascal_relational_compare(crate::primitives::ops::emit_dyn_gt);
                 } else {
                     {
                         let line = self.line;
@@ -906,16 +953,14 @@ impl Compiler {
                     return;
                 }
 
-                if self.profile.name == "pascal" {
-                    let t_set = self.define_local("__pascal_in_set");
-                    let t_value = self.define_local("__pascal_in_value");
-                    self.emit_u16(Op::LOCAL_SET, t_set);
-                    self.emit_u16(Op::LOCAL_SET, t_value);
-                    let helper = self.str_const("__vybe_pascal_set_contains");
-                    self.emit_u16(Op::GLOBAL_GET, helper);
-                    self.emit_u16(Op::LOCAL_GET, t_value);
-                    self.emit_u16(Op::LOCAL_GET, t_set);
-                    self.emit_u8(Op::CALL_REF, 2);
+                // builtinslotplan.md §3c: this was `profile.name == "pascal"`
+                // calling the `__vybe_pascal_set_contains` global, whose whole
+                // body (`runtime_helpers::build_pascal_set_contains`) is
+                // `ecma:set.has` with the two arguments swapped. Pascal now
+                // declares `[builtin_slots.set] contains` and gets the same
+                // emission without the shared compiler knowing its name.
+                if let Some(target) = self.set_contains_target() {
+                    self.emit_contains(&target);
                     return;
                 }
 
@@ -970,20 +1015,11 @@ impl Compiler {
                     return;
                 }
 
-                if self.profile.name == "pascal" {
-                    let t_set = self.define_local("__pascal_nin_set");
-                    let t_value = self.define_local("__pascal_nin_value");
-                    self.emit_u16(Op::LOCAL_SET, t_set);
-                    self.emit_u16(Op::LOCAL_SET, t_value);
-                    let helper = self.str_const("__vybe_pascal_set_contains");
-                    self.emit_u16(Op::GLOBAL_GET, helper);
-                    self.emit_u16(Op::LOCAL_GET, t_value);
-                    self.emit_u16(Op::LOCAL_GET, t_set);
-                    self.emit_u8(Op::CALL_REF, 2);
-                    {
-                        let line = self.line;
-                        crate::primitives::ops::emit_dyn_not(self.chunk(), line);
-                    };
+                // The negation of `In`'s slot binding — see there.
+                if let Some(target) = self.set_contains_target() {
+                    self.emit_contains(&target);
+                    let line = self.line;
+                    crate::primitives::ops::emit_dyn_not(self.chunk(), line);
                     return;
                 }
 
@@ -1110,7 +1146,7 @@ impl Compiler {
     pub(super) fn compile_compound_op(&mut self, op: &CompoundOp) {
         match op {
             CompoundOp::Add => {
-                if self.profile.dynamic_add && self.profile.name != "cobol" {
+                if self.profile.dynamic_add {
                     if self.profile.ecma_operator_coercion {
                         self.coerce_top_two_to_default_primitive();
                     }

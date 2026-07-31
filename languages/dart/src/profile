@@ -545,3 +545,18 @@ bool   = ["bool"]
 array  = ["list", "list<*"]
 map    = ["map", "map<*"]
 set    = ["set", "set<*"]
+
+# Dart's OVERRIDES of the platform default slot table — builtinslotplan.md §2a.
+#
+# The platform binds `map`/`get_item` to `common:dict.get_dynamic`, which
+# answers `undefined` for a missing key. Dart's answer is `null`, and the
+# difference is observable: `factory_from_json_optional_string_null` reads
+# `json['body']` from an empty `Map<String, dynamic>` and requires null.
+# Measured 2026-07-31 — binding the default centrally broke exactly that test,
+# which is why the pair stayed unbound until a language could override it.
+#
+# Every language has a different right answer on a MISS (`undefined` in JS,
+# `null` here, `KeyError` in Python, `null`+warning in PHP) and they all agree
+# on a HIT, so this belongs in the language, not the shared table.
+[builtin_slots.map]
+get_item = "common:dart.index_get"

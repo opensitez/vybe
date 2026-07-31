@@ -33,6 +33,43 @@ pub fn profile_source() -> &'static str {
     include_str!("profile")
 }
 
+// ── PHP's variable namespace ────────────────────────────────────────────────
+//
+// PHP keeps variables in a namespace separate from functions and classes: `$x`
+// and `x()` are unrelated bindings that can coexist in one program. The `$` is
+// PHP's spelling of that distinction, so all knowledge of it lives here and
+// none of it reaches shared code. See `vybe_runtime::registry::VariableNamespace`.
+
+fn variable_body(name: &str) -> &str {
+    name.strip_prefix('$').unwrap_or(name)
+}
+
+fn spell_variable(body: &str) -> String {
+    format!("${body}")
+}
+
+fn variable_global_key(name: &str, canon: &str) -> Option<String> {
+    if !name.starts_with('$') {
+        return None;
+    }
+    // Superglobals (`$_GET`, `$_SERVER`, `$_POST`, …) are registered by the
+    // host under their literal source spelling, so mangling them would make
+    // them unreachable. Everything else gets a prefix that keeps a global
+    // `$foo` from colliding with a function named `foo`.
+    if name.starts_with("$_") {
+        Some(name.to_string())
+    } else {
+        Some(format!("__php_var_{canon}"))
+    }
+}
+
+static VARIABLE_NAMESPACE: vybe_runtime::registry::VariableNamespace =
+    vybe_runtime::registry::VariableNamespace {
+        body: variable_body,
+        spell: spell_variable,
+        global_key: variable_global_key,
+    };
+
 /// Register this language with the shared plugin registry (dylib entry point).
 pub fn register() {
     vybe_runtime::registry::register_language(vybe_runtime::registry::LanguageDef {
@@ -47,6 +84,9 @@ pub fn register() {
         "php",
         vybe_runtime::registry::LanguageHooks {
             relational_compare: Some(emitter::relational_adapter::emit_relational_compare),
+            arith_add: Some(emitter::array_adapter::emit_php_add),
+            concat_stringify: Some(emitter::string_adapter::emit_concat_stringify),
+            variable_namespace: Some(&VARIABLE_NAMESPACE),
             constructor_ref_autoload: Some(
                 emitter::autoload_adapter::emit_constructor_ref_with_autoload,
             ),

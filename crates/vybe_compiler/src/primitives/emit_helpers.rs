@@ -166,17 +166,33 @@ impl Compiler {
     /// the handler is wired must NOT break dispatch.
     ///
     pub(crate) fn canon(&self, name: &str) -> String {
-        let name = if self.is_php_profile() {
-            name.strip_prefix('$').unwrap_or(name)
-        } else {
-            name
-        };
+        let name = self.variable_name_body(name);
         if self.case_sensitive {
             name.to_string()
         } else {
             name.to_lowercase()
         }
     }
+
+    /// `name` with any variable-namespace marker removed, so canonicalization
+    /// folds the bare name. Identity for the languages that have a single
+    /// namespace — which is all of them but PHP. See
+    /// [`vybe_runtime::registry::VariableNamespace`].
+    pub(crate) fn variable_name_body<'a>(&self, name: &'a str) -> &'a str {
+        match self.variable_namespace {
+            Some(ns) => (ns.body)(name),
+            None => name,
+        }
+    }
+
+    /// True when `name` is spelled in the language's separate VARIABLE
+    /// namespace. Derived from `body` being non-identity so a language declares
+    /// its marker in exactly one place instead of once per question asked
+    /// about it.
+    pub(crate) fn is_variable_name(&self, name: &str) -> bool {
+        self.variable_name_body(name).len() != name.len()
+    }
+
 
     /// Canonical global name for a *type* reference: [`Self::canon`] plus
     /// namespace-separator normalization.
@@ -190,16 +206,17 @@ impl Compiler {
         self.canon(name).replace("::", ".").replace('\\', ".")
     }
 
-    pub(crate) fn php_variable_global_key(&self, name: &str, canon: &str) -> String {
-        if self.is_php_profile() && name.starts_with('$') {
-            if name.starts_with("$_") {
-                name.to_string()
-            } else {
-                format!("__php_var_{canon}")
-            }
-        } else {
-            canon.to_string()
-        }
+    /// Global-scope key for `name`, whose canonical body is `canon`.
+    ///
+    /// Where a language keeps variables in their own namespace, a global `$foo`
+    /// must not collide with a function `foo`; the language decides what key
+    /// separates them, and which names are exempt. Everywhere else the
+    /// canonical name IS the key. Pairs with [`Self::canon`] — that strips the
+    /// marker so this can key off the bare name, so the two change together.
+    pub(crate) fn variable_global_key(&self, name: &str, canon: &str) -> String {
+        self.variable_namespace
+            .and_then(|ns| (ns.global_key)(name, canon))
+            .unwrap_or_else(|| canon.to_string())
     }
 
     /// True if `name` is a class the program actually declares. A real class

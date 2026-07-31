@@ -659,7 +659,7 @@ impl Compiler {
             return Ok(false);
         }
 
-        let ctor_global = format!("{}$arity0", class_name);
+        let ctor_global = crate::primitives::classes::ctor_global_for(&class_name, 0);
         if self.defined_globals.contains(&ctor_global) {
             self.emit_var_get(&ctor_global);
         } else {
@@ -3169,7 +3169,12 @@ impl Compiler {
             }
         }
 
-        if self.is_php_profile() {
+        // `compact`/`extract` convert between a map and the set of bindings in
+        // the VARIABLE namespace, so they only mean anything in a language that
+        // has one. They read and write local slots BY NAME, which is why they
+        // stay here rather than moving to a profile builtin: `emit_common`
+        // receives a chunk and an argc, and cannot reach the scope table.
+        if let Some(ns) = self.variable_namespace {
             if let ExprKind::Ident(name) = &callee.kind {
                 if name == "compact" {
                     let line = self.line;
@@ -3179,10 +3184,10 @@ impl Compiler {
                             self.emit(Op::NULL);
                             return Ok(());
                         };
-                        let php_var_name = format!("${}", var_name);
+                        let var_binding = (ns.spell)(var_name);
                         inst!(self, core_wasm::dup);
                         self.emit_const(Value::String(Arc::from(var_name.as_str())));
-                        self.emit_var_get(&php_var_name);
+                        self.emit_var_get(&var_binding);
                         common::collections::emit_set(&mut self.chunks, self.current, line);
                         self.emit(Op::DROP);
                     }
@@ -3196,11 +3201,12 @@ impl Compiler {
                             let Some(key_expr) = &elem.key else {
                                 continue;
                             };
-                            let bind_name = match &key_expr.kind {
-                                ExprKind::Lit(Literal::Str(s)) => format!("${}", s),
-                                ExprKind::Lit(Literal::Int(n)) => format!("${}", n),
+                            let bind_body = match &key_expr.kind {
+                                ExprKind::Lit(Literal::Str(s)) => s.to_string(),
+                                ExprKind::Lit(Literal::Int(n)) => n.to_string(),
                                 _ => continue,
                             };
+                            let bind_name = (ns.spell)(&bind_body);
                             self.compile_expr(&elem.value)?;
                             self.emit_var_set(&bind_name);
                             count += 1;
@@ -3209,14 +3215,23 @@ impl Compiler {
                         return Ok(());
                     }
 
+                    // Every USER binding in scope: a name in the variable
+                    // namespace whose body is not a compiler temporary. The
+                    // `__` convention for temporaries is shared (see
+                    // `track_lexical_name`); the marker that makes it a
+                    // variable is the language's.
+                    let is_user_variable = |name: &str| {
+                        self.is_variable_name(name)
+                            && !self.variable_name_body(name).starts_with("__")
+                    };
                     let mut binding_names = std::collections::BTreeSet::new();
                     for local in &self.scope().locals {
-                        if local.name.starts_with('$') && !local.name.starts_with("$__") {
+                        if is_user_variable(&local.name) {
                             binding_names.insert(local.name.clone());
                         }
                     }
                     for global in &self.defined_globals {
-                        if global.starts_with('$') && !global.starts_with("$__") {
+                        if is_user_variable(global) {
                             binding_names.insert(global.clone());
                         }
                     }
@@ -3231,8 +3246,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, count_slot);
 
                         for bind_name in binding_names {
-                            let key_name =
-                                bind_name.strip_prefix('$').unwrap_or(bind_name.as_str());
+                            let key_name = self.variable_name_body(&bind_name);
                             self.emit_u16(Op::LOCAL_GET, map_slot);
                             self.emit_const(Value::String(Arc::from(key_name)));
                             let line = self.line;
@@ -9146,11 +9160,10 @@ impl Compiler {
             // `defined_functions` and `defined_classes` from the "looks like
             // a variable" set, otherwise `GetResult()` (function call) and
             // `New Result()` (class) would be mis-identified as indexing.
-            if !is_known_func
-                && arg_exprs.len() == 1
-                && self.profile.parens_for_index
-                && !self.is_php_profile()
-            {
+            // `parens_for_index` alone is the gate — PHP never sets it (it
+            // defaults false), so the PHP name check that used to sit here was
+            // already unreachable.
+            if !is_known_func && arg_exprs.len() == 1 && self.profile.parens_for_index {
                 let canon_name = self.canon(name);
                 let is_local = self.has_accessible_local_binding(name);
                 let is_global_var = self.defined_globals.contains(&canon_name)
@@ -9521,7 +9534,14 @@ impl Compiler {
                 );
                 return Ok(());
             }
-            if self.is_python_profile() && !is_known_func {
+            // An object used as a callee: probe the Call SLOT before giving up.
+            // Kotlin `operator fun invoke`, Python `__call__`, PHP `__invoke`,
+            // Dart `call` and a C# `()` operator all fill it, so ONE probe
+            // reaches every one of them — which is exactly why this must not be
+            // gated on a language NAME. It was `is_python_profile()`, so
+            // `val f = Box(); f("x")` trapped with "Not a function" in every
+            // other language that has the feature.
+            if self.profile.callable_objects && !is_known_func {
                 let callee_slot = self.define_local("__py_call_target");
                 self.emit_var_get(name);
                 self.emit_u16(Op::LOCAL_SET, callee_slot);
@@ -9956,6 +9976,55 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_SET, callee_slot);
         self.emit_source_function_callable_name_resolution(callee_slot);
 
+        // A callee that is an OBJECT, not a function: dispatch through the Call
+        // SLOT. `Counter()(3)`, `A()(3)(4)`, `makeAdder()(2)` — the callee here
+        // is a produced value, so the Ident path's probe never sees it and a
+        // plain `CALL_REF` trapped with "Not a function".
+        //
+        // By ROLE, never by spelling: Kotlin `operator fun invoke`, Python
+        // `__call__`, PHP `__invoke`, Dart `call` and a C# `()` operator all
+        // fill `ProtocolSlot::Call`, so one probe reaches every one of them and
+        // no method-name table appears in shared code. Rewrites `callee_slot`
+        // to the bound method and remembers the object as the receiver, so the
+        // existing dispatch below carries it as `this`.
+        let invoke_matched = self.define_local("__call_ref_invoke_matched");
+        let invoke_receiver = self.define_local("__call_ref_invoke_receiver");
+        self.emit_const(Value::I32(0));
+        self.emit_u16(Op::LOCAL_SET, invoke_matched);
+        if self.profile.callable_objects {
+            let line = self.line;
+            // STRUCT_GET traps on a primitive, so gate on it being an object.
+            self.emit_u16(Op::LOCAL_GET, callee_slot);
+            let typeof_idx = self.import("ecma:value", "typeof");
+            self.emit_host_call(typeof_idx, 1);
+            self.emit_const(Value::String(Arc::from("object")));
+            crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+            self.chunk().emit_if(line);
+
+            self.emit_u16(Op::LOCAL_GET, callee_slot);
+            self.emit_u16(Op::LOCAL_SET, invoke_receiver);
+            self.emit_u16(Op::LOCAL_GET, callee_slot);
+            let slot_key =
+                self.str_const(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Call));
+            self.emit_u16(Op::STRUCT_GET, slot_key);
+            let method_slot = self.define_local("__call_ref_invoke_method");
+            self.emit_u16(Op::LOCAL_SET, method_slot);
+
+            self.emit_u16(Op::LOCAL_GET, method_slot);
+            self.emit(Op::REF_IS_NULL);
+            self.emit(Op::I32_EQZ);
+            let line = self.line;
+            self.chunk().emit_if(line);
+            self.emit_u16(Op::LOCAL_GET, method_slot);
+            self.emit_u16(Op::LOCAL_SET, callee_slot);
+            self.emit_const(Value::I32(1));
+            self.emit_u16(Op::LOCAL_SET, invoke_matched);
+            self.chunk().emit_end(line);
+
+            self.chunk().emit_end(line);
+        }
+
         let result_slot = self.define_local("__call_ref_result");
         self.emit(Op::NULL);
         self.emit_u16(Op::LOCAL_SET, result_slot);
@@ -9995,6 +10064,18 @@ impl Compiler {
         self.emit_u16(Op::STRUCT_GET, receiver_key);
         let receiver_slot = self.define_local("__call_ref_receiver");
         self.emit_u16(Op::LOCAL_SET, receiver_slot);
+
+        // The Call-slot method is UNBOUND — its receiver is the object the call
+        // was written on, which `__vybe_method_receiver` on the method itself
+        // does not carry.
+        {
+            let line = self.line;
+            self.emit_u16(Op::LOCAL_GET, invoke_matched);
+            self.chunk().emit_if(line);
+            self.emit_u16(Op::LOCAL_GET, invoke_receiver);
+            self.emit_u16(Op::LOCAL_SET, receiver_slot);
+            self.chunk().emit_end(line);
+        }
 
         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
         for (index, arg) in arg_exprs.iter().enumerate() {

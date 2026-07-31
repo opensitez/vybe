@@ -744,6 +744,20 @@ impl Compiler {
                     common::expressions::emit_undefined(self.chunk(), l);
                 }
                 Literal::Ellipsis => self.emit(Op::NULL),
+                // A byte string becomes a real `Uint8Array` — the shape Python
+                // `bytes` already used via `__py_bytes_new__`, now reached from
+                // the AST so the value carries a STATIC type and
+                // `(Bytes, slot)` bindings can resolve for it.
+                Literal::Bytes(bytes) => {
+                    for byte in bytes {
+                        self.emit_const(Value::F64(f64::from(*byte)));
+                    }
+                    let line = self.line;
+                    self.chunk()
+                        .emit_op_u16(Op::ARRAY_NEW_FIXED, bytes.len() as u16, line);
+                    let idx = self.import("ecma:uint8array", "new");
+                    self.emit_host_call(idx, 1);
+                }
             },
 
             // ── Identifier ──────────────────────────────────────────────
@@ -978,36 +992,26 @@ impl Compiler {
 
             // ── Binary ──────────────────────────────────────────────────
             ExprKind::Binary { op, left, right } => {
-                let is_csharp_integral_type = |type_hint: &str| {
-                    matches!(
-                        Self::normalize_type_hint(type_hint).as_str(),
-                        "int" | "uint" | "long" | "ulong" | "short" | "ushort" | "byte" | "sbyte"
-                    )
-                };
-                let is_c_integral_type = |type_hint: &str| {
-                    let hint = Self::normalize_type_hint(type_hint);
-                    hint.contains("int")
-                        || hint.contains("long")
-                        || hint.contains("short")
-                        || hint.contains("char")
-                        || hint == "uint8"
-                        || hint == "uint32"
-                        || hint == "bool"
-                        || hint == "_bool"
-                };
-                let expr_is_csharp_integral = |compiler: &Compiler, expr: &Expression| {
+                // Whether the expression is an INTEGER, per the language's own
+                // `[builtin_types] int = [...]` spellings then the platform
+                // table — builtinslotplan.md step 4a.
+                //
+                // This replaced TWO per-language spelling tables that lived
+                // here: an exact 8-way match for C# and a `contains`-based one
+                // for C (which also counts `char` and `bool`, correctly — they
+                // ARE integer types in C). Both were shared-crate tables keyed
+                // to one language, and the C one was reached through a literal
+                // `profile.name == "c"` (§3c).
+                let expr_is_integral = |compiler: &Compiler, expr: &Expression| {
                     matches!(expr.kind, ExprKind::Lit(Literal::Int(_)))
-                        || compiler
-                            .infer_expr_type_hint(expr)
-                            .as_deref()
-                            .is_some_and(is_csharp_integral_type)
-                };
-                let expr_is_c_integral = |compiler: &Compiler, expr: &Expression| {
-                    matches!(expr.kind, ExprKind::Lit(Literal::Int(_)))
-                        || compiler
-                            .infer_expr_type_hint(expr)
-                            .as_deref()
-                            .is_some_and(is_c_integral_type)
+                        || compiler.infer_expr_type_hint(expr).as_deref().is_some_and(
+                            |hint| {
+                                vybe_ast::builtin_types::classify_with(
+                                    &compiler.profile.builtin_type_spellings,
+                                    hint,
+                                ) == Some(vybe_ast::builtin_slots::BuiltinType::Int)
+                            },
+                        )
                 };
 
                 // Short-circuit for And/Or — generic path for all languages.
@@ -1039,7 +1043,17 @@ impl Compiler {
                         &mut self.chunks[self.current],
                         skip,
                     );
-                    if self.profile.name == "pascal" {
+                    // A short circuit yields the OPERAND, which is a raw i32
+                    // wherever it came from a comparison. `materialize_bool_results`
+                    // is the profile property for exactly this — "a boolean is a
+                    // VALUE in this language" — and it was already read at fifteen
+                    // other operator sites; only `&&`/`||` still asked for Pascal by
+                    // name. Pascal's own profile declares the property, so the name
+                    // check could not change its answer, and every other language
+                    // that declares it (C#, Go, Dart, Kotlin) declared it to stop
+                    // `print(a == b)` printing `1` — which `print(a && b)` was still
+                    // doing.
+                    if self.profile.materialize_bool_results {
                         let line = self.line;
                         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                         crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
@@ -1056,7 +1070,8 @@ impl Compiler {
                         &mut self.chunks[self.current],
                         skip,
                     );
-                    if self.profile.name == "pascal" {
+                    // Same as `&&` above — see the note there.
+                    if self.profile.materialize_bool_results {
                         let line = self.line;
                         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                         crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
@@ -1176,17 +1191,20 @@ impl Compiler {
                         }
                     }
                 }
-                if self.profile.name == "pascal" && (*op == BinOp::In || *op == BinOp::NotIn) {
-                    if !self.expr_is_pascal_set(right) {
-                        let line = self.line;
-                        self.compile_expr(right)?;
+                // builtinslotplan.md §3c: was `profile.name == "pascal"`. A
+                // language whose `in` means VALUE membership declares
+                // `[builtin_slots.array] contains`; one that means a KEY test
+                // (the ECMA profiles, `ecma:object.hasOwn`) declares nothing and
+                // cannot reach this. When the receiver IS a set, fall through to
+                // `compile_binop`, which uses the `set` row instead.
+                if (*op == BinOp::In || *op == BinOp::NotIn) && !self.expr_is_builtin_set(right) {
+                    if let Some(target) = self.array_contains_target() {
                         self.compile_expr(left)?;
-                        common::collections::emit_contains(&mut self.chunks, self.current, line);
+                        self.compile_expr(right)?;
+                        self.emit_contains(&target);
                         if *op == BinOp::NotIn {
-                            {
-                                let line = self.line;
-                                crate::primitives::ops::emit_dyn_not(self.chunk(), line);
-                            };
+                            let line = self.line;
+                            crate::primitives::ops::emit_dyn_not(self.chunk(), line);
                         }
                         return Ok(());
                     }
@@ -1210,20 +1228,15 @@ impl Compiler {
                     return Ok(());
                 }
 
+                // `int / int` truncates. ONE branch for every language that
+                // says so: C now declares `integer_division_on_slash = true`
+                // like C# always did, and each brings its own integer
+                // spellings, so the second copy of this block — the one gated
+                // on `profile.name == "c"` — is gone (§3c).
                 if self.profile.integer_division_on_slash
                     && *op == BinOp::Div
-                    && expr_is_csharp_integral(self, left)
-                    && expr_is_csharp_integral(self, right)
-                {
-                    self.compile_expr(left)?;
-                    self.compile_expr(right)?;
-                    self.compile_binop(&BinOp::IDiv);
-                    return Ok(());
-                }
-                if self.profile.name == "c"
-                    && *op == BinOp::Div
-                    && expr_is_c_integral(self, left)
-                    && expr_is_c_integral(self, right)
+                    && expr_is_integral(self, left)
+                    && expr_is_integral(self, right)
                 {
                     self.compile_expr(left)?;
                     self.compile_expr(right)?;
@@ -1231,7 +1244,9 @@ impl Compiler {
                     return Ok(());
                 }
 
-                if self.profile.name == "pascal" && *op == BinOp::BitXor {
+                // `xor` resolves by operand type — bitwise on integers,
+                // logical otherwise. Was `profile.name == "pascal"` (§3c).
+                if self.profile.xor_is_logical_for_non_integers && *op == BinOp::BitXor {
                     let integer_xor = self.pascal_expr_is_integer_like(left)
                         && self.pascal_expr_is_integer_like(right);
                     self.compile_expr(left)?;
@@ -1245,24 +1260,25 @@ impl Compiler {
                     return Ok(());
                 }
 
-                if self.is_php_profile() && *op == BinOp::Concat {
+                // PHP `.` and Lua `..` coerce BOTH operands to string up
+                // front instead of relying on the concat op's own coercion.
+                // The coercion itself is the only difference between them —
+                // PHP renders `true` as `"1"`, `null` as `""` and an array as
+                // `"Array"`, none of which is ECMA `String()` — so the
+                // language supplies it through `concat_stringify` and the
+                // shared `to_string` is the default.
+                if self.profile.concat_stringifies_operands && *op == BinOp::Concat {
                     let line = self.line;
-                    self.compile_expr(left)?;
-                    self.emit_common("php.echo_stringify", 1, line);
-                    self.compile_expr(right)?;
-                    self.emit_common("php.echo_stringify", 1, line);
+                    let stringify =
+                        vybe_runtime::registry::hooks(&self.profile.name).concat_stringify;
+                    for operand in [left, right] {
+                        self.compile_expr(operand)?;
+                        match stringify {
+                            Some(emit) => emit(&mut self.chunks, self.current, line),
+                            None => common::strings::emit_to_string(self.chunk(), line),
+                        }
+                    }
                     self.compile_binop(op);
-                    return Ok(());
-                }
-
-                // Lua `..` always stringifies operands (numbers, booleans, …).
-                if self.profile.name == "lua" && *op == BinOp::Concat {
-                    let line = self.line;
-                    self.compile_expr(left)?;
-                    common::strings::emit_to_string(self.chunk(), line);
-                    self.compile_expr(right)?;
-                    common::strings::emit_to_string(self.chunk(), line);
-                    common::strings::emit_str_concat(self.chunk(), line);
                     return Ok(());
                 }
 
@@ -1270,45 +1286,6 @@ impl Compiler {
                 // These already exist and return Value::BigInt / Value::Bool.
                 // `infer_expr_type_hint` returns "bigint" for BigInt literals
                 // and for variables initialised with BigInt values.
-                if self.is_php_profile() {
-                    let left_hint = self.infer_expr_type_hint(left);
-                    let right_hint = self.infer_expr_type_hint(right);
-                    let left_is_bigint = left_hint.as_deref() == Some("bigint");
-                    let right_is_bigint = right_hint.as_deref() == Some("bigint");
-                    if left_is_bigint || right_is_bigint {
-                        if left_is_bigint ^ right_is_bigint
-                            && matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq)
-                        {
-                            let number_idx = self.import("ecma:number", "Number");
-                            self.compile_expr(left)?;
-                            if left_is_bigint {
-                                self.emit_host_call(number_idx, 1);
-                            }
-                            self.compile_expr(right)?;
-                            if right_is_bigint {
-                                self.emit_host_call(number_idx, 1);
-                            }
-                            self.compile_binop(op);
-                            return Ok(());
-                        }
-                        let fn_name = match op {
-                            BinOp::Eq | BinOp::StrictEq => Some("eq"),
-                            BinOp::NotEq | BinOp::StrictNotEq => Some("ne"),
-                            BinOp::Lt => Some("lt"),
-                            BinOp::LtEq => Some("le"),
-                            BinOp::Gt => Some("gt"),
-                            BinOp::GtEq => Some("ge"),
-                            _ => None,
-                        };
-                        if let Some(name) = fn_name {
-                            let idx = self.import("ecma:bigint", name);
-                            self.compile_expr(left)?;
-                            self.compile_expr(right)?;
-                            self.emit_host_call(idx, 2);
-                            return Ok(());
-                        }
-                    }
-                }
                 if self.profile.has_ecma_bigint {
                     let left_hint = self.infer_expr_type_hint(left);
                     let right_hint = self.infer_expr_type_hint(right);
@@ -3874,8 +3851,12 @@ impl Compiler {
                     }
                     _ => None,
                 };
-                let php_autoload_name = match &class.kind {
-                    ExprKind::Ident(name) if self.is_php_profile() => {
+                // The source spelling to hand a runtime type resolver when the
+                // constructor global turns out to be undefined. Only meaningful
+                // where the language HAS such a resolver — see
+                // `emit_constructor_global_ref`, which owns the dispatch.
+                let autoload_source_name = match &class.kind {
+                    ExprKind::Ident(name) if self.profile.supports_autoload => {
                         Some(Self::strip_global_namespace_prefix(name).to_string())
                     }
                     _ => None,
@@ -3924,7 +3905,7 @@ impl Compiler {
                             Some(fixed) => fixed + 1,
                             None => args.len(),
                         };
-                        let overload_global = format!("{}$arity{}", canon_type, effective_len);
+                        let overload_global = crate::primitives::classes::ctor_global_for(&canon_type, effective_len);
                         let ctor_global = if self.defined_globals.contains(&overload_global) {
                             overload_global
                         } else {
@@ -3936,7 +3917,7 @@ impl Compiler {
                         // canonicalize to "inner", and the implicit-self-field
                         // check would mis-route to `me.inner` instead of the
                         // class global. Type names always come from globals.
-                        let autoload_name = php_autoload_name.as_deref().unwrap_or(type_name);
+                        let autoload_name = autoload_source_name.as_deref().unwrap_or(type_name);
                         self.emit_constructor_global_ref(&ctor_global, autoload_name);
                         if let Some(fixed) = js_ctor_rest_fixed {
                             for a in &args[..fixed] {
@@ -4005,13 +3986,13 @@ impl Compiler {
                         self.restore_js_new_target(saved_js_new_target);
                         return Ok(());
                     }
-                    if self.is_php_profile() {
-                        if let Some(autoload_name) = php_autoload_name.as_deref() {
+                    if self.profile.supports_autoload {
+                        if let Some(autoload_name) = autoload_source_name.as_deref() {
                             if let Some(flattened_name) = autoload_name.rsplit('\\').next() {
                                 let flattened_canon = self.canon(flattened_name);
                                 if self.defined_classes.contains(&flattened_canon) {
                                     let overload_global =
-                                        format!("{}$arity{}", flattened_canon, args.len());
+                                        crate::primitives::classes::ctor_global_for(&flattened_canon, args.len());
                                     let ctor_global =
                                         if self.defined_globals.contains(&overload_global) {
                                             overload_global
@@ -4036,7 +4017,7 @@ impl Compiler {
                         let last = class_parts.last().unwrap();
                         let canon_last = self.canon(last);
                         if self.defined_classes.contains(&canon_last) {
-                            let autoload_name = php_autoload_name.as_deref().unwrap_or(type_name);
+                            let autoload_name = autoload_source_name.as_deref().unwrap_or(type_name);
                             self.emit_constructor_global_ref(&canon_last, autoload_name);
                             for a in args {
                                 self.compile_expr(&a.value)?;
@@ -4335,13 +4316,9 @@ impl Compiler {
                         } else {
                             bare_str.to_lowercase()
                         };
-                        if self.is_php_profile() {
-                            let autoload_name = php_autoload_name.as_deref().unwrap_or(type_name);
-                            self.emit_constructor_global_ref(&ctor_name, autoload_name);
-                        } else {
-                            let ctor_idx = self.str_const(&ctor_name);
-                            self.emit_u16(Op::GLOBAL_GET, ctor_idx);
-                        }
+                        let autoload_name =
+                            autoload_source_name.as_deref().unwrap_or(type_name);
+                        self.emit_constructor_global_ref(&ctor_name, autoload_name);
                         for a in args {
                             self.compile_expr(&a.value)?;
                         }
@@ -4366,12 +4343,13 @@ impl Compiler {
                         return Ok(());
                     }
 
-                    if self.is_php_profile() {
-                        // A `$`-prefixed Ident is a *variable* (`new $c`), not a
-                        // class name — its runtime string value is resolved to a
-                        // constructor by the dynamic fall-through below.
+                    if self.profile.supports_autoload {
+                        // An Ident in the VARIABLE namespace is a variable
+                        // (`new $c`), not a class name — its runtime string
+                        // value is resolved to a constructor by the dynamic
+                        // fall-through below.
                         if let ExprKind::Ident(name) = &class.kind {
-                            if !name.starts_with('$') {
+                            if !self.is_variable_name(name) {
                                 let autoload_name =
                                     Self::strip_global_namespace_prefix(name).to_string();
                                 let ctor_base = autoload_name
@@ -4379,7 +4357,7 @@ impl Compiler {
                                     .next()
                                     .unwrap_or(autoload_name.as_str());
                                 let fallback_ctor = self.canon(ctor_base);
-                                let primary_ctor = format!("{}$arity{}", fallback_ctor, args.len());
+                                let primary_ctor = crate::primitives::classes::ctor_global_for(&fallback_ctor, args.len());
                                 self.emit_dynamic_constructor_global_ref(
                                     &primary_ctor,
                                     Some(&fallback_ctor),
@@ -5735,7 +5713,7 @@ impl Compiler {
                     if let Some(user_type) = self.user_value_type_name_from_hint(type_name) {
                         if matches!(&inner.kind, ExprKind::Object(_)) {
                             let ctor_global = {
-                                let overload = format!("{}$arity0", user_type);
+                                let overload = crate::primitives::classes::ctor_global_for(&user_type, 0);
                                 if self.defined_globals.contains(&overload) {
                                     overload
                                 } else {
@@ -6878,7 +6856,7 @@ impl Compiler {
             return Ok(false);
         }
 
-        if self.expr_is_pascal_set(left) && self.expr_is_pascal_set(right) {
+        if self.expr_is_builtin_set(left) && self.expr_is_builtin_set(right) {
             let helper = match op {
                 BinOp::Add => Some("__vybe_pascal_set_union"),
                 BinOp::Mul => Some("__vybe_pascal_set_intersection"),

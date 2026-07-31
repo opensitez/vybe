@@ -11,9 +11,9 @@ fn test_php_ob_list_handlers_active_stack() {
 ob_start();
 ob_start();
 $handlers = ob_list_handlers();
+ob_end_clean();
+ob_end_clean();
 echo implode(", ", $handlers);
-ob_end_clean();
-ob_end_clean();
 "#,
     );
     assert_eq!(out, vec!["default output handler, default output handler"]);
@@ -144,13 +144,11 @@ fn test_php_ob_get_status_runtime() {
 ob_start();
 echo "abc";
 $status = ob_get_status();
-echo array_keys($status)[0] . ':' . array_values($status)[0]['name'];
-echo '|';
-echo array_values($status)[0]['level'];
 ob_end_clean();
+echo $status['name'] . '|' . $status['level'];
 "#,
     );
-    assert_eq!(out, vec!["0:default output handler|1"]);
+    assert_eq!(out, vec!["default output handler|0"]);
 }
 
 #[test]
@@ -160,8 +158,8 @@ fn test_php_ob_get_status_full_true_runtime() {
 ob_start();
 echo "x";
 $status = ob_get_status(true);
-echo is_array($status) ? (is_array(array_values($status)[0]) ? 'full' : 'partial') : 'false';
 ob_end_clean();
+echo is_array($status) ? (is_array(array_values($status)[0]) ? 'full' : 'partial') : 'false';
 "#,
     );
     assert_eq!(out, vec!["full"]);
@@ -180,7 +178,7 @@ ob_start(function(string $chunk): string {
 echo 'ok';
 $inner = ob_get_clean();
 echo $inner;
-ob_end_clean();
+ob_end_flush();
 "#,
     );
     assert_eq!(out, vec!["[OK]"]);
@@ -193,8 +191,8 @@ fn test_php_ob_start_with_chunk_size_runtime() {
 ob_start(null, 32, false);
 echo str_repeat('a', 5);
 $inside = ob_get_contents();
-echo $inside . '|';
 ob_end_clean();
+echo $inside . '|';
 "#,
     );
     assert_eq!(out, vec!["aaaaa|"]);
@@ -206,14 +204,12 @@ fn test_php_ob_get_length_after_nested_clean_runtime() {
         r#"<?php
 ob_start();
 ob_start();
-$inner_len = 0;
 echo 'inner';
 $inner_len = ob_get_length();
 ob_end_clean();
-echo $inner_len;
-echo '|';
-echo ob_get_length();
+$outer_len = ob_get_length();
 ob_end_clean();
+echo $inner_len . '|' . $outer_len;
 "#,
     );
     assert_eq!(out, vec!["5|0"]);
@@ -229,11 +225,10 @@ echo 'inner';
 ob_end_clean();
 echo 'outer';
 $status = ob_get_status(true);
-echo '|';
-echo is_array($status) ? count($status) : -1;
-echo '|';
-echo ob_get_contents();
+$n = is_array($status) ? count($status) : -1;
+$contents = ob_get_contents();
 ob_end_clean();
+echo $contents . '|' . $n . '|' . $contents;
 "#,
     );
     assert_eq!(out, vec!["outer|1|outer"]);
@@ -244,12 +239,13 @@ fn test_php_ob_get_level_for_nested_buffers_runtime() {
     let out = run_prints(
         r#"<?php
 ob_start();
-echo ob_get_level() . '|';
+$l1 = ob_get_level();
 ob_start();
-echo ob_get_level() . '|';
+$l2 = ob_get_level();
 ob_end_clean();
-echo ob_get_level();
+$l3 = ob_get_level();
 ob_end_clean();
+echo $l1 . '|' . $l2 . '|' . $l3;
 "#,
     );
     assert_eq!(out, vec!["1|2|1"]);
@@ -279,9 +275,9 @@ ob_start(function(string $chunk): string {
 });
 echo 'a';
 echo 'b';
-ob_end_clean();
-echo ob_get_contents();
+$c = ob_get_clean();
+echo $c;
 "#,
     );
-    assert_eq!(out, vec![""]);
+    assert_eq!(out, vec!["AB"]);
 }

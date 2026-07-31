@@ -103,6 +103,13 @@ pub const PLATFORM_SPELLINGS: &[Spelling] = &[
     s("character", Match::Exact, BuiltinType::String),
     s("character(", Match::Prefix, BuiltinType::String),
     s("character*", Match::Prefix, BuiltinType::String),
+    // ── bytes ───────────────────────────────────────────────────────────
+    // `Literal::Bytes` gives these a static type to infer (unifiedstringplan
+    // §3c). Bytes are a distinct TYPE, not an encoding of `String`, so they
+    // classify separately rather than as a string spelling.
+    s("bytes", Match::Exact, BuiltinType::Bytes),
+    s("bytearray", Match::Exact, BuiltinType::Bytes),
+    s("uint8array", Match::Exact, BuiltinType::Bytes),
     // ── char ────────────────────────────────────────────────────────────
     // `is_numeric_type_hint` does NOT list `char`, and neither did the old
     // string predicate, so it belongs to neither. It is named here because

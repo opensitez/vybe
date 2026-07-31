@@ -14,7 +14,7 @@ impl Compiler {
         if self.profile.name != "pascal" {
             return;
         }
-        if !type_hint.is_some_and(Self::is_pascal_set_type_hint) {
+        if !type_hint.is_some_and(|h| self.hint_is_builtin_set(h)) {
             return;
         }
         if !matches!(value.kind, ExprKind::Array(_)) {
@@ -24,20 +24,36 @@ impl Compiler {
         self.emit_host_call(idx, 1);
     }
 
-    pub(super) fn expr_is_pascal_set(&self, expr: &Expression) -> bool {
-        if self.profile.name != "pascal" {
-            return false;
-        }
+    /// Whether `hint` names a `set` ACCORDING TO THE LANGUAGE — its
+    /// `[builtin_types] set = [...]` spellings, then the platform table.
+    ///
+    /// Replaces `Self::is_pascal_set_type_hint`, whose body was the single
+    /// spelling `"set of "` living in shared code. Both normalize identically
+    /// (`trim().to_lowercase()`) and `set = ["set of *"]` is a `Match::Prefix`,
+    /// so for Pascal this is the same predicate — the spelling just moved to
+    /// the language that owns it (builtinslotplan.md step 4a).
+    pub(super) fn hint_is_builtin_set(&self, hint: &str) -> bool {
+        vybe_ast::builtin_types::classify_with(&self.profile.builtin_type_spellings, hint)
+            == Some(vybe_ast::builtin_slots::BuiltinType::Set)
+    }
 
+    /// Whether `expr` is statically known to be a set.
+    ///
+    /// Carries NO language name. It used to open with `profile.name !=
+    /// "pascal"`, which made it a Pascal predicate that happened to live in
+    /// shared code; reachability is now the CALLER's business, and every caller
+    /// is gated on the language having declared a set binding (§2d — a language
+    /// that declares nothing cannot reach these paths).
+    pub(super) fn expr_is_builtin_set(&self, expr: &Expression) -> bool {
         match &expr.kind {
             ExprKind::Set(_) => true,
             ExprKind::Ident(name) => self
                 .lookup_var_type_hint(name)
-                .is_some_and(Self::is_pascal_set_type_hint),
+                .is_some_and(|h| self.hint_is_builtin_set(&h)),
             ExprKind::Binary { op, left, right }
                 if matches!(op, BinOp::Add | BinOp::Mul | BinOp::Sub) =>
             {
-                self.expr_is_pascal_set(left) && self.expr_is_pascal_set(right)
+                self.expr_is_builtin_set(left) && self.expr_is_builtin_set(right)
             }
             _ => false,
         }
@@ -260,7 +276,7 @@ impl Compiler {
         } else {
             cname
         };
-        let global_key = self.php_variable_global_key(name, &cname);
+        let global_key = self.variable_global_key(name, &cname);
         let idx = self.global_name_const_idx(&global_key);
 
         // ECMA-262 §9.1.1.4.6 / §13.3.2.1 GetValue: reading an *unresolvable*
@@ -572,7 +588,7 @@ impl Compiler {
             return;
         }
         // Global — canonicalize name for case-insensitive languages
-        let global_key = self.php_variable_global_key(name, &cname);
+        let global_key = self.variable_global_key(name, &cname);
         if self.scopes.len() == 1 {
             self.defined_globals.insert(global_key.clone());
         }

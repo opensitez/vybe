@@ -834,7 +834,11 @@ impl Compiler {
                 }
             }
         }
-        let slot = if self.is_php_profile() && name.starts_with('$') {
+        // Two independent questions, deliberately asked separately: does this
+        // language scope variables to the function rather than the block, and
+        // is this name a variable at all (rather than a compiler temporary)?
+        // They coincide in PHP and need not anywhere else.
+        let slot = if self.profile.function_scoped_variables && self.is_variable_name(name) {
             self.scopes
                 .last_mut()
                 .unwrap()
@@ -1202,7 +1206,8 @@ impl Compiler {
                 }
             }
         }
-        let slot = if self.is_php_profile() && name.starts_with('$') {
+        // See `define_local` — same two independent questions.
+        let slot = if self.profile.function_scoped_variables && self.is_variable_name(name) {
             self.scopes
                 .last_mut()
                 .unwrap()

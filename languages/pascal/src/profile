@@ -8,6 +8,11 @@ name = "pascal"
 extensions = ["pas", "pp", "dpr", "lpr"]
 
 [compiler]
+# `a xor b` is bitwise when both operands are integers and LOGICAL otherwise —
+# one token, two meanings, resolved by operand type. Replaces a
+# `profile.name == "pascal"` check in the shared binary-operator path
+# (builtinslotplan.md §3c).
+xor_is_logical_for_non_integers = true
 # Pascal RTTI (`TRttiType.GetProperty`, `GetAttributes`) reads a class's member
 # list at runtime instead of the walker deriving it into a compile-time HashMap.
 class_member_metadata = true
@@ -311,3 +316,33 @@ tostring      = { emit = "common:pascal.tostring", min_args = 0, max_args = 0 }
 # mounts ambiently so unqualified names resolve to their `Type` node.
 type_scopes = ["plib"]
 use_dotnet = false
+
+# Which built-in each of this language's type spellings NAMES — step 4a.
+#
+# `set of TD` was `Compiler::is_pascal_set_type_hint` in shared compiler code:
+# a per-language spelling table in a crate that serves twelve languages. The
+# trailing `*` is a prefix match and both sides normalize with
+# `trim().to_lowercase()`, so this is the same predicate, owned by the language.
+[builtin_types]
+set = ["set of *"]
+
+# ── Protocol slot bindings — builtinslotplan.md §2a ────────────────────────
+#
+# `x in s` on a Pascal set. The shared emitter used to reach this through a
+# literal `profile.name == "pascal"` check that called the
+# `__vybe_pascal_set_contains` global; that global's entire body is
+# `ecma:set.has` with its two arguments swapped, and the shared `in` path
+# already pushes `(collection, value)` in the order this wants.
+#
+# Declared here rather than defaulted centrally because `in` means different
+# things per language: on the ECMA profiles it is a KEY test
+# (`ecma:object.hasOwn`, ECMA-262 §13.10.1), and only a language that means
+# VALUE membership opts in.
+[builtin_slots.set]
+contains = "host:ecma:set:has"
+
+# `x in a` where `a` is NOT a set — an array or string. Pascal's `in` means
+# VALUE membership; the ECMA profiles' `in` is a KEY test (`ecma:object.hasOwn`,
+# ECMA-262 13.10.1) and they declare nothing here, so they are unaffected.
+[builtin_slots.array]
+contains = "common:collections.contains"

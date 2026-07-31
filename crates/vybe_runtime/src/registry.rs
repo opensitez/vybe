@@ -244,10 +244,52 @@ pub fn register_all_trees() {
 // `Option` — a language registers only what it implements (relational compare,
 // JS proxy dispatch, PHP autoload/source-normalise, Python value-eq, …).
 
+/// How a language spells names that live in a VARIABLE namespace kept separate
+/// from its function/class namespace — in PHP, `$x` and `x()` are unrelated
+/// bindings that can coexist. Most languages have ONE namespace, so most leave
+/// [`LanguageHooks::variable_namespace`] `None` and every name is just a name.
+///
+/// The marker carrying that distinction (`$`, `@`, a sigil, a prefix) is the
+/// language's own spelling, so the language owns all of it. These three
+/// operations are ONE mechanism and must agree with each other: `global_key`
+/// consumes the canonicalized output of `body`, and `spell` is `body`'s
+/// inverse. Changing one alone breaks the set.
+pub struct VariableNamespace {
+    /// `"$x"` → `"x"`: the marker removed, so canonicalization folds the bare
+    /// name. MUST return its input unchanged for a name outside the namespace —
+    /// the core uses "did this change the name" as the is-a-variable test.
+    pub body: fn(&str) -> &str,
+    /// `"x"` → `"$x"`: the inverse of [`Self::body`], for building a reference
+    /// to a variable the compiler knows only by its bare name (PHP `compact`,
+    /// `extract`).
+    pub spell: fn(&str) -> String,
+    /// The key this variable takes at GLOBAL scope, given the source name and
+    /// its canonicalized body. This is what keeps a global `$foo` from
+    /// colliding with a function `foo`. `None` = use the canonical body
+    /// unchanged, which is how names the host registers under their literal
+    /// source spelling (PHP superglobals) stay reachable.
+    pub global_key: fn(&str, &str) -> Option<String>,
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct LanguageHooks {
     pub value_eq: Option<fn(&mut Chunk, u32)>,
+    /// See [`VariableNamespace`]. `None` (the default) = one namespace.
+    pub variable_namespace: Option<&'static VariableNamespace>,
     pub relational_compare: Option<fn(&mut Chunk, fn(&mut Chunk, u32), u32)>,
+    /// `+` where the language overloads it on a COLLECTION as well as on
+    /// numbers — PHP's array union. Same shape as `relational_compare`: the
+    /// core cannot decide this from the operator alone, and the decision is a
+    /// property of the language's `+`, not of any operand the compiler can see.
+    /// Stack: `[l, r] → [result]`.
+    pub arith_add: Option<fn(&mut Vec<Chunk>, usize, u32)>,
+    /// How ONE operand of a string-concatenation operator becomes a string,
+    /// for the languages whose concat coerces both sides up front
+    /// (`profile.concat_stringifies_operands`). Only needed where that
+    /// spelling differs from the shared `to_string` — PHP renders `true` as
+    /// `"1"`, `null` as `""`, an array as `"Array"`. Leave it `None` to get
+    /// the shared coercion. Stack: `[value] → [string]`.
+    pub concat_stringify: Option<fn(&mut Vec<Chunk>, usize, u32)>,
     pub constructor_ref_autoload: Option<fn(&mut Chunk, &str, &str, u32)>,
     pub dynamic_constructor_ref_autoload: Option<fn(&mut Chunk, &str, Option<&str>, &str, u32)>,
     pub proxy_get: Option<fn(&mut [Chunk], usize, u32)>,

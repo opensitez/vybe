@@ -22,6 +22,7 @@ materialize_bool_results = true
 coerces_value_to_type_hint = false
 ambient_this_binding = false
 dynamic_add = true
+concat_stringifies_operands = true  # `..` stringifies both sides (numbers, booleans, …)
 dynamic_numeric_dispatch = true
 allow_trailing_comma = true
 supports_spread_arguments = true

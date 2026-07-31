@@ -167,10 +167,12 @@ crate::runtime_case!(
     "import socket\nprint(socket.inet_pton(socket.AF_INET, '127.0.0.1'))\n",
     "b'\\x7f\\x00\\x00\\x01'"
 );
+// `ntohl` BYTE-SWAPS on a little-endian host: CPython here answers 16777343,
+// not the input unchanged. The old expectation was the big-endian identity.
 crate::runtime_case!(
     socket_ntohl,
     "import socket\nprint(socket.ntohl(0x7f000001))\n",
-    "2130706433"
+    "16777343"
 );
 crate::runtime_case!(
     sqlite3_many_execute,

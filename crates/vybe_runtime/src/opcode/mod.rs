@@ -141,6 +141,9 @@ impl Op {
         if let Some(sub) = canon::from_name(wasm_name) {
             return Some(Op::new(0xF0, sub));
         }
+        if let Some(sub) = vm_internal::from_name(wasm_name) {
+            return Some(Op::new(0xFF, sub));
+        }
         None
     }
 
@@ -473,6 +476,7 @@ macro_rules! opcode_category {
 
         /// Reverse of `name`: the WASM mnemonic → sub-opcode. Generated from the
         /// same table so there is exactly one opcode list to maintain.
+        #[allow(dead_code)]
         pub(super) fn from_name(wasm_name: &str) -> Option<u16> {
             match wasm_name {
                 $( $wasm_name => Some($sub), )*

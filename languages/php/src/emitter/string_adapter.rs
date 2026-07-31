@@ -71,6 +71,13 @@ pub fn emit_strtoupper(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunk.emit_call(idx, 1, line);
 }
 
+/// `LanguageHooks::concat_stringify` shape for `.` — PHP's string coercion is
+/// the same one `echo` uses, so the two share an emitter rather than agreeing
+/// on `true` → `"1"` twice.
+pub fn emit_concat_stringify(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    emit_echo_stringify(chunks, current, 1, line);
+}
+
 pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     // emit_call indices resolve against the CURRENT chunk's import table,
     // so these must be added to `chunks[current]` — adding to `chunks[0]`
@@ -7996,7 +8003,39 @@ pub fn emit_str_increment(chunks: &mut [Chunk], current: usize, _argc: u8, line:
 }
 
 /// PHP 8.3 `str_decrement($s)`.
+/// `str_decrement()` (PHP 8.3). Unlike `str_increment`, decrementing has a
+/// FLOOR: `"0"`, `"a"` and `"A"` cannot go lower, and PHP raises a `ValueError`
+/// rather than wrapping. Without this guard the shared inc/dec walked past the
+/// floor and returned `"9"` for `"0"`.
 pub fn emit_str_decrement(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let slot = {
+        let chunk = &mut chunks[current];
+        let slot = alloc_local(chunk);
+        coerce_to_str(chunk, line);
+        lset(chunk, slot, line);
+
+        for (i, floor) in ["0", "a", "A"].iter().enumerate() {
+            lget(chunk, slot, line);
+            push_str(chunk, floor, line);
+            vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+            vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+            if i > 0 {
+                chunk.emit_op(Op::I32_OR, line);
+            }
+        }
+        chunk.emit_if(line);
+        slot
+    };
+    super::type_guard::emit_throw_const(
+        chunks,
+        current,
+        "ValueError",
+        "str_decrement(): Argument #1 ($string) must not be empty",
+        line,
+    );
+    chunks[current].emit_end(line);
+
+    lget(&mut chunks[current], slot, line);
     emit_str_incdec(chunks, current, false, line);
 }
 

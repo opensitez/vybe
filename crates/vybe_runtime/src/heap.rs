@@ -14,7 +14,6 @@
 //! allocation sites (many in host code with no VM in scope).
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::value::{Object, ObjectKind, Value};

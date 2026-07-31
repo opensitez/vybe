@@ -208,7 +208,18 @@ pub fn emit_test_function(chunk: &mut Chunk, line: u32) {
     emit_test_object(chunk, line);
 }
 
-fn emit_php_empty_from_slot(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
+/// PHP `empty($v)` over a value already in `value_slot`.
+///
+/// Also PHP's *falsiness*, which is not JS's: `"0"` is falsy here and truthy
+/// under `ops::emit_dyn_to_bool`, and `[]` is falsy here and truthy there.
+/// `relational_adapter::emit_compare3` negates this rather than keeping a
+/// second copy of the rule.
+pub(crate) fn emit_php_empty_from_slot(
+    chunks: &mut [Chunk],
+    current: usize,
+    value_slot: u16,
+    line: u32,
+) {
     let chunk = &mut chunks[current];
     lget(chunk, value_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -5540,6 +5551,40 @@ pub fn emit_php_array_unique(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
 }
 
 /// PHP `$a + $b` array union — first-wins merge via ecma:object.entries.
+/// PHP `+` — array UNION on two arrays, numeric add otherwise.
+///
+/// Registered as the `arith_add` language hook so the shared operator emitter
+/// never has to ask which language it is compiling. The operand types are only
+/// known at runtime, so the choice is a runtime branch, not a compile-time one:
+/// `[1,2] + [3]` unions (first wins), `1 + 2` adds.
+///
+/// Stack: `[l, r] → [result]`.
+pub fn emit_php_add(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let (a_slot, b_slot) = {
+        let c = &mut chunks[current];
+        (alloc_local(c), alloc_local(c))
+    };
+    chunks[current].emit_op_u16(Op::LOCAL_SET, b_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, a_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    vybe_compiler::primitives::instructions::recipes::is_object(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    vybe_compiler::primitives::instructions::recipes::is_object(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    emit_php_array_union(chunks, current, 2, line);
+
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_end(line);
+}
+
 pub fn emit_php_array_union(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let (a_slot, b_slot, out_slot, entries_slot, i_slot, n_slot, entry_slot, key_slot) = {
         let c = &mut chunks[current];

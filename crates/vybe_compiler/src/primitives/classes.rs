@@ -9,6 +9,18 @@ use super::*;
 use crate::primitives::ArrayBindingMetadata;
 use crate::primitives::class_normalize::{BaseCall, NormalConstructor, NormalMethod};
 
+/// Global name of the arity-specialized constructor overload for `prefix`.
+///
+/// Overloaded constructors emit one global per arity (`Point$arity2`), with the
+/// unsuffixed class global as the fallback entry. The `$arity` separator is not
+/// any language's spelling — it is this compiler's private encoding, and both
+/// the writer (this module) and the readers (`expressions.rs`, `calls.rs`,
+/// `arrays.rs`, `link.rs`) must agree on it. It used to be spelled inline in 15
+/// places across 6 files.
+pub fn ctor_global_for(prefix: &str, arity: usize) -> String {
+    format!("{prefix}$arity{arity}")
+}
+
 impl Compiler {
     fn qualified_nested_type_name(enclosing: &str, nested: &str) -> String {
         if nested.contains('.') {
@@ -137,7 +149,7 @@ impl Compiler {
             type_hint.and_then(|type_hint| self.user_value_type_name_from_hint(type_hint))
         {
             let ctor_global = {
-                let overload = format!("{}$arity0", type_name);
+                let overload = ctor_global_for(&type_name, 0);
                 if self.defined_globals.contains(&overload) {
                     overload
                 } else {
@@ -259,7 +271,7 @@ impl Compiler {
 
     fn emit_parent_value(&mut self, parent_name: &str, want_class_object: bool) {
         let pname = self.canon(parent_name);
-        let default_ctor = format!("{pname}$arity0");
+        let default_ctor = ctor_global_for(&pname, 0);
         let bound = self.scope().resolve(parent_name).is_some()
             || self.defined_globals.contains(&pname)
             || self.defined_classes.contains(&pname);
@@ -2717,9 +2729,9 @@ impl Compiler {
                         self.emit_u16(Op::GLOBAL_GET, qualified_idx);
                         self.emit_u16(Op::GLOBAL_SET, leaf_idx);
                         for arity in 0..=IMPLICIT_CTOR_FORWARD_ARGS {
-                            let qualified_ctor = format!("{qualified_nested}$arity{arity}");
+                            let qualified_ctor = ctor_global_for(&qualified_nested, arity as usize);
                             if self.defined_globals.contains(&qualified_ctor) {
-                                let leaf_ctor = format!("{leaf_nested}$arity{arity}");
+                                let leaf_ctor = ctor_global_for(&leaf_nested, arity as usize);
                                 let qualified_idx = self.str_const(&qualified_ctor);
                                 let leaf_idx = self.str_const(&leaf_ctor);
                                 self.emit_u16(Op::GLOBAL_GET, qualified_idx);
@@ -2914,7 +2926,7 @@ impl Compiler {
                     }
                 });
             self.defined_globals
-                .insert(format!("{}$arity{}", ctor_global_prefix, explicit_arity));
+                .insert(ctor_global_for(&ctor_global_prefix, explicit_arity));
         }
 
         // Captures are re-resolved BY NAME in whichever frame the ref is being
@@ -3078,7 +3090,7 @@ impl Compiler {
 
             let line = self.line;
             if let Some(this_args) = ctor_this_args {
-                let ctor_global = format!("{}$arity{}", ctor_global_prefix, this_args.len());
+                let ctor_global = ctor_global_for(&ctor_global_prefix, this_args.len());
                 self.emit_var_get(&ctor_global);
                 for expr in &this_args {
                     self.compile_expr(expr)?;
@@ -3660,8 +3672,13 @@ impl Compiler {
                     }
                 }
 
-                if self.is_php_profile() {
-                    // PHP runtime class identity. This must run AFTER the
+                if !self.class_prototype_dispatch() {
+                    // Runtime class identity for languages that carry it in
+                    // instance FIELDS. Where methods dispatch through a
+                    // prototype, the chain already answers "which class is
+                    // this" and re-stamping would fight it.
+                    //
+                    // This must run AFTER the
                     // ctor body / parent-ctor call — a child ctor receives
                     // `this` from the parent (synthesized forward OR
                     // `parent::__construct()` in the body) carrying the
@@ -3906,11 +3923,11 @@ impl Compiler {
             case_sensitive,
             line,
         );
-        if self.is_php_profile() {
+        if !self.class_prototype_dispatch() {
             // Stamp the declared class name on the ctor function so
-            // `get_class($x)` ($x.constructor.name) returns it. The JS
-            // branch below stamps `name` during prototype wiring; PHP
-            // skips that block, so stamp here.
+            // `get_class($x)` ($x.constructor.name) returns it. The
+            // prototype branch below stamps `name` during prototype wiring;
+            // languages that skip that block stamp here instead.
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             self.emit_const(Value::String(Arc::from(name)));
             let name_key = self.str_const("name");
@@ -3919,7 +3936,7 @@ impl Compiler {
         }
         for (arity, _, helper_idx, helper_captures, named) in &ctor_helpers {
             emit_helper_ref(self, *helper_idx, helper_captures)?;
-            let helper_global = format!("{}$arity{}", ctor_global_prefix, arity);
+            let helper_global = ctor_global_for(&ctor_global_prefix, *arity);
             let helper_idx_const = self.str_const(&helper_global);
             self.emit_u16(Op::GLOBAL_SET, helper_idx_const);
             // A named constructor (`Point.origin()`) is reached through the

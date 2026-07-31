@@ -108,7 +108,6 @@ mod metadata;
 pub mod namespaces;
 mod operators;
 mod overloads;
-mod php_lang;
 pub mod promises;
 pub mod prototypes;
 pub mod references;
@@ -465,6 +464,10 @@ pub struct Compiler {
     pub(crate) attribute_usage: HashMap<String, AttributeUsageMetadata>,
     pub(crate) reflection_bindings: HashMap<String, ReflectionBinding>,
     case_sensitive: bool,
+    /// Resolved ONCE at construction, like `case_sensitive` — `registry::hooks`
+    /// takes a mutex and linear-scans, and `canon` is called on nearly every
+    /// name the compiler touches.
+    variable_namespace: Option<&'static vybe_runtime::registry::VariableNamespace>,
     pub(crate) profile: LanguageProfile,
     current_func_name: Option<String>,
     current_result_slot: Option<u16>,
@@ -2237,6 +2240,7 @@ impl Compiler {
             attribute_usage: HashMap::new(),
             reflection_bindings: HashMap::new(),
             case_sensitive: profile.case_sensitive,
+            variable_namespace: vybe_runtime::registry::hooks(&profile.name).variable_namespace,
             profile,
             current_func_name: None,
             current_result_slot: None,
@@ -2623,6 +2627,14 @@ impl Compiler {
                 }
             }
         }
+
+        // Any output buffer still open when the script ends is FLUSHED, not
+        // discarded — a template that forgets its `ob_end_flush()` still
+        // renders. Costs one null check on `__vybe_ob_stack` for a program that
+        // never buffered, since the stack global is only created by the first
+        // `ob_start`.
+        let line = self.line;
+        common::io::emit_ob_flush_all(&mut self.chunks, 0, line);
 
         self.emit(Op::NULL);
         self.emit(Op::RETURN);

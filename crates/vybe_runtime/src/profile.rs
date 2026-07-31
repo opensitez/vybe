@@ -85,6 +85,22 @@ pub struct LanguageProfile {
 
     /// Whether parens are used for both calls and indexing (VB: arr(i)).
     pub parens_for_index: bool,
+    /// The language has ONE array type covering both list and dictionary use
+    /// (PHP `array`), so an indexed write must decide the backing
+    /// representation at runtime: a string key promotes an empty sequential
+    /// array to an ordered Map, and `$x[$k][] = $v` auto-vivifies the missing
+    /// inner array rather than faulting.
+    ///
+    /// Languages with separate list and map types know the representation
+    /// statically and need none of this.
+    pub unified_array_map: bool,
+
+    /// The string-concatenation operator coerces BOTH operands to string
+    /// before joining, rather than leaning on the concat op's own coercion —
+    /// PHP `.` and Lua `..`. The spelling of that coercion can differ from the
+    /// shared one, in which case the language also registers a
+    /// `LanguageHooks::concat_stringify`.
+    pub concat_stringifies_operands: bool,
 
     /// Entry point function name to auto-call if defined (e.g. "main").
     pub entry_point: Option<String>,
@@ -375,6 +391,16 @@ pub struct LanguageProfile {
     /// `fmt.Println(1)` still prints `1`.
     pub materialize_bool_results: bool,
 
+    /// An OBJECT can be called like a function: Kotlin `operator fun invoke`,
+    /// Python `__call__`, PHP `__invoke`, Dart `call`, C# an `()` operator.
+    ///
+    /// All of them fill [`ProtocolSlot::Call`], so the call site probes ONE
+    /// slot — this only says whether that probe is worth emitting. Declaring it
+    /// replaces the `is_python_profile()` check that used to guard the probe,
+    /// which is why `Counter()(3)` worked in Python and trapped with "Not a
+    /// function" everywhere else.
+    pub callable_objects: bool,
+
     /// `for x in obj` yields the object's KEYS for dict-like values (Map /
     /// Ordinary), while sequences (Array / Set / String) still yield values.
     /// Python `for k in dict` / JS-style object iteration. Routes the for-in
@@ -421,6 +447,18 @@ pub struct LanguageProfile {
     /// `compile_binary`.
     pub integer_division_on_slash: bool,
 
+    /// `xor` is ONE token with two meanings, resolved by operand type: bitwise
+    /// when both operands are integers, logical otherwise (Pascal, and the same
+    /// rule Delphi documents). The bitwise op is emitted either way; this only
+    /// says whether a non-integer result is materialized as a Boolean.
+    ///
+    /// A property rather than a `(BuiltinType, ProtocolSlot)` binding, because
+    /// it is not a question of WHICH emit target `xor` uses — both branches
+    /// emit the same opcode — but of how the RESULT is typed. Recorded in
+    /// builtinslotplan.md §3i: §3c mapped this site to "`BitXor` on `int`",
+    /// which the code does not bear out.
+    pub xor_is_logical_for_non_integers: bool,
+
     /// A `for` loop gives its loop variable a FRESH binding each iteration, so
     /// closures created in the body capture the per-iteration value (VB `For`,
     /// JS `let`-in-`for`). Languages where the loop variable is shared across
@@ -460,6 +498,21 @@ pub struct LanguageProfile {
     /// enclosing scope. Languages without block-scoped lexical bindings (or
     /// whose blocks already scope unconditionally) leave this `false`.
     pub lexical_block_scope: bool,
+
+    /// A variable binding belongs to the enclosing FUNCTION, not to the block
+    /// it is written in: `if (true) { $x = 1; } echo $x;` is legal PHP.
+    ///
+    /// Deliberately NOT the same question as [`Self::lexical_block_scope`],
+    /// which asks whether a block *containing* a `let`/`const` becomes its own
+    /// scope. A language can block-scope without setting that one — C, Java,
+    /// C#, Kotlin and Dart all leave it `false` — so it cannot stand in for
+    /// this. Nor is it the same question as "does this language have a separate
+    /// variable namespace" ([`vybe_runtime::registry::VariableNamespace`]);
+    /// those two happen to coincide in PHP and are independent in general.
+    ///
+    /// Defaults `false` (block scoping), which is what every language got
+    /// before this property existed.
+    pub function_scoped_variables: bool,
 
     /// ECMA-262 §9.1.1.4.6 GetValue: reading an *unresolvable* reference (a
     /// name bound nowhere in the scope chain or on the global object) is a
@@ -529,6 +582,14 @@ pub struct LanguageProfile {
     /// ever applies where the receiver's type can be named, and PHP's `array`
     /// and Python's `str` reached those classifiers and failed them.
     pub builtin_type_spellings: Vec<vybe_ast::builtin_types::Spelling>,
+
+    /// This language's OVERRIDES of the platform default slot table, from
+    /// `[builtin_slots.<type>]` — `builtinslotplan.md` §2a.
+    ///
+    /// Empty for most languages, by design: §3a measured 32 of 36 string-slot
+    /// cells already agreeing with ECMA. A language declares here only where it
+    /// genuinely differs, and the platform default answers everything else.
+    pub builtin_slots: vybe_ast::builtin_slots::BuiltinSlotBindings,
 
     /// Multi-opcode intrinsic definitions referenced by `emit = "intrinsic:<name>"`.
     pub intrinsics: HashMap<String, String>,
@@ -1063,6 +1124,14 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("parens_for_index")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let unified_array_map = compiler
+        .get("unified_array_map")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let concat_stringifies_operands = compiler
+        .get("concat_stringifies_operands")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let entry_point = compiler
         .get("entry_point")
         .and_then(|v| v.as_str())
@@ -1269,6 +1338,10 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("string_aware_relational")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let function_scoped_variables = compiler
+        .get("function_scoped_variables")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let lexical_block_scope = compiler
         .get("lexical_block_scope")
         .and_then(|v| v.as_bool())
@@ -1297,6 +1370,10 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("materialize_bool_results")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let callable_objects = compiler
+        .get("callable_objects")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let for_in_object_yields_keys = compiler
         .get("for_in_object_yields_keys")
         .and_then(|v| v.as_bool())
@@ -1319,6 +1396,10 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .unwrap_or(false);
     let integer_division_on_slash = compiler
         .get("integer_division_on_slash")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let xor_is_logical_for_non_integers = compiler
+        .get("xor_is_logical_for_non_integers")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let for_loop_per_iteration_binding = compiler
@@ -1452,6 +1533,74 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
             }
         }
         out
+    }
+
+    /// `[builtin_slots.<type>]` — the language's OVERRIDES of the platform
+    /// default `(BuiltinType, ProtocolSlot) -> emit target` table.
+    ///
+    /// ```toml
+    /// [builtin_slots.map]
+    /// get_item = "common:dart.index_get"   # Dart: a miss is `null`, not `undefined`
+    ///
+    /// [builtin_slots.string]
+    /// len = "common:str_length"            # PHP counts bytes
+    /// ```
+    ///
+    /// This is `builtinslotplan.md` §2a's shape, and it is what makes a slot
+    /// bindable when languages genuinely DISAGREE. Measured 2026-07-31: the
+    /// central table could not bind `Map`/`GetItem` because a missing key is
+    /// `undefined` in JS, `null` in Dart, a `KeyError` in Python and
+    /// `null`-plus-a-warning in PHP — four right answers, so any single central
+    /// entry encodes one language's as everyone's. Same for `Eq`, where
+    /// Python's set equality is order-independent and Dart's record equality is
+    /// structural.
+    ///
+    /// Precedence is the language's table first, then the platform default —
+    /// §2d steps 2 and 3, implemented by `BuiltinSlotBindings::get_or`.
+    ///
+    /// # An unrecognised key here is FATAL, unlike `[builtin_types]`
+    ///
+    /// `parse_builtin_types` skips what it does not recognise, and the cost of
+    /// that is bounded: a dropped spelling leaves the type unresolvable and the
+    /// language's own emitter keeps running.
+    ///
+    /// A dropped *override* is not bounded. It silently falls through to the
+    /// platform default, which is precisely the `undefined`-instead-of-`null`
+    /// failure that forced `Map`/`GetItem` to be backed out on 2026-07-31 — and
+    /// Dart's correctness now depends on exactly one entry in this table. A
+    /// one-character typo (`get_itm`, `[builtin_slots.mop]`) would reintroduce
+    /// that bug with no signal anywhere.
+    ///
+    /// Profiles ship WITH the platform in this repo, so "written against a
+    /// newer version" is not a real case — an unrecognised key is a typo, every
+    /// time. It fails the profile loudly.
+    fn parse_builtin_slots(
+        root: &Value,
+    ) -> Result<vybe_ast::builtin_slots::BuiltinSlotBindings, String> {
+        use vybe_ast::builtin_slots::{BuiltinSlotBindings, BuiltinType};
+
+        let mut out = BuiltinSlotBindings::new();
+        let Some(table) = root.get("builtin_slots").and_then(|v| v.as_table()) else {
+            return Ok(out);
+        };
+        for (type_key, entries) in table {
+            let ty = BuiltinType::from_key(type_key).ok_or_else(|| {
+                format!("[builtin_slots.{type_key}]: `{type_key}` is not a built-in type")
+            })?;
+            let slots = entries.as_table().ok_or_else(|| {
+                format!("[builtin_slots.{type_key}] must be a table of slot = \"target\"")
+            })?;
+            for (slot_key, target) in slots {
+                let slot = vybe_ast::ProtocolSlot::from_key(slot_key).ok_or_else(|| {
+                    format!("[builtin_slots.{type_key}]: `{slot_key}` is not a protocol slot")
+                })?;
+                let target = target.as_str().ok_or_else(|| {
+                    format!("[builtin_slots.{type_key}] {slot_key} must be an emit-target string")
+                })?;
+                out.insert(ty, slot, target);
+            }
+        }
+        Ok(out)
     }
 
     fn parse_string_table(root: &Value, section: &str) -> HashMap<String, String> {
@@ -1784,6 +1933,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         slice_step_zero_raises,
         tuple_literals_tagged,
         parens_for_index,
+        unified_array_map,
+        concat_stringifies_operands,
         entry_point,
         hoist_var,
         dynamic_add,
@@ -1802,6 +1953,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         field_hiding,
         methods_virtual_by_default,
         integer_division_on_slash,
+        xor_is_logical_for_non_integers,
         for_loop_per_iteration_binding,
         bare_name_invokes_parameterless_function,
         source_function_callable_aliases,
@@ -1840,12 +1992,14 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         member_call_on_null_error,
         string_aware_relational,
         lexical_block_scope,
+        function_scoped_variables,
         unresolved_reference_throws,
         coerces_value_to_type_hint,
         ambient_this_binding,
         uses_common_resolver,
         missing_arg_is_undefined,
         materialize_bool_results,
+        callable_objects,
         for_in_object_yields_keys,
         dict_literals_as_map,
         class_introspection_metadata,
@@ -1856,6 +2010,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         uses_normalize_class,
         builtins,
         builtin_type_spellings: parse_builtin_types(&root),
+        builtin_slots: parse_builtin_slots(&root)?,
         intrinsics,
         namespaces,
         known_types,
@@ -1867,4 +2022,91 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         esm_defaults,
         bare_module_aliases,
     })
+}
+
+#[cfg(test)]
+mod builtin_slot_parse_tests {
+    use super::*;
+    use vybe_ast::builtin_slots::BuiltinType;
+    use vybe_ast::ProtocolSlot;
+
+    fn profile_with(section: &str) -> LanguageProfile {
+        parse_profile(&format!(
+            "[info]\nname = \"t\"\n\n[compiler]\n\n{section}"
+        ))
+        .expect("profile parses")
+    }
+
+    /// The happy path: `[builtin_slots.<type>] <slot> = "<target>"` reaches the
+    /// table `Compiler::apply_builtin_slot_binding` consults.
+    #[test]
+    fn a_declared_override_is_parsed() {
+        let p = profile_with("[builtin_slots.map]\nget_item = \"common:dart.index_get\"\n");
+        assert_eq!(
+            p.builtin_slots.get(BuiltinType::Map, ProtocolSlot::GetItem),
+            Some("common:dart.index_get")
+        );
+    }
+
+    /// A profile with no section gets an empty table, NOT a failure — that is
+    /// what makes this mechanism inert for the eleven languages that declare
+    /// nothing.
+    #[test]
+    fn a_profile_without_the_section_gets_an_empty_table() {
+        let p = profile_with("");
+        assert!(p.builtin_slots.is_empty());
+    }
+
+    /// A typo must be LOUD, not silently dropped.
+    ///
+    /// This is the discriminating test for this section. A dropped override
+    /// falls through to the platform default, which is exactly the
+    /// `undefined`-instead-of-`null` bug that forced `Map`/`GetItem` to be
+    /// backed out on 2026-07-31 — and Dart's correctness now rests on a single
+    /// entry here. Skipping-on-unknown would make a one-character typo
+    /// reintroduce that bug with no signal.
+    #[test]
+    fn a_misspelled_type_or_slot_key_fails_the_profile() {
+        for (section, bad) in [
+            ("[builtin_slots.mop]\nget_item = \"common:x\"\n", "mop"),
+            ("[builtin_slots.map]\nget_itm = \"common:y\"\n", "get_itm"),
+        ] {
+            let err = parse_profile(&format!("[info]\nname = \"t\"\n\n[compiler]\n\n{section}"))
+                .expect_err("a misspelled key must fail the profile, not be skipped");
+            assert!(
+                err.contains(bad),
+                "error must name the offending key `{bad}`, got: {err}"
+            );
+        }
+    }
+
+    /// Every declared override must survive parsing — the count in the TOML
+    /// equals the count in the table. Asserting the count immediately after
+    /// writing a profile edit is the habit that caught a `sed` matching 39
+    /// entries instead of 1; this is the same check, enforced.
+    #[test]
+    fn every_declared_override_survives_parsing() {
+        let p = profile_with(
+            "[builtin_slots.map]\nget_item = \"common:a\"\nlen = \"common:b\"\n\
+             [builtin_slots.string]\nget_item = \"common:c\"\n",
+        );
+        assert_eq!(p.builtin_slots.iter().count(), 3);
+    }
+
+    /// Slot keys are the SAME vocabulary `ProtocolSlot::from_key` round-trips,
+    /// so a profile cannot name a slot the resolver has no way to look up.
+    #[test]
+    fn slot_keys_are_the_protocol_slot_vocabulary() {
+        for slot in [ProtocolSlot::Len, ProtocolSlot::GetItem, ProtocolSlot::Eq] {
+            let p = profile_with(&format!(
+                "[builtin_slots.string]\n{} = \"common:z\"\n",
+                slot.as_key()
+            ));
+            assert_eq!(
+                p.builtin_slots.get(BuiltinType::String, slot),
+                Some("common:z"),
+                "{slot:?} did not round-trip through its key"
+            );
+        }
+    }
 }

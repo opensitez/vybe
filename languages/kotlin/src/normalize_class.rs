@@ -5,6 +5,18 @@ use vybe_ast::{
 };
 use vybe_ast::class_normalize::{from_method_stmt, types::*, NormalMembers};
 
+/// A copy of `stmt` whose `FunctionDecl` name is `name`.
+///
+/// Cheap and only ever hit for the handful of members whose source spelling the
+/// walker had to annotate; every other member is renamed to itself.
+fn rename_method(stmt: &vybe_ast::Statement, name: &str) -> vybe_ast::Statement {
+    let mut out = stmt.clone();
+    if let StmtKind::FunctionDecl { name: n, .. } = &mut out.kind {
+        *n = name.to_string();
+    }
+    out
+}
+
 pub fn normalize_class(
     span: Span,
     _name: &str,
@@ -51,6 +63,25 @@ pub fn normalize_class(
                 if m.is_abstract {
                     continue;
                 }
+                // The walker marks a member operator by prefixing its name with
+                // `"operator "` so `protocol::canonical_method` can tell it from
+                // a plain method of the same name. That marker must NOT reach
+                // the class machinery: the bound member name comes from
+                // `source_name`, so leaving it on stored `plus` as
+                // `operator plus` — and `a.plus(b)` / `obj.invoke()`, which
+                // Kotlin allows, found nothing. Only the SLOT was published, so
+                // `a + b` worked while the named call did not.
+                // ONLY strips the marker. Renaming every special method would
+                // also move `toString` to `tostring`, `equals` to `eq` and so
+                // on — the class machinery binds members by `source_name`, and
+                // those names are what Kotlin code calls.
+                let renamed;
+                let stmt = if src_name.starts_with("operator ") {
+                    renamed = rename_method(stmt, &canonical);
+                    &renamed
+                } else {
+                    stmt
+                };
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, access) else {
                     continue;
                 };

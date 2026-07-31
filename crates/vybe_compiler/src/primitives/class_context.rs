@@ -190,16 +190,29 @@ impl Compiler {
         self.profile.name == "python"
     }
 
+    /// REMAINING language-name check, kept here beside `is_python_profile`
+    /// rather than in a `php_lang` module of its own — a file named after a
+    /// language in shared code invites more of the same, and the whole point
+    /// is that this predicate should keep shrinking. Each surviving call site
+    /// is a profile property, a normalization, or an adapter that has not been
+    /// written yet, not a permanent fixture.
+    pub(crate) fn is_php_profile(&self) -> bool {
+        self.profile.name == "php"
+    }
+
     /// True for profiles whose comparison/equality operators dispatch to a
     /// user-defined dunder (`__eq__`/`__lt__`/… and their cross-language
     /// aliases) — i.e. the same profiles the `<`/`>` sites already route
     /// through `emit_rich_compare_locals` (Python, Ruby, Dart, C#, VB, …).
     /// Excludes JS (ECMA coercion), PHP (loose comparison) and Pascal.
+    ///
+    /// PHP is excluded by `string_aware_relational` — it declares that flag and
+    /// registers a `relational_compare` hook, so it never reaches the rich path.
+    /// A separate PHP name check here would be redundant.
     pub(crate) fn uses_rich_comparison(&self) -> bool {
         !self.profile.ecma_operator_coercion
             && !self.profile.string_aware_relational
             && self.profile.name != "pascal"
-            && !self.is_php_profile()
     }
 
     /// Operator overloading on the arithmetic/unary operators: a user
@@ -215,11 +228,16 @@ impl Compiler {
     }
 
     pub(super) fn emit_condition_truthiness_from_stack(&mut self) {
-        // PHP used to have a custom truthiness check here that referenced the
-        // removed __keys/vybe$assoc_keys_csv side-band, causing stack corruption.
-        // Array truthiness is now handled at the empty()/isset() call sites via
-        // the Map-aware emitter. emit_dyn_to_bool is correct for all languages.
-        if !self.is_python_profile() && !self.is_php_profile() {
+        // Only Python needs a custom rule here — empty str/list/dict/set are
+        // falsy, which no primitive coercion expresses.
+        //
+        // PHP used to branch here too, onto a check that read the REMOVED
+        // `__keys`/`vybe$assoc_keys_csv` side-band and corrupted the stack. The
+        // side-band went away and array truthiness moved to the `empty()`/
+        // `isset()` call sites via the Map-aware emitter, but the dead branch
+        // outlived both. `emit_dyn_to_bool` is correct for every language that
+        // is not Python.
+        if !self.is_python_profile() {
             {
                 let line = self.line;
                 crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -228,94 +246,6 @@ impl Compiler {
         }
 
         let line = self.line;
-        if self.is_php_profile() {
-            let value_slot = self.define_local("__php_truth_value");
-            let keys_slot = self.define_local("__php_truth_keys");
-            let tracker_slot = self.define_local("__php_truth_tracker");
-
-            let typeof_idx = self.import("ecma:value", "typeof");
-            let array_len_idx = self.import("ecma:array", "length");
-            let has_own_idx = self.import("ecma:object", "hasOwn");
-            let keys_key = self.str_const("__keys");
-            let tracker_key = self.str_const("vybe$assoc_keys_csv");
-
-            self.emit_u16(Op::LOCAL_SET, value_slot);
-
-            self.emit_u16(Op::LOCAL_GET, value_slot);
-            self.emit_host_call(typeof_idx, 1);
-            self.emit_const(Value::String(Arc::from("object")));
-            fn_call!(self, "wasm:js-string", "equals", 2);
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-            self.chunk().emit_if_value(line);
-
-            self.emit_u16(Op::LOCAL_GET, value_slot);
-            self.emit_host_call(array_len_idx, 1);
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-            self.chunk().emit_if_value(line);
-            inst!(self, core_wasm::i32_const, 1);
-            self.chunk().emit_else(line);
-
-            self.emit_u16(Op::LOCAL_GET, value_slot);
-            self.emit_u16(Op::STRUCT_GET, keys_key);
-            self.emit_u16(Op::LOCAL_SET, keys_slot);
-
-            self.emit_u16(Op::LOCAL_GET, keys_slot);
-            self.emit(Op::REF_IS_NULL);
-            self.chunk().emit_if_value(line);
-            inst!(self, core_wasm::i32_const, 0);
-            self.chunk().emit_else(line);
-            self.emit_u16(Op::LOCAL_GET, keys_slot);
-            fn_call!(self, "wasm:js-undefined", "test", 1);
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-            self.chunk().emit_if_value(line);
-            inst!(self, core_wasm::i32_const, 0);
-            self.chunk().emit_else(line);
-            self.emit_u16(Op::LOCAL_GET, keys_slot);
-            self.emit(Op::ARRAY_LENGTH);
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-            self.chunk().emit_end(line);
-            self.chunk().emit_end(line);
-            self.chunk().emit_if_value(line);
-            inst!(self, core_wasm::i32_const, 1);
-            self.chunk().emit_else(line);
-
-            self.emit_u16(Op::LOCAL_GET, value_slot);
-            self.emit_u16(Op::STRUCT_GET, tracker_key);
-            self.emit_u16(Op::LOCAL_SET, tracker_slot);
-
-            self.emit_u16(Op::LOCAL_GET, tracker_slot);
-            self.emit(Op::REF_IS_NULL);
-            self.chunk().emit_if_value(line);
-            inst!(self, core_wasm::i32_const, 0);
-            self.chunk().emit_else(line);
-            self.emit_u16(Op::LOCAL_GET, tracker_slot);
-            fn_call!(self, "wasm:js-undefined", "test", 1);
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-            self.chunk().emit_if_value(line);
-            inst!(self, core_wasm::i32_const, 0);
-            self.chunk().emit_else(line);
-            self.emit_u16(Op::LOCAL_GET, tracker_slot);
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-            self.chunk().emit_end(line);
-            self.chunk().emit_end(line);
-            self.chunk().emit_if_value(line);
-            inst!(self, core_wasm::i32_const, 1);
-            self.chunk().emit_else(line);
-
-            self.emit_u16(Op::LOCAL_GET, value_slot);
-            self.emit_const(Value::String(Arc::from("__proto__")));
-            self.emit_host_call(has_own_idx, 2);
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-
-            self.chunk().emit_end(line);
-            self.chunk().emit_end(line);
-            self.chunk().emit_end(line);
-            self.chunk().emit_else(line);
-            self.emit_u16(Op::LOCAL_GET, value_slot);
-            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-            self.chunk().emit_end(line);
-            return;
-        }
 
         let value_slot = self.define_local("__py_truth_value");
         self.emit_u16(Op::LOCAL_SET, value_slot);

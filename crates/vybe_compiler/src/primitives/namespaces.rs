@@ -35,12 +35,47 @@ pub fn resolve_path(segments: &[&str]) -> Option<ResolutionTarget> {
     resolve_segments(&guard.tree, segments, 0)
 }
 
-fn normalize_source_path(name: &str) -> String {
+pub(crate) fn normalize_source_path(name: &str) -> String {
     name.trim_start_matches(['\\', '.'])
         .split(['\\', '.'])
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(".")
+}
+
+/// Runtime twin of [`normalize_source_path`] — stack: `[string] → [string]`.
+///
+/// `normalize_source_path` canonicalizes a name the compiler can SEE. When the
+/// name is only known at runtime (`$fn = "\\App\\helper"; $fn();`) the same
+/// collapse has to happen in emitted code. Without it a call site has no way to
+/// match the needle against the canonical `defined_functions` corpus, and the
+/// only remaining option is the inverse: expand every KNOWN name back into
+/// every spelling it could have been written with, and compare against all of
+/// them. That is quadratic in emitted bytecode and re-introduces separator
+/// syntax the frontend already normalized away.
+///
+/// Every spelling this collapses —
+/// `A.B.f`, `A\B\f`, `A\\B\\f`, and each of those rooted with `\` or `\\` —
+/// lands on one of exactly TWO keys: the canonical dotted name, or that name
+/// with a leading `.` (see [`rooted_lookup_key`]) when the source rooted it.
+/// Rooted-ness is preserved rather than stripped because it is meaningful:
+/// `\strlen` explicitly opts out of the current namespace.
+pub fn emit_normalize_source_path(chunk: &mut Chunk, line: u32) {
+    // `\\` → `\` — a doubled separator is what an escaped literal leaves behind.
+    chunk.emit_string_const("\\\\", line);
+    chunk.emit_string_const("\\", line);
+    crate::primitives::strings::emit_replace(chunk, line);
+
+    // `\` → `.` — one dotted spelling regardless of the source separator.
+    chunk.emit_string_const("\\", line);
+    chunk.emit_string_const(".", line);
+    crate::primitives::strings::emit_replace(chunk, line);
+}
+
+/// The key [`emit_normalize_source_path`] yields for a ROOTED spelling of an
+/// already-canonical dotted name. The unrooted spelling yields the name itself.
+pub fn rooted_lookup_key(canonical: &str) -> String {
+    format!(".{canonical}")
 }
 
 impl Compiler {

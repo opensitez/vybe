@@ -34,6 +34,9 @@ missing_arg_is_undefined = true     # a param default fires only when the arg is
                                     # explicit `null` is passed — `f(x: null)`
                                     # keeps `null`, doesn't fall back to default.
                                     # callback, then retry.
+unified_array_map = true          # ONE `array` type: list + dict, autovivifying
+concat_stringifies_operands = true # `.` stringifies both sides (true→"1", null→"", array→"Array")
+function_scoped_variables = true   # `if (true) { $x = 1; } echo $x;` is legal — blocks don't scope
 buffered_iterator_methods = true    # $gen->current()/next()/valid()/send()/
                                     # getReturn(); foreach buffers current value.
 source_function_callable_aliases = true # String callables and dynamic name
@@ -74,7 +77,7 @@ echo                = { emit = "common:php.echo",            min_args = 0, max_a
 __php_echo          = { emit = "common:php.echo",            min_args = 0, max_args = 255 }
 print               = { emit = "print",                      min_args = 1, max_args = 1 }
 print_r             = { emit = "common:php.print_r",         min_args = 1, max_args = 2 }
-var_dump            = { emit = "print",                      min_args = 1, max_args = 255 }
+var_dump            = { emit = "common:php.var_dump",        min_args = 1, max_args = 255 }
 printf              = { emit = "intrinsic:php_printf",       min_args = 1, max_args = 255 }
 vprintf             = { emit = "intrinsic:php_vprintf",      min_args = 2, max_args = 2 }
 vsprintf            = { emit = "intrinsic:php_vsprintf",     min_args = 2, max_args = 2 }
@@ -381,7 +384,7 @@ base_convert        = { emit = "common:php.base_convert",   min_args = 3, max_ar
 intval              = { emit = "common:php.intval",   min_args = 1, max_args = 2 }
 floatval            = { emit = "host:ecma:number:parseFloat", min_args = 1, max_args = 1 }
 doubleval           = { emit = "host:ecma:number:Number",     min_args = 1, max_args = 1 }
-strval              = { emit = "host:ecma:string:String", min_args = 1, max_args = 1 }
+strval              = { emit = "common:php.echo_stringify", min_args = 1, max_args = 1 }
 boolval             = { emit = "host:ecma:boolean:Boolean",    min_args = 1, max_args = 1 }
 # Type predicates — `is_string`, `is_bool`, `is_null`, `is_callable`,
 # `is_int`/`is_integer`/`is_long`, `is_finite`, `is_nan`, `is_infinite`
@@ -688,14 +691,17 @@ set_exception_handler = { emit = "common:php.set_exception_handler", min_args = 
 trigger_error       = { emit = "common:php.trigger_error",       min_args = 1, max_args = 2 }
 error_get_last      = { emit = "common:php.error_get_last",      min_args = 0, max_args = 0 }
 error_clear_last    = { emit = "common:php.error_clear_last",    min_args = 0, max_args = 0 }
-ob_start            = { emit = "common:php.ob_start",            min_args = 0, max_args = 2 }
-ob_get_clean        = { emit = "common:php.ob_get_clean",        min_args = 0, max_args = 0 }
-ob_get_contents     = { emit = "common:php.ob_get_contents",     min_args = 0, max_args = 0 }
-ob_end_clean        = { emit = "common:php.ob_end_clean",        min_args = 0, max_args = 0 }
-ob_end_flush        = { emit = "common:php.ob_end_flush",        min_args = 0, max_args = 0 }
-ob_get_level        = { emit = "common:php.ob_get_level",        min_args = 0, max_args = 0 }
-ob_clean            = { emit = "common:php.ob_clean",            min_args = 0, max_args = 0 }
+ob_start            = { emit = "common:output_buffer.start",            min_args = 0, max_args = 3 }
+ob_get_clean        = { emit = "common:output_buffer.get_clean",        min_args = 0, max_args = 0 }
+ob_get_contents     = { emit = "common:output_buffer.get_contents",     min_args = 0, max_args = 0 }
+ob_end_clean        = { emit = "common:output_buffer.end_clean",        min_args = 0, max_args = 0 }
+ob_end_flush        = { emit = "common:output_buffer.end_flush",        min_args = 0, max_args = 0 }
+ob_get_level        = { emit = "common:output_buffer.get_level",        min_args = 0, max_args = 0 }
+ob_clean            = { emit = "common:output_buffer.clean",            min_args = 0, max_args = 0 }
 ob_get_length       = { emit = "common:php.ob_get_length",       min_args = 0, max_args = 0 }
+ob_get_flush        = { emit = "common:output_buffer.get_flush",        min_args = 0, max_args = 0 }
+ob_flush            = { emit = "common:output_buffer.flush",            min_args = 0, max_args = 0 }
+ob_get_status       = { emit = "common:php.ob_get_status",       min_args = 0, max_args = 1 }
 ob_implicit_flush   = { emit = "common:php.ob_implicit_flush",   min_args = 0, max_args = 1 }
 ob_list_handlers    = { emit = "common:php.ob_list_handlers",    min_args = 0, max_args = 0 }
 ob_gzhandler        = { emit = "common:php.ob_gzhandler",        min_args = 1, max_args = 2 }
@@ -1055,3 +1061,13 @@ int    = ["int"]
 double = ["float"]
 bool   = ["bool"]
 array  = ["array", "iterable"]
+
+# PHP's OVERRIDES of the platform default slot table — builtinslotplan.md §2a.
+#
+# `<=>` is the primitive; `<` / `<=` / `>` / `>=` are its sign against 0 (§2f).
+# Declaring it here is what replaced THREE mechanisms that all answered the
+# same question: the `string_aware_relational` profile bool, the name-keyed
+# `LanguageHooks::relational_compare` callback, and the shared emitter building
+# `<=>` out of two `<`/`>` calls.
+[builtin_slots.string]
+compare = "common:php.compare3"

@@ -7,6 +7,8 @@ name = "python"
 extensions = ["py", "pyw"]
 
 [compiler]
+# Python `__call__` — an object is callable, so a call site probes the Call slot.
+callable_objects = true
 function_return = "explicit"
 self_keyword = "self"
 constructor_name = "__init__"
@@ -79,7 +81,7 @@ __py_iter_array__ = { emit = "common:python.iter_array",     min_args = 1, max_a
 __py_gen_send     = { emit = "common:python.gen_send",       min_args = 2, max_args = 2 }
 __py_gen_throw    = { emit = "common:python.gen_throw",      min_args = 2, max_args = 2 }
 __py_gen_close    = { emit = "common:python.gen_close",      min_args = 1, max_args = 1 }
-__py_getitem      = { emit = "common:python.getitem",        min_args = 2, max_args = 2 }
+__py_getitem      = { emit = "common:python.getitem",        min_args = 2, max_args = 2, slot = "get_item" }
 # `o.attr` read — distinct from `d[k]`: a miss consults the GetAttr role and
 # then raises AttributeError, where a subscript miss raises KeyError.
 __py_attr_read    = { emit = "common:python.attr_read",      min_args = 2, max_args = 2 }
@@ -597,6 +599,7 @@ dir             = { emit = "common:python.dir",               min_args = 0, max_
 # start-*/finish-* pairs are two calls because the proposal is poll-based; a
 # Python socket call is blocking, so the class does both.
 # ── ipaddress arithmetic (pure; see socket_adapter.rs) ───────────────────────
+_vybe_isview        = { emit = "host:ecma:arraybuffer:isView", min_args = 1, max_args = 1 }
 _vybe_ip4_parse     = { emit = "common:python.ip4_parse",     min_args = 1, max_args = 1 }
 _vybe_ip4_str       = { emit = "common:python.ip4_str",       min_args = 1, max_args = 1 }
 _vybe_ip4_octets    = { emit = "common:python.ip4_octets",    min_args = 1, max_args = 1 }

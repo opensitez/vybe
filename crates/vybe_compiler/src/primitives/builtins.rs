@@ -211,23 +211,6 @@ impl Compiler {
             return Ok(true);
         }
 
-        if self.is_php_profile() {
-            let builtin_name = self.canon(name);
-            if builtin_name == "strval" && args.len() == 1 {
-                self.compile_expr(args[0])?;
-                self.emit_common("php.echo_stringify", 1, line);
-                return Ok(true);
-            }
-
-            if builtin_name == "intval" && args.len() == 2 {
-                self.compile_expr(args[0])?;
-                self.compile_expr(args[1])?;
-                let parse_int = self.import("ecma:number", "parseInt");
-                self.emit_host_call(parse_int, 2);
-                return Ok(true);
-            }
-        }
-
         if self.profile.name == "pascal" {
             let builtin_name = self.canon(name);
             if builtin_name == "write" || builtin_name == "writeln" {
@@ -422,7 +405,7 @@ impl Compiler {
 
             let is_set_var = self
                 .lookup_var_type_hint(var_name)
-                .is_some_and(Self::is_pascal_set_type_hint);
+                .is_some_and(|h| self.hint_is_builtin_set(&h));
             if is_set_var && (builtin_name == "include" || builtin_name == "exclude") {
                 let helper = if builtin_name == "include" {
                     "__vybe_pascal_set_include"
@@ -974,15 +957,6 @@ impl Compiler {
         if let Some(def) = builtin {
             match &def.emit {
                 BuiltinEmit::Print => {
-                    if self.is_php_profile() && name.eq_ignore_ascii_case("var_dump") {
-                        let idx = self.import("wasi:logging/logging", "log");
-                        for a in args {
-                            self.compile_expr(a)?;
-                            self.emit_common("php.var_dump_stringify", 1, line);
-                            common::io::emit_print_with_import(self.chunk(), idx, 1, line);
-                        }
-                        return Ok(true);
-                    }
                     // print / console.log → `wasi:logging/logging.log`. The
                     // host log fn renders each arg via the console/inspect
                     // surface (`Value::Display`: BigInt `8n`, `-0`, arrays
@@ -2910,11 +2884,15 @@ impl Compiler {
                     if builtin_exists {
                         self.emit_const(Value::Bool(true));
                     } else {
-                        let lowered = name.to_ascii_lowercase();
+                        // The name is a literal, so it normalizes at COMPILE
+                        // time — no emitted comparison at all.
+                        let needle = crate::primitives::namespaces::normalize_source_path(
+                            &name.to_ascii_lowercase(),
+                        );
                         let exists = self.defined_functions.iter().any(|function_name| {
-                            Self::php_function_name_lookup_spellings(function_name)
-                                .iter()
-                                .any(|spelling| spelling == &lowered)
+                            crate::primitives::namespaces::normalize_source_path(
+                                &function_name.to_ascii_lowercase(),
+                            ) == needle
                         });
                         self.emit_const(Value::Bool(exists));
                     }
@@ -2939,6 +2917,13 @@ impl Compiler {
 
                         self.emit_u16(Op::LOCAL_GET, name_slot);
                         fn_call!(self, "ecma:string", "toLowerCase", 1);
+                        {
+                            let line = self.line;
+                            crate::primitives::namespaces::emit_normalize_source_path(
+                                self.chunk(),
+                                line,
+                            );
+                        }
                         let lowered_slot = self.define_local("__php_function_exists_lowered");
                         self.emit_u16(Op::LOCAL_SET, lowered_slot);
 
@@ -2949,8 +2934,13 @@ impl Compiler {
                         self.emit_const(Value::Bool(false));
                         self.emit_u16(Op::LOCAL_SET, exists_slot);
                         for function_name in known_functions {
-                            for spelling in Self::php_function_name_lookup_spellings(&function_name)
-                            {
+                            let canonical =
+                                crate::primitives::namespaces::normalize_source_path(
+                                    &function_name.to_ascii_lowercase(),
+                                );
+                            let rooted =
+                                crate::primitives::namespaces::rooted_lookup_key(&canonical);
+                            for spelling in [canonical, rooted] {
                                 self.emit_u16(Op::LOCAL_GET, lowered_slot);
                                 self.emit_const(Value::String(Arc::from(spelling)));
                                 {

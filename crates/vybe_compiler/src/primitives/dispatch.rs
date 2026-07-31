@@ -25,7 +25,7 @@ use vybe_runtime::opcode::Op;
 
 use crate::primitives::threading as thread_adapter;
 use crate::primitives::{
-    collections, dict, heap, object, ops, reflection, strings, threading, xml,
+    collections, dict, heap, io, object, ops, reflection, strings, threading, xml,
 };
 
 /// Handle common ops that need only a chunk and line.
@@ -64,6 +64,22 @@ pub fn emit_common(
         }
     }
     match name {
+        // ── Output buffering ──
+        // Language-neutral on purpose: `ob_*` is PHP's SPELLING of a capability
+        // (capture what would have been written), not a PHP feature. A language
+        // maps its own names onto these in its profile; the semantics live in
+        // `io.rs` beside the write they intercept.
+        "output_buffer.start" => io::emit_ob_start(chunks, current, argc, line),
+        "output_buffer.get_level" => io::emit_ob_get_level(chunks, current, line),
+        "output_buffer.get_contents" => io::emit_ob_get_contents(chunks, current, line),
+        "output_buffer.get_length" => io::emit_ob_get_length(chunks, current, None, line),
+        "output_buffer.clean" => io::emit_ob_clean(chunks, current, line),
+        "output_buffer.end_clean" => io::emit_ob_end_clean(chunks, current, line),
+        "output_buffer.end_flush" => io::emit_ob_end_flush(chunks, current, line),
+        "output_buffer.get_clean" => io::emit_ob_get_clean(chunks, current, line),
+        "output_buffer.get_flush" => io::emit_ob_get_flush(chunks, current, line),
+        "output_buffer.flush" => io::emit_ob_flush(chunks, current, line),
+
         // ── Dict ops ──
         "dict.set_dynamic" => {
             dict::emit_set_dynamic(chunks, current, line);

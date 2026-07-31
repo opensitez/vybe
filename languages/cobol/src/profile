@@ -15,7 +15,13 @@ constructor_name = "NEW"
 uses_common_resolver = true
 case_sensitive = false
 string_indexing = "one_based"
-dynamic_add = true
+# COBOL `ADD`/`+` is numeric only — `STRING`/`&` concatenate. This said `true`
+# while the shared emitter carried `dynamic_add && name != "cobol"`, so the
+# effective value has always been false; the exclusion just lived in shared code
+# instead of here. `dynamic_add` is read at exactly two sites and both carried
+# that guard, so moving it is equivalent, not a behaviour change.
+# builtinslotplan.md §3c / compilerhardcodedprofile.md.
+dynamic_add = false
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — COBOL intrinsic functions (FUNCTION xxx)

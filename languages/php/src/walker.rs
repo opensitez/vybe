@@ -10767,8 +10767,16 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
         let right_src = right_pair.as_str().trim().to_string();
         let right = walk_expression(right_pair)?;
         let op = parse_binop(&op_str);
-        // PHP comparisons coerce numeric strings to numbers.
-        // Route >/< through PHP-specific helpers that do Number() coercion.
+        // Two DateTime operands compare chronologically, on their timestamps.
+        //
+        // The four relational operators used to be rewritten here into
+        // `__php_gt`/`__php_lt`/`__php_gte`/`__php_lte` calls, which took them
+        // off the shared operator path entirely. They now stay as `BinOp`s and
+        // the shared emitter derives each from PHP's three-way `Compare`
+        // binding (`[builtin_slots.string] compare` → `common:php.compare3`),
+        // per builtinslotplan.md §2f. The old helpers coerced with
+        // `parseFloat`, so `"10" < "9a"` compared 10 against 9 and answered
+        // false where php answers true.
         if matches!(op, BinOp::Gt | BinOp::Lt | BinOp::GtEq | BinOp::LtEq) {
             if let (Some(left_time), Some(right_time)) = (
                 php_datetime_time_expr(left.clone(), &span),
@@ -10784,18 +10792,11 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
                 );
                 continue;
             }
-            let helper = match op {
-                BinOp::Gt => "__php_gt",
-                BinOp::Lt => "__php_lt",
-                BinOp::GtEq => "__php_gte",
-                BinOp::LtEq => "__php_lte",
-                _ => unreachable!(),
-            };
             left = Expression::with_span(
-                ExprKind::Call {
-                    callee: Box::new(Expression::ident(helper)),
-                    args: vec![Argument::positional(left), Argument::positional(right)],
-                    optional: false,
+                ExprKind::Binary {
+                    op,
+                    left: Box::new(left),
+                    right: Box::new(right),
                 },
                 span.clone(),
             );
@@ -24881,6 +24882,16 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             mapped_args.extend(args.iter().skip(1).map(|arg| arg.value.clone()));
             mk_call(Expression::ident("array_map"), mapped_args)
         }
+        // `ob_start($handler, ...)` — the handler is a callable like any other,
+        // so a `"name"` / `[Class, m]` / `[obj, m]` spelling has to become a
+        // real closure here. Without this the raw string reaches the shared
+        // buffer primitive's `CALL_REF` and the VM reports "string is not
+        // callable". Arity 1: handlers receive the buffer.
+        "ob_start" if !args.is_empty() => {
+            let mut mapped_args = vec![php_wrap_callable(arg(0)?, 1, span)];
+            mapped_args.extend(args.iter().skip(1).map(|arg| arg.value.clone()));
+            mk_call(Expression::ident("ob_start"), mapped_args)
+        }
         // Comparator-taking sorts: `[Class, m]` / `[obj, m]` / "name" → closure.
         fname @ ("usort" | "uasort" | "uksort") if args.len() == 2 => mk_call(
             Expression::ident(fname),
@@ -26102,11 +26113,21 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                     php_namespace_function_is_registered(&normalized)
                         || php_function_is_registered(&normalized)
                 } else if php_bare_name_is_namespaced_function_suffix(name) {
-                    false
+                    // A bare name that only exists as a NAMESPACED suffix is
+                    // genuinely not callable unqualified — an authoritative no.
+                    return Some(ExprKind::Lit(Literal::Bool(false)));
                 } else {
                     php_function_is_registered(name)
                 };
-                return Some(ExprKind::Lit(Literal::Bool(registered)));
+                if registered {
+                    return Some(ExprKind::Lit(Literal::Bool(registered)));
+                }
+                // The walker only knows USER-DEFINED functions. Answering
+                // `false` here also denied every profile builtin —
+                // `function_exists('strlen')` was false. Fall through instead:
+                // the shared intrinsic consults the profile's builtin table
+                // (and the common imports) before deciding.
+                return None;
             }
             return None;
         }

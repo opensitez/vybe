@@ -1129,6 +1129,14 @@ pub enum Literal {
     Undefined,
     /// Python `...`
     Ellipsis,
+    /// Binary data — PHP byte strings, Python `bytes`, Go `[]byte`.
+    ///
+    /// A distinct TYPE, not a differently-encoded `Str`
+    /// (`unifiedstringplan.md` §3c): it is what lets `(Bytes, slot)` bindings
+    /// resolve, which `builtin_slots.rs` records as the reason `Bytes` is
+    /// unbound today. Deliberately NOT `Utf8Str`/`Utf16Str` — encoding is a
+    /// property of a conversion, not of a literal.
+    Bytes(Vec<u8>),
 }
 
 // ── Variables ───────────────────────────────────────────────────────────────

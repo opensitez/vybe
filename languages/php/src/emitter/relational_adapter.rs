@@ -229,6 +229,171 @@ pub fn emit_relational_compare(chunk: &mut Chunk, cmp_fn: fn(&mut Chunk, u32), l
     chunk.emit_end(line);
 }
 
+/// PHP's `<=>` — the THREE-WAY compare, `[a, b]` → `i32` in `{-1, 0, 1}`.
+///
+/// This is the primitive. `<`, `<=`, `>`, `>=` are its sign against 0
+/// (builtinslotplan.md §2f), which is the inverse of how the shared emitter
+/// used to work: `Spaceship` was built by calling the relational hook TWICE,
+/// once for `<` and once for `>`. Spaceship is its own operator, not three.
+///
+/// Reached as the emit target `common:php.compare3`, declared by PHP's profile
+/// as `[builtin_slots.string] compare`. No `LanguageHooks` callback and no
+/// `profile.name` check is involved.
+///
+/// # PHP 8 comparison semantics, and the bug this fixes
+///
+/// PHP 8 compares two operands numerically **only when both are numeric**;
+/// otherwise the number is cast to a string and the comparison is
+/// lexicographic. `emit_relational_compare` tested numericness with
+/// `ecma:number.parseFloat`, and `parseFloat("9a")` is `9`, not `NaN` — so
+/// `"9a"` was treated as the number 9. Measured against the real `php` binary
+/// 2026-07-31:
+///
+/// | expression | php | old vybe |
+/// |---|---|---|
+/// | `"10" <=> "9a"` | -1 | **1** |
+/// | `5 <=> "abc"` | -1 | **0** |
+/// | `0 <=> "abc"` | -1 | **0** |
+/// | `"10" < "9a"` | true | **false** |
+/// | `5 < "abc"` | true | **false** |
+///
+/// `ecma:value.toNumber` is the right test: it bottoms out on
+/// `Value::as_f64`, which does a whole-string `parse::<f64>()` and yields NaN
+/// for `"9a"` — exactly PHP's `is_numeric`, including the leading-whitespace
+/// tolerance that makes `" 1" == "1"` true.
+pub fn emit_compare3(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let t_b = alloc_local(chunk);
+    let t_a = alloc_local(chunk);
+    let a_num = alloc_local(chunk);
+    let b_num = alloc_local(chunk);
+    let res = alloc_local(chunk);
+    lset(chunk, t_b, line);
+    lset(chunk, t_a, line);
+
+    // DateTime operands compare chronologically, via their `__time` field.
+    maybe_unbox_datetime(chunk, t_a, line);
+    maybe_unbox_datetime(chunk, t_b, line);
+
+    // ── PHP 8 comparison table, row 1: `null` against a `string` ──────────
+    // NULL becomes `""` and the ordinary string rules take over. This is why
+    // `null <=> "0"` is -1 (lexical, `"" < "0"`) and not 0, which is what the
+    // bool rule below would give — `(bool)null` and `(bool)"0"` are both false.
+    coerce_null_against_string(chunk, t_a, t_b, line);
+    coerce_null_against_string(chunk, t_b, t_a, line);
+
+    // ── row 2: `bool` or `null` on EITHER side → compare both as bools ────
+    // Reached only after row 1, so a null paired with a string is already a
+    // string by now. Measured against the real `php` binary: `true <=> "abc"`
+    // is 0 under this rule, where a string compare would say `"1" <=> "abc"`.
+    lget(chunk, t_a, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    lget(chunk, t_a, line);
+    let test_bool_a = chunk.add_import("wasm:js-boolean", "test");
+    chunk.emit_call(test_bool_a, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+    lget(chunk, t_b, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_OR, line);
+    lget(chunk, t_b, line);
+    let test_bool_b = chunk.add_import("wasm:js-boolean", "test");
+    chunk.emit_call(test_bool_b, 1, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_value(line);
+
+    // PHP falsiness, via PHP's own `empty` — NOT `ops::emit_dyn_to_bool`,
+    // which is JS's and calls `"0"` truthy. Each side lands as an i32 in
+    // {0, 1}, so the difference IS the three-way result: FALSE < TRUE.
+    emit_php_truthy(chunks, current, t_a, line);
+    emit_php_truthy(chunks, current, t_b, line);
+    let chunk = &mut chunks[current];
+    chunk.emit_op(Op::I32_SUB, line);
+
+    chunk.emit_else(line);
+
+    let to_number = chunk.add_import("ecma:value", "toNumber");
+    lget(chunk, t_a, line);
+    chunk.emit_call(to_number, 1, line);
+    lset(chunk, a_num, line);
+    lget(chunk, t_b, line);
+    chunk.emit_call(to_number, 1, line);
+    lset(chunk, b_num, line);
+
+    // Both numeric? NaN is the only f64 not equal to itself.
+    lget(chunk, a_num, line);
+    lget(chunk, a_num, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    lget(chunk, b_num, line);
+    lget(chunk, b_num, line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if_value(line);
+
+    // Numeric: (a > b) - (a < b).
+    lget(chunk, a_num, line);
+    lget(chunk, b_num, line);
+    chunk.emit_op(Op::F64_GT, line);
+    lget(chunk, a_num, line);
+    lget(chunk, b_num, line);
+    chunk.emit_op(Op::F64_LT, line);
+    chunk.emit_op(Op::I32_SUB, line);
+
+    chunk.emit_else(line);
+
+    // Lexicographic. `ecma:string.String` is the string cast — the same host
+    // function `primitives::strings::emit_to_string` uses, so a number operand
+    // becomes its PHP string form. `wasm:js-string.concat` will NOT do this:
+    // it rejects a non-string argument outright.
+    let to_str = chunk.add_import("ecma:string", "String");
+    lget(chunk, t_a, line);
+    chunk.emit_call(to_str, 1, line);
+    lget(chunk, t_b, line);
+    chunk.emit_call(to_str, 1, line);
+    let compare = chunk.add_import("wasm:js-string", "compare");
+    chunk.emit_call(compare, 2, line);
+    // `compare` is only documented by SIGN, so normalise to -1/0/1 rather than
+    // letting a host implementation's magnitude leak into `<=>`'s result.
+    lset(chunk, res, line);
+    lget(chunk, res, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::I32_GT_S, line);
+    lget(chunk, res, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::I32_LT_S, line);
+    chunk.emit_op(Op::I32_SUB, line);
+
+    chunk.emit_end(line); // numeric / lexical
+    chunk.emit_end(line); // bool-or-null / everything else
+}
+
+/// PHP truthiness of the value in `slot`, pushed as an i32 in {0, 1}.
+///
+/// `!empty($v)`, which is exactly how the walker spells a PHP condition
+/// (`php_truthy_condition`). Deliberately not `ops::emit_dyn_to_bool`: that is
+/// JS truthiness, under which `"0"` and `[]` are both true and PHP says false.
+fn emit_php_truthy(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    super::array_adapter::emit_php_empty_from_slot(chunks, current, slot, line);
+    let chunk = &mut chunks[current];
+    emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+}
+
+/// PHP 8 comparison table row 1 — `null` compared against a `string` compares
+/// `""` against that string. Rewrites `slot` in place when it holds null and
+/// `other` holds a string, so the general legs below never see the null.
+fn coerce_null_against_string(chunk: &mut Chunk, slot: u16, other: u16, line: u32) {
+    lget(chunk, slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    lget(chunk, other, line);
+    let test_str = chunk.add_import("wasm:js-string", "test");
+    chunk.emit_call(test_str, 1, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_if(line);
+    push_str(chunk, "", line);
+    lset(chunk, slot, line);
+    chunk.emit_end(line);
+}
+
 /// If the value in `slot` is a boxed DateTime-like object, replace it
 /// with its `__time` field so comparisons operate on the timestamp.
 fn maybe_unbox_datetime(chunk: &mut Chunk, slot: u16, line: u32) {

@@ -49,6 +49,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // `Map` (assoc) or `Array` (sequential).
         "php.echo" => super::output_adapter::emit_php_echo(chunks, current, argc, line),
         "php.print_expr" => super::output_adapter::emit_php_print_expr(chunks, current, line),
+        // The three-way primitive. `<`/`<=`/`>`/`>=` are its sign against 0,
+        // so the four `php.compare_*` arms below are legacy shapes kept for any
+        // direct caller; the operator path goes through this one.
+        "php.compare3" => {
+            super::relational_adapter::emit_compare3(chunks, current, line)
+        }
         "php.compare_gt" => {
             let chunk = &mut chunks[current];
             super::relational_adapter::emit_relational_compare(
@@ -82,9 +88,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             );
         }
         "php.intval" => {
-            let num_idx = chunks[current].add_import("ecma:number", "Number");
-            chunks[current].emit_call(num_idx, 1, line);
-            chunks[current].emit_op(vybe_runtime::opcode::Op::F64_TRUNC, line);
+            if argc == 2 {
+                // `intval($v, $base)` parses in an explicit radix — a different
+                // operation from the 1-arg numeric cast, not a variant of it.
+                let idx = chunks[current].add_import("ecma:number", "parseInt");
+                chunks[current].emit_call(idx, 2, line);
+            } else {
+                let num_idx = chunks[current].add_import("ecma:number", "Number");
+                chunks[current].emit_call(num_idx, 1, line);
+                chunks[current].emit_op(vybe_runtime::opcode::Op::F64_TRUNC, line);
+            }
         }
         // Guarded delegators: PHP throws TypeError when the first argument
         // isn't an array; the underlying op is the shared `common:*` emit.
@@ -631,6 +644,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.str_word_count" => {
             crate::emitter::string_adapter::emit_str_word_count(chunks, current, argc, line)
+        }
+        "php.var_dump" => {
+            super::output_adapter::emit_php_var_dump(chunks, current, argc, line)
         }
         "php.var_dump_stringify" => {
             crate::emitter::string_adapter::emit_var_dump_stringify(chunks, current, argc, line)
@@ -1221,20 +1237,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.error_clear_last" => {
             super::error_adapter::emit_error_clear_last(chunks, current, argc, line)
         }
-        "php.ob_start" => super::output_adapter::emit_ob_start(chunks, current, argc, line),
-        "php.ob_get_clean" => super::output_adapter::emit_ob_get_clean(chunks, current, argc, line),
-        "php.ob_get_contents" => {
-            super::output_adapter::emit_ob_get_contents(chunks, current, argc, line)
+        "php.ob_implicit_flush" => {
+            super::output_adapter::emit_ob_implicit_flush(chunks, current, argc, line)
         }
-        "php.ob_end_clean" => super::output_adapter::emit_ob_end_clean(chunks, current, argc, line),
-        "php.ob_end_flush" => super::output_adapter::emit_ob_end_flush(chunks, current, argc, line),
-        "php.ob_get_level" => super::output_adapter::emit_ob_get_level(chunks, current, argc, line),
-        "php.ob_clean" => super::output_adapter::emit_ob_clean(chunks, current, argc, line),
         "php.ob_get_length" => {
             super::output_adapter::emit_ob_get_length(chunks, current, argc, line)
         }
-        "php.ob_implicit_flush" => {
-            super::output_adapter::emit_ob_implicit_flush(chunks, current, argc, line)
+        "php.ob_get_status" => {
+            super::output_adapter::emit_ob_get_status(chunks, current, argc, line)
         }
         "php.ob_list_handlers" => {
             super::output_adapter::emit_ob_list_handlers(chunks, current, argc, line)

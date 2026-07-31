@@ -4,8 +4,6 @@ use vybe_runtime::Chunk;
 use vybe_runtime::Value;
 use vybe_runtime::opcode::Op;
 
-use vybe_ast::{Argument, ExprKind, Expression, ObjectProperty, UnaryOp};
-
 use crate::primitives::collections;
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {

@@ -24,10 +24,6 @@ impl Compiler {
         Self::normalize_type_hint(type_hint).contains("sortedset")
     }
 
-    pub(super) fn is_pascal_set_type_hint(type_hint: &str) -> bool {
-        Self::normalize_type_hint(type_hint).starts_with("set of ")
-    }
-
     pub(super) fn is_case_insensitive_string_key_type_hint(type_hint: &str) -> bool {
         Self::normalize_type_hint(type_hint).contains("#ordinalignorecase")
     }
@@ -648,7 +644,7 @@ impl Compiler {
                 .and_then(|type_hint| self.user_value_type_name_from_hint(type_hint))
             {
                 let ctor_global = {
-                    let overload = format!("{}$arity0", type_name);
+                    let overload = crate::primitives::classes::ctor_global_for(&type_name, 0);
                     if self.defined_globals.contains(&overload) {
                         overload
                     } else {
@@ -702,7 +698,11 @@ impl Compiler {
         let normalized = Self::normalize_type_hint(type_hint);
         match normalized.as_str() {
             "bool" | "boolean" | "_bool" => {
-                if self.profile.materialize_bool_results || self.profile.name == "pascal" {
+                // `|| self.profile.name == "pascal"` used to be OR'd in here and
+                // was unreachable from either side: `languages/pascal/src/profile`
+                // sets `materialize_bool_results = true`, so the left operand is
+                // already true whenever the right one is (builtinslotplan.md §3c).
+                if self.profile.materialize_bool_results {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                     crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);

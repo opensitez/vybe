@@ -311,18 +311,20 @@ echo $s;
         r#"<?php
 ob_start();
 echo '12345';
-echo ob_get_length();
+$len = ob_get_length();
 ob_end_clean();
+echo $len;
 "#,
-        ["123455"]
+        ["5"]
     };
 
     ob_get_level_increments_with_nested_start => {
         r#"<?php
 $base = ob_get_level();
 ob_start();
-echo $base + 1;
+$inside = ob_get_level();
 ob_end_clean();
+echo $inside - $base;
 "#,
         ["1"]
     };
@@ -377,7 +379,7 @@ echo count($list) >= 0 ? 'listed' : 'none';
         r#"<?php
 ob_start(fn(string $buf): string => strtoupper($buf));
 echo 'hello';
-echo ob_get_clean();
+ob_end_flush();
 "#,
         ["HELLO"]
     };
@@ -388,9 +390,9 @@ ob_start();
 echo 'outer-';
 ob_start(fn(string $buf): string => '[' . $buf . ']');
 echo 'inner';
-$inner = ob_get_clean();
-ob_get_clean();
-echo $inner;
+ob_end_flush();
+$outer = ob_get_clean();
+echo $outer;
 "#,
         ["outer-[inner]"]
     };
@@ -448,7 +450,7 @@ echo 'y';
 ob_end_clean();
 echo 'done';
 "#,
-        ["xydone"]
+        ["xdone"]
     };
 
     ob_status_reports_multiple_buffers => {
@@ -456,9 +458,10 @@ echo 'done';
 ob_start();
 ob_start();
 $status = ob_get_status(true);
-echo is_array($status) && array_key_exists(0, $status) && is_array($status[0]) ? 'one' : 'none';
+$ok = is_array($status) && array_key_exists(0, $status) && is_array($status[0]);
 ob_end_clean();
 ob_end_clean();
+echo $ok ? 'one' : 'none';
 "#,
         ["one"]
     };
@@ -467,17 +470,18 @@ ob_end_clean();
         r#"<?php
 ob_start(null, 1024, false);
 echo 'chunk';
-echo ob_get_contents();
+$c = ob_get_contents();
 ob_end_clean();
+echo $c;
 "#,
-        ["chunkchunk"]
+        ["chunk"]
     };
 
     ob_callback_can_strip_tags => {
         r#"<?php
 ob_start(fn(string $buf): string => strip_tags($buf));
 echo '<b>ok</b> <i>yes</i>';
-echo ob_get_clean();
+ob_end_flush();
 "#,
         ["ok yes"]
     };
@@ -485,8 +489,9 @@ echo ob_get_clean();
     ob_start_with_empty_buffer_reports_zero_length => {
         r#"<?php
 ob_start();
-echo ob_get_length();
+$len = ob_get_length();
 ob_end_clean();
+echo $len;
 "#,
         ["0"]
     };
@@ -518,7 +523,7 @@ ob_flush();
 echo '-outer-end';
 ob_end_clean();
 "#,
-        ["outer-start-inner-outer-end"]
+        ["outer-start-inner"]
     };
 
     ob_start_and_ob_get_clean_preserve_newlines => {
@@ -542,7 +547,7 @@ echo ':' . $l2 . ':';
 $l1 = ob_get_clean();
 echo $l1;
 "#,
-        ["L0-:L2:L1"]
+        ["L0-L1:L2:"]
     };
 
     ob_ob_get_clean_discards_outer_when_nested => {
@@ -571,7 +576,7 @@ echo $outer_len = ob_get_length();
 echo '|';
 echo ob_get_clean();
 "#,
-        ["2|5|abcde"]
+        ["abcde2|7|"]
     };
 
     ob_callback_drops_output_when_empty => {
@@ -589,9 +594,9 @@ echo 'after';
 ob_start();
 ob_implicit_flush(false);
 echo 'x';
-echo ob_get_length();
+$len = ob_get_length();
 ob_end_clean();
-echo 'done';
+echo $len . '|done';
 "#,
         ["1|done"]
     };
@@ -609,8 +614,8 @@ echo ob_end_flush();
         r#"<?php
 ob_start();
 $status = ob_get_status();
-echo is_array($status) ? 'arr' : 'no';
 ob_end_clean();
+echo is_array($status) ? 'arr' : 'no';
 "#,
         ["arr"]
     };
@@ -654,7 +659,7 @@ ob_start();
 echo 'abc';
 echo ob_get_clean();
 "#,
-        ["abcabc"]
+        ["abc"]
     };
 
     ob_start_with_identity_callback_preserves_content => {
@@ -663,7 +668,7 @@ ob_start(fn(string $buf): string => $buf);
 echo 'z';
 echo ob_get_clean();
 "#,
-        ["zz"]
+        ["z"]
     };
 
     ob_end_clean_nested_discard_outer_buffer => {
@@ -674,9 +679,10 @@ ob_start();
 echo 'inner';
 ob_end_clean();
 echo '|';
-ob_end_clean();
+$o = ob_get_clean();
+echo $o;
 "#,
-        ["|"]
+        ["outer|"]
     };
 
     ob_flush_without_content_returns_empty_string => {
@@ -688,7 +694,7 @@ ob_flush();
 echo ob_get_length();
 ob_end_clean();
 "#,
-        ["0|0"]
+        ["0|"]
     };
 
     ob_get_contents_after_clean_empty => {
@@ -696,8 +702,9 @@ ob_end_clean();
 ob_start();
 echo 'temp';
 ob_clean();
-echo ob_get_contents() === '' ? 'clean' : 'dirty';
+$r = ob_get_contents() === '' ? 'clean' : 'dirty';
 ob_end_clean();
+echo $r;
 "#,
         ["clean"]
     };
@@ -728,7 +735,7 @@ echo $out;
         r#"<?php
 ob_start('str_rot13');
 echo 'uryyb';
-echo ob_get_clean();
+ob_end_flush();
 "#,
         ["hello"]
     };
@@ -738,11 +745,12 @@ echo ob_get_clean();
 ob_start();
 ob_start();
 echo 'nested';
-$status = ob_get_length();
+$len = ob_get_length();
 ob_end_clean();
-echo $status;
+ob_end_clean();
+echo $len;
 "#,
-        ["6|6"]
+        ["6"]
     };
 
     ob_get_status_true_reports_nested_flags => {
@@ -750,9 +758,9 @@ echo $status;
 ob_start();
 ob_start();
 $status = ob_get_status(true);
+ob_end_clean();
+ob_end_clean();
 echo is_array($status) && count($status) >= 2 ? 'yes' : 'no';
-ob_end_clean();
-ob_end_clean();
 "#,
         ["yes"]
     };
@@ -772,8 +780,9 @@ echo ob_get_clean() === false ? 'closed' : 'open';
 ob_start();
 ob_implicit_flush(true);
 echo 'z';
-echo ob_get_level() >= 1 ? 'active' : 'off';
+$lvl = ob_get_level();
 ob_end_clean();
+echo $lvl >= 1 ? 'active' : 'off';
 "#,
         ["active"]
     };
@@ -786,6 +795,7 @@ echo 'inner';
 ob_clean();
 echo 'outer';
 $inner = ob_get_clean();
+ob_end_clean();
 echo $inner;
 "#,
         ["outer"]
@@ -795,7 +805,7 @@ echo $inner;
         r#"<?php
 ob_start(fn(string $buf): string => strtoupper(strtolower($buf)));
 echo 'MiXeD';
-echo ob_get_clean();
+ob_end_flush();
 "#,
         ["MIXED"]
     };
@@ -804,11 +814,12 @@ echo ob_get_clean();
         r#"<?php
 ob_start();
 ob_start();
-echo ob_get_status()['level'];
+$lvl = ob_get_status()['level'];
 ob_end_clean();
 ob_end_clean();
+echo $lvl;
 "#,
-        ["2"]
+        ["1"]
     };
 
     ob_get_status_without_active_buffer_empty => {
@@ -824,8 +835,9 @@ echo is_array($status) ? 'array' : 'no';
 ob_start();
 echo 'temp';
 ob_clean();
-echo ob_get_length() === 0 ? 'zero' : 'not';
+$r = ob_get_length() === 0 ? 'zero' : 'not';
 ob_end_clean();
+echo $r;
 "#,
         ["zero"]
     };
@@ -848,7 +860,7 @@ echo 'two';
 echo 'three';
 echo ob_get_clean();
 "#,
-        ["onetwothreeonetwothree"]
+        ["onetwothree"]
     };
 
     ob_nested_buffers_report_level_changes => {
@@ -857,10 +869,11 @@ ob_start();
 echo 'A';
 ob_start();
 echo 'B';
-echo ob_get_level() . '|';
+$l2 = ob_get_level();
 ob_get_clean();
-echo ob_get_level();
+$l1 = ob_get_level();
 ob_end_clean();
+echo $l2 . '|' . $l1;
 "#,
         ["2|1"]
     };
@@ -870,9 +883,9 @@ ob_end_clean();
 ob_start();
 echo 'abc';
 ob_clean();
-echo ob_get_level();
-echo '|';
+$lvl = ob_get_level();
 ob_get_clean();
+echo $lvl . '|';
 "#,
         ["1|"]
     };
@@ -906,8 +919,8 @@ echo ob_get_clean();
         r#"<?php
 ob_start();
 $status = ob_get_status(false);
-echo is_array($status) ? (array_key_exists('level', $status) ? 'ok' : 'nolvl') : 'bad';
 ob_end_clean();
+echo is_array($status) ? (array_key_exists('level', $status) ? 'ok' : 'nolvl') : 'bad';
 "#,
         ["ok"]
     };
@@ -922,7 +935,7 @@ echo is_array($status) ? 'arr' : 'bad';
 echo '|';
 echo $status['level'];
 "#,
-        ["arr|0"]
+        ["arr|"]
     };
 
     ob_get_clean_drops_nested_inner_when_called_in_inner => {
@@ -935,7 +948,7 @@ echo 'two';
 echo '|' . ob_get_clean();
 echo ob_get_clean();
 "#,
-        ["base|two|one"]
+        ["baseone|two"]
     };
 
     ob_clean_when_no_buffer_false => {
@@ -959,12 +972,11 @@ echo ob_get_level();
         r#"<?php
 ob_start();
 echo "éclair";
-echo ob_get_length();
-echo '|';
-echo strlen("éclair");
+$len = ob_get_length();
 ob_end_clean();
+echo $len . '|' . strlen("éclair");
 "#,
-        ["6|7"]
+        ["7|7"]
     };
 
     ob_start_with_output_handler_array => {
@@ -993,11 +1005,12 @@ ob_start();
 echo "A";
 ob_start();
 echo "B";
-echo ob_get_flush();
+$f = ob_get_flush();
+$len = ob_get_length();
 ob_end_clean();
-echo ob_get_length();
+echo $f . $len;
 "#,
-        ["B0"]
+        ["B2"]
     };
 
     ob_end_flush_after_clean_returns_false => {
@@ -1014,11 +1027,12 @@ echo ob_end_flush() ? 'closed' : 'false';
         r#"<?php
 $base = ob_get_level();
 ob_start();
-echo ob_get_level() === $base + 1 ? 'nested' : 'wrong';
+$a = ob_get_level() === $base + 1 ? 'nested' : 'wrong';
 ob_clean();
-echo '|' . (ob_get_level() === $base + 1 ? 'still' : 'gone');
+$b = ob_get_level() === $base + 1 ? 'still' : 'gone';
 ob_end_clean();
-echo '|' . (ob_get_level() === $base ? 'done' : 'open');
+$c = ob_get_level() === $base ? 'done' : 'open';
+echo $a . '|' . $b . '|' . $c;
 "#,
         ["nested|still|done"]
     };
@@ -1047,7 +1061,7 @@ $status = ob_get_status();
 echo is_array($status) && array_key_exists('level', $status) ? 'arr' : 'not';
 echo '|' . $status['level'];
 "#,
-        ["arr|0"]
+        ["not|"]
     };
 
     ob_callback_can_return_empty_string => {

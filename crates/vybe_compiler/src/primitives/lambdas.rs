@@ -13,21 +13,6 @@ impl Compiler {
         }
     }
 
-    pub(super) fn normalize_explicit_capture(&self, capture: &str) -> String {
-        let (by_ref, raw_name) = Self::split_explicit_capture(capture);
-        let normalized_name = if self.is_php_profile() && !raw_name.starts_with('$') {
-            format!("${raw_name}")
-        } else {
-            raw_name.to_string()
-        };
-
-        if by_ref {
-            format!("&{normalized_name}")
-        } else {
-            normalized_name
-        }
-    }
-
     pub(super) fn compile_lambda(
         &mut self,
         params: &[Param],
@@ -46,21 +31,16 @@ impl Compiler {
         is_generator: bool,
         is_arrow: bool,
     ) -> Result<(), String> {
-        let normalized_captures: Vec<String> = captures
-            .iter()
-            .map(|capture| self.normalize_explicit_capture(capture))
-            .collect();
-
-        if normalized_captures
+        // A capture list names bindings in the ENCLOSING scope, so the strings
+        // arrive spelled exactly as that scope defined them — sigil and all.
+        // Nothing to normalize here: the walker is the only thing that knows
+        // its own spelling, and it already applied it.
+        if captures
             .iter()
             .any(|capture| !Self::split_explicit_capture(capture).0)
         {
             return self.compile_lambda_with_explicit_captures(
-                params,
-                body,
-                &normalized_captures,
-                is_async,
-                is_generator,
+                params, body, captures, is_async, is_generator,
             );
         }
 
