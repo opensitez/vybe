@@ -1,0 +1,10 @@
+[package]
+name = "vybe_platform_jvm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+inventory = { workspace = true }
+vybe_runtime = { workspace = true }
