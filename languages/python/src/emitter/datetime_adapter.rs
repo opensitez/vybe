@@ -341,7 +341,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 /// Python ordinal 1 is 0001-01-01; the epoch is ordinal 719163.
 const EPOCH_ORDINAL: f64 = 719_163.0;
-const MS_PER_DAY: f64 = 86_400_000.0;
+const MS_PER_DAY: f64 = vybe_compiler::primitives::datetime::MS_PER_DAY;
 
 fn emit_literal_date(chunk: &mut Chunk, y: i64, m: i64, d: i64, tag: &str, line: u32) {
     core_wasm::f64_const(chunk, line, (days_from_civil(y, m, d) * 86_400_000) as f64);
@@ -489,7 +489,7 @@ fn emit_time_of_day_ms(chunk: &mut Chunk, obj: u16, line: u32) {
         core_wasm::f64_const(chunk, line, scale);
         chunk.emit_op(Op::F64_MUL, line);
     };
-    part(chunk, "hour", 3_600_000.0);
+    part(chunk, "hour", vybe_compiler::primitives::datetime::MS_PER_HOUR);
     part(chunk, "minute", 60_000.0);
     chunk.emit_op(Op::F64_ADD, line);
     part(chunk, "second", MS_PER_SECOND);
@@ -601,23 +601,9 @@ pub fn emit_cal_weekday(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
 /// `calendar.isleap(y)`. Stack: `[y]` → `[bool]`.
 pub fn emit_cal_isleap(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let y = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::LOCAL_SET, y, line);
-
-    let divides = |chunk: &mut Chunk, n: i32| {
-        chunk.emit_op_u16(Op::LOCAL_GET, y, line);
-        core_wasm::i32_const(chunk, line, n);
-        chunk.emit_op(Op::I32_REM_S, line);
-        chunk.emit_op(Op::I32_EQZ, line);
-    };
-
-    // (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
-    divides(chunk, 4);
-    divides(chunk, 100);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_op(Op::I32_AND, line);
-    divides(chunk, 400);
-    chunk.emit_op(Op::I32_OR, line);
+    // Proleptic Gregorian leap rule — shared, because it is identical in every
+    // language (this file, PHP, Java and .NET each had their own copy).
+    vybe_compiler::primitives::datetime::emit_is_leap_year(chunk, line);
     // Python's `isleap` returns a real `bool`, so lift the i32 the same way
     // the comparison operators do under `materialize_bool_results`.
     vybe_compiler::primitives::ops::emit_i32_to_bool(chunk, line);
@@ -625,6 +611,14 @@ pub fn emit_cal_isleap(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
 
 /// Days in month `m` of year `y`. Day 0 of the next month is the last day
 /// of this one — the standard ECMA overflow trick. Stack: `[]` → `[num]`.
+/// Days in month `m` of year `y`. Day 0 of the next month is the last day
+/// of this one — the standard ECMA overflow trick. Stack: `[]` → `[num]`.
+///
+/// NOT yet migrated to `primitives::datetime::emit_days_in_month`: substituting
+/// the shared arithmetic version broke `test_py_datetime_replace` and
+/// `test_py_datetime_comparison` with `wasm:js-string.equals — first arg not a
+/// string or null`, i.e. the values reaching here are not plain numbers on this
+/// path. Diagnose that before retrying; PHP and .NET migrated cleanly.
 fn emit_days_in_month(chunk: &mut Chunk, y: u16, m: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, y, line);
     chunk.emit_op_u16(Op::LOCAL_GET, m, line);

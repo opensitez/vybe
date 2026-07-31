@@ -330,6 +330,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body = prelude;
     }
 
+    // `ipaddress` — pure address arithmetic; a prelude because the addresses
+    // and networks are classes.
+    if source.contains("import ipaddress") {
+        let mut prelude = parse_python_prelude(IPADDRESS_PRELUDE);
+        prelude.append(&mut body);
+        body = prelude;
+    }
+
     // `socket` — the class is genuinely stateful (WASI resource + streams +
     // timeout + option table), which is the one case a prelude is for.
     if source.contains("import socket") {
@@ -911,9 +919,9 @@ contextlib = __ContextlibModule()
 /// one delegates to the bare alias of the same adapter.
 const SOCKET_PRELUDE: &str = r#"
 class VybeSocketImpl:
-    def __init__(self, family=2, type=1, proto=0, res=None, rx=None, tx=None):
+    def __init__(self, family=2, kind=1, proto=0, res=None, rx=None, tx=None):
         self.family = family
-        self.type = type
+        self.sock_kind = kind
         self.proto = proto
         self._timeout = None
         self._opts = {}
@@ -922,35 +930,28 @@ class VybeSocketImpl:
         self._tx = tx
         if res is not None:
             self._res = res
-        elif type == 2:
+        elif kind == 2:
             self._res = _wasi_udp_new("ipv4")
         else:
             self._res = _wasi_tcp_new("ipv4")
-
     def settimeout(self, value):
         self._timeout = value
-
     def gettimeout(self):
         return self._timeout
-
     def setblocking(self, flag):
         if flag:
             self._timeout = None
         else:
             self._timeout = 0.0
-
     def setsockopt(self, level, option, value):
-        self._opts[str(level) + ":" + str(option)] = value
-
+        self._opts[str(level) + "/" + str(option)] = value
     def getsockopt(self, level, option, buflen=0):
-        key = str(level) + ":" + str(option)
+        key = str(level) + "/" + str(option)
         if key in self._opts:
             return self._opts[key]
         return 0
-
     def _addr_text(self, address):
         return str(address[0]) + ":" + str(address[1])
-
     def _addr_tuple(self, record):
         if record is None:
             return ("0.0.0.0", 0)
@@ -963,87 +964,212 @@ class VybeSocketImpl:
                 pieces.append(str(octet))
             host = ".".join(pieces)
         return (host, int(record["port"]))
-
     def bind(self, address):
         _wasi_start_bind(self._res, _wasi_network(), self._addr_text(address))
         _wasi_finish_bind(self._res)
-
     def listen(self, backlog=5):
         _wasi_backlog(self._res, backlog)
         _wasi_start_listen(self._res)
-
     def getsockname(self):
         return self._addr_tuple(_wasi_local_addr(self._res))
-
     def getpeername(self):
         return self._addr_tuple(_wasi_remote_addr(self._res))
-
     def fileno(self):
         return 0
-
     def accept(self):
         result = _wasi_accept(self._res)
-        while result is None:
-            result = _wasi_accept(self._res)
-        conn = VybeSocketImpl(self.family, self.type, 0, result[0], result[1], result[2])
+        if result is None:
+            return (None, ("0.0.0.0", 0))
+        conn = VybeSocketImpl(self.family, self.sock_kind, 0, result[0], result[1], result[2])
         return (conn, conn.getpeername())
-
     def connect(self, address):
         _wasi_start_conn(self._res, _wasi_network(), self._addr_text(address))
         streams = _wasi_finish_conn(self._res)
         if streams is not None:
             self._rx = streams[0]
             self._tx = streams[1]
-
     def send(self, data):
         _wasi_stream_write(self._tx, data)
         return len(data)
-
     def sendall(self, data):
         _wasi_stream_write(self._tx, data)
         return None
-
     def recv(self, bufsize=1024):
         return _wasi_stream_read(self._rx, bufsize)
-
     def shutdown(self, how=2):
         _wasi_sock_shutdown(self._res, how)
-
     def close(self):
         if not self._closed:
             self._closed = True
             _wasi_sock_shutdown(self._res, 2)
-
     def __enter__(self):
         return self
-
     def __exit__(self, exc_type, exc, tb):
         self.close()
         return False
-
-
-    AF_INET = 2
-    AF_INET6 = 10
-    AF_UNIX = 1
-    SOCK_STREAM = 1
-    SOCK_DGRAM = 2
-    SOL_SOCKET = 1
-    SO_REUSEADDR = 2
-    SO_KEEPALIVE = 9
-    SO_BROADCAST = 6
-    IPPROTO_TCP = 6
-    IPPROTO_UDP = 17
-    SHUT_RD = 0
-    SHUT_WR = 1
-    SHUT_RDWR = 2
-
-
 def create_connection(address, timeout=None):
     conn = VybeSocketImpl(2, 1)
     if timeout is not None:
         conn.settimeout(timeout)
     conn.connect(address)
     return conn
+"#;
+
+/// `ipaddress` — pure address arithmetic, so no host surface is involved at
+/// all; the module is a prelude only because `IPv4Address`/`IPv4Network` are
+/// stateful classes.
+///
+/// Authoring constraints this file must respect (each one silently drops the
+/// whole prelude): no comment inside an indented block, no blank line inside a
+/// class body, no string literal containing `:` inside a subscript, and no
+/// parameter or attribute named `type`.
+const IPADDRESS_PRELUDE: &str = r#"
+class VybeIPv4Address:
+    def __init__(self, value):
+        self.version = 4
+        self._int = value
+        self._text = _vybe_ip4_str(value)
+    def __str__(self):
+        return self._text
+    def __repr__(self):
+        return "IPv4Address('" + self._text + "')"
+    def __int__(self):
+        return self._int
+    def __eq__(self, other):
+        return int(self) == int(other)
+    def __add__(self, n):
+        return VybeIPv4Address(self._int + n)
+    def __sub__(self, n):
+        return VybeIPv4Address(self._int - n)
+    def _octets(self):
+        return _vybe_ip4_octets(self._int)
+    def _prop_compressed(self):
+        return self._text
+    def _prop_exploded(self):
+        return self._text
+    def _prop_packed(self):
+        return bytes(self._octets())
+    def _prop_is_private(self):
+        parts = self._octets()
+        if parts[0] == 10:
+            return True
+        if parts[0] == 127:
+            return True
+        if parts[0] == 192:
+            if parts[1] == 168:
+                return True
+        if parts[0] == 172:
+            if parts[1] >= 16:
+                if parts[1] <= 31:
+                    return True
+        return False
+    def _prop_is_loopback(self):
+        return self._octets()[0] == 127
+    def _prop_is_multicast(self):
+        first = self._octets()[0]
+        if first < 224:
+            return False
+        return first <= 239
+    def _prop_is_global(self):
+        return not self._prop_is_private()
+
+class VybeIPv6Address:
+    def __init__(self, text):
+        self.version = 6
+        self._groups = _vybe_ip6_groups(text)
+    def __str__(self):
+        return _vybe_ip6_compress(self._groups)
+    def __repr__(self):
+        return "IPv6Address('" + str(self) + "')"
+    def __eq__(self, other):
+        return str(self) == str(other)
+    def _prop_compressed(self):
+        return _vybe_ip6_compress(self._groups)
+    def _prop_exploded(self):
+        return _vybe_ip6_explode(self._groups)
+    def _prop_is_loopback(self):
+        return _vybe_ip6_explode(self._groups) == "0000:0000:0000:0000:0000:0000:0000:0001"
+    def _prop_is_multicast(self):
+        return self._groups[0] >= 65280
+    def _prop_is_private(self):
+        return self._groups[0] >= 64512
+    def _prop_is_global(self):
+        return not self._prop_is_private()
+
+class VybeIPv4Network:
+    def __init__(self, text):
+        pair = _vybe_ip4_net_parts(text)
+        self.version = 4
+        self.prefixlen = pair[1]
+        self._mask = _vybe_ip4_mask(pair[1])
+        self.num_addresses = _vybe_ip4_count(pair[1])
+        self._base = int(pair[0] / self.num_addresses) * self.num_addresses
+        self.network_address = VybeIPv4Address(self._base)
+        self.netmask = VybeIPv4Address(self._mask)
+        self.hostmask = VybeIPv4Address(4294967295 - self._mask)
+        self.broadcast_address = VybeIPv4Address(self._base + self.num_addresses - 1)
+    def __str__(self):
+        return str(self.network_address) + "/" + str(self.prefixlen)
+    def __repr__(self):
+        return "IPv4Network('" + str(self) + "')"
+    def __contains__(self, addr):
+        value = int(addr)
+        if value < self._base:
+            return False
+        return value < self._base + self.num_addresses
+    def hosts(self):
+        out = []
+        i = self._base + 1
+        last = self._base + self.num_addresses - 1
+        while i < last:
+            out.append(VybeIPv4Address(i))
+            i = i + 1
+        return out
+    def subnets(self, prefixlen_diff=1):
+        new_len = self.prefixlen + prefixlen_diff
+        step = _vybe_ip4_count(new_len)
+        out = []
+        i = self._base
+        limit = self._base + self.num_addresses
+        while i < limit:
+            out.append(VybeIPv4Network(_vybe_ip4_str(i) + "/" + str(new_len)))
+            i = i + step
+        return out
+    def supernet(self, prefixlen_diff=1):
+        new_len = self.prefixlen - prefixlen_diff
+        return VybeIPv4Network(_vybe_ip4_str(self._base) + "/" + str(new_len))
+
+class VybeIPv4Interface:
+    def __init__(self, text):
+        pair = _vybe_ip4_net_parts(text)
+        self.version = 4
+        self.ip = VybeIPv4Address(pair[0])
+        self.network = VybeIPv4Network(text)
+        self.prefixlen = pair[1]
+    def __str__(self):
+        return str(self.ip) + "/" + str(self.prefixlen)
+
+def ip_address(value):
+    if isinstance(value, int):
+        return VybeIPv4Address(value)
+    if isinstance(value, bytes):
+        total = 0
+        for b in value:
+            total = total * 256 + b
+        return VybeIPv4Address(total)
+    text = str(value)
+    if "." in text:
+        return VybeIPv4Address(_vybe_ip4_parse(text))
+    return VybeIPv6Address(text)
+
+def ip_network(value, strict=True):
+    return VybeIPv4Network(str(value))
+
+def ip_interface(value):
+    return VybeIPv4Interface(str(value))
+
+def collapse_addresses(nets):
+    return list(nets)
 "#;
 
 const IO_PRELUDE: &str = r#"
@@ -10437,6 +10563,9 @@ fn py_known_module(root: &str) -> bool {
                 | "threading"
                 | "queue"
                 | "socket"
+                | "socketserver"
+                | "ipaddress"
+                | "ssl"
                 | "select"
                 | "signal"
                 | "errno"
@@ -12773,6 +12902,21 @@ fn desugar_member_reads(e: Expression) -> Expression {
             args,
             optional,
         } => {
+            // `t.join()` — a THREAD join. Python's string/list `join` ALWAYS
+            // takes the iterable as its argument (`sep.join(items)`), so a
+            // zero-argument `.join()` is never the collection method and can
+            // route to the shared thread join with no runtime check. Done here
+            // rather than in the postfix walk because an empty argument list
+            // does not reach the `call_args` rule at all.
+            if args.is_empty()
+                && let ExprKind::Member { object, field, .. } = &callee.kind
+                && field == "join"
+            {
+                return call_ident(
+                    "__py_thread_join",
+                    vec![desugar_member_reads((**object).clone())],
+                );
+            }
             // `__import__('json')` — same static mount binding as
             // importlib.import_module.
             if let ExprKind::Ident(n) = &callee.kind {

@@ -251,3 +251,170 @@ pub fn emit_getaddrinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     tuples::emit_tuple(chunks, current, 5, line);
     chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
 }
+
+// ── ipaddress helpers ───────────────────────────────────────────────────────
+//
+// The `ipaddress` prelude is pure Python except for these: the dotted-quad and
+// hextet conversions, which are string/number work the prelude would express
+// far more slowly.
+
+/// `_vybe_ip4_parse("192.168.1.1")` → the 32-bit integer.
+/// Stack: `[str] -> [number]`.
+pub fn emit_ip4_parse(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        chunks[current].emit_string_const("", line);
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let parts = chunks[current].alloc_scratch(1);
+    lget(chunks, current, base, line);
+    chunks[current].emit_string_const(".", line);
+    call_import(chunks, current, "ecma:string", "split", 2, line);
+    lset(chunks, current, parts, line);
+
+    // ((a * 256 + b) * 256 + c) * 256 + d, built left to right.
+    for octet in 0..4i32 {
+        if octet > 0 {
+            chunks[current].emit_f64_const(256.0, line);
+            chunks[current].emit_op(Op::F64_MUL, line);
+        }
+        lget(chunks, current, parts, line);
+        chunks[current].emit_i32_const(octet, line);
+        chunks[current].emit_op(Op::ARRAY_GET, line);
+        chunks[current].emit_f64_const(10.0, line);
+        call_import(chunks, current, "ecma:number", "parseInt", 2, line);
+        if octet > 0 {
+            chunks[current].emit_op(Op::F64_ADD, line);
+        }
+    }
+}
+
+/// Leave the four octets of the 32-bit value in `value` on the stack, most
+/// significant first.
+///
+/// The per-octet reduction is `math::emit_c_fmod` — the shared `a - trunc(a/b)
+/// * b`, pure WASM opcodes. WASM has no `f64.rem` (remainder is integer-only:
+/// `i32.rem_s/u`, `i64.rem_s/u`), and ECMA spells remainder as the `%`
+/// OPERATOR rather than a `Math` function, so there is no `ecma:math` import to
+/// reach for. Both operands are non-negative here, so C truncation and floor
+/// modulo agree.
+fn push_ip4_octets(chunks: &mut [Chunk], current: usize, value: u16, line: u32) {
+    for shift in [16777216.0f64, 65536.0, 256.0, 1.0] {
+        lget(chunks, current, value, line);
+        chunks[current].emit_f64_const(shift, line);
+        chunks[current].emit_op(Op::F64_DIV, line);
+        chunks[current].emit_op(Op::F64_FLOOR, line);
+        chunks[current].emit_f64_const(256.0, line);
+        vybe_compiler::primitives::math::emit_c_fmod(&mut chunks[current], line);
+    }
+}
+
+/// `_vybe_ip4_str(n)` → `"192.168.1.1"`. Stack: `[number] -> [str]`.
+pub fn emit_ip4_str(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        chunks[current].emit_f64_const(0.0, line);
+    }
+    let value = chunks[current].alloc_scratch(1);
+    lset(chunks, current, value, line);
+    let octets = chunks[current].alloc_scratch(1);
+    push_ip4_octets(chunks, current, value, line);
+    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 4, line);
+    lset(chunks, current, octets, line);
+
+    let out = chunks[current].alloc_scratch(1);
+    chunks[current].emit_string_const("", line);
+    lset(chunks, current, out, line);
+    for index in 0..4i32 {
+        lget(chunks, current, out, line);
+        if index > 0 {
+            chunks[current].emit_string_const(".", line);
+            call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+        }
+        lget(chunks, current, octets, line);
+        chunks[current].emit_i32_const(index, line);
+        chunks[current].emit_op(Op::ARRAY_GET, line);
+        call_import(chunks, current, "ecma:string", "String", 1, line);
+        call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+        lset(chunks, current, out, line);
+    }
+    lget(chunks, current, out, line);
+}
+
+/// `_vybe_ip4_octets(n)` → `[a, b, c, d]`. Stack: `[number] -> [array]`.
+pub fn emit_ip4_octets(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        chunks[current].emit_f64_const(0.0, line);
+    }
+    let value = chunks[current].alloc_scratch(1);
+    lset(chunks, current, value, line);
+    push_ip4_octets(chunks, current, value, line);
+    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 4, line);
+}
+
+/// `_vybe_ip4_mask(prefixlen)` → the 32-bit netmask.
+/// Stack: `[number] -> [number]`.
+pub fn emit_ip4_mask(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        chunks[current].emit_f64_const(0.0, line);
+    }
+    let bits = chunks[current].alloc_scratch(1);
+    lset(chunks, current, bits, line);
+    // 2^32 - 2^(32 - bits)
+    chunks[current].emit_f64_const(4294967296.0, line);
+    chunks[current].emit_f64_const(2.0, line);
+    chunks[current].emit_f64_const(32.0, line);
+    lget(chunks, current, bits, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    call_import(chunks, current, "ecma:math", "pow", 2, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+}
+
+/// `_vybe_ip4_count(prefixlen)` → the address count, `2^(32 - prefixlen)`.
+/// Stack: `[number] -> [number]`.
+pub fn emit_ip4_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        chunks[current].emit_f64_const(0.0, line);
+    }
+    let bits = chunks[current].alloc_scratch(1);
+    lset(chunks, current, bits, line);
+    chunks[current].emit_f64_const(2.0, line);
+    chunks[current].emit_f64_const(32.0, line);
+    lget(chunks, current, bits, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    call_import(chunks, current, "ecma:math", "pow", 2, line);
+}
+
+/// `_vybe_ip4_net_parts("192.168.1.0/24")` → `(address_int, prefixlen)`. A
+/// missing `/len` defaults to /32, matching CPython.
+/// Stack: `[str] -> [tuple]`.
+pub fn emit_ip4_net_parts(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        chunks[current].emit_string_const("", line);
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let parts = chunks[current].alloc_scratch(1);
+    lget(chunks, current, base, line);
+    chunks[current].emit_string_const("/", line);
+    call_import(chunks, current, "ecma:string", "split", 2, line);
+    lset(chunks, current, parts, line);
+
+    lget(chunks, current, parts, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    emit_ip4_parse(chunks, current, 1, line);
+
+    lget(chunks, current, parts, line);
+    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if_value(line);
+    lget(chunks, current, parts, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    chunks[current].emit_f64_const(10.0, line);
+    call_import(chunks, current, "ecma:number", "parseInt", 2, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_f64_const(32.0, line);
+    chunks[current].emit_end(line);
+
+    tuples::emit_tuple(chunks, current, 2, line);
+}

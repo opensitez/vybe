@@ -706,6 +706,24 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::runtime_adapter::emit_py_exception_add_note(chunks, current, line)
         }
         "python.int" => crate::emitter::runtime_adapter::emit_py_int(chunks, current, argc, line),
+        "python.ip4_parse" => {
+            crate::emitter::socket_adapter::emit_ip4_parse(chunks, current, argc, line)
+        }
+        "python.ip4_str" => {
+            crate::emitter::socket_adapter::emit_ip4_str(chunks, current, argc, line)
+        }
+        "python.ip4_octets" => {
+            crate::emitter::socket_adapter::emit_ip4_octets(chunks, current, argc, line)
+        }
+        "python.ip4_mask" => {
+            crate::emitter::socket_adapter::emit_ip4_mask(chunks, current, argc, line)
+        }
+        "python.ip4_count" => {
+            crate::emitter::socket_adapter::emit_ip4_count(chunks, current, argc, line)
+        }
+        "python.ip4_net_parts" => {
+            crate::emitter::socket_adapter::emit_ip4_net_parts(chunks, current, argc, line)
+        }
         "python.sock_inet_aton" => {
             crate::emitter::socket_adapter::emit_inet_aton(chunks, current, argc, line)
         }

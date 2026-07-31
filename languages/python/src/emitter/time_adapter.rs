@@ -11,7 +11,7 @@ use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::instructions::core_wasm;
 
 const MS_PER_SECOND: f64 = 1_000.0;
-const MS_PER_DAY: f64 = 86_400_000.0;
+const MS_PER_DAY: f64 = vybe_compiler::primitives::datetime::MS_PER_DAY;
 
 /// `struct_time`'s nine fields, in CPython order.
 const TM_FIELDS: &[&str] = &[

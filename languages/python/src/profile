@@ -596,6 +596,14 @@ dir             = { emit = "common:python.dir",               min_args = 0, max_
 # an adapter — the `socket` class in SOCKET_PRELUDE sequences them. The WASI
 # start-*/finish-* pairs are two calls because the proposal is poll-based; a
 # Python socket call is blocking, so the class does both.
+# ── ipaddress arithmetic (pure; see socket_adapter.rs) ───────────────────────
+_vybe_ip4_parse     = { emit = "common:python.ip4_parse",     min_args = 1, max_args = 1 }
+_vybe_ip4_str       = { emit = "common:python.ip4_str",       min_args = 1, max_args = 1 }
+_vybe_ip4_octets    = { emit = "common:python.ip4_octets",    min_args = 1, max_args = 1 }
+_vybe_ip4_mask      = { emit = "common:python.ip4_mask",      min_args = 1, max_args = 1 }
+_vybe_ip4_count     = { emit = "common:python.ip4_count",     min_args = 1, max_args = 1 }
+_vybe_ip4_net_parts = { emit = "common:python.ip4_net_parts", min_args = 1, max_args = 1 }
+
 _wasi_network      = { emit = "host:wasi:sockets/instance-network:instance-network", min_args = 0, max_args = 0 }
 _wasi_tcp_new      = { emit = "host:wasi:sockets/tcp-create-socket:create-tcp-socket", min_args = 0, max_args = 1 }
 _wasi_udp_new      = { emit = "host:wasi:sockets/udp-create-socket:create-udp-socket", min_args = 0, max_args = 1 }
@@ -609,7 +617,10 @@ _wasi_accept       = { emit = "host:wasi:sockets/tcp:accept",         min_args =
 _wasi_local_addr   = { emit = "host:wasi:sockets/tcp:local-address",  min_args = 1, max_args = 1 }
 _wasi_remote_addr  = { emit = "host:wasi:sockets/tcp:remote-address", min_args = 1, max_args = 1 }
 _wasi_sock_shutdown = { emit = "host:wasi:sockets/tcp:shutdown",      min_args = 1, max_args = 2 }
-_wasi_stream_read  = { emit = "host:wasi:io/streams:blocking-read",   min_args = 2, max_args = 2 }
+# NON-blocking `read`, not `blocking-read`: `accept` here is poll-shaped and
+# answers None when nothing is queued, so a blocking read has no peer to
+# wait for and would hang the process rather than fail.
+_wasi_stream_read  = { emit = "host:wasi:io/streams:read",            min_args = 2, max_args = 2 }
 _wasi_stream_write = { emit = "host:wasi:io/streams:blocking-write-and-flush", min_args = 2, max_args = 2 }
 
 # ── socket (module-level, no socket object) ──────────────────────────────────
@@ -629,6 +640,11 @@ gethostname            = { emit = "common:python.sock_gethostname",   min_args =
 gethostbyname          = { emit = "common:python.sock_gethostbyname", min_args = 1, max_args = 1 }
 getaddrinfo            = { emit = "common:python.sock_getaddrinfo",   min_args = 1, max_args = 6 }
 
+__py_thread_join = { emit = "common:threading.thread_join",   min_args = 1, max_args = 2 }
+# Nanoseconds. `wasi:clocks/monotonic-clock.wait-for` is the real blocking
+# sleep — the `vybe:clocks:sleep` the `time.sleep` row names is not a
+# registered host function at all.
+_vybe_wait_ns   = { emit = "host:wasi:clocks/monotonic-clock:wait-for", min_args = 1, max_args = 1 }
 urljoin         = { emit = "common:python.url_join",           min_args = 2, max_args = 3 }
 urlsplit        = { emit = "common:python.url_split",          min_args = 1, max_args = 3 }
 urlparse        = { emit = "common:python.url_split",          min_args = 1, max_args = 3 }
@@ -828,6 +844,11 @@ index           = { emit = "common:python.index",             min_args = 1, max_
 rindex          = { emit = "common:str_last_index_of",        min_args = 1, max_args = 3 }
 count           = { emit = "common:python.str_count",        min_args = 1, max_args = 3 }
 startswith      = { emit = "common:python.str_startswith",    min_args = 1, max_args = 3 }
+# `threading.Thread` spawns on construction (common:threading.task_run), so
+# `.start()` is the no-op the shared emitter already models; `.join()` is the
+# real wait. `join` is taken by the string/array method, so only `start` can be
+# a plain value method here.
+start           = { emit = "common:threading.thread_start",   min_args = 0, max_args = 0 }
 endswith        = { emit = "common:python.str_endswith",      min_args = 1, max_args = 3 }
 capitalize      = { emit = "intrinsic:capitalize",     min_args = 0, max_args = 0 }
 title           = { emit = "host:ecma:string:title",          min_args = 0, max_args = 0 }
@@ -1090,3 +1111,21 @@ oct = "str"
 bin = "str"
 input = "str"
 format = "str"
+
+# ── builtinslotplan.md step 4 ────────────────────────────────────────────
+# Python's own spellings for the built-in types. Step 3's census measured
+# `def f(s: str)` producing the hint `str`, which reached the platform's
+# shared classifiers and failed them — so an annotated Python program
+# resolved no receiver at all. The fix is Python declaring `str`, not `str`
+# being appended to a shared list.
+#
+# `*` marks where a spelling need not match: `list[*` is a prefix.
+[builtin_types]
+string = ["str"]
+int    = ["int"]
+double = ["float"]
+bool   = ["bool"]
+bytes  = ["bytes", "bytearray"]
+array  = ["list", "list[*", "tuple", "tuple[*"]
+map    = ["dict", "dict[*"]
+set    = ["set", "set[*", "frozenset"]
