@@ -69,3 +69,24 @@ fn open_output_then_extend_compiles() {
         "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nENVIRONMENT DIVISION.\nINPUT-OUTPUT SECTION.\nFILE-CONTROL.\n    SELECT F ASSIGN TO \"f.dat\".\nDATA DIVISION.\nFILE SECTION.\nFD F.\n01 R PIC X(20).\nPROCEDURE DIVISION.\n    OPEN OUTPUT F.\n    CLOSE F.\n    OPEN EXTEND F.\n    CLOSE F.\n    STOP RUN.",
     );
 }
+
+#[test]
+fn close_with_rewind_default_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nENVIRONMENT DIVISION.\nINPUT-OUTPUT SECTION.\nFILE-CONTROL.\n    SELECT F ASSIGN TO \"f.dat\".\nDATA DIVISION.\nFILE SECTION.\nFD F.\n01 R PIC X(20).\nPROCEDURE DIVISION.\n    OPEN INPUT F.\n    CLOSE F.\n    OPEN INPUT F.\n    CLOSE F.\n    STOP RUN.",
+    );
+}
+
+#[test]
+fn open_all_modes_sequence_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nENVIRONMENT DIVISION.\nINPUT-OUTPUT SECTION.\nFILE-CONTROL.\n    SELECT F1 ASSIGN TO \"a.dat\".\n    SELECT F2 ASSIGN TO \"b.dat\".\n    SELECT F3 ASSIGN TO \"c.dat\".\nDATA DIVISION.\nFILE SECTION.\nFD F1.\n01 R1 PIC X(10).\nFD F2.\n01 R2 PIC X(10).\nFD F3.\n01 R3 PIC X(10).\nPROCEDURE DIVISION.\n    OPEN INPUT F1 OUTPUT F2 I-O F3.\n    CLOSE F1 F2 F3.\n    STOP RUN.",
+    );
+}
+
+#[test]
+fn close_multiple_modes_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nENVIRONMENT DIVISION.\nINPUT-OUTPUT SECTION.\nFILE-CONTROL.\n    SELECT F1 ASSIGN TO \"a.dat\".\n    SELECT F2 ASSIGN TO \"b.dat\".\nDATA DIVISION.\nFILE SECTION.\nFD F1.\n01 R1 PIC X(10).\nFD F2.\n01 R2 PIC X(10).\nPROCEDURE DIVISION.\n    OPEN INPUT F1 OUTPUT F2.\n    CLOSE F1 WITH NO REWIND.\n    CLOSE F2.\n    STOP RUN.",
+    );
+}

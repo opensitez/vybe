@@ -70,3 +70,42 @@ MAIN SECTION.
 "#,
     );
 }
+
+#[test]
+fn test_paragraph_fallthrough_and_through() {
+    let output = run_prints(&p(
+        "",
+        r#"
+    PERFORM P1 THRU P4.
+    STOP RUN.
+P1.
+    DISPLAY "PARA1".
+P2.
+    DISPLAY "PARA2".
+P3.
+    DISPLAY "PARA3".
+P4.
+    DISPLAY "PARA4".
+"#,
+    ));
+assert_eq!(output, vec!["PARA1", "PARA2", "PARA3", "PARA4"]);
+}
+
+#[test]
+fn test_sections_after_through() {
+    let output = run_prints(&p(
+        "",
+        r#"
+    PERFORM S1.
+S1.
+    DISPLAY "START".
+    PERFORM PAR2.
+PAR2.
+    DISPLAY "MID".
+S2 SECTION.
+    DISPLAY "END".
+    STOP RUN.
+"#,
+    ));
+    assert_eq!(output, vec!["START", "MID", "END"]);
+}

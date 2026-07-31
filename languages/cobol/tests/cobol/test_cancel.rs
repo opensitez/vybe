@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── CANCEL statement ──────────────────────────────────────────
 // CANCEL releases the storage and initialization state of a
@@ -258,6 +258,27 @@ fn cancel_preserves_caller_state() {
 }
 
 #[test]
+fn cancel_after_end_call_compiles() {
+    compile_ok(
+        r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. test.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       PROCEDURE DIVISION.
+           CALL "utility-module"
+               ON EXCEPTION
+                   DISPLAY "MISSING"
+               NOT ON EXCEPTION
+                   DISPLAY "LOADED"
+           END-CALL
+           CANCEL "utility-module"
+           STOP RUN.
+"#,
+    );
+}
+
+#[test]
 fn cancel_dynamic_dispatch() {
     compile_ok(
         r#"
@@ -279,4 +300,38 @@ fn cancel_dynamic_dispatch() {
            STOP RUN.
 "#,
     );
+}
+
+#[test]
+fn cancel_runtime_uncalled_program() {
+    let out = run_prints(
+        r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T.
+       PROCEDURE DIVISION.
+           CANCEL "never-called-prog"
+           DISPLAY "OK"
+           STOP RUN.
+"#,
+    );
+    assert_eq!(out, vec!["OK"]);
+}
+
+#[test]
+fn cancel_runtime_after_missing_call_exception() {
+    let out = run_prints(
+        r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T.
+       PROCEDURE DIVISION.
+           CALL "missing-module"
+               ON EXCEPTION
+                   DISPLAY "EXC"
+           END-CALL
+           CANCEL "missing-module"
+           DISPLAY "AFTER"
+           STOP RUN.
+"#,
+    );
+    assert_eq!(out, vec!["EXC", "AFTER"]);
 }

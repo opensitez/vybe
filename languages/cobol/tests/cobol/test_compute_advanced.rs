@@ -121,12 +121,84 @@ fn test_compute_chain() {
 
 #[test]
 fn test_compute_math_funcs() {
-    compile_ok(&p(
+    let output = run_prints(&p(
         r#"
 01 WS-R PIC 9V9999.
 "#,
         r#"
     COMPUTE WS-R = FUNCTION SIN(1.0) + FUNCTION COS(1.0).
+    DISPLAY WS-R.
 "#,
     ));
+    assert_eq!(output.len(), 1);
+}
+
+#[test]
+fn test_compute_with_end_compute_block() {
+    let output = run_prints(&p(
+        r#"
+01 WS-A PIC 9 VALUE 3.
+01 WS-B PIC 9 VALUE 4.
+01 WS-R PIC 9 VALUE 0.
+"#,
+        r#"
+    COMPUTE WS-R = WS-A + WS-B
+        ON SIZE ERROR
+            DISPLAY "ERR"
+    END-COMPUTE.
+    DISPLAY WS-R.
+"#,
+    ));
+    assert_eq!(output, vec!["007"]);
+}
+
+#[test]
+fn test_compute_size_error_path() {
+    let output = run_prints(&p(
+        r#"
+01 WS-R PIC 9 VALUE 0.
+01 WS-OK PIC X VALUE "N".
+"#,
+        r#"
+    COMPUTE WS-R = 999 * 999
+        ON SIZE ERROR MOVE "Y" TO WS-OK
+        NOT ON SIZE ERROR MOVE "N" TO WS-OK
+    END-COMPUTE
+    DISPLAY WS-OK.
+"#,
+    ));
+    assert_eq!(output, vec!["Y"]);
+}
+
+#[test]
+fn test_compute_unary_plus() {
+    let output = run_prints(&p(
+        r#"
+01 WS-A PIC S9(3) VALUE 42.
+01 WS-B PIC S9(3) VALUE 0.
+"#,
+        r#"
+    COMPUTE WS-B = + WS-A.
+    DISPLAY WS-B.
+"#,
+    ));
+    assert_eq!(output, vec!["+42"]);
+}
+
+#[test]
+fn test_compute_multiple_results() {
+    let output = run_prints(&p(
+        r#"
+01 WS-A PIC 9(2) VALUE 10.
+01 WS-B PIC 9(2) VALUE 20.
+01 WS-C PIC 9(2) VALUE 0.
+01 WS-D PIC 9(2) VALUE 0.
+"#,
+        r#"
+    COMPUTE WS-C WS-D = WS-A + WS-B.
+    DISPLAY WS-C.
+    DISPLAY WS-D.
+"#,
+    ));
+    assert_eq!(output, vec!["30", "30"]);
 }

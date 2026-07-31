@@ -45,7 +45,7 @@ fn test_string_with_pointer() {
 
 #[test]
 fn test_string_overflow() {
-    compile_ok(&p(
+    let output = run_prints(&p(
         r#"
 01 WS-A PIC X(10) VALUE "ABCDEFGHIJ".
 01 WS-B PIC X(10) VALUE "KLQRSTUVWX".
@@ -60,6 +60,7 @@ fn test_string_overflow() {
     END-STRING.
 "#,
     ));
+    assert_eq!(output, vec!["OVERFLOW"]);
 }
 
 #[test]

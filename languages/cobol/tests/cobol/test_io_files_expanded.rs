@@ -100,3 +100,19 @@ fn merge_file_on_key_compiles() {
         "    MERGE WS-FILE ON DESCENDING KEY WS-KEY.",
     ));
 }
+
+#[test]
+fn write_file_with_from_clause_compiles() {
+    compile_ok(&p(
+        "01 WS-BUF PIC X(20) VALUE \"line\".",
+        "    WRITE WS-REC FROM WS-BUF.",
+    ));
+}
+
+#[test]
+fn sort_then_stop_sequence_compiles() {
+    compile_ok(&p(
+        "01 WS-KEY PIC 9(5).",
+        "    SORT WS-FILE ON ASCENDING KEY WS-KEY.\n    STOP RUN.",
+    ));
+}

@@ -61,25 +61,27 @@ fn test_add_negative_literal() {
     DISPLAY WS-A.
 "#,
     ));
-    assert!(output.len() >= 1);
+    assert_eq!(output, vec!["005"]);
 }
 
 #[test]
 fn test_add_rounded() {
-    compile_ok(&p(
+    let output = run_prints(&p(
         r#"
 01 WS-A PIC 9V99 VALUE 1.25.
 01 WS-B PIC 9V9 VALUE 0.0.
 "#,
         r#"
     ADD WS-A TO WS-B ROUNDED.
+    DISPLAY WS-B.
 "#,
     ));
+    assert_eq!(output, vec!["013"]);
 }
 
 #[test]
 fn test_add_corresponding() {
-    compile_ok(&p(
+    let output = run_prints(&p(
         r#"
 01 WS-G1.
    05 WS-X PIC 9(3) VALUE 10.
@@ -90,6 +92,52 @@ fn test_add_corresponding() {
 "#,
         r#"
     ADD CORRESPONDING WS-G1 TO WS-G2.
+    DISPLAY WS-G2.
 "#,
     ));
+    assert_eq!(output, vec!["1535"]);
+}
+
+#[test]
+fn test_add_size_error_false_path() {
+    let output = run_prints(&p(
+        "01 WS-A PIC 9(3) VALUE 10.\n01 WS-B PIC 99 VALUE 0.",
+        r#"
+    ADD WS-A TO WS-B ON SIZE ERROR
+        DISPLAY "ERR"
+    NOT ON SIZE ERROR
+        DISPLAY WS-B
+    END-ADD.
+"#,
+    ));
+    assert_eq!(output, vec!["10"]);
+}
+
+#[test]
+fn test_add_giving_and_size_error() {
+    compile_ok(&p(
+        "01 WS-A PIC 9(5) VALUE 99999.\n01 WS-B PIC 9(5) VALUE 0.",
+        r#"
+    ADD WS-A TO WS-A GIVING WS-B ON SIZE ERROR
+        DISPLAY WS-B
+    END-ADD.
+"#,
+    ));
+}
+
+#[test]
+fn test_add_multiple_receiving_fields_runtime() {
+    let output = run_prints(&p(
+        r#"
+01 WS-A PIC 9(2) VALUE 10.
+01 WS-B PIC 9(2) VALUE 20.
+01 WS-C PIC 9(2) VALUE 0.
+01 WS-D PIC 9(2) VALUE 0.
+"#,
+        r#"
+    ADD WS-A WS-B TO WS-C GIVING WS-D.
+    DISPLAY WS-D.
+"#,
+    ));
+    assert_eq!(output, vec!["030"]);
 }

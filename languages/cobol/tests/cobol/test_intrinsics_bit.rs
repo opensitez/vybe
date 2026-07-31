@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 fn p(data: &str, body: &str) -> String {
     format!(
@@ -50,4 +50,33 @@ fn test_intrinsics_module_info() {
     MOVE FUNCTION MODULE-NAME TO WS-NAME.
 "#,
     ));
+}
+
+#[test]
+fn test_intrinsics_bit_runtime_values() {
+    let output = run_prints(
+        &p(
+            r#"
+01 WS-BIT1 PIC X(8) VALUE "11110000".
+01 WS-BIT2 PIC X(8) VALUE "11001100".
+01 WS-RES PIC X(8).
+01 WS-CHAR PIC X.
+"#,
+            r#"
+    MOVE FUNCTION BIT-AND(WS-BIT1 WS-BIT2) TO WS-RES.
+    DISPLAY WS-RES.
+    MOVE FUNCTION BIT-OR(WS-BIT1 WS-BIT2) TO WS-RES.
+    DISPLAY WS-RES.
+    MOVE FUNCTION BIT-NOT(WS-BIT1) TO WS-RES.
+    DISPLAY WS-RES.
+    MOVE FUNCTION HEX-TO-CHAR("41") TO WS-CHAR.
+    DISPLAY WS-CHAR.
+"#,
+        ),
+    );
+    assert_eq!(output.len(), 4);
+    assert!(!output[0].trim().is_empty());
+    assert!(!output[1].trim().is_empty());
+    assert!(!output[2].trim().is_empty());
+    assert_eq!(output[3], "A");
 }

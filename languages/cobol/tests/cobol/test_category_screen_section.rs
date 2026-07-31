@@ -85,3 +85,64 @@ fn test_screen_control() {
     let out = helpers::run_prints(src);
     assert!(!out.is_empty());
 }
+
+#[test]
+fn test_screen_section_with_paging() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SCREEN-PAGE.
+       DATA DIVISION.
+       SCREEN SECTION.
+       01 PAGE-SCREEN.
+          05 LINE 1 COL 1 VALUE "PAGE 1".
+          05 LINE PLUS 2 COL 1 VALUE "NEXT LINE".
+       PROCEDURE DIVISION.
+           DISPLAY PAGE-SCREEN.
+           DISPLAY "PAGING PARSED".
+           STOP RUN.
+    "#;
+    let out = helpers::run_prints(src);
+    assert!(!out.is_empty());
+}
+
+#[test]
+fn test_screen_section_with_prompt_input() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SCREEN-PROMPT.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CODE PIC X(8).
+       SCREEN SECTION.
+       01 PROMPT-SCREEN.
+          05 LINE 1 COL 1 PIC X(8) BEFORE ADVANCING 1.
+          05 LINE 2 COL 1 PIC X(8) VALUE "CODE:" PROMPT ">" TO WS-CODE.
+       PROCEDURE DIVISION.
+           ACCEPT PROMPT-SCREEN.
+           DISPLAY "PROMPT PARSED".
+           STOP RUN.
+    "#;
+    let out = helpers::run_prints(src);
+    assert!(!out.is_empty());
+}
+
+#[test]
+fn test_screen_section_multiple_frames() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SCREEN-FRAME.
+       DATA DIVISION.
+       SCREEN SECTION.
+       01 FRAME-1.
+          05 LINE 1 COL 1 VALUE "A".
+       01 FRAME-2.
+          05 LINE 3 COL 1 VALUE "B".
+       PROCEDURE DIVISION.
+           DISPLAY FRAME-1.
+           DISPLAY FRAME-2.
+           DISPLAY "MULTI FRAME".
+           STOP RUN.
+    "#;
+    let out = helpers::run_prints(src);
+    assert!(!out.is_empty());
+}

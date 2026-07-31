@@ -136,7 +136,7 @@ fn condition_name_supports_nested_boolean_checks() {
 
 #[test]
 fn condition_name_with_alphanumeric_values_is_case_sensitive() {
-    compile_ok(&p(
+    let output = run_prints(&p(
         r#"
 01 WS-CODE PIC X VALUE "C".
    88 IS-VALID VALUE "A", "B", "C".
@@ -147,6 +147,7 @@ fn condition_name_with_alphanumeric_values_is_case_sensitive() {
     END-IF.
 "#,
     ));
+    assert_eq!(output, vec!["VALID"]);
 }
 
 #[test]
@@ -239,4 +240,95 @@ fn condition_name_supports_multiple_values_with_false_item() {
 "#,
     ));
     assert_eq!(output, vec!["NO"]);
+}
+
+#[test]
+fn condition_name_negated_with_not() {
+    let output = run_prints(&p(
+        r#"
+01 WS-STATE PIC X VALUE "X".
+   88 IS-ACTIVE VALUE "Y", "Z".
+"#,
+        r#"
+    IF NOT IS-ACTIVE
+        DISPLAY "INACTIVE"
+    ELSE
+        DISPLAY "ACTIVE"
+    END-IF.
+"#,
+    ));
+    assert_eq!(output, vec!["INACTIVE"]);
+}
+
+#[test]
+fn condition_name_combined_with_logical_and() {
+    let output = run_prints(&p(
+        r#"
+01 WS-STATE PIC X VALUE "Y".
+01 WS-TYPE PIC X VALUE "R".
+   88 IS-OPEN VALUE "Y".
+   88 IS-READY VALUE "R".
+"#,
+        r#"
+    IF IS-OPEN AND IS-READY
+        DISPLAY "OPEN-READY"
+    ELSE
+        DISPLAY "BLOCKED"
+    END-IF.
+"#,
+    ));
+    assert_eq!(output, vec!["OPEN-READY"]);
+}
+
+#[test]
+fn condition_name_false_when_unused_setter_is_false() {
+    let output = run_prints(&p(
+        r#"
+01 WS-CODE PIC X VALUE "A".
+   88 IS-READY VALUE "A".
+"#,
+        r#"
+    SET IS-READY TO FALSE.
+    IF IS-READY
+        DISPLAY "READY"
+    ELSE
+        DISPLAY "NOT-READY"
+    END-IF.
+"#,
+    ));
+    assert_eq!(output, vec!["NOT-READY"]);
+}
+
+#[test]
+fn condition_name_in_evaluate_with_other() {
+    let output = run_prints(&p(
+        r#"
+01 WS-VAL PIC 99 VALUE 10.
+   88 IS-LOW VALUE 1 THRU 5.
+"#,
+        r#"
+    EVALUATE TRUE
+        WHEN IS-LOW
+            DISPLAY "LOW"
+        WHEN OTHER
+            DISPLAY "HIGH"
+    END-EVALUATE.
+"#,
+    ));
+    assert_eq!(output, vec!["HIGH"]);
+}
+
+#[test]
+fn condition_name_multiple_range_values_compile() {
+    compile_ok(&p(
+        r#"
+01 WS-AGE PIC 99 VALUE 18.
+   88 AGE-STATE VALUE 0 THRU 17, 18 THRU 30.
+"#,
+        r#"
+    IF AGE-STATE
+        CONTINUE
+    END-IF.
+"#,
+    ));
 }

@@ -121,7 +121,7 @@ fn test_condition_sign() {
 
 #[test]
 fn test_condition_abbreviated() {
-    compile_ok(&p(
+    let output = run_prints(&p(
         "01 WS-A PIC 9 VALUE 5.",
         r#"
     IF WS-A > 0 AND < 10
@@ -129,6 +129,7 @@ fn test_condition_abbreviated() {
     END-IF.
 "#,
     ));
+    assert_eq!(output, vec!["BETWEEN"]);
 }
 
 #[test]
@@ -148,4 +149,64 @@ fn test_condition_figuratives() {
 "#,
     ));
     assert_eq!(output, vec!["NAME-SPACES", "VAL-ZEROS"]);
+}
+
+#[test]
+fn test_condition_with_nested_parentheses_precedence() {
+    let output = run_prints(&p(
+        r#"
+01 WS-A PIC 9 VALUE 1.
+01 WS-B PIC 9 VALUE 8.
+01 WS-C PIC 9 VALUE 9.
+"#,
+        r#"
+    IF (WS-A > 0 AND WS-B > 5) OR WS-C > 10
+        DISPLAY "COND"
+    ELSE
+        DISPLAY "NONE"
+    END-IF.
+"#,
+    ));
+    assert_eq!(output, vec!["COND"]);
+}
+
+#[test]
+fn test_condition_nested_if_else_chain() {
+    let output = run_prints(&p(
+        r#"
+01 WS-A PIC 9 VALUE 2.
+"#,
+        r#"
+    IF WS-A > 5
+        DISPLAY "BIG"
+    ELSE
+        IF WS-A = 2
+            DISPLAY "TWO"
+        ELSE
+            DISPLAY "OTHER"
+        END-IF
+    END-IF.
+"#,
+    ));
+    assert_eq!(output, vec!["TWO"]);
+}
+
+#[test]
+fn condition_with_truthy_falsy_literals_compile() {
+    compile_ok(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 FLAG PIC X VALUE "Y".
+PROCEDURE DIVISION.
+    IF FLAG = "Y"
+        DISPLAY "YES"
+    ELSE
+        DISPLAY "NO"
+    END-IF.
+    STOP RUN.
+"#,
+    );
 }

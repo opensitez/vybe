@@ -175,10 +175,11 @@ fn evaluate_true_multiple_when() {
 
 #[test]
 fn evaluate_numeric_when_thru_compiles() {
-    compile_ok(&p(
+    let out = run_prints(&p(
         "01 X PIC 9 VALUE 7.",
         "    EVALUATE X\n        WHEN 1 THRU 5 DISPLAY \"L\"\n        WHEN 6 THRU 9 DISPLAY \"H\"\n        WHEN OTHER DISPLAY \"O\"\n    END-EVALUATE.",
     ));
+    assert_eq!(out, vec!["H"]);
 }
 
 #[test]
@@ -258,9 +259,10 @@ fn inspect_replacing_all_letters_compiles() {
 
 #[test]
 fn search_all_with_at_end_compiles() {
-    compile_ok(
+    let out = run_prints(
         "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 TAB.\n   05 E OCCURS 4 TIMES ASCENDING KEY IS K INDEXED BY I.\n      10 K PIC 9(2).\n01 F PIC X VALUE \"N\".\nPROCEDURE DIVISION.\n    MOVE 1 TO K(1).\n    MOVE 2 TO K(2).\n    MOVE 3 TO K(3).\n    MOVE 4 TO K(4).\n    SEARCH ALL E\n        AT END MOVE \"N\" TO F\n        WHEN K(I) = 3 MOVE \"Y\" TO F\n    END-SEARCH.\n    DISPLAY F.\n    STOP RUN.",
     );
+    assert_eq!(out, vec!["Y"]);
 }
 
 #[test]
@@ -582,4 +584,30 @@ fn source_and_object_computer_with_program_compiles() {
     compile_ok(
         "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nENVIRONMENT DIVISION.\nCONFIGURATION SECTION.\nSOURCE-COMPUTER. IBM-Z.\nOBJECT-COMPUTER. IBM-Z.\nPROCEDURE DIVISION.\n    STOP RUN.",
     );
+}
+
+#[test]
+fn stop_literal_runtime_still_terminates() {
+    let out = run_prints("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    STOP \"DONE\". ");
+    assert_eq!(out.len(), 0);
+}
+
+#[test]
+fn condition_name_set_runtime_true_false() {
+    let out = run_prints(
+        &p(
+            "01 ST PIC X VALUE \"N\".\n   88 ACTIVE VALUE \"Y\".\n   88 INACTIVE VALUE \"N\".",
+            "    SET ACTIVE TO TRUE\n    IF ACTIVE\n        DISPLAY \"ON\"\n    END-IF\n    SET INACTIVE TO TRUE\n    IF NOT ACTIVE\n        DISPLAY \"OFF\"\n    END-IF",
+        ),
+    );
+    assert_eq!(out, vec!["ON", "OFF"]);
+}
+
+#[test]
+fn special_names_currency_sign_runtime() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nENVIRONMENT DIVISION.\nCONFIGURATION SECTION.\nSPECIAL-NAMES.\n    CURRENCY SIGN IS \"$\".\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 N PIC $$$$9 VALUE 1234.\nPROCEDURE DIVISION.\n    MOVE N TO N\n    DISPLAY N\n    STOP RUN.",
+    );
+    assert_eq!(out.len(), 1);
+    assert!(!out[0].trim().is_empty());
 }

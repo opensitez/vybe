@@ -56,3 +56,19 @@ fn if_else_call() {
         "    IF F = 1\n        CALL \"YESP\"\n    ELSE\n        CALL \"NOP\"\n    END-IF.",
     ));
 }
+
+#[test]
+fn call_with_nested_procedure_text() {
+    compile_ok(&p(
+        "01 WS-INPUT PIC 9(2) VALUE 10.",
+        "    IF WS-INPUT > 0\n        CALL \"SUBX\" USING BY VALUE WS-INPUT\n    END-IF.",
+    ));
+}
+
+#[test]
+fn call_with_giving_target() {
+    compile_ok(&p(
+        "01 WS-ARG PIC 9(4) VALUE 7.\n01 WS-RET PIC 9(4).",
+        "    CALL \"RET-SUB\" USING WS-ARG GIVING WS-RET.",
+    ));
+}

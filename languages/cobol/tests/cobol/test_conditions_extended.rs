@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 fn p(data: &str, body: &str) -> String {
     format!(
@@ -188,4 +188,58 @@ fn perform_inline_condition_compiles() {
         "",
         "    PERFORM 2 TIMES\n        CONTINUE\n    END-PERFORM.",
     ));
+}
+
+#[test]
+fn if_with_else_outputs_expected_branch() {
+    let out = run_prints(&p(
+        "01 WS-A PIC 9(3) VALUE 3.",
+        "    IF WS-A > 5\n        DISPLAY \"BIG\"\n    ELSE\n        DISPLAY \"SMALL\"\n    END-IF.",
+    ));
+    assert_eq!(out, vec!["SMALL"]);
+}
+
+#[test]
+fn nested_if_else_runtime() {
+    let out = run_prints(&p(
+        "01 WS-A PIC 9(3) VALUE 8.",
+        "    IF WS-A > 0\n        IF WS-A < 10\n            DISPLAY \"MID\"\n        ELSE\n            DISPLAY \"BIG\"\n        END-IF\n    END-IF.",
+    ));
+    assert_eq!(out, vec!["MID"]);
+}
+
+#[test]
+fn evaluate_true_multiple_cases_runtime() {
+    let out = run_prints(&p(
+        "01 WS-A PIC 9(1) VALUE 85.",
+        "    EVALUATE TRUE\n        WHEN WS-A >= 90\n            DISPLAY \"A\"\n        WHEN WS-A >= 80\n            DISPLAY \"B\"\n        WHEN OTHER\n            DISPLAY \"F\"\n    END-EVALUATE.",
+    ));
+    assert_eq!(out, vec!["B"]);
+}
+
+#[test]
+fn perform_until_with_body_output() {
+    let out = run_prints(&p(
+        "01 WS-I PIC 9(2) VALUE 0.",
+        "    PERFORM UNTIL WS-I >= 3\n        ADD 1 TO WS-I\n        DISPLAY WS-I\n    END-PERFORM.",
+    ));
+    assert_eq!(out, vec!["1", "2", "3"]);
+}
+
+#[test]
+fn if_spaces_runtime() {
+    let out = run_prints(&p(
+        "01 WS-X PIC X(4) VALUE SPACES.",
+        "    IF WS-X IS SPACES\n        DISPLAY \"SPACES\"\n    END-IF.",
+    ));
+    assert_eq!(out, vec!["SPACES"]);
+}
+
+#[test]
+fn evaluate_nested_true_runtime() {
+    let out = run_prints(&p(
+        "01 WS-VAL PIC X(1) VALUE \"C\".\n01 WS-COUNT PIC 9 VALUE 0.\n   88 MATCH VALUE \"A\".\n   88 NO-MATCH VALUE \"B\".",
+        "    IF WS-COUNT = 0\n        EVALUATE TRUE\n            WHEN MATCH\n                DISPLAY \"MATCH\"\n            WHEN NO-MATCH\n                DISPLAY \"NO\"\n            WHEN OTHER\n                DISPLAY \"OTHER\"\n        END-EVALUATE\n    END-IF.",
+    ));
+    assert_eq!(out, vec!["OTHER"]);
 }

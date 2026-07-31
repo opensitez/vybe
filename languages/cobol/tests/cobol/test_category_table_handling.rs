@@ -126,3 +126,94 @@ fn test_table_initialization() {
     "#;
     assert_eq!(helpers::run_prints(src), vec!["***"]);
 }
+
+#[test]
+fn test_table_search_runtime_found() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TBL-SRCH.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS.
+          05 ELEM OCCURS 4 TIMES INDEXED BY I PIC 9(2).
+       PROCEDURE DIVISION.
+           MOVE 10 TO ELEM(1).
+           MOVE 20 TO ELEM(2).
+           MOVE 30 TO ELEM(3).
+           SEARCH WS
+               WHEN ELEM(I) = 20
+                   DISPLAY "FOUND"
+           END-SEARCH.
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["FOUND"]);
+}
+
+#[test]
+fn test_table_search_runtime_not_found() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TBL-SRCH-NF.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS.
+          05 ELEM OCCURS 3 TIMES INDEXED BY I PIC 9(2).
+       PROCEDURE DIVISION.
+           MOVE 11 TO ELEM(1).
+           MOVE 22 TO ELEM(2).
+           MOVE 33 TO ELEM(3).
+           SEARCH WS
+               AT END DISPLAY "NONE"
+               WHEN ELEM(I) = 99 DISPLAY "FOUND"
+           END-SEARCH.
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["NONE"]);
+}
+
+#[test]
+fn test_table_indexed_set_up_down_paths() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TBL-SETPATH.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 ARR.
+          05 ELEM OCCURS 5 TIMES INDEXED BY IDX PIC 9 VALUE 0.
+       PROCEDURE DIVISION.
+           SET IDX TO 1.
+           MOVE 1 TO ELEM(IDX).
+           SET IDX UP BY 2.
+           MOVE 3 TO ELEM(IDX).
+           SET IDX DOWN BY 1.
+           DISPLAY ELEM(1).
+           DISPLAY ELEM(2).
+           DISPLAY ELEM(3).
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["1", "0", "3"]);
+}
+
+#[test]
+fn test_table_copy_between_tables() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TBL-COPY.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 SRC.
+          05 SRC-ELEM OCCURS 3 TIMES PIC X(2).
+       01 DST.
+          05 DST-ELEM OCCURS 3 TIMES PIC X(2).
+       PROCEDURE DIVISION.
+           MOVE "AA" TO SRC-ELEM(1).
+           MOVE "BB" TO SRC-ELEM(2).
+           MOVE "CC" TO SRC-ELEM(3).
+           MOVE SRC TO DST.
+           DISPLAY DST-ELEM(1).
+           DISPLAY DST-ELEM(2).
+           DISPLAY DST-ELEM(3).
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["AA", "BB", "CC"]);
+}

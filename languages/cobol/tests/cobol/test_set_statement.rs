@@ -1,4 +1,4 @@
-use super::helpers::{compile_ok, run_prints};
+use super::helpers::run_prints;
 
 fn p(data: &str, body: &str) -> String {
     format!(
@@ -66,17 +66,43 @@ fn test_set_index_up_down() {
 
 #[test]
 fn test_set_pointer() {
-    compile_ok(&p(
+    let output = run_prints(&p(
         r#"
 01 WS-ITEM PIC X(10).
 01 WS-PTR POINTER.
-LINKAGE SECTION.
-01 LNK-ITEM PIC X(10).
+01 WS-FLAG PIC X VALUE 'N'.
 "#,
         r#"
     SET WS-PTR TO ADDRESS OF WS-ITEM.
+    MOVE 'Y' TO WS-FLAG.
     SET WS-PTR TO NULL.
-    SET ADDRESS OF LNK-ITEM TO WS-PTR.
+    IF WS-PTR = NULL
+        DISPLAY WS-FLAG
+    END-IF.
 "#,
     ));
+    assert_eq!(output, vec!["Y"]);
+}
+
+#[test]
+fn test_set_index_with_arithmetic_step() {
+    let output = run_prints(&p(
+        r#"
+01 WS-TABLE.
+   05 WS-ITEM PIC 9(2) OCCURS 6 TIMES INDEXED BY WS-IDX.
+01 WS-STEP PIC 99 VALUE 2.
+"#,
+        r#"
+    MOVE 10 TO WS-ITEM(1).
+    MOVE 20 TO WS-ITEM(3).
+    MOVE 30 TO WS-ITEM(5).
+    MOVE 1 TO WS-IDX.
+    DISPLAY WS-ITEM(WS-IDX).
+    SET WS-IDX UP BY WS-STEP.
+    DISPLAY WS-ITEM(WS-IDX).
+    SET WS-IDX UP BY WS-STEP.
+    DISPLAY WS-ITEM(WS-IDX).
+"#,
+    ));
+    assert_eq!(output, vec!["10", "20", "30"]);
 }

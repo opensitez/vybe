@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 mod helpers;
 mod test_accept_environment;
 mod test_add_advanced;
@@ -308,3 +310,36 @@ mod test_category_unstring_pointer;
 mod test_category_xml_json_advanced;
 mod test_category_xml_json_generate;
 mod test_category_xml_json_parse;
+
+// ── New 1000-test batch ─────────────────────────────────────
+mod test_compute_expressions;
+mod test_display_formatting;
+mod test_move_group_redefines;
+mod test_perform_inline_declarative;
+mod test_perform_out_of_line;
+mod test_inspect_converting;
+mod test_string_delimited_forms;
+mod test_numeric_picture_editing;
+mod test_signed_arithmetic;
+mod test_table_subscript_index;
+mod test_binary_comp_types;
+mod test_condition_compound;
+mod test_evaluate_when_forms;
+mod test_level88_transition;
+mod test_paragraph_section_flow;
+mod test_go_to_forms;
+mod test_initialize_forms;
+mod test_data_group_level;
+mod test_value_all_forms;
+mod test_occurs_indexed_by;
+mod test_scope_terminators_nesting;
+mod test_special_registers_detail;
+mod test_accept_forms;
+mod test_numeric_functions;
+mod test_string_functions_intrinsic;
+mod test_table_search_binary;
+mod test_nested_if_else;
+mod test_format_picture_output;
+mod test_qualified_names_of_clause;
+mod test_program_id_recursive;
+mod test_compute_rounded;

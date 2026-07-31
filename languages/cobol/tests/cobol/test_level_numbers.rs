@@ -43,7 +43,7 @@ fn test_level_three_nesting() {
 
 #[test]
 fn test_level_deep_nesting() {
-    compile_ok(&p(
+    let output = run_prints(&p(
         r#"
 01 WS-L01.
    05 WS-L05.
@@ -53,8 +53,10 @@ fn test_level_deep_nesting() {
 "#,
         r#"
     DISPLAY WS-L01.
+    DISPLAY WS-L20.
 "#,
     ));
+    assert_eq!(output, vec!["HELLO", "HELLO"]);
 }
 
 #[test]

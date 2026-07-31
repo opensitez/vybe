@@ -179,3 +179,53 @@ fn test_pic_editing_slash_b_zero() {
     "#;
     assert_eq!(helpers::run_prints(src), vec!["12/34/56 1 2 102"]);
 }
+
+#[test]
+fn test_pic_numeric_zero_fill() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. PIC-ZFILL.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 NUM PIC 9999 VALUE 12.
+       PROCEDURE DIVISION.
+           MOVE NUM TO NUM.
+           DISPLAY NUM.
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["0012"]);
+}
+
+#[test]
+fn test_pic_comp_2_sign() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. PIC-COMP.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 NUM PIC S9(3) COMP-2 VALUE -123.
+       01 NUM2 PIC S9(3) COMP-2.
+       PROCEDURE DIVISION.
+           MOVE NUM TO NUM2.
+           DISPLAY NUM2.
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["-123"]);
+}
+
+#[test]
+fn test_pic_alpha_num_merge() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. PIC-MIX.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 A PIC A(3) VALUE "A1 ".
+       01 B PIC X(5) VALUE SPACES.
+       PROCEDURE DIVISION.
+           MOVE A TO B.
+           DISPLAY B.
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["A1   "]);
+}

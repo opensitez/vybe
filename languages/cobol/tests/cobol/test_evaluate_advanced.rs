@@ -41,7 +41,7 @@ fn test_evaluate_not_value() {
 
 #[test]
 fn test_evaluate_multiple_subjects() {
-    compile_ok(&p(
+    let output = run_prints(&p(
         r#"
 01 WS-A PIC 9 VALUE 1.
 01 WS-B PIC 9 VALUE 2.
@@ -57,6 +57,7 @@ fn test_evaluate_multiple_subjects() {
     END-EVALUATE.
 "#,
     ));
+    assert_eq!(output, vec!["MATCH"]);
 }
 
 #[test]

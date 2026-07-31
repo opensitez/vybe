@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── ACCEPT FROM ENVIRONMENT ───────────────────────────────────
 
@@ -121,7 +121,7 @@ fn accept_environment_custom_var() {
 
 #[test]
 fn accept_environment_missing_var() {
-    compile_ok(
+    let out = run_prints(
         r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
@@ -141,6 +141,7 @@ fn accept_environment_missing_var() {
            STOP RUN.
 "#,
     );
+    assert_eq!(out, vec!["missing"]);
 }
 
 #[test]
@@ -399,4 +400,66 @@ fn accept_date_and_time_combined() {
            STOP RUN.
 "#,
     );
+}
+
+#[test]
+fn accept_environment_name_keyword_runtime() {
+    let out = run_prints(
+        r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. test.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 ws-env-name PIC X(30) VALUE "HOME".
+       01 ws-env-val  PIC X(200).
+       PROCEDURE DIVISION.
+           ACCEPT ws-env-val FROM ENVIRONMENT NAME ws-env-name
+           IF ws-env-val = SPACES
+               DISPLAY "missing"
+           ELSE
+               DISPLAY "found"
+           END-IF
+           STOP RUN.
+"#,
+    );
+    assert_eq!(out.len(), 1);
+    assert!(out[0] == "found" || out[0] == "missing");
+}
+
+#[test]
+fn accept_date_output_length() {
+    let out = run_prints(
+        r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. test.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 ws-date PIC 9(6).
+       PROCEDURE DIVISION.
+           ACCEPT ws-date FROM DATE
+           DISPLAY ws-date
+           STOP RUN.
+"#,
+    );
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].len(), 6);
+}
+
+#[test]
+fn accept_time_output_length() {
+    let out = run_prints(
+        r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. test.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 ws-time PIC 9(8).
+       PROCEDURE DIVISION.
+           ACCEPT ws-time FROM TIME
+           DISPLAY ws-time
+           STOP RUN.
+"#,
+    );
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].len(), 8);
 }

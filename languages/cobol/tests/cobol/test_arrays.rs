@@ -1,4 +1,4 @@
-use super::helpers::{compile_ok, run_prints};
+use super::helpers::run_prints;
 
 fn p(data: &str, body: &str) -> String {
     format!(
@@ -9,18 +9,20 @@ fn p(data: &str, body: &str) -> String {
 
 #[test]
 fn indexed_array_assignments_compile() {
-    compile_ok(&p(
+    let output = run_prints(&p(
         "01 WS-TABLE PIC 9(3) OCCURS 3 TIMES.\n01 WS-INDEX PIC 9(1) VALUE 1.",
-        "    MOVE 10 TO WS-TABLE(1).\n    MOVE 20 TO WS-TABLE(2).\n    MOVE 30 TO WS-TABLE(3).",
+        "    MOVE 10 TO WS-TABLE(1).\n    MOVE 20 TO WS-TABLE(2).\n    MOVE 30 TO WS-TABLE(3).\n    DISPLAY WS-TABLE(1).\n    DISPLAY WS-TABLE(2).\n    DISPLAY WS-TABLE(3).",
     ));
+    assert_eq!(output, vec!["10", "20", "30"]);
 }
 
 #[test]
 fn array_indexed_loop_compile() {
-    compile_ok(&p(
+    let output = run_prints(&p(
         "01 WS-TABLE PIC 9(3) OCCURS 3 TIMES.\n01 WS-INDEX PIC 9(1) VALUE 1.",
-        "    PERFORM VARYING WS-INDEX FROM 1 BY 1 UNTIL WS-INDEX > 3\n        MOVE WS-INDEX TO WS-TABLE(WS-INDEX)\n    END-PERFORM.",
+        "    PERFORM VARYING WS-INDEX FROM 1 BY 1 UNTIL WS-INDEX > 3\n        MOVE WS-INDEX TO WS-TABLE(WS-INDEX)\n    END-PERFORM.\n    DISPLAY WS-TABLE(1).\n    DISPLAY WS-TABLE(2).\n    DISPLAY WS-TABLE(3).",
     ));
+    assert_eq!(output, vec!["1", "2", "3"]);
 }
 
 #[test]

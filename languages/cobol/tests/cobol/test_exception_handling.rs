@@ -56,3 +56,27 @@ fn raise_exception_in_conditional_flow_compiles() {
         "    IF FLAG = 1\n        RAISE EXCEPTION \"E1\"\n    ELSE\n        DISPLAY \"NOERR\"\n    END-IF.",
     ));
 }
+
+#[test]
+fn call_with_not_on_exception_compiles() {
+    compile_ok(&p(
+        "",
+        "    CALL \"MAY-FAIL\"\n        ON EXCEPTION\n            DISPLAY \"ERR\"\n        NOT ON EXCEPTION\n            DISPLAY \"OK\"\n        END-CALL.",
+    ));
+}
+
+#[test]
+fn raise_named_exception_with_id_compiles() {
+    compile_ok(&p(
+        "01 WS-NAME PIC X(10) VALUE \"EX-1\".",
+        "    IF WS-NAME = \"EX-1\"\n        RAISE EXCEPTION EC-IMPLICIT-EXCEPTION\n    END-IF.",
+    ));
+}
+
+#[test]
+fn move_in_on_exception_handler_compiles() {
+    compile_ok(&p(
+        "01 WS-OUT PIC X(6) VALUE SPACES.",
+        "    CALL \"MAY-FAIL\"\n        ON EXCEPTION\n            MOVE \"FAILED\" TO WS-OUT\n        END-CALL\n    DISPLAY WS-OUT.",
+    ));
+}

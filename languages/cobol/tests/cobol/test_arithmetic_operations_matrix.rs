@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 fn p(data: &str, body: &str) -> String {
     format!(
@@ -51,17 +51,19 @@ fn add_case_06() {
 }
 #[test]
 fn add_case_07() {
-    compile_ok(&p(
-        "01 A PIC 9 VALUE 2.\n01 B PIC 9 VALUE 2.",
+    let out = run_prints(&p(
+        "01 A PIC 9 VALUE 9.\n01 B PIC 9 VALUE 9.",
         "    ADD A TO B ON SIZE ERROR DISPLAY \"E\" END-ADD.",
     ));
+    assert_eq!(out, vec!["E"]);
 }
 #[test]
 fn add_case_08() {
-    compile_ok(&p(
+    let out = run_prints(&p(
         "01 A PIC 9 VALUE 2.\n01 B PIC 9 VALUE 2.",
         "    ADD A TO B NOT ON SIZE ERROR DISPLAY \"O\" END-ADD.",
     ));
+    assert_eq!(out, vec!["O"]);
 }
 #[test]
 fn add_case_09() {
@@ -280,10 +282,11 @@ fn cmp_case_06() {
 }
 #[test]
 fn cmp_case_07() {
-    compile_ok(&p(
+    let out = run_prints(&p(
         "01 R PIC 9 VALUE 0.",
-        "    COMPUTE R = 1 + 1 ON SIZE ERROR DISPLAY \"E\" END-COMPUTE.",
+        "    COMPUTE R = 1 + 1 ON SIZE ERROR DISPLAY \"E\" END-COMPUTE.\n    DISPLAY R.",
     ));
+    assert_eq!(out, vec!["2"]);
 }
 #[test]
 fn cmp_case_08() {
@@ -305,4 +308,28 @@ fn cmp_case_10() {
         "01 A PIC 9 VALUE 2.\n01 B PIC 9 VALUE 3.\n01 C PIC 9 VALUE 4.\n01 R PIC 999 VALUE 0.",
         "    COMPUTE R = (A + B) * C.",
     ));
+}
+
+#[test]
+fn add_case_runtime_giving() {
+    let out = run_prints(&p("01 A PIC 99 VALUE 12.\n01 B PIC 99 VALUE 8.\n01 R PIC 99.", "    ADD A TO B GIVING R.\n    DISPLAY R."));
+    assert_eq!(out, vec!["20"]);
+}
+
+#[test]
+fn mul_case_runtime_not_on_size_error_path() {
+    let out = run_prints(&p("01 A PIC 9 VALUE 3.\n01 B PIC 9 VALUE 2.", "    MULTIPLY A BY B NOT ON SIZE ERROR DISPLAY \"OK\" END-MULTIPLY."));
+    assert_eq!(out, vec!["OK"]);
+}
+
+#[test]
+fn div_case_runtime_quotient_remainder() {
+    let out = run_prints(&p("01 A PIC 99 VALUE 20.\n01 B PIC 9 VALUE 3.\n01 Q PIC 99.\n01 M PIC 9.", "    DIVIDE B INTO A GIVING Q REMAINDER M.\n    DISPLAY Q.\n    DISPLAY M."));
+    assert_eq!(out, vec!["6", "2"]);
+}
+
+#[test]
+fn compare_case_runtime_expression() {
+    let out = run_prints(&p("01 R PIC 999 VALUE 0.", "    COMPUTE R = (5 - 2) * (8 / 4).\n    DISPLAY R."));
+    assert_eq!(out, vec!["6"]);
 }

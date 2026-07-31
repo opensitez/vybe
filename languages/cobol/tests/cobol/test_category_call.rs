@@ -121,3 +121,42 @@ fn test_call_nested() {
     let out = helpers::run_prints(src);
     assert!(!out.is_empty());
 }
+
+#[test]
+fn test_call_with_mixed_usages() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALL-MIXED.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 INPUT PIC X VALUE "A".
+       01 OUTPUT PIC 9 VALUE 0.
+       01 VALUE-IN PIC 9 VALUE 1.
+       PROCEDURE DIVISION.
+           CALL "SUBMIX"
+             USING BY REFERENCE INPUT
+                   BY CONTENT VALUE-IN
+                   BY VALUE OUTPUT.
+           DISPLAY "OK".
+           STOP RUN.
+    "#;
+    assert!(!helpers::run_prints(src).is_empty());
+}
+
+#[test]
+fn test_call_implicit_using_list() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALL-LIST.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 A PIC 9 VALUE 1.
+       01 B PIC 9 VALUE 2.
+       PROCEDURE DIVISION.
+           CALL "SUB-LIST" USING A B.
+           DISPLAY "OK".
+           STOP RUN.
+    "#;
+    let out = helpers::run_prints(src);
+    assert_eq!(out, vec!["OK"]);
+}

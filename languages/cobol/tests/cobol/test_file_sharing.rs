@@ -69,3 +69,17 @@ fn shared_open_input_output_extend_compiles() {
         "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nENVIRONMENT DIVISION.\nINPUT-OUTPUT SECTION.\nFILE-CONTROL.\n    SELECT F1 ASSIGN TO \"a.dat\".\n    SELECT F2 ASSIGN TO \"b.dat\".\n    SELECT F3 ASSIGN TO \"c.dat\".\nDATA DIVISION.\nFILE SECTION.\nFD F1.\n01 R1 PIC X(10).\nFD F2.\n01 R2 PIC X(10).\nFD F3.\n01 R3 PIC X(10).\nPROCEDURE DIVISION.\n    OPEN INPUT F1.\n    OPEN OUTPUT F2.\n    OPEN EXTEND F3.\n    CLOSE F1 F2 F3.\n    STOP RUN.",
     );
 }
+
+#[test]
+fn reopen_after_close_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nENVIRONMENT DIVISION.\nINPUT-OUTPUT SECTION.\nFILE-CONTROL.\n    SELECT F1 ASSIGN TO \"a.dat\".\nDATA DIVISION.\nFILE SECTION.\nFD F1.\n01 R1 PIC X(10).\nPROCEDURE DIVISION.\n    OPEN INPUT F1.\n    CLOSE F1.\n    OPEN INPUT F1.\n    CLOSE F1.\n    STOP RUN.",
+    );
+}
+
+#[test]
+fn open_input_and_output_same_file_sequence_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nENVIRONMENT DIVISION.\nINPUT-OUTPUT SECTION.\nFILE-CONTROL.\n    SELECT F1 ASSIGN TO \"a.dat\".\nDATA DIVISION.\nFILE SECTION.\nFD F1.\n01 R1 PIC X(10).\nPROCEDURE DIVISION.\n    OPEN OUTPUT F1.\n    CLOSE F1.\n    OPEN I-O F1.\n    CLOSE F1.\n    STOP RUN.",
+    );
+}

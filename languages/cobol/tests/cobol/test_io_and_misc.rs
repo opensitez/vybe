@@ -123,6 +123,10 @@ fn call_multi_args() {
 fn call_no_args() {
     compile_ok(&p("", "    CALL \"INIT\"."));
 }
+#[test]
+fn call_with_returning_local() {
+    compile_ok(&p("01 RET PIC 9(3).", "    CALL \"SUBPROG\" RETURNING RET."));
+}
 
 // ── RAISE ──────────────────────────────────────────────────
 #[test]
@@ -169,6 +173,19 @@ fn write_file() {
         "01 REC PIC X(80) VALUE \"Data\".",
         "    WRITE WS-REC FROM REC.",
     ));
+}
+
+#[test]
+fn sort_and_merge_program() {
+    compile_ok(&p(
+        "01 WS-KEY PIC 9(5).",
+        "    SORT WS-FILE ON ASCENDING KEY WS-KEY.\n    MERGE WS-FILE ON DESCENDING KEY WS-KEY.",
+    ));
+}
+
+#[test]
+fn close_and_reopen_file_sequence() {
+    compile_ok(&p("", "    OPEN OUTPUT WS-FILE.\n    CLOSE WS-FILE.\n    OPEN INPUT WS-FILE.\n    CLOSE WS-FILE."));
 }
 
 // ── SORT ───────────────────────────────────────────────────

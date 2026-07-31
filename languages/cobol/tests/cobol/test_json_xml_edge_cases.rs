@@ -55,3 +55,46 @@ fn test_xml_parse_processing_procedure() {
     let out = helpers::run_prints(src);
     assert!(!out.is_empty());
 }
+
+#[test]
+fn test_json_parse_with_name_clause() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. JSON-NAME-EDGE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 JSON-DOC PIC X(200) VALUE '{"A": 42, "B": true}'.
+       01 PARSED-DATA.
+          05 USER-AGE PIC 9(3).
+          05 IS-ACTIVE PIC X(5).
+       PROCEDURE DIVISION.
+           JSON PARSE JSON-DOC INTO PARSED-DATA
+              NAME USER-AGE IS "A"
+              NAME IS-ACTIVE IS "B".
+           DISPLAY "JSON NAME EDGE".
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["JSON NAME EDGE"]);
+}
+
+#[test]
+fn test_xml_parse_with_returning_clause() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. XML-RETURN-EDGE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 XML-DOC PIC X(200) VALUE "<ROOT><VALUE>1</VALUE></ROOT>".
+       01 XML-STATUS PIC S9(9) COMP-5.
+       PROCEDURE DIVISION.
+           XML PARSE XML-DOC
+                PROCESSING PROCEDURE XML-PROC
+                RETURNING XML-STATUS.
+           DISPLAY XML-STATUS.
+           STOP RUN.
+       XML-PROC.
+           DISPLAY XML-STATUS.
+    "#;
+    let out = helpers::run_prints(src);
+    assert!(!out.is_empty());
+}

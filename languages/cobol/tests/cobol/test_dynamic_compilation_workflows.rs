@@ -38,3 +38,19 @@ fn dynamic_dispatch_with_exception_branch_compiles() {
         "    CALL WS-TARGET\n        ON EXCEPTION DISPLAY \"CALL-FAIL\"\n        NOT ON EXCEPTION DISPLAY \"CALL-OK\"\n    END-CALL.",
     ));
 }
+
+#[test]
+fn dynamic_load_with_returning_handle_compiles() {
+    compile_ok(&p(
+        "01 WS-SRC PIC X(200) VALUE \"CALL.\".\n01 WS-HANDLE PIC X(40).",
+        "    CALL \"LOAD-PLUGIN\" USING WS-SRC RETURNING WS-HANDLE.\n    CALL \"RUN-PLUGIN\" USING WS-HANDLE.",
+    ));
+}
+
+#[test]
+fn dynamic_module_name_expression_compiles() {
+    compile_ok(&p(
+        "01 WS-PROG PIC X(20) VALUE \"HANDLER\".",
+        "    CALL WS-PROG\n        ON EXCEPTION DISPLAY \"ERR\"\n        NOT ON EXCEPTION DISPLAY \"OK\"\n    END-CALL.",
+    ));
+}

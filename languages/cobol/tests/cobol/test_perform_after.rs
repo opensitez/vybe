@@ -41,3 +41,22 @@ fn test_perform_varying_after_3d() {
 "#,
     ));
 }
+
+#[test]
+fn test_perform_varying_after_descending() {
+    let output = run_prints(&p(
+        r#"
+01 WS-I PIC 9.
+01 WS-J PIC 9.
+01 WS-TOTAL PIC 99 VALUE 0.
+"#,
+        r#"
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > 2
+      AFTER WS-J FROM 3 BY -1 UNTIL WS-J < 1
+        ADD 1 TO WS-TOTAL
+    END-PERFORM
+    DISPLAY WS-TOTAL.
+"#,
+    ));
+    assert_eq!(output, vec!["04"]);
+}

@@ -159,3 +159,85 @@ fn test_search_multiple_when() {
     "#;
     assert_eq!(helpers::run_prints(src), vec!["FOUND B"]);
 }
+
+#[test]
+fn test_search_linear_with_if_no_match() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SEARCH-IF-NOMATCH.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 TBL-DATA.
+          05 FILLER PIC X VALUE "1".
+          05 FILLER PIC X VALUE "2".
+          05 FILLER PIC X VALUE "3".
+       01 TBL REDEFINES TBL-DATA.
+          05 TBL-ENTRY OCCURS 3 TIMES INDEXED BY IDX.
+             10 VAL PIC X.
+       01 RESULT PIC X VALUE "N".
+       PROCEDURE DIVISION.
+           SET IDX TO 1.
+           SEARCH TBL-ENTRY
+              AT END IF RESULT = "N" DISPLAY "NO" END-IF
+              WHEN VAL(IDX) = "9"
+                 MOVE "Y" TO RESULT
+                 DISPLAY RESULT
+           END-SEARCH.
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["NO"]);
+}
+
+#[test]
+fn test_search_all_uses_ascending_key_order() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SEARCH-ALL-ORDER.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 TBL-DATA.
+          05 FILLER PIC X(5) VALUE "05PEND".
+          05 FILLER PIC X(5) VALUE "02CODE".
+          05 FILLER PIC X(5) VALUE "07END ".
+       01 TBL REDEFINES TBL-DATA.
+          05 TBL-ENTRY OCCURS 3 TIMES
+             ASCENDING KEY IS KEY-ID
+             INDEXED BY IDX.
+             10 KEY-ID PIC 9(2).
+             10 VAL PIC X(3).
+       PROCEDURE DIVISION.
+           SEARCH ALL TBL-ENTRY
+              WHEN KEY-ID(IDX) = 07
+                 DISPLAY VAL(IDX)
+           END-SEARCH.
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["END"]);
+}
+
+#[test]
+fn test_search_all_duplicate_keys_prefers_first_match() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SEARCH-ALL-DUP.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 TBL-DATA.
+          05 FILLER PIC X(6) VALUE "01A".
+          05 FILLER PIC X(6) VALUE "01B".
+          05 FILLER PIC X(6) VALUE "02C".
+       01 TBL REDEFINES TBL-DATA.
+          05 TBL-ENTRY OCCURS 3 TIMES
+             ASCENDING KEY IS KEY-ID
+             INDEXED BY IDX.
+             10 KEY-ID PIC 9(2).
+             10 VAL PIC X(4).
+       PROCEDURE DIVISION.
+           SEARCH ALL TBL-ENTRY
+              WHEN KEY-ID(IDX) = 01
+                 DISPLAY VAL(IDX)
+           END-SEARCH.
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["A"]);
+}

@@ -61,104 +61,29 @@ cobol_test!(
     "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 TBL. 05 EL OCCURS 3 TIMES ASCENDING KEY K1. 10 G1 OCCURS 2 TIMES. 15 K1 PIC 9 VALUE 1. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
     vec![] as Vec<&str>
 ); // Parse error test
-// Parse fillers
+// Coverage-focused occurs edge cases
 cobol_test!(
-    test_occurs_parse_11,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
+    test_occurs_nested_population,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 TBL. 05 R OCCURS 2 TIMES. 10 C OCCURS 2 TIMES PIC 9(2). PROCEDURE DIVISION. MOVE 11 TO C(1 1) MOVE 22 TO C(1 2) MOVE 33 TO C(2 1) MOVE 44 TO C(2 2) DISPLAY C(1 1) DISPLAY C(2 2). STOP RUN.",
+    vec!["11", "44"]
 );
 cobol_test!(
-    test_occurs_parse_12,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
+    test_occurs_reference_modification,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 TBL. 05 E OCCURS 3 TIMES PIC X(3). PROCEDURE DIVISION. MOVE 'ABC' TO E(1) MOVE 'DEF' TO E(2) MOVE 'GHI' TO E(3) DISPLAY E(2)(2:2) STOP RUN.",
+    vec!["EF"]
 );
 cobol_test!(
-    test_occurs_parse_13,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
+    test_occurs_indexed_search_lookup,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 TBL. 05 E OCCURS 4 TIMES INDEXED BY I PIC 9(2) VALUE 0. PROCEDURE DIVISION. MOVE 10 TO E(1) MOVE 20 TO E(2) MOVE 30 TO E(3) SET I TO 2 DISPLAY E(I) STOP RUN.",
+    vec!["20"]
 );
 cobol_test!(
-    test_occurs_parse_14,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
+    test_occurs_set_up_down_path,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 TBL. 05 E OCCURS 4 TIMES INDEXED BY I PIC 9(2) VALUE 0. 01 J PIC 9 VALUE 1. PROCEDURE DIVISION. SET I TO 4 DISPLAY E(I) SET I DOWN BY J DISPLAY E(3) STOP RUN.",
+    vec!["0", "0"]
 );
 cobol_test!(
-    test_occurs_parse_15,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_occurs_parse_16,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_occurs_parse_17,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_occurs_parse_18,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_occurs_parse_19,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_occurs_parse_20,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_occurs_parse_21,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_occurs_parse_22,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_occurs_parse_23,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_occurs_parse_24,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_occurs_parse_25,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_occurs_parse_26,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_occurs_parse_27,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_occurs_parse_28,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_occurs_parse_29,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_occurs_parse_30,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
+    test_occurs_copy_group,
+    "IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 SRC. 05 A PIC X(2) OCCURS 2 TIMES VALUE SPACES. 01 DST. 05 B PIC X(2) OCCURS 2 TIMES. PROCEDURE DIVISION. MOVE 'AA' TO A(1) MOVE 'BB' TO A(2) MOVE SRC TO DST DISPLAY B(1) DISPLAY B(2) STOP RUN.",
+    vec!["AA", "BB"]
 );

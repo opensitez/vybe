@@ -262,3 +262,103 @@ PROCEDURE DIVISION.
 "#,
     );
 }
+
+#[test]
+fn formatted_date_runtime() {
+    let output = run_prints(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DATE PIC X(10).
+PROCEDURE DIVISION.
+    MOVE FUNCTION FORMATTED-DATE("YYYY-MM-DD" 20240101) TO WS-DATE.
+    DISPLAY WS-DATE.
+    STOP RUN.
+"#,
+    );
+    assert_eq!(output, vec!["2024-01-01"]);
+}
+
+#[test]
+fn numval_runtime() {
+    let output = run_prints(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-STR PIC X(10) VALUE "12345".
+01 WS-NUM PIC 9(10).
+01 WS-VALID PIC 9(1).
+PROCEDURE DIVISION.
+    COMPUTE WS-VALID = FUNCTION TEST-NUMVAL(WS-STR).
+    COMPUTE WS-NUM = FUNCTION NUMVAL(WS-STR).
+    DISPLAY WS-VALID.
+    DISPLAY WS-NUM.
+    STOP RUN.
+"#,
+    );
+    assert_eq!(output, vec!["1", "12345"]);
+}
+
+#[test]
+fn when_compiled_runtime_len() {
+    let output = run_prints(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-COMPILED PIC X(40).
+PROCEDURE DIVISION.
+    MOVE FUNCTION WHEN-COMPILED TO WS-COMPILED.
+    DISPLAY FUNCTION TRIM(WS-COMPILED).
+    STOP RUN.
+"#,
+    );
+    assert_eq!(output.len(), 1);
+    assert!(!output[0].is_empty());
+}
+
+#[test]
+fn date_of_integer_roundtrip_runtime() {
+    let output = run_prints(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DATE PIC X(8) VALUE 20240229.
+01 WS-INT PIC S9(7).
+01 WS-OUT PIC X(8).
+PROCEDURE DIVISION.
+    COMPUTE WS-INT = FUNCTION INTEGER-OF-DATE(WS-DATE).
+    COMPUTE WS-OUT = FUNCTION DATE-OF-INTEGER(WS-INT).
+    DISPLAY WS-OUT.
+    STOP RUN.
+"#,
+    );
+    assert_eq!(output, vec!["20240229"]);
+}
+
+#[test]
+fn formatted_time_runtime_has_colons() {
+    let output = run_prints(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-TIME PIC X(8).
+PROCEDURE DIVISION.
+    MOVE FUNCTION FORMATTED-TIME("HH:MM:SS" 3661) TO WS-TIME.
+    DISPLAY WS-TIME.
+    STOP RUN.
+"#,
+    );
+    assert_eq!(output.len(), 1);
+    assert!(output[0].contains(":"));
+    assert_eq!(output[0].len(), 8);
+}

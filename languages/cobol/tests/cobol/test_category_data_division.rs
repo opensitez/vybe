@@ -148,3 +148,102 @@ fn test_data_level_88_multiple() {
     "#;
     assert_eq!(helpers::run_prints(src), vec!["VALID"]);
 }
+
+#[test]
+fn test_data_filler_in_group() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. DATA-FILL.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-REC.
+          05 FILLER PIC X(3) VALUE "ABC".
+          05 WS-FLD PIC X(3) VALUE "DEF".
+       PROCEDURE DIVISION.
+           DISPLAY WS-REC.
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["ABCDEF"]);
+}
+
+#[test]
+fn test_data_picture_comp_fields() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. DATA-PIC.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 DECIMAL PIC S9(4)V99 VALUE -12.34.
+       PROCEDURE DIVISION.
+           DISPLAY DECIMAL.
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["-1234"]);
+}
+
+#[test]
+fn test_data_66_set_condition_name() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. DATA-66.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-NUM PIC 9 VALUE 1.
+       88 LOW VALUE 0 THRU 1.
+       PROCEDURE DIVISION.
+           IF LOW
+               DISPLAY "LOW"
+           END-IF.
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["LOW"]);
+}
+
+#[test]
+fn test_data_value_clause_spaces() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. DATA-VAL.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-A PIC X(3) VALUE SPACE.
+       PROCEDURE DIVISION.
+           DISPLAY "[" WS-A "]".
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["[   ]"]);
+}
+
+#[test]
+fn test_data_redefines_impact_group_move() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. DATA-MOVE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 GROUP.
+          05 A PIC X(2) VALUE "HI".
+          05 B PIC X(2) VALUE "JO".
+       01 NUM REDEFINES GROUP PIC X(4).
+       PROCEDURE DIVISION.
+           MOVE GROUP TO NUM.
+           DISPLAY NUM.
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["HIJO"]);
+}
+
+#[test]
+fn test_data_usage_display_with_pic_comp5() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. DATA-COMP5.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 VAL PIC S9(4) COMP-5 VALUE -12.
+       PROCEDURE DIVISION.
+           DISPLAY VAL.
+           STOP RUN.
+    "#;
+    assert_eq!(helpers::run_prints(src), vec!["-12"]);
+}

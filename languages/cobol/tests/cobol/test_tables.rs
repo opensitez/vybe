@@ -1,4 +1,4 @@
-use super::helpers::{compile_ok, run_prints};
+use super::helpers::run_prints;
 
 fn p(data: &str, body: &str) -> String {
     format!(
@@ -9,7 +9,7 @@ fn p(data: &str, body: &str) -> String {
 
 #[test]
 fn test_table_occurs_keys() {
-    compile_ok(&p(
+    let output = run_prints(&p(
         r#"
 01 WS-TABLE.
    05 WS-ENTRY OCCURS 5 TIMES
@@ -18,9 +18,60 @@ fn test_table_occurs_keys() {
       10 WS-KEY PIC 9(3).
 "#,
         r#"
-    DISPLAY "OK".
+    MOVE 10 TO WS-KEY(1).
+    MOVE 20 TO WS-KEY(2).
+    MOVE 30 TO WS-KEY(3).
+    SEARCH ALL WS-ENTRY
+        WHEN WS-KEY(WS-IDX) = 20 DISPLAY 'FOUND'
+    END-SEARCH.
 "#,
     ));
+    assert_eq!(output, vec!["FOUND"]);
+}
+
+#[test]
+fn test_table_occurs_keys_not_found() {
+    let output = run_prints(&p(
+        r#"
+01 WS-TABLE.
+   05 WS-ENTRY OCCURS 4 TIMES
+      ASCENDING KEY IS WS-KEY
+      INDEXED BY WS-IDX.
+      10 WS-KEY PIC 9(3).
+"#,
+        r#"
+    MOVE 10 TO WS-KEY(1).
+    MOVE 20 TO WS-KEY(2).
+    MOVE 30 TO WS-KEY(3).
+    SEARCH ALL WS-ENTRY
+        AT END DISPLAY 'NONE'
+        WHEN WS-KEY(WS-IDX) = 99 DISPLAY 'FOUND'
+    END-SEARCH.
+"#,
+    ));
+    assert_eq!(output, vec!["NONE"]);
+}
+
+#[test]
+fn test_table_linear_search_with_at_end() {
+    let output = run_prints(&p(
+        r#"
+01 WS-TABLE.
+   05 WS-ENTRY OCCURS 4 TIMES
+      INDEXED BY WS-IDX.
+      10 WS-KEY PIC X(2).
+"#,
+        r#"
+    MOVE "A" TO WS-KEY(1).
+    MOVE "B" TO WS-KEY(2).
+    MOVE "C" TO WS-KEY(3).
+    SEARCH WS-ENTRY
+        AT END DISPLAY 'NONE'
+        WHEN WS-KEY(WS-IDX) = "B" DISPLAY 'FOUND'
+    END-SEARCH.
+"#,
+    ));
+    assert_eq!(output, vec!["FOUND"]);
 }
 
 #[test]

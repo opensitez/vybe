@@ -45,3 +45,35 @@ fn test_intrinsics_test_numval() {
 "#,
     ));
 }
+
+#[test]
+fn test_intrinsics_case_conversion() {
+    let output = run_prints(&p(
+        r#"
+01 WS-TEXT PIC X(5) VALUE "Hello".
+01 WS-UP PIC X(5).
+01 WS-LOW PIC X(5).
+"#,
+        r#"
+    MOVE FUNCTION UPPER-CASE(WS-TEXT) TO WS-UP.
+    MOVE FUNCTION LOWER-CASE(WS-TEXT) TO WS-LOW.
+    DISPLAY WS-UP.
+    DISPLAY WS-LOW.
+"#,
+    ));
+    assert_eq!(output, vec!["HELLO", "hello"]);
+}
+
+#[test]
+fn test_intrinsics_ord_max_min_runtime() {
+    let output = run_prints(&p(
+        "01 WS-ORD PIC 9(5) VALUE 0.",
+        r#"
+    COMPUTE WS-ORD = FUNCTION ORD-MAX.
+    DISPLAY WS-ORD.
+    COMPUTE WS-ORD = FUNCTION ORD-MIN.
+    DISPLAY WS-ORD.
+"#,
+    ));
+    assert_eq!(output.len(), 2);
+}

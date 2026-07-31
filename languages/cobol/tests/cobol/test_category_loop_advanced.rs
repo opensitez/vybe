@@ -86,3 +86,46 @@ fn test_loop_exit_perform_cycle() {
     // 1, 2, 4, 5. So 4 times.
     assert_eq!(helpers::run_prints(src), vec!["04"]);
 }
+
+#[test]
+fn test_loop_exit_perform_early_break() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. LOOP-EXIT.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 I PIC 9 VALUE 0.
+       01 TOTAL PIC 99 VALUE 0.
+       PROCEDURE DIVISION.
+           PERFORM VARYING I FROM 1 BY 1 UNTIL I > 6
+              IF I = 4
+                 EXIT PERFORM
+              END-IF
+              ADD 1 TO TOTAL
+           END-PERFORM.
+           DISPLAY TOTAL.
+           STOP RUN.
+    "#;
+    // executes for I=1,2,3
+    assert_eq!(helpers::run_prints(src), vec!["03"]);
+}
+
+#[test]
+fn test_loop_no_iterations_zero() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. LOOP-ZERO.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 I PIC 9 VALUE 0.
+       01 TOTAL PIC 99 VALUE 99.
+       PROCEDURE DIVISION.
+           PERFORM VARYING I FROM 5 BY 1 UNTIL I < 5
+              ADD 1 TO TOTAL
+           END-PERFORM.
+           DISPLAY TOTAL.
+           STOP RUN.
+    "#;
+    // condition false at start.
+    assert_eq!(helpers::run_prints(src), vec!["99"]);
+}

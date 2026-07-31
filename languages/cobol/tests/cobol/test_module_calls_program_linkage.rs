@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn call_no_args_compiles() {
@@ -107,4 +107,28 @@ fn call_with_group_arg_compiles() {
     compile_ok(
         "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 G.\n   05 A PIC X(3).\n   05 B PIC 9(2).\nPROCEDURE DIVISION.\n    CALL \"MG\" USING G.\n    STOP RUN.",
     );
+}
+
+#[test]
+fn call_exception_runtime_message() {
+    let output = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    CALL \"M7\"\n        ON EXCEPTION\n            DISPLAY \"E\"\n        NOT ON EXCEPTION\n            DISPLAY \"OK\"\n    END-CALL\n    STOP RUN.",
+    );
+    assert_eq!(output, vec!["E"]);
+}
+
+#[test]
+fn call_dynamic_name_runtime() {
+    let output = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 N PIC X(10) VALUE \"NO-MOD\".\nPROCEDURE DIVISION.\n    CALL N\n        ON EXCEPTION\n            DISPLAY \"MISS\"\n    END-CALL\n    STOP RUN.",
+    );
+    assert_eq!(output, vec!["MISS"]);
+}
+
+#[test]
+fn call_by_reference_runtime_value_preserved() {
+    let output = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 A PIC 9(5) VALUE 12345.\nPROCEDURE DIVISION.\n    CALL \"M4\" USING BY REFERENCE A\n        ON EXCEPTION\n            DISPLAY A\n    END-CALL\n    STOP RUN.",
+    );
+    assert_eq!(output, vec!["12345"]);
 }

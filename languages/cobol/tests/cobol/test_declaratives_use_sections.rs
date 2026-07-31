@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn declaratives_use_after_error_compiles() {
@@ -35,4 +35,20 @@ fn declaratives_section_labels_compiles() {
     compile_ok(
         "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\nDECLARATIVES.\nD-A SECTION.\n    USE AFTER STANDARD ERROR PROCEDURE ON WS-FILE.\nD-B SECTION.\n    USE AFTER STANDARD ERROR PROCEDURE ON WS-FILE.\nEND DECLARATIVES.\nMAIN SECTION.\n    DISPLAY \"OK\".\n    STOP RUN.",
     );
+}
+
+#[test]
+fn declaratives_use_sections_runtime() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 WS-FILE PIC X(1) VALUE \"A\".\nPROCEDURE DIVISION.\nDECLARATIVES.\nERR-SEC SECTION.\n    USE AFTER STANDARD ERROR PROCEDURE ON WS-FILE.\nEND DECLARATIVES.\nMAIN-SEC SECTION.\n    DISPLAY \"RUN\".\n    STOP RUN.",
+    );
+    assert_eq!(out, vec!["RUN"]);
+}
+
+#[test]
+fn declaratives_with_call_runtime() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 WS-FILE PIC X(1) VALUE \"A\".\n01 WS-RESULT PIC X(5) VALUE SPACES.\nPROCEDURE DIVISION.\nDECLARATIVES.\nD2 SECTION.\n    USE AFTER STANDARD ERROR PROCEDURE ON WS-FILE.\nEND DECLARATIVES.\nMAIN-SEC SECTION.\n    MOVE \"OK\" TO WS-RESULT.\n    DISPLAY WS-RESULT\n    STOP RUN.",
+    );
+    assert_eq!(out, vec!["OK"]);
 }

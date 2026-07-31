@@ -52,7 +52,7 @@ fn test_subtract_decimals() {
 
 #[test]
 fn test_subtract_corresponding() {
-    compile_ok(&p(
+    let output = run_prints(&p(
         r#"
 01 WS-G1.
    05 WS-X PIC 9(3) VALUE 5.
@@ -63,6 +63,9 @@ fn test_subtract_corresponding() {
 "#,
         r#"
     SUBTRACT CORRESPONDING WS-G1 FROM WS-G2.
+    DISPLAY WS-X.
+    DISPLAY WS-Y.
 "#,
     ));
+    assert_eq!(output, vec!["015", "020"]);
 }

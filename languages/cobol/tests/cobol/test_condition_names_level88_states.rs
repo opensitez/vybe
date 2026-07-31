@@ -223,3 +223,20 @@ fn condition_name_re_evaluates_after_arithmetic_change() {
     ));
     assert_eq!(output, vec!["NOT-READY"]);
 }
+
+#[test]
+fn condition_name_range_surface_compiles() {
+    compile_ok(&p(
+        "01 ST PIC 9(2) VALUE 10.\n   88 LOW VALUE 1 THRU 5.\n   88 MID VALUE 6 THRU 10.\n   88 HIGH VALUE 11 THRU 20.",
+        "    SET MID TO TRUE.",
+    ));
+}
+
+#[test]
+fn condition_name_range_runtime_transitions() {
+    let output = run_prints(&p(
+        "01 ST PIC 9(2) VALUE 0.\n   88 LOW VALUE 1 THRU 5.\n   88 MID VALUE 6 THRU 10.\n   88 HIGH VALUE 11 THRU 20.",
+        "    SET LOW TO TRUE\n    IF LOW DISPLAY \"LOW\" ELSE DISPLAY \"NOT-LOW\" END-IF\n    SET HIGH TO TRUE\n    IF HIGH DISPLAY \"HIGH\" ELSE DISPLAY \"NOT-HIGH\" END-IF",
+    ));
+    assert_eq!(output, vec!["LOW", "HIGH"]);
+}

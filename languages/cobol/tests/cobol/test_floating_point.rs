@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn comp1_definition_compiles() {
@@ -68,4 +68,12 @@ fn floating_compute_parentheses_compiles() {
     compile_ok(
         "IDENTIFICATION DIVISION.\nPROGRAM-ID. FP10.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 A USAGE COMP-2.\n01 B USAGE COMP-2.\n01 C USAGE COMP-2.\nPROCEDURE DIVISION.\n    COMPUTE C = (A + B) * B.\n    STOP RUN.",
     );
+}
+
+#[test]
+fn floating_add_runtime_outputs_expected_value() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. FP11.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 A USAGE COMP-1 VALUE 1.\n01 B USAGE COMP-1 VALUE 2.\n01 C USAGE COMP-1.\nPROCEDURE DIVISION.\n    ADD B TO A\n    MOVE A TO C\n    DISPLAY C\n    STOP RUN.",
+    );
+    assert_eq!(out, vec!["3"]);
 }

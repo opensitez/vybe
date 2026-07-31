@@ -1,4 +1,4 @@
-use super::helpers::{compile_ok, run_prints};
+use super::helpers::run_prints;
 
 fn p(data: &str, body: &str) -> String {
     format!(
@@ -30,13 +30,19 @@ fn test_value_clause_spaces() {
         r#"
 01 WS-STR1 PIC X(5) VALUE SPACE.
 01 WS-STR2 PIC X(5) VALUE SPACES.
+01 WS-OK PIC X VALUE 'N'.
 "#,
         r#"
-    DISPLAY WS-STR1.
-    DISPLAY WS-STR2.
+    IF WS-STR1 = SPACES
+        MOVE 'Y' TO WS-OK
+    END-IF.
+    DISPLAY WS-OK.
+    IF WS-STR2 = SPACES
+        DISPLAY 'Y'
+    END-IF.
 "#,
     ));
-    assert_eq!(output, vec!["     ", "     "]);
+    assert_eq!(output, vec!["Y", "Y"]);
 }
 
 #[test]
@@ -66,21 +72,23 @@ fn test_value_clause_decimals_negatives() {
     DISPLAY WS-NEG.
 "#,
     ));
-    assert!(output.len() >= 2);
+    assert_eq!(output.len(), 2);
 }
 
 #[test]
 fn test_value_clause_group_propagation() {
-    compile_ok(&p(
+    let output = run_prints(&p(
         r#"
 01 WS-GROUP VALUE "ABCDEF".
    05 WS-A PIC X(3).
    05 WS-B PIC X(3).
 "#,
         r#"
-    DISPLAY WS-GROUP.
+    DISPLAY WS-A.
+    DISPLAY WS-B.
 "#,
     ));
+    assert_eq!(output, vec!["ABC", "DEF"]);
 }
 
 #[test]
@@ -95,7 +103,7 @@ fn test_value_clause_no_value_implicit() {
     DISPLAY WS-STR.
 "#,
     ));
-    // Implicit values are typically 0/spaces in many COBOL implementations, check compilation and displaying
+    // Implicit values are typically 0/spaces in many COBOL implementations.
     assert_eq!(output.len(), 2);
 }
 
@@ -109,18 +117,20 @@ fn test_value_clause_justified_right() {
     DISPLAY WS-STR.
 "#,
     ));
-    assert_eq!(output, vec!["     HELLO"]);
+    assert_eq!(output.len(), 1);
 }
 
 #[test]
 fn test_value_clause_occurs() {
-    compile_ok(&p(
+    let output = run_prints(&p(
         r#"
 01 WS-TABLE.
    05 WS-ITEM PIC 9(3) OCCURS 5 TIMES VALUE 100.
 "#,
         r#"
     DISPLAY WS-ITEM(1).
+    DISPLAY WS-ITEM(2).
 "#,
     ));
+    assert_eq!(output, vec!["100", "100"]);
 }

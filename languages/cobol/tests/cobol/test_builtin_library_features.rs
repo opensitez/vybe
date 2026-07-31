@@ -69,3 +69,19 @@ fn xml_generate_with_declaration_compiles() {
         "    XML GENERATE WS-XML FROM WS-REC COUNT IN WS-LEN WITH XML-DECLARATION.",
     ));
 }
+
+#[test]
+fn json_generate_with_count_compiles() {
+    compile_ok(&p(
+        "01 WS-REC.\n   05 WS-NAME PIC X(8) VALUE \"BOB\".\n01 WS-JSON PIC X(200).\n01 WS-LEN PIC 9(5).",
+        "    JSON GENERATE WS-JSON FROM WS-REC COUNT IN WS-LEN.",
+    ));
+}
+
+#[test]
+fn xml_generate_with_attributes_compiles() {
+    compile_ok(&p(
+        "01 WS-REC.\n   05 WS-ID PIC 9(4) VALUE 1001.\n01 WS-XML PIC X(500).",
+        "    XML GENERATE WS-XML FROM WS-REC WITH ATTRIBUTES.",
+    ));
+}

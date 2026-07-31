@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 fn p(data: &str, body: &str) -> String {
     format!(
@@ -129,4 +129,46 @@ fn error_flag_set_compiles() {
         "01 ERR-FLAG PIC 9 VALUE 0.",
         "    CALL \"MAYBE\"\n        ON EXCEPTION MOVE 1 TO ERR-FLAG\n    END-CALL.",
     ));
+}
+
+#[test]
+fn add_on_size_error_compiles() {
+    compile_ok(&p(
+        "01 A PIC 9(3) VALUE 999.\n01 B PIC 9(3) VALUE 2.\n01 C PIC 9(3).",
+        "    ADD A TO B GIVING C\n        ON SIZE ERROR DISPLAY \"SE\"\n        NOT ON SIZE ERROR DISPLAY \"OK\"\n    END-ADD.",
+    ));
+}
+
+#[test]
+fn subtract_on_size_error_compiles() {
+    compile_ok(&p(
+        "01 A PIC 9(2) VALUE 10.\n01 B PIC 9(2) VALUE 20.\n01 C PIC 9(2).",
+        "    SUBTRACT B FROM A GIVING C\n        ON SIZE ERROR DISPLAY \"SE\"\n    END-SUBTRACT.",
+    ));
+}
+
+#[test]
+fn multiply_size_error_compiles() {
+    compile_ok(&p(
+        "01 A PIC 9(4) VALUE 200.\n01 B PIC 9(4) VALUE 300.\n01 C PIC 9(4).",
+        "    MULTIPLY A BY B GIVING C\n        ON SIZE ERROR DISPLAY \"MUL-SE\"\n    END-MULTIPLY.",
+    ));
+}
+
+#[test]
+fn string_overflow_branch_fires() {
+    let out = run_prints(&p(
+        "01 A PIC X(5) VALUE \"ABCDE\".\n01 B PIC X(5) VALUE \"FGHIJ\".\n01 O PIC X(5).",
+        "    STRING A DELIMITED BY SIZE B DELIMITED BY SIZE INTO O\n        ON OVERFLOW DISPLAY \"OV\"\n    END-STRING.",
+    ));
+    assert_eq!(out, vec!["OV"]);
+}
+
+#[test]
+fn unstring_overflow_branch_fires() {
+    let out = run_prints(&p(
+        "01 S PIC X(3) VALUE \"A,B\".\n01 A PIC X(1).",
+        "    UNSTRING S DELIMITED BY \",\" INTO A\n        ON OVERFLOW DISPLAY \"OV\"\n    END-UNSTRING.",
+    ));
+    assert_eq!(out, vec!["OV"]);
 }

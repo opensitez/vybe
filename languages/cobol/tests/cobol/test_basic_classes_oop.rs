@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn class_minimal_compiles() {
@@ -161,4 +161,82 @@ END OBJECT.
 END CLASS COUNTER.
 "#,
     );
+}
+
+#[test]
+fn class_method_with_parameters_compiles() {
+    compile_ok(
+        r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. METER.
+OBJECT.
+METHOD-ID. SET-LIMIT.
+PROCEDURE DIVISION USING WS-LIMIT.
+    MOVE WS-LIMIT TO WS-LIMIT.
+END METHOD SET-LIMIT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-LIMIT PIC 9(4).
+END OBJECT.
+END CLASS METER.
+"#,
+    );
+}
+
+#[test]
+fn class_method_with_using_and_returning_compiles() {
+    compile_ok(
+        r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. WRAPPER.
+OBJECT.
+METHOD-ID. SCALE.
+PROCEDURE DIVISION USING WS-VALUE RETURNING WS-RESULT.
+    COMPUTE WS-RESULT = WS-VALUE * 2.
+END METHOD SCALE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VALUE PIC S9(4)V99.
+01 WS-RESULT PIC S9(4)V99.
+END OBJECT.
+END CLASS WRAPPER.
+"#,
+    );
+}
+
+#[test]
+fn class_with_private_section_compiles() {
+    compile_ok(
+        r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. PRIVATE-CLASS.
+OBJECT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-SECRET PIC X(10) VALUE "SECRET".
+01 WS-RESULT PIC X(10).
+METHOD-ID. GET-SECRET.
+PROCEDURE DIVISION RETURNING WS-RESULT.
+    MOVE WS-SECRET TO WS-RESULT.
+END METHOD GET-SECRET.
+END OBJECT.
+END CLASS PRIVATE-CLASS.
+"#,
+    );
+}
+
+#[test]
+fn class_definition_runtime() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nCLASS-ID. BASIC-CLASS.\nOBJECT.\nMETHOD-ID. PRINT-HI.\nPROCEDURE DIVISION.\n    DISPLAY \"HI\".\nEND METHOD PRINT-HI.\nEND OBJECT.\nEND CLASS BASIC-CLASS.\nDATA DIVISION.\nPROCEDURE DIVISION.\n    DISPLAY \"OK\".\n    STOP RUN.",
+    );
+    assert_eq!(out, vec!["OK"]);
+}
+
+#[test]
+fn class_property_runtime_structure() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. P.\nCLASS-ID. POINT.\nOBJECT.\nMETHOD-ID. PRINT.\nPROCEDURE DIVISION.\n    DISPLAY \"METHOD\".\nEND METHOD PRINT.\nEND OBJECT.\nEND CLASS POINT.\nPROCEDURE DIVISION.\n    DISPLAY \"POINT\".\n    STOP RUN.",
+    );
+    assert_eq!(out, vec!["POINT"]);
 }

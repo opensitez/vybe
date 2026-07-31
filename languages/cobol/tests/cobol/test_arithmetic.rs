@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 fn p(body: &str) -> String {
     format!(
@@ -10,11 +10,20 @@ fn p(body: &str) -> String {
 // ── ADD ────────────────────────────────────────────────────
 #[test]
 fn add_to() {
-    compile_ok(&p("    ADD 5 TO WS-A."));
+    let out = run_prints(&p("    ADD 5 TO WS-A.\n    DISPLAY WS-A."));
+    assert_eq!(out, vec!["5"]);
 }
 #[test]
 fn add_giving() {
     compile_ok(&p("    ADD WS-A WS-B GIVING WS-C."));
+}
+
+#[test]
+fn add_giving_runtime() {
+    let out = run_prints(&p(
+        "    MOVE 5 TO WS-A.\n    MOVE 7 TO WS-B.\n    ADD WS-A WS-B GIVING WS-C.\n    DISPLAY WS-C.",
+    ));
+    assert_eq!(out, vec!["12"]);
 }
 #[test]
 fn add_literal_to() {
@@ -34,6 +43,14 @@ fn subtract_from() {
 fn subtract_giving() {
     compile_ok(&p("    SUBTRACT WS-B FROM WS-A GIVING WS-C."));
 }
+
+#[test]
+fn subtract_giving_runtime() {
+    let out = run_prints(&p(
+        "    MOVE 20 TO WS-A.\n    MOVE 7 TO WS-B.\n    SUBTRACT WS-B FROM WS-A GIVING WS-C.\n    DISPLAY WS-C.",
+    ));
+    assert_eq!(out, vec!["13"]);
+}
 #[test]
 fn subtract_literal() {
     compile_ok(&p("    SUBTRACT 100 FROM WS-A."));
@@ -49,6 +66,14 @@ fn multiply_giving() {
     compile_ok(&p("    MULTIPLY WS-A BY WS-B GIVING WS-C."));
 }
 
+#[test]
+fn multiply_giving_runtime() {
+    let out = run_prints(&p(
+        "    MOVE 3 TO WS-A.\n    MOVE 4 TO WS-B.\n    MULTIPLY WS-A BY WS-B GIVING WS-C.\n    DISPLAY WS-C.",
+    ));
+    assert_eq!(out, vec!["12"]);
+}
+
 // ── DIVIDE ─────────────────────────────────────────────────
 #[test]
 fn divide_giving() {
@@ -59,14 +84,39 @@ fn divide_remainder() {
     compile_ok(&p("    DIVIDE 17 BY 5 GIVING WS-C REMAINDER WS-R."));
 }
 
+#[test]
+fn divide_remainder_runtime() {
+    let out = run_prints(&p(
+        "    MOVE 17 TO WS-A.\n    DIVIDE 17 BY 5 GIVING WS-C REMAINDER WS-R.\n    DISPLAY WS-C.\n    DISPLAY WS-R.",
+    ));
+    assert_eq!(out, vec!["03", "02"]);
+}
+
 // ── COMPUTE ────────────────────────────────────────────────
 #[test]
 fn compute_add() {
-    compile_ok(&p("    COMPUTE WS-C = WS-A + WS-B."));
+    let out = run_prints(&p("    COMPUTE WS-C = 2 + 3.\n    DISPLAY WS-C."));
+    assert_eq!(out, vec!["5"]);
 }
 #[test]
 fn compute_sub() {
     compile_ok(&p("    COMPUTE WS-C = WS-A - WS-B."));
+}
+
+#[test]
+fn compute_truncated_division_runtime() {
+    let out = run_prints(&p(
+        "    MOVE 22 TO WS-A.\n    MOVE 7 TO WS-B.\n    COMPUTE WS-C = WS-A / WS-B.\n    DISPLAY WS-C.",
+    ));
+    assert_eq!(out, vec!["003"]);
+}
+
+#[test]
+fn compute_unary_plus_minus_runtime() {
+    let out = run_prints(&p(
+        "    MOVE 8 TO WS-A.\n    COMPUTE WS-C = - WS-A.\n    COMPUTE WS-D = + WS-C.\n    DISPLAY WS-C.\n    DISPLAY WS-D.",
+    ));
+    assert_eq!(out, vec!["-008", "008"]);
 }
 #[test]
 fn compute_mul() {
@@ -74,7 +124,8 @@ fn compute_mul() {
 }
 #[test]
 fn compute_div() {
-    compile_ok(&p("    COMPUTE WS-C = WS-A / WS-B."));
+    let out = run_prints(&p("    MOVE 20 TO WS-A.\n    MOVE 5 TO WS-B.\n    COMPUTE WS-C = WS-A / WS-B.\n    DISPLAY WS-C."));
+    assert_eq!(out, vec!["4"]);
 }
 #[test]
 fn compute_pow() {

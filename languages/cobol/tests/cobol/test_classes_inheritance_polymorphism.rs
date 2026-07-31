@@ -108,3 +108,10 @@ fn class_override_with_display_compiles() {
         "IDENTIFICATION DIVISION.\nCLASS-ID. C10 INHERITS FROM BASE-C.\nOBJECT.\nMETHOD-ID. M1 OVERRIDE.\nPROCEDURE DIVISION.\n    DISPLAY \"OV2\".\nEND METHOD M1.\nEND OBJECT.\nEND CLASS C10.",
     );
 }
+
+#[test]
+fn class_factory_default_value_compiles() {
+    compile_ok(
+        "IDENTIFICATION DIVISION.\nCLASS-ID. C11.\nFACTORY.\nMETHOD-ID. NEW.\nPROCEDURE DIVISION RETURNING WS-VAL.\n    MOVE \"OKAY\" TO WS-VAL.\nEND METHOD NEW.\nEND FACTORY.\nEND CLASS C11.",
+    );
+}

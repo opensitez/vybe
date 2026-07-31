@@ -442,6 +442,64 @@ END INTERFACE SERIALIZABLE.
     );
 }
 
+#[test]
+fn class_with_implements_and_inheritance() {
+    compile_ok(
+        r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. ENTITY.
+OBJECT.
+METHOD-ID. ID.
+PROCEDURE DIVISION RETURNING WS-RESULT.
+    MOVE "BASE" TO WS-RESULT.
+END METHOD ID.
+END OBJECT.
+END CLASS ENTITY.
+
+CLASS-ID. CUSTOMER INHERITS FROM ENTITY IMPLEMENTS PRINTABLE.
+OBJECT.
+METHOD-ID. ID PROPERTY GET.
+PROCEDURE DIVISION RETURNING WS-RESULT.
+    MOVE "CUST" TO WS-RESULT.
+END METHOD ID.
+METHOD-ID. PRINT.
+PROCEDURE DIVISION.
+    DISPLAY "CUSTOMER".
+END METHOD PRINT.
+END OBJECT.
+END CLASS CUSTOMER.
+"#,
+    );
+}
+
+#[test]
+fn parse_class_without_object_identifier() {
+    assert!(parse_ok(
+        r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. EMPTY.
+END CLASS EMPTY.
+"#
+    ));
+}
+
+#[test]
+fn parse_multiple_interface_implements() {
+    assert!(parse_ok(
+        r#"
+IDENTIFICATION DIVISION.
+CLASS-ID. REPORTABLE IMPLEMENTS PRINTABLE, SERIALIZABLE.
+OBJECT.
+METHOD-ID. TO-STRING.
+PROCEDURE DIVISION RETURNING WS-RESULT.
+    DISPLAY WS-RESULT.
+END METHOD TO-STRING.
+END OBJECT.
+END CLASS REPORTABLE.
+"#
+    ));
+}
+
 // ═══════════════════════════════════════════════════════════
 // OO COBOL PARSE TESTS (verify parsing succeeds)
 // ═══════════════════════════════════════════════════════════

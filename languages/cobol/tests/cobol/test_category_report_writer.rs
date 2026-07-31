@@ -83,3 +83,75 @@ fn test_report_writer_control_breaks() {
     let out = helpers::run_prints(src);
     assert!(!out.is_empty());
 }
+
+#[test]
+fn test_report_writer_page_control() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. RW-PAGE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       REPORT SECTION.
+       RD SALES-REP
+          PAGE LIMIT 40
+          PAGE HEADING.
+       01 TYPE IS PAGE HEADING.
+          05 LINE 1 COLUMN 1 PIC X(20) VALUE "PAGE HEADER".
+       PROCEDURE DIVISION.
+           INITIATE SALES-REP.
+           TERMINATE SALES-REP.
+           DISPLAY "PAGE OK".
+           STOP RUN.
+    "#;
+    let out = helpers::run_prints(src);
+    assert!(!out.is_empty());
+}
+
+#[test]
+fn test_report_writer_report_line_types() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. RW-LINE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       REPORT SECTION.
+       RD SALES-REP.
+       01 HEADING-LINE TYPE IS REPORT HEADING.
+          05 LINE 1 COLUMN 1 PIC X(10) VALUE "HDR".
+       01 DETAIL-LINE TYPE IS DETAIL.
+          05 LINE PLUS 1 COLUMN 1 PIC X(10) VALUE "ROW".
+       01 FOOTING-LINE TYPE IS REPORT FOOTING.
+          05 LINE PLUS 1 COLUMN 1 PIC X(10) VALUE "FOOT".
+       PROCEDURE DIVISION.
+           INITIATE SALES-REP.
+           GENERATE HEADING-LINE.
+           GENERATE DETAIL-LINE.
+           GENERATE FOOTING-LINE.
+           TERMINATE SALES-REP.
+           DISPLAY "LINES OK".
+           STOP RUN.
+    "#;
+    let out = helpers::run_prints(src);
+    assert!(!out.is_empty());
+}
+
+#[test]
+fn test_report_writer_report_heading_source() {
+    let src = r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. RW-SRC.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 HDR PIC X(10) VALUE "TITLE".
+       REPORT SECTION.
+       RD SALES-REP.
+       01 TYPE IS REPORT HEADING.
+          05 LINE 1 COLUMN 1 PIC X(10) SOURCE HDR.
+       PROCEDURE DIVISION.
+           INITIATE SALES-REP.
+           DISPLAY "SOURCE OK".
+           STOP RUN.
+    "#;
+    let out = helpers::run_prints(src);
+    assert!(!out.is_empty());
+}

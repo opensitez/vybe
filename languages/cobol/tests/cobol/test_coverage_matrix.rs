@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 fn compile_case(index: usize, data: &str, body: &str) {
     let label = format!("CASE{:03}", index);
@@ -194,4 +194,18 @@ fn cobol_figure_and_initialize_matrix() {
         compile_case(index, &data, &body);
         index += 1;
     }
+}
+
+#[test]
+fn numeric_arithmetic_single_case_runtime() {
+    let src = "IDENTIFICATION DIVISION.\nPROGRAM-ID. SAMPLE.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 A PIC 9(2) VALUE 2.\n01 B PIC 9(2) VALUE 3.\n01 R PIC 9(3) VALUE 0.\nPROCEDURE DIVISION.\n    ADD A TO B\n    DISPLAY B\n    SUBTRACT A FROM B\n    DISPLAY B\n    STOP RUN.";
+    let out = run_prints(src);
+    assert_eq!(out, vec!["5", "3"]);
+}
+
+#[test]
+fn condition_matrix_single_runtime() {
+    let src = "IDENTIFICATION DIVISION.\nPROGRAM-ID. SAMPLE2.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 A PIC 9(2) VALUE 7.\n01 B PIC 9(2) VALUE 7.\n01 FLAG PIC X(1) VALUE \"N\".\nPROCEDURE DIVISION.\n    IF A = B MOVE \"Y\" TO FLAG END-IF.\n    DISPLAY FLAG\n    STOP RUN.";
+    let out = run_prints(src);
+    assert_eq!(out, vec!["Y"]);
 }

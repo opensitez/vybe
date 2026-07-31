@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── ALTER statement (legacy COBOL-74/85) ─────────────────────
 // ALTER changes the target of a GO TO so it jumps to a
@@ -6,7 +6,7 @@ use super::helpers::compile_ok;
 
 #[test]
 fn alter_basic() {
-    compile_ok(
+    let out = run_prints(
         r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
@@ -29,11 +29,12 @@ fn alter_basic() {
            STOP RUN.
 "#,
     );
+    assert_eq!(out, vec!["B"]);
 }
 
 #[test]
 fn alter_conditional() {
-    compile_ok(
+    let out = run_prints(
         r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
@@ -61,11 +62,12 @@ fn alter_conditional() {
            STOP RUN.
 "#,
     );
+    assert_eq!(out, vec!["SLOW"]);
 }
 
 #[test]
 fn alter_multiple_targets() {
-    compile_ok(
+    let out = run_prints(
         r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
@@ -92,11 +94,12 @@ fn alter_multiple_targets() {
            STOP RUN.
 "#,
     );
+    assert_eq!(out, vec!["step 1", "step 3"]);
 }
 
 #[test]
 fn alter_then_reset() {
-    compile_ok(
+    let out = run_prints(
         r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
@@ -120,11 +123,12 @@ fn alter_then_reset() {
            STOP RUN.
 "#,
     );
+    assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn alter_in_loop() {
-    compile_ok(
+    let out = run_prints(
         r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
@@ -150,6 +154,7 @@ fn alter_in_loop() {
            STOP RUN.
 "#,
     );
+    assert_eq!(out, vec!["3"]);
 }
 
 // ── STOP literal ─────────────────────────────────────────────
@@ -228,7 +233,7 @@ fn stop_literal_after_compute() {
 
 #[test]
 fn stop_run_from_nested_perform() {
-    compile_ok(
+    let out = run_prints(
         r#"
        IDENTIFICATION DIVISION.
        PROGRAM-ID. test.
@@ -246,6 +251,7 @@ fn stop_run_from_nested_perform() {
            STOP RUN.
 "#,
     );
+    assert_eq!(out, vec!["Y"]);
 }
 
 #[test]
@@ -271,6 +277,76 @@ fn stop_literal_long_message() {
        PROGRAM-ID. test.
        PROCEDURE DIVISION.
            STOP "This is a longer pause message for the operator"
+           STOP RUN.
+"#,
+    );
+}
+
+#[test]
+fn alter_override_to_alt_path_runtime() {
+    let out = run_prints(
+        r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. test.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 ws-choice PIC X VALUE "Y".
+       01 ws-result PIC X(10) VALUE SPACES.
+       PROCEDURE DIVISION.
+           IF ws-choice = "Y"
+               ALTER entry-point TO PROCEED TO branch-a
+           ELSE
+               ALTER entry-point TO PROCEED TO branch-b
+           END-IF
+           GO TO entry-point
+           STOP RUN.
+       entry-point.
+           GO TO branch-b.
+       branch-a.
+           MOVE "A" TO ws-result
+           DISPLAY ws-result
+           STOP RUN.
+       branch-b.
+           MOVE "B" TO ws-result
+           DISPLAY ws-result
+           STOP RUN.
+"#,
+    );
+    assert_eq!(out, vec!["A"]);
+}
+
+#[test]
+fn stop_run_runtime_after_display() {
+    let out = run_prints(
+        r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. test.
+       PROCEDURE DIVISION.
+           DISPLAY "start"
+           STOP RUN.
+           DISPLAY "after"
+       "#,
+    );
+    assert_eq!(out, vec!["start"]);
+}
+
+#[test]
+fn alter_sentence_target_is_honoured_compiles() {
+    compile_ok(
+        r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. test.
+       PROCEDURE DIVISION.
+           ALTER entry-point TO PROCEED TO target-path
+           GO TO entry-point
+           STOP RUN.
+       entry-point.
+           GO TO default-path.
+       default-path.
+           DISPLAY "DEFAULT".
+           STOP RUN.
+       target-path.
+           DISPLAY "TARGET".
            STOP RUN.
 "#,
     );

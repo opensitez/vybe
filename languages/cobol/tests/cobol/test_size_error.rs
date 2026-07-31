@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ── ON SIZE ERROR / NOT ON SIZE ERROR — ADD ───────────────────
 
@@ -217,6 +217,72 @@ fn compute_on_size_error() {
            STOP RUN.
 "#,
     );
+}
+
+#[test]
+fn add_overflow_takes_size_error_path() {
+    let out = run_prints(
+        r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. test.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 ws-num PIC 9 VALUE 8.
+       01 ws-status PIC X VALUE SPACE.
+       PROCEDURE DIVISION.
+           ADD 5 TO ws-num
+               ON SIZE ERROR MOVE "Y" TO ws-status
+               NOT ON SIZE ERROR MOVE "N" TO ws-status
+           END-ADD
+           DISPLAY ws-status
+           STOP RUN.
+"#,
+    );
+    assert_eq!(out, vec!["Y"]);
+}
+
+#[test]
+fn add_without_overflow_takes_not_on_size_error_path() {
+    let out = run_prints(
+        r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. test.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 ws-num PIC 9 VALUE 1.
+       01 ws-status PIC X VALUE SPACE.
+       PROCEDURE DIVISION.
+           ADD 5 TO ws-num
+               ON SIZE ERROR MOVE "E" TO ws-status
+               NOT ON SIZE ERROR MOVE "K" TO ws-status
+           END-ADD
+           DISPLAY ws-status
+           STOP RUN.
+"#,
+    );
+    assert_eq!(out, vec!["K"]);
+}
+
+#[test]
+fn compute_overflow_takes_size_error_path_only() {
+    let out = run_prints(
+        r#"
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. test.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 ws-result PIC 99 VALUE 0.
+       01 ws-status PIC X VALUE SPACE.
+       PROCEDURE DIVISION.
+           COMPUTE ws-result = 999 * 999
+               ON SIZE ERROR     MOVE "E" TO ws-status
+               NOT ON SIZE ERROR MOVE "K" TO ws-status
+           END-COMPUTE
+           DISPLAY ws-status
+           STOP RUN.
+"#,
+    );
+    assert_eq!(out, vec!["E"]);
 }
 
 #[test]

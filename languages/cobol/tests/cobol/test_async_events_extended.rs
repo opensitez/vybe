@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn call_basic_compiles() {
@@ -33,4 +33,20 @@ fn evaluate_with_calls_compiles() {
     compile_ok(
         "IDENTIFICATION DIVISION.\nPROGRAM-ID. C-E.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 K PIC 9 VALUE 2.\nPROCEDURE DIVISION.\n    EVALUATE K\n        WHEN 1 CALL \"S1\"\n        WHEN 2 CALL \"S2\"\n        WHEN OTHER CALL \"SX\"\n    END-EVALUATE.\n    STOP RUN.",
     );
+}
+
+#[test]
+fn call_missing_program_hits_exception() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. C-EX.\nPROCEDURE DIVISION.\n    CALL \"NONEXIST\"\n        ON EXCEPTION\n            DISPLAY \"ERROR\"\n        NOT ON EXCEPTION\n            DISPLAY \"SHOULD-NOT\"\n    END-CALL\n    STOP RUN.",
+    );
+    assert_eq!(out, vec!["ERROR"]);
+}
+
+#[test]
+fn evaluate_without_target_call_syntax_still_compiles() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. C-YN.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 K PIC 9 VALUE 2.\nPROCEDURE DIVISION.\n    EVALUATE K\n        WHEN 1\n            CALL \"SUB\" ON EXCEPTION DISPLAY \"ONE\" NOT ON EXCEPTION DISPLAY \"ONE-OK\" END-CALL\n        WHEN 2\n            CALL \"SUB\" ON EXCEPTION DISPLAY \"TWO\" NOT ON EXCEPTION DISPLAY \"TWO-OK\" END-CALL\n        WHEN OTHER\n            CALL \"SUB\" ON EXCEPTION DISPLAY \"OTHER\" NOT ON EXCEPTION DISPLAY \"OTHER-OK\" END-CALL\n    END-EVALUATE\n    STOP RUN.",
+    );
+    assert_eq!(out, vec!["TWO"]);
 }

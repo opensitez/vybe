@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 // ═══════════════════════════════════════════════════════════
 // COBOL 2023: Nested programs, COPY, and modular features
@@ -245,4 +245,85 @@ PROCEDURE DIVISION.
     STOP RUN.
 "#,
     );
+}
+
+#[test]
+fn nested_programs_runtime_display() {
+    let out = run_prints(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MAIN-PROG.
+PROCEDURE DIVISION.
+    DISPLAY "Main program".
+    END PROGRAM MAIN-PROG.
+"#,
+    );
+    assert_eq!(out, vec!["Main program"]);
+}
+
+#[test]
+fn nested_with_inner_call_runtime() {
+    let out = run_prints(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. OUTER.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-SHARED PIC X(20) VALUE "Shared".
+PROCEDURE DIVISION.
+    DISPLAY WS-SHARED.
+    CALL "INNER"
+    END-CALL
+    STOP RUN.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INNER.
+PROCEDURE DIVISION.
+    DISPLAY "Inner".
+    STOP RUN.
+END PROGRAM INNER.
+END PROGRAM OUTER.
+"#,
+    );
+    assert_eq!(out, vec!["Shared", "Inner"]);
+}
+
+#[test]
+fn perform_thru_sections_runtime_total() {
+    let out = run_prints(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-COUNTER PIC 9(3) VALUE 0.
+PROCEDURE DIVISION.
+    PERFORM INIT-PARA THRU CLEANUP-PARA.
+    DISPLAY WS-COUNTER.
+    STOP RUN.
+INIT-PARA.
+    ADD 1 TO WS-COUNTER.
+PROCESS-PARA.
+    ADD 10 TO WS-COUNTER.
+CLEANUP-PARA.
+    ADD 100 TO WS-COUNTER.
+"#,
+    );
+    assert_eq!(out, vec!["111"]);
+}
+
+#[test]
+fn global_data_item_runtime() {
+    let out = run_prints(
+        r#"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-SHARED PIC X(20) GLOBAL VALUE "GLOBAL VALUE".
+PROCEDURE DIVISION.
+    DISPLAY WS-SHARED.
+    STOP RUN.
+"#,
+    );
+    assert_eq!(out, vec!["GLOBAL VALUE"]);
 }

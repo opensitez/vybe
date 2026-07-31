@@ -31,7 +31,7 @@ fn divide_into_updates_target() {
         "01 A PIC 9(3) VALUE 3.\n01 B PIC 9(3) VALUE 9.",
         "    DIVIDE A INTO B.\n    DISPLAY B.",
     ));
-    assert_eq!(out, vec!["9"]);
+    assert_eq!(out, vec!["3"]);
 }
 
 #[test]
@@ -81,17 +81,19 @@ fn perform_times_executes_fixed_count() {
 
 #[test]
 fn search_linear_with_at_end_compiles() {
-    compile_ok(&p(
+    let out = run_prints(&p(
         "01 TBL.\n   05 E OCCURS 3 TIMES INDEXED BY IDX.\n      10 K PIC 9.\n01 F PIC X VALUE \"N\".",
         "    MOVE 1 TO K(1).\n    MOVE 2 TO K(2).\n    MOVE 3 TO K(3).\n    SET IDX TO 1.\n    SEARCH E\n        AT END MOVE \"N\" TO F\n        WHEN K(IDX) = 2 MOVE \"Y\" TO F\n    END-SEARCH.\n    DISPLAY F.",
     ));
+    assert_eq!(out, vec!["Y"]);
 }
 
 #[test]
-fn call_on_exception_not_on_exception_compiles() {
-    compile_ok(
+fn call_on_exception_compiles() {
+    let out = run_prints(
         "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    CALL \"SUB-X\"\n        ON EXCEPTION DISPLAY \"ERR\"\n        NOT ON EXCEPTION DISPLAY \"OK\"\n    END-CALL.\n    STOP RUN.",
     );
+    assert_eq!(out, vec!["ERR"]);
 }
 
 #[test]
@@ -155,4 +157,31 @@ fn inspect_replacing_first_compiles() {
         "01 TXT PIC X(6) VALUE \"AAAAAA\".",
         "    INSPECT TXT REPLACING FIRST \"A\" BY \"B\".",
     ));
+}
+
+#[test]
+fn if_else_with_false_branch() {
+    let out = run_prints(&p(
+        "01 X PIC 9 VALUE 0.",
+        "    IF X = 1\n        DISPLAY \"TRUE\"\n    ELSE\n        DISPLAY \"FALSE\"\n    END-IF.",
+    ));
+    assert_eq!(out, vec!["FALSE"]);
+}
+
+#[test]
+fn evaluate_when_any_runtime() {
+    let out = run_prints(&p(
+        "01 A PIC 9 VALUE 5.\n01 B PIC 9 VALUE 1.",
+        "    EVALUATE A ALSO B\n        WHEN 1 ALSO ANY DISPLAY \"NO\"\n        WHEN 5 ALSO 1\n            DISPLAY \"YES\"\n        WHEN OTHER\n            DISPLAY \"NA\"\n    END-EVALUATE.",
+    ));
+    assert_eq!(out, vec!["YES"]);
+}
+
+#[test]
+fn unstring_with_pointer_runtime() {
+    let out = run_prints(&p(
+        "01 SRC PIC X(12) VALUE \"AA,BBB,CC\".\n01 F1 PIC X(5).\n01 F2 PIC X(5).\n01 P PIC 9(2) VALUE 1.",
+        "    UNSTRING SRC\n        DELIMITED BY \",\"\n        INTO F1 F2\n        WITH POINTER P.\n    DISPLAY F1.\n    DISPLAY F2.\n",
+    ));
+    assert_eq!(out, vec!["AA", "BBB"]);
 }

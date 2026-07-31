@@ -70,3 +70,36 @@ MY-PARA-EXIT.
 "#,
     ));
 }
+
+#[test]
+fn test_goto_next_sentence() {
+    let output = run_prints(&p(
+        "01 WS-FLAG PIC X VALUE \"Y\".",
+        r#"
+    DISPLAY "START".
+    GO TO NEXT SENTENCE.
+    DISPLAY "SKIPPED".
+NEXT-SENTENCE.
+    IF WS-FLAG = "Y"
+        DISPLAY "RAN"
+    END-IF.
+"#,
+    ));
+    assert_eq!(output, vec!["START", "RAN"]);
+}
+
+#[test]
+fn test_goto_depending_on_runtime() {
+    let output = run_prints(&p(
+        "01 WS-IDX PIC 9 VALUE 2.",
+        r#"
+    GO TO PARA1 PARA2 DEPENDING ON WS-IDX.
+    DISPLAY "OTHER".
+PARA1.
+    DISPLAY "P1".
+PARA2.
+    DISPLAY "P2".
+"#,
+    ));
+    assert_eq!(output, vec!["P2"]);
+}

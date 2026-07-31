@@ -1,163 +1,98 @@
-use crate::helpers;
+use super::helpers::run_prints;
 
-macro_rules! cobol_test {
-    ($name:ident, $src:expr, $expected:expr) => {
-        #[test]
-        fn $name() {
-            let out = crate::helpers::run_prints($src);
-            assert_eq!(out, $expected);
-        }
-    };
+#[test]
+fn test_end_program_nested_with_named_terminator() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. CALL 'S1'. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. S1. PROCEDURE DIVISION. DISPLAY 'OK'. EXIT PROGRAM. END PROGRAM S1. END PROGRAM T.",
+    );
+    assert_eq!(out, vec!["OK"]);
 }
 
-// 30 specific tests for PROGRAM STRUCTURE END PROGRAM
-cobol_test!(
-    test_end_program_nested,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. CALL 'S1'. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. S1. PROCEDURE DIVISION. DISPLAY 'OK'. EXIT PROGRAM. END PROGRAM S1. END PROGRAM T.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_missing_main,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. CALL 'S1'. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. S1. PROCEDURE DIVISION. DISPLAY 'OK'. EXIT PROGRAM. END PROGRAM S1.",
-    vec!["OK"]
-); // Legal to omit on main program
-cobol_test!(
-    test_end_program_multiple_nested,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. CALL 'S1'. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. S1. PROCEDURE DIVISION. CALL 'S2'. EXIT PROGRAM. IDENTIFICATION DIVISION. PROGRAM-ID. S2. PROCEDURE DIVISION. DISPLAY 'OK'. EXIT PROGRAM. END PROGRAM S2. END PROGRAM S1. END PROGRAM T.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_sibling_nested,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. CALL 'S1'. CALL 'S2'. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. S1. PROCEDURE DIVISION. DISPLAY '1'. EXIT PROGRAM. END PROGRAM S1. IDENTIFICATION DIVISION. PROGRAM-ID. S2. PROCEDURE DIVISION. DISPLAY '2'. EXIT PROGRAM. END PROGRAM S2. END PROGRAM T.",
-    vec!["1", "2"]
-);
-cobol_test!(
-    test_end_program_parse_5,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_6,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_7,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_8,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_9,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_10,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_11,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_12,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_13,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_14,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_15,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_16,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_17,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_18,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_19,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_20,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_21,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_22,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_23,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_24,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_25,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_26,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_27,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_28,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_29,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
-cobol_test!(
-    test_end_program_parse_30,
-    "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'OK'. STOP RUN.",
-    vec!["OK"]
-);
+#[test]
+fn test_end_program_main_omitted_name() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'MAIN'. STOP RUN. END PROGRAM.",
+    );
+    assert_eq!(out, vec!["MAIN"]);
+}
+
+#[test]
+fn test_end_program_nested_without_main_terminator() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. CALL 'S1'. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. S1. PROCEDURE DIVISION. DISPLAY 'SUB'. EXIT PROGRAM. END PROGRAM.",
+    );
+    assert_eq!(out, vec!["SUB"]);
+}
+
+#[test]
+fn test_end_program_without_root_name_token() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY 'ROOT'. STOP RUN. END PROGRAM",
+    );
+    assert_eq!(out, vec!["ROOT"]);
+}
+
+#[test]
+fn test_end_program_nested_chain_with_implicit_names() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION. PROGRAM-ID. ROOT. PROCEDURE DIVISION. CALL 'MID'. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. MID. PROCEDURE DIVISION. DISPLAY 'MID'. CALL 'LEAF'. EXIT PROGRAM. IDENTIFICATION DIVISION. PROGRAM-ID. LEAF. PROCEDURE DIVISION. DISPLAY 'LEAF'. EXIT PROGRAM. END PROGRAM. END PROGRAM.",
+    );
+    assert_eq!(out, vec!["MID", "LEAF"]);
+}
+
+#[test]
+fn test_end_program_common_child_order() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION. PROGRAM-ID. APP. PROCEDURE DIVISION. CALL 'COM'. CALL 'SUB'. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. COM IS COMMON PROGRAM. PROCEDURE DIVISION. DISPLAY 'COMMON'. EXIT PROGRAM. IDENTIFICATION DIVISION. PROGRAM-ID. SUB. PROCEDURE DIVISION. DISPLAY 'SUB'. EXIT PROGRAM. END PROGRAM SUB. END PROGRAM APP.",
+    );
+    assert_eq!(out, vec!["COMMON", "SUB"]);
+}
+
+#[test]
+fn test_end_program_initial_program_reused() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION. PROGRAM-ID. ROOT. DATA DIVISION. WORKING-STORAGE SECTION. 01 C PIC 9 VALUE 0. PROCEDURE DIVISION. CALL 'WORKER'. CALL 'WORKER'. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. WORKER IS INITIAL PROGRAM. DATA DIVISION. WORKING-STORAGE SECTION. 01 V PIC 9 VALUE 0. PROCEDURE DIVISION. ADD 1 TO V. DISPLAY V. EXIT PROGRAM. END PROGRAM WORKER.",
+    );
+    assert_eq!(out, vec!["1", "1"]);
+}
+
+#[test]
+fn test_end_program_mixed_named_and_implicit_nested() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION. PROGRAM-ID. APP. PROCEDURE DIVISION. CALL 'MID'. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. MID IS COMMON PROGRAM. PROCEDURE DIVISION. DISPLAY 'MID'. CALL 'LEAF'. EXIT PROGRAM. IDENTIFICATION DIVISION. PROGRAM-ID. LEAF. PROCEDURE DIVISION. DISPLAY 'LEAF'. EXIT PROGRAM. END PROGRAM LEAF. END PROGRAM MID. END PROGRAM APP.",
+    );
+    assert_eq!(out, vec!["MID", "LEAF"]);
+}
+
+#[test]
+fn test_end_program_worker_without_local_end_name() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION. PROGRAM-ID. ROOT. PROCEDURE DIVISION. CALL 'WORKER'. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. WORKER. PROCEDURE DIVISION. DISPLAY 'WORKER'. END PROGRAM.",
+    );
+    assert_eq!(out, vec!["WORKER"]);
+}
+
+// existing typed-chain coverage from the previous suite
+#[test]
+fn test_end_program_nested_typed_chain() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION. PROGRAM-ID. ROOT. PROCEDURE DIVISION. CALL 'MID'. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. MID. PROCEDURE DIVISION. CALL 'LEAF'. EXIT PROGRAM. IDENTIFICATION DIVISION. PROGRAM-ID. LEAF. PROCEDURE DIVISION. DISPLAY 'LEAF'. EXIT PROGRAM. END PROGRAM LEAF. END PROGRAM MID. END PROGRAM ROOT.",
+    );
+    assert_eq!(out, vec!["LEAF"]);
+}
+
+#[test]
+fn test_end_program_initial_scope_infer() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION. PROGRAM-ID. MAIN. PROCEDURE DIVISION. CALL 'WORKER'. CALL 'WORKER'. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. WORKER IS INITIAL PROGRAM. DATA DIVISION. WORKING-STORAGE SECTION. 01 C PIC 9 VALUE 0. PROCEDURE DIVISION. ADD 1 TO C. DISPLAY C. EXIT PROGRAM. END PROGRAM WORKER.",
+    );
+    assert_eq!(out, vec!["1", "1"]);
+}
+
+#[test]
+fn test_end_program_common_and_nested() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION. PROGRAM-ID. APP. PROCEDURE DIVISION. CALL 'COM'. CALL 'SUB'. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. COM IS COMMON PROGRAM. PROCEDURE DIVISION. DISPLAY 'COMMON'. EXIT PROGRAM. END PROGRAM COM. IDENTIFICATION DIVISION. PROGRAM-ID. SUB. PROCEDURE DIVISION. DISPLAY 'SUB'. EXIT PROGRAM. END PROGRAM SUB.",
+    );
+    assert_eq!(out, vec!["COMMON", "SUB"]);
+}

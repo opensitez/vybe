@@ -1,4 +1,4 @@
-use super::helpers::compile_ok;
+use super::helpers::{compile_ok, run_prints};
 
 #[test]
 fn special_names_collating_sequence_compiles() {
@@ -68,4 +68,36 @@ fn collating_sequence_with_file_sort_compiles() {
     compile_ok(
         "IDENTIFICATION DIVISION.\nPROGRAM-ID. COLL10.\nENVIRONMENT DIVISION.\nINPUT-OUTPUT SECTION.\nFILE-CONTROL.\n    SELECT INFILE ASSIGN TO \"in.dat\".\nDATA DIVISION.\nSD SORT-FILE.\n01 SREC PIC X(20).\nFILE SECTION.\nFD INFILE.\n01 INREC PIC X(20).\nWORKING-STORAGE SECTION.\n01 KEY PIC X(5).\nPROCEDURE DIVISION.\n    SORT SORT-FILE ON ASCENDING KEY KEY USING INFILE COLLATING SEQUENCE IS ALPHA10.\n    STOP RUN.",
     );
+}
+
+#[test]
+fn collating_sequence_user_defined_runtime() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. COLL11.\nENVIRONMENT DIVISION.\nCONFIGURATION SECTION.\nSPECIAL-NAMES.\n    ALPHABET MY-COLLATE IS \"B\" \"A\" \"C\".\n    COLLATING SEQUENCE IS MY-COLLATE.\nPROCEDURE DIVISION.\n    IF \"B\" < \"A\"\n        DISPLAY \"B_BEFORE_A\"\n    END-IF.\n    STOP RUN.",
+    );
+    assert_eq!(out, vec!["B_BEFORE_A"]);
+}
+
+#[test]
+fn collating_sequence_with_alphabet_runtime() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. COLL12.\nENVIRONMENT DIVISION.\nCONFIGURATION SECTION.\nSPECIAL-NAMES.\n    ALPHABET STD-COLL IS STANDARD-1.\n    COLLATING SEQUENCE IS STD-COLL.\nPROCEDURE DIVISION.\n    IF \"A\" < \"Z\"\n        DISPLAY \"ALPHA_ORDER\"\n    END-IF.\n    STOP RUN.",
+    );
+    assert_eq!(out, vec!["ALPHA_ORDER"]);
+}
+
+#[test]
+fn collating_sequence_in_special_names_and_currency_runtime() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. COLL13.\nENVIRONMENT DIVISION.\nCONFIGURATION SECTION.\nSPECIAL-NAMES.\n    ALPHABET MY-COLLATE IS STANDARD-2.\n    COLLATING SEQUENCE IS MY-COLLATE.\n    CURRENCY SIGN IS \"$\".\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 AMT PIC $99.99 VALUE $12.34.\n01 TOTAL PIC $99.99 VALUE $0.00.\nPROCEDURE DIVISION.\n    MOVE AMT TO TOTAL\n    IF TOTAL > 0 DISPLAY \"CURR_COLL\" END-IF.\n    STOP RUN.",
+    );
+    assert_eq!(out, vec!["CURR_COLL"]);
+}
+
+#[test]
+fn source_computer_collating_sequence_runtime() {
+    let out = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. COLL14.\nENVIRONMENT DIVISION.\nCONFIGURATION SECTION.\nSOURCE-COMPUTER. IBM-Z.\nSPECIAL-NAMES.\n    ALPHABET SRC-COLLATE IS STANDARD-1.\n    COLLATING SEQUENCE IS SRC-COLLATE.\nPROCEDURE DIVISION.\n    DISPLAY \"SRC_OK\".\n    STOP RUN.",
+    );
+    assert_eq!(out, vec!["SRC_OK"]);
 }
