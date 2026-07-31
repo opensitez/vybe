@@ -199,3 +199,51 @@ fn compare_floats_equality() {
 fn compare_negative_numbers() {
     assert_eq!(run_print("-3 < -1"), "True");
 }
+
+// ── `in` / `not in` across the RUNTIME probe's legs ────────────────────────
+//
+// Python cannot resolve a receiver's type at compile time in idiomatic code, so
+// `x in y` tests `y` at run time and dispatches to that type's `Contains`
+// binding — `[builtin_slots.string|array|map] contains`
+// (builtinslotplan.md §3i). The list and dict legs were covered above; these
+// pin the string leg and the two receivers that fall through to the third.
+//
+// The map leg is `ecma:object.hasIn`, NOT the platform default own-only
+// `dict.has`, because `in` on a Python object must see inherited members. That
+// distinction is the reason the probe requires all three to be declared rather
+// than defaulting the gaps.
+
+#[test]
+fn membership_substring_in_string() {
+    assert_eq!(run_print("'wor' in 'hello world'"), "True");
+}
+
+#[test]
+fn membership_absent_substring_in_string() {
+    assert_eq!(run_print("'xyz' in 'hello world'"), "False");
+}
+
+#[test]
+fn membership_not_in_string() {
+    assert_eq!(run_print("'z' not in 'abc'"), "True");
+}
+
+#[test]
+fn membership_element_in_set() {
+    assert_eq!(run_print("2 in {1, 2, 3}"), "True");
+}
+
+#[test]
+fn membership_absent_element_in_set() {
+    assert_eq!(run_print("9 in {1, 2, 3}"), "False");
+}
+
+#[test]
+fn membership_element_in_tuple() {
+    assert_eq!(run_print("5 in (4, 5, 6)"), "True");
+}
+
+#[test]
+fn membership_not_in_tuple() {
+    assert_eq!(run_print("9 not in (4, 5, 6)"), "True");
+}

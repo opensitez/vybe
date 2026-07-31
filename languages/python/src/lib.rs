@@ -35,7 +35,6 @@ pub fn register() {
     vybe_runtime::registry::register_hooks(
         "python",
         vybe_runtime::registry::LanguageHooks {
-            value_eq: Some(emitter::runtime_adapter::emit_py_value_eq),
             ..Default::default()
         },
     );

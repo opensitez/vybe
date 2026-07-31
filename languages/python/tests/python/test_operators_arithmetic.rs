@@ -237,3 +237,31 @@ fn arithmetic_sum_builtin() {
 fn arithmetic_min_max() {
     assert_eq!(run_print("[min(1,2), max(1,2)]"), "[1, 2]");
 }
+
+// ── `%` is FLOORED — the result takes the DIVISOR's sign ───────────────────
+//
+// `[builtin_slots.int] mod = "common:math.floor_mod"` (builtinslotplan.md
+// §3i). The platform default truncates, as C and JS do, so `-7 % 3` would be
+// -1 there and is 2 here. `-7 % 3` was already covered; these pin the negative
+// DIVISOR (where truncation and flooring differ in the other direction) and the
+// float operands, which take the same path.
+
+#[test]
+fn modulo_negative_divisor_takes_divisor_sign() {
+    assert_eq!(run_print("7 % -3"), "-2");
+}
+
+#[test]
+fn modulo_both_negative() {
+    assert_eq!(run_print("-7 % -3"), "-1");
+}
+
+#[test]
+fn modulo_float_operands_floors() {
+    assert_eq!(run_print("7.5 % 2"), "1.5");
+}
+
+#[test]
+fn modulo_negative_float_takes_divisor_sign() {
+    assert_eq!(run_print("-7.5 % 2"), "0.5");
+}

@@ -1132,3 +1132,34 @@ bytes  = ["bytes", "bytearray"]
 array  = ["list", "list[*", "tuple", "tuple[*"]
 map    = ["dict", "dict[*"]
 set    = ["set", "set[*", "frozenset"]
+
+# ── Protocol slot bindings — builtinslotplan.md §2a/§2c ────────────────────
+#
+# `x in y`. Python cannot resolve `y`'s type at compile time in idiomatic code
+# (§3b measured this), so the shared emitter probes `y` at RUN time and
+# dispatches to whichever of these three applies. The shared compiler used to
+# hold Python's three answers itself, behind `is_python_profile()`.
+#
+# The dict/object leg is deliberately `hasIn` and not the platform default
+# `common:dict.has`: `in` on a Python object must see inherited members, so it
+# walks the prototype chain. Sets land here too and `hasIn` answers correctly
+# for them.
+[builtin_slots.string]
+contains = "host:ecma:string:includes"
+
+[builtin_slots.array]
+contains = "common:collections.contains"
+# `==` on two sets is order-independent, and on tuples/lists it is deep. This
+# is the fallback the shared `==` uses when neither operand has a user
+# `__eq__`; it was `LanguageHooks::value_eq`, keyed by language NAME.
+eq = "common:python.value_eq"
+
+[builtin_slots.map]
+contains = "host:ecma:object:hasIn"
+
+# `%` is FLOORED: the result takes the divisor's sign, so `-7 % 3` is 2 and
+# `7 % -3` is -2. The platform default truncates (C, JS), so a language whose
+# `%` floors declares it. Was `is_python_profile()` in the shared `BinOp::Mod`
+# arm.
+[builtin_slots.int]
+mod = "common:math.floor_mod"

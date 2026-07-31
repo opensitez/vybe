@@ -274,3 +274,74 @@ fn dict_items_unpack_in_for() {
         "3"
     );
 }
+
+// ── dict `==` compares CONTENTS ────────────────────────────────────────────
+//
+// Python dicts are `Map`-backed, and `emit_py_value_eq`'s structural leg used
+// `JSON.stringify(a) == JSON.stringify(b)` — which renders EVERY Map as `{}`,
+// so every dict compared equal, `{'a': 1} == {}` included. `dict_equality`
+// above passed for that reason, not because anything was compared.
+//
+// A Map leg now runs first: sizes equal AND every key of `a` present in `b`
+// with an equal value, recursing so nested containers work. Values measured
+// against real `python3`.
+
+#[test]
+fn dict_inequality_different_value() {
+    assert_eq!(run_print("{'a': 1} == {'a': 2}"), "False");
+}
+
+#[test]
+fn dict_inequality_against_empty() {
+    assert_eq!(run_print("{'a': 1} == {}"), "False");
+}
+
+#[test]
+fn dict_inequality_different_key() {
+    assert_eq!(run_print("{'a': 1} == {'b': 99}"), "False");
+}
+
+#[test]
+fn dict_inequality_subset_is_not_equal() {
+    assert_eq!(run_print("{'a': 1} == {'a': 1, 'b': 2}"), "False");
+}
+
+// Order-independent: this is why entries() cannot be compared as JSON.
+#[test]
+fn dict_equality_ignores_insertion_order() {
+    assert_eq!(run_print("{'a': 1, 'b': 2} == {'b': 2, 'a': 1}"), "True");
+}
+
+// The recursion — a nested dict must compare by content, not by identity.
+#[test]
+fn dict_nested_inequality() {
+    assert_eq!(run_print("{'a': {'b': 1}} == {'a': {'b': 2}}"), "False");
+}
+
+#[test]
+fn dict_nested_equality() {
+    assert_eq!(run_print("{'a': {'b': 1}} == {'a': {'b': 1}}"), "True");
+}
+
+#[test]
+fn dict_with_list_value_inequality() {
+    assert_eq!(run_print("{'a': [1, 2]} == {'a': [2, 1]}"), "False");
+}
+
+// VARIABLE receivers, not just literals — a literal can short-circuit
+// type-hint lookup, which is how comparable bugs have survived elsewhere.
+#[test]
+fn dict_inequality_via_variables() {
+    assert_eq!(
+        run_print("d1 = {'a': 1}\nd2 = {'a': 2}\nd1 == d2"),
+        "False"
+    );
+}
+
+#[test]
+fn dict_non_equality_operator_via_variables() {
+    assert_eq!(
+        run_print("d1 = {'a': 1}\nd2 = {'a': 2}\nd1 != d2"),
+        "True"
+    );
+}

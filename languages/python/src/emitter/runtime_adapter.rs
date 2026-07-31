@@ -147,45 +147,204 @@ pub fn emit_py_raise(
     chunks[current].emit_op(Op::NULL, line);
 }
 
+/// Name of the recursive value-equality function chunk.
+const VALUE_EQ_CHUNK: &str = "__py_value_eq";
+
 /// Python value-equality fallback for `==`/`!=` when no user `__eq__` is found.
-/// Plain containers (lists/tuples/dicts — objects with no `__type` class stamp)
-/// compare structurally via JSON; class instances and primitives keep
-/// identity/primitive equality. Stack: `[a, b]` → `[bool i32]`.
-pub fn emit_py_value_eq(chunk: &mut Chunk, line: u32) {
+/// Reached as the `[builtin_slots.array] eq` binding. Stack: `[a, b]` → `[bool]`.
+///
+/// A CALL into a shared function chunk rather than an inline expansion, because
+/// dicts nest: `{'a': {'b': 1}} == {'a': {'b': 2}}` needs the value comparison
+/// to re-enter this same logic, and an inline emitter cannot recurse.
+pub fn emit_py_value_eq(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let idx = ensure_value_eq_chunk(chunks, line);
+    let c = &mut chunks[current];
+    let b = c.alloc_scratch(1);
+    let a = c.alloc_scratch(1);
+    c.emit_op_u16(Op::LOCAL_SET, b, line);
+    c.emit_op_u16(Op::LOCAL_SET, a, line);
+    c.emit_op_u16(Op::REF_FUNC, idx as u16, line);
+    c.emit(0, line);
+    c.emit_op_u16(Op::LOCAL_GET, a, line);
+    c.emit_op_u16(Op::LOCAL_GET, b, line);
+    c.emit_op(Op::CALL_REF, line);
+    c.emit(2u8, line);
+}
+
+fn ensure_value_eq_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    if let Some(idx) = chunks.iter().position(|c| c.name == VALUE_EQ_CHUNK) {
+        return idx;
+    }
+    build_value_eq_chunk(chunks, line)
+}
+
+/// `__py_value_eq(a, b) -> bool`, self-recursive.
+///
+/// Order matters and each leg is a distinct Python rule:
+/// 1. set vs set   — order-independent, by size + subset
+/// 2. MAP vs MAP   — dicts. Order-independent, by size + per-key recursion
+/// 3. structural   — plain lists/tuples, via JSON
+/// 4. identity     — class instances and primitives
+///
+/// Leg 2 is why this is a function. It used to be absent, and dicts fell to
+/// leg 3 — but `JSON.stringify` of a `Map` is `{}` for EVERY Map, so every
+/// dict compared equal, `{'a': 1} == {}` included.
+fn build_value_eq_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
+    let self_idx = chunks.len();
+    let mut c = vybe_compiler::primitives::functions::create_function_chunk(VALUE_EQ_CHUNK, 2);
+    c.alloc_scratch(2); // arg slots 0 (a) and 1 (b)
+    let a = 0u16;
+    let b = 1u16;
+
+    // ── leg 1: set vs set ───────────────────────────────────────────────
+    emit_is_set(&mut c, a, line);
+    emit_is_set(&mut c, b, line);
+    c.emit_op(Op::I32_AND, line);
+    c.emit_if(line);
+    {
+        let size_key =
+            c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("size")));
+        c.emit_op_u16(Op::LOCAL_GET, a, line);
+        c.emit_op_u16(Op::STRUCT_GET, size_key, line);
+        c.emit_op_u16(Op::LOCAL_GET, b, line);
+        c.emit_op_u16(Op::STRUCT_GET, size_key, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(&mut c, line);
+        let sub = c.add_import("ecma:set", "isSubsetOf");
+        c.emit_op_u16(Op::LOCAL_GET, a, line);
+        c.emit_op_u16(Op::LOCAL_GET, b, line);
+        c.emit_call(sub, 2, line);
+        c.emit_op(Op::I32_AND, line);
+        c.emit_op(Op::RETURN, line);
+    }
+    c.emit_end(line);
+
+    // ── leg 2: map vs map (Python dict) ─────────────────────────────────
+    emit_chunk_is_map(&mut c, a, line);
+    emit_chunk_is_map(&mut c, b, line);
+    c.emit_op(Op::I32_AND, line);
+    c.emit_if(line);
+    emit_map_eq_body(&mut c, self_idx, a, b, line);
+    c.emit_end(line);
+
+    // ── legs 3 and 4 ────────────────────────────────────────────────────
+    emit_structural_or_identity(&mut c, a, b, line);
+    c.emit_op(Op::RETURN, line);
+
+    chunks.push(c);
+    self_idx
+}
+
+/// `emit_is_map` from `collections_adapter`, against a single chunk.
+fn emit_chunk_is_map(c: &mut Chunk, slot: u16, line: u32) {
+    c.emit_op_u16(Op::LOCAL_GET, slot, line);
+    let tag = c.add_import("ecma:object", "toStringTag");
+    c.emit_call(tag, 1, line);
+    c.emit_string_const("[object Map]", line);
+    let eq = c.add_import("wasm:js-string", "equals");
+    c.emit_call(eq, 2, line);
+}
+
+/// Two Maps are equal iff their sizes match and every key of `a` is present in
+/// `b` with an equal value — ORDER-INDEPENDENT, because Python's
+/// `{'a':1,'b':2} == {'b':2,'a':1}` is True. Comparing `entries()` as JSON
+/// would be order-dependent and is why that is not done here.
+///
+/// Returns from the enclosing function on every path.
+fn emit_map_eq_body(c: &mut Chunk, self_idx: usize, a: u16, b: u16, line: u32) {
+    let keys = c.alloc_scratch(1);
+    let n = c.alloc_scratch(1);
+    let i = c.alloc_scratch(1);
+    let k = c.alloc_scratch(1);
+
+    let size = c.add_import("ecma:map", "size");
+    let has = c.add_import("ecma:map", "has");
+    let get = c.add_import("ecma:map", "get");
+    let map_keys = c.add_import("ecma:map", "keys");
+
+    // sizes differ -> false
+    c.emit_op_u16(Op::LOCAL_GET, a, line);
+    c.emit_call(size, 1, line);
+    c.emit_op_u16(Op::LOCAL_GET, b, line);
+    c.emit_call(size, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(c, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if(line);
+    c.emit_i32_const(0, line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+
+    c.emit_op_u16(Op::LOCAL_GET, a, line);
+    c.emit_call(map_keys, 1, line);
+    c.emit_op_u16(Op::LOCAL_SET, keys, line);
+    c.emit_op_u16(Op::LOCAL_GET, keys, line);
+    c.emit_op(Op::ARRAY_LENGTH, line);
+    c.emit_op_u16(Op::LOCAL_SET, n, line);
+    c.emit_i32_const(0, line);
+    c.emit_op_u16(Op::LOCAL_SET, i, line);
+
+    let block = c.emit_block(line);
+    let (lp, _) = c.emit_loop_s(line);
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_op_u16(Op::LOCAL_GET, n, line);
+    c.emit_op(Op::I32_GE_S, line);
+    c.emit_br_if(1, line);
+
+    c.emit_op_u16(Op::LOCAL_GET, keys, line);
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_op(Op::ARRAY_GET, line);
+    c.emit_op_u16(Op::LOCAL_SET, k, line);
+
+    // key missing from b -> false
+    c.emit_op_u16(Op::LOCAL_GET, b, line);
+    c.emit_op_u16(Op::LOCAL_GET, k, line);
+    c.emit_call(has, 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if(line);
+    c.emit_i32_const(0, line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+
+    // values differ -> false. RECURSES, so nested dicts compare by content.
+    c.emit_op_u16(Op::REF_FUNC, self_idx as u16, line);
+    c.emit(0, line);
+    c.emit_op_u16(Op::LOCAL_GET, a, line);
+    c.emit_op_u16(Op::LOCAL_GET, k, line);
+    c.emit_call(get, 2, line);
+    c.emit_op_u16(Op::LOCAL_GET, b, line);
+    c.emit_op_u16(Op::LOCAL_GET, k, line);
+    c.emit_call(get, 2, line);
+    c.emit_op(Op::CALL_REF, line);
+    c.emit(2u8, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
+    c.emit_op(Op::I32_EQZ, line);
+    c.emit_if(line);
+    c.emit_i32_const(0, line);
+    c.emit_op(Op::RETURN, line);
+    c.emit_end(line);
+
+    c.emit_op_u16(Op::LOCAL_GET, i, line);
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::I32_ADD, line);
+    c.emit_op_u16(Op::LOCAL_SET, i, line);
+    c.emit_br(0, line);
+    c.emit_end(line);
+    c.patch_loop(lp);
+    c.emit_end(line);
+    c.patch_block(block);
+
+    c.emit_i32_const(1, line);
+    c.emit_op(Op::RETURN, line);
+}
+
+/// Legs 3 and 4, unchanged from the original inline emitter.
+fn emit_structural_or_identity(chunk: &mut Chunk, a: u16, b: u16, line: u32) {
     let typeof_fn = chunk.add_import("ecma:value", "typeof");
     let is_array = chunk.add_import("ecma:array", "isArray");
     let has_own = chunk.add_import("ecma:object", "hasOwn");
     let cast_bool = chunk.add_import("wasm:js-boolean", "cast");
     let json_str = chunk.add_import("ecma:json", "stringify");
     let str_eq = chunk.add_import("wasm:js-string", "equals");
-    let b = chunk.alloc_scratch(1);
-    let a = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::LOCAL_SET, b, line);
-    chunk.emit_op_u16(Op::LOCAL_SET, a, line);
-
-    // Both operands sets → Python set equality: equal iff the sizes match and
-    // one is a subset of the other (element identity, order-independent). A
-    // JSON-structural compare would spuriously fail on differing insertion
-    // order (`{1,2} == {2,1}`).
-    emit_is_set(chunk, a, line);
-    emit_is_set(chunk, b, line);
-    chunk.emit_op(Op::I32_AND, line);
-    chunk.emit_if_value(line);
-    {
-        let size_key =
-            chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("size")));
-        chunk.emit_op_u16(Op::LOCAL_GET, a, line);
-        chunk.emit_op_u16(Op::STRUCT_GET, size_key, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, b, line);
-        chunk.emit_op_u16(Op::STRUCT_GET, size_key, line);
-        vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line); // sizes equal
-        let sub = chunk.add_import("ecma:set", "isSubsetOf");
-        chunk.emit_op_u16(Op::LOCAL_GET, a, line);
-        chunk.emit_op_u16(Op::LOCAL_GET, b, line);
-        chunk.emit_call(sub, 2, line);
-        chunk.emit_op(Op::I32_AND, line);
-    }
-    chunk.emit_else(line);
 
     // structural = isArray(a) OR (typeof(a)=="object" AND a != null AND
     // !hasOwn(a, "__type")) — i.e. a plain list/tuple/dict, not a class instance.
@@ -229,7 +388,6 @@ pub fn emit_py_value_eq(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, b, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_end(line);
-    chunk.emit_end(line); // close the set-equality outer if
 }
 
 /// Python `print(...)` — inline emitter that writes to `wasi:cli/stdout`

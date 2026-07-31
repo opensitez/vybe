@@ -4,6 +4,13 @@
 use vybe_runtime::Chunk;
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
+    // Structural equality for composite built-ins — Python's `==` on two sets
+    // is order-independent. Reached as `[builtin_slots.array] eq`; used to be
+    // the `LanguageHooks::value_eq` callback, keyed by language name.
+    if name == "python.value_eq" {
+        crate::emitter::runtime_adapter::emit_py_value_eq(chunks, current, line);
+        return true;
+    }
     if let Some(exc_name) = name.strip_prefix("python.exc.") {
         crate::emitter::runtime_adapter::emit_py_exception(chunks, current, argc, exc_name, line);
         return true;

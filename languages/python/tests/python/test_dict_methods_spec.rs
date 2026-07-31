@@ -93,15 +93,20 @@ runtime_case!(
     "a = {'x': 1}\nb = {'x': 5}\nc = {**a, **b}\nprint(c['x'])\n",
     "5"
 );
+// `print(bool)` in Python is `True`/`False`, capitalised — these two asserted
+// the JS spelling and so could never pass, whatever the membership test did.
+// Corrected against real `python3`, not against vybe's output. Every other
+// membership assertion in the suite (e.g. `test_operators_comparison`) already
+// expects the capitalised form.
 runtime_case!(
     dict_membership_existing_runtime,
     "d = {'a': 1}\nprint('a' in d)\n",
-    "true"
+    "True"
 );
 runtime_case!(
     dict_membership_missing_runtime,
     "d = {'a': 1}\nprint('z' in d)\n",
-    "false"
+    "False"
 );
 runtime_case!(
     dict_len_after_overwrite_runtime,
