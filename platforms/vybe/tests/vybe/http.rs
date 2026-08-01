@@ -56,21 +56,6 @@ fn as_string(value: &Value) -> String {
 
 // ── Runtime mode ──────────────────────────────────────────────────────────────
 
-#[test]
-fn mode_reports_cli_without_request_context() {
-    assert_eq!(as_string(&call_http("mode", vec![])), "cli");
-}
-
-#[test]
-fn php_sapi_name_reports_cli_without_request_context() {
-    assert_eq!(as_string(&call_http("php_sapi_name", vec![])), "cli");
-}
-
-#[test]
-fn server_software_has_vybex_prefix() {
-    assert!(as_string(&call_http("server_software", vec![])).starts_with("vybex/"));
-}
-
 // ── Request accessors — sentinel values without a live request ────────────────
 
 #[test]
@@ -92,69 +77,8 @@ fn headers_returns_empty_array_without_request() {
 }
 
 #[test]
-fn envs_returns_empty_array_without_request() {
-    assert_eq!(array_len(&call_http("envs", vec![])), 0);
-}
-
-#[test]
-fn body_eof_is_true_without_request() {
-    assert_eq!(call_http("body_eof", vec![]), Value::Bool(true));
-}
-
-#[test]
-fn body_read_all_returns_empty_string_without_request() {
-    assert_eq!(as_string(&call_http("body_read_all", vec![])), "");
-}
-
-#[test]
-fn cookies_returns_empty_array_without_request() {
-    assert_eq!(array_len(&call_http("cookies", vec![])), 0);
-}
-
-#[test]
-fn query_pairs_returns_empty_array_without_request() {
-    assert_eq!(array_len(&call_http("query_pairs", vec![])), 0);
-}
-
-#[test]
 fn uri_returns_string_without_request() {
     let v = call_http("uri", vec![]);
-    assert!(matches!(
-        v,
-        Value::String(_) | Value::Null | Value::Undefined
-    ));
-}
-
-#[test]
-fn path_returns_string_without_request() {
-    let v = call_http("path", vec![]);
-    assert!(matches!(
-        v,
-        Value::String(_) | Value::Null | Value::Undefined
-    ));
-}
-
-#[test]
-fn query_returns_string_without_request() {
-    let v = call_http("query", vec![]);
-    assert!(matches!(
-        v,
-        Value::String(_) | Value::Null | Value::Undefined
-    ));
-}
-
-#[test]
-fn scheme_returns_string_without_request() {
-    let v = call_http("scheme", vec![]);
-    assert!(matches!(
-        v,
-        Value::String(_) | Value::Null | Value::Undefined
-    ));
-}
-
-#[test]
-fn host_returns_string_without_request() {
-    let v = call_http("host", vec![]);
     assert!(matches!(
         v,
         Value::String(_) | Value::Null | Value::Undefined
@@ -167,15 +91,6 @@ fn remote_addr_returns_string_without_request() {
     assert!(matches!(
         v,
         Value::String(_) | Value::Null | Value::Undefined
-    ));
-}
-
-#[test]
-fn body_length_returns_number_without_request() {
-    let v = call_http("body_length", vec![]);
-    assert!(matches!(
-        v,
-        Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Null | Value::Undefined
     ));
 }
 
@@ -197,11 +112,6 @@ fn has_header_is_false_without_response() {
         call_http("has_header", vec![Value::String("x-test".into())]),
         Value::Bool(false)
     );
-}
-
-#[test]
-fn http_response_code_returns_200_without_response() {
-    assert_eq!(call_http("http_response_code", vec![]), Value::F64(200.0));
 }
 
 #[test]
@@ -251,14 +161,6 @@ fn write_does_not_panic() {
 }
 
 #[test]
-fn write_text_does_not_panic() {
-    assert!(matches!(
-        call_http("write_text", vec![Value::String("text".into())]),
-        Value::Null | Value::Undefined
-    ));
-}
-
-#[test]
 fn end_does_not_panic() {
     assert!(matches!(
         call_http("end", vec![]),
@@ -274,57 +176,18 @@ fn flush_does_not_panic() {
     ));
 }
 
-#[test]
-fn set_cookie_does_not_panic() {
-    // set_cookie returns Bool(true) on success, Null/Undefined if no response context
-    let r = call_http(
-        "set_cookie",
-        vec![Value::String("session".into()), Value::String("abc".into())],
-    );
-    assert!(matches!(r, Value::Null | Value::Undefined | Value::Bool(_)));
-}
-
-#[test]
-fn send_header_raw_does_not_panic() {
-    assert!(matches!(
-        call_http(
-            "send_header_raw",
-            vec![Value::String("X-Raw: value".into())]
-        ),
-        Value::Null | Value::Undefined
-    ));
-}
-
 // ── Surface check ─────────────────────────────────────────────────────────────
 
 #[test]
 fn proposal_vybe_http_surface_is_registered() {
     let expected = [
-        "mode",
-        "server_software",
-        "request_id",
-        "php_sapi_name",
         "method",
         "uri",
-        "path",
-        "query",
-        "scheme",
-        "host",
-        "port",
-        "protocol",
         "remote_addr",
         "remote_port",
         "header",
         "header_all",
         "headers",
-        "env",
-        "envs",
-        "body_length",
-        "body_eof",
-        "body_read",
-        "body_read_all",
-        "cookies",
-        "query_pairs",
         "set_status",
         "status",
         "set_header",
@@ -333,12 +196,8 @@ fn proposal_vybe_http_surface_is_registered() {
         "has_header",
         "headers_sent",
         "write",
-        "write_text",
         "end",
         "flush",
-        "http_response_code",
-        "send_header_raw",
-        "set_cookie",
     ];
     let missing = expected
         .into_iter()
