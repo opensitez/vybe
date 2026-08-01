@@ -20,6 +20,14 @@ fn this_field(name: &str) -> Expression {
     })
 }
 
+fn this_component(index: usize) -> Expression {
+    Expression::new(ExprKind::Index {
+        object: Box::new(Expression::new(ExprKind::This)),
+        index: Box::new(Expression::int(index as i64)),
+        null_safe: false,
+    })
+}
+
 /// Render a value the way Kotlin does — `emitter/tostring.rs` dispatches on the
 /// VALUE, so a nested collection or record renders as Kotlin spells it.
 fn kt_render(expr: Expression) -> Expression {
@@ -94,10 +102,11 @@ fn derive_record_members(class_name: &str, out: &mut NormalMembers) {
     // `copy(a = this.a, …)` — every component defaults to the current value.
     let copy_params: Vec<Param> = components
         .iter()
-        .map(|comp| Param {
+        .enumerate()
+        .map(|(idx, comp)| Param {
             name: comp.clone(),
             type_hint: None,
-            default: Some(this_field(comp)),
+            default: Some(this_component(idx)),
             pass_by: PassBy::Value,
             is_rest: false,
             is_kwargs: false,
@@ -378,11 +387,11 @@ pub fn normalize_class(
                 // access, which resolves `__get_<Name>` / `__set_<Name>` by the
                 // EXACT source spelling — so the canonical name keeps its case.
                 let access = Access::from(m.visibility);
-                let synthetic_backing_getter =
-                    !*is_auto && getter.is_none() && setter.is_some();
-                let getter_body = getter
-                    .clone()
-                    .or_else(|| synthetic_backing_getter.then(|| ret(this_field(&format!("__kt_field_{}", pname)))));
+                let synthetic_backing_getter = !*is_auto && getter.is_none() && setter.is_some();
+                let getter_body = getter.clone().or_else(|| {
+                    synthetic_backing_getter
+                        .then(|| ret(this_field(&format!("__kt_field_{}", pname))))
+                });
                 let getter_method = getter_body.as_ref().map(|body| {
                     build_normal_method(
                         span.clone(),

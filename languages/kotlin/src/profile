@@ -187,16 +187,19 @@ cos   = { emit = "host:ecma:math:cos",   min_args = 1, max_args = 1 }
 tan   = { emit = "host:ecma:math:tan",   min_args = 1, max_args = 1 }
 
 # Exception & Error Builtins
-error         = { emit = "common:errors.throw", min_args = 1, max_args = 1 }
-require       = { emit = "common:errors.require", min_args = 1, max_args = 1 }
-check         = { emit = "common:errors.check", min_args = 1, max_args = 1 }
-checkNotNull  = { emit = "common:errors.check_not_null", min_args = 1, max_args = 1 }
-Exception                  = { emit = "common:errors.exception", min_args = 0, max_args = 1 }
-
-IllegalArgumentException   = { emit = "common:errors.illegal_argument", min_args = 0, max_args = 1 }
-IllegalStateException      = { emit = "common:errors.illegal_state", min_args = 0, max_args = 1 }
-NullPointerException       = { emit = "common:errors.null_pointer", min_args = 0, max_args = 1 }
-IndexOutOfBoundsException  = { emit = "common:errors.index_out_of_bounds", min_args = 0, max_args = 1 }
+error          = { emit = "common:kotlin.error", min_args = 1, max_args = 1 }
+require        = { emit = "common:kotlin.require", min_args = 1, max_args = 2 }
+check          = { emit = "common:kotlin.check", min_args = 1, max_args = 2 }
+requireNotNull = { emit = "common:kotlin.require_not_null", min_args = 1, max_args = 1 }
+checkNotNull   = { emit = "common:kotlin.check_not_null", min_args = 1, max_args = 1 }
+__kt_not_null_assert = { emit = "common:kotlin.not_null_assert", min_args = 1, max_args = 1 }
+__kt_class_of = { emit = "common:kotlin.class_of", min_args = 1, max_args = 1 }
+__kt_illegal_state_exception = { emit = "common:kotlin.illegal_state_exception", min_args = 0, max_args = 1 }
+Exception                  = { emit = "common:kotlin.exception", min_args = 0, max_args = 1 }
+IllegalArgumentException   = { emit = "common:kotlin.illegal_argument_exception", min_args = 0, max_args = 1 }
+IllegalStateException      = { emit = "common:kotlin.illegal_state_exception", min_args = 0, max_args = 1 }
+NullPointerException       = { emit = "common:kotlin.null_pointer_exception", min_args = 0, max_args = 1 }
+IndexOutOfBoundsException  = { emit = "common:kotlin.index_out_of_bounds_exception", min_args = 0, max_args = 1 }
 
 [builtin_return_types]
 "kotlin.math.sign" = "Double"
@@ -252,6 +255,8 @@ toLong     = { emit = "host:ecma:math:trunc",     min_args = 0, max_args = 0 }
 # integer division, and an absent method is an "undefined is not callable" trap.
 toDouble   = { emit = "host:ecma:number:Number",  min_args = 0, max_args = 0 }
 toFloat    = { emit = "host:ecma:number:Number",  min_args = 0, max_args = 0 }
+toIntOrNull    = { emit = "common:kotlin.to_int_or_null", min_args = 0, max_args = 1 }
+toDoubleOrNull = { emit = "common:kotlin.to_double_or_null", min_args = 0, max_args = 0 }
 isFinite   = { emit = "host:ecma:number:isFinite", min_args = 0, max_args = 0 }
 # No host fn answers this one: ECMA has `isFinite` and `isNaN` but nothing for
 # "infinite", which is neither. Composed in `emitter/tostring.rs`' sibling.

@@ -103,6 +103,68 @@ pub fn emit_is_infinite(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line
     chunks[current].emit_end(line);
 }
 
+/// Kotlin `String.toIntOrNull(radix?)`.
+///
+/// Stack: `[receiver]` or `[receiver, radix]` -> `[number|null]`.
+pub fn emit_to_int_or_null(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let radix = if argc >= 2 {
+        let slot = chunk.alloc_scratch(1);
+        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+        Some(slot)
+    } else {
+        None
+    };
+    let value = chunk.alloc_scratch(1);
+    if argc >= 1 {
+        chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    } else {
+        chunk.emit_string_const("", line);
+        chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    if let Some(radix) = radix {
+        chunk.emit_op_u16(Op::LOCAL_GET, radix, line);
+    }
+    let parse = chunk.add_import("ecma:number", "parseInt");
+    chunk.emit_call(parse, if radix.is_some() { 2 } else { 1 }, line);
+    emit_null_if_nan(chunks, current, line);
+}
+
+/// Kotlin `String.toDoubleOrNull()`.
+///
+/// Stack: `[receiver]` -> `[number|null]`.
+pub fn emit_to_double_or_null(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let value = chunk.alloc_scratch(1);
+    if argc >= 1 {
+        chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    } else {
+        chunk.emit_string_const("", line);
+        chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    }
+
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    let parse = chunk.add_import("ecma:number", "Number");
+    chunk.emit_call(parse, 1, line);
+    emit_null_if_nan(chunks, current, line);
+}
+
+fn emit_null_if_nan(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let parsed = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, parsed, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, parsed, line);
+    let is_nan = chunks[current].add_import("ecma:number", "isNaN");
+    chunks[current].emit_call(is_nan, 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, parsed, line);
+    chunks[current].emit_end(line);
+}
+
 /// Kotlin `compareTo` syntax lowering.
 ///
 /// Stack: `[compare_result]` -> `[bool]`.

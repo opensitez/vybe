@@ -326,6 +326,16 @@ extensions = []
 "java.util.Locale.CANADA" = "CA"
 "java.util.Locale.CANADA_FRENCH" = "FR_CA"
 
+[value_methods]
+"java.lang.StringBuilder.append"     = { emit = "common:jvm.java.sb_append", min_args = 1, max_args = 1 }
+"java.lang.StringBuilder.appendLine" = { emit = "common:jvm.java.sb_append_line", min_args = 0, max_args = 1 }
+"java.lang.StringBuilder.toString"   = { emit = "common:jvm.java.sb_to_string", min_args = 0, max_args = 0 }
+"java.util.StringTokenizer.hasMoreTokens"   = { emit = "common:jvm.java.st_has_more", min_args = 0, max_args = 0 }
+"java.util.StringTokenizer.hasMoreElements" = { emit = "common:jvm.java.st_has_more", min_args = 0, max_args = 0 }
+"java.util.StringTokenizer.nextToken"       = { emit = "common:jvm.java.st_next", min_args = 0, max_args = 0 }
+"java.util.StringTokenizer.nextElement"     = { emit = "common:jvm.java.st_next", min_args = 0, max_args = 0 }
+"java.util.StringTokenizer.countTokens"     = { emit = "common:jvm.java.st_count", min_args = 0, max_args = 0 }
+
 [known_types]
 "java.lang.String" = ["ecma:string", "new"]
 "java.util.Random" = ["common", "java.random_new"]
@@ -358,5 +368,6 @@ extensions = []
 # `StringBuilder` / `OutOfMemoryError` stay in the Java profile as its idiom.
 # Without these the tree registers no `Type` node for them, so `__types` is
 # never stamped and `StringBuilder.class.isInstance(sb)` answers false.
-"java.lang.StringBuilder"    = ["common", "java.stringbuilder_new"]
+"java.lang.StringBuilder"    = ["common", "jvm.java.stringbuilder_new"]
+"java.util.StringTokenizer"  = ["common", "jvm.java.stringtokenizer_new"]
 "java.lang.OutOfMemoryError" = ["common", "jvm.java.hash_map_new"]

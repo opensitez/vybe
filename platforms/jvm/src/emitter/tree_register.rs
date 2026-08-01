@@ -110,6 +110,28 @@ fn merge_type_methods(root: &mut Subtree, path: &str, new_methods: Subtree) {
     }
 }
 
+fn merge_type_member_returns(root: &mut Subtree, path: &str, returns: &[(&str, &str)]) {
+    let mut segments: Vec<&str> = path.split('.').collect();
+    let leaf = segments.pop().expect("non-empty path");
+    let mut cursor = root;
+    for seg in segments {
+        let entry = cursor
+            .entry(seg.to_string())
+            .or_insert_with(|| NamespaceNode::Namespace(Subtree::new()));
+        cursor = match entry {
+            NamespaceNode::Namespace(children) => children,
+            NamespaceNode::Type { statics, .. } => statics,
+            _ => return,
+        };
+    }
+    let Some(NamespaceNode::Type { member_returns, .. }) = cursor.get_mut(leaf) else {
+        return;
+    };
+    for (member, ty) in returns {
+        member_returns.insert(member.to_lowercase(), (*ty).to_string());
+    }
+}
+
 fn builtin_leaf(def: &BuiltinDef, arity: Option<u8>) -> Option<NamespaceNode> {
     match &def.emit {
         BuiltinEmit::Common(op) => Some(NamespaceNode::CommonEmit(op.clone())),
@@ -628,6 +650,12 @@ pub const JAVA_TYPES: &[JavaType] = &[
         &["StringBuilder", "CharSequence", "Appendable", "Object"],
         None,
     ),
+    t(
+        "StringTokenizer",
+        "util",
+        &["StringTokenizer", "Enumeration", "Object"],
+        None,
+    ),
     // Types whose `[known_types]` entry declares a constructor but which had no
     // JAVA_TYPES row, so they never registered as tree `Type` nodes. While the
     // declarations lived in the Java profile that was invisible —
@@ -941,6 +969,20 @@ pub fn register_namespace_tree() {
             ensure_type_node(&mut root, &type_path);
             merge_type_methods(&mut root, &type_path, methods);
         }
+        merge_type_member_returns(
+            &mut root,
+            "lang.stringbuilder",
+            &[
+                ("append", "java.lang.StringBuilder"),
+                ("appendLine", "java.lang.StringBuilder"),
+                ("toString", "java.lang.String"),
+            ],
+        );
+        merge_type_member_returns(
+            &mut root,
+            "util.stringtokenizer",
+            &[("nextToken", "java.lang.String"), ("nextElement", "java.lang.String")],
+        );
 
         insert_java_lang_system(&mut root);
         insert_java_net_url_uri(&mut root);
@@ -1026,6 +1068,60 @@ mod tests {
         assert_eq!(
             vybe_runtime::namespaces::lookup_type_member_return(&scopes, "URL", "toURI"),
             Some("java.net.URI".to_string())
+        );
+    }
+
+    #[test]
+    fn java_lang_stringbuilder_tree_is_platform_owned() {
+        super::register_namespace_tree();
+        let scopes = vec!["jvm".to_string()];
+        assert!(
+            vybe_runtime::namespaces::lookup_type_ctor_target(&scopes, "java.lang.StringBuilder")
+                .is_some()
+        );
+        assert!(
+            vybe_runtime::namespaces::lookup_type_instance_target(
+                &scopes,
+                "java.lang.StringBuilder",
+                "append",
+                1,
+            )
+            .is_some()
+        );
+        assert_eq!(
+            vybe_runtime::namespaces::lookup_type_member_return(
+                &scopes,
+                "java.lang.StringBuilder",
+                "append",
+            ),
+            Some("java.lang.StringBuilder".to_string())
+        );
+    }
+
+    #[test]
+    fn java_util_stringtokenizer_tree_is_platform_owned() {
+        super::register_namespace_tree();
+        let scopes = vec!["jvm".to_string()];
+        assert!(
+            vybe_runtime::namespaces::lookup_type_ctor_target(&scopes, "java.util.StringTokenizer")
+                .is_some()
+        );
+        assert!(
+            vybe_runtime::namespaces::lookup_type_instance_target(
+                &scopes,
+                "java.util.StringTokenizer",
+                "hasMoreTokens",
+                0,
+            )
+            .is_some()
+        );
+        assert_eq!(
+            vybe_runtime::namespaces::lookup_type_member_return(
+                &scopes,
+                "java.util.StringTokenizer",
+                "nextToken",
+            ),
+            Some("java.lang.String".to_string())
         );
     }
 

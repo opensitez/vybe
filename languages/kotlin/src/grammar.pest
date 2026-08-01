@@ -302,7 +302,7 @@ infix_expr = { unary ~ (infix_op ~ unary)* }
 infix_op = { to_kw | "until" | "downTo" | "step" | "and" | "or" | "xor" | "shl" | "shr" | "ushr" | "matches" | "zip" | "union" | "intersect" | "plus" | "minus" }
 
 unary = { prefix_op* ~ postfix }
-prefix_op = { "!" | "-" | "+" | "++" | "--" }
+prefix_op = { "++" | "--" | "!" | "-" | "+" }
 
 postfix = { primary ~ postfix_suffix* }
 postfix_suffix = { type_args | call_suffix | index_suffix | safe_call_suffix | member_suffix | null_assert_suffix | inc_suffix }
@@ -347,7 +347,7 @@ primary = {
   | super_expr
 }
 
-callable_ref = { dotted_name? ~ "::" ~ identifier }
+callable_ref = { dotted_name? ~ "::" ~ (identifier | class_kw) }
 
 // `this@Outer` reaches an outer receiver from an inner class or a scope
 // function; `super<Base>.f()` picks WHICH supertype's default implementation to

@@ -17,6 +17,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     use crate::emitter::bitset_adapter as bitset;
     use crate::emitter::map_adapter as map;
     use crate::emitter::math_adapter as math;
+    use crate::emitter::stringbuilder_adapter as sb;
+    use crate::emitter::stringtokenizer_adapter as st;
     use crate::emitter::system_adapter as system;
     use crate::emitter::url_adapter as url;
     use crate::emitter::uuid_adapter as uuid;
@@ -266,6 +268,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.linked_hash_map_new" => {
             map::emit_linked_hash_map_new(chunks, current, argc, line)
         }
+        "jvm.java.stringbuilder_new" => sb::emit_new(chunks, current, argc, line),
+        "jvm.java.sb_append" => sb::emit_append(chunks, current, argc, line),
+        "jvm.java.sb_append_line" => sb::emit_append_line(chunks, current, argc, line),
+        "jvm.java.sb_to_string" => sb::emit_to_string(chunks, current, argc, line),
+        "jvm.java.stringtokenizer_new" => st::emit_new(chunks, current, argc, line),
+        "jvm.java.st_has_more" => st::emit_has_more(chunks, current, argc, line),
+        "jvm.java.st_next" => st::emit_next(chunks, current, argc, line),
+        "jvm.java.st_count" => st::emit_count(chunks, current, argc, line),
 
         _ => return false,
     }
