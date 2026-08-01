@@ -716,13 +716,45 @@ gethostname         = { emit = "host:wasi:cli:machineName",  min_args = 0, max_a
 
 # ── HTTP / web (vybex --serve) ──────────────────────────────────────────────
 header              = { emit = "common:php.header",               min_args = 1, max_args = 3 }
-http_response_code  = { emit = "host:node:http:http_response_code", min_args = 0, max_args = 1 }
+# Arity-based get/set is PHP's convention. Node has a `statusCode` property,
+# which is `node:http`'s `status`/`set_status`; a combined `http_response_code`
+# host function was PHP's function name living in Node's namespace.
+http_response_code  = { emit = "common:php.http_response_code",   min_args = 0, max_args = 1 }
 session_start       = { emit = "common:php.session_start",         min_args = 0, max_args = 0 }
+# Identity/lifecycle come from the SHARED session primitive, not a PHP-specific
+# emit — a session is a session across languages (httpserver.md §4a). These three
+# did not exist at all before; calling them killed the script mid-response with
+# "undefined is not callable".
+session_id          = { emit = "common:http_session.id",           min_args = 0, max_args = 1 }
+session_name        = { emit = "common:http_session.name",         min_args = 0, max_args = 1 }
+session_status      = { emit = "common:http_session.status",       min_args = 0, max_args = 0 }
+session_regenerate_id = { emit = "common:http_session.regenerate_id", min_args = 0, max_args = 1 }
 session_unset       = { emit = "common:php.session_unset",         min_args = 0, max_args = 0 }
 session_destroy     = { emit = "common:php.session_destroy",       min_args = 0, max_args = 0 }
-setcookie           = { emit = "host:node:http:set_cookie",         min_args = 1, max_args = 3 }
-setrawcookie        = { emit = "host:node:http:set_cookie",         min_args = 1, max_args = 3 }
+# Cookie serialization is the SHARED RFC 6265 primitive; only the value
+# encoding differs between these two, and that encoding is PHP's own.
+setcookie           = { emit = "common:php.setcookie",            min_args = 1, max_args = 3 }
+setrawcookie        = { emit = "common:php.setrawcookie",         min_args = 1, max_args = 3 }
 headers_sent        = { emit = "host:node:http:headers_sent",      min_args = 0, max_args = 2 }
+
+# ── Superglobals ────────────────────────────────────────────────────────────
+#
+# `$_SERVER`, `$_GET`, `$_POST`, `$_FILES`, `$_COOKIE` and `$_REQUEST` are PHP's
+# NAMES for data every server-side language has: WSGI calls the first `environ`,
+# Rack calls it `env`. So the data comes from the shared request primitives —
+# which read `wasi:http` — and this file only says which PHP name each one wears.
+# The walker prepends `$_GET = __vybe_superglobal_get();` and friends for the
+# superglobals a script actually mentions (see `PhpPreludeGroup::Superglobals`).
+#
+# Nothing here parses anything. Before this, `vybex --serve` re-parsed the query
+# string, the cookie header and multipart bodies in Rust inside the server crate,
+# where only PHP under `--serve` could ever reach them.
+__vybe_superglobal_server  = { emit = "common:http_request.environ",        min_args = 0, max_args = 0 }
+__vybe_superglobal_get     = { emit = "common:http_request.query_params",   min_args = 0, max_args = 0 }
+__vybe_superglobal_post    = { emit = "common:http_form.fields",           min_args = 0, max_args = 0 }
+__vybe_superglobal_files   = { emit = "common:http_form.files",            min_args = 0, max_args = 0 }
+__vybe_superglobal_cookie  = { emit = "common:http_cookie.request_cookies", min_args = 0, max_args = 0 }
+__vybe_superglobal_request = { emit = "common:http_request.request_params", min_args = 0, max_args = 0 }
 header_remove       = { emit = "host:node:http:remove_header",     min_args = 0, max_args = 1 }
 
 # ── Miscellaneous ───────────────────────────────────────────────────────────
@@ -1075,6 +1107,21 @@ array  = ["array", "iterable"]
 # `<=>` out of two `<`/`>` calls.
 [builtin_slots.string]
 compare = "common:php.compare3"
+# `==` / `!=`. PHP's loose equality coerces (`"1" == 1` is true) and is NOT the
+# platform's `ops::emit_dyn_eq`.
+#
+# This was a WALKER REWRITE to a `__php_loose_eq(...)` call plus a PHP-SOURCE
+# prelude function, pulled in by a substring scan of the AST text
+# (`needs.class_helpers`). The profile never declared the identifier, so the
+# call reached neither the prelude reliably nor the `emit_php_loose_eq` emitter
+# that already existed — and `$a == $b` on two equal strings answered a raw,
+# untyped `0`. Literals were unaffected because they constant-fold first, which
+# is why it survived.
+eq = "common:php.loose_eq"
+# `!=` / `<>` is its own target, not `eq` negated: the emitter materializes a
+# real Bool and `emit_dyn_not` would discard that, printing `0` for
+# `bool(false)`.
+ne = "common:php.loose_ne"
 # The cast `.` applies to each operand before concatenating. PHP renders `true`
 # as "1", `false`/`null` as "", and an array as "Array" — none of which is the
 # ECMA `String()` coercion the platform defaults to.

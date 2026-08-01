@@ -119,16 +119,6 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
     // Install the thread-local context for the duration of this VM run.
     let _guard = vybe_platform_node::http::install_context(Arc::clone(&ctx));
 
-    // Compile the script (Phase 2: compile cache).
-    let bundle = match vybe_compiler::projects::load(script_path) {
-        Ok(b) => b,
-        Err(e) => {
-            let msg = format!("compile error: {e}");
-            end_with_text(&ctx, 500, &msg);
-            return;
-        }
-    };
-
     // Fresh VM per request (Phase 2: pool).
     let mut vm = VM::new();
     let caps = if no_sandbox {
@@ -144,20 +134,43 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
         c.grant(Capability::HttpServer);
         c
     };
+
+    // Register BEFORE compiling. Language plugins publish their `LanguageDef`
+    // — including the file extensions they claim — into the global registry as
+    // part of this one loop, so `projects::load` can only resolve `.php` once
+    // it has run. Compiling first left the registry holding nothing but the
+    // built-in project types, and every served script died with
+    // "Unknown file extension".
     crate::cli::register_plugins(&mut vm, &caps);
-    
+
+    // Compile the script (Phase 2: compile cache).
+    let bundle = match vybe_compiler::projects::load(script_path) {
+        Ok(b) => b,
+        Err(e) => {
+            let msg = format!("compile error: {e}");
+            end_with_text(&ctx, 500, &msg);
+            return;
+        }
+    };
 
     crate::server::programmatic::register(&mut vm);
+
+    // `wasi:http` is now the ONLY representation of the incoming request.
+    // Every superglobal a PHP script reads is emitted code reading these
+    // handles (`documentation/httpserver.md` §4a) — nothing below Layer 3
+    // knows about PHP, WSGI or Rack. `RequestContext` survives for the
+    // RESPONSE half and for the deployment metadata `wasi:http` does not model
+    // (document root, resolved script path, peer address); draining those is
+    // what retires it.
+    install_wasi_http_request(&mut vm, &ctx);
     if let Err(e) = crate::adapters::register_all(&mut vm) {
         let msg = format!("adapter registration error: {e}");
         end_with_text(&ctx, 500, &msg);
         return;
     }
 
-    // Populate PHP-style superglobals from the request context. Built as
-    // `ObjectKind::Map` — the canonical cross-language associative type
-    // — so any language's string-key access via `ecma:array.get` works
-    // uniformly. PHP's `$_SERVER['REQUEST_METHOD']` lands here.
+    // Seed the session store and `$_ENV`. The request-derived superglobals are
+    // NOT built here any more — see `inject_superglobals`.
     inject_superglobals(&mut vm, &ctx);
 
     // SAPI-style stdout override: bind the WASI stdout stream to the HTTP
@@ -207,30 +220,27 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
     ctx.response.lock().unwrap().end();
 }
 
-/// Populate PHP-style superglobals by inserting entries into `vm.globals`.
+/// Seed the session, and `$_ENV`, into `vm.globals`.
 ///
-/// Each superglobal is an `ObjectKind::Map` (the canonical cross-language
-/// associative type). `$_SERVER['REQUEST_METHOD']` then routes through
-/// `ecma:array.get` which dispatches on `ObjectKind::Map` and returns
-/// the value — same as every other language's associative map.
+/// **`$_SERVER`, `$_GET`, `$_POST`, `$_FILES`, `$_COOKIE` and `$_REQUEST` are
+/// no longer built here.** They are bound by the PHP walker to the shared
+/// request primitives, which read `wasi:http` — see `SUPERGLOBALS_PRELUDE` in
+/// `languages/php/src/walker.rs` and `documentation/httpserver.md` §4a. This
+/// function used to re-parse the query string, the `Cookie:` header and
+/// multipart bodies in Rust, which meant one request had two representations
+/// and only PHP under `--serve` could ever reach the second one.
 ///
-/// The globals inserted here are PHP-idiomatic (`_SERVER`, `_GET`, etc.)
-/// but non-PHP scripts running under `--serve` simply won't touch them.
-/// Real request data is always available via `\Vybe\Http\Request\*` host
-/// calls regardless of language.
+/// What is left is the part with no primitive behind it yet: session state
+/// persists in the process-global `PHP_SESSION_STORE`, and the store needs the
+/// id BEFORE the script runs in order to preload `$_SESSION`. Moving that to a
+/// real backing store needs two calls that are not this change's to make (the
+/// sandboxed capability set at line 133 grants only `FileRead`, and emitted
+/// sessions have no end-of-request flush hook).
 fn inject_superglobals(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
-    use indexmap::IndexMap;
-    use std::sync::{Arc as StdArc, Mutex as StdMutex};
+    use std::sync::Arc as StdArc;
     use vybe_runtime::Value;
-    use vybe_runtime::value::{Object, ObjectKind};
 
-    let server = make_string_map_value(ctx.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     let env = make_string_map_value(std::env::vars());
-
-    let get_pairs: Vec<(String, String)> = form_urlencoded::parse(ctx.query.as_bytes())
-        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-        .collect();
-    let get = make_string_map_value(get_pairs);
 
     let cookie_header = ctx
         .headers
@@ -238,12 +248,7 @@ fn inject_superglobals(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
         .find(|(n, _)| n.eq_ignore_ascii_case("cookie"))
         .map(|(_, v)| v.as_str())
         .unwrap_or("");
-    let cookie_pairs = parse_cookie_header(cookie_header);
-    let session_cookie = cookie_pairs
-        .iter()
-        .find(|(name, value)| name == PHP_SESSION_COOKIE_NAME && !value.is_empty())
-        .map(|(_, value)| value.clone());
-    let cookies = make_string_map_value(cookie_pairs);
+    let session_cookie = session_cookie_value(cookie_header);
     let session_id = session_cookie
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -259,49 +264,26 @@ fn inject_superglobals(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
             .unwrap_or_default(),
     );
 
-    let content_type = ctx
-        .headers
-        .iter()
-        .find(|(n, _)| n.eq_ignore_ascii_case("content-type"))
-        .map(|(_, v)| v.as_str())
-        .unwrap_or("");
-    let body = ctx.body.lock().unwrap().read_all();
-    let (post_pairs, file_pairs) = if content_type
-        .to_ascii_lowercase()
-        .starts_with("application/x-www-form-urlencoded")
-    {
-        (
-            form_urlencoded::parse(&body)
-                .map(|(k, v)| (k.into_owned(), v.into_owned()))
-                .collect(),
-            Vec::new(),
-        )
-    } else if content_type
-        .to_ascii_lowercase()
-        .starts_with("multipart/form-data")
-    {
-        parse_multipart_form(&body, content_type)
-    } else {
-        (Vec::new(), Vec::new())
-    };
-    let post = make_string_map_value(post_pairs);
-    let files = make_map_value(file_pairs);
-
     // PHP variables and functions live in separate namespaces; the
     // walker preserves the `$` sigil on variable identifiers so a
-    // function `foo` and a variable `$foo` don't collide. Register
-    // the superglobals with the same `$` prefix so user code's
-    // `$_SERVER["PHP_SELF"]` etc. resolves correctly.
-    vm.globals.insert("$_SERVER".to_string(), server);
+    // function `foo` and a variable `$foo` don't collide.
     vm.globals.insert("$_ENV".to_string(), env);
-    vm.globals.insert("$_GET".to_string(), get);
-    vm.globals.insert("$_COOKIE".to_string(), cookies);
-    vm.globals.insert("$_POST".to_string(), post);
-    vm.globals.insert("$_FILES".to_string(), files);
     vm.globals.insert("$_SESSION".to_string(), session);
     vm.globals.insert(
         PHP_SESSION_ID_GLOBAL.to_string(),
         Value::String(StdArc::from(session_id.as_str())),
+    );
+    // Publish the same identity under the NEUTRAL globals the shared session
+    // primitive reads (`primitives/http_session.rs`), so `session_id()` and
+    // `session_name()` — and every other language's equivalent — report the id
+    // this request is actually using rather than minting a second one.
+    vm.globals.insert(
+        vybe_compiler::primitives::http_session::SESSION_ID_GLOBAL.to_string(),
+        Value::String(StdArc::from(session_id.as_str())),
+    );
+    vm.globals.insert(
+        vybe_compiler::primitives::http_session::SESSION_NAME_GLOBAL.to_string(),
+        Value::String(StdArc::from(PHP_SESSION_COOKIE_NAME)),
     );
     vm.globals
         .insert(PHP_SESSION_STARTED_GLOBAL.to_string(), Value::Bool(false));
@@ -311,23 +293,23 @@ fn inject_superglobals(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
     );
     vm.globals
         .insert(PHP_SESSION_DESTROYED_GLOBAL.to_string(), Value::Bool(false));
-    let mut request_im: IndexMap<Value, Value> = IndexMap::new();
-    for key in ["$_GET", "$_POST", "$_COOKIE"] {
-        if let Some(Value::Object(obj)) = vm.globals.get(key) {
-            let o = obj.lock().unwrap();
-            if let ObjectKind::Map(ref im) = o.kind {
-                for (k, v) in im.iter() {
-                    request_im.insert(k.clone(), v.clone());
-                }
-            }
+}
+
+/// The session cookie's value, if the request carries one.
+///
+/// Deliberately narrow: this is NOT a `Cookie:` header parser. `$_COOKIE` comes
+/// from `common:http_cookie.request_cookies` now, and so does the session id
+/// the primitive itself uses. This only answers "which stored session should
+/// `$_SESSION` be preloaded from", which has to be decided in Rust because the
+/// store is in Rust.
+fn session_cookie_value(header: &str) -> Option<String> {
+    header.split(';').find_map(|part| {
+        let (name, value) = part.trim().split_once('=')?;
+        if name.trim() != PHP_SESSION_COOKIE_NAME || value.is_empty() {
+            return None;
         }
-    }
-    let mut req_obj = Object::new();
-    req_obj.kind = ObjectKind::Map(request_im);
-    vm.globals.insert(
-        "$_REQUEST".to_string(),
-        Value::Object(StdArc::new(StdMutex::new(req_obj))),
-    );
+        Some(value.to_string())
+    })
 }
 
 fn make_map_value(
@@ -401,155 +383,6 @@ fn persist_superglobals(vm: &vybe_runtime::VM, _ctx: &Arc<RequestContext>) {
     PHP_SESSION_STORE.insert(session_id, persisted);
 }
 
-fn parse_cookie_header(header: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for part in header.split(';') {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        match part.split_once('=') {
-            Some((n, v)) => {
-                let v = v
-                    .strip_prefix('"')
-                    .and_then(|s| s.strip_suffix('"'))
-                    .unwrap_or(v);
-                let decoded = percent_encoding::percent_decode_str(v)
-                    .decode_utf8_lossy()
-                    .into_owned();
-                out.push((n.trim().to_string(), decoded));
-            }
-            None => out.push((part.to_string(), String::new())),
-        }
-    }
-    out
-}
-
-fn parse_multipart_form(
-    body: &[u8],
-    content_type: &str,
-) -> (Vec<(String, String)>, Vec<(String, vybe_runtime::Value)>) {
-    use vybe_runtime::Value;
-
-    let Some(boundary) = extract_multipart_boundary(content_type) else {
-        return (Vec::new(), Vec::new());
-    };
-
-    let marker = format!("--{boundary}").into_bytes();
-    let mut post = Vec::new();
-    let mut files = Vec::new();
-    let mut pos = match find_subslice(body, &marker, 0) {
-        Some(pos) => pos,
-        None => return (post, files),
-    };
-
-    loop {
-        let mut cursor = pos + marker.len();
-        if body.get(cursor..cursor + 2) == Some(b"--") {
-            break;
-        }
-        if body.get(cursor..cursor + 2) == Some(b"\r\n") {
-            cursor += 2;
-        }
-
-        let Some(next) = find_subslice(body, &marker, cursor) else {
-            break;
-        };
-        let mut part = &body[cursor..next];
-        if part.ends_with(b"\r\n") {
-            part = &part[..part.len() - 2];
-        }
-        pos = next;
-        if part.is_empty() {
-            continue;
-        }
-
-        let Some(header_end) = find_subslice(part, b"\r\n\r\n", 0) else {
-            continue;
-        };
-        let header_text = String::from_utf8_lossy(&part[..header_end]);
-        let data = &part[header_end + 4..];
-
-        let mut field_name = None;
-        let mut file_name = None;
-        let mut file_type = String::new();
-        for line in header_text.split("\r\n") {
-            let lower = line.to_ascii_lowercase();
-            if lower.starts_with("content-disposition:") {
-                field_name = extract_disposition_param(line, "name");
-                file_name = extract_disposition_param(line, "filename");
-            } else if lower.starts_with("content-type:") {
-                file_type = line
-                    .split_once(':')
-                    .map(|(_, value)| value.trim().to_string())
-                    .unwrap_or_default();
-            }
-        }
-
-        let Some(name) = field_name else {
-            continue;
-        };
-        if let Some(filename) = file_name {
-            let (tmp_name, error_code) = write_upload_tempfile(data);
-            let upload = make_map_value(vec![
-                (
-                    "name".to_string(),
-                    Value::String(std::sync::Arc::from(filename.as_str())),
-                ),
-                (
-                    "type".to_string(),
-                    Value::String(std::sync::Arc::from(file_type.as_str())),
-                ),
-                (
-                    "tmp_name".to_string(),
-                    Value::String(std::sync::Arc::from(tmp_name.as_str())),
-                ),
-                ("error".to_string(), Value::F64(error_code as f64)),
-                ("size".to_string(), Value::F64(data.len() as f64)),
-            ]);
-            files.push((name, upload));
-        } else {
-            post.push((name, String::from_utf8_lossy(data).into_owned()));
-        }
-    }
-
-    (post, files)
-}
-
-fn extract_multipart_boundary(content_type: &str) -> Option<String> {
-    content_type
-        .split(';')
-        .map(str::trim)
-        .find_map(|part| part.strip_prefix("boundary="))
-        .map(|value| value.trim_matches('"').to_string())
-}
-
-fn extract_disposition_param(line: &str, key: &str) -> Option<String> {
-    let needle = format!("{key}=\"");
-    let start = line.find(&needle)? + needle.len();
-    let rest = &line[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
-}
-
-fn write_upload_tempfile(data: &[u8]) -> (String, u32) {
-    let path = std::env::temp_dir().join(format!("vybex-upload-{}", uuid::Uuid::new_v4()));
-    match std::fs::write(&path, data) {
-        Ok(()) => (path.display().to_string(), 0),
-        Err(_) => (String::new(), 7),
-    }
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
-    if needle.is_empty() || start >= haystack.len() {
-        return None;
-    }
-    haystack[start..]
-        .windows(needle.len())
-        .position(|window| window == needle)
-        .map(|offset| start + offset)
-}
-
 fn end_with_text(ctx: &RequestContext, status: u16, body: &str) {
     let mut r = ctx.response.lock().unwrap();
     if !r.headers_sent {
@@ -583,7 +416,7 @@ fn _bytes_shim() -> Bytes {
 mod tests {
     use super::{
         PHP_SESSION_COOKIE_NAME, PHP_SESSION_ID_GLOBAL, PHP_SESSION_STARTED_GLOBAL,
-        PHP_SESSION_STORE, inject_superglobals, parse_cookie_header, persist_superglobals,
+        PHP_SESSION_STORE, inject_superglobals, install_wasi_http_request, persist_superglobals,
     };
     use bytes::Bytes;
     use http::Request;
@@ -644,8 +477,15 @@ mod tests {
         }
     }
 
-    fn map_value<'a>(map: &'a IndexMap<String, Value>, key: &str) -> &'a Value {
-        map.get(key).unwrap_or_else(|| panic!("missing key {key}"))
+    /// Read one cookie's value out of a `Set-Cookie` header.
+    ///
+    /// Test scaffolding, not a parser: an EMPTY value is a real answer here,
+    /// because that is how `session_destroy()` clears the cookie.
+    fn cookie_pair_value(header: &str, name: &str) -> Option<String> {
+        header.split(';').find_map(|part| {
+            let (key, value) = part.trim().split_once('=')?;
+            (key.trim() == name).then(|| value.to_string())
+        })
     }
 
     fn value_as_string(value: &Value) -> String {
@@ -677,7 +517,35 @@ mod tests {
                 Value::Null
             }),
         );
-        
+
+        // `echo` reaches the response through the WASI stdout stream, exactly
+        // as `run_vm` binds it. Without this the harness only ever saw
+        // `wasi:logging` and every script's real output was dropped on the
+        // floor — assertions on `echo` compared `[]` against `[]`-shaped
+        // expectations only by accident.
+        let stdout_out = Arc::clone(&output);
+        vm.register_host_fn(
+            "wasi:cli/stdout",
+            "write-via-stream",
+            Box::new(move |host_ctx: &mut HostContext, args: &[Value]| {
+                let stream = args.first().cloned().unwrap_or(Value::Null);
+                let bytes = host_ctx.stream_drain(&stream);
+                if !bytes.is_empty() {
+                    stdout_out
+                        .lock()
+                        .expect("lock output")
+                        .push(String::from_utf8_lossy(&bytes).into_owned());
+                }
+                let (fut, fut_id) = host_ctx.create_future();
+                host_ctx.resolve_future(fut_id, Value::Null);
+                fut
+            }),
+        );
+
+        // Same order as `run_vm`: the request goes out through `wasi:http`
+        // FIRST, because the superglobals the script reads are emitted code
+        // that reads it back.
+        install_wasi_http_request(&mut vm, &ctx);
         inject_superglobals(&mut vm, &ctx);
         let _guard = vybe_platform_node::http::install_context(Arc::clone(&ctx));
         vm.run(chunks).expect("run php request");
@@ -693,71 +561,83 @@ mod tests {
         (output, ctx)
     }
 
+    /// `$_SERVER` reaches PHP through the SHARED request primitives.
+    ///
+    /// Asserted from inside a running script rather than by inspecting
+    /// `vm.globals`, because the binding is now emitted code — the walker's
+    /// `SUPERGLOBALS_PRELUDE` calling `common:http_request.environ`, which
+    /// reads `wasi:http`. Reading the global directly would pass even if the
+    /// PHP name were never bound.
     #[test]
-    fn inject_superglobals_adds_server_timing_and_env_keys() {
+    fn server_superglobal_carries_request_and_deployment_keys() {
         let ctx = build_ctx(
             "GET",
             "http://localhost:8080/index.php?foo=bar",
             &[("Host", "localhost:8080")],
             b"",
         );
-        let mut vm = VM::new();
-        inject_superglobals(&mut vm, &ctx);
-
-        let server = map_entries(vm.globals.get("$_SERVER").expect("$_SERVER"));
-        assert_eq!(
-            value_as_string(map_value(&server, "PHP_SELF")),
-            "/index.php"
+        let (out, _ctx) = run_php_request(
+            r#"<?php
+                echo $_SERVER['REQUEST_METHOD'];
+                echo $_SERVER['QUERY_STRING'];
+                echo $_SERVER['SCRIPT_NAME'];
+                echo $_SERVER['HTTP_HOST'];
+                echo $_SERVER['SERVER_ADDR'];
+            "#,
+            ctx,
         );
         assert_eq!(
-            value_as_string(map_value(&server, "SCRIPT_NAME")),
-            "/index.php"
+            out,
+            vec![
+                "GET".to_string(),
+                "foo=bar".to_string(),
+                "/index.php".to_string(),
+                "localhost:8080".to_string(),
+                "127.0.0.1".to_string(),
+            ],
+            "message keys come from wasi:http, deployment keys from the transport"
         );
-        assert_eq!(
-            value_as_string(map_value(&server, "SCRIPT_FILENAME")),
-            "/tmp/index.php"
-        );
-        assert_eq!(
-            value_as_string(map_value(&server, "PATH_TRANSLATED")),
-            "/tmp/index.php"
-        );
-        assert_eq!(
-            value_as_string(map_value(&server, "DOCUMENT_URI")),
-            "/index.php"
-        );
-        assert_eq!(
-            value_as_string(map_value(&server, "SCRIPT_URL")),
-            "/index.php"
-        );
-        assert_eq!(
-            value_as_string(map_value(&server, "SCRIPT_URI")),
-            "http://localhost:8080/index.php?foo=bar"
-        );
-        assert_eq!(
-            value_as_string(map_value(&server, "HTTP_HOST")),
-            "localhost:8080"
-        );
-        assert_eq!(
-            value_as_string(map_value(&server, "REQUEST_SCHEME")),
-            "http"
-        );
-        assert_eq!(
-            value_as_string(map_value(&server, "SERVER_ADDR")),
-            "127.0.0.1"
-        );
-        assert_eq!(
-            value_as_string(map_value(&server, "REMOTE_HOST")),
-            "127.0.0.1"
-        );
-        assert!(!value_as_string(map_value(&server, "REQUEST_TIME")).is_empty());
-        assert!(!value_as_string(map_value(&server, "REQUEST_TIME_FLOAT")).is_empty());
-
-        let env = map_entries(vm.globals.get("$_ENV").expect("$_ENV"));
-        assert!(env.contains_key("HOME") || env.contains_key("PATH"));
     }
 
+    /// `$_GET` is the query string parsed by `common:http_request.query_params`.
     #[test]
-    fn inject_superglobals_uses_resolved_script_name_for_directory_indexes() {
+    fn get_superglobal_is_parsed_from_the_query_string() {
+        let ctx = build_ctx(
+            "GET",
+            "http://localhost:8080/index.php?name=ada&lang=php",
+            &[("Host", "localhost:8080")],
+            b"",
+        );
+        let (out, _ctx) = run_php_request(
+            r#"<?php echo $_GET['name']; echo $_GET['lang'];"#,
+            ctx,
+        );
+        assert_eq!(out, vec!["ada".to_string(), "php".to_string()]);
+    }
+
+    /// `$_COOKIE` is the `Cookie:` header parsed by `common:http_cookie.parse`.
+    #[test]
+    fn cookie_superglobal_is_parsed_from_the_request_header() {
+        let ctx = build_ctx(
+            "GET",
+            "http://localhost:8080/index.php",
+            &[("Host", "localhost:8080"), ("Cookie", "theme=dark; lang=fr")],
+            b"",
+        );
+        let (out, _ctx) = run_php_request(
+            r#"<?php echo $_COOKIE['theme']; echo $_COOKIE['lang'];"#,
+            ctx,
+        );
+        assert_eq!(out, vec!["dark".to_string(), "fr".to_string()]);
+    }
+
+    /// A directory index resolves `SCRIPT_NAME`/`PHP_SELF` to the real file.
+    ///
+    /// `wasi:http` knows the request target (`/genie/`); only the transport
+    /// knows it resolved to `/genie/index.php`, so this is the deployment half
+    /// of the CGI environment and it must survive the merge.
+    #[test]
+    fn a_directory_index_reports_the_resolved_script_name() {
         let req = Request::builder()
             .method("GET")
             .uri("http://localhost:8080/genie/")
@@ -777,26 +657,21 @@ mod tests {
             "http",
         );
 
-        let mut vm = VM::new();
-        inject_superglobals(&mut vm, &built.ctx);
-
-        let server = map_entries(vm.globals.get("$_SERVER").expect("$_SERVER"));
-        assert_eq!(
-            value_as_string(map_value(&server, "REQUEST_URI")),
-            "http://localhost:8080/genie/"
+        let (out, _ctx) = run_php_request(
+            r#"<?php echo $_SERVER['SCRIPT_NAME']; echo $_SERVER['PHP_SELF'];"#,
+            built.ctx,
         );
         assert_eq!(
-            value_as_string(map_value(&server, "SCRIPT_NAME")),
-            "/genie/index.php"
-        );
-        assert_eq!(
-            value_as_string(map_value(&server, "PHP_SELF")),
-            "/genie/index.php"
+            out,
+            vec!["/genie/index.php".to_string(), "/genie/index.php".to_string()]
         );
     }
 
+    /// `$_POST`/`$_FILES` come from `common:http_form.*` reading the
+    /// `wasi:http` body — the Rust multipart parser this replaced could only
+    /// ever be reached by PHP under `--serve`.
     #[test]
-    fn inject_superglobals_parses_multipart_into_post_and_files() {
+    fn multipart_reaches_post_and_files() {
         let boundary = "----vybex-boundary";
         let body = format!(
             "--{boundary}\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nhello\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"upload\"; filename=\"note.txt\"\r\nContent-Type: text/plain\r\n\r\nabcde\r\n--{boundary}--\r\n"
@@ -813,22 +688,50 @@ mod tests {
             ],
             body.as_bytes(),
         );
-        let mut vm = VM::new();
-        inject_superglobals(&mut vm, &ctx);
+        let (out, _ctx) = run_php_request(
+            r#"<?php
+                echo $_POST['title'];
+                echo $_FILES['upload']['name'];
+                echo $_FILES['upload']['type'];
+                echo $_FILES['upload']['size'];
+            "#,
+            ctx,
+        );
+        assert_eq!(
+            out,
+            vec![
+                "hello".to_string(),
+                "note.txt".to_string(),
+                "text/plain".to_string(),
+                "5".to_string(),
+            ]
+        );
+    }
 
-        let post = map_entries(vm.globals.get("$_POST").expect("$_POST"));
-        assert_eq!(value_as_string(map_value(&post, "title")), "hello");
-
-        let files = map_entries(vm.globals.get("$_FILES").expect("$_FILES"));
-        let upload = map_entries(map_value(&files, "upload"));
-        assert_eq!(value_as_string(map_value(&upload, "name")), "note.txt");
-        assert_eq!(value_as_string(map_value(&upload, "type")), "text/plain");
-        assert_eq!(value_as_string(map_value(&upload, "size")), "5");
-        let tmp_name = value_as_string(map_value(&upload, "tmp_name"));
-        assert!(!tmp_name.is_empty(), "tmp_name should not be empty");
-        assert!(
-            std::fs::metadata(tmp_name).is_ok(),
-            "uploaded tmp file should exist"
+    /// `$_REQUEST` merges the three, in PHP's documented order.
+    #[test]
+    fn request_superglobal_merges_get_post_and_cookie() {
+        let ctx = build_ctx(
+            "POST",
+            "http://localhost:8080/index.php?a=fromget",
+            &[
+                ("Host", "localhost:8080"),
+                ("Content-Type", "application/x-www-form-urlencoded"),
+                ("Cookie", "c=fromcookie"),
+            ],
+            b"b=frompost",
+        );
+        let (out, _ctx) = run_php_request(
+            r#"<?php echo $_REQUEST['a']; echo $_REQUEST['b']; echo $_REQUEST['c'];"#,
+            ctx,
+        );
+        assert_eq!(
+            out,
+            vec![
+                "fromget".to_string(),
+                "frompost".to_string(),
+                "fromcookie".to_string()
+            ]
         );
     }
 
@@ -862,11 +765,8 @@ mod tests {
                 .map(|(_, value)| value.clone())
                 .expect("set-cookie header")
         };
-        let session_id = parse_cookie_header(&cookie)
-            .into_iter()
-            .find(|(name, _)| name == PHP_SESSION_COOKIE_NAME)
-            .map(|(_, value)| value)
-            .expect("session id from cookie");
+        let session_id =
+            cookie_pair_value(&cookie, PHP_SESSION_COOKIE_NAME).expect("session id from cookie");
         assert_eq!(
             first_vm
                 .globals
@@ -919,11 +819,8 @@ mod tests {
                 .map(|(_, value)| value.clone())
                 .expect("set-cookie header")
         };
-        let session_id = parse_cookie_header(&cookie)
-            .into_iter()
-            .find(|(name, _)| name == PHP_SESSION_COOKIE_NAME)
-            .map(|(_, value)| value)
-            .expect("session id from cookie");
+        let session_id =
+            cookie_pair_value(&cookie, PHP_SESSION_COOKIE_NAME).expect("session id from cookie");
         persist_superglobals(&first_vm, &first_ctx);
         assert!(PHP_SESSION_STORE.get(&session_id).is_some());
 
@@ -948,10 +845,7 @@ mod tests {
                 .map(|(_, value)| value.clone())
                 .expect("cleared set-cookie header")
         };
-        let cleared_value = parse_cookie_header(&cleared_cookie)
-            .into_iter()
-            .find(|(name, _)| name == PHP_SESSION_COOKIE_NAME)
-            .map(|(_, value)| value)
+        let cleared_value = cookie_pair_value(&cleared_cookie, PHP_SESSION_COOKIE_NAME)
             .expect("cleared php session cookie");
         assert!(cleared_value.is_empty());
     }
@@ -999,4 +893,145 @@ mod tests {
         let (out, _ctx) = run_php_request(r#"<?php echo 'before'; exit; echo 'after';"#, ctx);
         assert_eq!(out, vec!["before".to_string()]);
     }
+}
+
+
+/// Globals holding this request's `wasi:http` handles.
+///
+/// The spec has the HOST create `incoming-request` / `response-outparam` and
+/// hand them to the guest — for a component that is `incoming-handler.handle`'s
+/// two arguments. `vybex --serve` compiles a SCRIPT rather than a component, so
+/// there is no export to call: the handles are published as globals under
+/// reserved names instead, and the request-shaping primitives read them.
+pub const WASI_REQUEST_GLOBAL: &str = "__wasi_http_incoming_request";
+pub const WASI_RESPONSE_OUT_GLOBAL: &str = "__wasi_http_response_out";
+
+/// Build the `wasi:http` view of this request and expose it to the VM.
+fn install_wasi_http_request(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
+    let headers: Vec<(String, Vec<u8>)> = ctx
+        .headers
+        .iter()
+        .map(|(name, value)| (name.clone(), value.as_bytes().to_vec()))
+        .collect();
+
+    // Mirror rather than consume: the legacy streaming reader is still the
+    // one `node:http.body_read` serves.
+    let body = ctx
+        .body
+        .lock()
+        .map(|reader| reader.peek_all().to_vec())
+        .unwrap_or_default();
+
+    publish_wasi_request(
+        vm, &ctx.method, &ctx.path, &ctx.query, &ctx.scheme, &ctx.host, headers, body,
+    );
+    publish_server_env(vm, ctx);
+}
+
+/// Publish the DEPLOYMENT half of the CGI environment.
+///
+/// `wasi:http` models the message; it has no document root, script path,
+/// server identity, peer address or protocol version. Those come from the
+/// transport — under their standard CGI names, so the map is language-neutral
+/// and `primitives/http_request_env` merges it without renaming anything.
+/// The message-derived keys (`REQUEST_METHOD`, `PATH_INFO`, `HTTP_*`, …) are
+/// NOT set here: the primitive derives them from `wasi:http` so every language
+/// gets them, including ones that never run under this server.
+fn publish_server_env(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
+    use indexmap::IndexMap;
+    use vybe_runtime::Value;
+    use vybe_runtime::value::{Object, ObjectKind};
+
+    const DEPLOYMENT_KEYS: &[&str] = &[
+        "DOCUMENT_ROOT",
+        "DOCUMENT_URI",
+        "GATEWAY_INTERFACE",
+        "PATH_TRANSLATED",
+        "PHP_SELF",
+        "REMOTE_HOST",
+        "REQUEST_TIME",
+        "REQUEST_TIME_FLOAT",
+        "SCRIPT_FILENAME",
+        "SCRIPT_NAME",
+        "SCRIPT_URI",
+        "SCRIPT_URL",
+        "SERVER_ADDR",
+        "SERVER_ADMIN",
+        "SERVER_PORT",
+        "SERVER_PROTOCOL",
+        "SERVER_SIGNATURE",
+        "SERVER_SOFTWARE",
+    ];
+
+    let mut entries: IndexMap<Value, Value> = IndexMap::new();
+    for key in DEPLOYMENT_KEYS {
+        if let Some(value) = ctx.env.get(*key) {
+            entries.insert(
+                Value::String(std::sync::Arc::from(*key)),
+                Value::String(std::sync::Arc::from(value.as_str())),
+            );
+        }
+    }
+    // Peer address is the socket's, not the message's.
+    entries.insert(
+        Value::String(std::sync::Arc::from("REMOTE_ADDR")),
+        Value::String(std::sync::Arc::from(ctx.remote_addr.as_str())),
+    );
+    entries.insert(
+        Value::String(std::sync::Arc::from("REMOTE_PORT")),
+        Value::String(std::sync::Arc::from(ctx.remote_port.to_string().as_str())),
+    );
+
+    let mut object = Object::new();
+    object.kind = ObjectKind::Map(entries);
+    vm.globals.insert(
+        vybe_compiler::primitives::http_request_env::SERVER_ENV_GLOBAL.to_string(),
+        Value::Object(vybe_runtime::heap::alloc(object)),
+    );
+}
+
+/// Map raw request parts onto `wasi:http` handles and publish them as globals.
+///
+/// Split out from [`install_wasi_http_request`] so the MAPPING is testable
+/// without a hyper request: joining path+query, deriving the authority, and
+/// treating an empty scheme as absent are all places to get the spec wrong.
+#[allow(clippy::too_many_arguments)]
+pub fn publish_wasi_request(
+    vm: &mut vybe_runtime::VM,
+    method: &str,
+    path: &str,
+    query: &str,
+    scheme: &str,
+    host: &str,
+    headers: Vec<(String, Vec<u8>)>,
+    body: Vec<u8>,
+) -> (u32, u32) {
+    // §incoming-request.path-with-query is the path AND query together.
+    let path_with_query = if query.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}?{query}")
+    };
+
+    // `scheme` and `authority` are `option<…>`: empty means absent, not "".
+    let scheme = (!scheme.is_empty()).then(|| scheme.to_string());
+    let authority = (!host.is_empty()).then(|| host.to_string());
+
+    let request_id = vybe_platform_wasi::http::push_incoming_request(
+        method,
+        Some(path_with_query),
+        scheme,
+        authority,
+        headers,
+        body,
+    );
+    let param_id = vybe_platform_wasi::http::push_response_outparam();
+
+    if let Some(value) = vybe_platform_wasi::http::incoming_request_value(vm, request_id) {
+        vm.globals.insert(WASI_REQUEST_GLOBAL.to_string(), value);
+    }
+    if let Some(value) = vybe_platform_wasi::http::response_outparam_value(vm, param_id) {
+        vm.globals.insert(WASI_RESPONSE_OUT_GLOBAL.to_string(), value);
+    }
+    (request_id, param_id)
 }

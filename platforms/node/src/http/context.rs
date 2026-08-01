@@ -41,6 +41,16 @@ impl RequestBodyReader {
         self.length
     }
 
+    /// The whole body WITHOUT advancing the read cursor.
+    ///
+    /// `read`/`read_all` consume; this mirrors. Needed so the same request can
+    /// be published as a `wasi:http` `incoming-request` (whose `consume` hands
+    /// the guest its own body resource) while the existing streaming reader
+    /// stays untouched.
+    pub fn peek_all(&self) -> &[u8] {
+        self.inner.get_ref()
+    }
+
     pub fn eof(&self) -> bool {
         self.inner.position() as usize >= self.inner.get_ref().len()
     }

@@ -1164,7 +1164,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // and concatenates. `argc` includes the format string; trailing
         // args are packed into a local array indexed by placeholder N.
         "php.isset_all" => emit_isset_all(&mut chunks[current], argc, line),
+        "php.setcookie" => {
+            crate::emitter::misc_adapter::emit_php_setcookie(chunks, current, argc, line)
+        }
+        "php.setrawcookie" => {
+            crate::emitter::misc_adapter::emit_php_setrawcookie(chunks, current, argc, line)
+        }
         "php.header" => crate::emitter::misc_adapter::emit_php_header(chunks, current, argc, line),
+        "php.http_response_code" => {
+            crate::emitter::misc_adapter::emit_php_http_response_code(chunks, current, argc, line)
+        }
         "php.extension_loaded" => {
             crate::emitter::misc_adapter::emit_php_extension_loaded(chunks, current, argc, line)
         }

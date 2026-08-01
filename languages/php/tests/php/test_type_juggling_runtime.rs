@@ -456,3 +456,59 @@ echo " 1" <=> "1";
         ["0"]
     };
 }
+
+// ── `==` on VARIABLES, not just literals ───────────────────────────────────
+//
+// `$a == $b` on two equal strings answered a raw, untyped `0`. The walker
+// rewrote `==` into a `__php_loose_eq(...)` CALL, and that identifier resolved
+// to a PHP-SOURCE prelude gated by a substring scan of the AST text — never to
+// the `emit_php_loose_eq` emitter, which the profile did not declare. Literals
+// were unaffected because they constant-fold before any call is built, which is
+// exactly why every existing `==` test passed and the bug survived.
+//
+// `==` is now `[builtin_slots.string] eq` and stays a `BinOp` (§3i).
+crate::php_cases! {
+    loose_equal_two_equal_string_variables => {
+        r#"<?php
+$a = 'demo'; $b = 'demo';
+var_dump($a == $b);
+"#,
+        ["bool(true)"]
+    };
+
+    loose_equal_two_different_string_variables => {
+        r#"<?php
+$a = 'demo'; $b = 'other';
+var_dump($a == $b);
+"#,
+        ["bool(false)"]
+    };
+
+    not_equal_two_equal_string_variables => {
+        r#"<?php
+$a = 'demo'; $b = 'demo';
+var_dump($a != $b);
+"#,
+        ["bool(false)"]
+    };
+
+    // The coercion `==` is FOR — still intact on variables.
+    loose_equal_numeric_string_and_int_variables => {
+        r#"<?php
+$a = '1'; $b = 1;
+var_dump($a == $b);
+"#,
+        ["bool(true)"]
+    };
+
+    // An array subscript is the shape this was first reported from
+    // (`$user[0] == $username`).
+    loose_equal_array_element_against_variable => {
+        r#"<?php
+$user = ['demo', 'x'];
+$name = 'demo';
+var_dump($user[0] == $name);
+"#,
+        ["bool(true)"]
+    };
+}

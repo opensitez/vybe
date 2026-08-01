@@ -113,11 +113,181 @@ fn set_struct_from_slot(chunk: &mut Chunk, obj_slot: u16, key: &str, value_slot:
     struct_set_key(chunk, key, line);
 }
 
+/// Apply one PHP `header()` line through Node's response API.
+///
+/// PHP hands `header()` a RAW field line — `"Content-Type: text/plain"`, or a
+/// status line `"HTTP/1.1 404 Not Found"`. Splitting that is PHP's semantics,
+/// so it happens here. Node's response object has `setHeader`, `appendHeader`
+/// and `statusCode` and nothing that takes a raw line, so a `send_header_raw`
+/// host function was PHP's `header()` wearing a Node badge.
+fn emit_apply_header(
+    chunks: &mut [Chunk],
+    current: usize,
+    header_slot: u16,
+    replace_slot: Option<u16>,
+    line: u32,
+) {
+    let set_status = chunks[0].add_import("node:http".to_string(), "set_status".to_string());
+    let set_header = chunks[0].add_import("node:http".to_string(), "set_header".to_string());
+    let add_header = chunks[0].add_import("node:http".to_string(), "add_header".to_string());
+    let index_of = chunks[0].add_import("ecma:string".to_string(), "indexOf".to_string());
+    let starts_with = chunks[0].add_import("ecma:string".to_string(), "startsWith".to_string());
+    let substring = chunks[0].add_import("wasm:js-string".to_string(), "substring".to_string());
+    let length = chunks[0].add_import("wasm:js-string".to_string(), "length".to_string());
+    let trim = chunks[0].add_import("ecma:string".to_string(), "trim".to_string());
+    let to_number = chunks[0].add_import("ecma:value".to_string(), "toNumber".to_string());
+
+    let at = alloc_local(&mut chunks[current]);
+    let rest = alloc_local(&mut chunks[current]);
+    let name_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+
+    lget(chunk, header_slot, line);
+    push_str(chunk, "HTTP/", line);
+    chunk.emit_call(starts_with, 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+
+    // Status line: the code is the token between the first two spaces.
+    lget(chunk, header_slot, line);
+    push_str(chunk, " ", line);
+    chunk.emit_call(index_of, 2, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    lset(chunk, at, line);
+
+    lget(chunk, header_slot, line);
+    lget(chunk, at, line);
+    lget(chunk, header_slot, line);
+    chunk.emit_call(length, 1, line);
+    chunk.emit_call(substring, 3, line);
+    lset(chunk, rest, line);
+
+    lget(chunk, rest, line);
+    push_str(chunk, " ", line);
+    chunk.emit_call(index_of, 2, line);
+    lset(chunk, at, line);
+
+    lget(chunk, at, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::I32_GT_S, line);
+    chunk.emit_if(line);
+    lget(chunk, rest, line);
+    chunk.emit_i32_const(0, line);
+    lget(chunk, at, line);
+    chunk.emit_call(substring, 3, line);
+    chunk.emit_else(line);
+    lget(chunk, rest, line);
+    chunk.emit_end(line);
+    chunk.emit_call(to_number, 1, line);
+    chunk.emit_call(set_status, 1, line);
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_else(line);
+
+    // Field line: `Name: value`, split at the FIRST colon so values keeping
+    // their own colons (`Location: http://…`) survive intact.
+    lget(chunk, header_slot, line);
+    push_str(chunk, ":", line);
+    chunk.emit_call(index_of, 2, line);
+    lset(chunk, at, line);
+
+    lget(chunk, at, line);
+    chunk.emit_i32_const(0, line);
+    chunk.emit_op(Op::I32_GT_S, line);
+    chunk.emit_if(line);
+
+    lget(chunk, header_slot, line);
+    chunk.emit_i32_const(0, line);
+    lget(chunk, at, line);
+    chunk.emit_call(substring, 3, line);
+    chunk.emit_call(trim, 1, line);
+    lset(chunk, name_slot, line);
+
+    lget(chunk, name_slot, line);
+    lget(chunk, header_slot, line);
+    lget(chunk, at, line);
+    chunk.emit_i32_const(1, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    lget(chunk, header_slot, line);
+    chunk.emit_call(length, 1, line);
+    chunk.emit_call(substring, 3, line);
+    chunk.emit_call(trim, 1, line);
+
+    // `replace` defaults to true — PHP replaces a same-named header unless
+    // told otherwise, which is `setHeader` vs `appendHeader` in Node.
+    match replace_slot {
+        Some(slot) => {
+            lget(chunk, slot, line);
+            vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+            chunk.emit_if(line);
+            chunk.emit_call(set_header, 2, line);
+            chunk.emit_else(line);
+            chunk.emit_call(add_header, 2, line);
+            chunk.emit_end(line);
+        }
+        None => chunk.emit_call(set_header, 2, line),
+    }
+    chunk.emit_op(Op::DROP, line);
+
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
+/// PHP `http_response_code()` — get with no argument, set with one.
+///
+/// Arity-based get/set is PHP's calling convention, not Node's. Node has a
+/// `statusCode` property, which is `node:http`'s `status` / `set_status`; a
+/// combined `http_response_code` host function was PHP's function name sitting
+/// in Node's namespace.
+pub fn emit_php_http_response_code(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let status = chunks[0].add_import("node:http".to_string(), "status".to_string());
+    let set_status = chunks[0].add_import("node:http".to_string(), "set_status".to_string());
+    let chunk = &mut chunks[current];
+
+    // PHP answers 200 when nothing has set a status; Node's `statusCode`
+    // reports 0 for "unset". The default is PHP's, so it is applied here — the
+    // old host function baked it into `node:http` instead.
+    if argc == 0 {
+        emit_status_or_default(chunk, status, line);
+        return;
+    }
+
+    // Setting: `http_response_code(404)`. A zero or absent code is a read, the
+    // same way the host function behaved.
+    let code = alloc_local(chunk);
+    lset(chunk, code, line);
+    lget(chunk, code, line);
+    push_const(chunk, Value::F64(0.0), line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, code, line);
+    chunk.emit_call(set_status, 1, line);
+    chunk.emit_op(Op::DROP, line);
+    lget(chunk, code, line);
+    chunk.emit_else(line);
+    emit_status_or_default(chunk, status, line);
+    chunk.emit_end(line);
+}
+
+/// Node's `statusCode`, or PHP's 200 default when nothing has set one.
+fn emit_status_or_default(chunk: &mut Chunk, status: u16, line: u32) {
+    let current = alloc_local(chunk);
+    chunk.emit_call(status, 0, line);
+    lset(chunk, current, line);
+    lget(chunk, current, line);
+    push_const(chunk, Value::F64(0.0), line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, current, line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::F64(200.0), line);
+    chunk.emit_end(line);
+}
+
 pub fn emit_php_header(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let send_header_import =
-        chunks[0].add_import("node:http".to_string(), "send_header_raw".to_string());
-    let response_code_import =
-        chunks[0].add_import("node:http".to_string(), "http_response_code".to_string());
+    let set_status_import = chunks[0].add_import("node:http".to_string(), "set_status".to_string());
+    let status_import = chunks[0].add_import("node:http".to_string(), "status".to_string());
     let string_import = chunks[0].add_import("ecma:string".to_string(), "String".to_string());
     let lower_import = chunks[0].add_import("ecma:string".to_string(), "toLowerCase".to_string());
     let starts_with_import =
@@ -144,15 +314,21 @@ pub fn emit_php_header(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     }
     lset(chunk, header_slot, line);
 
-    lget(chunk, header_slot, line);
-    if let Some(slot) = replace_slot {
-        lget(chunk, slot, line);
-    }
+    emit_apply_header(chunks, current, header_slot, replace_slot, line);
+
+    // `header($h, $replace, $code)` — an explicit third argument sets the
+    // status outright.
+    let chunk = &mut chunks[current];
     if let Some(slot) = response_code_slot {
         lget(chunk, slot, line);
+        push_const(chunk, Value::F64(0.0), line);
+        vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+        chunk.emit_if(line);
+        lget(chunk, slot, line);
+        chunk.emit_call(set_status_import, 1, line);
+        chunk.emit_op(Op::DROP, line);
+        chunk.emit_end(line);
     }
-    chunk.emit_call(send_header_import, argc, line);
-    chunk.emit_op(Op::DROP, line);
 
     if let Some(slot) = response_code_slot {
         lget(chunk, slot, line);
@@ -169,13 +345,13 @@ pub fn emit_php_header(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
-    chunk.emit_call(response_code_import, 0, line);
+    chunk.emit_call(status_import, 0, line);
     push_const(chunk, Value::F64(200.0), line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
 
     push_const(chunk, Value::F64(302.0), line);
-    chunk.emit_call(response_code_import, 1, line);
+    chunk.emit_call(set_status_import, 1, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);
@@ -286,7 +462,6 @@ pub fn emit_php_phpinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 }
 
 pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let set_cookie_import = chunks[0].add_import("node:http".to_string(), "set_cookie".to_string());
     let map_new_import = chunks[0].add_import("ecma:map".to_string(), "new".to_string());
     let chunk = &mut chunks[current];
     let needs_cookie = chunk.add_constant(Value::String(Arc::from("__php_session_needs_cookie")));
@@ -300,6 +475,20 @@ pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, l
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_op_u16(Op::GLOBAL_SET, destroyed, line);
 
+    // Mirror the lifecycle into the SHARED session primitive's global so
+    // `session_status()` — which dispatches to `common:http_session.status` —
+    // reports ACTIVE. Without this it kept answering "not started" right after
+    // a successful `session_start()`.
+    let status = chunk.add_constant(Value::String(Arc::from(
+        vybe_compiler::primitives::http_session::SESSION_STATUS_GLOBAL,
+    )));
+    push_const(
+        chunk,
+        Value::I32(vybe_compiler::primitives::http_session::STATUS_ACTIVE),
+        line,
+    );
+    chunk.emit_op_u16(Op::GLOBAL_SET, status, line);
+
     chunk.emit_op_u16(Op::GLOBAL_GET, session, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
@@ -311,14 +500,43 @@ pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, l
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
+    // The session id goes out RAW. Real PHP does not URL-encode session ids,
+    // and an encoded cookie would disagree with what `session_id()` returns —
+    // the value apps compare against and put in URLs.
     push_str(chunk, "PHPSESSID", line);
     chunk.emit_op_u16(Op::GLOBAL_GET, session_id, line);
-    chunk.emit_call(set_cookie_import, 2, line);
-    chunk.emit_op(Op::DROP, line);
+    // No expiry: a session cookie lives until the browser closes.
+    vybe_compiler::primitives::http_cookie::emit_serialize(chunks, current, 2, line);
+    emit_send_cookie(chunks, current, line);
+
+    let chunk = &mut chunks[current];
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_op_u16(Op::GLOBAL_SET, needs_cookie, line);
     chunk.emit_end(line);
     push_const(chunk, Value::Bool(true), line);
+}
+
+/// Send the serialized cookie on the stack as a `Set-Cookie` header.
+/// Stack: `[cookie]` → `[]`.
+///
+/// `add_header` is Node's `appendHeader`. Every other header replaces a
+/// same-named one; `Set-Cookie` is the header that cannot be combined, so each
+/// cookie is its own field line and replacing would silently drop all but the
+/// last (RFC 6265 §3.1, RFC 9110 §5.3).
+///
+/// The cookie itself is built by `primitives/http_cookie.rs`. Nothing here
+/// spells a cookie by hand: `session_start` and `session_destroy` used to
+/// concatenate their own `Set-Cookie: PHPSESSID=…` literals while
+/// `setcookie()` next door went through the shared serializer.
+fn emit_send_cookie(chunks: &mut [Chunk], current: usize, line: u32) {
+    let add_header = chunks[0].add_import("node:http".to_string(), "add_header".to_string());
+    let cookie_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+    lset(chunk, cookie_slot, line);
+    push_str(chunk, "Set-Cookie", line);
+    lget(chunk, cookie_slot, line);
+    chunk.emit_call(add_header, 2, line);
+    chunk.emit_op(Op::DROP, line);
 }
 
 pub fn emit_php_session_unset(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
@@ -331,8 +549,18 @@ pub fn emit_php_session_unset(chunks: &mut [Chunk], current: usize, _argc: u8, l
 
 pub fn emit_php_session_destroy(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     emit_php_session_unset(chunks, current, 0, line);
-    let set_cookie_import = chunks[0].add_import("node:http".to_string(), "set_cookie".to_string());
     let chunk = &mut chunks[current];
+    // Close the session in the shared primitive too, so `session_status()`
+    // stops reporting ACTIVE.
+    let status = chunk.add_constant(Value::String(Arc::from(
+        vybe_compiler::primitives::http_session::SESSION_STATUS_GLOBAL,
+    )));
+    push_const(
+        chunk,
+        Value::I32(vybe_compiler::primitives::http_session::STATUS_NONE),
+        line,
+    );
+    chunk.emit_op_u16(Op::GLOBAL_SET, status, line);
     let started = chunk.add_constant(Value::String(Arc::from("__php_session_started")));
     let destroyed = chunk.add_constant(Value::String(Arc::from("__php_session_destroyed")));
     let needs_cookie = chunk.add_constant(Value::String(Arc::from("__php_session_needs_cookie")));
@@ -345,11 +573,27 @@ pub fn emit_php_session_destroy(chunks: &mut [Chunk], current: usize, _argc: u8,
     push_const(chunk, Value::Bool(false), line);
     chunk.emit_op_u16(Op::GLOBAL_SET, needs_cookie, line);
 
+    // Deleting a cookie means expiring it in the past (RFC 6265 §3.1) — an
+    // empty value alone leaves the cookie in the jar. The date formatting is
+    // the shared serializer's (`expires_becomes_an_http_date`), not a literal
+    // spelled out here.
     push_str(chunk, "PHPSESSID", line);
     push_str(chunk, "", line);
-    chunk.emit_call(set_cookie_import, 2, line);
-    chunk.emit_op(Op::DROP, line);
-    push_const(chunk, Value::Bool(true), line);
+    let attrs = chunks[0].add_import("ecma:map".to_string(), "new".to_string());
+    chunks[current].emit_call(attrs, 0, line);
+    let attrs_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+    lset(chunk, attrs_slot, line);
+    lget(chunk, attrs_slot, line);
+    push_str(chunk, "expires", line);
+    push_const(chunk, Value::F64(1.0), line);
+    vybe_compiler::primitives::collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    lget(&mut chunks[current], attrs_slot, line);
+    vybe_compiler::primitives::http_cookie::emit_serialize(chunks, current, 3, line);
+    emit_send_cookie(chunks, current, line);
+
+    push_const(&mut chunks[current], Value::Bool(true), line);
 }
 
 fn helper_loop_start(chunk: &mut Chunk, line: u32) -> vybe_compiler::primitives::loops::LoopState {
@@ -1534,4 +1778,67 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
 
     // Return the struct
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+}
+
+
+/// PHP `setcookie($name, $value, $options)`.
+///
+/// PHP URL-ENCODES the value here (`urlencode`, so `-_.` survive and a space
+/// becomes `+`); `setrawcookie()` is the same call without that step. That
+/// choice is PHP's, which is why it lives in this adapter and not in
+/// `primitives/http_cookie.rs` — the primitive serializes verbatim.
+pub fn emit_php_setcookie(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_setcookie_inner(chunks, current, argc, true, line);
+}
+
+/// PHP `setrawcookie()` — the value is sent exactly as given.
+pub fn emit_php_setrawcookie(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_setcookie_inner(chunks, current, argc, false, line);
+}
+
+fn emit_setcookie_inner(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    encode_value: bool,
+    line: u32,
+) {
+    let attrs_slot = if argc >= 3 {
+        Some(alloc_local(&mut chunks[current]))
+    } else {
+        None
+    };
+    let value_slot = alloc_local(&mut chunks[current]);
+    let name_slot = alloc_local(&mut chunks[current]);
+
+    if let Some(slot) = attrs_slot {
+        lset(&mut chunks[current], slot, line);
+    }
+    if argc >= 2 {
+        lset(&mut chunks[current], value_slot, line);
+    } else {
+        push_str(&mut chunks[current], "", line);
+        lset(&mut chunks[current], value_slot, line);
+    }
+    lset(&mut chunks[current], name_slot, line);
+
+    lget(&mut chunks[current], name_slot, line);
+    lget(&mut chunks[current], value_slot, line);
+    if encode_value {
+        crate::emitter::string_adapter::emit_urlencode(chunks, current, 1, line);
+    }
+    if let Some(slot) = attrs_slot {
+        lget(&mut chunks[current], slot, line);
+    }
+    vybe_compiler::primitives::http_cookie::emit_serialize(
+        chunks,
+        current,
+        if attrs_slot.is_some() { 3 } else { 2 },
+        line,
+    );
+
+    // Reuse the ordinary header path — a cookie is just a `Set-Cookie` header,
+    // which is why writing one needs no host function of its own.
+    emit_send_cookie(chunks, current, line);
+    push_const(&mut chunks[current], Value::Bool(true), line);
 }

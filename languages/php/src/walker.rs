@@ -3803,6 +3803,70 @@ function php_uname($mode = 'a') {
 /// while objects/scalars pass straight through (PHP objects ARE references).
 /// The walker wraps aliasing RHS places (`Ident`/`Index`/`Member`) of `=`
 /// assignments in this call; `is_array` is the runtime type test.
+/// Bind PHP's superglobal NAMES to the shared request primitives.
+///
+/// The data is `wasi:http`'s, reached through `primitives/http_request_env`,
+/// `http_form` and `http_cookie` — the same primitives WSGI's `environ` and
+/// Rack's `env` will read. All PHP contributes is the spelling, which is why
+/// this is six assignments and not a parser.
+///
+/// Statement order is load-bearing: [`php_superglobal_prelude`] picks
+/// statements out of this group by index, so a script that only mentions
+/// `$_GET` never drains the request body to build `$_POST`.
+const SUPERGLOBALS_PRELUDE: &str = r##"
+$_SERVER = __vybe_superglobal_server();
+$_GET = __vybe_superglobal_get();
+$_POST = __vybe_superglobal_post();
+$_FILES = __vybe_php_files();
+$_COOKIE = __vybe_superglobal_cookie();
+$_REQUEST = __vybe_superglobal_request();
+function __vybe_php_files() {
+    $out = [];
+    foreach (__vybe_superglobal_files() as $field => $upload) {
+        $out[$field] = [
+            'name' => $upload['filename'],
+            'type' => $upload['type'],
+            'tmp_name' => '',
+            'size' => $upload['size'],
+            'error' => 0,
+        ];
+    }
+    return $out;
+}
+"##;
+
+/// Index of the `$_FILES` statement in [`SUPERGLOBALS_PRELUDE`].
+const SUPERGLOBAL_FILES: usize = 3;
+
+/// Index of the `__vybe_php_files` declaration in [`SUPERGLOBALS_PRELUDE`].
+///
+/// `$_FILES` is the one superglobal whose SHAPE is PHP's rather than shared:
+/// the primitive reports an upload as `filename`/`type`/`size`/`content`, and
+/// `name`/`tmp_name`/`error` are PHP's spellings for it. Renaming in PHP source
+/// keeps that out of `primitives/http_form.rs`, where a `$_FILES` key would be
+/// one language's vocabulary in shared code.
+const SUPERGLOBAL_FILES_HELPER: usize = 6;
+
+/// The superglobal bindings this script actually needs, in prelude order.
+///
+/// Off the request path these all yield empty maps rather than trapping (see
+/// `every_request_op_survives_with_no_request`), which is what real PHP does
+/// on the command line — `$_GET` is `[]`, not an error.
+fn php_superglobal_prelude(names: &[bool; 6]) -> Vec<Statement> {
+    if !names.iter().any(|needed| *needed) {
+        return Vec::new();
+    }
+    let all = cached_php_prelude_group(PhpPreludeGroup::Superglobals);
+    all.into_iter()
+        .enumerate()
+        .filter(|(index, _)| match *index {
+            SUPERGLOBAL_FILES_HELPER => names[SUPERGLOBAL_FILES],
+            other => names[other],
+        })
+        .map(|(_, stmt)| stmt)
+        .collect()
+}
+
 const COPY_ON_ASSIGN_PRELUDE: &str = r##"
 function __php_copy_on_assign($v) {
     // Scalars/null: not Map-backed, nothing to copy.
@@ -3918,6 +3982,9 @@ struct PhpPreludeNeeds {
     ini: bool,
     version: bool,
     copy_on_assign: bool,
+    /// One flag per superglobal, in `SUPERGLOBALS_PRELUDE` order:
+    /// `$_SERVER`, `$_GET`, `$_POST`, `$_FILES`, `$_COOKIE`, `$_REQUEST`.
+    superglobals: [bool; 6],
 }
 
 #[derive(Clone, Copy)]
@@ -3928,6 +3995,7 @@ enum PhpPreludeGroup {
     Ini,
     Version,
     Copy,
+    Superglobals,
 }
 
 /// Parse a PHP prelude source into statements, cached once per process. The
@@ -3942,7 +4010,10 @@ fn cached_php_prelude_group(group: PhpPreludeGroup) -> Vec<Statement> {
     static VERSION: std::sync::OnceLock<Vec<Statement>> = std::sync::OnceLock::new();
     static COPY: std::sync::OnceLock<Vec<Statement>> = std::sync::OnceLock::new();
 
+    static SUPERGLOBALS: std::sync::OnceLock<Vec<Statement>> = std::sync::OnceLock::new();
+
     let (cache, src) = match group {
+        PhpPreludeGroup::Superglobals => (&SUPERGLOBALS, SUPERGLOBALS_PRELUDE),
         PhpPreludeGroup::Exception => (&EXCEPTION, EXCEPTION_PRELUDE),
         PhpPreludeGroup::Url => (&URL, URL_FUNCTIONS_PRELUDE),
         PhpPreludeGroup::Class => (&CLASS, CLASS_HELPERS_PRELUDE),
@@ -3969,7 +4040,9 @@ fn cached_php_prelude_for(stmts: &[Statement]) -> Vec<Statement> {
     if needs.url || needs.ini || needs.version {
         needs.copy_on_assign = true;
     }
-    let mut prelude = Vec::new();
+    // Superglobals bind FIRST: the rest of the prelude is function declarations,
+    // but a `$_SERVER` read in the script body must already see the request.
+    let mut prelude = php_superglobal_prelude(&needs.superglobals);
     if needs.exceptions {
         prelude.append(&mut cached_php_prelude_group(PhpPreludeGroup::Exception));
     }
@@ -4046,6 +4119,17 @@ fn php_prelude_needs(stmts: &[Statement]) -> PhpPreludeNeeds {
     ]
     .iter()
     .any(|name| ast.contains(name));
+
+    // Bind only the superglobals this script names. `$_POST` costs a body read,
+    // so a page that only looks at `$_GET` must not pay for one.
+    for (slot, name) in ["$_SERVER", "$_GET", "$_POST", "$_FILES", "$_COOKIE", "$_REQUEST"]
+        .iter()
+        .enumerate()
+    {
+        needs.superglobals[slot] = ast.contains(name);
+    }
+    // `$_REQUEST` is `$_GET` + `$_POST` + `$_COOKIE` merged, but the MERGE lives
+    // in the primitive, so naming it does not drag the other three in here.
 
     needs.url = [
         "parse_url",
@@ -10944,25 +11028,21 @@ fn walk_left_assoc_binary(pair: Pair<Rule>) -> Result<Expression, String> {
                 );
                 continue;
             }
-            let eq_call = Expression::with_span(
-                ExprKind::Call {
-                    callee: Box::new(Expression::ident("__php_loose_eq")),
-                    args: vec![Argument::positional(left), Argument::positional(right)],
-                    optional: false,
+            // `==` / `!=` used to become a `__php_loose_eq(...)` CALL here,
+            // which took the operator off the shared path entirely — the same
+            // way `<`/`>`/`<=`/`>=` did. The identifier resolved to a PHP-SOURCE
+            // prelude gated by a substring scan of the AST text, not to the
+            // `emit_php_loose_eq` emitter, so `$a == $b` on two equal strings
+            // answered a raw untyped `0`. It now stays a `BinOp` and the shared
+            // emitter reads `[builtin_slots.string] eq` (builtinslotplan.md §3i).
+            left = Expression::with_span(
+                ExprKind::Binary {
+                    op,
+                    left: Box::new(left),
+                    right: Box::new(right),
                 },
                 span.clone(),
             );
-            left = if op == BinOp::NotEq {
-                Expression::with_span(
-                    ExprKind::Unary {
-                        op: UnaryOp::Not,
-                        expr: Box::new(eq_call),
-                    },
-                    span.clone(),
-                )
-            } else {
-                eq_call
-            };
         } else if op == BinOp::InstanceOf
             && right_src.eq_ignore_ascii_case("self")
             && current_class_name().is_some()
