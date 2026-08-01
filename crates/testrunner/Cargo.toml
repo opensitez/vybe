@@ -1,0 +1,20 @@
+[package]
+name = "testrunner"
+version = "0.1.0"
+edition = "2024"
+
+# Deliberately its OWN workspace root, not a member of the repo workspace.
+# The whole point of this crate is to escape the 20-crate relink: it links
+# nothing from Vybe and drives the already-built `vybex` binary as a
+# subprocess, so editing the compiler never rebuilds the runner (and vice
+# versa). `testecma` is a member and pays exactly that cost.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+rayon = "1"
+walkdir = "2"
+
+[[bin]]
+name = "testrunner"
+path = "src/main.rs"
