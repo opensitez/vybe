@@ -34,6 +34,7 @@ pub fn emit_helper(
             if argc >= 2 {
                 chunks[current].emit_op(Op::DROP, line);
             }
+            emit_json_text_coerce(&mut chunks[current], line);
             vybe_compiler::primitives::json::emit_parse_or_null(chunks, current, line);
         }
         "go.regex_split_pat_first" => {
@@ -52,6 +53,41 @@ pub fn emit_helper(
         _ => return false,
     }
     true
+}
+
+/// Leave JSON *text* on the stack for a value that Go types as `[]byte`.
+///
+/// A byte slice has two runtime shapes here: `[]byte(s)` builds a real element
+/// array, while `json.Marshal` hands back the string itself under the same
+/// `[]byte` declared type. Nothing static separates them, so decide at runtime
+/// — text passes through, bytes go through the UTF-8 decoder that pairs with
+/// the `TextEncoder` `[]byte(s)` used to build it.
+///
+/// `__go_io_string_to_bytes` ends in `__go_array_from`, so a Go byte slice is a
+/// PLAIN array — and `web:encoding.decode` reads only ArrayBuffers, typed
+/// arrays and buffer views, returning empty for anything else. Hence the
+/// `newFromIterable` hop; a value that is already a typed array or buffer goes
+/// straight through.
+fn emit_json_text_coerce(chunk: &mut Chunk, line: u32) {
+    let slot = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    host::emit(chunk, "wasm:js-string", "test", 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_else(line);
+    host::emit(chunk, "web:encoding", "decoderNew", 0, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    host::emit(chunk, "ecma:array", "isArray", 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    host::emit(chunk, "ecma:uint8array", "newFromIterable", 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+    chunk.emit_end(line);
+    host::emit(chunk, "web:encoding", "decode", 2, line);
+    chunk.emit_end(line);
 }
 
 fn emit_fmt_sprint(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

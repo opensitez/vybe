@@ -1589,33 +1589,23 @@ class __IOModule:
 io = __IOModule()
 "#;
 
-/// `fnmatch` — shell-style pattern matching. Self-contained iterative matcher
-/// (`*`, `?`) over local strings; `translate` builds a regex-shaped string.
+/// `fnmatch` — shell-style pattern matching.
+///
+/// The MATCHER is no longer here: `__glob_match` is bound to
+/// `common:str_glob_match`, the shared emitter php's `fnmatch` also uses. What
+/// was here was a hand-written iterative `*`/`?` matcher that could not do
+/// `[seq]` classes at all — so `fnmatch("fileA.py", "file[ABC].py")` was False
+/// where real python3 says True. Every test missed it because
+/// `fold_fnmatch_call` CONSTANT-FOLDS literal arguments in Rust, so the prelude
+/// only ran behind a variable, which no test exercised.
+///
+/// `os.path.normcase` is identity on POSIX, so `fnmatch` is case-SENSITIVE here
+/// and identical to `fnmatchcase` — measured, `fnmatch.fnmatch('ABC','abc')` is
+/// False on this platform. The old body lower-cased both sides.
+///
+/// `translate` stays Python: it emits python's OWN regex dialect
+/// (`(?s:…)\Z`), which is a regex-layer question, not a glob one.
 const FNMATCH_PRELUDE: &str = r#"
-def __fn_match(name, pat):
-    ni = 0
-    pi = 0
-    nlen = len(name)
-    plen = len(pat)
-    star_pi = -1
-    star_ni = 0
-    while ni < nlen:
-        if pi < plen and (pat[pi] == name[ni] or pat[pi] == '?'):
-            ni = ni + 1
-            pi = pi + 1
-        elif pi < plen and pat[pi] == '*':
-            star_pi = pi
-            star_ni = ni
-            pi = pi + 1
-        elif star_pi >= 0:
-            pi = star_pi + 1
-            star_ni = star_ni + 1
-            ni = star_ni
-        else:
-            return False
-    while pi < plen and pat[pi] == '*':
-        pi = pi + 1
-    return pi == plen
 def __fn_translate(pat):
     res = ''
     i = 0
@@ -1634,13 +1624,13 @@ def __fn_translate(pat):
     return '(?s:' + res + ')\\Z'
 class __FnmatchModule:
     def fnmatch(self, name, pat):
-        return __fn_match(name.lower(), pat.lower())
+        return __glob_match(name, pat)
     def fnmatchcase(self, name, pat):
-        return __fn_match(name, pat)
+        return __glob_match(name, pat)
     def filter(self, names, pat):
         result = []
         for nm in names:
-            if __fn_match(nm.lower(), pat.lower()):
+            if __glob_match(nm, pat):
                 result.append(nm)
         return result
     def translate(self, pat):
@@ -10056,8 +10046,14 @@ fn rust_fnmatch(name: &str, pattern: &str, case_sensitive: bool) -> bool {
     rec(&n, &p, 0, 0, &mut memo)
 }
 
+/// CPython `fnmatch.translate` — note the DIALECT: `(?s:BODY)\\Z`, not
+/// `^BODY$`. Measured, `fnmatch.translate("*.py")` is `(?s:.*\\.py)\\Z`; this
+/// emitted the ECMA-shaped anchors instead, so python's own regex idiom was
+/// wrong wherever the result was used or printed.
+///
+/// [`fnmatch_generated_regex_to_pattern`] is the inverse and must stay in step.
 fn rust_fnmatch_translate(pattern: &str) -> String {
-    let mut out = String::from("^");
+    let mut out = String::from("(?s:");
     let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0usize;
     while i < chars.len() {
@@ -10100,7 +10096,7 @@ fn rust_fnmatch_translate(pattern: &str) -> String {
         }
         i += 1;
     }
-    out.push('$');
+    out.push_str(")\\Z");
     out
 }
 
@@ -10140,7 +10136,8 @@ fn fold_fnmatch_call(field: &str, args: &[Argument]) -> Option<Expression> {
 }
 
 fn fnmatch_generated_regex_to_pattern(regex: &str) -> Option<String> {
-    let body = regex.strip_prefix('^')?.strip_suffix('$')?;
+    // The inverse of `rust_fnmatch_translate`, so it reads python's dialect.
+    let body = regex.strip_prefix("(?s:")?.strip_suffix(")\\Z")?;
     let chars: Vec<char> = body.chars().collect();
     let mut out = String::new();
     let mut i = 0usize;

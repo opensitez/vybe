@@ -279,7 +279,18 @@ bytes           = { emit = "common:python.bytes",     min_args = 0, max_args = 3
 
 # ── Collections ──────────────────────────────────────────────────────────────
 
-len             = { emit = "common:python.length",         min_args = 1, max_args = 1 }
+# `slot = "len"` says python's `len()` fills the shared `Len` slot. When the
+# argument's built-in type is statically a string, the emit is rewritten to the
+# `[builtin_slots.string] len` binding below — the code-point count. Any other
+# receiver, or one whose type is not statically known, keeps
+# `common:python.length`, which is the runtime-polymorphic path (list, dict,
+# set, bytes). Static specialisation, runtime fallback.
+# `__glob_match(name, pattern)` — the SHARED glob matcher, which the `fnmatch`
+# prelude calls instead of carrying its own. php's `fnmatch` binds the same
+# emitter. Case-SENSITIVE: `os.path.normcase` is identity on POSIX, so python's
+# `fnmatch` and `fnmatchcase` are the same operation here.
+__glob_match    = { emit = "common:str_glob_match",        min_args = 2, max_args = 2 }
+len             = { emit = "common:python.length",         min_args = 1, max_args = 1, slot = "len" }
 range           = { emit = "common:python.range",         min_args = 1, max_args = 3 }
 list            = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
 tuple           = { emit = "host:ecma:array:from",          min_args = 0, max_args = 1 }
@@ -1153,6 +1164,17 @@ set    = ["set", "set[*", "frozenset"]
 # for them.
 [builtin_slots.string]
 contains = "host:ecma:string:includes"
+# Python counts CODE POINTS: `len("😀")` is 1 and `len("a😀b")` is 3, where the
+# platform default (`host:ecma:string:length`) counts UTF-16 units and answers
+# 2 and 4. `unifiedstringplan.md` Axis 1 names this unit `scalar`, and python is
+# the only language on it.
+#
+# This is the unit as a DECLARED VALUE rather than a parameter threaded through
+# the emitters — `unifiedstringplan.md` §3a — and it is what
+# `builtinslotplan.md` §3i recorded as blocked on a code-point-length host
+# function. No host function was needed: `common:str_scalar_length` counts with
+# the string iterator, which already yields code points.
+len = "common:str_scalar_length"
 
 [builtin_slots.array]
 contains = "common:collections.contains"

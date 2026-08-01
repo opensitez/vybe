@@ -20,7 +20,7 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
-use vybe_compiler::primitives::{ops, strings};
+use vybe_compiler::primitives::{collections, ops, strings};
 
 fn call_import(
     chunks: &mut [Chunk],
@@ -576,9 +576,13 @@ pub fn emit_which(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::CONST, k, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, found, line);
 
-    // `get-environment(key)` answers the value directly (no key → all pairs).
+    // `get-environment: func() -> list<tuple<string, string>>` takes NO key
+    // (wasi-cli 0.3.0 `wit/environment.wit`). Keying the pair list is this
+    // adapter's job, so the pairs become a map and `PATH` is read from it.
+    call_import(chunks, current, "wasi:cli/environment", "get-environment", 0, line);
+    call_import(chunks, current, "ecma:map", "fromEntries", 1, line);
     chunks[current].emit_string_const("PATH", line);
-    call_import(chunks, current, "wasi:cli/environment", "get-environment", 1, line);
+    collections::emit_get(chunks, current, line);
     let path_s = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, path_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_s, line);

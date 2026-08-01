@@ -28612,10 +28612,16 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
             )
         }
         // strncmp/strncasecmp handled via profile + emitter (not walker rewrite)
-        // fnmatch($pattern, $string) — rewrite to intrinsic
+        // fnmatch($pattern, $string[, $flags]) — rewrite to intrinsic.
+        // The 3-arg form was NOT rewritten, so `FNM_CASEFOLD` never reached the
+        // matcher and `fnmatch(...)` with flags resolved as an unknown function.
         "fnmatch" if args.len() == 2 => mk_call(
             Expression::with_span(ExprKind::Ident("__vybe_fnmatch".to_string()), span.clone()),
             vec![arg(0)?, arg(1)?],
+        ),
+        "fnmatch" if args.len() >= 3 => mk_call(
+            Expression::with_span(ExprKind::Ident("__vybe_fnmatch".to_string()), span.clone()),
+            vec![arg(0)?, arg(1)?, arg(2)?],
         ),
         // strtok($str, $delim) / strtok($delim) — stateful tokenizer
         "strtok" if args.len() == 2 => mk_call(
@@ -29938,6 +29944,13 @@ fn php_constant_expr(name: &str, span: &Span) -> Option<ExprKind> {
         "PHP_ROUND_HALF_EVEN" => ExprKind::Lit(Literal::Int(3)),
         "PHP_ROUND_HALF_ODD" => ExprKind::Lit(Literal::Int(4)),
         // ── string padding flags — integer literals ──
+        // ── fnmatch flags — integer literals, same treatment as STR_PAD_* ──
+        // Absent until 2026-08-01, so `fnmatch($p, $s, FNM_CASEFOLD)` passed an
+        // UNRESOLVED name and the case-fold flag never reached the matcher.
+        "FNM_NOESCAPE" => ExprKind::Lit(Literal::Int(1)),
+        "FNM_PATHNAME" => ExprKind::Lit(Literal::Int(2)),
+        "FNM_PERIOD" => ExprKind::Lit(Literal::Int(4)),
+        "FNM_CASEFOLD" => ExprKind::Lit(Literal::Int(16)),
         "STR_PAD_LEFT" => ExprKind::Lit(Literal::Int(0)),
         "STR_PAD_RIGHT" => ExprKind::Lit(Literal::Int(1)),
         "STR_PAD_BOTH" => ExprKind::Lit(Literal::Int(2)),

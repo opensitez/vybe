@@ -610,6 +610,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.strtoupper" => {
             crate::emitter::string_adapter::emit_strtoupper(chunks, current, argc, line)
         }
+        "php.strtolower" => {
+            crate::emitter::string_adapter::emit_strtolower(chunks, current, argc, line)
+        }
+        "php.strrev" => {
+            crate::emitter::string_adapter::emit_strrev(chunks, current, argc, line)
+        }
+        "php.str_repeat" => {
+            crate::emitter::string_adapter::emit_str_repeat(chunks, current, argc, line)
+        }
         "php.addslashes" => {
             crate::emitter::string_adapter::emit_addslashes(chunks, current, argc, line)
         }

@@ -250,52 +250,22 @@ pub fn emit_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         return;
     }
 
-    let sep = base + 1;
-    if argc == 2 {
-        chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, sep, line);
-        call_import(chunks, current, "ecma:string", "split", 2, line);
-        return;
-    }
-
-    // argc >= 3: maxsplit — split fully, then re-join the tail beyond `n`.
-    let n = base + 2;
+    // An explicit separator is the SHARED split-with-limit emitter — the same
+    // one php `explode` binds. Python's limit counts SPLITS and reads a
+    // negative value as unlimited; that is the whole of the difference, and it
+    // is `SplitOptions::max_splits()`.
     chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, sep, line);
-    call_import(chunks, current, "ecma:string", "split", 2, line);
-    let full = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, full, line);
-
-    // head = full.slice(0, n)
-    chunks[current].emit_op_u16(Op::LOCAL_GET, full, line);
-    chunks[current].emit_i32_const(0, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
-    call_import(chunks, current, "ecma:array", "slice", 3, line);
-    let head = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, head, line);
-
-    // tail = full.slice(n)
-    chunks[current].emit_op_u16(Op::LOCAL_GET, full, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
-    chunks[current].emit_i32_const(0x7FFF_FFFF, line);
-    call_import(chunks, current, "ecma:array", "slice", 3, line);
-    let tail = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, tail, line);
-
-    // if tail non-empty: head.push(tail.join(sep))
-    chunks[current].emit_op_u16(Op::LOCAL_GET, tail, line);
-    call_import(chunks, current, "ecma:array", "length", 1, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, head, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, tail, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, sep, line);
-    call_import(chunks, current, "ecma:array", "join", 2, line);
-    collections::emit_push(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_end(line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, head, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
+    if argc >= 3 {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
+    }
+    strings::emit_split_limit(
+        chunks,
+        current,
+        if argc >= 3 { 3 } else { 2 },
+        strings::SplitOptions::max_splits(),
+        line,
+    );
 }
 
 /// Python `s.startswith(prefix[, start[, end]])` — test whether the slice

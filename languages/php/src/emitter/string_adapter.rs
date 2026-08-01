@@ -40,13 +40,24 @@ fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
 fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
 }
+/// PHP's value → string coercion, for the ~55 ADAPTER call sites
+/// (`strlen($v)`, `str_pad($v, …)`, `explode(…, $v)`, …).
+///
+/// This is the SAME emitter `.` concatenation and `echo` use, and the same one
+/// `[builtin_slots.string] to_string` binds. It used to be `"" + v` through
+/// `emit_dyn_add` — a THIRD implementation, which disagreed with the other two.
+/// Measured against real php on `[true, false, null, 1.0, 1.5, 100, "x"]`:
+///
+/// | | result |
+/// |---|---|
+/// | real php `strlen($v)` | `1,0,0,1,3,3,1` |
+/// | `coerce_to_str` (was) | `1,1,1,1,3,3,1` |
+/// | `strlen("" . $v)` — the BOUND path | `1,0,0,1,3,3,1` |
+///
+/// So `strlen(false)` and `strlen(null)` were wrong while the declared binding
+/// was already right: the fork, not the binding, was the bug.
 fn coerce_to_str(chunk: &mut Chunk, line: u32) {
-    // Stack: [v] → [String(v)] via "" + v.
-    let v_slot = alloc_local(chunk);
-    lset(chunk, v_slot, line);
-    push_str(chunk, "", line);
-    lget(chunk, v_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    emit_stringify(chunk, line);
 }
 
 fn call_import(
@@ -72,6 +83,36 @@ pub fn emit_strtoupper(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunk.emit_call(idx, 1, line);
 }
 
+// ── coercing wrappers over SHARED primitives ────────────────────────────────
+//
+// These bound `common:str_to_lower` / `str_repeat` / `str_reverse` directly,
+// which meant they skipped PHP's string coercion entirely while `strtoupper`
+// — the same operation, other case — applied it. Measured against real `php`
+// on `[true, false, null, 0, 1, 1.5, "x"]`, `strtolower(false)` gave `"false"`
+// where php gives `""`.
+//
+// The BEHAVIOUR still comes from `primitives/strings.rs`; only the coercion is
+// PHP's, so these are two lines each rather than a reimplementation. That is
+// the same split `emit_strlen` uses: shared counter, language coercion.
+
+/// PHP `strtolower($s)`.
+pub fn emit_strtolower(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    coerce_str_args(chunks, current, argc, 1, line);
+    strings::emit_to_lower(&mut chunks[current], line);
+}
+
+/// PHP `strrev($s)`.
+pub fn emit_strrev(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    coerce_str_args(chunks, current, argc, 1, line);
+    strings::emit_str_reverse(&mut chunks[current], line);
+}
+
+/// PHP `str_repeat($s, $times)` — only the FIRST argument is a string.
+pub fn emit_str_repeat(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    coerce_str_args(chunks, current, argc, 1, line);
+    strings::emit_repeat(&mut chunks[current], line);
+}
+
 /// `LanguageHooks::concat_stringify` shape for `.` — PHP's string coercion is
 /// the same one `echo` uses, so the two share an emitter rather than agreeing
 /// on `true` → `"1"` twice.
@@ -80,14 +121,20 @@ pub fn emit_concat_stringify(chunks: &mut Vec<Chunk>, current: usize, line: u32)
 }
 
 pub fn emit_echo_stringify(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    // emit_call indices resolve against the CURRENT chunk's import table,
-    // so these must be added to `chunks[current]` — adding to `chunks[0]`
-    // yields an index valid only at top level and silently calls garbage
-    // inside a function chunk (see project_chunk_import_tables).
-    let test_bigint = chunks[current].add_import("wasm:js-bigint", "test");
-    let bigint_to_string = chunks[current].add_import("ecma:bigint", "toString");
-    let from_i64 = chunks[current].add_import("wasm:js-string", "fromI64");
-    let chunk = &mut chunks[current];
+    emit_stringify(&mut chunks[current], line);
+}
+
+/// PHP's ONE value → string coercion.
+///
+/// Single-chunk on purpose: every import and every op lands in the chunk it is
+/// handed, which is what lets `coerce_to_str` share it. (emit_call indices
+/// resolve against the CURRENT chunk's import table — adding to `chunks[0]`
+/// yields an index valid only at top level and silently calls garbage inside a
+/// function chunk; see project_chunk_import_tables.)
+fn emit_stringify(chunk: &mut Chunk, line: u32) {
+    let test_bigint = chunk.add_import("wasm:js-bigint", "test");
+    let bigint_to_string = chunk.add_import("ecma:bigint", "toString");
+    let from_i64 = chunk.add_import("wasm:js-string", "fromI64");
     let v_slot = alloc_local(chunk);
     let _ty_slot = alloc_local(chunk);
 
@@ -480,15 +527,22 @@ pub fn emit_str_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 // ── str_pad ────────────────────────────────────────────────────────
 
 /// PHP `str_pad(str, length, pad_string?, pad_type?)`.
+/// PHP `str_pad(string, length, pad = " ", mode = STR_PAD_RIGHT)`.
+///
+/// The padding itself is the SHARED emitter — python `ljust`/`rjust`/`center`
+/// bind the same three sides. What is php's own is that the SIDE is a runtime
+/// argument rather than part of the spelling, so the three-way branch stays
+/// here and each arm is a binding.
+///
+/// The two guards the old body checked by hand — `strlen >= length` and an
+/// empty pad string — are both already `StringPad` (ECMA-262 §22.1.3.16)
+/// behaviour, so they are gone rather than moved.
 pub fn emit_str_pad(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let mode_slot = alloc_local(chunk);
     let pad_slot = alloc_local(chunk);
     let target_slot = alloc_local(chunk);
     let s_slot = alloc_local(chunk);
-    let str_len_slot = alloc_local(chunk);
-    let left_target_slot = alloc_local(chunk);
-    let tmp_slot = alloc_local(chunk);
 
     if argc >= 4 {
         lset(chunk, mode_slot, line);
@@ -507,81 +561,32 @@ pub fn emit_str_pad(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     coerce_to_str(chunk, line);
     lset(chunk, s_slot, line);
 
-    lget(chunk, s_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "length");
-        chunk.emit_call(idx, 1, line);
-    }
-    lset(chunk, str_len_slot, line);
+    // STR_PAD_LEFT = 0, STR_PAD_RIGHT = 1, STR_PAD_BOTH = 2.
+    let mut arm = |chunks: &mut [Chunk], current: usize, side: strings::PadSide| {
+        lget(&mut chunks[current], s_slot, line);
+        lget(&mut chunks[current], target_slot, line);
+        lget(&mut chunks[current], pad_slot, line);
+        strings::emit_pad(chunks, current, 3, side, strings::CenterBias::Right, line);
+    };
 
-    lget(chunk, str_len_slot, line);
-    lget(chunk, target_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_ge(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if_value(line);
-    lget(chunk, s_slot, line);
-    chunk.emit_else(line);
+    lget(&mut chunks[current], mode_slot, line);
+    push_const(&mut chunks[current], Value::F64(0.0), line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    arm(chunks, current, strings::PadSide::Start);
+    chunks[current].emit_else(line);
 
-    lget(chunk, pad_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "length");
-        chunk.emit_call(idx, 1, line);
-    }
-    push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if_value(line);
-    lget(chunk, s_slot, line);
-    chunk.emit_else(line);
-
-    lget(chunk, mode_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if_value(line);
-    lget(chunk, s_slot, line);
-    lget(chunk, target_slot, line);
-    lget(chunk, pad_slot, line);
-    call_import(chunks, current, "ecma:string", "padStart", 3, line);
-    let chunk = &mut chunks[current];
-    chunk.emit_else(line);
-
-    lget(chunk, mode_slot, line);
-    push_const(chunk, Value::F64(2.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if_value(line);
-    lget(chunk, target_slot, line);
-    lget(chunk, str_len_slot, line);
-    chunk.emit_op(Op::F64_SUB, line);
-    push_const(chunk, Value::F64(2.0), line);
-    chunk.emit_op(Op::F64_DIV, line);
-    chunk.emit_op(Op::F64_FLOOR, line);
-    lget(chunk, str_len_slot, line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, left_target_slot, line);
-    lget(chunk, s_slot, line);
-    lget(chunk, left_target_slot, line);
-    lget(chunk, pad_slot, line);
-    call_import(chunks, current, "ecma:string", "padStart", 3, line);
-    let chunk = &mut chunks[current];
-    lset(chunk, tmp_slot, line);
-    lget(chunk, tmp_slot, line);
-    lget(chunk, target_slot, line);
-    lget(chunk, pad_slot, line);
-    call_import(chunks, current, "ecma:string", "padEnd", 3, line);
-    let chunk = &mut chunks[current];
-    chunk.emit_else(line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, target_slot, line);
-    lget(chunk, pad_slot, line);
-    call_import(chunks, current, "ecma:string", "padEnd", 3, line);
-    let chunk = &mut chunks[current];
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
+    lget(&mut chunks[current], mode_slot, line);
+    push_const(&mut chunks[current], Value::F64(2.0), line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    arm(chunks, current, strings::PadSide::Both);
+    chunks[current].emit_else(line);
+    arm(chunks, current, strings::PadSide::End);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 // ── substr_count ───────────────────────────────────────────────────
@@ -1668,10 +1673,11 @@ pub fn emit_str_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     lset(chunk, repl_slot, line);
     lset(chunk, srch_slot, line);
 
-    // Coerce subj to string.
-    push_str(chunk, "", line);
+    // Coerce subj to string — PHP's coercion, not ECMA's. This was a fourth
+    // inline `"" + v`, which is why `str_replace("1","Z",false)` yielded `"0"`
+    // where real php yields `""`.
     lget(chunk, subj_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    coerce_to_str(chunk, line);
     lset(chunk, subj_slot, line);
 
     // is_array_search = Array.isArray(srch)
@@ -4635,6 +4641,9 @@ pub fn emit_strrchr(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
 ///
 /// Stack on entry (argc=3): `str, delim, limit`; (argc=2): `str, delim`.
 pub fn emit_explode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    // Separator and subject are both string PARAMETERS in php, so both take
+    // php's coercion; a third argument is the limit and must not.
+    coerce_str_args(chunks, current, argc, 2, line);
     strings::emit_split_limit(
         chunks,
         current,
@@ -5642,79 +5651,46 @@ pub fn emit_preg_grep(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 }
 
 // ── fnmatch ───────────────────────────────────────────────────────────────
-pub fn emit_fnmatch(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+/// PHP `fnmatch($pattern, $string)` — shell-style match, case-SENSITIVE.
+///
+/// The matcher is the shared one; php's only contribution is argument order.
+/// PHP takes the pattern FIRST, so the subject is on top of the stack, while
+/// the shared emitter wants `[name, pattern]` — python's order, and the one
+/// that reads left-to-right.
+pub fn emit_fnmatch(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    /// `FNM_CASEFOLD` — php's case-insensitive glob flag.
+    const FNM_CASEFOLD: i32 = 16;
+
     let chunk = &mut chunks[current];
+    let flags_slot = alloc_local(chunk);
     let str_slot = alloc_local(chunk);
     let pat_slot = alloc_local(chunk);
-    let rx_slot = alloc_local(chunk);
+    if argc >= 3 {
+        vybe_compiler::primitives::convert::emit_to_int(chunk, line);
+        lset(chunk, flags_slot, line);
+    }
     lset(chunk, str_slot, line);
     lset(chunk, pat_slot, line);
-    lget(chunk, pat_slot, line);
-    lset(chunk, rx_slot, line);
-    // Escape regex metacharacters in glob pattern (except * and ?)
-    for (from, to) in [
-        ("\\", "\\\\"),
-        (".", "\\."),
-        ("(", "\\("),
-        (")", "\\)"),
-        ("[", "\\["),
-        ("]", "\\]"),
-        ("+", "\\+"),
-        ("^", "\\^"),
-        ("$", "\\$"),
-        ("{", "\\{"),
-        ("}", "\\}"),
-        ("|", "\\|"),
-    ] {
-        let chunk = &mut chunks[current];
-        lget(chunk, rx_slot, line);
-        push_str(chunk, from, line);
-        push_str(chunk, to, line);
-        {
-            let idx = chunk.add_import("ecma:string", "replaceAll");
-            chunk.emit_call(idx, 3, line);
-        }
-        lset(chunk, rx_slot, line);
-    }
-    let chunk = &mut chunks[current];
-    // * → .*
-    lget(chunk, rx_slot, line);
-    push_str(chunk, "*", line);
-    push_str(chunk, ".*", line);
-    {
-        let idx = chunk.add_import("ecma:string", "replaceAll");
-        chunk.emit_call(idx, 3, line);
-    }
-    lset(chunk, rx_slot, line);
-    // ? → .
-    lget(chunk, rx_slot, line);
-    push_str(chunk, "?", line);
-    push_str(chunk, ".", line);
-    {
-        let idx = chunk.add_import("ecma:string", "replaceAll");
-        chunk.emit_call(idx, 3, line);
-    }
-    lset(chunk, rx_slot, line);
-    // ^pattern$
-    push_str(chunk, "^", line);
-    lget(chunk, rx_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "concat");
-        chunk.emit_call(idx, 2, line);
-    }
-    push_str(chunk, "$", line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "concat");
-        chunk.emit_call(idx, 2, line);
-    }
-    lset(chunk, rx_slot, line);
-    lget(chunk, rx_slot, line);
+
+    // PHP takes the pattern FIRST, so the subject is on top; the shared emitter
+    // wants `[name, pattern]`.
     lget(chunk, str_slot, line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:regexp", "exec", 2, line);
-    let chunk = &mut chunks[current];
-    chunk.emit_op(Op::NULL, line);
-    vybe_compiler::primitives::ops::emit_dyn_ne(chunk, line);
+    lget(chunk, pat_slot, line);
+    if argc >= 3 {
+        lget(chunk, flags_slot, line);
+        push_const(chunk, Value::I32(FNM_CASEFOLD), line);
+        chunk.emit_op(Op::I32_AND, line);
+        push_const(chunk, Value::I32(0), line);
+        chunk.emit_op(Op::I32_NE, line);
+        chunk.emit_if_value(line);
+        push_str(chunk, "i", line);
+        chunk.emit_else(line);
+        push_str(chunk, "", line);
+        chunk.emit_end(line);
+    } else {
+        push_str(chunk, "", line);
+    }
+    strings::emit_glob_match_flagged(chunks, current, line);
 }
 
 // ── strtok ────────────────────────────────────────────────────────────────
@@ -6773,93 +6749,16 @@ pub fn emit_str_decrement(chunks: &mut [Chunk], current: usize, _argc: u8, line:
 // JS `.length` (UTF-16 code units) / `mb_strlen` (codepoints). Vybe stores
 // strings as JS strings, so recover the byte count by summing the UTF-8
 // width of each codepoint. (mb_strlen stays on `common:str_length`.)
+/// PHP `strlen($s)` — UTF-8 BYTE length, not characters.
+///
+/// The counter itself is the SHARED one: it was php's private implementation
+/// and the only byte-length code on the platform, which is why Lua `#` and Go
+/// `len(s)` had nothing to bind to. What stays here is php's COERCION —
+/// `strlen(123)` is `3` because php stringifies first, which is php's rule, not
+/// the counter's.
 pub fn emit_strlen(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    let chunk = &mut chunks[current];
-    let s_slot = alloc_local(chunk);
-    let i_slot = alloc_local(chunk);
-    let n_slot = alloc_local(chunk);
-    let bytes_slot = alloc_local(chunk);
-    let cp_slot = alloc_local(chunk);
-
-    coerce_to_str(chunk, line);
-    lset(chunk, s_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    lset(chunk, i_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    lset(chunk, bytes_slot, line);
-    lget(chunk, s_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "length");
-        chunk.emit_call(idx, 1, line);
-    }
-    lset(chunk, n_slot, line);
-
-    let _ = chunk;
-    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
-    let chunk = &mut chunks[current];
-    lget(chunk, i_slot, line);
-    lget(chunk, n_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    let _ = chunk;
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
-    let chunk = &mut chunks[current];
-
-    // cp = s.codePointAt(i)
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "codePointAt");
-        chunk.emit_call(idx, 2, line);
-    }
-    lset(chunk, cp_slot, line);
-
-    // bytes += cp<0x80?1 : cp<0x800?2 : cp<0x10000?3 : 4
-    lget(chunk, cp_slot, line);
-    push_const(chunk, Value::F64(128.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_else(line);
-    lget(chunk, cp_slot, line);
-    push_const(chunk, Value::F64(2048.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::F64(2.0), line);
-    chunk.emit_else(line);
-    lget(chunk, cp_slot, line);
-    push_const(chunk, Value::F64(65536.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::F64(3.0), line);
-    chunk.emit_else(line);
-    push_const(chunk, Value::F64(4.0), line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    lget(chunk, bytes_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    lset(chunk, bytes_slot, line);
-
-    // i += cp > 0xFFFF ? 2 : 1  (astral codepoints span two UTF-16 units)
-    lget(chunk, cp_slot, line);
-    push_const(chunk, Value::F64(65535.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if_value(line);
-    push_const(chunk, Value::F64(2.0), line);
-    chunk.emit_else(line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_end(line);
-    lget(chunk, i_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    lset(chunk, i_slot, line);
-    let _ = chunk;
-    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
-    let chunk = &mut chunks[current];
-    lget(chunk, bytes_slot, line);
+    coerce_to_str(&mut chunks[current], line);
+    strings::emit_byte_length(chunks, current, line);
 }
 
 // ── count_chars ────────────────────────────────────────────────────

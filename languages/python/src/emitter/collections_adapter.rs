@@ -2170,17 +2170,20 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     // units and answered 2 and 4 — every character outside the BMP was off by
     // one.
     //
-    // `Array.from` iterates a string with the STRING ITERATOR, which yields
+    // The count itself is the SHARED scalar length, `strings::emit_scalar_length`
+    // — the same emitter php's `mb_strlen` binds. It was open-coded here as
+    // `Array.from(recv).length`, which is that emitter's exact body; the two
+    // agreed only because both were written from the same idiom.
+    //
+    // (`Array.from` iterates a string with the STRING ITERATOR, which yields
     // code points, so its length is the scalar count. Verified against `node`:
-    // `Array.from("😀").length` is 1. No host function is added — this is the
-    // `[...s].length` idiom over primitives that already exist.
+    // `Array.from("😀").length` is 1. No host function involved.)
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    call_import(chunks, current, "ecma:array", "from", 1, line);
-    collections::emit_len(chunks, current, line);
+    vybe_compiler::primitives::strings::emit_scalar_length(chunks, current, line);
     chunks[current].emit_else(line);
 
     // isArray(recv) → element count

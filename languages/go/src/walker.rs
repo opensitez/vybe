@@ -5766,7 +5766,7 @@ fn collect_go_struct_infos(body: &[Statement]) -> HashMap<String, GoStructInfo> 
                     }
                     if let Some(type_name) = type_hint.clone() {
                         info.member_types.insert(name.clone(), type_name.clone());
-                        if go_embedded_field_name(&type_name).as_deref() == Some(name.as_str()) {
+                        if go_field_is_embedded(modifiers) {
                             info.embedded_fields.push((name.clone(), type_name));
                         }
                     }
@@ -5817,12 +5817,26 @@ fn collect_go_interface_methods(body: &[Statement]) -> HashMap<String, HashSet<S
 }
 
 fn go_field_tag_from_modifiers(modifiers: &Modifiers) -> Option<String> {
-    let ExprKind::Lit(Literal::Str(text)) = &modifiers.decorators.first()?.kind else {
-        return None;
-    };
-    text.find("__go_tag:")
-        .map(|idx| text[idx + "__go_tag:".len()..].to_string())
+    modifiers.decorators.iter().find_map(|decorator| {
+        let ExprKind::Lit(Literal::Str(text)) = &decorator.kind else {
+            return None;
+        };
+        text.find("__go_tag:")
+            .map(|idx| text[idx + "__go_tag:".len()..].to_string())
+    })
 }
+
+/// `struct { Inner }` promotes its fields; `struct { Inner Inner }` does not.
+/// The two look identical once the walker fills the missing field name in from
+/// the type, so the embedding is recorded while the source still shows it —
+/// comparing the name back against the type calls every `T T` field embedded.
+fn go_field_is_embedded(modifiers: &Modifiers) -> bool {
+    modifiers.decorators.iter().any(|decorator| {
+        matches!(&decorator.kind, ExprKind::Lit(Literal::Str(text)) if &**text == GO_EMBEDDED_MARKER)
+    })
+}
+
+const GO_EMBEDDED_MARKER: &str = "__go_embedded";
 
 fn merge_go_struct_decls(body: &[Statement]) -> Vec<Statement> {
     let mut first_index: HashMap<String, usize> = HashMap::new();
@@ -13215,7 +13229,7 @@ fn go_rewrite_json_call(
             Some(go_tuple_with_nil(json))
         }
         "json.Unmarshal" => {
-            let input = go_json_text_input(go_arg_value(args, 0), env, signatures);
+            let input = go_json_text_input(go_arg_value(args, 0));
             let target = go_arg_value(args, 1);
             let target_place = go_json_unmarshal_target(&target);
             if go_expr_type_hint(&target_place, env, signatures).as_deref()
@@ -13279,36 +13293,25 @@ fn go_rewrite_json_call(
     }
 }
 
-/// `json.Unmarshal(data []byte, …)` — the shared JSON parse takes text, so the
-/// byte slice has to come back as a string. Unwrap the `[]byte(s)` conversion
-/// where the source is right there instead of round-tripping: the encode side
-/// (`__go_io_string_to_bytes`) is UTF-8 via TextEncoder while the decode side
-/// (`__go_io_bytes_to_string`) builds the string one char code at a time, so a
-/// round trip mangles anything non-ASCII. `json.RawMessage` is already held as
-/// JSON text and passes through untouched.
-fn go_json_text_input(
-    expr: Expression,
-    env: &GoNormalizeEnv,
-    signatures: &HashMap<String, GoFunctionSignature>,
-) -> Expression {
+/// `json.Unmarshal(data []byte, …)` — the shared JSON parse takes text, so a
+/// `[]byte(s)` conversion right at the call site is unwrapped back to its
+/// source rather than encoded and decoded again. Anything else keeps its
+/// runtime shape; `go.json_parse` decides between text and bytes there, since
+/// no static hint separates a real byte slice from a `json.Marshal` result
+/// (declared `[]byte`, carried as the string itself).
+fn go_json_text_input(expr: Expression) -> Expression {
     match &expr.kind {
         ExprKind::Call { callee, args, .. }
             if go_expr_call_name(callee).as_deref() == Some("__go_io_string_to_bytes")
                 && args.len() == 1 =>
         {
-            return args[0].value.clone();
+            args[0].value.clone()
         }
         ExprKind::Cast {
             expr: inner,
             type_name,
-        } if matches!(type_name.trim(), "[]byte" | "[]uint8") => {
-            return (**inner).clone();
-        }
-        _ => {}
-    }
-    match go_expr_type_hint(&expr, env, signatures).as_deref() {
-        Some("string" | "__goRawMessage") => expr,
-        _ => go_builtin_call("__go_io_bytes_to_string", vec![expr]),
+        } if matches!(type_name.trim(), "[]byte" | "[]uint8") => (**inner).clone(),
+        _ => expr,
     }
 }
 
@@ -13319,18 +13322,6 @@ fn go_json_unmarshal_struct_object(
 ) -> Option<Expression> {
     let lookup = go_struct_lookup_name(type_name)?;
     let info = env.struct_infos.get(&lookup)?;
-    let has_raw_message = info
-        .member_types
-        .values()
-        .any(|ty| ty.as_str() == "__goRawMessage");
-    let has_struct_field = info.member_types.values().any(|ty| {
-        go_struct_lookup_name(ty)
-            .as_ref()
-            .is_some_and(|lookup| env.struct_infos.contains_key(lookup))
-    });
-    if info.embedded_fields.is_empty() && !has_raw_message && has_struct_field {
-        return None;
-    }
     let mut props = Vec::new();
     for field_name in &info.field_order {
         let tag = info.field_tags.get(field_name).map(String::as_str);
@@ -13354,13 +13345,21 @@ fn go_json_unmarshal_struct_object(
         } else if let Some(inner_type) =
             field_type.and_then(|ty| go_struct_lookup_name(ty).map(|_| ty.to_string()))
         {
-            if is_embedded {
-                go_json_unmarshal_struct_object(parsed.clone(), &inner_type, env).unwrap_or_else(
-                    || go_json_member_or_zero(parsed.clone(), &json_name, field_type, env),
-                )
+            // An embedded field is promoted: its own JSON keys sit on the
+            // parent object. A named one nests, so the recursion re-roots on
+            // that member — which also gives Go's zero struct when the key is
+            // absent, since every leaf falls back to its own zero value.
+            let inner_root = if is_embedded {
+                parsed.clone()
             } else {
-                go_json_member_or_zero(parsed.clone(), &json_name, field_type, env)
-            }
+                Expression::new(ExprKind::Index {
+                    object: Box::new(parsed.clone()),
+                    index: Box::new(Expression::string(&json_name)),
+                    null_safe: false,
+                })
+            };
+            go_json_unmarshal_struct_object(inner_root, &inner_type, env)
+                .unwrap_or_else(|| go_json_member_or_zero(parsed.clone(), &json_name, field_type, env))
         } else {
             go_json_member_or_zero(parsed.clone(), &json_name, field_type, env)
         };
@@ -19145,9 +19144,14 @@ fn walk_struct_type(name: String, pair: Pair<Rule>) -> Result<Statement, String>
                 }
             }
 
+            // No name in source is what makes a field embedded — record it now,
+            // because filling the name in from the type erases the difference
+            // between `Inner` and `Inner Inner`.
+            let mut embedded = false;
             if field_names.is_empty() {
                 if let Some(type_name) = field_type.as_deref().and_then(go_embedded_field_name) {
                     field_names.push(type_name);
+                    embedded = true;
                 }
             }
 
@@ -19157,6 +19161,11 @@ fn walk_struct_type(name: String, pair: Pair<Rule>) -> Result<Statement, String>
                     modifiers
                         .decorators
                         .push(Expression::string(&format!("__go_tag:{tag}")));
+                }
+                if embedded {
+                    modifiers
+                        .decorators
+                        .push(Expression::string(GO_EMBEDDED_MARKER));
                 }
                 members.push(ClassMember::Field {
                     name: fname,

@@ -268,8 +268,18 @@ fn collapse_stray_triple_percents(input: &str) -> String {
     let mut index = 0usize;
     while index < bytes.len() {
         if bytes[index] != b'%' {
-            out.push(bytes[index] as char);
-            index += 1;
+            // Copy a whole UTF-8 CHARACTER. `bytes[index] as char` is a
+            // Latin-1 decode: each byte of `é` became a separate char, so any
+            // non-ASCII text in a `printf` FORMAT string came out as mojibake
+            // (`printf("café\n")` printed `cafÃ©`) while `puts("café")` was
+            // fine. unifiedstringplan.md step 0 — and a site OUTSIDE the 8
+            // walkers that audit counted.
+            let ch = input[index..]
+                .chars()
+                .next()
+                .expect("index is a char boundary");
+            out.push(ch);
+            index += ch.len_utf8();
             continue;
         }
         let start = index;

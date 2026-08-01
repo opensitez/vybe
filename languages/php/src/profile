@@ -99,8 +99,13 @@ __php_object_hash   = { emit = "common:object.hash_code",    min_args = 1, max_a
 
 # ── String functions ─────────────────────────────────────────────────────────
 
-strlen              = { emit = "common:php.strlen",          min_args = 1, max_args = 1 }
-strtolower          = { emit = "common:str_to_lower",        min_args = 1, max_args = 1 }
+# `slot = "len"` says `strlen` is PHP's GENERIC length spelling, so it fills the
+# shared `Len` slot and picks up the `[builtin_slots.string] len` binding below
+# when the argument is statically a string. `mb_strlen` deliberately does NOT
+# declare a slot: it is a second, explicit unit in the same language, and the
+# slot must mean one thing.
+strlen              = { emit = "common:php.strlen",          min_args = 1, max_args = 1, slot = "len" }
+strtolower          = { emit = "common:php.strtolower",      min_args = 1, max_args = 1 }
 strtoupper          = { emit = "common:php.strtoupper",      min_args = 1, max_args = 1 }
 strcmp              = { emit = "common:str_compare",         min_args = 2, max_args = 2 }
 strcasecmp          = { emit = "common:php.strcasecmp",      min_args = 2, max_args = 2 }
@@ -112,7 +117,7 @@ iconv               = { emit = "common:php.iconv",           min_args = 3, max_a
 str_contains        = { emit = "intrinsic:php_str_contains",        min_args = 2, max_args = 2 }
 str_starts_with     = { emit = "intrinsic:php_str_starts_with",     min_args = 2, max_args = 2 }
 str_ends_with       = { emit = "intrinsic:php_str_ends_with",       min_args = 2, max_args = 2 }
-str_repeat          = { emit = "common:str_repeat",          min_args = 2, max_args = 2 }
+str_repeat          = { emit = "common:php.str_repeat",      min_args = 2, max_args = 2 }
 base64_decode       = { emit = "common:php.base64_decode",   min_args = 1, max_args = 2 }
 gzcompress          = { emit = "common:php.gzcompress",      min_args = 1, max_args = 2 }
 gzuncompress        = { emit = "common:php.gzuncompress",    min_args = 1, max_args = 2 }
@@ -151,7 +156,7 @@ mb_strtolower       = { emit = "common:str_to_lower",        min_args = 1, max_a
 mb_strtoupper       = { emit = "common:php.strtoupper",      min_args = 1, max_args = 2 }
 # `mb_substr` walker-rewritten to `__php_mb_substr` (see below) — NOT to
 # `__php_substr`, whose bound math runs in UTF-16 units.
-strrev              = { emit = "common:str_reverse",         min_args = 1, max_args = 1 }
+strrev              = { emit = "common:php.strrev",          min_args = 1, max_args = 1 }
 strrpos             = { emit = "common:php.strrpos",          min_args = 2, max_args = 3 }
 strriios            = { emit = "common:str_last_index_of",   min_args = 2, max_args = 3 }
 strripos            = { emit = "common:php.strripos",         min_args = 2, max_args = 3 }
@@ -215,7 +220,7 @@ strncasecmp         = { emit = "common:php.strncasecmp",       min_args = 3, max
 strpbrk             = { emit = "common:php.strpbrk",          min_args = 2, max_args = 2 }
 substr_compare      = { emit = "common:php.substr_compare",   min_args = 3, max_args = 5 }
 preg_grep           = { emit = "common:php.preg_grep",        min_args = 2, max_args = 3 }
-__vybe_fnmatch      = { emit = "common:php.fnmatch",          min_args = 2, max_args = 2 }
+__vybe_fnmatch      = { emit = "common:php.fnmatch",          min_args = 2, max_args = 3 }
 __vybe_strtok       = { emit = "common:php.strtok_init",      min_args = 2, max_args = 2 }
 __vybe_preg_replace_limited = { emit = "common:php.preg_replace_limited", min_args = 4, max_args = 4 }
 __vybe_strtok_next  = { emit = "common:php.strtok_next",      min_args = 1, max_args = 1 }
@@ -1125,6 +1130,12 @@ array  = ["array", "iterable"]
 # `<=>` out of two `<`/`>` calls.
 [builtin_slots.string]
 compare = "common:php.compare3"
+# PHP counts UTF-8 BYTES: `strlen("café")` is 5 where the platform default
+# (`host:ecma:string:length`) counts UTF-16 units and answers 4. Until
+# `common:str_byte_length` existed there was nothing on the platform to bind
+# here — php's counter was private to its own adapter, which is exactly the
+# fork `builtinslotplan.md` §1 set out to remove.
+len = "common:str_byte_length"
 # `==` / `!=`. PHP's loose equality coerces (`"1" == 1` is true) and is NOT the
 # platform's `ops::emit_dyn_eq`.
 #
