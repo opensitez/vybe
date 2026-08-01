@@ -1138,8 +1138,13 @@ fn unescape_lua_string(s: &str) -> String {
                 }
             }
         } else {
-            out.push(bytes[i] as char);
-            i += 1;
+            // Copy a whole UTF-8 CHARACTER. `bytes[i] as char` is a Latin-1
+            // decode: it turns each byte of `é` into a separate char, so every
+            // non-ASCII Lua string literal reached the parser as mojibake
+            // (`"café"` became `cafÃ©`). unifiedstringplan.md step 0.
+            let ch = s[i..].chars().next().expect("index is a char boundary");
+            out.push(ch);
+            i += ch.len_utf8();
         }
     }
     out

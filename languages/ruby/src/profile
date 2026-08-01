@@ -734,3 +734,13 @@ inject           = "__array_reduce"
 flat_map         = { emit = "common:ruby.flat_map",         min_args = 1, max_args = 1 }
 collect_concat   = { emit = "common:ruby.flat_map",         min_args = 1, max_args = 1 }
 sort             = "__array_sort"
+
+# ── Protocol slot bindings — builtinslotplan.md §2a ────────────────────────
+#
+# How ONE interpolated part becomes a string. Measured against real `ruby`:
+# `"#{nil}"` is `""`, where the shared ECMA coercion gives `"null"`. Every
+# other value already agrees, so the emitter defers to the shared helper for
+# them. The `.`/`+` operators are unaffected — this is the interpolation and
+# concat `ToString` role.
+[builtin_slots.string]
+to_string = "common:ruby.to_s"

@@ -566,3 +566,10 @@ get_item = "common:dart.index_get"
 # `LanguageHooks::value_eq`, keyed by language NAME (builtinslotplan.md §3c).
 [builtin_slots.array]
 eq = "common:dart.value_eq"
+
+# How ONE interpolated part becomes a string. Measured against real `dart`:
+# `"${[1, 2]}"` is `[1, 2]`, where the shared ECMA coercion gives the JS
+# `1,2`. `print([1, 2])` already rendered correctly via `dart.to_string` — the
+# same renderer, which interpolation simply never consulted.
+[builtin_slots.string]
+to_string = "common:dart.to_string"

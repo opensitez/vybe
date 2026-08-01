@@ -538,8 +538,13 @@ fn expand_one_function_macro_in_line(
                 }
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        // Copy a whole UTF-8 CHARACTER. `bytes[i] as char` is a Latin-1
+        // decode: each byte of `é` became a separate char, so every
+        // non-ASCII C source reached the parser as mojibake
+        // (`"café"` printed `cafÃ©`). unifiedstringplan.md step 0.
+        let ch = line[i..].chars().next().expect("index is a char boundary");
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
@@ -16774,8 +16779,13 @@ fn strip_alignment_specifiers(text: &str) -> String {
             }
             continue;
         }
-        out.push(bytes[index] as char);
-        index += 1;
+        // Copy a whole UTF-8 CHARACTER. `bytes[i] as char` is a Latin-1
+        // decode: each byte of `é` became a separate char, so every
+        // non-ASCII C source reached the parser as mojibake
+        // (`"café"` printed `cafÃ©`). unifiedstringplan.md step 0.
+        let ch = text[index..].chars().next().expect("index is a char boundary");
+        out.push(ch);
+        index += ch.len_utf8();
     }
     out
 }
@@ -16905,8 +16915,13 @@ fn apply_stringize(text: &str, param_values: &HashMap<String, String>, variadic:
             }
         }
 
-        out.push(bytes[i] as char);
-        i += 1;
+        // Copy a whole UTF-8 CHARACTER. `bytes[i] as char` is a Latin-1
+        // decode: each byte of `é` became a separate char, so every
+        // non-ASCII C source reached the parser as mojibake
+        // (`"café"` printed `cafÃ©`). unifiedstringplan.md step 0.
+        let ch = text[i..].chars().next().expect("index is a char boundary");
+        out.push(ch);
+        i += ch.len_utf8();
     }
 
     out

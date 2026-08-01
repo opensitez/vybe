@@ -35,8 +35,13 @@ fn rewrite_hollerith(src: &str) -> String {
         // Skip line comments.
         if b == b'!' {
             while i < bytes.len() && bytes[i] != b'\n' {
-                out.push(bytes[i] as char);
-                i += 1;
+                // Copy a whole UTF-8 CHARACTER. `bytes[i] as char` is a Latin-1
+                // decode: each byte of `é` became a separate char, so every
+                // non-ASCII Fortran source reached the parser as mojibake.
+                // unifiedstringplan.md step 0.
+                let ch = src[i..].chars().next().expect("index is a char boundary");
+                out.push(ch);
+                i += ch.len_utf8();
             }
             continue;
         }
@@ -47,8 +52,10 @@ fn rewrite_hollerith(src: &str) -> String {
             i += 1;
             while i < bytes.len() {
                 let c = bytes[i];
-                out.push(c as char);
-                i += 1;
+                // Whole CHARACTER — see the comment-skip above.
+                let ch = src[i..].chars().next().expect("index is a char boundary");
+                out.push(ch);
+                i += ch.len_utf8();
                 if c == quote {
                     // Fortran doubled-quote escape.
                     if i < bytes.len() && bytes[i] == quote {
@@ -94,8 +101,10 @@ fn rewrite_hollerith(src: &str) -> String {
                 }
             }
         }
-        out.push(b as char);
-        i += 1;
+        // Whole CHARACTER — see the comment-skip above.
+        let ch = src[i..].chars().next().expect("index is a char boundary");
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
