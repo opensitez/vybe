@@ -379,7 +379,7 @@ fn build_pq_insert_method(chunks: &mut Vec<Chunk>, cmp_idx: usize, line: u32) ->
     let pair_slot = 3;
     c.emit_op_u16(Op::LOCAL_GET, 2, line); // priority → pair[0]
     c.emit_op_u16(Op::LOCAL_GET, 1, line); // value    → pair[1]
-    c.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    c.emit_array_new_fixed(0, 2, line);
     c.emit_op_u16(Op::LOCAL_SET, pair_slot, line);
     heap::emit_push_sorted_with_comparator_func(&mut c, 0, pair_slot, cmp_idx, line);
     c.emit_op(Op::NULL, line);
@@ -974,7 +974,7 @@ fn finish_array_instance(
     let this_slot = chunk.alloc_scratch(1);
 
     // this = [] (empty array)
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
     // Bind each method as a named property on the array
@@ -1007,7 +1007,7 @@ fn finish_fixed_values_array_instance(
     for value in values {
         chunk.emit_f64_const(*value, line);
     }
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, values.len() as u16, line);
+    chunk.emit_array_new_fixed(0, values.len() as u16, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
     for (mname, midx) in binds {
@@ -1039,7 +1039,7 @@ fn finish_second_child_array_instance(
             chunk.emit_op(Op::DROP, line);
         }
     } else {
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
     }
 
@@ -1104,7 +1104,7 @@ fn finish_single_null_array_instance(
 
     let this_slot = chunk.alloc_scratch(1);
     chunk.emit_op(Op::NULL, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
+    chunk.emit_array_new_fixed(0, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
     for (mname, midx) in binds {
@@ -1135,7 +1135,7 @@ fn finish_array_iterator_instance(
             chunk.emit_op(Op::DROP, line);
         }
     } else {
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
     }
 

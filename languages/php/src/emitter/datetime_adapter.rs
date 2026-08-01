@@ -1902,7 +1902,7 @@ fn emit_indexed_name(
         for n in names {
             push_str(chunk, n, line);
         }
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, names.len() as u16, line);
+        chunk.emit_array_new_fixed(0, names.len() as u16, line);
     }
     // Index by the getter result.
     emit_dt_getter(chunks, current, dt_slot, getter, line);
@@ -2464,7 +2464,7 @@ pub fn emit_php_getdate(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         for n in &weekday_full {
             push_str(chunk, n, line);
         }
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, weekday_full.len() as u16, line);
+        chunk.emit_array_new_fixed(0, weekday_full.len() as u16, line);
         local_get(chunk, dt_slot, line);
     }
     call_import(chunks, current, "ecma:date", "getDay", 1, line);
@@ -2479,7 +2479,7 @@ pub fn emit_php_getdate(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         for n in &month_full {
             push_str(chunk, n, line);
         }
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, month_full.len() as u16, line);
+        chunk.emit_array_new_fixed(0, month_full.len() as u16, line);
         local_get(chunk, dt_slot, line);
     }
     call_import(chunks, current, "ecma:date", "getMonth", 1, line);

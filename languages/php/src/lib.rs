@@ -91,7 +91,6 @@ pub fn register() {
                 emitter::autoload_adapter::emit_dynamic_constructor_ref_with_autoload,
             ),
             normalize_source: Some(normalize_source_for_parser),
-            str_getcsv: Some(emitter::string_adapter::emit_str_getcsv),
             ..Default::default()
         },
     );

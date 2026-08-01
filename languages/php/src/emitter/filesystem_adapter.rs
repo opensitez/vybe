@@ -1362,6 +1362,97 @@ pub fn emit_fopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 /// PHP `fwrite($stream, $data, ...)` — for a `stdout`/`stderr` sink writes
 /// to the process stream; for a memory stream appends to the buffer.
 /// Returns the byte count written.
+/// PHP `fputcsv($stream, $fields, $separator = ",", $enclosure = "\"")`.
+///
+/// Composed, not reimplemented: the row is rendered by the SHARED
+/// `primitives/csv.rs::emit_format_row` — the same emitter fortran and any
+/// other CSV consumer reach — and then handed to `fwrite`. php terminates the
+/// record with `\n`.
+pub fn emit_fputcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    if argc >= 5 {
+        chunk.emit_op(Op::DROP, line); // $escape — doubling is the scanner's job
+    }
+    let enc_slot = alloc_local(chunk);
+    let sep_slot = alloc_local(chunk);
+    let rows_slot = alloc_local(chunk);
+    let stream_slot = alloc_local(chunk);
+    if argc >= 4 {
+        lset(chunk, enc_slot, line);
+    } else {
+        push_str(chunk, "\"", line);
+        lset(chunk, enc_slot, line);
+    }
+    if argc >= 3 {
+        lset(chunk, sep_slot, line);
+    } else {
+        push_str(chunk, ",", line);
+        lset(chunk, sep_slot, line);
+    }
+    lset(chunk, rows_slot, line);
+    lset(chunk, stream_slot, line);
+
+    lget(chunk, stream_slot, line);
+    lget(chunk, rows_slot, line);
+    lget(chunk, sep_slot, line);
+    lget(chunk, enc_slot, line);
+    vybe_compiler::primitives::csv::emit_format_row(chunks, current, line);
+    let chunk = &mut chunks[current];
+    push_str(chunk, "\n", line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "concat");
+        chunk.emit_call(idx, 2, line);
+    }
+    // stack: [stream, line] — exactly `fwrite`'s contract.
+    emit_fwrite(chunks, current, 2, line);
+}
+
+/// PHP `fgetcsv($stream, $length = null, $separator = ",", $enclosure = "\"")`.
+///
+/// `fgets` then the SHARED scanner. The trailing newline `fgets` keeps is
+/// stripped first, or it would land in the last field.
+pub fn emit_fgetcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    if argc >= 5 {
+        chunk.emit_op(Op::DROP, line); // $escape
+    }
+    let enc_slot = alloc_local(chunk);
+    let sep_slot = alloc_local(chunk);
+    if argc >= 4 {
+        lset(chunk, enc_slot, line);
+    } else {
+        push_str(chunk, "\"", line);
+        lset(chunk, enc_slot, line);
+    }
+    if argc >= 3 {
+        lset(chunk, sep_slot, line);
+    } else {
+        push_str(chunk, ",", line);
+        lset(chunk, sep_slot, line);
+    }
+    if argc >= 2 {
+        chunk.emit_op(Op::DROP, line); // $length — `fgets` reads a whole line
+    }
+
+    // stack: [stream] → fgets → [record]
+    emit_read_record(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, sep_slot, line);
+    lget(chunk, enc_slot, line);
+    vybe_compiler::primitives::csv::emit_parse_line(chunks, current, line);
+}
+
+/// Read one record: `fgets($stream)` with the trailing `\r\n` / `\n` removed.
+/// Left on, the terminator would become part of the final field.
+fn emit_read_record(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_fgets(chunks, current, 1, line);
+    let chunk = &mut chunks[current];
+    {
+        let idx = chunk.add_import("ecma:string", "trimEnd");
+        chunk.emit_call(idx, 1, line);
+    }
+}
+
 pub fn emit_fwrite(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     if argc >= 3 {

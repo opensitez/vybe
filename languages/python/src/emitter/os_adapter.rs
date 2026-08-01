@@ -155,7 +155,7 @@ pub fn emit_scandir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, raws, line);
 
     let out = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     let i = chunks[current].alloc_scratch(1);
     chunks[current].emit_i32_const(0, line);
@@ -220,10 +220,10 @@ pub fn emit_walk(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let top = base;
 
     let out = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     let stack = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, stack, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, stack, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, top, line);
@@ -256,9 +256,9 @@ pub fn emit_walk(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur, line);
     call_import(chunks, current, "wasi:filesystem", "readDirEntries", 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, raws, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, dirs, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, files, line);
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
@@ -461,7 +461,7 @@ pub fn emit_entry_zero(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_copytree(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_args(chunks, current, argc, line);
     let work = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, work, line);
     // seed with [src, dst]
     chunks[current].emit_op_u16(Op::LOCAL_GET, work, line);

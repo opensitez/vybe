@@ -380,6 +380,8 @@ echo number_format(1987.65, 3, '.', ',') . "\n";
 echo number_format(1000, 0, '.', ',') . "\n";
 "#
         ),
-        vec!["1.987,6", "1,987.650", "1,000"]
+        // `1.987,7`: php rounds half-away-from-zero, so 1987.65 at 1 decimal is
+        // 1987.7. `1.987,6` was JS `toFixed` banker's rounding.
+        vec!["1.987,7", "1,987.650", "1,000"]
     );
 }

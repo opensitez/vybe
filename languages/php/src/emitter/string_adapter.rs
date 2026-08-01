@@ -468,7 +468,7 @@ pub fn emit_str_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     }
     coerce_to_str(chunk, line);
     lset(chunk, s_slot, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, out_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
@@ -1043,12 +1043,6 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let n_slot = alloc_local(chunk);
     let sign_slot = alloc_local(chunk);
     let fixed_slot = alloc_local(chunk);
-    let dot_slot = alloc_local(chunk);
-    let int_part_slot = alloc_local(chunk);
-    let frac_part_slot = alloc_local(chunk);
-    let out_slot = alloc_local(chunk);
-    let i_slot = alloc_local(chunk);
-    let len_slot = alloc_local(chunk);
 
     if argc >= 4 {
         lset(chunk, thousep_slot, line);
@@ -1135,137 +1129,23 @@ pub fn emit_number_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let chunk = &mut chunks[current];
     chunk.emit_call(to_fixed, 2, line);
     lset(chunk, fixed_slot, line);
-
-    // dot_idx = fixed.indexOf(".")
-    lget(chunk, fixed_slot, line);
-    push_str(chunk, ".", line);
-    {
-        let idx = chunk.add_import("ecma:string", "indexOf");
-        chunk.emit_call(idx, 2, line);
-    }
-    lset(chunk, dot_slot, line);
-
-    // if dot_idx < 0: int_part = fixed; frac_part = ""
-    lget(chunk, dot_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    lget(chunk, fixed_slot, line);
-    lset(chunk, int_part_slot, line);
-    push_str(chunk, "", line);
-    lset(chunk, frac_part_slot, line);
-    chunk.emit_else(line);
-    lget(chunk, fixed_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    lget(chunk, dot_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "substring");
-        chunk.emit_call(idx, 3, line);
-    }
-    lset(chunk, int_part_slot, line);
-    lget(chunk, fixed_slot, line);
-    lget(chunk, dot_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lget(chunk, fixed_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "length");
-        chunk.emit_call(idx, 1, line);
-    }
-    {
-        let idx = chunk.add_import("wasm:js-string", "substring");
-        chunk.emit_call(idx, 3, line);
-    }
-    lset(chunk, frac_part_slot, line);
-    chunk.emit_end(line);
-
-    // out = ""; len = int_part.length; for i in 0..len
-    push_str(chunk, "", line);
-    lset(chunk, out_slot, line);
-    lget(chunk, int_part_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "length");
-        chunk.emit_call(idx, 1, line);
-    }
-    lset(chunk, len_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    lset(chunk, i_slot, line);
-
-    let _ = chunk;
-    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
-    let chunk = &mut chunks[current];
-    lget(chunk, i_slot, line);
-    lget(chunk, len_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    let _ = chunk;
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
-    let chunk = &mut chunks[current];
-
-    // if i > 0: if (len - i) % 3 == 0: out += thousep
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    lget(chunk, len_slot, line);
-    lget(chunk, i_slot, line);
-    chunk.emit_op(Op::F64_SUB, line);
-    push_const(chunk, Value::F64(3.0), line);
-    vybe_compiler::primitives::math::emit_c_fmod(chunk, line);
-    push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    lget(chunk, out_slot, line);
-    lget(chunk, thousep_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    lset(chunk, out_slot, line);
-    chunk.emit_end(line); // end inner if
-    chunk.emit_end(line); // end outer if
-
-    // out += int_part.charAt(i)
-    lget(chunk, out_slot, line);
-    lget(chunk, int_part_slot, line);
-    lget(chunk, i_slot, line);
-    {
-        let idx = chunk.add_import("ecma:string", "charAt");
-        chunk.emit_call(idx, 2, line);
-    }
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    lset(chunk, out_slot, line);
-
-    // i++
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    let _ = chunk;
-    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
-    let chunk = &mut chunks[current];
-
-    // if frac_part.length > 0: out += decsep + frac_part
-    lget(chunk, frac_part_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "length");
-        chunk.emit_call(idx, 1, line);
-    }
-    push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    lget(chunk, out_slot, line);
-    lget(chunk, decsep_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    lget(chunk, frac_part_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    lset(chunk, out_slot, line);
-    chunk.emit_end(line);
-
-    // sign + out
+    // Grouping is the SHARED emitter — python's `,` format flag binds the same
+    // one. Everything above is php's and stays: the argument defaults, the
+    // `ValueError` on negative decimals, and the half-away-from-zero pre-round
+    // (JS `toFixed` is engine-dependent, so php's rounding cannot be delegated).
+    //
+    // The sign is re-attached AFTER grouping because `emit_group_digits`
+    // preserves a leading sign itself; php stripped it before rounding, so it
+    // is prepended here rather than passed through.
     lget(chunk, sign_slot, line);
-    lget(chunk, out_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    lget(chunk, fixed_slot, line);
+    {
+        let idx = chunk.add_import("wasm:js-string", "concat");
+        chunk.emit_call(idx, 2, line);
+    }
+    lget(chunk, thousep_slot, line);
+    lget(chunk, decsep_slot, line);
+    strings::emit_group_digits(chunks, current, line);
 }
 
 // ── substr_replace ─────────────────────────────────────────────────
@@ -1860,7 +1740,7 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 
     // out = []
     let out_slot = alloc_local(chunk);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, out_slot, line);
 
     // for li in 0..lines.length
@@ -2095,166 +1975,42 @@ pub fn emit_wordwrap(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 /// PHP `str_getcsv($s)` — parse one CSV row, return array of fields.
 /// MVP: comma delim, double-quote enclosure, doubled-quote escape.
 /// Multi-arg flavors (delim, enclosure, escape overrides) ignored.
+/// PHP `str_getcsv($string, $separator = ",", $enclosure = "\"", $escape = "\\")`.
+///
+/// The scanner is the SHARED one in `primitives/csv.rs` — fortran's
+/// `str_getcsv` binds the same emitter. What stays here is php's: the string
+/// coercion, and supplying php's defaults for the arguments the caller omitted.
+///
+/// The previous body dropped every optional argument
+/// (`for _ in 1..argc { DROP }`) and hardcoded `,` and `"`, so
+/// `str_getcsv($s, ";")` silently split on commas. The dialect now reaches the
+/// scanner.
 pub fn emit_str_getcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    // Stack: str [, sep [, enclosure [, escape ]]] — pop back to front.
     let chunk = &mut chunks[current];
-    // Drop optional args; only the first is used.
-    for _ in 1..argc {
-        chunk.emit_op(Op::DROP, line);
+    if argc >= 4 {
+        chunk.emit_op(Op::DROP, line); // $escape: doubling is handled by the scanner
     }
-    let s_slot = alloc_local(chunk);
-    let out_slot = alloc_local(chunk);
-    let cur_slot = alloc_local(chunk);
-    let in_q_slot = alloc_local(chunk);
-    let i_slot = alloc_local(chunk);
-    let n_slot = alloc_local(chunk);
-    let c_slot = alloc_local(chunk);
-
+    let enc_slot = alloc_local(chunk);
+    let sep_slot = alloc_local(chunk);
+    if argc >= 3 {
+        coerce_to_str(chunk, line);
+        lset(chunk, enc_slot, line);
+    } else {
+        push_str(chunk, "\"", line);
+        lset(chunk, enc_slot, line);
+    }
+    if argc >= 2 {
+        coerce_to_str(chunk, line);
+        lset(chunk, sep_slot, line);
+    } else {
+        push_str(chunk, ",", line);
+        lset(chunk, sep_slot, line);
+    }
     coerce_to_str(chunk, line);
-    lset(chunk, s_slot, line);
-    let _ = chunk;
-    vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
-    let chunk = &mut chunks[current];
-    lset(chunk, out_slot, line);
-    push_str(chunk, "", line);
-    lset(chunk, cur_slot, line);
-    push_const(chunk, Value::Bool(false), line);
-    lset(chunk, in_q_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    lset(chunk, i_slot, line);
-    lget(chunk, s_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "length");
-        chunk.emit_call(idx, 1, line);
-    }
-    lset(chunk, n_slot, line);
-
-    let _ = chunk;
-    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
-    let chunk = &mut chunks[current];
-    lget(chunk, i_slot, line);
-    lget(chunk, n_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    let _ = chunk;
-    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
-    let chunk = &mut chunks[current];
-
-    // c = s.charAt(i)
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    {
-        let idx = chunk.add_import("ecma:string", "charAt");
-        chunk.emit_call(idx, 2, line);
-    }
-    lset(chunk, c_slot, line);
-
-    // if in_q: handle in-quote state; else: handle normal state
-    lget(chunk, in_q_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    // in quote
-    lget(chunk, c_slot, line);
-    push_str(chunk, "\"", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    // c == '"': check if next is also '"'
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lget(chunk, n_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    {
-        let idx = chunk.add_import("ecma:string", "charAt");
-        chunk.emit_call(idx, 2, line);
-    }
-    push_str(chunk, "\"", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    // doubled quote — append " and skip next
-    lget(chunk, cur_slot, line);
-    push_str(chunk, "\"", line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    lset(chunk, cur_slot, line);
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    chunk.emit_else(line);
-    // no next / next not quote: close quote
-    push_const(chunk, Value::Bool(false), line);
-    lset(chunk, in_q_slot, line);
-    chunk.emit_end(line); // end doubled-quote check
-    chunk.emit_else(line); // no next char
-    // close quote
-    push_const(chunk, Value::Bool(false), line);
-    lset(chunk, in_q_slot, line);
-    chunk.emit_end(line); // end has-next check
-    chunk.emit_else(line); // c != '"'
-    // append c to cur
-    lget(chunk, cur_slot, line);
-    lget(chunk, c_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    lset(chunk, cur_slot, line);
-    chunk.emit_end(line); // end c=='"' check
-    chunk.emit_else(line); // not in quote
-    // not in quote: check c == '"'
-    lget(chunk, c_slot, line);
-    push_str(chunk, "\"", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    push_const(chunk, Value::Bool(true), line);
-    lset(chunk, in_q_slot, line);
-    chunk.emit_else(line);
-    // c != '"': check c == ','
-    lget(chunk, c_slot, line);
-    push_str(chunk, ",", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
-    chunk.emit_if(line);
-    // push current and reset
-    lget(chunk, out_slot, line);
-    lget(chunk, cur_slot, line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:array", "push", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-    let chunk = &mut chunks[current];
-    push_str(chunk, "", line);
-    lset(chunk, cur_slot, line);
-    chunk.emit_else(line);
-    // append c
-    lget(chunk, cur_slot, line);
-    lget(chunk, c_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    lset(chunk, cur_slot, line);
-    chunk.emit_end(line); // end c==',' check
-    chunk.emit_end(line); // end c=='"' check (not-in-quote)
-    chunk.emit_end(line); // end in_q if/else
-
-    // i++
-    lget(chunk, i_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_ADD, line);
-    lset(chunk, i_slot, line);
-    let _ = chunk;
-    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
-    let chunk = &mut chunks[current];
-
-    // Push final field.
-    lget(chunk, out_slot, line);
-    lget(chunk, cur_slot, line);
-    let _ = chunk;
-    call_import(chunks, current, "ecma:array", "push", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-    let chunk = &mut chunks[current];
-    lget(chunk, out_slot, line);
+    lget(chunk, sep_slot, line);
+    lget(chunk, enc_slot, line);
+    vybe_compiler::primitives::csv::emit_parse_line(chunks, current, line);
 }
 
 // ── soundex ────────────────────────────────────────────────────────
@@ -2752,7 +2508,7 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         // Build new result array
         {
             let c = &mut chunks[current];
-            c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+            c.emit_array_new_fixed(0, 0, line);
             lset(c, new_result_slot, line);
             push_const(c, Value::F64(0.0), line);
             lset(c, i_slot, line);
@@ -2827,7 +2583,7 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         let b = alloc_local(c);
         let d = alloc_local(c);
         let e = alloc_local(c);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        c.emit_array_new_fixed(0, 0, line);
         lset(c, e, line);
         lget(c, result_slot, line);
         c.emit_op(Op::ARRAY_LENGTH, line);
@@ -2978,7 +2734,7 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     lset(chunk, group_count_slot, line);
 
     // result = []
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, result_slot, line);
 
     // for j in 0..group_count: build column j into result
@@ -2995,7 +2751,7 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     let chunk = &mut chunks[current];
 
     // group_arr = []
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, group_arr_slot, line);
 
     // for i in 0..raw_len: group_arr.push(raw[i][j] || "")
@@ -3223,7 +2979,7 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     push_const(chunk, Value::F64(0.0), line);
     chunk.emit_op(Op::ARRAY_GET, line);
     lset(chunk, full_matches_slot, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, filtered_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, filter_i_slot, line);
@@ -3606,7 +3362,7 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     if argc >= 2 {
         lset(chunk, field_keys_slot, line);
     } else {
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         lset(chunk, field_keys_slot, line);
     }
 
@@ -4921,7 +4677,7 @@ fn emit_str_word_count_with_mode(chunks: &mut [Chunk], current: usize, argc: u8,
     lset(chunk, len_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, out_slot, line);
     let _ = chunk;
     let ls1 = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
@@ -5597,7 +5353,7 @@ pub fn emit_preg_grep(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     lset(chunk, invert_slot, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, out_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
@@ -5883,7 +5639,7 @@ pub fn emit_mb_convert_case(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     lset(chunk, nw_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, wi_slot, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, out_slot, line);
     let _ = chunk;
     let ws = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);

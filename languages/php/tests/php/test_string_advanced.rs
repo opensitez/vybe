@@ -1001,7 +1001,8 @@ echo "|";
 echo implode('-', $u);
 "#
         ),
-        &["4||", "c", "c|a-b-c"]
+        // Two echo statements → two output lines. Real php: `4||`, `c|a-b-c`.
+        &["4||", "c|a-b-c"]
     );
 }
 

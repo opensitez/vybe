@@ -668,6 +668,10 @@ fwrite              = { emit = "common:php.fwrite",             min_args = 2, ma
 fputs               = { emit = "common:php.fwrite",             min_args = 2, max_args = 3 }
 fread               = { emit = "common:php.fread",             min_args = 2, max_args = 2 }
 fgets               = { emit = "common:php.fgets",             min_args = 1, max_args = 2 }
+# CSV records over a stream. Both compose: the row rendering / field scanning is
+# `primitives/csv.rs`, the stream half is `fwrite`/`fgets`.
+fputcsv             = { emit = "common:php.fputcsv",           min_args = 2, max_args = 5 }
+fgetcsv             = { emit = "common:php.fgetcsv",           min_args = 1, max_args = 5 }
 fgetc               = { emit = "common:php.fgetc",             min_args = 1, max_args = 1 }
 feof                = { emit = "common:php.feof",              min_args = 1, max_args = 1 }
 ftell               = { emit = "common:php.ftell",             min_args = 1, max_args = 1 }

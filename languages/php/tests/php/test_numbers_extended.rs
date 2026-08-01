@@ -173,7 +173,9 @@ fn number_format_custom_decimals() {
         run_prints(
             r#"<?php echo number_format(1234.56789, 2, ',', ' '); echo '|'; echo number_format(12, 0, '.', ','); "#
         ),
-        vec!["1234,57|12"]
+        // The 4th argument IS the thousands separator, so a space appears:
+        // real php gives `1 234,57`.
+        vec!["1 234,57|12"]
     );
 }
 

@@ -379,7 +379,7 @@ fn emit_php_key_list_from_slot(chunks: &mut [Chunk], current: usize, value_slot:
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
     lset(&mut chunks[current], out_slot, line);
     lget(&mut chunks[current], keys_slot, line);
     chunks[current].emit_op(Op::ARRAY_LENGTH, line);
@@ -748,7 +748,7 @@ pub fn emit_php_array_keys(chunks: &mut [Chunk], current: usize, argc: u8, line:
     emit_php_key_list_from_slot(chunks, current, value_slot, line);
     let chunk = &mut chunks[current];
     lset(chunk, keys_slot, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, out_slot, line);
 
     push_const(chunk, Value::F64(0.0), line);
@@ -881,7 +881,7 @@ pub fn emit_php_array_values(chunks: &mut [Chunk], current: usize, argc: u8, lin
     lget(chunk, values_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
     lset(chunk, len_slot, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, out_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
@@ -952,7 +952,7 @@ pub fn emit_array_fill(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     lget(chunk, sequential_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     chunk.emit_else(line);
     let _ = chunk;
     call_import(chunks, current, "ecma:map", "new", 0, line);
@@ -1056,7 +1056,7 @@ fn emit_object_from_keys(
     let pair_slot = alloc_local(chunk);
 
     let _ = chunk;
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     let chunk = &mut chunks[current];
     lset(chunk, entries_slot, line);
 
@@ -1087,7 +1087,7 @@ fn emit_object_from_keys(
     chunk.emit_op(Op::ARRAY_GET, line);
     lset(chunk, value_slot, line);
 
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, pair_slot, line);
     lget(chunk, pair_slot, line);
     lget(chunk, key_slot, line);
@@ -1630,7 +1630,7 @@ pub fn emit_array_map(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     lget(chunk, is_array_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     chunk.emit_else(line);
     let _ = chunk;
     call_import(chunks, current, "ecma:map", "new", 0, line);
@@ -1849,13 +1849,13 @@ pub fn emit_array_walk_recursive(chunks: &mut [Chunk], current: usize, argc: u8,
     lset(chunk, fn_slot, line);
     lset(chunk, arr_slot, line);
 
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, work_slot, line);
     lget(chunk, work_slot, line);
     chunk.emit_op(Op::NULL, line);
     chunk.emit_op(Op::NULL, line);
     lget(chunk, arr_slot, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, line);
+    chunk.emit_array_new_fixed(0, 3, line);
     let _ = chunk;
     call_import(chunks, current, "ecma:array", "push", 2, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -1932,7 +1932,7 @@ pub fn emit_array_walk_recursive(chunks: &mut [Chunk], current: usize, argc: u8,
     lget(chunk, cur_slot, line);
     lget(chunk, key_slot, line);
     lget(chunk, child_slot, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, line);
+    chunk.emit_array_new_fixed(0, 3, line);
     let _ = chunk;
     call_import(chunks, current, "ecma:array", "push", 2, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -2035,7 +2035,7 @@ pub fn emit_array_pad(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     lset(chunk, diff_slot, line);
 
     // pad = []
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, pad_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, i_slot, line);
@@ -2141,7 +2141,7 @@ pub fn emit_array_chunk(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     chunk.emit_end(line);
 
     // out = []
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, out_slot, line);
 
     // block $done { if size < 1 { br $done } ... }
@@ -2198,7 +2198,7 @@ pub fn emit_array_chunk(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     call_import(chunks, current, "ecma:map", "new", 0, line);
     let chunk = &mut chunks[current];
     chunk.emit_else(line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     chunk.emit_end(line);
     lset(chunk, chunk_slot, line);
 
@@ -2518,7 +2518,7 @@ fn emit_array_diff_or_intersect(chunks: &mut [Chunk], current: usize, intersect:
     lset(chunk, seen_slot, line);
 
     // out = []
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, out_slot, line);
 
     // for i in 0..b.length: seen[String(b[i])] = true
@@ -2740,7 +2740,7 @@ pub fn emit_array_column(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     if has_index {
         call_import(chunks, current, "ecma:map", "new", 0, line);
     } else {
-        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunks[current].emit_array_new_fixed(0, 0, line);
     }
     {
         let chunk = &mut chunks[current];
@@ -3543,7 +3543,7 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
         call_import(chunks, current, "ecma:map", "new", 0, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
         chunks[current].emit_else(line);
-        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunks[current].emit_array_new_fixed(0, 0, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
         chunks[current].emit_end(line);
     }
@@ -4368,7 +4368,7 @@ pub fn emit_array_replace_recursive(chunks: &mut [Chunk], current: usize, _argc:
             vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
             chunk.emit_op(Op::I32_AND, line);
             chunk.emit_if(line);
-            chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+            chunk.emit_array_new_fixed(0, 0, line);
             chunk.emit_else(line);
         }
         call_import(chunks, current, "ecma:map", "new", 0, line);
@@ -4611,7 +4611,7 @@ fn emit_array_udiff_or_uintersect(
         lset(chunk, cb_slot, line);
         lset(chunk, b_slot, line);
         lset(chunk, a_slot, line);
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         lset(chunk, out_slot, line);
         push_const(chunk, Value::F64(0.0), line);
         lset(chunk, i_slot, line);
@@ -4979,9 +4979,9 @@ fn emit_assoc_sort_impl(
     call_import(chunks, current, "ecma:map", "new", 0, line);
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, used_slot, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, sorted_keys_slot, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, sorted_vals_slot, line);
 
     // outer loop: for outer in 0..n
@@ -5303,7 +5303,7 @@ pub fn emit_php_array_merge(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     {
         let c = &mut chunks[current];
         // Collect args into array (reversed on stack, so reverse after)
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        c.emit_array_new_fixed(0, 0, line);
         lset(c, args_arr_slot, line);
     }
     for _ in 0..argc {
@@ -5849,7 +5849,7 @@ pub fn emit_php_array_reverse(chunks: &mut [Chunk], current: usize, argc: u8, li
     {
         let c = &mut chunks[current];
         c.emit_else(line);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        c.emit_array_new_fixed(0, 0, line);
         c.emit_end(line);
         lset(c, out_slot, line);
         push_const(c, Value::F64(0.0), line);
@@ -6042,7 +6042,7 @@ pub fn emit_php_array_slice(chunks: &mut [Chunk], current: usize, argc: u8, line
     {
         let c = &mut chunks[current];
         c.emit_if(line);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        c.emit_array_new_fixed(0, 0, line);
         lset(c, out_slot, line);
         push_const(c, Value::Bool(false), line);
         lset(c, out_is_map_slot, line);
@@ -6180,7 +6180,7 @@ pub fn emit_php_implode(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     }
 
     // Build a new array with stringified elements
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, out_slot, line);
 
     // Get values from array (works for both Array and Map)

@@ -104,7 +104,7 @@ pub fn emit_helper(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
     }
 
     if name == "pascal.json_array_new" {
-        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunks[current].emit_array_new_fixed(0, 0, line);
         return true;
     }
 

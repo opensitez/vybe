@@ -52,7 +52,7 @@ fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
 }
 
 fn emit_empty_array(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
 }
 
 fn emit_select_column_count_from_sql_slot(chunk: &mut Chunk, sql_slot: u16, line: u32) {

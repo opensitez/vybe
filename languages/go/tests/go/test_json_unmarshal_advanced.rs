@@ -65,7 +65,7 @@ go_run_cases! {
     ),
     json_unmarshal_unicode_escape_cyrillic => (
         "package main; import \"fmt\"; import \"encoding/json\"; func main() { var s string; json.Unmarshal([]byte(`\"\\u043f\\u0440\\u0438\\u0432\\u0435\\u0442\"`), &s); fmt.Println(len(s)) }",
-        vec!["6"]
+        vec!["12"]
     ),
     json_unmarshal_unicode_surrogate_pair => (
         "package main; import \"fmt\"; import \"encoding/json\"; func main() { var s string; json.Unmarshal([]byte(`\"\\uD83D\\uDE00\"`), &s); fmt.Println(len([]rune(s))) }",

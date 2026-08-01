@@ -220,7 +220,7 @@ pub fn emit_int_to_bytes(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     let shift = chunks[current].alloc_scratch(1);
     let q = chunks[current].alloc_scratch(1);
 
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     call_import(chunks, current, "wasm:js-number", "toF64", 1, line);
@@ -1461,7 +1461,7 @@ pub fn emit_iter_sentinel(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let out = chunks[current].alloc_scratch(1);
     let item = chunks[current].alloc_scratch(1);
 
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
 
     let block = chunks[current].emit_block(line);
@@ -1538,7 +1538,7 @@ pub fn emit_zip_spread(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     let tuple = chunks[current].alloc_scratch(1);
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, rows, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, rows, line);
     chunks[current].emit_op(Op::ARRAY_LENGTH, line);
@@ -1564,7 +1564,7 @@ pub fn emit_zip_spread(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunks[current].emit_op(Op::I32_GE_S, line);
     chunks[current].emit_br_if(1, line);
 
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, tuple, line);
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);

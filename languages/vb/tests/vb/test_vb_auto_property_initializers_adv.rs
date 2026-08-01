@@ -38,7 +38,7 @@ Module Program
     End Sub
 End Module
 "#;
-    assert_eq!(run_vb(src), vec!["1.0,2.0"]);
+    assert_eq!(run_vb(src), vec!["1,2"]);
 }
 
 #[test]

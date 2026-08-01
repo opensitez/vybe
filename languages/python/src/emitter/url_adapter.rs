@@ -131,7 +131,7 @@ pub fn emit_urlsplit(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         url::emit_component(chunks, current, parsed, field, line);
     }
 
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 5, line);
+    chunks[current].emit_array_new_fixed(0, 5, line);
     let fields = [
         Some("scheme".to_string()),
         Some("netloc".to_string()),
@@ -249,7 +249,7 @@ fn search_params(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
 /// `parse_qsl(q)` → `[(key, value), …]` in order, duplicates preserved.
 pub fn emit_parse_qsl(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc == 0 {
-        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunks[current].emit_array_new_fixed(0, 0, line);
         return;
     }
     let base = stash_args(chunks, current, argc, line);

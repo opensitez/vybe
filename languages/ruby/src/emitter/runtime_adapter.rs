@@ -737,7 +737,7 @@ fn emit_array3_from_slots(chunks: &mut [Chunk], current: usize, a: u16, b: u16, 
     chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, c, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 3, line);
+    chunks[current].emit_array_new_fixed(0, 3, line);
 }
 
 fn emit_is_regexp_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
@@ -805,7 +805,7 @@ fn emit_partition_not_found(
         chunks[current].emit_string_const("", line);
         chunks[current].emit_string_const("", line);
     }
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 3, line);
+    chunks[current].emit_array_new_fixed(0, 3, line);
 }
 
 fn emit_partition_regex_literal_fallback(
@@ -887,7 +887,7 @@ fn emit_ruby_partition(chunks: &mut [Chunk], current: usize, argc: u8, reverse: 
         chunks[current].emit_string_const("", line);
         chunks[current].emit_string_const("", line);
         chunks[current].emit_string_const("", line);
-        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 3, line);
+        chunks[current].emit_array_new_fixed(0, 3, line);
         return;
     }
     let s = slots[0];
@@ -903,7 +903,7 @@ fn emit_ruby_partition(chunks: &mut [Chunk], current: usize, argc: u8, reverse: 
         chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
         chunks[current].emit_string_const("", line);
         chunks[current].emit_string_const("", line);
-        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 3, line);
+        chunks[current].emit_array_new_fixed(0, 3, line);
     } else {
         chunks[current].emit_string_const("", line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
@@ -915,7 +915,7 @@ fn emit_ruby_partition(chunks: &mut [Chunk], current: usize, argc: u8, reverse: 
         chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
         call_import(chunks, current, "ecma:string", "length", 1, line);
         call_import(chunks, current, "ecma:string", "substring", 3, line);
-        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 3, line);
+        chunks[current].emit_array_new_fixed(0, 3, line);
     }
     chunks[current].emit_else(line);
     emit_is_regexp_slot(chunks, current, sep, line);
@@ -7646,7 +7646,7 @@ fn emit_ruby_exception_ancestors(chunk: &mut Chunk, ty: &'static str, line: u32)
     for name in &chain {
         chunk.emit_string_const(name, line);
     }
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, chain.len() as u16, line);
+    chunk.emit_array_new_fixed(0, chain.len() as u16, line);
     let key = chunk.add_constant(Value::String(Arc::from("__types")));
     chunk.emit_op_u16(Op::STRUCT_SET, key, line);
     chunk.emit_op(Op::DROP, line);
@@ -7654,7 +7654,7 @@ fn emit_ruby_exception_ancestors(chunk: &mut Chunk, ty: &'static str, line: u32)
 
 fn emit_ruby_exception_backtrace_default(chunk: &mut Chunk, line: u32) {
     chunk.emit_dup(line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     let key = chunk.add_constant(Value::String(Arc::from("backtrace")));
     chunk.emit_op_u16(Op::STRUCT_SET, key, line);
     chunk.emit_op(Op::DROP, line);
@@ -11150,7 +11150,7 @@ fn emit_date_name(
     for name in names {
         chunks[current].emit_string_const(name, line);
     }
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, names.len() as u16, line);
+    chunks[current].emit_array_new_fixed(0, names.len() as u16, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, dt_slot, line);
     call_import(chunks, current, "ecma:date", getter, 1, line);
     collections::emit_get(chunks, current, line);
@@ -11184,7 +11184,7 @@ fn emit_date_yday(chunks: &mut [Chunk], current: usize, dt_slot: u16, line: u32)
     for n in [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334] {
         core_wasm::i32_const(&mut chunks[current], line, n);
     }
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 12, line);
+    chunks[current].emit_array_new_fixed(0, 12, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, dt_slot, line);
     call_import(chunks, current, "ecma:date", "getUTCMonth", 1, line);
     collections::emit_get(chunks, current, line);

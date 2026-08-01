@@ -219,7 +219,7 @@ fn emit_php_hash_algos(chunks: &mut [Chunk], current: usize, line: u32) {
     push_str(chunk, "md5", line);
     push_str(chunk, "sha1", line);
     push_str(chunk, "sha256", line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, line);
+    chunk.emit_array_new_fixed(0, 3, line);
 }
 
 fn emit_php_hash_hkdf(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

@@ -1157,6 +1157,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "php.fread" => crate::emitter::filesystem_adapter::emit_fread(chunks, current, argc, line),
         "php.fgets" => crate::emitter::filesystem_adapter::emit_fgets(chunks, current, argc, line),
+        "php.fputcsv" => {
+            crate::emitter::filesystem_adapter::emit_fputcsv(chunks, current, argc, line)
+        }
+        "php.fgetcsv" => {
+            crate::emitter::filesystem_adapter::emit_fgetcsv(chunks, current, argc, line)
+        }
         "php.fgetc" => crate::emitter::filesystem_adapter::emit_fgetc(chunks, current, argc, line),
         "php.feof" => crate::emitter::filesystem_adapter::emit_feof(chunks, current, argc, line),
         "php.ftell" => crate::emitter::filesystem_adapter::emit_ftell(chunks, current, argc, line),

@@ -37,7 +37,7 @@ fn emit_type_descriptor(chunk: &mut Chunk, name: &str, kind: reflection::Reflect
     set_string_field(chunk, reflection::FIELD_KIND, kind.as_str(), line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const(name, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
+    chunk.emit_array_new_fixed(0, 1, line);
     set_field(chunk, reflection::FIELD_TYPES, line);
 }
 

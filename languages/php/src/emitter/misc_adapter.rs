@@ -803,7 +803,7 @@ fn build_php_json_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize 
         call_import_into(imports, &mut helper, "ecma:array", "isArray", 1, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool_into(imports, &mut helper, line);
         helper.emit_if(line);
-        helper.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        helper.emit_array_new_fixed(0, 0, line);
         lset(&mut helper, out_slot, line);
         lget(&mut helper, value_slot, line);
         helper.emit_op(Op::ARRAY_LENGTH, line);
@@ -862,7 +862,7 @@ fn build_php_json_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize 
         lget(&mut helper, value_slot, line);
         call_import_into(imports, &mut helper, "ecma:object", "keys", 1, line);
         lset(&mut helper, keys_slot, line);
-        helper.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        helper.emit_array_new_fixed(0, 0, line);
         lset(&mut helper, out_slot, line);
         lget(&mut helper, keys_slot, line);
         helper.emit_op(Op::ARRAY_LENGTH, line);
@@ -888,7 +888,7 @@ fn build_php_json_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize 
         lget(&mut helper, key_slot, line);
         helper.emit_op(Op::ARRAY_GET, line);
         call_ref(&mut helper, 1, line);
-        helper.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+        helper.emit_array_new_fixed(0, 2, line);
         call_import_into(imports, &mut helper, "ecma:array", "push", 2, line);
         helper.emit_op(Op::DROP, line);
         bump_loop_index(&mut helper, i_slot, line);
@@ -998,7 +998,7 @@ fn build_php_serialize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         push_str(&mut helper, "array", line);
         struct_set_key(&mut helper, SERIAL_KIND_KEY, line);
 
-        helper.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        helper.emit_array_new_fixed(0, 0, line);
         lset(&mut helper, items_slot, line);
         lget(&mut helper, value_slot, line);
         helper.emit_op(Op::ARRAY_LENGTH, line);
@@ -1357,7 +1357,7 @@ fn build_php_unserialize_helper(chunks: &mut Vec<Chunk>, alloc_idx: usize, line:
         push_str(&mut helper, "array", line);
         vybe_compiler::primitives::ops::emit_dyn_eq(&mut helper, line);
         helper.emit_if(line);
-        helper.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        helper.emit_array_new_fixed(0, 0, line);
         lset(&mut helper, out_slot, line);
         lget(&mut helper, node_slot, line);
         struct_get_key(&mut helper, "items", line);

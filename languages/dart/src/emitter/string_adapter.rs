@@ -1647,7 +1647,7 @@ pub fn emit_dart_map_entry(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    chunks[current].emit_array_new_fixed(0, 2, line);
     let pair_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, pair_slot, line);
     let chunk = &mut chunks[current];
@@ -1788,7 +1788,7 @@ pub fn emit_dart_map_entries(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    chunks[current].emit_array_new_fixed(0, 2, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, pair_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, entries_slot, line);
     emit_pair_to_map_entry(chunks, current, pair_slot, line);

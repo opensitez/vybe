@@ -76,7 +76,7 @@ pub fn emit_inet_aton(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         chunks[current].emit_f64_const(10.0, line);
         call_import(chunks, current, "ecma:number", "parseInt", 2, line);
     }
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 4, line);
+    chunks[current].emit_array_new_fixed(0, 4, line);
     // Same constructor `int.to_bytes` / the `b"..."` literal path uses, so
     // `len()` and indexing behave identically to any other `bytes` value.
     call_import(chunks, current, "ecma:uint8array", "new", 1, line);
@@ -249,7 +249,7 @@ pub fn emit_getaddrinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     }
     tuples::emit_tuple(chunks, current, 2, line);
     tuples::emit_tuple(chunks, current, 5, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
+    chunks[current].emit_array_new_fixed(0, 1, line);
 }
 
 // ── ipaddress helpers ───────────────────────────────────────────────────────
@@ -317,7 +317,7 @@ pub fn emit_ip4_str(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lset(chunks, current, value, line);
     let octets = chunks[current].alloc_scratch(1);
     push_ip4_octets(chunks, current, value, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 4, line);
+    chunks[current].emit_array_new_fixed(0, 4, line);
     lset(chunks, current, octets, line);
 
     let out = chunks[current].alloc_scratch(1);
@@ -347,7 +347,7 @@ pub fn emit_ip4_octets(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     let value = chunks[current].alloc_scratch(1);
     lset(chunks, current, value, line);
     push_ip4_octets(chunks, current, value, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 4, line);
+    chunks[current].emit_array_new_fixed(0, 4, line);
 }
 
 /// `_vybe_ip4_mask(prefixlen)` → the 32-bit netmask.

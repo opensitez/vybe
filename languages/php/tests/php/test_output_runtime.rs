@@ -286,7 +286,9 @@ echo mark('a') . mark('b');
         r#"<?php
 echo 'a', 1, false, null, true, "\n";
 "#,
-        ["a1 1"]
+        // `echo` stringifies php-style: false and null are "", true is "1".
+        // Real php prints `a11`.
+        ["a11"]
     };
 
     printf_numbering_and_width => {

@@ -81,6 +81,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
 
     normalize_vb_partial_classes(&mut body);
     normalize_vb_implicit_method_self_classes(&mut body);
+    normalize_vb_member_array_assignment_classes(&mut body);
 
     let mut synthesized = dotnet_exceptions::synthesize_exception_classes();
     synthesized.extend(body);
@@ -121,6 +122,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     normalize_vb_array_paren_indexes(&mut module);
     normalize_vb_custom_collection_for_each(&mut module);
     normalize_vb_default_indexer_calls(&mut module);
+    normalize_vb_member_array_assignment_classes(&mut module.body);
     normalize_vb_array_segment_surface(&mut module);
     normalize_vb_dotnet_collection_calls(&mut module);
     normalize_vb_stringbuilder_member_access(&mut module);
@@ -143,6 +145,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     normalize_vb_span_index_surface(&mut module);
     normalize_vb_unmanaged_stream_surface(&mut module);
     normalize_vb_anonymous_equals(&mut module);
+    normalize_vb_member_array_assignment_classes(&mut module.body);
     Ok(module)
 }
 
@@ -8072,6 +8075,12 @@ fn normalize_vb_convert_change_type_reflection_expr(
                     *expr = Expression::string(&type_name);
                     return;
                 }
+                if literal_string(object).is_some_and(|name| name.eq_ignore_ascii_case("System.Object")) {
+                    if let Some(type_name) = vb_convert_single_reflected_object_type(locals) {
+                        *expr = Expression::string(&type_name);
+                        return;
+                    }
+                }
             }
             if let Some(value) = vb_convert_known_member_value(object, field, locals) {
                 *expr = value;
@@ -8319,11 +8328,11 @@ fn vb_convert_known_call_value(
     }
     if let ExprKind::Member { object, field, .. } = &callee.kind {
         if field.eq_ignore_ascii_case("ToString") && args.is_empty() {
-            if let Some(type_name) = vb_convert_type_name_member(object, locals) {
-                return Some(Expression::string(&type_name));
-            }
             if let Some(name) = vb_convert_known_object_field(object, "__name", locals) {
                 return Some(name);
+            }
+            if let Some(type_name) = vb_convert_type_name_member(object, locals) {
+                return Some(Expression::string(&type_name));
             }
             if vb_convert_known_string(object, locals).is_some() {
                 return Some((**object).clone());
@@ -8340,6 +8349,24 @@ fn vb_convert_known_call_value(
 
 fn vb_convert_known_new_value(class: &Expression, args: &[Argument]) -> Option<Expression> {
     let class_name = dotted_expr_name(class)?;
+    if matches!(
+        class_name.to_ascii_lowercase().as_str(),
+        "cultureinfo" | "system.globalization.cultureinfo"
+    ) {
+        return Some(Expression::new(ExprKind::Object(vec![
+            ObjectProperty::KeyValue {
+                key: Expression::string("__type"),
+                value: Expression::string("CultureInfo"),
+            },
+            ObjectProperty::KeyValue {
+                key: Expression::string("Name"),
+                value: args
+                    .first()
+                    .map(|arg| arg.value.clone())
+                    .unwrap_or_else(|| Expression::string("")),
+            },
+        ])));
+    }
     if !matches!(class_name.to_ascii_lowercase().as_str(), "uri" | "system.uri") || args.is_empty()
     {
         return None;
@@ -8406,6 +8433,33 @@ fn vb_convert_known_object_field(
         }
     }
     None
+}
+
+fn vb_convert_single_reflected_object_type(locals: &VbConvertReflectionLocals) -> Option<String> {
+    let mut found = None;
+    for value in locals.values.values() {
+        let ExprKind::Object(props) = &value.kind else {
+            continue;
+        };
+        let mut type_name = None;
+        let mut has_name = false;
+        for prop in props {
+            if let ObjectProperty::KeyValue { key, value } = prop {
+                if literal_string(key).is_some_and(|name| name == "__type") {
+                    type_name = literal_string(value);
+                } else if literal_string(key).is_some_and(|name| name == "__name") {
+                    has_name = true;
+                }
+            }
+        }
+        if has_name {
+            if found.is_some() {
+                return None;
+            }
+            found = type_name;
+        }
+    }
+    found
 }
 
 fn vb_convert_value_to_type(
@@ -8651,6 +8705,16 @@ fn vb_convert_culture_is_decimal_comma(expr: &Expression) -> bool {
             .first()
             .and_then(|arg| literal_string(&arg.value))
             .is_some_and(|name| matches!(name.to_ascii_lowercase().as_str(), "de-de" | "fr-fr")),
+        ExprKind::Object(props) => props.iter().any(|prop| {
+            if let ObjectProperty::KeyValue { key, value } = prop {
+                literal_string(key).is_some_and(|name| name.eq_ignore_ascii_case("Name"))
+                    && literal_string(value).is_some_and(|name| {
+                        matches!(name.to_ascii_lowercase().as_str(), "de-de" | "fr-fr")
+                    })
+            } else {
+                false
+            }
+        }),
         _ => false,
     }
 }
@@ -16280,6 +16344,51 @@ fn vb_array_bound_length_i64(expr: &Expression) -> Option<i64> {
     Some(vb_array_bound_upper_i64(expr)? - vb_array_bound_lower_i64(expr)? + 1)
 }
 
+fn vb_array_total_length_expr(bounds: &[Expression]) -> Expression {
+    bounds
+        .iter()
+        .map(|bound| vb_array_length_from_upper_bound(bound.clone()))
+        .reduce(|left, right| Expression::new(ExprKind::Binary {
+            op: BinOp::Mul,
+            left: Box::new(left),
+            right: Box::new(right),
+        }))
+        .unwrap_or_else(|| Expression::int(0))
+}
+
+fn vb_flat_array_index_expr(indices: Vec<Expression>, bounds: &[Expression]) -> Expression {
+    let rank = indices.len().min(bounds.len());
+    let mut result: Option<Expression> = None;
+    for idx in 0..rank {
+        let lower = vb_array_bound_lower(&bounds[idx]);
+        let mut term = if matches!(lower.kind, ExprKind::Lit(Literal::Int(0))) {
+            indices[idx].clone()
+        } else {
+            Expression::new(ExprKind::Binary {
+                op: BinOp::Sub,
+                left: Box::new(indices[idx].clone()),
+                right: Box::new(lower),
+            })
+        };
+        for bound in &bounds[idx + 1..rank] {
+            term = Expression::new(ExprKind::Binary {
+                op: BinOp::Mul,
+                left: Box::new(term),
+                right: Box::new(vb_array_length_from_upper_bound(bound.clone())),
+            });
+        }
+        result = Some(match result {
+            Some(acc) => Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(acc),
+                right: Box::new(term),
+            }),
+            None => term,
+        });
+    }
+    result.unwrap_or_else(|| Expression::int(0))
+}
+
 fn record_vb_array_bounds_metadata(
     locals: &mut HashMap<String, String>,
     name: &str,
@@ -16375,6 +16484,22 @@ fn vb_multidim_array_expr(bounds: &[Expression], default_value: Expression) -> E
         return vb_filled_array_expr(vb_array_length_from_upper_bound(first.clone()), default_value);
     }
 
+    if let Some(length) = vb_array_bound_length_i64(first)
+        && (0..=1024).contains(&length)
+    {
+        let row_expr = vb_multidim_array_expr(rest, default_value);
+        return Expression::new(ExprKind::Array(
+            (0..length)
+                .map(|_| ArrayElement {
+                    key: None,
+                    value: row_expr.clone(),
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+        ));
+    }
+
     let length = vb_array_length_from_upper_bound(first.clone());
     let array_expr = call_expr(
         Expression::new(ExprKind::Member {
@@ -16425,14 +16550,13 @@ fn vb_multidim_array_expr(bounds: &[Expression], default_value: Expression) -> E
             }),
             body: vec![
                 Statement::with_span(
-                    StmtKind::Assign {
-                        targets: vec![Expression::new(ExprKind::Index {
-                            object: Box::new(Expression::ident("__arr")),
-                            index: Box::new(Expression::ident("__i")),
-                            null_safe: false,
-                        })],
-                        value: row_expr,
-                    },
+                    StmtKind::Expr(call_expr(
+                        member_expr(Expression::ident("__arr"), "SetValue"),
+                        vec![
+                            Argument::positional(row_expr),
+                            Argument::positional(Expression::ident("__i")),
+                        ],
+                    )),
                     Span::default(),
                 ),
                 Statement::with_span(
@@ -18848,7 +18972,10 @@ fn normalize_vb_dotnet_collection_statement(
                             *init = if upper_bounds.len() == 1 {
                                 vb_filled_array_expr(bounds[0].clone(), default_value)
                             } else {
-                                vb_multidim_array_expr(&upper_bounds, default_value)
+                                vb_filled_array_expr(
+                                    vb_array_total_length_expr(&upper_bounds),
+                                    default_value,
+                                )
                             };
                         }
                     }
@@ -18963,6 +19090,13 @@ fn normalize_vb_dotnet_collection_statement(
                             }
                         }
                         locals.insert(name.to_ascii_lowercase(), local_type.into());
+                    } else if let Some(type_name) = decl
+                        .type_hint
+                        .as_deref()
+                        .map(vb_canonical_type_name)
+                        .or_else(|| decl.init.as_ref().and_then(vb_new_expr_type_name))
+                    {
+                        locals.insert(name.to_ascii_lowercase(), type_name);
                     }
                 }
             }
@@ -18990,10 +19124,17 @@ fn normalize_vb_dotnet_collection_statement(
             }
             normalize_vb_dotnet_collection_statements(body, &mut function_locals);
         }
-        StmtKind::ClassDecl { members, .. }
-        | StmtKind::StructDecl { members, .. }
-        | StmtKind::ModuleDecl { members, .. } => {
+        StmtKind::ClassDecl { name, members, .. }
+        | StmtKind::StructDecl { name, members, .. } => {
+            record_vb_dotnet_collection_member_types(name, members, locals);
             let member_locals = dotnet_collection_member_locals(members);
+            for member in members {
+                normalize_vb_dotnet_collection_member(member, &member_locals);
+            }
+        }
+        StmtKind::ModuleDecl { members, .. } => {
+            let mut member_locals = locals.clone();
+            member_locals.extend(dotnet_collection_member_locals(members));
             for member in members {
                 normalize_vb_dotnet_collection_member(member, &member_locals);
             }
@@ -19115,11 +19256,462 @@ fn dotnet_collection_member_locals(members: &[ClassMember]) -> HashMap<String, S
         else {
             continue;
         };
-        if let Some(type_name) = dotnet_vb::collection_local_type(type_hint) {
+        if let Some(type_name) = vb_dotnet_collection_member_local_type(type_hint) {
+            if dotnet_vb::collection_type_is_dictionary(&type_name) {
+                if let Some(key_type) = vb_dictionary_key_type_hint(type_hint) {
+                    locals.insert(
+                        format!("$dict_key:{}", name.to_ascii_lowercase()),
+                        key_type,
+                    );
+                }
+                if let Some(value_type) = vb_dictionary_value_type_hint(type_hint) {
+                    locals.insert(
+                        format!("$dict_value:{}", name.to_ascii_lowercase()),
+                        value_type,
+                    );
+                }
+            }
             locals.insert(name.to_ascii_lowercase(), type_name);
         }
     }
     locals
+}
+
+fn record_vb_dotnet_collection_member_types(
+    class_name: &str,
+    members: &[ClassMember],
+    locals: &mut HashMap<String, String>,
+) {
+    let class_key = vb_canonical_type_name(class_name).to_ascii_lowercase();
+    for member in members {
+        let (member_name, type_hint) = match member {
+            ClassMember::Field {
+                name,
+                type_hint: Some(type_hint),
+                ..
+            }
+            | ClassMember::Property {
+                name,
+                type_hint: Some(type_hint),
+                ..
+            } => (name, type_hint),
+            _ => continue,
+        };
+        if let Some(type_name) = vb_dotnet_collection_member_local_type(type_hint) {
+            locals.insert(
+                format!(
+                    "$member:{}:{}",
+                    class_key,
+                    member_name.to_ascii_lowercase()
+                ),
+                type_name,
+            );
+        }
+    }
+}
+
+fn vb_dotnet_collection_member_expr_type(
+    expr: &Expression,
+    locals: &HashMap<String, String>,
+) -> Option<String> {
+    let ExprKind::Member { object, field, .. } = &expr.kind else {
+        return None;
+    };
+    let receiver_type = vb_infer_expr_type(object, locals).or_else(|| {
+        if let ExprKind::Ident(name) = &object.kind {
+            locals.get(&name.to_ascii_lowercase()).cloned()
+        } else {
+            None
+        }
+    })?;
+    locals
+        .get(&format!(
+            "$member:{}:{}",
+            vb_canonical_type_name(&receiver_type).to_ascii_lowercase(),
+            field.to_ascii_lowercase()
+        ))
+        .cloned()
+}
+
+fn vb_dictionary_key_type_hint(type_hint: &str) -> Option<String> {
+    vb_dictionary_generic_arg(type_hint, 0)
+}
+
+fn vb_dictionary_value_type_hint(type_hint: &str) -> Option<String> {
+    vb_dictionary_generic_arg(type_hint, 1)
+}
+
+fn vb_dictionary_generic_arg(type_hint: &str, index: usize) -> Option<String> {
+    let lower = type_hint.to_ascii_lowercase();
+    if let Some(open) = lower.find("(of") {
+        let close = matching_vb_paren_end(type_hint, open)?;
+        let args = split_vb_top_level_commas(type_hint[open + 3..close].trim());
+        return args
+            .get(index)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+    }
+    let args = common_generics::generic_argument_display_names(type_hint);
+    args.get(index).cloned()
+}
+
+fn vb_dotnet_collection_member_local_type(type_hint: &str) -> Option<String> {
+    dotnet_vb::collection_local_type(type_hint).or_else(|| {
+        let key = vb_default_indexer_type_key(type_hint);
+        let type_name = match key.as_str() {
+            "arraylist" => "ArrayList",
+            "collection" => "Collection",
+            "concurrentdictionary" => "ConcurrentDictionary",
+            "dictionary" => "Dictionary",
+            "hashset" => "HashSet",
+            "keyvaluepair" => "KeyValuePair",
+            "list" => "List",
+            "observablecollection" => "ObservableCollection",
+            "queue" => "Queue",
+            "readonlycollection" => "ReadOnlyCollection",
+            "readonlylist" => "ReadOnlyList",
+            "sorteddictionary" => "SortedDictionary",
+            "sortedset" => "SortedSet",
+            "stack" => "Stack",
+            _ => return None,
+        };
+        Some(type_name.to_string())
+    })
+}
+
+fn vb_dotnet_collection_field_alias(field: &str) -> String {
+    let clean = field
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect::<String>();
+    format!("__vb_field_{clean}")
+}
+
+fn vb_dotnet_collection_body_has_alias(body: &[Statement], alias: &str) -> bool {
+    body.iter().any(|stmt| {
+        matches!(
+            &stmt.kind,
+            StmtKind::VarDecl { declarations, .. }
+                if declarations.iter().any(|decl| {
+                    matches!(&decl.pattern, BindingPattern::Ident(name) if name == alias)
+                })
+        )
+    })
+}
+
+fn vb_dotnet_collection_aliases(
+    member_locals: &HashMap<String, String>,
+) -> Vec<(String, String, String)> {
+    let mut aliases = member_locals
+        .iter()
+        .filter(|(field, type_name)| {
+            !field.starts_with('$') && dotnet_vb::collection_local_type(type_name).is_some()
+        })
+        .map(|(field, type_name)| {
+            (
+                field.clone(),
+                vb_dotnet_collection_field_alias(field),
+                type_name.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    aliases.sort_by(|left, right| left.0.cmp(&right.0));
+    aliases
+}
+
+fn normalize_vb_dotnet_collection_member_body(
+    body: &mut Vec<Statement>,
+    member_locals: &HashMap<String, String>,
+) {
+    let aliases = vb_dotnet_collection_aliases(member_locals);
+    let mut body_locals = member_locals.clone();
+    for (_, alias, type_name) in &aliases {
+        body_locals.insert(alias.to_ascii_lowercase(), type_name.clone());
+    }
+    for (field, alias, _) in &aliases {
+        let field_key = format!("$dict_key:{}", field.to_ascii_lowercase());
+        if let Some(key_type) = member_locals.get(&field_key) {
+            body_locals.insert(
+                format!("$dict_key:{}", alias.to_ascii_lowercase()),
+                key_type.clone(),
+            );
+        }
+        let field_key = format!("$dict_value:{}", field.to_ascii_lowercase());
+        if let Some(value_type) = member_locals.get(&field_key) {
+            body_locals.insert(
+                format!("$dict_value:{}", alias.to_ascii_lowercase()),
+                value_type.clone(),
+            );
+        }
+    }
+
+    let mut inserted = Vec::new();
+    for (field, alias, type_name) in &aliases {
+        if vb_dotnet_collection_body_has_alias(body, alias) {
+            continue;
+        }
+        inserted.push(Statement::with_span(
+            StmtKind::VarDecl {
+                declarations: vec![VarDeclarator {
+                    pattern: BindingPattern::Ident(alias.clone()),
+                    type_hint: Some(type_name.clone()),
+                    init: Some(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::new(ExprKind::This)),
+                        field: field.clone(),
+                        null_safe: false,
+                    })),
+                    array_bounds: None,
+                    with_events: false,
+                }],
+                kind: VarDeclKind::Var,
+            },
+            Span::default(),
+        ));
+    }
+    let inserted_count = inserted.len();
+    if inserted_count > 0 {
+        body.splice(0..0, inserted);
+    }
+
+    for stmt in body.iter_mut().skip(inserted_count) {
+        replace_vb_dotnet_collection_field_aliases_in_statement(stmt, &aliases);
+    }
+    normalize_vb_dotnet_collection_statements(body, &mut body_locals);
+}
+
+fn replace_vb_dotnet_collection_field_aliases_in_statement(
+    stmt: &mut Statement,
+    aliases: &[(String, String, String)],
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            replace_vb_dotnet_collection_field_aliases_in_expr(expr, aliases);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if matches!(
+                    &decl.pattern,
+                    BindingPattern::Ident(name)
+                        if aliases.iter().any(|(_, alias, _)| alias == name)
+                ) {
+                    continue;
+                }
+                if let Some(init) = &mut decl.init {
+                    replace_vb_dotnet_collection_field_aliases_in_expr(init, aliases);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                replace_vb_dotnet_collection_field_aliases_in_expr(target, aliases);
+            }
+            replace_vb_dotnet_collection_field_aliases_in_expr(value, aliases);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            replace_vb_dotnet_collection_field_aliases_in_expr(target, aliases);
+            replace_vb_dotnet_collection_field_aliases_in_expr(value, aliases);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            replace_vb_dotnet_collection_field_aliases_in_expr(cond, aliases);
+            for nested in then_body {
+                replace_vb_dotnet_collection_field_aliases_in_statement(nested, aliases);
+            }
+            for (elif_cond, elif_body) in elifs {
+                replace_vb_dotnet_collection_field_aliases_in_expr(elif_cond, aliases);
+                for nested in elif_body {
+                    replace_vb_dotnet_collection_field_aliases_in_statement(nested, aliases);
+                }
+            }
+            if let Some(else_body) = else_body {
+                for nested in else_body {
+                    replace_vb_dotnet_collection_field_aliases_in_statement(nested, aliases);
+                }
+            }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            replace_vb_dotnet_collection_field_aliases_in_expr(cond, aliases);
+            for nested in body {
+                replace_vb_dotnet_collection_field_aliases_in_statement(nested, aliases);
+            }
+            if let Some(else_body) = else_body {
+                for nested in else_body {
+                    replace_vb_dotnet_collection_field_aliases_in_statement(nested, aliases);
+                }
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                replace_vb_dotnet_collection_field_aliases_in_statement(init, aliases);
+            }
+            if let Some(cond) = cond {
+                replace_vb_dotnet_collection_field_aliases_in_expr(cond, aliases);
+            }
+            if let Some(update) = update {
+                replace_vb_dotnet_collection_field_aliases_in_expr(update, aliases);
+            }
+            for nested in body {
+                replace_vb_dotnet_collection_field_aliases_in_statement(nested, aliases);
+            }
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            replace_vb_dotnet_collection_field_aliases_in_expr(iter, aliases);
+            for nested in body {
+                replace_vb_dotnet_collection_field_aliases_in_statement(nested, aliases);
+            }
+            if let Some(else_body) = else_body {
+                for nested in else_body {
+                    replace_vb_dotnet_collection_field_aliases_in_statement(nested, aliases);
+                }
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            finally,
+            else_body,
+        } => {
+            for nested in body {
+                replace_vb_dotnet_collection_field_aliases_in_statement(nested, aliases);
+            }
+            for catch in catches {
+                if let Some(when_clause) = &mut catch.when_clause {
+                    replace_vb_dotnet_collection_field_aliases_in_expr(when_clause, aliases);
+                }
+                for nested in &mut catch.body {
+                    replace_vb_dotnet_collection_field_aliases_in_statement(nested, aliases);
+                }
+            }
+            if let Some(else_body) = else_body {
+                for nested in else_body {
+                    replace_vb_dotnet_collection_field_aliases_in_statement(nested, aliases);
+                }
+            }
+            if let Some(finally) = finally {
+                for nested in finally {
+                    replace_vb_dotnet_collection_field_aliases_in_statement(nested, aliases);
+                }
+            }
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            for nested in body {
+                replace_vb_dotnet_collection_field_aliases_in_statement(nested, aliases);
+            }
+        }
+        StmtKind::FunctionDecl { body, .. } => {
+            for nested in body {
+                replace_vb_dotnet_collection_field_aliases_in_statement(nested, aliases);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn replace_vb_dotnet_collection_field_aliases_in_expr(
+    expr: &mut Expression,
+    aliases: &[(String, String, String)],
+) {
+    match &mut expr.kind {
+        ExprKind::Member { object, field, .. }
+            if matches!(&object.kind, ExprKind::This) =>
+        {
+            if let Some((_, alias, _)) = aliases
+                .iter()
+                .find(|(name, _, _)| name.eq_ignore_ascii_case(field))
+            {
+                *expr = Expression::ident(alias);
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            replace_vb_dotnet_collection_field_aliases_in_expr(callee, aliases);
+            for arg in args {
+                replace_vb_dotnet_collection_field_aliases_in_expr(&mut arg.value, aliases);
+            }
+        }
+        ExprKind::Member { object, .. } => {
+            replace_vb_dotnet_collection_field_aliases_in_expr(object, aliases);
+        }
+        ExprKind::Index { object, index, .. } => {
+            replace_vb_dotnet_collection_field_aliases_in_expr(object, aliases);
+            replace_vb_dotnet_collection_field_aliases_in_expr(index, aliases);
+        }
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Assign {
+            target: left,
+            value: right,
+        }
+        | ExprKind::Walrus {
+            target: left,
+            value: right,
+        } => {
+            replace_vb_dotnet_collection_field_aliases_in_expr(left, aliases);
+            replace_vb_dotnet_collection_field_aliases_in_expr(right, aliases);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::RefLoad(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::TypeOf(expr) => {
+            replace_vb_dotnet_collection_field_aliases_in_expr(expr, aliases);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            replace_vb_dotnet_collection_field_aliases_in_expr(cond, aliases);
+            replace_vb_dotnet_collection_field_aliases_in_expr(then, aliases);
+            replace_vb_dotnet_collection_field_aliases_in_expr(else_, aliases);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                replace_vb_dotnet_collection_field_aliases_in_expr(&mut item.value, aliases);
+            }
+        }
+        ExprKind::Tuple(items) => {
+            for item in items {
+                replace_vb_dotnet_collection_field_aliases_in_expr(item, aliases);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { value, .. } => {
+                        replace_vb_dotnet_collection_field_aliases_in_expr(value, aliases);
+                    }
+                    ObjectProperty::Computed { key, value } => {
+                        replace_vb_dotnet_collection_field_aliases_in_expr(key, aliases);
+                        replace_vb_dotnet_collection_field_aliases_in_expr(value, aliases);
+                    }
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
+                        replace_vb_dotnet_collection_field_aliases_in_statement(value, aliases);
+                    }
+                    ObjectProperty::Spread(value) => {
+                        replace_vb_dotnet_collection_field_aliases_in_expr(value, aliases);
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        ExprKind::Lambda { .. } => {}
+        _ => {}
+    }
 }
 
 fn normalize_vb_dotnet_collection_member(
@@ -19128,7 +19720,11 @@ fn normalize_vb_dotnet_collection_member(
 ) {
     match member {
         ClassMember::Method(stmt) => {
-            normalize_vb_dotnet_collection_statement(stmt, &mut member_locals.clone());
+            if let StmtKind::FunctionDecl { body, .. } = &mut stmt.kind {
+                normalize_vb_dotnet_collection_member_body(body, member_locals);
+            } else {
+                normalize_vb_dotnet_collection_statement(stmt, &mut member_locals.clone());
+            }
         }
         ClassMember::NestedType(stmt) => {
             normalize_vb_dotnet_collection_statement(stmt, &mut HashMap::new());
@@ -19138,13 +19734,10 @@ fn normalize_vb_dotnet_collection_member(
         }
         ClassMember::Property { getter, setter, .. } => {
             if let Some(getter) = getter {
-                normalize_vb_dotnet_collection_statements(getter, &mut member_locals.clone());
+                normalize_vb_dotnet_collection_member_body(getter, member_locals);
             }
             if let Some(setter) = setter {
-                normalize_vb_dotnet_collection_statements(
-                    &mut setter.body,
-                    &mut member_locals.clone(),
-                );
+                normalize_vb_dotnet_collection_member_body(&mut setter.body, member_locals);
             }
         }
         _ => {}
@@ -19279,6 +19872,25 @@ fn vb_gettype_expr_type_name(expr: &Expression) -> Option<String> {
         ExprKind::Ident(name) => Some(name.clone()),
         _ => None,
     })
+}
+
+fn vb_indexed_dictionary_value_type(
+    expr: &Expression,
+    locals: &HashMap<String, String>,
+) -> Option<String> {
+    let ExprKind::Index { object, .. } = &expr.kind else {
+        return None;
+    };
+    let ExprKind::Ident(name) = &object.kind else {
+        return None;
+    };
+    let type_name = locals.get(&name.to_ascii_lowercase())?;
+    if !dotnet_vb::collection_type_is_dictionary(type_name) {
+        return None;
+    }
+    locals
+        .get(&format!("$dict_value:{}", name.to_ascii_lowercase()))
+        .cloned()
 }
 
 fn vb_rewrite_rectangular_array_copy_statement(
@@ -20066,7 +20678,6 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                     }
                 }
                 if field.eq_ignore_ascii_case("Item")
-                    && args.len() == 1
                     && matches!(
                         &object.kind,
                         ExprKind::Ident(name)
@@ -20075,7 +20686,7 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                                 .is_some_and(|type_name| dotnet_vb::collection_type_is_dictionary(type_name))
                     )
                 {
-                    *expr = Expression::new(ExprKind::Index {
+                    let mut indexed = Expression::new(ExprKind::Index {
                         object: object.clone(),
                         index: Box::new(vb_normalize_dictionary_key(
                             object,
@@ -20084,6 +20695,14 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                         )),
                         null_safe: false,
                     });
+                    for arg in args.iter().skip(1) {
+                        indexed = Expression::new(ExprKind::Index {
+                            object: Box::new(indexed),
+                            index: Box::new(arg.value.clone()),
+                            null_safe: false,
+                        });
+                    }
+                    *expr = indexed;
                     return;
                 }
                 if args.len() == 1
@@ -20133,6 +20752,20 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
                             return;
                         }
                     }
+                    if field.eq_ignore_ascii_case("Add")
+                        && args.len() == 1
+                        && vb_indexed_dictionary_value_type(object, locals)
+                            .is_some_and(|type_name| {
+                                dotnet_vb::collection_base_type_name(&type_name)
+                                    .eq_ignore_ascii_case("List")
+                            })
+                    {
+                        *expr = call_expr(
+                            Expression::ident("__dotnet_list_add"),
+                            vec![Argument::positional((**object).clone()), args[0].clone()],
+                        );
+                        return;
+                    }
                 }
                 if field.eq_ignore_ascii_case("CopyTo")
                     && args.len() == 2
@@ -20162,6 +20795,42 @@ fn normalize_vb_dotnet_collection_expr(expr: &mut Expression, locals: &HashMap<S
         }
         ExprKind::Member { object, field, .. } => {
             normalize_vb_dotnet_collection_expr(object, locals);
+            if field.eq_ignore_ascii_case("Count")
+                && vb_indexed_dictionary_value_type(object, locals).is_some_and(|type_name| {
+                    dotnet_vb::collection_base_type_name(&type_name).eq_ignore_ascii_case("List")
+                })
+            {
+                *expr = Expression::new(ExprKind::Member {
+                    object: object.clone(),
+                    field: "Length".into(),
+                    null_safe: false,
+                });
+                return;
+            }
+            if field.eq_ignore_ascii_case("Count")
+                && vb_dotnet_collection_member_expr_type(object, locals).is_some_and(|type_name| {
+                    matches!(
+                        dotnet_vb::collection_base_type_name(&type_name).as_str(),
+                        "ArrayList"
+                            | "Collection"
+                            | "HashSet"
+                            | "List"
+                            | "ObservableCollection"
+                            | "Queue"
+                            | "ReadOnlyCollection"
+                            | "ReadOnlyList"
+                            | "SortedSet"
+                            | "Stack"
+                    )
+                })
+            {
+                *expr = Expression::new(ExprKind::Member {
+                    object: object.clone(),
+                    field: "Length".into(),
+                    null_safe: false,
+                });
+                return;
+            }
             if let ExprKind::Ident(name) = &object.kind {
                 let key = name.to_ascii_lowercase();
                 if field.eq_ignore_ascii_case("Rank") {
@@ -20393,6 +21062,27 @@ fn vb_normalize_dictionary_key(
     let ExprKind::Ident(name) = &object.kind else {
         return key;
     };
+    if let Some(key_type) = locals.get(&format!("$dict_key:{}", name.to_ascii_lowercase())) {
+        let base_key = dotnet_vb::collection_base_type_name(key_type);
+        if base_key.eq_ignore_ascii_case("DateTime")
+            || base_key.eq_ignore_ascii_case("DateTimeOffset")
+        {
+            return call_expr(
+                Expression::new(ExprKind::Member {
+                    object: Box::new(key),
+                    field: "ToString".into(),
+                    null_safe: false,
+                }),
+                Vec::new(),
+            );
+        }
+        if key_type.trim_start().starts_with('(')
+            || key_type.to_ascii_lowercase().starts_with("tuple")
+            || key_type.to_ascii_lowercase().starts_with("valuetuple")
+        {
+            return vb_dictionary_structural_key_expr(key);
+        }
+    }
     if !locals
         .get(&name.to_ascii_lowercase())
         .is_some_and(|type_name| type_name == "DictionaryIgnoreCase")
@@ -20410,6 +21100,61 @@ fn vb_normalize_dictionary_key(
             Vec::new(),
         ),
     }
+}
+
+fn vb_dictionary_structural_key_expr(key: Expression) -> Expression {
+    match key.kind {
+        ExprKind::Tuple(items) => {
+            let mut parts = Vec::with_capacity(items.len() * 2 + 1);
+            parts.push(Expression::string("tuple"));
+            for item in items {
+                parts.push(Expression::string("|"));
+                parts.push(vb_dictionary_key_part_expr(item));
+            }
+            vb_concat_exprs(parts)
+        }
+        _ => vb_dictionary_key_part_expr(key),
+    }
+}
+
+fn vb_dictionary_key_part_expr(expr: Expression) -> Expression {
+    match expr.kind {
+        ExprKind::Lit(Literal::Str(_)) => expr,
+        ExprKind::Lit(Literal::Int(_))
+        | ExprKind::Lit(Literal::Float(_))
+        | ExprKind::Lit(Literal::Bool(_))
+        | ExprKind::Lit(Literal::Char(_)) => call_expr(
+            Expression::new(ExprKind::Member {
+                object: Box::new(expr),
+                field: "ToString".into(),
+                null_safe: false,
+            }),
+            Vec::new(),
+        ),
+        _ => call_expr(
+            Expression::new(ExprKind::Member {
+                object: Box::new(expr),
+                field: "ToString".into(),
+                null_safe: false,
+            }),
+            Vec::new(),
+        ),
+    }
+}
+
+fn vb_concat_exprs(mut parts: Vec<Expression>) -> Expression {
+    if parts.is_empty() {
+        return Expression::string("");
+    }
+    let mut expr = parts.remove(0);
+    for part in parts {
+        expr = Expression::new(ExprKind::Binary {
+            op: BinOp::Concat,
+            left: Box::new(expr),
+            right: Box::new(part),
+        });
+    }
+    expr
 }
 
 fn vb_normalize_new_class_name(expr: &mut Expression, class_name: &str) {
@@ -21573,6 +22318,16 @@ fn vb_default_indexer_type_key(type_name: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn vb_is_dictionary_type_name(type_name: &str) -> bool {
+    let key = vb_default_indexer_type_key(type_name);
+    key.eq_ignore_ascii_case("dictionary") || key.eq_ignore_ascii_case("dictionaryignorecase")
+}
+
+fn vb_is_dictionary_local_type(type_name: &str) -> bool {
+    vb_is_dictionary_type_name(type_name)
+        || vb_is_dictionary_type_name(&dotnet_vb::collection_base_type_name(type_name))
+}
+
 fn vb_default_indexer_local_type(type_hint: &str) -> String {
     let canonical = vb_canonical_type_name(type_hint);
     if type_hint.trim().ends_with("()") && !canonical.trim().ends_with("()") {
@@ -21608,7 +22363,14 @@ fn rewrite_vb_default_indexer_statement(
                 }
                 if let BindingPattern::Ident(name) = &decl.pattern {
                     if let Some(type_hint) = &decl.type_hint {
-                        let mut local_type = vb_default_indexer_local_type(type_hint);
+                        let mut local_type = if vb_canonical_type_name(type_hint) == "Object" {
+                            decl.init
+                                .as_ref()
+                                .and_then(|init| vb_infer_expr_type(init, locals))
+                                .unwrap_or_else(|| vb_default_indexer_local_type(type_hint))
+                        } else {
+                            vb_default_indexer_local_type(type_hint)
+                        };
                         if decl.array_bounds.is_some() && !local_type.trim().ends_with("()") {
                             local_type.push_str("()");
                         }
@@ -21622,10 +22384,20 @@ fn rewrite_vb_default_indexer_statement(
             }
         }
         StmtKind::Assign { targets, value } => {
-            for target in targets {
+            for target in &mut *targets {
                 rewrite_vb_default_indexer_target_expr(target, default_indexer_types, locals);
             }
             rewrite_vb_default_indexer_expr(value, default_indexer_types, locals);
+            if targets.len() == 1 {
+                if let Some(setter_call) = vb_default_indexer_setter_call(
+                    &targets[0],
+                    value.clone(),
+                    default_indexer_types,
+                    locals,
+                ) {
+                    stmt.kind = StmtKind::Expr(setter_call);
+                }
+            }
         }
         StmtKind::CompoundAssign { target, value, .. } => {
             rewrite_vb_default_indexer_target_expr(target, default_indexer_types, locals);
@@ -21817,6 +22589,103 @@ fn rewrite_vb_default_indexer_target_expr(
             rewrite_vb_default_indexer_target_expr(else_, default_indexer_types, locals);
         }
         _ => rewrite_vb_default_indexer_expr(expr, default_indexer_types, locals),
+    }
+}
+
+fn vb_default_indexer_setter_call(
+    target: &Expression,
+    value: Expression,
+    default_indexer_types: &HashMap<String, bool>,
+    locals: &HashMap<String, String>,
+) -> Option<Expression> {
+    if let ExprKind::Call { callee, args, .. } = &target.kind {
+        let mut new_args = args.clone();
+        new_args.push(Argument::positional(value.clone()));
+        if let Some(call) = vb_default_indexer_setter_call_from_root(
+            callee,
+            new_args,
+            default_indexer_types,
+            locals,
+        ) {
+            return Some(call);
+        }
+    }
+
+    let mut indices = Vec::new();
+    let root = vb_collect_index_expr_root(target, &mut indices)?;
+    if indices.is_empty() {
+        return None;
+    }
+    let mut new_args = indices.into_iter().map(Argument::positional).collect::<Vec<_>>();
+    new_args.push(Argument::positional(value));
+    vb_default_indexer_setter_call_from_root(&root, new_args, default_indexer_types, locals)
+}
+
+fn vb_default_indexer_setter_call_from_root(
+    root: &Expression,
+    new_args: Vec<Argument>,
+    default_indexer_types: &HashMap<String, bool>,
+    locals: &HashMap<String, String>,
+) -> Option<Expression> {
+    match &root.kind {
+        ExprKind::Ident(name) => {
+            let type_name = locals.get(&name.to_ascii_lowercase())?;
+            let base_type = dotnet_vb::collection_base_type_name(type_name);
+            if type_name.trim().ends_with("()") || base_type.eq_ignore_ascii_case("Array") {
+                return Some(call_expr(
+                    member_expr(Expression::ident(name), "SetValue"),
+                    new_args,
+                ));
+            }
+            if vb_is_dictionary_local_type(type_name) {
+                return Some(call_expr(
+                    member_expr(Expression::ident(name), "Add"),
+                    new_args,
+                ));
+            }
+            if default_indexer_types.contains_key(&vb_default_indexer_type_key(type_name))
+                && dotnet_vb::collection_local_type(type_name).is_none()
+                && !vb_is_dictionary_local_type(type_name)
+            {
+                return Some(call_expr(
+                    member_expr(Expression::ident(name), "__setitem__"),
+                    new_args,
+                ));
+            }
+        }
+        ExprKind::Member { object, field, .. } => {
+            if matches!(&object.kind, ExprKind::This) {
+                if let Some(type_name) = locals.get(&field.to_ascii_lowercase()) {
+                    if vb_is_dictionary_local_type(type_name) {
+                        return Some(call_expr(member_expr(root.clone(), "Add"), new_args));
+                    }
+                }
+            }
+            let setter_name = if field.eq_ignore_ascii_case("Item") {
+                "__setitem__".to_string()
+            } else {
+                format!("__set_{field}")
+            };
+            return Some(call_expr(member_expr((**object).clone(), &setter_name), new_args));
+        }
+        _ => {}
+    }
+    None
+}
+
+fn vb_collect_index_expr_root(expr: &Expression, indices: &mut Vec<Expression>) -> Option<Expression> {
+    match &expr.kind {
+        ExprKind::Index { object, index, .. } => {
+            let root = vb_collect_index_expr_root(object, indices)?;
+            indices.push((**index).clone());
+            Some(root)
+        }
+        ExprKind::Call { callee, args, .. } => {
+            let root = vb_collect_index_expr_root(callee, indices)?;
+            indices.extend(args.iter().map(|arg| arg.value.clone()));
+            Some(root)
+        }
+        _ => Some(expr.clone()),
     }
 }
 
@@ -22249,6 +23118,8 @@ fn collect_vb_default_indexer_static_fields(
                     format!("{}.{}", owner_name, name).to_ascii_lowercase(),
                     vb_canonical_type_name(type_hint),
                 );
+            } else {
+                locals.insert(name.to_ascii_lowercase(), vb_canonical_type_name(type_hint));
             }
         }
     }
@@ -22609,7 +23480,7 @@ fn rewrite_vb_default_indexer_expr(
                             .contains_key(&vb_default_indexer_type_key(type_name))
                         {
                             let field = if dotnet_vb::collection_local_type(type_name).is_some()
-                                || base_type.eq_ignore_ascii_case("Dictionary")
+                                || vb_is_dictionary_local_type(type_name)
                             {
                                 "Item"
                             } else {
@@ -22620,6 +23491,36 @@ fn rewrite_vb_default_indexer_expr(
                                 field: field.to_string(),
                                 null_safe: false,
                             }));
+                        }
+                    }
+                } else if let ExprKind::Member { object, field, .. } = &callee.kind {
+                    if matches!(&object.kind, ExprKind::This) {
+                        if let Some(type_name) = locals.get(&field.to_ascii_lowercase()) {
+                            if vb_is_dictionary_local_type(type_name) {
+                                *callee = Box::new(Expression::new(ExprKind::Member {
+                                    object: Box::new((**callee).clone()),
+                                    field: "Item".to_string(),
+                                    null_safe: false,
+                                }));
+                                return;
+                            }
+                        }
+                    }
+                    if field.eq_ignore_ascii_case("Item") {
+                        if let Some(receiver_name) = dotted_expr_name(object) {
+                            if let Some(type_name) = locals.get(&receiver_name.to_ascii_lowercase()) {
+                                if default_indexer_types
+                                    .contains_key(&vb_default_indexer_type_key(type_name))
+                                    && dotnet_vb::collection_local_type(type_name).is_none()
+                                    && !vb_is_dictionary_local_type(type_name)
+                                {
+                                    *callee = Box::new(Expression::new(ExprKind::Member {
+                                        object: object.clone(),
+                                        field: "__getitem__".to_string(),
+                                        null_safe: false,
+                                    }));
+                                }
+                            }
                         }
                     }
                 } else if let Some(name) = dotted_expr_name(callee) {
@@ -22773,7 +23674,7 @@ fn rewrite_vb_default_indexer_expr(
                         return;
                     }
                     if default_indexer_types.contains_key(&vb_default_indexer_type_key(type_name))
-                        && base_type.eq_ignore_ascii_case("Dictionary")
+                        && vb_is_dictionary_local_type(type_name)
                     {
                         *expr = call_expr(
                             Expression::new(ExprKind::Member {
@@ -22900,7 +23801,7 @@ fn normalize_vb_local_type_statement(stmt: &mut Statement, locals: &mut HashMap<
                             default_value,
                         )
                     } else {
-                        vb_multidim_array_expr(bounds, default_value)
+                        vb_filled_array_expr(vb_array_total_length_expr(bounds), default_value)
                     });
                 }
                 if let BindingPattern::Ident(name) = &decl.pattern {
@@ -23063,7 +23964,7 @@ fn normalize_vb_local_type_statement(stmt: &mut Statement, locals: &mut HashMap<
                             let length = vb_array_length_from_upper_bound(bounds[0].clone());
                             vb_filled_array_expr(length, default_value)
                         } else {
-                            vb_multidim_array_expr(bounds, default_value)
+                            vb_filled_array_expr(vb_array_total_length_expr(bounds), default_value)
                         };
                         stmt.kind = StmtKind::Assign {
                             targets: vec![Expression::ident(array)],
@@ -24763,6 +25664,11 @@ fn parse_sub_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     }
                 }
             }
+            Rule::sub_expr_body => {
+                for stmt_pair in p.into_inner() {
+                    body.push(parse_statement(stmt_pair)?);
+                }
+            }
             Rule::handles_clause => {
                 for hp in p.into_inner() {
                     if hp.as_rule() == Rule::dotted_identifier {
@@ -24886,6 +25792,11 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                         Rule::func_end | Rule::NEWLINE | Rule::EOI => {}
                         _ => body.push(parse_statement(stmt_pair)?),
                     }
+                }
+            }
+            Rule::func_expr_body => {
+                if let Some(expr_pair) = p.into_inner().find(|inner| inner.as_rule() == Rule::expression) {
+                    body.push(Statement::new(StmtKind::Return(Some(parse_expression(expr_pair)?))));
                 }
             }
             Rule::handles_clause => {
@@ -25445,21 +26356,50 @@ fn parse_namespace_decl(pair: Pair<Rule>) -> Result<Statement, String> {
 
 /// Parse an auto-implemented property into a VarDeclarator (field), since it's syntactic sugar.
 fn parse_auto_property_as_field(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
-    let pair_text = pair.as_str().to_ascii_lowercase();
+    let pair_text_raw = pair.as_str().to_string();
+    let pair_text = pair_text_raw.to_ascii_lowercase();
     let mut name = String::new();
     let mut var_type: Option<String> = None;
     let mut initializer = None;
+    let mut collection_initializer = None;
     let is_with_events = pair_text
         .split(|c: char| !c.is_ascii_alphanumeric())
         .any(|part| part == "withevents");
+    let has_as_new = pair_text.contains(" as new ");
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::identifier => name = p.as_str().to_string(),
             Rule::type_name => var_type = Some(p.as_str().to_string()),
             Rule::expression => initializer = Some(parse_expression(p)?),
+            Rule::from_initializer => {
+                let elements: Vec<Expression> = p
+                    .into_inner()
+                    .filter(|e| e.as_rule() == Rule::expression)
+                    .map(parse_expression)
+                    .collect::<Result<Vec<_>, _>>()?;
+                collection_initializer = Some(elements);
+            }
             // Skip visibility, ReadOnly, WriteOnly keywords
             _ => {}
+        }
+    }
+    if initializer.is_none() {
+        if let (Some(type_name), Some(elements)) = (var_type.clone(), collection_initializer) {
+            initializer = Some(emit_vb_collection_init_iife(
+                Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident(&type_name)),
+                    args: Vec::new(),
+                }),
+                elements,
+            ));
+        } else if has_as_new {
+            if let Some(type_name) = &var_type {
+                initializer = Some(Expression::new(ExprKind::New {
+                    class: Box::new(Expression::ident(type_name)),
+                    args: Vec::new(),
+                }));
+            }
         }
     }
 
@@ -26070,10 +27010,6 @@ fn normalize_vb_mybase_property_access_statement(stmt: &mut Statement, property:
 }
 
 fn normalize_vb_mybase_property_access_expr(expr: &mut Expression, property: &str) {
-    if vb_expr_is_mybase_member(expr, property) {
-        *expr = vb_mybase_property_backing_expr(property);
-        return;
-    }
     match &mut expr.kind {
         ExprKind::Call { callee, args, .. } => {
             normalize_vb_mybase_property_access_expr(callee, property);
@@ -27150,6 +28086,8 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     }
 
     resolve_vb_this_constructor_chains(&mut members);
+    expand_vb_array_field_bounds_from_usage(&mut members);
+    inject_vb_array_field_initialization_guards(&mut members);
     normalize_vb_implicit_property_self(&name, &mut members);
     normalize_vb_myclass_calls(&mut members, &name);
     normalize_vb_interface_event_alias_raises(&mut members);
@@ -27184,6 +28122,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     if let Some(parent_name) = parents.first() {
         inject_implicit_mybase_new(&mut members, &name, parent_name);
     }
+    inject_vb_instance_field_initializers(&mut members);
 
     Ok(Statement::with_span(
         StmtKind::ClassDecl {
@@ -27203,6 +28142,962 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         },
         span,
     ))
+}
+
+fn inject_vb_instance_field_initializers(members: &mut Vec<ClassMember>) {
+    let initializers = members
+        .iter()
+        .filter_map(|member| {
+            let ClassMember::Field {
+                name,
+                init: Some(init),
+                modifiers,
+                ..
+            } = member
+            else {
+                return None;
+            };
+            if modifiers.is_static || modifiers.is_shared {
+                return None;
+            }
+            Some(Statement::new(StmtKind::Assign {
+                targets: vec![member_expr(Expression::new(ExprKind::This), name)],
+                value: init.clone(),
+            }))
+        })
+        .collect::<Vec<_>>();
+    if initializers.is_empty() {
+        return;
+    }
+
+    let has_ctor = members
+        .iter()
+        .any(|member| matches!(member, ClassMember::Constructor { .. }));
+    if !has_ctor {
+        members.push(ClassMember::Constructor {
+            name: None,
+            params: Vec::new(),
+            body: initializers,
+            base_args: None,
+            initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
+            visibility: Visibility::Public,
+        });
+        return;
+    }
+
+    for member in members {
+        let ClassMember::Constructor { body, .. } = member else {
+            continue;
+        };
+        let mut insert_at = 0usize;
+        if matches!(body.first().map(|stmt| &stmt.kind), Some(StmtKind::Expr(expr)) if matches!(expr.kind, ExprKind::SuperCall { .. }))
+        {
+            insert_at = 1;
+        }
+        if matches!(
+            body.get(insert_at).map(|stmt| &stmt.kind),
+            Some(StmtKind::Assign { targets, .. })
+                if targets.first().is_some_and(vb_is_control_name_target)
+        ) {
+            insert_at += 1;
+        }
+        body.splice(insert_at..insert_at, initializers.iter().cloned());
+    }
+}
+
+fn expand_vb_array_field_bounds_from_usage(members: &mut [ClassMember]) {
+    let mut ranks = HashMap::new();
+    for member in members.iter() {
+        collect_vb_member_array_usage_ranks(member, &mut ranks);
+    }
+    if ranks.is_empty() {
+        return;
+    }
+    for member in members {
+        match member {
+            ClassMember::Field {
+                name,
+                type_hint: Some(type_hint),
+                init,
+                array_bounds: Some(bounds),
+                ..
+            } => {
+                let Some(&rank) = ranks.get(&name.to_ascii_lowercase()) else {
+                    continue;
+                };
+                if rank <= bounds.len() || bounds.is_empty() {
+                    continue;
+                }
+                let last = bounds.last().cloned().unwrap_or_else(|| Expression::int(0));
+                while bounds.len() < rank {
+                    bounds.push(last.clone());
+                }
+                *init = Some(vb_filled_array_expr(
+                    vb_array_total_length_expr(bounds),
+                    vb_default_value_for_type(type_hint),
+                ));
+            }
+            ClassMember::NestedType(stmt) => {
+                if let StmtKind::ClassDecl { members, .. }
+                | StmtKind::StructDecl { members, .. }
+                | StmtKind::ModuleDecl { members, .. } = &mut stmt.kind
+                {
+                    expand_vb_array_field_bounds_from_usage(members);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_vb_member_array_usage_ranks(member: &ClassMember, ranks: &mut HashMap<String, usize>) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            collect_vb_array_usage_rank_statement(stmt, ranks);
+        }
+        ClassMember::Constructor { body, .. } => {
+            collect_vb_array_usage_rank_statements(body, ranks);
+        }
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                collect_vb_array_usage_rank_statements(getter, ranks);
+            }
+            if let Some(setter) = setter {
+                collect_vb_array_usage_rank_statements(&setter.body, ranks);
+            }
+        }
+        ClassMember::Field { init: Some(init), .. } | ClassMember::Const { value: init, .. } => {
+            collect_vb_array_usage_rank_expr(init, ranks);
+        }
+        _ => {}
+    }
+}
+
+fn collect_vb_array_usage_rank_statements(body: &[Statement], ranks: &mut HashMap<String, usize>) {
+    for stmt in body {
+        collect_vb_array_usage_rank_statement(stmt, ranks);
+    }
+}
+
+fn collect_vb_array_usage_rank_statement(stmt: &Statement, ranks: &mut HashMap<String, usize>) {
+    match &stmt.kind {
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &decl.init {
+                    collect_vb_array_usage_rank_expr(init, ranks);
+                }
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                collect_vb_array_usage_rank_expr(target, ranks);
+            }
+            collect_vb_array_usage_rank_expr(value, ranks);
+        }
+        StmtKind::CompoundAssign { target, value, .. } => {
+            collect_vb_array_usage_rank_expr(target, ranks);
+            collect_vb_array_usage_rank_expr(value, ranks);
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            collect_vb_array_usage_rank_expr(expr, ranks);
+        }
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            collect_vb_array_usage_rank_expr(cond, ranks);
+            collect_vb_array_usage_rank_statements(then_body, ranks);
+            for (cond, body) in elifs {
+                collect_vb_array_usage_rank_expr(cond, ranks);
+                collect_vb_array_usage_rank_statements(body, ranks);
+            }
+            if let Some(body) = else_body {
+                collect_vb_array_usage_rank_statements(body, ranks);
+            }
+        }
+        StmtKind::While { cond, body, else_body } => {
+            collect_vb_array_usage_rank_expr(cond, ranks);
+            collect_vb_array_usage_rank_statements(body, ranks);
+            if let Some(body) = else_body {
+                collect_vb_array_usage_rank_statements(body, ranks);
+            }
+        }
+        StmtKind::DoWhile { cond, body, .. } => {
+            collect_vb_array_usage_rank_expr(cond, ranks);
+            collect_vb_array_usage_rank_statements(body, ranks);
+        }
+        StmtKind::For { init, cond, update, body } => {
+            if let Some(init) = init {
+                collect_vb_array_usage_rank_statement(init, ranks);
+            }
+            if let Some(cond) = cond {
+                collect_vb_array_usage_rank_expr(cond, ranks);
+            }
+            if let Some(update) = update {
+                collect_vb_array_usage_rank_expr(update, ranks);
+            }
+            collect_vb_array_usage_rank_statements(body, ranks);
+        }
+        StmtKind::ForIn { iter, body, else_body, .. } => {
+            collect_vb_array_usage_rank_expr(iter, ranks);
+            collect_vb_array_usage_rank_statements(body, ranks);
+            if let Some(body) = else_body {
+                collect_vb_array_usage_rank_statements(body, ranks);
+            }
+        }
+        StmtKind::Try { body, catches, else_body, finally } => {
+            collect_vb_array_usage_rank_statements(body, ranks);
+            for catch in catches {
+                if let Some(when_clause) = &catch.when_clause {
+                    collect_vb_array_usage_rank_expr(when_clause, ranks);
+                }
+                collect_vb_array_usage_rank_statements(&catch.body, ranks);
+            }
+            if let Some(body) = else_body {
+                collect_vb_array_usage_rank_statements(body, ranks);
+            }
+            if let Some(body) = finally {
+                collect_vb_array_usage_rank_statements(body, ranks);
+            }
+        }
+        StmtKind::FunctionDecl { body, .. }
+        | StmtKind::Block(body)
+        | StmtKind::NamespaceDecl { body, .. } => collect_vb_array_usage_rank_statements(body, ranks),
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                collect_vb_member_array_usage_ranks(member, ranks);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_vb_array_usage_rank_expr(expr: &Expression, ranks: &mut HashMap<String, usize>) {
+    let mut indices = Vec::new();
+    if let Some(root) = vb_collect_index_expr_root(expr, &mut indices)
+        && indices.len() > 1
+    {
+        match root.kind {
+            ExprKind::Ident(name) => {
+                ranks
+                    .entry(name.to_ascii_lowercase())
+                    .and_modify(|rank| *rank = (*rank).max(indices.len()))
+                    .or_insert(indices.len());
+            }
+            ExprKind::Member { field, .. } => {
+                ranks
+                    .entry(field.to_ascii_lowercase())
+                    .and_modify(|rank| *rank = (*rank).max(indices.len()))
+                    .or_insert(indices.len());
+            }
+            _ => {}
+        }
+    }
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            if args.len() > 1 {
+                let key = match &callee.kind {
+                    ExprKind::Ident(name) => Some(name.as_str()),
+                    ExprKind::Member { field, .. } => Some(field.as_str()),
+                    _ => None,
+                };
+                if let Some(key) = key {
+                    ranks
+                        .entry(key.to_ascii_lowercase())
+                        .and_modify(|rank| *rank = (*rank).max(args.len()))
+                        .or_insert(args.len());
+                }
+            }
+            collect_vb_array_usage_rank_expr(callee, ranks);
+            for arg in args {
+                collect_vb_array_usage_rank_expr(&arg.value, ranks);
+            }
+        }
+        ExprKind::Member { object, .. } => collect_vb_array_usage_rank_expr(object, ranks),
+        ExprKind::Index { object, index, .. } => {
+            collect_vb_array_usage_rank_expr(object, ranks);
+            collect_vb_array_usage_rank_expr(index, ranks);
+        }
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Walrus { target: left, value: right } => {
+            collect_vb_array_usage_rank_expr(left, ranks);
+            collect_vb_array_usage_rank_expr(right, ranks);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::RefLoad(expr) => collect_vb_array_usage_rank_expr(expr, ranks),
+        ExprKind::Assign { target, value } => {
+            collect_vb_array_usage_rank_expr(target, ranks);
+            collect_vb_array_usage_rank_expr(value, ranks);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            collect_vb_array_usage_rank_expr(cond, ranks);
+            collect_vb_array_usage_rank_expr(then, ranks);
+            collect_vb_array_usage_rank_expr(else_, ranks);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                collect_vb_array_usage_rank_expr(&item.value, ranks);
+            }
+        }
+        ExprKind::Tuple(items) => {
+            for item in items {
+                collect_vb_array_usage_rank_expr(item, ranks);
+            }
+        }
+        ExprKind::New { class, args } => {
+            collect_vb_array_usage_rank_expr(class, ranks);
+            for arg in args {
+                collect_vb_array_usage_rank_expr(&arg.value, ranks);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        collect_vb_array_usage_rank_expr(key, ranks);
+                        collect_vb_array_usage_rank_expr(value, ranks);
+                    }
+                    ObjectProperty::Spread(value) => collect_vb_array_usage_rank_expr(value, ranks),
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
+                        collect_vb_array_usage_rank_statement(value, ranks);
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn inject_vb_array_field_initialization_guards(members: &mut [ClassMember]) {
+    let fields = members
+        .iter()
+        .filter_map(|member| {
+            let ClassMember::Field {
+                name,
+                type_hint: Some(type_hint),
+                array_bounds: Some(bounds),
+                modifiers,
+                ..
+            } = member
+            else {
+                return None;
+            };
+            if modifiers.is_static || modifiers.is_shared || bounds.is_empty() {
+                return None;
+            }
+            let default_value = vb_default_value_for_type(type_hint);
+            let init = if bounds.len() == 1 {
+                vb_filled_array_expr(
+                    vb_array_length_from_upper_bound(bounds[0].clone()),
+                    default_value,
+                )
+            } else {
+                vb_filled_array_expr(vb_array_total_length_expr(bounds), default_value)
+            };
+            Some((name.clone(), init))
+        })
+        .collect::<Vec<_>>();
+    if fields.is_empty() {
+        return;
+    }
+    for member in members {
+        match member {
+            ClassMember::Method(stmt) => {
+                if let StmtKind::FunctionDecl { body, modifiers, .. } = &mut stmt.kind {
+                    if !(modifiers.is_static || modifiers.is_shared) {
+                        inject_vb_array_field_guards_into_body(body, &fields);
+                    }
+                }
+            }
+            ClassMember::Constructor { body, .. } => {
+                inject_vb_array_field_guards_into_body(body, &fields);
+            }
+            ClassMember::Property { getter, setter, modifiers, .. } => {
+                if !(modifiers.is_static || modifiers.is_shared) {
+                    if let Some(getter) = getter {
+                        inject_vb_array_field_guards_into_body(getter, &fields);
+                    }
+                    if let Some(setter) = setter {
+                        inject_vb_array_field_guards_into_body(&mut setter.body, &fields);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn inject_vb_array_field_guards_into_body(body: &mut Vec<Statement>, fields: &[(String, Expression)]) {
+    let guards = fields
+        .iter()
+        .map(|(name, init)| {
+            let target = member_expr(Expression::new(ExprKind::This), name);
+            Statement::new(StmtKind::If {
+                cond: Expression::new(ExprKind::Binary {
+                    op: BinOp::Is,
+                    left: Box::new(target.clone()),
+                    right: Box::new(Expression::null()),
+                }),
+                then_body: vec![Statement::new(StmtKind::Assign {
+                    targets: vec![target],
+                    value: init.clone(),
+                })],
+                elifs: Vec::new(),
+                else_body: None,
+            })
+        })
+        .collect::<Vec<_>>();
+    body.splice(0..0, guards);
+}
+
+fn vb_is_control_name_target(expr: &Expression) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Member { object, field, .. }
+            if field == "__control_name"
+                && matches!(&object.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Me"))
+    )
+}
+
+fn normalize_vb_member_array_assignments(members: &mut [ClassMember]) {
+    let array_fields = members
+        .iter()
+        .filter_map(|member| {
+            let ClassMember::Field {
+                name,
+                array_bounds: Some(bounds),
+                modifiers,
+                ..
+            } = member
+            else {
+                return None;
+            };
+            if modifiers.is_static || modifiers.is_shared || bounds.is_empty() {
+                return None;
+            }
+            Some((name.to_ascii_lowercase(), bounds.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+    if array_fields.is_empty() {
+        for member in members {
+            if let ClassMember::NestedType(stmt) = member {
+                normalize_vb_member_array_assignments_in_statement(stmt);
+            }
+        }
+        return;
+    }
+
+    for member in members {
+        match member {
+            ClassMember::Method(stmt) => {
+                normalize_vb_member_array_assignment_statement(stmt, &array_fields);
+            }
+            ClassMember::NestedType(stmt) => {
+                normalize_vb_member_array_assignments_in_statement(stmt);
+            }
+            ClassMember::Constructor { body, .. } => {
+                normalize_vb_member_array_assignment_statements(body, &array_fields);
+            }
+            ClassMember::Property { getter, setter, .. } => {
+                if let Some(getter) = getter {
+                    normalize_vb_member_array_assignment_statements(getter, &array_fields);
+                }
+                if let Some(setter) = setter {
+                    normalize_vb_member_array_assignment_statements(&mut setter.body, &array_fields);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn normalize_vb_member_array_assignment_classes(body: &mut [Statement]) {
+    for stmt in body {
+        normalize_vb_member_array_assignments_in_statement(stmt);
+    }
+}
+
+fn normalize_vb_member_array_assignments_in_statement(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => normalize_vb_member_array_assignments(members),
+        StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
+            for stmt in body {
+                normalize_vb_member_array_assignments_in_statement(stmt);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_vb_member_array_assignment_statements(
+    body: &mut Vec<Statement>,
+    array_fields: &HashMap<String, Vec<Expression>>,
+) {
+    for stmt in body {
+        normalize_vb_member_array_assignment_statement(stmt, array_fields);
+    }
+}
+
+fn normalize_vb_member_array_assignment_statement(
+    stmt: &mut Statement,
+    array_fields: &HashMap<String, Vec<Expression>>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Assign { targets, value } if targets.len() == 1 => {
+            normalize_vb_member_array_assignment_expr(value, array_fields);
+            if let Some(call) =
+                vb_member_array_set_call(&targets[0], value.clone(), array_fields)
+            {
+                stmt.kind = StmtKind::Expr(call);
+            } else {
+                normalize_vb_member_array_assignment_expr(&mut targets[0], array_fields);
+            }
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                normalize_vb_member_array_assignment_expr(target, array_fields);
+            }
+            normalize_vb_member_array_assignment_expr(value, array_fields);
+        }
+        StmtKind::CompoundAssign { target, value, op } => {
+            normalize_vb_member_array_assignment_expr(value, array_fields);
+            if let Some(call) =
+                vb_member_array_compound_set_call(target, *op, value.clone(), array_fields)
+            {
+                stmt.kind = StmtKind::Expr(call);
+            } else {
+                normalize_vb_member_array_assignment_expr(target, array_fields);
+            }
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    normalize_vb_member_array_assignment_expr(init, array_fields);
+                }
+            }
+        }
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            normalize_vb_member_array_assignment_expr(expr, array_fields);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            normalize_vb_member_array_assignment_expr(cond, array_fields);
+            normalize_vb_member_array_assignment_statements(then_body, array_fields);
+            for (cond, body) in elifs {
+                normalize_vb_member_array_assignment_expr(cond, array_fields);
+                normalize_vb_member_array_assignment_statements(body, array_fields);
+            }
+            if let Some(body) = else_body {
+                normalize_vb_member_array_assignment_statements(body, array_fields);
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            normalize_vb_member_array_assignment_expr(cond, array_fields);
+            normalize_vb_member_array_assignment_statements(body, array_fields);
+            if let Some(body) = else_body {
+                normalize_vb_member_array_assignment_statements(body, array_fields);
+            }
+        }
+        StmtKind::DoWhile { cond, body, .. } => {
+            normalize_vb_member_array_assignment_expr(cond, array_fields);
+            normalize_vb_member_array_assignment_statements(body, array_fields);
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                normalize_vb_member_array_assignment_statement(init, array_fields);
+            }
+            if let Some(cond) = cond {
+                normalize_vb_member_array_assignment_expr(cond, array_fields);
+            }
+            if let Some(update) = update {
+                normalize_vb_member_array_assignment_expr(update, array_fields);
+            }
+            normalize_vb_member_array_assignment_statements(body, array_fields);
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            normalize_vb_member_array_assignment_expr(iter, array_fields);
+            normalize_vb_member_array_assignment_statements(body, array_fields);
+            if let Some(body) = else_body {
+                normalize_vb_member_array_assignment_statements(body, array_fields);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            normalize_vb_member_array_assignment_statements(body, array_fields);
+            for catch in catches {
+                if let Some(when_clause) = &mut catch.when_clause {
+                    normalize_vb_member_array_assignment_expr(when_clause, array_fields);
+                }
+                normalize_vb_member_array_assignment_statements(&mut catch.body, array_fields);
+            }
+            if let Some(body) = else_body {
+                normalize_vb_member_array_assignment_statements(body, array_fields);
+            }
+            if let Some(body) = finally {
+                normalize_vb_member_array_assignment_statements(body, array_fields);
+            }
+        }
+        StmtKind::Block(body) => {
+            normalize_vb_member_array_assignment_statements(body, array_fields);
+        }
+        StmtKind::FunctionDecl { body, .. } => {
+            normalize_vb_member_array_assignment_statements(body, array_fields);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => normalize_vb_member_array_assignments(members),
+        StmtKind::NamespaceDecl { body, .. } => {
+            for stmt in body {
+                normalize_vb_member_array_assignments_in_statement(stmt);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_vb_member_array_assignment_expr(
+    expr: &mut Expression,
+    array_fields: &HashMap<String, Vec<Expression>>,
+) {
+    match &mut expr.kind {
+        ExprKind::Call { callee, args, .. } => {
+            normalize_vb_member_array_assignment_expr(callee, array_fields);
+            for arg in &mut *args {
+                normalize_vb_member_array_assignment_expr(&mut arg.value, array_fields);
+            }
+            if let Some(call) =
+                vb_member_array_setter_method_call(callee, args.as_slice(), array_fields)
+            {
+                *expr = call;
+            } else if let Some(read) =
+                vb_member_array_get_call(callee, args.as_slice(), array_fields)
+            {
+                *expr = read;
+            }
+        }
+        ExprKind::Member { object, .. } => {
+            normalize_vb_member_array_assignment_expr(object, array_fields);
+        }
+        ExprKind::Index { object, index, .. } => {
+            normalize_vb_member_array_assignment_expr(object, array_fields);
+            normalize_vb_member_array_assignment_expr(index, array_fields);
+            if let Some(rewrite) = vb_member_array_flat_index_expr(expr, array_fields) {
+                *expr = rewrite;
+            }
+        }
+        ExprKind::Binary { left, right, .. }
+        | ExprKind::NullCoalesce { left, right }
+        | ExprKind::Walrus {
+            target: left,
+            value: right,
+        } => {
+            normalize_vb_member_array_assignment_expr(left, array_fields);
+            normalize_vb_member_array_assignment_expr(right, array_fields);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::TypeOf(expr)
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::YieldFrom(expr)
+        | ExprKind::Spread(expr)
+        | ExprKind::Void(expr)
+        | ExprKind::Delete(expr)
+        | ExprKind::RefLoad(expr) => {
+            normalize_vb_member_array_assignment_expr(expr, array_fields);
+        }
+        ExprKind::Assign { target, value } => {
+            normalize_vb_member_array_assignment_expr(value, array_fields);
+            if let Some(call) = vb_member_array_set_call(target, (**value).clone(), array_fields) {
+                *expr = call;
+            } else {
+                normalize_vb_member_array_assignment_expr(target, array_fields);
+            }
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            normalize_vb_member_array_assignment_expr(cond, array_fields);
+            normalize_vb_member_array_assignment_expr(then, array_fields);
+            normalize_vb_member_array_assignment_expr(else_, array_fields);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                normalize_vb_member_array_assignment_expr(&mut item.value, array_fields);
+            }
+        }
+        ExprKind::Tuple(items) => {
+            for item in items {
+                normalize_vb_member_array_assignment_expr(item, array_fields);
+            }
+        }
+        ExprKind::New { class, args } => {
+            normalize_vb_member_array_assignment_expr(class, array_fields);
+            for arg in args {
+                normalize_vb_member_array_assignment_expr(&mut arg.value, array_fields);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                match prop {
+                    ObjectProperty::KeyValue { key, value }
+                    | ObjectProperty::Computed { key, value } => {
+                        normalize_vb_member_array_assignment_expr(key, array_fields);
+                        normalize_vb_member_array_assignment_expr(value, array_fields);
+                    }
+                    ObjectProperty::Spread(value) => {
+                        normalize_vb_member_array_assignment_expr(value, array_fields);
+                    }
+                    ObjectProperty::Method { value, .. }
+                    | ObjectProperty::Accessor { value, .. } => {
+                        normalize_vb_member_array_assignment_statement(value, array_fields);
+                    }
+                    ObjectProperty::Shorthand(_) => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn vb_member_array_set_call(
+    target: &Expression,
+    value: Expression,
+    array_fields: &HashMap<String, Vec<Expression>>,
+) -> Option<Expression> {
+    if let ExprKind::Call { callee, args, .. } = &target.kind
+        && let Some((root, indices, bounds)) =
+            vb_member_array_call_parts(callee, args.as_slice(), array_fields)
+    {
+        return Some(vb_array_field_set_call(root, indices, bounds, value));
+    }
+    let mut indices = Vec::new();
+    let root = vb_collect_index_expr_root(target, &mut indices)?;
+    let bounds = vb_this_array_field_bounds(&root, array_fields)?;
+    if indices.is_empty() {
+        return None;
+    }
+    Some(vb_array_field_set_call(root, indices, bounds, value))
+}
+
+fn vb_member_array_compound_set_call(
+    target: &Expression,
+    op: CompoundOp,
+    value: Expression,
+    array_fields: &HashMap<String, Vec<Expression>>,
+) -> Option<Expression> {
+    let op = vb_compound_op_to_bin_op(op)?;
+    let mut indices = Vec::new();
+    let root = vb_collect_index_expr_root(target, &mut indices)?;
+    let bounds = vb_this_array_field_bounds(&root, array_fields)?;
+    if indices.is_empty() {
+        return None;
+    }
+    let current_value = target.clone();
+    let next_value = Expression::new(ExprKind::Binary {
+        op,
+        left: Box::new(current_value),
+        right: Box::new(value),
+    });
+    Some(vb_array_field_set_call(root, indices, bounds, next_value))
+}
+
+fn vb_member_array_get_call(
+    callee: &Expression,
+    args: &[Argument],
+    array_fields: &HashMap<String, Vec<Expression>>,
+) -> Option<Expression> {
+    let (root, indices, bounds) = vb_member_array_call_parts(callee, args, array_fields)?;
+    if indices.len() > 1 && bounds.len() > 1 {
+        return Some(Expression::new(ExprKind::Index {
+            object: Box::new(root),
+            index: Box::new(vb_flat_array_index_expr(indices, bounds)),
+            null_safe: false,
+        }));
+    }
+    let mut current = root;
+    for index in indices {
+        current = Expression::new(ExprKind::Index {
+            object: Box::new(current),
+            index: Box::new(index),
+            null_safe: false,
+        });
+    }
+    Some(current)
+}
+
+fn vb_member_array_call_parts<'a>(
+    callee: &Expression,
+    args: &[Argument],
+    array_fields: &'a HashMap<String, Vec<Expression>>,
+) -> Option<(Expression, Vec<Expression>, &'a [Expression])> {
+    if args.is_empty() || args.iter().any(|arg| arg.name.is_some() || arg.spread) {
+        return None;
+    }
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    if !matches!(&object.kind, ExprKind::This) {
+        return None;
+    }
+    let bounds = array_fields.get(&field.to_ascii_lowercase())?;
+    let indices = args.iter().map(|arg| arg.value.clone()).collect::<Vec<_>>();
+    Some((member_expr((**object).clone(), field), indices, bounds))
+}
+
+fn vb_member_array_setter_method_call(
+    callee: &Expression,
+    args: &[Argument],
+    array_fields: &HashMap<String, Vec<Expression>>,
+) -> Option<Expression> {
+    if args.len() < 2 {
+        return None;
+    }
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return None;
+    };
+    let array_field = field.strip_prefix("__set_")?;
+    let bounds = array_fields.get(&array_field.to_ascii_lowercase())?;
+    if !matches!(&object.kind, ExprKind::This) {
+        return None;
+    }
+    let value = args.last()?.value.clone();
+    let indices = args[..args.len() - 1]
+        .iter()
+        .map(|arg| arg.value.clone())
+        .collect::<Vec<_>>();
+    let root = member_expr((**object).clone(), array_field);
+    Some(vb_array_field_set_call(root, indices, bounds, value))
+}
+
+fn vb_compound_op_to_bin_op(op: CompoundOp) -> Option<BinOp> {
+    Some(match op {
+        CompoundOp::Add => BinOp::Add,
+        CompoundOp::Sub => BinOp::Sub,
+        CompoundOp::Mul => BinOp::Mul,
+        CompoundOp::Div => BinOp::Div,
+        CompoundOp::IDiv => BinOp::IDiv,
+        CompoundOp::Mod => BinOp::Mod,
+        CompoundOp::Pow => BinOp::Pow,
+        CompoundOp::Concat => BinOp::Concat,
+        CompoundOp::BitAnd => BinOp::BitAnd,
+        CompoundOp::BitOr => BinOp::BitOr,
+        CompoundOp::BitXor => BinOp::BitXor,
+        CompoundOp::Shl => BinOp::Shl,
+        CompoundOp::Shr => BinOp::Shr,
+        CompoundOp::UShr => BinOp::UShr,
+        CompoundOp::And => BinOp::And,
+        CompoundOp::Or => BinOp::Or,
+        CompoundOp::NullCoalesce => BinOp::NullCoalesce,
+    })
+}
+
+fn vb_this_array_field_bounds<'a>(
+    root: &Expression,
+    array_fields: &'a HashMap<String, Vec<Expression>>,
+) -> Option<&'a [Expression]> {
+    let ExprKind::Member { object, field, .. } = &root.kind else {
+        return None;
+    };
+    if !matches!(&object.kind, ExprKind::This) {
+        return None;
+    }
+    array_fields
+        .get(&field.to_ascii_lowercase())
+        .map(Vec::as_slice)
+}
+
+fn vb_member_array_flat_index_expr(
+    expr: &Expression,
+    array_fields: &HashMap<String, Vec<Expression>>,
+) -> Option<Expression> {
+    let mut indices = Vec::new();
+    let root = vb_collect_index_expr_root(expr, &mut indices)?;
+    let bounds = vb_this_array_field_bounds(&root, array_fields)?;
+    if indices.len() <= 1 || bounds.len() <= 1 {
+        return None;
+    }
+    Some(Expression::new(ExprKind::Index {
+        object: Box::new(root),
+        index: Box::new(vb_flat_array_index_expr(indices, bounds)),
+        null_safe: false,
+    }))
+}
+
+fn vb_array_field_set_call(
+    root: Expression,
+    indices: Vec<Expression>,
+    bounds: &[Expression],
+    value: Expression,
+) -> Expression {
+    if indices.len() > 1 && bounds.len() > 1 {
+        return call_expr(
+            member_expr(root, "SetValue"),
+            vec![
+                Argument::positional(value),
+                Argument::positional(vb_flat_array_index_expr(indices, bounds)),
+            ],
+        );
+    }
+    vb_nested_array_set_call(root, indices, value)
+}
+
+fn vb_nested_array_set_call(
+    root: Expression,
+    mut indices: Vec<Expression>,
+    value: Expression,
+) -> Expression {
+    let Some(last_index) = indices.pop() else {
+        return value;
+    };
+    let mut array_expr = root;
+    for index in indices {
+        array_expr = Expression::new(ExprKind::Index {
+            object: Box::new(array_expr),
+            index: Box::new(index),
+            null_safe: false,
+        });
+    }
+    call_expr(
+        member_expr(array_expr, "SetValue"),
+        vec![
+            Argument::positional(value),
+            Argument::positional(last_index),
+        ],
+    )
 }
 
 /// Inject `MyBase.New()` at the start of every constructor body that doesn't
@@ -27599,6 +29494,11 @@ fn inject_handles_into_constructor(members: &mut Vec<ClassMember>) {
 fn parse_property_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     let modifiers = parse_property_modifiers(&pair);
     let implemented_targets = vb_implements_target_member_infos(&pair);
+    let is_default_property = pair
+        .as_str()
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|part| part == "default");
     let inner = pair.into_inner();
     let mut name = String::new();
     let mut parameters = Vec::new();
@@ -27614,6 +29514,13 @@ fn parse_property_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, 
                 Rule::type_name => return_type = Some(p.as_str().to_string()),
                 Rule::property_get => getter = Some(parse_property_get(p)?),
                 Rule::property_set => setter = Some(parse_property_set(p)?),
+                Rule::property_expr_body => {
+                    if let Some(expr_pair) = p.into_inner().find(|inner| inner.as_rule() == Rule::expression) {
+                        getter = Some(vec![Statement::new(StmtKind::Return(Some(parse_expression(
+                            expr_pair,
+                        )?)))]);
+                    }
+                }
                 _ => {}
             },
         }
@@ -27622,7 +29529,8 @@ fn parse_property_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, 
     if !parameters.is_empty() {
         let mut members = Vec::new();
         if let Some(body) = getter {
-            let getter_name = if name.eq_ignore_ascii_case("Item") {
+            let has_default_indexer_alias = is_default_property || name.eq_ignore_ascii_case("Item");
+            let getter_name = if has_default_indexer_alias {
                 "__getitem__".to_string()
             } else {
                 name.clone()
@@ -27640,7 +29548,20 @@ fn parse_property_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, 
                     is_sub: false,
                 },
             ))));
-            if name.eq_ignore_ascii_case("Item") {
+            if has_default_indexer_alias {
+                members.push(ClassMember::Method(Box::new(Statement::new(
+                    StmtKind::FunctionDecl {
+                        name: name.clone(),
+                        params: parameters.clone(),
+                        return_type: return_type.clone(),
+                        body: body.clone(),
+                        modifiers: modifiers.clone(),
+                        handles: vec![],
+                        is_async: false,
+                        is_generator: false,
+                        is_sub: false,
+                    },
+                ))));
                 for target in &implemented_targets {
                     if target.member.eq_ignore_ascii_case("Item") {
                         members.push(ClassMember::Method(Box::new(Statement::new(
@@ -27674,7 +29595,8 @@ fn parse_property_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, 
             }
         }
         if let Some(setter) = setter {
-            let setter_name = if name.eq_ignore_ascii_case("Item") {
+            let has_default_indexer_alias = is_default_property || name.eq_ignore_ascii_case("Item");
+            let setter_name = if has_default_indexer_alias {
                 "__setitem__".to_string()
             } else {
                 format!("__set_{name}")
@@ -27684,7 +29606,7 @@ fn parse_property_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, 
             members.push(ClassMember::Method(Box::new(Statement::new(
                 StmtKind::FunctionDecl {
                     name: setter_name,
-                    params: setter_params,
+                    params: setter_params.clone(),
                     return_type: None,
                     body: setter.body.clone(),
                     modifiers: modifiers.clone(),
@@ -27694,7 +29616,20 @@ fn parse_property_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, 
                     is_sub: true,
                 },
             ))));
-            if name.eq_ignore_ascii_case("Item") {
+            if has_default_indexer_alias {
+                members.push(ClassMember::Method(Box::new(Statement::new(
+                    StmtKind::FunctionDecl {
+                        name: format!("__set_{name}"),
+                        params: setter_params.clone(),
+                        return_type: None,
+                        body: setter.body.clone(),
+                        modifiers: modifiers.clone(),
+                        handles: vec![],
+                        is_async: false,
+                        is_generator: false,
+                        is_sub: true,
+                    },
+                ))));
                 for target in &implemented_targets {
                     if target.member.eq_ignore_ascii_case("Item") {
                         members.push(ClassMember::Method(Box::new(Statement::new(
@@ -27831,7 +29766,75 @@ fn parse_property_set(pair: Pair<Rule>) -> Result<PropertySetter, String> {
         }
     }
 
+    normalize_vb_exit_property_setter_body(&mut body);
     Ok(PropertySetter { param, body })
+}
+
+fn normalize_vb_exit_property_setter_body(body: &mut [Statement]) {
+    for stmt in body {
+        match &mut stmt.kind {
+            StmtKind::Break(BreakTarget::Kind(ExitKind::Property)) => {
+                stmt.kind = StmtKind::Return(None);
+            }
+            StmtKind::If {
+                then_body,
+                elifs,
+                else_body,
+                ..
+            } => {
+                normalize_vb_exit_property_setter_body(then_body);
+                for (_, elif_body) in elifs {
+                    normalize_vb_exit_property_setter_body(elif_body);
+                }
+                if let Some(else_body) = else_body {
+                    normalize_vb_exit_property_setter_body(else_body);
+                }
+            }
+            StmtKind::While {
+                body, else_body, ..
+            } => {
+                normalize_vb_exit_property_setter_body(body);
+                if let Some(else_body) = else_body {
+                    normalize_vb_exit_property_setter_body(else_body);
+                }
+            }
+            StmtKind::DoWhile { body, .. } | StmtKind::Block(body) => {
+                normalize_vb_exit_property_setter_body(body);
+            }
+            StmtKind::For { init, body, .. } => {
+                if let Some(init) = init {
+                    normalize_vb_exit_property_setter_body(std::slice::from_mut(init.as_mut()));
+                }
+                normalize_vb_exit_property_setter_body(body);
+            }
+            StmtKind::ForIn {
+                body, else_body, ..
+            } => {
+                normalize_vb_exit_property_setter_body(body);
+                if let Some(else_body) = else_body {
+                    normalize_vb_exit_property_setter_body(else_body);
+                }
+            }
+            StmtKind::Try {
+                body,
+                catches,
+                else_body,
+                finally,
+            } => {
+                normalize_vb_exit_property_setter_body(body);
+                for catch in catches {
+                    normalize_vb_exit_property_setter_body(&mut catch.body);
+                }
+                if let Some(else_body) = else_body {
+                    normalize_vb_exit_property_setter_body(else_body);
+                }
+                if let Some(finally) = finally {
+                    normalize_vb_exit_property_setter_body(finally);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn parse_param_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
@@ -27934,17 +29937,26 @@ fn parse_const_statement(pair: Pair<Rule>) -> Result<(Visibility, VarDeclarator)
 }
 
 fn parse_array_bounds_pair(pair: Pair<Rule>) -> Result<Vec<Expression>, String> {
+    let raw = pair.as_str().trim().to_string();
     match pair.as_rule() {
-        Rule::array_rank_spec => pair
-            .into_inner()
-            .next()
-            .map(parse_array_bounds_pair)
-            .transpose()
-            .map(|bounds| bounds.unwrap_or_default()),
-        Rule::array_bounds => pair
-            .into_inner()
-            .map(parse_array_bound_pair)
-            .collect::<Result<Vec<_>, _>>(),
+        Rule::array_rank_spec => {
+            if let Some(bounds) = parse_array_bounds_text_from_rank(&raw)? {
+                return Ok(bounds);
+            }
+            pair.into_inner()
+                .next()
+                .map(parse_array_bounds_pair)
+                .transpose()
+                .map(|bounds| bounds.unwrap_or_default())
+        }
+        Rule::array_bounds => {
+            if raw.contains(',') {
+                return parse_array_bounds_text(&raw);
+            }
+            pair.into_inner()
+                .map(parse_array_bound_pair)
+                .collect::<Result<Vec<_>, _>>()
+        }
         Rule::array_bound => parse_array_bound_pair(pair).map(|bound| vec![bound]),
         Rule::array_rank_commas => Ok(Vec::new()),
         _ => Err(format!(
@@ -27955,13 +29967,38 @@ fn parse_array_bounds_pair(pair: Pair<Rule>) -> Result<Vec<Expression>, String> 
 }
 
 fn parse_array_bound_pair(pair: Pair<Rule>) -> Result<Expression, String> {
-    let mut inner = pair.into_inner();
-    let first = inner
-        .next()
-        .ok_or_else(|| "array bound missing upper expression".to_string())?;
-    let lower_or_upper = parse_expression(first)?;
-    if let Some(upper_pair) = inner.next() {
-        let upper = parse_expression(upper_pair)?;
+    parse_array_bound_text(pair.as_str())
+}
+
+fn parse_array_bounds_text_from_rank(text: &str) -> Result<Option<Vec<Expression>>, String> {
+    let trimmed = text.trim();
+    let Some(inner) = trimmed.strip_prefix('(').and_then(|value| value.strip_suffix(')')) else {
+        return Ok(None);
+    };
+    if !inner.contains(',') {
+        return Ok(None);
+    }
+    if inner.chars().all(|ch| ch == ',' || ch.is_whitespace()) {
+        return Ok(Some(Vec::new()));
+    }
+    parse_array_bounds_text(inner).map(Some)
+}
+
+fn parse_array_bounds_text(text: &str) -> Result<Vec<Expression>, String> {
+    split_vb_top_level_commas(text)
+        .into_iter()
+        .map(parse_array_bound_text)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+fn parse_array_bound_text(text: &str) -> Result<Expression, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("array bound missing upper expression".to_string());
+    }
+    if let Some((lower_text, upper_text)) = split_vb_array_bound_range(text) {
+        let lower_or_upper = parse_expression_str(lower_text)?;
+        let upper = parse_expression_str(upper_text)?;
         Ok(call_expr(
             Expression::ident("__vb_array_bound"),
             vec![
@@ -27970,8 +30007,33 @@ fn parse_array_bound_pair(pair: Pair<Rule>) -> Result<Expression, String> {
             ],
         ))
     } else {
-        Ok(lower_or_upper)
+        parse_expression_str(text)
     }
+}
+
+fn split_vb_array_bound_range(text: &str) -> Option<(&str, &str)> {
+    let lowered = text.to_ascii_lowercase();
+    let bytes = lowered.as_bytes();
+    let needle = b"to";
+    let mut i = 0usize;
+    while i + needle.len() <= bytes.len() {
+        if &bytes[i..i + needle.len()] == needle {
+            let before_ok = i == 0
+                || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_';
+            let after = i + needle.len();
+            let after_ok = after == bytes.len()
+                || !bytes[after].is_ascii_alphanumeric() && bytes[after] != b'_';
+            if before_ok && after_ok {
+                let left = text[..i].trim();
+                let right = text[after..].trim();
+                if !left.is_empty() && !right.is_empty() {
+                    return Some((left, right));
+                }
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 fn parse_dim_statement(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
@@ -28299,39 +30361,22 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             }
         }
         Rule::mybase_assign_statement => {
-            // MyBase.prop = value
             let mut inner = pair.into_inner();
             let _mybase = inner.next().unwrap(); // mybase_keyword
-            let mut members: Vec<String> = Vec::new();
+            let mut target_expr = None;
             let mut value_expr = None;
             for p in inner {
                 match p.as_rule() {
-                    Rule::identifier | Rule::member_identifier => {
-                        members.push(p.as_str().to_string())
-                    }
+                    Rule::l_value_expression => target_expr = Some(parse_l_value_expression(p)?),
                     Rule::expression => value_expr = Some(parse_expression(p)?),
                     _ => {}
                 }
             }
             let value =
                 value_expr.ok_or_else(|| "mybase_assign_statement missing value".to_string())?;
-            if members.is_empty() {
-                return Err("mybase_assign_statement needs at least one member".to_string());
-            }
-            let last = members.pop().unwrap();
-            let mut obj = Expression::new(ExprKind::Super);
-            for m in members {
-                obj = Expression::new(ExprKind::Member {
-                    object: Box::new(obj),
-                    field: m,
-                    null_safe: false,
-                });
-            }
-            let target = Expression::new(ExprKind::Member {
-                object: Box::new(obj),
-                field: last,
-                null_safe: false,
-            });
+            let target = target_expr
+                .map(vb_prefix_super_to_lvalue)
+                .ok_or_else(|| "mybase_assign_statement missing target".to_string())?;
             StmtKind::Assign {
                 targets: vec![target],
                 value,
@@ -30669,17 +32714,6 @@ fn parse_member_chain_node(chain: Pair<Rule>, expr: Expression) -> Result<Expres
                     arguments.insert(0, Argument::positional(Expression::string(&type_name)));
                 }
             }
-            if name.eq_ignore_ascii_case("Item") && !arguments.is_empty() {
-                let mut indexed = expr;
-                for arg in arguments {
-                    indexed = Expression::new(ExprKind::Index {
-                        object: Box::new(indexed),
-                        index: Box::new(arg.value),
-                        null_safe: false,
-                    });
-                }
-                return Ok(indexed);
-            }
             if name.eq_ignore_ascii_case("Round") {
                 if let Some(path) = dotted_expr_name(&expr) {
                     if path.eq_ignore_ascii_case("Math") || path.eq_ignore_ascii_case("System.Math")
@@ -31486,6 +33520,7 @@ fn parse_single_line_if(pair: Pair<Rule>) -> Result<Statement, String> {
 }
 
 fn parse_field_decl(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
+    let raw_decl = pair.as_str().to_string();
     let pair_text = pair.as_str().to_ascii_lowercase();
     let mut field_name = String::new();
     let mut field_type: Option<String> = None;
@@ -31527,6 +33562,13 @@ fn parse_field_decl(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
         }
     }
 
+    if field_bounds.as_ref().map_or(true, |bounds| bounds.len() < 2)
+        && let Some(bounds) = parse_vb_field_decl_bounds_from_text(&raw_decl)?
+        && bounds.len() >= 2
+    {
+        field_bounds = Some(bounds);
+    }
+
     // Handle "As New Type" syntax
     if is_new {
         if let Some(field_type_value) = field_type.as_mut() {
@@ -31547,6 +33589,29 @@ fn parse_field_decl(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
             }));
         }
     }
+    if !raw_decl.contains('=')
+        && !is_new
+        && let (Some(bounds), Some(type_hint)) = (&field_bounds, &field_type)
+        && bounds.len() > 1
+    {
+        field_init = Some(vb_filled_array_expr(
+            vb_array_total_length_expr(bounds),
+            vb_default_value_for_type(type_hint),
+        ));
+    }
+    if field_init.is_none() {
+        if let (Some(bounds), Some(type_hint)) = (&field_bounds, &field_type) {
+            let default_value = vb_default_value_for_type(type_hint);
+            field_init = Some(if bounds.len() == 1 {
+                vb_filled_array_expr(
+                    vb_array_length_from_upper_bound(bounds[0].clone()),
+                    default_value,
+                )
+            } else {
+                vb_filled_array_expr(vb_array_total_length_expr(bounds), default_value)
+            });
+        }
+    }
 
     Ok(VarDeclarator {
         pattern: BindingPattern::Ident(field_name),
@@ -31555,6 +33620,33 @@ fn parse_field_decl(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
         array_bounds: field_bounds,
         with_events: is_with_events,
     })
+}
+
+fn parse_vb_field_decl_bounds_from_text(raw: &str) -> Result<Option<Vec<Expression>>, String> {
+    let Some(open) = raw.find('(') else {
+        return Ok(None);
+    };
+    let before_open = &raw[..open];
+    if before_open
+        .split_whitespace()
+        .any(|part| part.eq_ignore_ascii_case("As"))
+    {
+        return Ok(None);
+    }
+    let Some(close) = raw[open + 1..].find(')').map(|idx| open + 1 + idx) else {
+        return Ok(None);
+    };
+    let inner = raw[open + 1..close].trim();
+    if !inner.contains(',') {
+        return Ok(None);
+    }
+    let bounds = split_vb_top_level_commas(inner)
+        .into_iter()
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(parse_expression_str)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(bounds))
 }
 
 fn parse_open_statement(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -34178,6 +36270,44 @@ fn parse_l_value_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     }
 
     Ok(expr)
+}
+
+fn vb_prefix_super_to_lvalue(expr: Expression) -> Expression {
+    match expr.kind {
+        ExprKind::Ident(name) => Expression::new(ExprKind::Member {
+            object: Box::new(Expression::new(ExprKind::Super)),
+            field: name,
+            null_safe: false,
+        }),
+        ExprKind::Member {
+            object,
+            field,
+            null_safe,
+        } => Expression::new(ExprKind::Member {
+            object: Box::new(vb_prefix_super_to_lvalue(*object)),
+            field,
+            null_safe,
+        }),
+        ExprKind::Index {
+            object,
+            index,
+            null_safe,
+        } => Expression::new(ExprKind::Index {
+            object: Box::new(vb_prefix_super_to_lvalue(*object)),
+            index,
+            null_safe,
+        }),
+        ExprKind::Call {
+            callee,
+            args,
+            optional,
+        } => Expression::new(ExprKind::Call {
+            callee: Box::new(vb_prefix_super_to_lvalue(*callee)),
+            args,
+            optional,
+        }),
+        _ => expr,
+    }
 }
 
 // ── Helper functions ──

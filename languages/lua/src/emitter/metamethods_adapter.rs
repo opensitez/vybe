@@ -667,7 +667,7 @@ fn emit_lua_multi_row_from_slots(
     for slot in slots {
         load(&mut chunks[current], *slot, line);
     }
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, slots.len() as u16, line);
+    chunks[current].emit_array_new_fixed(0, slots.len() as u16, line);
 }
 
 fn emit_lua_nil_nil(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
@@ -1013,7 +1013,7 @@ fn emit_lua_coroutine_payload(
             for i in 1..argc {
                 load(&mut chunks[current], base + i as u16, line);
             }
-            chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, (argc - 1) as u16, line);
+            chunks[current].emit_array_new_fixed(0, (argc - 1) as u16, line);
             emit_lua_multi_row(chunks, current, 1, line);
         }
     }
@@ -1096,17 +1096,17 @@ fn emit_lua_coroutine_result_row(
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
     load(&mut chunks[current], ok_slot, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
+    chunks[current].emit_array_new_fixed(0, 1, line);
     chunks[current].emit_else(line);
     load(&mut chunks[current], ok_slot, line);
     load(&mut chunks[current], value_slot, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    chunks[current].emit_array_new_fixed(0, 2, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
     load(&mut chunks[current], ok_slot, line);
     load(&mut chunks[current], value_slot, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    chunks[current].emit_array_new_fixed(0, 2, line);
     chunks[current].emit_end(line);
     emit_lua_multi_row(chunks, current, 1, line);
 }
@@ -1465,7 +1465,7 @@ pub fn emit_lua_coroutine_running(chunks: &mut Vec<Chunk>, current: usize, argc:
     load(&mut chunks[current], running_slot, line);
     chunks[current].emit_bool_const(false, line);
     chunks[current].emit_end(line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    chunks[current].emit_array_new_fixed(0, 2, line);
     emit_lua_multi_row(chunks, current, 1, line);
 }
 
@@ -2507,7 +2507,7 @@ pub fn emit_lua_math_modf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     load(&mut chunks[current], x, line);
     load(&mut chunks[current], int_part, line);
     chunks[current].emit_op(Op::F64_SUB, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    chunks[current].emit_array_new_fixed(0, 2, line);
     emit_lua_multi_row(chunks, current, 1, line);
 }
 
@@ -3174,7 +3174,7 @@ pub fn emit_lua_pcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
         i32_const(&mut chunks[current], 0, line);
         vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
         chunks[current].emit_op(Op::NULL, line);
-        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+        chunks[current].emit_array_new_fixed(0, 2, line);
         return;
     }
 
@@ -3237,12 +3237,12 @@ pub fn emit_lua_pcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
     chunks[current].emit_else(line);
     load(&mut chunks[current], ok_slot, line);
     load(&mut chunks[current], value_slot, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    chunks[current].emit_array_new_fixed(0, 2, line);
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
     load(&mut chunks[current], ok_slot, line);
     load(&mut chunks[current], value_slot, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    chunks[current].emit_array_new_fixed(0, 2, line);
     chunks[current].emit_end(line);
     emit_lua_multi_row(chunks, current, 1, line);
 }
@@ -3378,12 +3378,12 @@ pub fn emit_lua_xpcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     chunks[current].emit_else(line);
     load(&mut chunks[current], ok_slot, line);
     load(&mut chunks[current], value_slot, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    chunks[current].emit_array_new_fixed(0, 2, line);
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
     load(&mut chunks[current], ok_slot, line);
     load(&mut chunks[current], value_slot, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    chunks[current].emit_array_new_fixed(0, 2, line);
     chunks[current].emit_end(line);
     emit_lua_multi_row(chunks, current, 1, line);
 }
@@ -3409,7 +3409,7 @@ pub fn emit_lua_assert(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         for i in 0..argc {
             load(&mut chunks[current], base + i as u16, line);
         }
-        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, argc as u16, line);
+        chunks[current].emit_array_new_fixed(0, argc as u16, line);
         emit_lua_multi_row(chunks, current, 1, line);
     }
     chunks[current].emit_else(line);
@@ -4474,7 +4474,7 @@ pub fn emit_lua_ipairs(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
 
     load(&mut chunks[current], i, line);
     load(&mut chunks[current], value, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    chunks[current].emit_array_new_fixed(0, 2, line);
     save(&mut chunks[current], row, line);
     load(&mut chunks[current], out, line);
     load(&mut chunks[current], row, line);
@@ -4568,7 +4568,7 @@ pub fn emit_lua_next(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     chunks[current].emit_if(line);
     chunks[current].emit_op(Op::NULL, line);
     chunks[current].emit_op(Op::NULL, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    chunks[current].emit_array_new_fixed(0, 2, line);
     emit_lua_multi_row(chunks, current, 1, line);
     chunks[current].emit_else(line);
     chunks[current].emit_string_const("invalid key to next", line);

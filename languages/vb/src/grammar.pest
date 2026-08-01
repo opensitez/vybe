@@ -129,7 +129,7 @@ raiseevent_statement = { ^"RaiseEvent" ~ identifier ~ ("(" ~ argument_list? ~ ")
 yield_statement = { ^"Yield" ~ expression? }
 
 // Array support
-array_bound = { expression ~ (^"To" ~ expression)? }
+array_bound = @{ (!("," | ")") ~ ANY)+ }
 array_bounds = { array_bound ~ ("," ~ array_bound)* }
 array_literal = { "{" ~ NEWLINE* ~ (expression ~ (NEWLINE* ~ "," ~ NEWLINE* ~ expression)*)? ~ NEWLINE* ~ "}" }
 
@@ -312,9 +312,10 @@ implements_member_clause = { ^"Implements" ~ implements_target ~ ("," ~ implemen
 sub_decl = {
     attribute_line* ~
     sub_modifier* ~ ^"Sub" ~ sub_name ~ generic_suffix? ~ "(" ~ param_list? ~ ")" ~ handles_clause? ~ implements_member_clause?
-    ~ (sub_inline_body | sub_block_body | abstract_body)
+    ~ (sub_expr_body | sub_inline_body | sub_block_body | abstract_body)
 }
 abstract_body = { &(NEWLINE | EOI) }
+sub_expr_body = { "=>" ~ statement }
 sub_inline_body = { ":" ~ (statement ~ ":")* ~ sub_end }
 sub_block_body = { (NEWLINE | EOI) ~ (!sub_end ~ line)* ~ sub_end }
 sub_end = { ^"End" ~ ^"Sub" }
@@ -322,8 +323,9 @@ sub_end = { ^"End" ~ ^"Sub" }
 function_decl = {
     attribute_line* ~
     sub_modifier* ~ ^"Function" ~ function_name ~ generic_suffix? ~ "(" ~ param_list? ~ ")" ~ (^"As" ~ type_name)? ~ implements_member_clause?
-    ~ (func_inline_body | func_block_body | abstract_body)
+    ~ (func_expr_body | func_inline_body | func_block_body | abstract_body)
 }
+func_expr_body = { "=>" ~ expression }
 func_inline_body = { ":" ~ (statement ~ ":")* ~ func_end }
 func_block_body = { (NEWLINE | EOI) ~ (!func_end ~ line)* ~ func_end }
 func_end = { ^"End" ~ ^"Function" }
@@ -342,7 +344,7 @@ param_list = { param ~ ("," ~ param)* }
 pass_type_keyword = { ^"ByVal" | ^"ByRef" }
 optional_keyword = { ^"Optional" }
 paramarray_keyword = { ^"ParamArray" }
-param = { paramarray_keyword? ~ optional_keyword? ~ pass_type_keyword? ~ optional_keyword? ~ identifier ~ ("(" ~ ")")? ~ nullable_marker? ~ (^"As" ~ type_name)? ~ ("=" ~ expression)? }
+param = { attribute* ~ paramarray_keyword? ~ optional_keyword? ~ pass_type_keyword? ~ optional_keyword? ~ identifier ~ ("(" ~ ")")? ~ nullable_marker? ~ (^"As" ~ type_name)? ~ ("=" ~ expression)? }
 nullable_marker = { "?" }
 
 // Module declarations (VB.NET style - members are implicitly shared)
@@ -481,15 +483,18 @@ auto_property_modifier = {
     | ^"WithEvents"
     | ^"Custom"
 }
+auto_property_accessor = { visibility_modifier? ~ (^"Get" | ^"Set") }
+auto_property_accessor_block = { "{" ~ auto_property_accessor ~ (";" ~ auto_property_accessor)* ~ ";"? ~ "}" }
 auto_property_decl = {
-    attribute_line* ~ auto_property_modifier* ~ ^"Property" ~ identifier ~ !"(" ~ (^"As" ~ dim_new_keyword? ~ type_name)? ~ implements_member_clause? ~ ("=" ~ expression)?
+    attribute_line* ~ auto_property_modifier* ~ ^"Property" ~ identifier ~ !"(" ~ (^"As" ~ dim_new_keyword? ~ type_name ~ from_initializer?)? ~ implements_member_clause? ~ auto_property_accessor_block? ~ ("=" ~ expression)?
 }
 auto_property_line = _{ auto_property_decl ~ ((NEWLINE ~ !(visibility_modifier? ~ (^"Get" | ^"Set"))) | EOI) }
 
 property_decl = {
-    attribute_line* ~ property_modifier* ~ ^"Property" ~ identifier ~ ("(" ~ param_list? ~ ")")? ~ (^"As" ~ type_name)? ~ implements_member_clause? ~ (NEWLINE | EOI | ":")
-    ~ ((property_get | property_set | NEWLINE)* ~ property_end)?
+    attribute_line* ~ property_modifier* ~ ^"Property" ~ identifier ~ ("(" ~ param_list? ~ ")")? ~ (^"As" ~ type_name)? ~ implements_member_clause?
+    ~ (property_expr_body | ((NEWLINE | EOI | ":") ~ ((property_get | property_set | NEWLINE)* ~ property_end)?))
 }
+property_expr_body = { "=>" ~ expression }
 
 property_get = {
     visibility_modifier? ~ ^"Get" ~ (
@@ -562,7 +567,7 @@ me_assign_statement = { me_keyword ~ ("." ~ member_identifier)+ ~ "=" ~ expressi
 mybase_keyword = @{ ^"MyBase" ~ !(ASCII_ALPHANUMERIC | "_") }
 mybase_member_call = { mybase_keyword ~ ("." ~ member_identifier)+ ~ "(" ~ argument_list? ~ ")" }
 mybase_member_access = { mybase_keyword ~ ("." ~ member_identifier)+ }
-mybase_assign_statement = { mybase_keyword ~ ("." ~ member_identifier)+ ~ "=" ~ expression }
+mybase_assign_statement = { mybase_keyword ~ "." ~ l_value_expression ~ "=" ~ expression }
 
 // Dotted identifier: System.Windows.Forms.Button
 dotted_identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~ ("." ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*)* }

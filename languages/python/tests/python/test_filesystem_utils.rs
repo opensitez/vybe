@@ -148,7 +148,9 @@ crate::runtime_case!(
 crate::runtime_case!(
     fnmatch_casefold,
     "import fnmatch\nprint(fnmatch.fnmatchcase('A.py', '*.py'))\n",
-    "False"
+    // `*` matches any sequence and involves no letter case, so real python3
+    // says True here regardless of fnmatchcase being case-sensitive.
+    "True"
 );
 crate::runtime_case!(
     argparse_namespace,

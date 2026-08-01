@@ -236,9 +236,9 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         chunk.emit_op_u16(Op::LOCAL_SET, parent_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, abstract_slot, line);
     } else if argc >= 8 {
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, ctor_params_slot, line);
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, fields_pub_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, methods_pub_slot, line);
@@ -248,13 +248,13 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         chunk.emit_op_u16(Op::LOCAL_SET, parent_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, abstract_slot, line);
     } else if argc >= 6 {
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, ctor_params_slot, line);
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, fields_pub_slot, line);
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, methods_pub_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, fields_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, methods_slot, line);
@@ -262,19 +262,19 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         chunk.emit_op_u16(Op::LOCAL_SET, parent_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, abstract_slot, line);
     } else {
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, ctor_params_slot, line);
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, fields_pub_slot, line);
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, methods_pub_slot, line);
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, fields_slot, line);
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, methods_slot, line);
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, ifaces_slot, line);
         chunk.emit_op(Op::NULL, line);
         chunk.emit_op_u16(Op::LOCAL_SET, parent_slot, line);
@@ -389,13 +389,13 @@ pub fn emit_refl_method(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line:
         chunk.emit_op_u16(Op::LOCAL_SET, param_count_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, vis_slot, line);
     } else if argc >= 5 {
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, param_count_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, vis_slot, line);
     } else {
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
         chunk.emit_f64_const(0.0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);
@@ -469,7 +469,7 @@ pub fn emit_refl_property(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     if argc >= 3 {
         chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
     } else {
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, attrs_slot, line);
     }
     chunk.emit_op_u16(Op::LOCAL_SET, prop_slot, line);
@@ -524,12 +524,12 @@ pub fn emit_refl_function(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
         chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, param_count_slot, line);
     } else if argc >= 3 {
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, params_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);
         chunk.emit_op_u16(Op::LOCAL_SET, param_count_slot, line);
     } else {
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, params_slot, line);
         chunk.emit_f64_const(0.0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, required_slot, line);

@@ -1717,5 +1717,5 @@ pub fn emit_php_pdo_error_info(chunks: &mut [Chunk], current: usize, argc: u8, l
     push_str(chunk, "00000", line);
     chunk.emit_op(Op::NULL, line);
     chunk.emit_op(Op::NULL, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, line);
+    chunk.emit_array_new_fixed(0, 3, line);
 }

@@ -1499,7 +1499,7 @@ pub fn emit_py_exception_add_note(chunks: &mut [Chunk], current: usize, line: u3
     chunk.emit_string_const("__notes__", line);
     reflection::emit_get_property_in_chunk(chunk, line);
     chunk.emit_else(line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_SET, notes, line);
 
@@ -1846,7 +1846,7 @@ pub fn emit_pymod(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line); // tuple → spread
         chunks[current].emit_else(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, b_slot, line); // scalar/list → single arg
-        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
+        chunks[current].emit_array_new_fixed(0, 1, line);
         chunks[current].emit_end(line);
         // stack: [fmt, args] → formatted string
         vybe_compiler::primitives::sprintf::emit_sprintf_from_array(chunks, current, line);
@@ -1952,145 +1952,12 @@ pub fn emit_py_fmt_sci(chunks: &mut [Chunk], current: usize, line: u32) {
 /// fractional part (`"-1234.5"` → `"-1,234.5"`). Pure string surgery — printf
 /// has no grouping. Stack: `[string]` → `[string]`.
 pub fn emit_py_fmt_group(chunks: &mut [Chunk], current: usize, line: u32) {
-    let c = &mut chunks[current];
-    let s = c.alloc_scratch(1);
-    c.emit_op_u16(Op::LOCAL_SET, s, line);
-
-    let length = c.add_import("wasm:js-string", "length");
-    let charat = c.add_import("ecma:string", "charAt");
-    let indexof = c.add_import("ecma:string", "indexOf");
-    let slice = c.add_import("ecma:string", "slice");
-
-    // dot = s.indexOf(".")  (−1 if none)
-    let dot = c.alloc_scratch(1);
-    c.emit_op_u16(Op::LOCAL_GET, s, line);
-    c.emit_string_const(".", line);
-    c.emit_call(indexof, 2, line);
-    c.emit_op_u16(Op::LOCAL_SET, dot, line);
-
-    // intEnd = dot < 0 ? s.length : dot   (dot < 0 → no fractional part)
-    let int_end = c.alloc_scratch(1);
-    c.emit_op_u16(Op::LOCAL_GET, dot, line);
-    let tof64 = c.add_import("wasm:js-number", "toF64");
-    c.emit_call(tof64, 1, line);
-    c.emit_f64_const(0.0, line);
-    c.emit_op(Op::F64_LT, line);
-    c.emit_if_value(line);
-    c.emit_op_u16(Op::LOCAL_GET, s, line);
-    c.emit_call(length, 1, line);
-    c.emit_else(line);
-    c.emit_op_u16(Op::LOCAL_GET, dot, line);
-    c.emit_call(tof64, 1, line);
-    c.emit_op(Op::I32_TRUNC_SAT_F64_S, line);
-    c.emit_end(line);
-    c.emit_op_u16(Op::LOCAL_SET, int_end, line);
-
-    // frac = s.slice(intEnd)  (includes the ".", or "" )
-    let frac = c.alloc_scratch(1);
-    c.emit_op_u16(Op::LOCAL_GET, s, line);
-    c.emit_op_u16(Op::LOCAL_GET, int_end, line);
-    c.emit_call(slice, 2, line);
-    c.emit_op_u16(Op::LOCAL_SET, frac, line);
-
-    // start = (s[0] is '+' or '-') ? 1 : 0  ; sign = s.slice(0, start)
-    let start = c.alloc_scratch(1);
-    c.emit_op_u16(Op::LOCAL_GET, s, line);
-    c.emit_f64_const(0.0, line);
-    c.emit_call(charat, 2, line);
-    let sign_is = c.alloc_scratch(1);
-    c.emit_op_u16(Op::LOCAL_SET, sign_is, line);
-    // A leading '+'/'-' is a sign: "+-".includes(firstChar) AND firstChar != ""
-    // (includes("") is vacuously true, so guard on a non-empty char).
-    c.emit_string_const("+-", line);
-    c.emit_op_u16(Op::LOCAL_GET, sign_is, line);
-    let includes = c.add_import("ecma:string", "includes");
-    c.emit_call(includes, 2, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
-    c.emit_op_u16(Op::LOCAL_GET, sign_is, line);
-    c.emit_call(length, 1, line); // 1 if a real char, 0 if empty ("" not a sign)
-    c.emit_op(Op::I32_AND, line);
-    c.emit_if_value(line);
-    c.emit_i32_const(1, line);
-    c.emit_else(line);
-    c.emit_i32_const(0, line);
-    c.emit_end(line);
-    c.emit_op_u16(Op::LOCAL_SET, start, line);
-
-    // digits = s.slice(start, intEnd)  ; sign = s.slice(0, start)
-    let sign = c.alloc_scratch(1);
-    c.emit_op_u16(Op::LOCAL_GET, s, line);
-    c.emit_i32_const(0, line);
-    c.emit_op_u16(Op::LOCAL_GET, start, line);
-    c.emit_call(slice, 3, line);
-    c.emit_op_u16(Op::LOCAL_SET, sign, line);
-
-    let digits = c.alloc_scratch(1);
-    c.emit_op_u16(Op::LOCAL_GET, s, line);
-    c.emit_op_u16(Op::LOCAL_GET, start, line);
-    c.emit_op_u16(Op::LOCAL_GET, int_end, line);
-    c.emit_call(slice, 3, line);
-    c.emit_op_u16(Op::LOCAL_SET, digits, line);
-
-    // n = digits.length ; out = "" ; i = 0
-    let n = c.alloc_scratch(1);
-    c.emit_op_u16(Op::LOCAL_GET, digits, line);
-    c.emit_call(length, 1, line);
-    c.emit_op_u16(Op::LOCAL_SET, n, line);
-    let out = c.alloc_scratch(1);
-    c.emit_string_const("", line);
-    c.emit_op_u16(Op::LOCAL_SET, out, line);
-    let i = c.alloc_scratch(1);
-    c.emit_i32_const(0, line);
-    c.emit_op_u16(Op::LOCAL_SET, i, line);
-
-    // for i in 0..n: if i>0 and (n-i)%3==0: out += ","  ; out += digits.charAt(i)
-    let block = c.emit_block(line);
-    let (loop_p, _) = c.emit_loop_s(line);
-    c.emit_op_u16(Op::LOCAL_GET, i, line);
-    c.emit_op_u16(Op::LOCAL_GET, n, line);
-    c.emit_op(Op::I32_GE_S, line);
-    c.emit_br_if(1, line);
-    // comma?  i>0 && (n-i)%3==0
-    c.emit_op_u16(Op::LOCAL_GET, i, line);
-    c.emit_i32_const(0, line);
-    c.emit_op(Op::I32_GT_S, line);
-    c.emit_op_u16(Op::LOCAL_GET, n, line);
-    c.emit_op_u16(Op::LOCAL_GET, i, line);
-    c.emit_op(Op::I32_SUB, line);
-    c.emit_i32_const(3, line);
-    c.emit_op(Op::I32_REM_S, line);
-    c.emit_i32_const(0, line);
-    c.emit_op(Op::I32_EQ, line);
-    c.emit_op(Op::I32_AND, line);
-    c.emit_if(line);
-    c.emit_op_u16(Op::LOCAL_GET, out, line);
-    c.emit_string_const(",", line);
-    vybe_compiler::primitives::strings::emit_str_concat(c, line);
-    c.emit_op_u16(Op::LOCAL_SET, out, line);
-    c.emit_end(line);
-    // out += digits.charAt(i)
-    c.emit_op_u16(Op::LOCAL_GET, out, line);
-    c.emit_op_u16(Op::LOCAL_GET, digits, line);
-    c.emit_op_u16(Op::LOCAL_GET, i, line);
-    c.emit_call(charat, 2, line);
-    vybe_compiler::primitives::strings::emit_str_concat(c, line);
-    c.emit_op_u16(Op::LOCAL_SET, out, line);
-    // i++
-    c.emit_op_u16(Op::LOCAL_GET, i, line);
-    c.emit_i32_const(1, line);
-    c.emit_op(Op::I32_ADD, line);
-    c.emit_op_u16(Op::LOCAL_SET, i, line);
-    c.emit_br(0, line);
-    c.emit_end(line);
-    c.patch_loop(loop_p);
-    c.emit_end(line);
-    c.patch_block(block);
-
-    // result = sign + out + frac
-    c.emit_op_u16(Op::LOCAL_GET, sign, line);
-    c.emit_op_u16(Op::LOCAL_GET, out, line);
-    c.emit_op_u16(Op::LOCAL_GET, frac, line);
-    vybe_compiler::primitives::strings::emit_concat(c, 3, line);
+    // The grouping itself is the SHARED emitter — php `number_format` binds the
+    // same one. Python's separators are fixed (`,` and `.`); php's are runtime
+    // arguments, which is why they are stack values rather than an option.
+    chunks[current].emit_string_const(",", line);
+    chunks[current].emit_string_const(".", line);
+    vybe_compiler::primitives::strings::emit_group_digits(chunks, current, line);
 }
 
 /// Shared body for the pure-arithmetic dunders: stash `[a, b]`, then dispatch to

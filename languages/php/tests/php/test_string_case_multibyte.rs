@@ -137,7 +137,9 @@ if (function_exists('mb_str_pad')) {
 }
 "#
         ),
-        vec!["00é|*é"]
+        // Measured against real `php`: `mb_str_pad("é", 2, "*", STR_PAD_BOTH)`
+        // is `é*` — STR_PAD_BOTH puts the odd character on the RIGHT.
+        vec!["00é|é*"]
     );
 }
 
