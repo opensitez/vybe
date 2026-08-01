@@ -13,6 +13,7 @@
 //! as `a.plus(b)`, exactly as Kotlin allows, and only the slot is added.
 
 use vybe_ast::class_normalize::types::SpecialMethodKind;
+use vybe_ast::{BinOp, UnaryOp};
 
 /// Resolve a Kotlin method name to `(canonical, slot?)`.
 pub fn canonical_method(name: &str) -> (String, Option<SpecialMethodKind>) {
@@ -66,5 +67,46 @@ pub fn canonical_method(name: &str) -> (String, Option<SpecialMethodKind>) {
         "iterator" => ("iterator".into(), Some(Iterator)),
         "next" => ("next".into(), Some(Next)),
         _ => (name.to_string(), None),
+    }
+}
+
+pub fn binary_operator_method(op: BinOp) -> Option<&'static str> {
+    match op {
+        BinOp::Add => Some("plus"),
+        BinOp::Sub => Some("minus"),
+        BinOp::Mul => Some("times"),
+        BinOp::Div => Some("div"),
+        BinOp::Mod => Some("rem"),
+        BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => Some("compareTo"),
+        BinOp::In => Some("contains"),
+        _ => None,
+    }
+}
+
+pub fn compound_operator_method(op: BinOp) -> Option<&'static str> {
+    match op {
+        BinOp::Add => Some("plusAssign"),
+        BinOp::Sub => Some("minusAssign"),
+        BinOp::Mul => Some("timesAssign"),
+        BinOp::Div => Some("divAssign"),
+        BinOp::Mod => Some("remAssign"),
+        _ => None,
+    }
+}
+
+pub fn step_operator_method(op: BinOp) -> Option<&'static str> {
+    match op {
+        BinOp::Add => Some("inc"),
+        BinOp::Sub => Some("dec"),
+        _ => None,
+    }
+}
+
+pub fn unary_operator_method(op: UnaryOp) -> Option<&'static str> {
+    match op {
+        UnaryOp::Neg => Some("unaryMinus"),
+        UnaryOp::Pos => Some("unaryPlus"),
+        UnaryOp::Not => Some("not"),
+        _ => None,
     }
 }

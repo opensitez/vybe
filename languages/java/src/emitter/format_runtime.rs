@@ -4022,6 +4022,11 @@ fn url_fns() -> Vec<Statement> {
     ));
 
     // getProtocol()/getScheme(): "http:" minus the colon.
+    //
+    // This IS `url::UrlField::Scheme` — a third copy of the reshaping php
+    // `parse_url` and python `urlsplit` needed — but binding it to
+    // `common:url.component_scheme` BROKE java URL (measured), so the migration
+    // needs more than a profile line. See the notes in `languages/java/profile`.
     out.push(function_stmt(
         "__j_url_protocol",
         vec!["u"],

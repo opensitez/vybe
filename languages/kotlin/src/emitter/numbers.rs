@@ -4,6 +4,14 @@ use vybe_compiler::primitives::ops;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+#[derive(Debug, Clone, Copy)]
+pub enum CompareZero {
+    Lt,
+    Gt,
+    Le,
+    Ge,
+}
+
 /// `println(x)` where `x` is statically a `Double`.
 ///
 /// Kotlin's `Double.toString()` always carries a fraction — `2.0 * 3` prints
@@ -93,4 +101,18 @@ pub fn emit_is_infinite(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line
     chunks[current].emit_bool_const(true, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+}
+
+/// Kotlin `compareTo` syntax lowering.
+///
+/// Stack: `[compare_result]` -> `[bool]`.
+pub fn emit_compare_zero(chunks: &mut Vec<Chunk>, current: usize, op: CompareZero, line: u32) {
+    chunks[current].emit_i32_const(0, line);
+    match op {
+        CompareZero::Lt => ops::emit_dyn_lt(&mut chunks[current], line),
+        CompareZero::Gt => ops::emit_dyn_gt(&mut chunks[current], line),
+        CompareZero::Le => ops::emit_dyn_le(&mut chunks[current], line),
+        CompareZero::Ge => ops::emit_dyn_ge(&mut chunks[current], line),
+    }
+    ops::emit_i32_to_bool(&mut chunks[current], line);
 }

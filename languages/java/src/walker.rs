@@ -119,8 +119,6 @@ thread_local! {
     // then-body (flow-scoped, like the record/switch pattern paths).
     static JAVA_INSTANCEOF_BINDINGS: RefCell<Vec<(String, String, Expression)>> =
         RefCell::new(Vec::new());
-    // Locals declared as java.net.URL/URI — __j_url_* runtime.
-    static JAVA_URL_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     // Locals declared as javax.xml.namespace.QName — common XML name runtime.
     static JAVA_QNAME_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
@@ -171,7 +169,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
     JAVA_NUMBER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_PATTERN_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_MATCHER_VARS.with(|vars| vars.borrow_mut().clear());
-    JAVA_URL_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_QNAME_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_INSTANCEOF_BINDINGS.with(|b| b.borrow_mut().clear());
 
@@ -3091,13 +3088,6 @@ fn walk_var_declarator(
         JAVA_MATCHER_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
     }
 
-    // java.net.URL/URI locals — __j_url_* runtime.
-    if type_hint
-        .as_deref()
-        .is_some_and(|hint| hint.contains("URL") || hint.contains("URI"))
-    {
-        JAVA_URL_VARS.with(|vars| vars.borrow_mut().insert(name.clone()));
-    }
     if type_hint
         .as_deref()
         .is_some_and(|hint| java_type_simple_name(hint) == "QName")
@@ -3829,8 +3819,9 @@ fn java_type_test_expr(subject: &Expression, stamped_name: &str) -> Expression {
         // first element when the element type is one the runtime distinguishes.
         // An empty array carries no evidence against the claim, so it passes.
         let is_array = is_type("list");
-        let Some(element) = vybe_platform_jvm::emitter::tree_register::array_element_intrinsic(stamped_name.trim_end())
-        else {
+        let Some(element) = vybe_platform_jvm::emitter::tree_register::array_element_intrinsic(
+            stamped_name.trim_end(),
+        ) else {
             return is_array;
         };
         let first = Expression::new(ExprKind::Index {
@@ -6478,66 +6469,6 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         }
     }
 
-    // java.net.URL/URI receivers → the __j_url_* getters over the
-    // WHATWG-parsed object. toURI()/toURL() are identity (same object).
-    {
-        let url_recv = match &receiver.kind {
-            ExprKind::Ident(n) => JAVA_URL_VARS.with(|vars| vars.borrow().contains(n.as_str())),
-            ExprKind::Call { callee, .. } => matches!(
-                &callee.kind,
-                ExprKind::Ident(n) if matches!(
-                    n.as_str(),
-                    "__j_url_new" | "__j_url_ctx" | "__j_url_make" | "__j_url_parse"
-                        | "__j_uri_new"
-                        | "__j_uri_make3"
-                        | "__j_uri_make7"
-                        | "__j_uri_normalize"
-                        | "__j_uri_resolve"
-                        | "__j_uri_relativize"
-                )
-            ),
-            _ => false,
-        };
-        if url_recv {
-            if matches!(method.as_str(), "toURI" | "toURL") {
-                return receiver;
-            }
-            let prelude_fn = match method.as_str() {
-                "getProtocol" | "getScheme" => Some("__j_url_protocol"),
-                "getHost" => Some("__j_url_host"),
-                "getPort" => Some("__j_url_port"),
-                "getDefaultPort" => Some("__j_url_default_port"),
-                "getPath" | "getRawPath" => Some("__j_url_path"),
-                "getQuery" | "getRawQuery" => Some("__j_url_query"),
-                "getRef" | "getFragment" | "getRawFragment" => Some("__j_url_ref"),
-                "getFile" => Some("__j_url_file"),
-                "getAuthority" | "getRawAuthority" => Some("__j_url_authority"),
-                "getUserInfo" | "getRawUserInfo" => Some("__j_url_user_info"),
-                "getSchemeSpecificPart" | "getRawSchemeSpecificPart" => Some("__j_uri_ssp"),
-                "isAbsolute" => Some("__j_uri_is_absolute"),
-                "isOpaque" => Some("__j_uri_is_opaque"),
-                "normalize" => Some("__j_uri_normalize"),
-                "resolve" => Some("__j_uri_resolve"),
-                "relativize" => Some("__j_uri_relativize"),
-                "compareTo" => Some("__j_uri_compare_to"),
-                "toString" | "toExternalForm" | "toASCIIString" => Some("__j_url_to_string"),
-                "equals" => Some("__j_url_equals"),
-                "hashCode" => Some("__j_url_hash"),
-                "sameFile" => Some("__j_url_same_file"),
-                _ => None,
-            };
-            if let Some(prelude_fn) = prelude_fn {
-                let mut call_args = vec![Argument::positional(receiver)];
-                call_args.extend(args);
-                return Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident(prelude_fn)),
-                    args: call_args,
-                    optional: false,
-                });
-            }
-        }
-    }
-
     // java.util.Base64 encoder/decoder objects — small Java prelude over
     // ECMA btoa/atob.
     {
@@ -6657,11 +6588,6 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
     }
 
     if let Some(type_name) = java_expr_dotted_name(&receiver) {
-        if java_type_simple_name(&type_name) == "URI" {
-            if let Some(expr) = java_uri_static_call(method.as_str(), args.clone()) {
-                return expr;
-            }
-        }
         if java_type_simple_name(&type_name) == "StreamSupport" && method == "stream" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_stream_support_stream")),
@@ -6826,11 +6752,6 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 args,
                 optional: false,
             });
-        }
-        if java_type_simple_name(&type_name) == "URI" {
-            if let Some(expr) = java_uri_static_call(method.as_str(), args.clone()) {
-                return expr;
-            }
         }
         if type_name == "Boolean" && matches!(method.as_str(), "parseBoolean" | "valueOf") {
             return java_boolean_parse_call(args);
@@ -7002,11 +6923,6 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     args,
                     optional: false,
                 });
-            }
-            if java_type_simple_name(type_name) == "URI" {
-                if let Some(expr) = java_uri_static_call(method.as_str(), args.clone()) {
-                    return expr;
-                }
             }
             if type_name == "Boolean" && matches!(method.as_str(), "parseBoolean" | "valueOf") {
                 return java_boolean_parse_call(args);
@@ -7925,17 +7841,6 @@ fn java_thread_static_call(method: &str, args: Vec<Argument>) -> Option<Expressi
     }))
 }
 
-fn java_uri_static_call(method: &str, args: Vec<Argument>) -> Option<Expression> {
-    if method != "create" || args.len() != 1 {
-        return None;
-    }
-    Some(Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("__j_uri_new")),
-        args,
-        optional: false,
-    }))
-}
-
 fn java_args_to_array(args: &[Argument]) -> Expression {
     Expression::new(ExprKind::Array(
         args.iter()
@@ -8770,20 +8675,6 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         optional: false,
                     }));
                 }
-                // java.net.URI needs to represent opaque and relative strings
-                // as well as WHATWG-parsed hierarchical URLs.
-                if matches!(class_name.as_str(), "URI" | "java.net.URI") {
-                    let ctor = match args.len() {
-                        3 => "__j_uri_make3",
-                        7 => "__j_uri_make7",
-                        _ => "__j_uri_new",
-                    };
-                    return Ok(Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident(ctor)),
-                        args,
-                        optional: false,
-                    }));
-                }
                 if matches!(
                     class_name.as_str(),
                     "ProcessBuilder" | "java.lang.ProcessBuilder"
@@ -8798,28 +8689,6 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                 if matches!(class_name.as_str(), "File" | "java.io.File") {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_file_new")),
-                        args,
-                        optional: false,
-                    }));
-                }
-                // java.net.URL → the WHATWG-parsed object (web:url) the
-                // __j_url_* prelude getters read. Arity picks the java
-                // constructor form: (spec), (context, spec), or
-                // (protocol, host, port, file).
-                if matches!(class_name.as_str(), "URL" | "java.net.URL") {
-                    let (ctor, args) = match args.len() {
-                        2 => ("__j_url_ctx", args),
-                        3 => {
-                            // URL(protocol, host, file) == port -1 form.
-                            let mut args = args;
-                            args.insert(2, Argument::positional(Expression::int(-1)));
-                            ("__j_url_make", args)
-                        }
-                        4 => ("__j_url_make", args),
-                        _ => ("__j_url_new", args),
-                    };
-                    return Ok(Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident(ctor)),
                         args,
                         optional: false,
                     }));

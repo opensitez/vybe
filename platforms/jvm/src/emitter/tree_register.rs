@@ -20,10 +20,12 @@
 //! - opcode/intrinsic/print builtins have no process-global target to
 //!   point at — skipped.
 
+use std::collections::BTreeMap;
 use std::sync::Once;
 
+use vybe_runtime::Value;
 use vybe_runtime::namespaces::{self, NamespaceNode, Subtree};
-use vybe_runtime::profile::{BuiltinEmit, parse_profile};
+use vybe_runtime::profile::{BuiltinDef, BuiltinEmit, ConstantValue, parse_profile};
 
 /// Insert `node` at the dotted `path` under `root`, creating interior
 /// namespaces as needed. Keys are lowercase-canonical.
@@ -50,7 +52,6 @@ fn insert_path(root: &mut Subtree, path: &str, node: NamespaceNode) {
     }
     cursor.entry(leaf.to_string()).or_insert(node);
 }
-
 
 /// Make the node at `path` a `Type`, preserving whatever is already there.
 ///
@@ -85,6 +86,281 @@ fn ensure_type_node(root: &mut Subtree, path: &str) {
             member_returns: Default::default(),
         };
     }
+}
+
+fn merge_type_methods(root: &mut Subtree, path: &str, new_methods: Subtree) {
+    let mut segments: Vec<&str> = path.split('.').collect();
+    let leaf = segments.pop().expect("non-empty path");
+    let mut cursor = root;
+    for seg in segments {
+        let entry = cursor
+            .entry(seg.to_string())
+            .or_insert_with(|| NamespaceNode::Namespace(Subtree::new()));
+        cursor = match entry {
+            NamespaceNode::Namespace(children) => children,
+            NamespaceNode::Type { statics, .. } => statics,
+            _ => return,
+        };
+    }
+    let Some(NamespaceNode::Type { methods, .. }) = cursor.get_mut(leaf) else {
+        return;
+    };
+    for (name, node) in new_methods {
+        methods.entry(name).or_insert(node);
+    }
+}
+
+fn builtin_leaf(def: &BuiltinDef, arity: Option<u8>) -> Option<NamespaceNode> {
+    match &def.emit {
+        BuiltinEmit::Common(op) => Some(NamespaceNode::CommonEmit(op.clone())),
+        BuiltinEmit::HostCall(module, func) => Some(match arity {
+            Some(a) => namespaces::host_fn_with_arity(module, func, a),
+            None => namespaces::host_fn(module, func),
+        }),
+        _ => None,
+    }
+}
+
+fn method_node(defs: &[BuiltinDef]) -> Option<NamespaceNode> {
+    let mut entries = Vec::new();
+    for def in defs {
+        for arity in def.min_args..=def.max_args {
+            entries.push((arity, builtin_leaf(def, Some(arity))?));
+        }
+    }
+    Some(namespaces::overloads(entries))
+}
+
+fn common_emit(name: &str) -> NamespaceNode {
+    NamespaceNode::CommonEmit(name.to_string())
+}
+
+fn insert_java_lang_system(root: &mut Subtree) {
+    let mut statics = Subtree::new();
+    statics.insert(
+        "getproperty".to_string(),
+        namespaces::overloads(vec![
+            (1, common_emit("jvm.java.lang.system_get_property")),
+            (2, common_emit("jvm.java.lang.system_get_property")),
+        ]),
+    );
+    insert_path(
+        root,
+        "lang.system",
+        NamespaceNode::Type {
+            ctor: None,
+            ctor_call: None,
+            statics,
+            methods: Subtree::new(),
+            member_returns: Default::default(),
+        },
+    );
+}
+
+fn insert_java_util_uuid(root: &mut Subtree) {
+    let mut methods = Subtree::new();
+    for (name, emit) in [
+        ("version", "jvm.java.uuid_version"),
+        ("variant", "jvm.java.uuid_variant"),
+        ("getmostsignificantbits", "jvm.java.uuid_most_bits"),
+        ("getleastsignificantbits", "jvm.java.uuid_least_bits"),
+        ("hashcode", "jvm.java.uuid_hash_code"),
+    ] {
+        methods.insert(name.to_string(), common_emit(emit));
+    }
+    methods.insert(
+        "compareto".to_string(),
+        namespaces::overloads(vec![(1, common_emit("jvm.java.uuid_compare_to"))]),
+    );
+    ensure_type_node(root, "util.uuid");
+    merge_type_methods(root, "util.uuid", methods);
+}
+
+fn insert_java_net_url_uri(root: &mut Subtree) {
+    let mut url_methods = Subtree::new();
+    for (name, emit) in [
+        ("getprotocol", "jvm.java.net.url_protocol"),
+        ("gethost", "jvm.java.net.url_host"),
+        ("getport", "jvm.java.net.url_port"),
+        ("getdefaultport", "jvm.java.net.url_default_port"),
+        ("getpath", "jvm.java.net.url_path"),
+        ("getrawpath", "jvm.java.net.url_path"),
+        ("getquery", "jvm.java.net.url_query"),
+        ("getrawquery", "jvm.java.net.url_query"),
+        ("getref", "jvm.java.net.url_ref"),
+        ("getfragment", "jvm.java.net.url_ref"),
+        ("getrawfragment", "jvm.java.net.url_ref"),
+        ("getauthority", "jvm.java.net.url_authority"),
+        ("getrawauthority", "jvm.java.net.url_authority"),
+        ("getuserinfo", "jvm.java.net.url_user_info"),
+        ("getrawuserinfo", "jvm.java.net.url_user_info"),
+        ("tostring", "jvm.java.net.url_to_string"),
+        ("toexternalform", "jvm.java.net.url_to_string"),
+        ("touri", "jvm.java.net.url_to_uri"),
+        ("hashcode", "jvm.java.net.url_hash"),
+    ] {
+        url_methods.insert(name.to_string(), common_emit(emit));
+    }
+    url_methods.insert(
+        "equals".to_string(),
+        namespaces::overloads(vec![(1, common_emit("jvm.java.net.url_equals"))]),
+    );
+    url_methods.insert(
+        "samefile".to_string(),
+        namespaces::overloads(vec![(1, common_emit("jvm.java.net.url_same_file"))]),
+    );
+    for (name, emit) in [
+        ("protocol", "jvm.java.net.url_protocol"),
+        ("host", "jvm.java.net.url_host"),
+        ("port", "jvm.java.net.url_port"),
+        ("defaultport", "jvm.java.net.url_default_port"),
+        ("path", "jvm.java.net.url_path"),
+        ("query", "jvm.java.net.url_query"),
+        ("ref", "jvm.java.net.url_ref"),
+        ("fragment", "jvm.java.net.url_ref"),
+        ("authority", "jvm.java.net.url_authority"),
+        ("file", "jvm.java.net.url_file"),
+        ("userinfo", "jvm.java.net.url_user_info"),
+    ] {
+        url_methods.insert(name.to_string(), common_emit(emit));
+    }
+
+    let mut url_returns = BTreeMap::new();
+    url_returns.insert("touri".to_string(), "java.net.URI".to_string());
+
+    insert_path(
+        root,
+        "net.url",
+        NamespaceNode::Type {
+            ctor: Some(namespaces::CtorSpec {
+                params: Vec::new(),
+                fields: Vec::new(),
+                ancestry: ["URL", "Serializable", "Object"]
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+                control_fn: None,
+                field_gui: Vec::new(),
+                value_equality: false,
+            }),
+            ctor_call: Some(Box::new(common_emit("jvm.java.net.url_new"))),
+            statics: Subtree::new(),
+            methods: url_methods,
+            member_returns: url_returns,
+        },
+    );
+
+    let mut encoder_statics = Subtree::new();
+    encoder_statics.insert("encode".to_string(), common_emit("jvm.java.net.url_encode"));
+    insert_path(
+        root,
+        "net.urlencoder",
+        NamespaceNode::Type {
+            ctor: None,
+            ctor_call: None,
+            statics: encoder_statics,
+            methods: Subtree::new(),
+            member_returns: Default::default(),
+        },
+    );
+
+    let mut decoder_statics = Subtree::new();
+    decoder_statics.insert("decode".to_string(), common_emit("jvm.java.net.url_decode"));
+    insert_path(
+        root,
+        "net.urldecoder",
+        NamespaceNode::Type {
+            ctor: None,
+            ctor_call: None,
+            statics: decoder_statics,
+            methods: Subtree::new(),
+            member_returns: Default::default(),
+        },
+    );
+
+    let mut uri_statics = Subtree::new();
+    uri_statics.insert("create".to_string(), common_emit("jvm.java.net.uri_new"));
+    let mut uri_methods = Subtree::new();
+    for (name, emit) in [
+        ("getscheme", "jvm.java.net.url_protocol"),
+        ("gethost", "jvm.java.net.url_host"),
+        ("getport", "jvm.java.net.url_port"),
+        ("getpath", "jvm.java.net.url_path"),
+        ("getrawpath", "jvm.java.net.url_path"),
+        ("getquery", "jvm.java.net.url_query"),
+        ("getrawquery", "jvm.java.net.url_query"),
+        ("getfragment", "jvm.java.net.url_ref"),
+        ("getrawfragment", "jvm.java.net.url_ref"),
+        ("getauthority", "jvm.java.net.url_authority"),
+        ("getrawauthority", "jvm.java.net.url_authority"),
+        ("getuserinfo", "jvm.java.net.url_user_info"),
+        ("getrawuserinfo", "jvm.java.net.url_user_info"),
+        ("getschemespecificpart", "jvm.java.net.uri_ssp"),
+        ("getrawschemespecificpart", "jvm.java.net.uri_ssp"),
+        ("isabsolute", "jvm.java.net.uri_is_absolute"),
+        ("isopaque", "jvm.java.net.uri_is_opaque"),
+        ("normalize", "jvm.java.net.uri_normalize"),
+        ("tostring", "jvm.java.net.url_to_string"),
+        ("toasciistring", "jvm.java.net.url_to_string"),
+        ("tourl", "jvm.java.net.uri_to_url"),
+        ("hashcode", "jvm.java.net.url_hash"),
+    ] {
+        uri_methods.insert(name.to_string(), common_emit(emit));
+    }
+    for (name, emit) in [
+        ("resolve", "jvm.java.net.uri_resolve"),
+        ("relativize", "jvm.java.net.uri_relativize"),
+        ("compareto", "jvm.java.net.uri_compare_to"),
+        ("equals", "jvm.java.net.url_equals"),
+    ] {
+        uri_methods.insert(
+            name.to_string(),
+            namespaces::overloads(vec![(1, common_emit(emit))]),
+        );
+    }
+    for (name, emit) in [
+        ("scheme", "jvm.java.net.url_protocol"),
+        ("host", "jvm.java.net.url_host"),
+        ("port", "jvm.java.net.url_port"),
+        ("path", "jvm.java.net.url_path"),
+        ("query", "jvm.java.net.url_query"),
+        ("fragment", "jvm.java.net.url_ref"),
+        ("authority", "jvm.java.net.url_authority"),
+        ("userinfo", "jvm.java.net.url_user_info"),
+        ("schemespecificpart", "jvm.java.net.uri_ssp"),
+        ("isabsolute", "jvm.java.net.uri_is_absolute"),
+        ("isopaque", "jvm.java.net.uri_is_opaque"),
+    ] {
+        uri_methods.insert(name.to_string(), common_emit(emit));
+    }
+
+    let mut uri_returns = BTreeMap::new();
+    for name in ["normalize", "resolve", "relativize"] {
+        uri_returns.insert(name.to_string(), "java.net.URI".to_string());
+    }
+    uri_returns.insert("tourl".to_string(), "java.net.URL".to_string());
+
+    insert_path(
+        root,
+        "net.uri",
+        NamespaceNode::Type {
+            ctor: Some(namespaces::CtorSpec {
+                params: Vec::new(),
+                fields: Vec::new(),
+                ancestry: ["URI", "Comparable", "Serializable", "Object"]
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+                control_fn: None,
+                field_gui: Vec::new(),
+                value_equality: false,
+            }),
+            ctor_call: Some(Box::new(common_emit("jvm.java.net.uri_new"))),
+            statics: uri_statics,
+            methods: uri_methods,
+            member_returns: uri_returns,
+        },
+    );
 }
 
 /// One Java stdlib type, as DATA: what it is called, what it IS (its
@@ -361,11 +637,33 @@ pub const JAVA_TYPES: &[JavaType] = &[
     t(
         "BigInteger",
         "math",
-        &["BigInteger", "Number", "Comparable", "Serializable", "Object"],
+        &[
+            "BigInteger",
+            "Number",
+            "Comparable",
+            "Serializable",
+            "Object",
+        ],
         None,
     ),
-    t("BitSet", "util", &["BitSet", "Cloneable", "Serializable", "Object"], None),
-    t("Random", "util", &["Random", "Serializable", "Object"], None),
+    t(
+        "BitSet",
+        "util",
+        &["BitSet", "Cloneable", "Serializable", "Object"],
+        None,
+    ),
+    t(
+        "UUID",
+        "util",
+        &["UUID", "Comparable", "Serializable", "Object"],
+        None,
+    ),
+    t(
+        "Random",
+        "util",
+        &["Random", "Serializable", "Object"],
+        None,
+    ),
     t(
         "SplittableRandom",
         "util",
@@ -381,7 +679,13 @@ pub const JAVA_TYPES: &[JavaType] = &[
     t(
         "IdentityHashMap",
         "util",
-        &["IdentityHashMap", "Map", "Cloneable", "Serializable", "Object"],
+        &[
+            "IdentityHashMap",
+            "Map",
+            "Cloneable",
+            "Serializable",
+            "Object",
+        ],
         None,
     ),
     t(
@@ -486,7 +790,7 @@ pub fn intrinsics_answering(queried: &str) -> Vec<&'static str> {
     out
 }
 
-/// Register the Java stdlib surface under the `java` root. Idempotent;
+/// Register the JVM stdlib surface under platform-owned roots. Idempotent;
 /// first call wins.
 pub fn register_namespace_tree() {
     static ONCE: Once = Once::new();
@@ -495,6 +799,7 @@ pub fn register_namespace_tree() {
             return;
         };
         let mut root = Subtree::new();
+        let mut kotlin_root = Subtree::new();
 
         // TYPES first, at their package path (`java.util.arraylist`), so one
         // registration answers both the bare name and the fully-qualified
@@ -567,6 +872,13 @@ pub fn register_namespace_tree() {
             if key.starts_with("__") {
                 continue;
             }
+            if let Some(path) = key.strip_prefix("kotlin.") {
+                let Some(leaf) = builtin_leaf(def, None) else {
+                    continue;
+                };
+                insert_path(&mut kotlin_root, path, leaf);
+                continue;
+            }
             // `root` IS the `java` node — it is handed to
             // `register_namespace_tree("java", …)` below. So a key that
             // already carries the package prefix must drop it, or the leaf
@@ -575,17 +887,14 @@ pub fn register_namespace_tree() {
             // way, which is why the tree's whole package surface was dead
             // while the type nodes (keyed `util.arraylist`) resolved fine.
             let path = key.strip_prefix("java.").unwrap_or(key.as_str());
-            let leaf = match &def.emit {
-                BuiltinEmit::Common(op) => {
-                    if key.starts_with("java.") || op.starts_with("java.") {
-                        NamespaceNode::CommonEmit(op.clone())
-                    } else {
-                        continue;
-                    }
-                }
-                BuiltinEmit::HostCall(module, func) => namespaces::host_fn(module, func),
-                _ => continue,
+            let Some(leaf) = builtin_leaf(def, None) else {
+                continue;
             };
+            if let NamespaceNode::CommonEmit(op) = &leaf {
+                if !key.starts_with("java.") && !op.starts_with("java.") {
+                    continue;
+                }
+            }
             match path.rsplit_once('.') {
                 Some((type_path, member)) => {
                     statics_by_type
@@ -608,7 +917,52 @@ pub fn register_namespace_tree() {
             }
             ensure_type_node(&mut root, &type_path);
         }
-        namespaces::register_namespace_tree("java", NamespaceNode::Namespace(root));
+
+        let mut methods_by_type: std::collections::BTreeMap<String, Subtree> =
+            std::collections::BTreeMap::new();
+        for (name, defs) in &profile.value_methods {
+            let key = name.to_lowercase();
+            let Some(path) = key.strip_prefix("java.") else {
+                continue;
+            };
+            let Some((type_path, member)) = path.rsplit_once('.') else {
+                continue;
+            };
+            let Some(node) = method_node(defs) else {
+                continue;
+            };
+            methods_by_type
+                .entry(type_path.to_string())
+                .or_default()
+                .entry(member.to_string())
+                .or_insert(node);
+        }
+        for (type_path, methods) in methods_by_type {
+            ensure_type_node(&mut root, &type_path);
+            merge_type_methods(&mut root, &type_path, methods);
+        }
+
+        insert_java_lang_system(&mut root);
+        insert_java_net_url_uri(&mut root);
+        insert_java_util_uuid(&mut root);
+
+        for (name, value) in &profile.namespace_constants {
+            let key = name.to_lowercase();
+            let node = match value {
+                ConstantValue::Float(v) => NamespaceNode::Const(Value::F64(*v)),
+                ConstantValue::Str(s) => NamespaceNode::Const(Value::String(s.clone().into())),
+            };
+            if let Some(path) = key.strip_prefix("kotlin.") {
+                insert_path(&mut kotlin_root, path, node);
+            } else {
+                let path = key.strip_prefix("java.").unwrap_or(key.as_str());
+                insert_path(&mut root, path, node);
+            }
+        }
+        let mut jvm_root = Subtree::new();
+        jvm_root.insert("java".to_string(), NamespaceNode::Namespace(root));
+        namespaces::register_namespace_tree("jvm", NamespaceNode::Namespace(jvm_root));
+        namespaces::register_namespace_tree("kotlin", NamespaceNode::Namespace(kotlin_root));
     });
 }
 
@@ -623,7 +977,11 @@ mod tests {
             .keys()
             .filter(|k| k.starts_with("java."))
             .count();
-        let known = ["java.util.ArrayList", "java.util.HashMap", "java.math.BigInteger"];
+        let known = [
+            "java.util.ArrayList",
+            "java.util.HashMap",
+            "java.math.BigInteger",
+        ];
         for k in known {
             assert!(
                 profile.lookup_known_type(k).is_some(),
@@ -634,5 +992,161 @@ mod tests {
         // qualified (`java.time.Instant.parse`) and once bare
         // (`Instant.parse`) — which is the duplication this crate removes.
         assert_eq!(builtins, 242, "java.* builtins in the platform fragment");
+        let kotlin_builtins = profile
+            .builtins
+            .keys()
+            .filter(|k| k.starts_with("kotlin."))
+            .count();
+        assert_eq!(
+            kotlin_builtins, 28,
+            "kotlin.* builtins in the platform fragment"
+        );
+    }
+
+    #[test]
+    fn java_net_tree_declares_method_return_types() {
+        super::register_namespace_tree();
+        let scopes = vec!["jvm".to_string()];
+        assert!(
+            vybe_runtime::namespaces::lookup_type_static_member(
+                &scopes,
+                "java.lang.System",
+                "getProperty"
+            )
+            .is_some()
+        );
+        assert_eq!(
+            vybe_runtime::namespaces::lookup_type_member_return(&scopes, "URI", "resolve"),
+            Some("java.net.URI".to_string())
+        );
+        assert_eq!(
+            vybe_runtime::namespaces::lookup_type_member_return(&scopes, "java.net.URI", "toURL"),
+            Some("java.net.URL".to_string())
+        );
+        assert_eq!(
+            vybe_runtime::namespaces::lookup_type_member_return(&scopes, "URL", "toURI"),
+            Some("java.net.URI".to_string())
+        );
+    }
+
+    #[test]
+    fn java_util_uuid_tree_is_platform_owned() {
+        super::register_namespace_tree();
+        let scopes = vec!["jvm".to_string()];
+        assert!(matches!(
+            vybe_runtime::namespaces::lookup_type_ctor_target(&scopes, "java.util.UUID"),
+            Some(vybe_runtime::component_model::ConstructorTarget::Common(op))
+                if op == "jvm.java.uuid_new"
+        ));
+        assert!(matches!(
+            vybe_runtime::namespaces::lookup_type_static_member(
+                &scopes,
+                "java.util.UUID",
+                "fromString"
+            ),
+            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+                if op == "jvm.java.uuid_from_string"
+        ));
+        assert!(matches!(
+            vybe_runtime::namespaces::lookup_type_instance_member(
+                &scopes,
+                "java.util.UUID",
+                "version"
+            ),
+            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+                if op == "jvm.java.uuid_version"
+        ));
+    }
+
+    #[test]
+    fn java_lang_character_tree_is_platform_owned() {
+        super::register_namespace_tree();
+        let scopes = vec!["jvm".to_string()];
+        assert!(matches!(
+            vybe_runtime::namespaces::lookup_type_static_member(
+                &scopes,
+                "java.lang.Character",
+                "isDigit"
+            ),
+            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+                if op == "jvm.java.char_is_digit"
+        ));
+        assert!(matches!(
+            vybe_runtime::namespaces::lookup_type_static_member(
+                &scopes,
+                "java.lang.Character",
+                "toUpperCase"
+            ),
+            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+                if op == "jvm.java.char_to_upper"
+        ));
+    }
+
+    #[test]
+    fn java_lang_integer_tree_is_platform_owned() {
+        super::register_namespace_tree();
+        let scopes = vec!["jvm".to_string()];
+        assert!(matches!(
+            vybe_runtime::namespaces::lookup_type_static_member(
+                &scopes,
+                "java.lang.Integer",
+                "parseInt"
+            ),
+            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+                if op == "jvm.java.parse_int"
+        ));
+        assert!(matches!(
+            vybe_runtime::namespaces::lookup_type_static_member(
+                &scopes,
+                "java.lang.Integer",
+                "bitCount"
+            ),
+            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+                if op == "jvm.java.int_bit_count"
+        ));
+    }
+
+    #[test]
+    fn java_util_arrays_tree_is_platform_owned() {
+        super::register_namespace_tree();
+        let scopes = vec!["jvm".to_string()];
+        assert!(matches!(
+            vybe_runtime::namespaces::lookup_type_static_member(
+                &scopes,
+                "java.util.Arrays",
+                "sort"
+            ),
+            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+                if op == "jvm.java.arrays_sort"
+        ));
+        assert!(matches!(
+            vybe_runtime::namespaces::lookup_type_static_member(
+                &scopes,
+                "java.util.Arrays",
+                "asList"
+            ),
+            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+                if op == "jvm.java.arrays_as_list"
+        ));
+    }
+
+    #[test]
+    fn java_util_bitset_tree_is_platform_owned() {
+        super::register_namespace_tree();
+        let scopes = vec!["jvm".to_string()];
+        assert!(matches!(
+            vybe_runtime::namespaces::lookup_type_ctor_target(&scopes, "java.util.BitSet"),
+            Some(vybe_runtime::component_model::ConstructorTarget::Common(op))
+                if op == "jvm.java.bitset_new"
+        ));
+        assert!(matches!(
+            vybe_runtime::namespaces::lookup_type_static_member(
+                &scopes,
+                "java.util.BitSet",
+                "valueOf"
+            ),
+            Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+                if op == "jvm.java.bitset_value_of"
+        ));
     }
 }

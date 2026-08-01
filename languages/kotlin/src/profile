@@ -123,6 +123,10 @@ __kt_hash     = { emit = "common:object.hash_code", min_args = 1, max_args = 1 }
 # Common Host Helpers
 __object_keys = { emit = "ecma:object.keys", min_args = 1, max_args = 1 }
 __coll_is_array = { emit = "common:ref_is_array", min_args = 1, max_args = 1 }
+__kt_cmp_lt0 = { emit = "common:kotlin.cmp_lt0", min_args = 1, max_args = 1 }
+__kt_cmp_gt0 = { emit = "common:kotlin.cmp_gt0", min_args = 1, max_args = 1 }
+__kt_cmp_le0 = { emit = "common:kotlin.cmp_le0", min_args = 1, max_args = 1 }
+__kt_cmp_ge0 = { emit = "common:kotlin.cmp_ge0", min_args = 1, max_args = 1 }
 
 # Collections - Lists & Arrays
 listOf          = { emit = "common:collections.new" }
@@ -331,14 +335,23 @@ to_string = "common:kotlin.print_double"
 # ── JDK surface, via the COMMON RESOLVER ────────────────────────────────────
 #
 # Kotlin can use every Java class library, and declares NOTHING to get them.
-# `platforms/jvm` registers the `java` root; this one line names the tree root
+# `platforms/jvm` registers the `jvm.java` root; this one line names the tree root
 # to resolve platform types against — the same single line csharp has as
 # `type_scopes = ["dotnet"]`. `lookup_type_static_member` /
 # `lookup_type_ctor_target` fold case on both the class and the member, so
-# every JDK spelling resolves without per-language mount or ambient data.
+# every JDK spelling resolves without per-language hardcoded class lists.
 
 [namespaces]
-type_scopes = ["java", "kotlin"]
+type_scopes = ["jvm", "kotlin"]
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "java"
+path = "jvm.java"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "jvm.java.lang"
 
 [[esm_default]]
 kind = "tree-mount"

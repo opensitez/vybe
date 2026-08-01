@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 inventory = { workspace = true }
 vybe_runtime = { workspace = true }
+vybe_compiler = { workspace = true }

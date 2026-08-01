@@ -339,6 +339,11 @@ __j_write          = { emit = "intrinsic:write_stdout",     min_args = 1, max_ar
 
 # java.net.URL/URI constructor → WHATWG parse (web:url); the __j_url_*
 # prelude getters read the parsed object's fields.
+#
+# NOT movable to `platforms/jvm` as-is: `tree_register.rs` registers a platform
+# SHORTHAND builtin only when its target is java-owned (`common:java.<op>`).
+# `host:web:url:new` is not, so moving it silently stopped registering and java
+# URL errored. A move needs a `common:java.url_*` shim in the platform.
 __j_url_parse      = { emit = "host:web:url:new",           min_args = 1, max_args = 2 }
 
 # Regex host surface for the __j_pat_*/__j_m_* prelude runtime
@@ -809,20 +814,20 @@ BitSet        = ["common", "java.bitset_new"]
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS (namespaceplan.md): Java packages ARE its namespaces.
 # `java.*` fully-qualified chains walk the global namespace tree at the
-# `java` root (the surface tree_register.rs contributes from [builtins]);
+# `jvm.java` root (the surface platforms/jvm contributes as Type nodes);
 # the ambient root is the data form of Java's implicit `java.lang.*`
 # import — bare qualified chains (`Integer.parseInt`) additionally search
-# under `java` when nothing shadows them.
+# under `jvm.java` when nothing shadows them.
 # ────────────────────────────────────────────────────────────────────────────
 
 [[esm_default]]
 kind = "tree-mount"
 prefix = "java"
-path = "java"
+path = "jvm.java"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "java"
+path = "jvm.java"
 
 # Per-PACKAGE ambient roots — `java.lang.*` is implicitly imported by the JLS,
 # and the rest are what `import java.util.UUID;` makes reachable as the bare
@@ -832,35 +837,35 @@ path = "java"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "java.lang"
+path = "jvm.java.lang"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "java.util"
+path = "jvm.java.util"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "java.util.concurrent"
+path = "jvm.java.util.concurrent"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "java.time"
+path = "jvm.java.time"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "java.time.temporal"
+path = "jvm.java.time.temporal"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "java.time.format"
+path = "jvm.java.time.format"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "java.math"
+path = "jvm.java.math"
 
 [[esm_default]]
 kind = "tree-ambient"
-path = "java.io"
+path = "jvm.java.io"
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACES
@@ -871,9 +876,9 @@ use_dotnet = false
 
 # Namespace-tree roots this language resolves platform types against, and mounts
 # ambiently so an unqualified type name resolves to its `Type` node. Java's own
-# stdlib surface registers under `java` (see `tree_register.rs`), so a type used
+# stdlib surface registers under `jvm.java` (see `tree_register.rs`), so a type used
 # as a VALUE (`ArrayList.class`) reaches the shared `Ctor`/`ancestry` machinery
 # instead of resolving to nothing.
-type_scopes = ["java"]
+type_scopes = ["jvm"]
 roots = []
 extra_imports = []

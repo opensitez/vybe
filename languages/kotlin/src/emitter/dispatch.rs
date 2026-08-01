@@ -23,6 +23,22 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::numbers::emit_is_infinite(chunks, current, argc, line);
             true
         }
+        "kotlin.cmp_lt0" => {
+            crate::emitter::numbers::emit_compare_zero(chunks, current, crate::emitter::numbers::CompareZero::Lt, line);
+            true
+        }
+        "kotlin.cmp_gt0" => {
+            crate::emitter::numbers::emit_compare_zero(chunks, current, crate::emitter::numbers::CompareZero::Gt, line);
+            true
+        }
+        "kotlin.cmp_le0" => {
+            crate::emitter::numbers::emit_compare_zero(chunks, current, crate::emitter::numbers::CompareZero::Le, line);
+            true
+        }
+        "kotlin.cmp_ge0" => {
+            crate::emitter::numbers::emit_compare_zero(chunks, current, crate::emitter::numbers::CompareZero::Ge, line);
+            true
+        }
         "kotlin.tostring" => {
             crate::emitter::tostring::emit_to_string(chunks, current, line);
             true

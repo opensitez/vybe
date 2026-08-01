@@ -33,11 +33,7 @@ pub fn register() {
     emitter::tree_register::register_namespace_tree();
     vybe_runtime::registry::register_platform(vybe_runtime::registry::PlatformDef {
         name: "jvm",
-        // The `common:java.*` emits still live in `languages/java`'s emitter and
-        // dispatch through its LanguageDef; they move here adapter by adapter
-        // (javakotlinmigration.md Phases 3-6). Registering a second dispatcher
-        // for the same ops now would be the duplication this crate removes.
-        emit_dispatch: None,
+        emit_dispatch: Some(crate::emitter::dispatch::dispatch),
         register_tree: Some(crate::emitter::tree_register::register_namespace_tree),
         namespace_constants: None,
         component_descriptor: None,

@@ -484,6 +484,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
 
     let aliases = kotlin_import_aliases(&imports);
     rewrite_import_aliases_in_stmts(&mut body, &aliases);
+    normalize_kotlin_operator_calls(&mut body);
 
     if let Some(name) = package_name.filter(|name| !name.is_empty()) {
         let has_main = body.iter().any(|stmt| {
@@ -596,6 +597,30 @@ fn imported_leaf_is_value(path: &str) -> bool {
             .next()
             .is_some_and(|ch| !ch.is_ascii_uppercase())
     })
+}
+
+fn rewrite_imported_value_ident(name: &mut String, aliases: &HashMap<String, String>, scope: &HashSet<String>) {
+    if scope.contains(name) {
+        return;
+    }
+    if let Some(path) = aliases.get(name) {
+        if imported_leaf_is_value(path) {
+            if let Some(leaf) = imported_leaf(path) {
+                *name = leaf.to_string();
+            }
+        }
+    }
+}
+
+fn imported_type_alias_expr(name: &str, aliases: &HashMap<String, String>, scope: &HashSet<String>) -> Option<Expression> {
+    if scope.contains(name) {
+        return None;
+    }
+    let path = aliases.get(name)?;
+    if imported_leaf_is_value(path) {
+        return None;
+    }
+    Some(dotted_ident_expr(path))
 }
 
 fn kotlin_import_path(path: &str) -> String {
@@ -893,38 +918,18 @@ fn rewrite_import_aliases_in_expr(
 ) {
     match &mut expr.kind {
         ExprKind::Ident(name) => {
-            if !scope.contains(name) {
-                if let Some(path) = aliases.get(name) {
-                    if imported_leaf_is_value(path) {
-                        if let Some(leaf) = imported_leaf(path) {
-                            *name = leaf.to_string();
-                        }
-                    }
-                }
-            }
+            rewrite_imported_value_ident(name, aliases, scope);
         }
         ExprKind::Member { object, field, .. } => {
             rewrite_import_aliases_in_expr(object, aliases, scope);
-            if !scope.contains(field) {
-                if let Some(path) = aliases.get(field) {
-                    if imported_leaf_is_value(path) {
-                        if let Some(real_field) = imported_leaf(path) {
-                            *field = real_field.to_string();
-                        }
-                    }
-                }
-            }
+            rewrite_imported_value_ident(field, aliases, scope);
         }
         ExprKind::Call { callee, args, .. } => {
             if let ExprKind::Ident(name) = &mut callee.kind {
-                if !scope.contains(name) {
-                    if let Some(path) = aliases.get(name) {
-                        if imported_leaf_is_value(path) {
-                            if let Some(leaf) = imported_leaf(path) {
-                                *name = leaf.to_string();
-                            }
-                        }
-                    }
+                if let Some(replacement) = imported_type_alias_expr(name, aliases, scope) {
+                    **callee = replacement;
+                } else {
+                    rewrite_imported_value_ident(name, aliases, scope);
                 }
             } else {
                 rewrite_import_aliases_in_expr(callee, aliases, scope);
@@ -935,14 +940,10 @@ fn rewrite_import_aliases_in_expr(
         }
         ExprKind::New { class, args } => {
             if let ExprKind::Ident(name) = &mut class.kind {
-                if !scope.contains(name) {
-                    if let Some(path) = aliases.get(name) {
-                        if imported_leaf_is_value(path) {
-                            if let Some(leaf) = imported_leaf(path) {
-                                *name = leaf.to_string();
-                            }
-                        }
-                    }
+                if let Some(replacement) = imported_type_alias_expr(name, aliases, scope) {
+                    **class = replacement;
+                } else {
+                    rewrite_imported_value_ident(name, aliases, scope);
                 }
             } else {
                 rewrite_import_aliases_in_expr(class, aliases, scope);
@@ -1081,6 +1082,538 @@ fn post_alias_kotlin_lowering(expr: &Expression) -> Option<Expression> {
             }
             _ => None,
         },
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct KotlinOperatorInfo {
+    returns: HashMap<String, Option<String>>,
+}
+
+impl KotlinOperatorInfo {
+    fn has(&self, name: &str) -> bool {
+        self.returns.contains_key(name)
+    }
+
+    fn return_type(&self, name: &str) -> Option<String> {
+        self.returns.get(name).and_then(Clone::clone)
+    }
+}
+
+type KotlinOperatorTable = HashMap<String, KotlinOperatorInfo>;
+type KotlinLocalTypes = HashMap<String, String>;
+
+fn normalize_kotlin_operator_calls(stmts: &mut [Statement]) {
+    let operators = collect_kotlin_operator_table(stmts);
+    let mut locals = KotlinLocalTypes::new();
+    normalize_kotlin_operator_stmts(stmts, &operators, &mut locals);
+}
+
+fn collect_kotlin_operator_table(stmts: &[Statement]) -> KotlinOperatorTable {
+    fn visit_stmt(stmt: &Statement, out: &mut KotlinOperatorTable) {
+        match &stmt.kind {
+            StmtKind::ClassDecl { name, members, .. } => {
+                for member in members {
+                    if let ClassMember::Method(method) = member {
+                        if let StmtKind::FunctionDecl {
+                            name: method_name,
+                            return_type,
+                            ..
+                        } = &method.kind
+                        {
+                            if let Some(op_name) = method_name.strip_prefix("operator ") {
+                                out.entry(name.clone())
+                                    .or_default()
+                                    .returns
+                                    .insert(op_name.to_string(), return_type.clone());
+                            }
+                        }
+                    }
+                }
+                for member in members {
+                    match member {
+                        ClassMember::Constructor { body, .. } => {
+                            for stmt in body {
+                                visit_stmt(stmt, out);
+                            }
+                        }
+                        ClassMember::Field { .. }
+                        | ClassMember::Method(_)
+                        | ClassMember::Property { .. }
+                        | ClassMember::Event { .. }
+                        | ClassMember::Const { .. } => {}
+                        ClassMember::NestedType(class_stmt) => visit_stmt(class_stmt, out),
+                        ClassMember::Augment(_) => {}
+                    }
+                }
+            }
+            StmtKind::NamespaceDecl { body, .. } | StmtKind::Block(body) => {
+                for stmt in body {
+                    visit_stmt(stmt, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = KotlinOperatorTable::new();
+    for stmt in stmts {
+        visit_stmt(stmt, &mut out);
+    }
+    out
+}
+
+fn normalize_kotlin_operator_stmts(
+    stmts: &mut [Statement],
+    operators: &KotlinOperatorTable,
+    locals: &mut KotlinLocalTypes,
+) {
+    for stmt in stmts {
+        normalize_kotlin_operator_stmt(stmt, operators, locals);
+    }
+}
+
+fn normalize_kotlin_operator_stmt(
+    stmt: &mut Statement,
+    operators: &KotlinOperatorTable,
+    locals: &mut KotlinLocalTypes,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            normalize_kotlin_operator_expr(expr, operators, locals);
+        }
+        StmtKind::Throw { expr, cause } => {
+            if let Some(expr) = expr {
+                normalize_kotlin_operator_expr(expr, operators, locals);
+            }
+            if let Some(cause) = cause {
+                normalize_kotlin_operator_expr(cause, operators, locals);
+            }
+        }
+        StmtKind::Echo(exprs) => {
+            for expr in exprs {
+                normalize_kotlin_operator_expr(expr, operators, locals);
+            }
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    normalize_kotlin_operator_expr(init, operators, locals);
+                }
+                if let BindingPattern::Ident(name) = &decl.pattern {
+                    let inferred = decl
+                        .type_hint
+                        .clone()
+                        .or_else(|| decl.init.as_ref().and_then(|e| kotlin_expr_type(e, locals, operators)));
+                    if let Some(ty) = inferred {
+                        locals.insert(name.clone(), ty);
+                    }
+                }
+            }
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut fn_locals = locals.clone();
+            for param in params {
+                if let Some(ty) = &param.type_hint {
+                    fn_locals.insert(param.name.clone(), ty.clone());
+                }
+            }
+            normalize_kotlin_operator_stmts(body, operators, &mut fn_locals);
+        }
+        StmtKind::ClassDecl { members, .. } => {
+            for member in members {
+                match member {
+                    ClassMember::Field {
+                        init: Some(init), ..
+                    } => normalize_kotlin_operator_expr(init, operators, locals),
+                    ClassMember::Method(method) => {
+                        normalize_kotlin_operator_stmt(method, operators, locals);
+                    }
+                    ClassMember::Constructor { params, body, .. } => {
+                        let mut ctor_locals = locals.clone();
+                        for param in params {
+                            if let Some(ty) = &param.type_hint {
+                                ctor_locals.insert(param.name.clone(), ty.clone());
+                            }
+                        }
+                        normalize_kotlin_operator_stmts(body, operators, &mut ctor_locals);
+                    }
+                    ClassMember::NestedType(class_stmt) => {
+                        normalize_kotlin_operator_stmt(class_stmt, operators, locals);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            let mut block_locals = locals.clone();
+            normalize_kotlin_operator_stmts(body, operators, &mut block_locals);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            normalize_kotlin_operator_expr(cond, operators, locals);
+            normalize_kotlin_operator_stmts(then_body, operators, &mut locals.clone());
+            for (elif_cond, elif_body) in elifs {
+                normalize_kotlin_operator_expr(elif_cond, operators, locals);
+                normalize_kotlin_operator_stmts(elif_body, operators, &mut locals.clone());
+            }
+            if let Some(else_body) = else_body {
+                normalize_kotlin_operator_stmts(else_body, operators, &mut locals.clone());
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            normalize_kotlin_operator_expr(cond, operators, locals);
+            normalize_kotlin_operator_stmts(body, operators, &mut locals.clone());
+            if let Some(else_body) = else_body {
+                normalize_kotlin_operator_stmts(else_body, operators, &mut locals.clone());
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            let mut for_locals = locals.clone();
+            if let Some(init) = init {
+                normalize_kotlin_operator_stmt(init, operators, &mut for_locals);
+            }
+            if let Some(cond) = cond {
+                normalize_kotlin_operator_expr(cond, operators, &for_locals);
+            }
+            if let Some(update) = update {
+                normalize_kotlin_operator_expr(update, operators, &for_locals);
+            }
+            normalize_kotlin_operator_stmts(body, operators, &mut for_locals);
+        }
+        StmtKind::ForIn {
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            normalize_kotlin_operator_expr(iter, operators, locals);
+            normalize_kotlin_operator_stmts(body, operators, &mut locals.clone());
+            if let Some(else_body) = else_body {
+                normalize_kotlin_operator_stmts(else_body, operators, &mut locals.clone());
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            normalize_kotlin_operator_stmts(body, operators, &mut locals.clone());
+            for catch in catches {
+                if let Some(when_clause) = &mut catch.when_clause {
+                    normalize_kotlin_operator_expr(when_clause, operators, locals);
+                }
+                normalize_kotlin_operator_stmts(&mut catch.body, operators, &mut locals.clone());
+            }
+            if let Some(else_body) = else_body {
+                normalize_kotlin_operator_stmts(else_body, operators, &mut locals.clone());
+            }
+            if let Some(finally) = finally {
+                normalize_kotlin_operator_stmts(finally, operators, &mut locals.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_kotlin_operator_expr(
+    expr: &mut Expression,
+    operators: &KotlinOperatorTable,
+    locals: &KotlinLocalTypes,
+) {
+    match &mut expr.kind {
+        ExprKind::Binary { left, right, .. } => {
+            normalize_kotlin_operator_expr(left, operators, locals);
+            normalize_kotlin_operator_expr(right, operators, locals);
+        }
+        ExprKind::Unary { expr: inner, .. }
+        | ExprKind::Cast { expr: inner, .. }
+        | ExprKind::Await(inner)
+        | ExprKind::Yield(Some(inner))
+        | ExprKind::Delete(inner) => normalize_kotlin_operator_expr(inner, operators, locals),
+        ExprKind::Assign { target, value } => {
+            normalize_kotlin_operator_expr(target, operators, locals);
+            normalize_kotlin_operator_expr(value, operators, locals);
+        }
+        ExprKind::Call { callee, args, .. } => {
+            normalize_kotlin_operator_expr(callee, operators, locals);
+            for arg in args {
+                normalize_kotlin_operator_expr(&mut arg.value, operators, locals);
+            }
+        }
+        ExprKind::New { class, args } => {
+            normalize_kotlin_operator_expr(class, operators, locals);
+            for arg in args {
+                normalize_kotlin_operator_expr(&mut arg.value, operators, locals);
+            }
+        }
+        ExprKind::Member { object, .. } => normalize_kotlin_operator_expr(object, operators, locals),
+        ExprKind::Index { object, index, .. } => {
+            normalize_kotlin_operator_expr(object, operators, locals);
+            normalize_kotlin_operator_expr(index, operators, locals);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            normalize_kotlin_operator_expr(cond, operators, locals);
+            normalize_kotlin_operator_expr(then, operators, locals);
+            normalize_kotlin_operator_expr(else_, operators, locals);
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            normalize_kotlin_operator_expr(left, operators, locals);
+            normalize_kotlin_operator_expr(right, operators, locals);
+        }
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                if let Some(key) = &mut elem.key {
+                    normalize_kotlin_operator_expr(key, operators, locals);
+                }
+                normalize_kotlin_operator_expr(&mut elem.value, operators, locals);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { key, value } = prop {
+                    normalize_kotlin_operator_expr(key, operators, locals);
+                    normalize_kotlin_operator_expr(value, operators, locals);
+                }
+            }
+        }
+        ExprKind::Tuple(items) | ExprKind::Sequence(items) => {
+            for item in items {
+                normalize_kotlin_operator_expr(item, operators, locals);
+            }
+        }
+        ExprKind::Range { start, end, .. } => {
+            normalize_kotlin_operator_expr(start, operators, locals);
+            normalize_kotlin_operator_expr(end, operators, locals);
+        }
+        ExprKind::Lambda { params, body, .. } => {
+            let mut lambda_locals = locals.clone();
+            for param in params {
+                if let Some(ty) = &param.type_hint {
+                    lambda_locals.insert(param.name.clone(), ty.clone());
+                }
+            }
+            match body {
+                LambdaBody::Expr(expr) => normalize_kotlin_operator_expr(expr, operators, &lambda_locals),
+                LambdaBody::Block(stmts) => {
+                    normalize_kotlin_operator_stmts(stmts, operators, &mut lambda_locals);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if let Some(replacement) = kotlin_operator_rewrite(expr, operators, locals) {
+        *expr = replacement;
+    }
+}
+
+fn kotlin_operator_rewrite(
+    expr: &Expression,
+    operators: &KotlinOperatorTable,
+    locals: &KotlinLocalTypes,
+) -> Option<Expression> {
+    match &expr.kind {
+        ExprKind::Binary { op, left, right } => {
+            if *op == BinOp::In {
+                if matches!(right.kind, ExprKind::Range { .. })
+                    || kotlin_expr_type(right, locals, operators).as_deref() == Some("Range")
+                {
+                    return Some(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__coll_contains")),
+                        args: vec![
+                            Argument::positional((**right).clone()),
+                            Argument::positional((**left).clone()),
+                        ],
+                        optional: false,
+                    }));
+                }
+                let ty = kotlin_expr_type(right, locals, operators)?;
+                let method = crate::protocol::binary_operator_method(*op)?;
+                if operators.get(&ty).is_some_and(|info| info.has(method)) {
+                    return Some(kotlin_operator_call((**right).clone(), method, vec![
+                        (**left).clone(),
+                    ]));
+                }
+                return None;
+            }
+
+            let method = crate::protocol::binary_operator_method(*op)?;
+            let ty = kotlin_expr_type(left, locals, operators)?;
+            if !operators.get(&ty).is_some_and(|info| info.has(method)) {
+                return None;
+            }
+            let call = kotlin_operator_call((**left).clone(), method, vec![(**right).clone()]);
+            match op {
+                BinOp::Lt => Some(kotlin_compare_zero_call("__kt_cmp_lt0", call)),
+                BinOp::Gt => Some(kotlin_compare_zero_call("__kt_cmp_gt0", call)),
+                BinOp::LtEq => Some(kotlin_compare_zero_call("__kt_cmp_le0", call)),
+                BinOp::GtEq => Some(kotlin_compare_zero_call("__kt_cmp_ge0", call)),
+                _ => Some(call),
+            }
+        }
+        ExprKind::Assign { target, value } => {
+            let ExprKind::Binary { op, left, right } = &value.kind else {
+                return None;
+            };
+            if !kotlin_same_simple_expr(target, left) {
+                return None;
+            }
+            let ty = kotlin_expr_type(target, locals, operators)?;
+            let info = operators.get(&ty)?;
+            if let Some(method) = crate::protocol::compound_operator_method(*op) {
+                if info.has(method) {
+                    return Some(kotlin_operator_call(
+                        (**target).clone(),
+                        method,
+                        vec![(**right).clone()],
+                    ));
+                }
+            }
+
+            if !matches!(right.kind, ExprKind::Lit(Literal::Int(1))) {
+                return None;
+            }
+            let method = crate::protocol::step_operator_method(*op)?;
+            info.has(method).then(|| Expression::new(ExprKind::Assign {
+                target: Box::new((**target).clone()),
+                value: Box::new(kotlin_operator_call((**target).clone(), method, Vec::new())),
+            }))
+        }
+        ExprKind::Unary { op, expr: inner } => {
+            let method = crate::protocol::unary_operator_method(*op)?;
+            let ty = kotlin_expr_type(inner, locals, operators)?;
+            operators
+                .get(&ty)
+                .is_some_and(|info| info.has(method))
+                .then(|| kotlin_operator_call((**inner).clone(), method, Vec::new()))
+        }
+        _ => None,
+    }
+}
+
+fn kotlin_same_simple_expr(a: &Expression, b: &Expression) -> bool {
+    match (&a.kind, &b.kind) {
+        (ExprKind::Ident(a), ExprKind::Ident(b)) => a == b,
+        (
+            ExprKind::Member {
+                object: ao,
+                field: af,
+                null_safe: ans,
+            },
+            ExprKind::Member {
+                object: bo,
+                field: bf,
+                null_safe: bns,
+            },
+        ) => af == bf && ans == bns && kotlin_same_simple_expr(ao, bo),
+        (
+            ExprKind::Index {
+                object: ao,
+                index: ai,
+                null_safe: ans,
+            },
+            ExprKind::Index {
+                object: bo,
+                index: bi,
+                null_safe: bns,
+            },
+        ) => ans == bns && kotlin_same_simple_expr(ao, bo) && kotlin_same_simple_expr(ai, bi),
+        (ExprKind::Lit(Literal::Int(a)), ExprKind::Lit(Literal::Int(b))) => a == b,
+        (ExprKind::Lit(Literal::Str(a)), ExprKind::Lit(Literal::Str(b))) => a == b,
+        _ => false,
+    }
+}
+
+fn kotlin_operator_call(receiver: Expression, method: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(receiver),
+            field: method.to_string(),
+            null_safe: false,
+        })),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
+fn kotlin_compare_zero_call(helper: &str, value: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident(helper)),
+        args: vec![Argument::positional(value)],
+        optional: false,
+    })
+}
+
+fn kotlin_expr_type(
+    expr: &Expression,
+    locals: &KotlinLocalTypes,
+    operators: &KotlinOperatorTable,
+) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => locals.get(name).cloned(),
+        ExprKind::New { class, .. } => match &class.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Member { field, .. } => Some(field.clone()),
+            _ => None,
+        },
+        ExprKind::Call { callee, .. } => {
+            let ExprKind::Member { object, field, .. } = &callee.kind else {
+                return None;
+            };
+            let receiver_ty = kotlin_expr_type(object, locals, operators)?;
+            operators
+                .get(&receiver_ty)
+                .and_then(|info| info.return_type(field))
+        }
+        ExprKind::Binary { op, left, right } => {
+            if matches!(
+                op,
+                BinOp::In
+                    | BinOp::Lt
+                    | BinOp::Gt
+                    | BinOp::LtEq
+                    | BinOp::GtEq
+                    | BinOp::Eq
+                    | BinOp::NotEq
+                    | BinOp::StrictEq
+                    | BinOp::StrictNotEq
+            ) {
+                return Some("Boolean".to_string());
+            }
+            let method = crate::protocol::binary_operator_method(*op)?;
+            let receiver_ty = kotlin_expr_type(left, locals, operators)?;
+            operators
+                .get(&receiver_ty)
+                .and_then(|info| info.return_type(method))
+                .or_else(|| kotlin_expr_type(right, locals, operators))
+        }
+        ExprKind::Unary { op, expr } => {
+            if matches!(op, UnaryOp::Not) {
+                return Some("Boolean".to_string());
+            }
+            let method = crate::protocol::unary_operator_method(*op)?;
+            let receiver_ty = kotlin_expr_type(expr, locals, operators)?;
+            operators
+                .get(&receiver_ty)
+                .and_then(|info| info.return_type(method))
+        }
+        ExprKind::Range { .. } => Some("Range".to_string()),
         _ => None,
     }
 }
