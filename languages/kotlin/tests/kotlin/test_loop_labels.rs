@@ -12,7 +12,7 @@ kotlin_run_test!(
             println(out)
         }
     "#,
-        // Verified against Kotlin semantics: i=1 runs all four j (2+3+4+5=14); i=2 breaks out on the first inner step.
+    // Verified against Kotlin semantics: i=1 runs all four j (2+3+4+5=14); i=2 breaks out on the first inner step.
     &["14"]
 );
 
@@ -30,7 +30,7 @@ kotlin_run_test!(
             println(out)
         }
     "#,
-        // Verified against Kotlin semantics: each i adds itself once before `j == 2` continues the outer loop: 1+2+3.
+    // Verified against Kotlin semantics: each i adds itself once before `j == 2` continues the outer loop: 1+2+3.
     &["6"]
 );
 
@@ -102,7 +102,7 @@ kotlin_run_test!(
             println(out)
         }
     "#,
-        // Verified against Kotlin semantics: i=0 adds 0+1+2=3, then i=1/j=0 adds 1 before i=1/j=1 breaks out.
+    // Verified against Kotlin semantics: i=0 adds 0+1+2=3, then i=1/j=0 adds 1 before i=1/j=1 breaks out.
     &["4"]
 );
 
@@ -120,7 +120,7 @@ kotlin_run_test!(
             println(out)
         }
     "#,
-        // Verified against Kotlin semantics: `j == 1` on the FIRST inner step every time, so `out += i` never runs.
+    // Verified against Kotlin semantics: `j == 1` on the FIRST inner step every time, so `out += i` never runs.
     &["0"]
 );
 
@@ -274,7 +274,7 @@ kotlin_run_test!(
             println(out)
         }
     "#,
-        // Verified against Kotlin semantics: 8 inner steps run before i+j first reaches 6 at i=3, j=3.
+    // Verified against Kotlin semantics: 8 inner steps run before i+j first reaches 6 at i=3, j=3.
     &["8"]
 );
 
@@ -496,7 +496,7 @@ kotlin_run_test!(
             println(out)
         }
     "#,
-        // Verified against Kotlin semantics: i=1 and i=3 each add 1+2+3; only i=2 is skipped.
+    // Verified against Kotlin semantics: i=1 and i=3 each add 1+2+3; only i=2 is skipped.
     &["12"]
 );
 

@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_primary_constructor_property_initializes_before_init_block() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder(val base: Int) {
             val plus = base + 1
             val label: String
@@ -17,13 +18,15 @@ fn test_primary_constructor_property_initializes_before_init_block() {
         fun main() {
             println(Holder(3).out())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["v=4"]);
 }
 
 #[test]
 fn test_init_blocks_execute_in_top_down_order() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Base {
             init {
                 println("base")
@@ -39,13 +42,15 @@ fn test_init_blocks_execute_in_top_down_order() {
         fun main() {
             Leaf()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["base", "leaf"]);
 }
 
 #[test]
 fn test_property_init_order_with_override_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open val base = 1
             init {
@@ -63,13 +68,15 @@ fn test_property_init_order_with_override_chain() {
         fun main() {
             Child()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["4", "4"]);
 }
 
 #[test]
 fn test_initialization_order_does_not_recompute_dependencies() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var ticks = 0
 
         class Holder {
@@ -91,13 +98,15 @@ fn test_initialization_order_does_not_recompute_dependencies() {
             Holder()
             println(ticks)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "2", "1"]);
 }
 
 #[test]
 fn test_init_evaluates_properties_before_secondary_constructor() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder(val value: Int) {
             val label: String
 
@@ -114,13 +123,15 @@ fn test_init_evaluates_properties_before_secondary_constructor() {
             val item = Holder()
             println(item.out())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["v=5"]);
 }
 
 #[test]
 fn test_init_block_can_reference_secondary_defaults() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             val value: Int
 
@@ -140,13 +151,15 @@ fn test_init_block_can_reference_secondary_defaults() {
             val item = Holder()
             println(item.out())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["init", "7"]);
 }
 
 #[test]
 fn test_initialization_logs_in_nested_property_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             val first = 1
             val second = first + one()
@@ -162,13 +175,15 @@ fn test_initialization_logs_in_nested_property_chain() {
         fun main() {
             Holder()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["4"]);
 }
 
 #[test]
 fn test_companion_and_init_are_independent_timelines() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             companion object {
                 init { println("companion") }
@@ -183,13 +198,15 @@ fn test_companion_and_init_are_independent_timelines() {
             Holder()
             Holder()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["companion", "instance", "instance"]);
 }
 
 #[test]
 fn test_initialization_of_multiple_properties_order_by_appearance() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             val a = 1
             val b = a + c
@@ -205,13 +222,15 @@ fn test_initialization_of_multiple_properties_order_by_appearance() {
         fun main() {
             Holder()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "4", "3"]);
 }
 
 #[test]
 fn test_init_without_secondary_constructor_still_runs_defaults() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder(val base: Int = 1) {
             val scaled = base * 2
             init { println(scaled) }
@@ -221,13 +240,15 @@ fn test_init_without_secondary_constructor_still_runs_defaults() {
             Holder()
             Holder(4)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "8"]);
 }
 
 #[test]
 fn test_init_of_derived_uses_base_initialized_state() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             val base = 10
             init { println(base) }
@@ -241,13 +262,15 @@ fn test_init_of_derived_uses_base_initialized_state() {
         fun main() {
             Child()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["10", "11"]);
 }
 
 #[test]
 fn test_initialization_of_local_class_occurs_on_use() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             class Local {
                 init { println("local") }
@@ -257,13 +280,15 @@ fn test_initialization_of_local_class_occurs_on_use() {
             Local()
             println("end")
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["start", "local", "end"]);
 }
 
 #[test]
 fn test_init_order_records_property_evaluation_and_init() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var trace = ""
         fun tick(value: String): Int {
             trace += value
@@ -285,13 +310,15 @@ fn test_init_order_records_property_evaluation_and_init() {
         fun main() {
             Holder()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ab", "2"]);
 }
 
 #[test]
 fn test_secondary_constructor_delegation_preserves_base_initialization() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base(prefix: Int) {
             val value = prefix
             init {
@@ -310,13 +337,15 @@ fn test_secondary_constructor_delegation_preserves_base_initialization() {
         fun main() {
             println(Leaf().label)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "20"]);
 }
 
 #[test]
 fn test_derived_class_init_runs_after_base_init() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             init {
                 println("base")
@@ -336,13 +365,15 @@ fn test_derived_class_init_runs_after_base_init() {
         fun main() {
             Child()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["base", "child-1", "child-2"]);
 }
 
 #[test]
 fn test_field_initialization_happens_in_declaration_order() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             val first = 1
             val second = first + 1
@@ -357,13 +388,15 @@ fn test_field_initialization_happens_in_declaration_order() {
         fun main() {
             Holder()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "2", "3"]);
 }
 
 #[test]
 fn test_companion_init_occurs_before_instance_init_once() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             companion object {
                 var count = 0
@@ -383,13 +416,15 @@ fn test_companion_init_occurs_before_instance_init_once() {
             Holder()
             Holder()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["9", "9"]);
 }
 
 #[test]
 fn test_init_uses_primary_constructor_parameters() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder(prefix: String) {
             val value: String
 
@@ -403,13 +438,15 @@ fn test_init_uses_primary_constructor_parameters() {
             Holder("x")
             Holder("y")
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["X", "Y"]);
 }
 
 #[test]
 fn test_init_block_can_read_property_updates() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var factor = 1
 
         class Holder {
@@ -431,13 +468,15 @@ fn test_init_block_can_read_property_updates() {
             Holder()
             println(factor)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "4", "4"]);
 }
 
 #[test]
 fn test_init_block_for_local_class_runs_at_instantiation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             class Local {
                 init { println("local-init") }
@@ -447,13 +486,15 @@ fn test_init_block_for_local_class_runs_at_instantiation() {
             Local()
             println("b")
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["a", "local-init", "b"]);
 }
 
 #[test]
 fn test_inherited_property_shadowing_does_not_reorder_init() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open val value = 2
         }
@@ -471,13 +512,15 @@ fn test_inherited_property_shadowing_does_not_reorder_init() {
         fun main() {
             Child()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7", "8"]);
 }
 
 #[test]
 fn test_init_blocks_in_multiple_levels_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class LevelOne {
             init {
                 println("one")
@@ -499,13 +542,15 @@ fn test_init_blocks_in_multiple_levels_chain() {
         fun main() {
             LevelThree()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["one", "two", "three"]);
 }
 
 #[test]
 fn test_constructor_default_values_apply_per_instance() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder(prefix: Int = 1) {
             val value = prefix + 1
             init {
@@ -517,13 +562,15 @@ fn test_constructor_default_values_apply_per_instance() {
             Holder()
             Holder(2)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "3"]);
 }
 
 #[test]
 fn test_init_uses_global_counter_and_reuses_updated_state() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var stamp = 0
 
         fun next_stamp(): Int {
@@ -549,13 +596,15 @@ fn test_init_uses_global_counter_and_reuses_updated_state() {
             Holder()
             println(stamp)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "11", "2", "3", "13", "4", "4"]);
 }
 
 #[test]
 fn test_overridden_property_is_visible_before_derived_fields_init() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open val label: String = "base"
 
@@ -576,13 +625,15 @@ fn test_overridden_property_is_visible_before_derived_fields_init() {
         fun main() {
             Child()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["child", "child:v"]);
 }
 
 #[test]
 fn test_init_blocks_can_mutate_companion_state_before_subsequent_property_init() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var globalValue = 1
 
         class Holder {
@@ -605,13 +656,15 @@ fn test_init_blocks_can_mutate_companion_state_before_subsequent_property_init()
             Holder()
             println(globalValue)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "20", "10", "20", "10"]);
 }
 
 #[test]
 fn test_secondary_constructor_chain_initializes_once_per_instance() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             val value: Int
 
@@ -632,13 +685,15 @@ fn test_secondary_constructor_chain_initializes_once_per_instance() {
         fun main() {
             Holder()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["instance", "6", "delegated"]);
 }
 
 #[test]
 fn test_property_initializers_evaluate_in_declaration_order() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             val base = 1
             val multiplied = base * 2
@@ -654,13 +709,15 @@ fn test_property_initializers_evaluate_in_declaration_order() {
         fun main() {
             Holder()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "2", "3"]);
 }
 
 #[test]
 fn test_local_class_initialization_runs_after_function_code_before_use() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             println("pre")
 
@@ -676,13 +733,15 @@ fn test_local_class_initialization_runs_after_function_code_before_use() {
             Holder()
             println("done")
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["pre", "post", "init", "done"]);
 }
 
 #[test]
 fn test_init_blocks_execute_in_chain_before_instance_values_are_printed() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class LevelOne {
             open val base = "one"
             init {
@@ -705,6 +764,7 @@ fn test_init_blocks_execute_in_chain_before_instance_values_are_printed() {
         fun main() {
             LevelThree()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["one", "one-two", "one-three"]);
 }

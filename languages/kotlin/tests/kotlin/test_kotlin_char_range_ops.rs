@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_char_range_membership_and_iteration() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val span = 'b'..'e'
             var text = ""
@@ -11,13 +12,15 @@ fn test_char_range_membership_and_iteration() {
             println('a' in span)
             println('d' in span)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["bcde", "false", "true"]);
 }
 
 #[test]
 fn test_descending_char_range() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var out = ""
             for (c in 'e' downTo 'c') {
@@ -25,6 +28,7 @@ fn test_descending_char_range() {
             }
             println(out)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["edc"]);
 }

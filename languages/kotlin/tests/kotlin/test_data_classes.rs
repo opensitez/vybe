@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_data_class_constructs_with_field_access() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class User(val name: String, val age: Int)
 
         fun main() {
@@ -11,13 +12,15 @@ fn test_data_class_constructs_with_field_access() {
             println(a.age)
             println(a.toString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["Ada", "30", "User(name=Ada, age=30)"]);
 }
 
 #[test]
 fn test_data_class_copy_keeps_unset_fields() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Point(val x: Int, val y: Int)
 
         fun main() {
@@ -26,13 +29,15 @@ fn test_data_class_copy_keeps_unset_fields() {
             println(a == b)
             println(a === b)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "false"]);
 }
 
 #[test]
 fn test_data_class_copy_modifies_single_field() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Point(val x: Int, val y: Int)
 
         fun main() {
@@ -41,13 +46,15 @@ fn test_data_class_copy_modifies_single_field() {
             println(b.x)
             println(b.y)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "99"]);
 }
 
 #[test]
 fn test_data_class_named_component_access() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class PairValue(val left: Int, val right: Int)
 
         fun main() {
@@ -55,13 +62,15 @@ fn test_data_class_named_component_access() {
             println(p.component1())
             println(p.component2())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["4", "9"]);
 }
 
 #[test]
 fn test_data_class_destructuring_by_index() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class PairValue(val left: Int, val right: Int)
 
         fun main() {
@@ -69,13 +78,15 @@ fn test_data_class_destructuring_by_index() {
             val (left, right) = p
             println(left + right)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["18"]);
 }
 
 #[test]
 fn test_data_class_structural_equality_uses_all_fields() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Key(val id: Int, val tag: String)
 
         fun main() {
@@ -85,13 +96,15 @@ fn test_data_class_structural_equality_uses_all_fields() {
             println(a == b)
             println(a == c)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "false"]);
 }
 
 #[test]
 fn test_data_class_hash_code_matches_equality() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Key(val id: Int, val tag: String)
 
         fun main() {
@@ -100,13 +113,15 @@ fn test_data_class_hash_code_matches_equality() {
             println(a.hashCode() == b.hashCode())
             println(a.hashCode() != a.hashCode())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "false"]);
 }
 
 #[test]
 fn test_data_class_with_var_property_supports_mutation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Counter(var value: Int)
 
         fun main() {
@@ -114,13 +129,15 @@ fn test_data_class_with_var_property_supports_mutation() {
             c.value += 4
             println(c.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7"]);
 }
 
 #[test]
 fn test_data_class_copy_updates_mutable_field() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Counter(var value: Int)
 
         fun main() {
@@ -131,13 +148,15 @@ fn test_data_class_copy_updates_mutable_field() {
             d.value += 1
             println(d.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "12", "13"]);
 }
 
 #[test]
 fn test_generic_data_class_holds_different_types() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Holder<T>(val value: T)
 
         fun main() {
@@ -146,13 +165,15 @@ fn test_generic_data_class_holds_different_types() {
             println(a.value)
             println(b.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "x"]);
 }
 
 #[test]
 fn test_generic_data_class_equality_depends_on_payload() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Holder<T>(val value: T)
 
         fun main() {
@@ -162,13 +183,15 @@ fn test_generic_data_class_equality_depends_on_payload() {
             println(a == b)
             println(a == c)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "false"]);
 }
 
 #[test]
 fn test_data_class_in_set_uses_equality() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Item(val id: Int)
 
         fun main() {
@@ -177,13 +200,15 @@ fn test_data_class_in_set_uses_equality() {
             val values = setOf(first)
             println(values.contains(second))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true"]);
 }
 
 #[test]
 fn test_data_class_as_map_key_round_trip_lookup() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Entry(val k: Int, val v: Int)
 
         fun main() {
@@ -191,13 +216,15 @@ fn test_data_class_as_map_key_round_trip_lookup() {
             println(map[Entry(1, 2)])
             println(map[Entry(2, 1)] == null)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ok", "true"]);
 }
 
 #[test]
 fn test_data_class_with_default_values_preserved_in_copy() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Settings(val enabled: Boolean = true, val retries: Int = 3)
 
         fun main() {
@@ -208,13 +235,15 @@ fn test_data_class_with_default_values_preserved_in_copy() {
             println(copy.enabled)
             println(copy.retries)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "3", "true", "7"]);
 }
 
 #[test]
 fn test_data_class_local_scope_declaration() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun make(): Int {
             data class Local(val value: Int)
             return Local(9).value
@@ -223,13 +252,15 @@ fn test_data_class_local_scope_declaration() {
         fun main() {
             println(make())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["9"]);
 }
 
 #[test]
 fn test_data_class_in_list_and_destructure_each() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class PairNode(val id: Int, val weight: Int)
 
         fun main() {
@@ -240,13 +271,15 @@ fn test_data_class_in_list_and_destructure_each() {
             }
             println(score)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["14"]);
 }
 
 #[test]
 fn test_data_class_nested_copy_propagates_outer() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Child(val value: Int)
         data class Parent(val child: Child, val tag: String)
 
@@ -257,13 +290,15 @@ fn test_data_class_nested_copy_propagates_outer() {
             println(p2.child.value)
             println(p2.tag)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "9", "x"]);
 }
 
 #[test]
 fn test_data_class_when_on_components() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Kind(val id: Int, val name: String)
 
         fun classify(kind: Kind): String {
@@ -277,13 +312,15 @@ fn test_data_class_when_on_components() {
             println(classify(first))
             println(classify(second))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["first:root", "other:leaf"]);
 }
 
 #[test]
 fn test_data_class_ordering_by_to_string_is_deterministic() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Pair(val a: Int, val b: Int)
 
         fun main() {
@@ -292,13 +329,15 @@ fn test_data_class_ordering_by_to_string_is_deterministic() {
             val list = listOf(a, b)
             println(list.sortedBy { it.a }.joinToString(";") { it.toString() })
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["Pair(a=2, b=1);Pair(a=10, b=3)"]);
 }
 
 #[test]
 fn test_data_class_copy_chain_preserves_previous_instances() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Node(val id: Int, val label: String)
 
         fun main() {
@@ -311,13 +350,15 @@ fn test_data_class_copy_chain_preserves_previous_instances() {
             println(a == b)
             println(b == c)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["a", "1", "b", "false", "false"]);
 }
 
 #[test]
 fn test_data_class_with_boolean_and_numeric_fields() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Flagged(val enabled: Boolean, val level: Int)
 
         fun main() {
@@ -328,13 +369,15 @@ fn test_data_class_with_boolean_and_numeric_fields() {
             println(updated.enabled)
             println(updated.level)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["false", "2", "true", "2"]);
 }
 
 #[test]
 fn test_data_class_with_nullable_members() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Holder(val value: String?)
 
         fun main() {
@@ -343,13 +386,15 @@ fn test_data_class_with_nullable_members() {
             println(missing.value == null)
             println(present.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "ok"]);
 }
 
 #[test]
 fn test_data_class_plus_operator_style_via_copy() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Coord(val x: Int, val y: Int)
 
         fun main() {
@@ -362,13 +407,15 @@ fn test_data_class_plus_operator_style_via_copy() {
             println(moved.y)
             println(origin.x)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "4", "0"]);
 }
 
 #[test]
 fn test_data_class_multiple_instances_in_map_lookup_by_copy() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Route(val from: Int, val to: Int)
 
         fun main() {
@@ -377,13 +424,15 @@ fn test_data_class_multiple_instances_in_map_lookup_by_copy() {
             val probe = route.copy(to = 2)
             println(lookup[probe])
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ok"]);
 }
 
 #[test]
 fn test_data_class_rebinds_in_iteration() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Meter(val id: Int, val value: Int)
 
         fun main() {
@@ -396,13 +445,15 @@ fn test_data_class_rebinds_in_iteration() {
             println(sum)
             println(items[0].value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["12", "1"]);
 }
 
 #[test]
 fn test_data_class_destructure_with_function_return() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Record(val code: Int, val weight: Int)
 
         fun split(): Record {
@@ -415,13 +466,15 @@ fn test_data_class_destructure_with_function_return() {
             println(weight)
             println(code + weight)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["4", "5", "9"]);
 }
 
 #[test]
 fn test_data_class_string_projection_is_stable() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Tag(val name: String, val value: Int)
 
         fun main() {
@@ -430,13 +483,15 @@ fn test_data_class_string_projection_is_stable() {
             val list = listOf(a, b)
             println(list.joinToString("|") { it.toString() })
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["Tag(name=x, value=1)|Tag(name=y, value=1)"]);
 }
 
 #[test]
 fn test_data_class_implements_interface_contract() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Identifiable { val id: Int }
         data class Item(override val id: Int, val payload: String) : Identifiable
 
@@ -446,13 +501,15 @@ fn test_data_class_implements_interface_contract() {
             println(a)
             println((item as Item).payload)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7", "payload"]);
 }
 
 #[test]
 fn test_data_class_copy_does_not_mutate_source_instance() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Pair(val x: Int, val y: Int)
 
         fun main() {
@@ -461,13 +518,15 @@ fn test_data_class_copy_does_not_mutate_source_instance() {
             println(original.y)
             println(copy.y)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "9"]);
 }
 
 #[test]
 fn test_data_class_deeply_nested_destructuring() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Line(val start: Int, val end: Int)
         data class Segment(val a: Line, val b: Line)
 
@@ -479,13 +538,15 @@ fn test_data_class_deeply_nested_destructuring() {
             println(s)
             println(e)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5", "1", "2"]);
 }
 
 #[test]
 fn test_data_class_as_generic_type_argument() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Box<T>(val value: T)
         data class Holder<T>(val value: Box<T>)
 
@@ -496,13 +557,15 @@ fn test_data_class_as_generic_type_argument() {
             println(holder.value.value)
             println(copy.value.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["x", "x", "y"]);
 }
 
 #[test]
 fn test_data_class_copy_uses_named_and_positional_semantics_together() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Range(val start: Int, val end: Int)
 
         fun main() {
@@ -511,13 +574,15 @@ fn test_data_class_copy_uses_named_and_positional_semantics_together() {
             println(base.toString())
             println(shifted.toString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["Range(start=1, end=10)", "Range(start=2, end=10)"]);
 }
 
 #[test]
 fn test_data_class_default_values_preserve_when_copying_subset() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Flag(val enabled: Boolean = true, val count: Int = 1)
 
         fun main() {
@@ -528,13 +593,15 @@ fn test_data_class_default_values_preserve_when_copying_subset() {
             println(copied.enabled)
             println(copied.count)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "1", "true", "7"]);
 }
 
 #[test]
 fn test_data_class_var_mutation_changes_equality_result() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Box(var text: String, val id: Int)
 
         fun main() {
@@ -546,13 +613,15 @@ fn test_data_class_var_mutation_changes_equality_result() {
             println(a == b)
             println(a.text)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "false", "b"]);
 }
 
 #[test]
 fn test_data_class_list_field_round_trips_through_copy() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Bucket(val values: MutableList<Int>)
 
         fun main() {
@@ -563,13 +632,15 @@ fn test_data_class_list_field_round_trips_through_copy() {
             println(copy.values.size)
             println(base.values[2])
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "3", "3"]);
 }
 
 #[test]
 fn test_data_class_in_set_with_mutated_var_field_can_change_lookup() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Packet(var id: Int, val payload: String)
 
         fun main() {
@@ -580,13 +651,15 @@ fn test_data_class_in_set_with_mutated_var_field_can_change_lookup() {
             println(set.contains(Packet(2, "x")))
             println(set.contains(Packet(1, "x")))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "false", "false"]);
 }
 
 #[test]
 fn test_data_class_in_map_for_hash_lookup_after_copy() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Key(val id: Int, val label: String)
 
         fun main() {
@@ -597,13 +670,15 @@ fn test_data_class_in_map_for_hash_lookup_after_copy() {
             println(map[original] == null)
             println(map[copy])
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "first"]);
 }
 
 #[test]
 fn test_data_class_destructuring_with_nested_components_in_expression() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Range(val start: Int, val end: Int)
         data class Window(val left: Range, val right: Range)
 
@@ -616,13 +691,15 @@ fn test_data_class_destructuring_with_nested_components_in_expression() {
             val window = Window(Range(1, 4), Range(10, 20))
             println(size(window))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["13"]);
 }
 
 #[test]
 fn test_data_class_copy_with_expression_args() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Point(val x: Int, val y: Int, val z: Int = 0)
 
         fun main() {
@@ -631,13 +708,15 @@ fn test_data_class_copy_with_expression_args() {
             println(b.z)
             println(b.x + b.y + b.z)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "6"]);
 }
 
 #[test]
 fn test_data_class_components_power_for_map_key_projection() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Tile(val row: Int, val col: Int)
 
         fun main() {
@@ -647,26 +726,30 @@ fn test_data_class_components_power_for_map_key_projection() {
                 .joinToString(";") { "${it.first},${it.second}" }
             println(labels)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0,1;2,3"]);
 }
 
 #[test]
 fn test_data_class_to_string_exposes_field_names() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Trace(val action: String, val count: Int)
 
         fun main() {
             val item = Trace("run", 3)
             println(item.toString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["Trace(action=run, count=3)"]);
 }
 
 #[test]
 fn test_data_class_copy_chain_preserves_immutability_surface() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Node(val id: Int, val next: Node?)
 
         fun main() {
@@ -677,13 +760,15 @@ fn test_data_class_copy_chain_preserves_immutability_surface() {
             println(b.id)
             println(b.next?.id)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "2", "10", "2"]);
 }
 
 #[test]
 fn test_data_class_array_is_equal_by_structural_values() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Record(val values: IntArray)
 
         fun main() {
@@ -692,6 +777,7 @@ fn test_data_class_array_is_equal_by_structural_values() {
             println(a == b)
             println(a.values.contentToString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["false", "[1, 2]"]);
 }

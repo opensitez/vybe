@@ -2,7 +2,8 @@ use crate::helpers::{compile_ok_check, run_prints};
 
 #[test]
 fn test_public_members_are_callable_by_default() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Item {
             val label = "x"
             fun text(): String = "ok"
@@ -13,13 +14,15 @@ fn test_public_members_are_callable_by_default() {
             println(item.label)
             println(item.text())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["x", "ok"]);
 }
 
 #[test]
 fn test_private_members_are_not_accessible_outside_declaring_class() {
-    assert!(!compile_ok_check(r#"
+    assert!(!compile_ok_check(
+        r#"
         class Item {
             private val secret: Int = 9
         }
@@ -28,12 +31,14 @@ fn test_private_members_are_not_accessible_outside_declaring_class() {
             val item = Item()
             println(item.secret)
         }
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn test_protected_property_is_visible_to_subclass() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             protected var value: Int = 1
         }
@@ -48,13 +53,15 @@ fn test_protected_property_is_visible_to_subclass() {
             child.bump()
             println(child.read())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_protected_property_not_visible_to_unrelated_type() {
-    assert!(!compile_ok_check(r#"
+    assert!(!compile_ok_check(
+        r#"
         open class Base {
             protected var value: Int = 1
         }
@@ -66,24 +73,28 @@ fn test_protected_property_not_visible_to_unrelated_type() {
         fun main() {
             leak(Base())
         }
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn test_private_constructor_prevents_external_call() {
-    assert!(!compile_ok_check(r#"
+    assert!(!compile_ok_check(
+        r#"
         class Guard private constructor(val value: Int)
 
         fun main() {
             val value = Guard(1)
             println(value.value)
         }
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn test_private_class_is_file_local_access_control() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         private class Hidden {
             val value = 8
         }
@@ -95,13 +106,15 @@ fn test_private_class_is_file_local_access_control() {
         fun main() {
             println(spawn())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["8"]);
 }
 
 #[test]
 fn test_private_member_stays_within_class_hierarchy() {
-    assert!(!compile_ok_check(r#"
+    assert!(!compile_ok_check(
+        r#"
         open class Base {
             private val hidden = 4
         }
@@ -109,12 +122,14 @@ fn test_private_member_stays_within_class_hierarchy() {
         class Child : Base() {
             fun read(): Int = hidden
         }
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn test_internal_property_access_within_module() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Item {
             internal val value = 9
         }
@@ -123,13 +138,15 @@ fn test_internal_property_access_within_module() {
             val item = Item()
             println(item.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["9"]);
 }
 
 #[test]
 fn test_override_restricts_private_visibility() {
-    assert!(!compile_ok_check(r#"
+    assert!(!compile_ok_check(
+        r#"
         open class Base {
             private open fun label(): String = "base"
         }
@@ -137,12 +154,14 @@ fn test_override_restricts_private_visibility() {
         class Child : Base() {
             override fun label(): String = "child"
         }
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn test_private_setter_restricts_external_assignment() {
-    assert!(!compile_ok_check(r#"
+    assert!(!compile_ok_check(
+        r#"
         class Counter {
             var value: Int = 0
                 private set
@@ -153,12 +172,14 @@ fn test_private_setter_restricts_external_assignment() {
             counter.value = 4
             println(counter.value)
         }
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn test_accessing_private_setter_from_same_class_only() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Counter {
             var value: Int = 0
                 private set
@@ -173,13 +194,15 @@ fn test_accessing_private_setter_from_same_class_only() {
             counter.setValue(11)
             println(counter.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["11"]);
 }
 
 #[test]
 fn test_public_members_are_implicitly_accessible() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Item {
             fun show(): String = "ok"
         }
@@ -187,13 +210,15 @@ fn test_public_members_are_implicitly_accessible() {
         fun main() {
             println(Item().show())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ok"]);
 }
 
 #[test]
 fn test_protected_member_is_only_visible_in_subclass_hierarchy() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             protected var value: Int = 3
         }
@@ -213,13 +238,15 @@ fn test_protected_member_is_only_visible_in_subclass_hierarchy() {
             child.write(6)
             println(child.read())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["6"]);
 }
 
 #[test]
 fn test_protected_member_call_rejected_outside_hierarchy() {
-    assert!(!compile_ok_check(r#"
+    assert!(!compile_ok_check(
+        r#"
         open class Base {
             protected fun label(): String = "base"
         }
@@ -230,12 +257,14 @@ fn test_protected_member_call_rejected_outside_hierarchy() {
             val value = Base()
             println(value.label())
         }
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn test_private_class_is_inaccessible_outside_file_scope() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         private class Local {
             fun value(): String = "inner"
         }
@@ -243,24 +272,28 @@ fn test_private_class_is_inaccessible_outside_file_scope() {
         fun main() {
             println(Local().value())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["inner"]);
 }
 
 #[test]
 fn test_private_constructor_hides_instantiation_outside_factory() {
-    assert!(!compile_ok_check(r#"
+    assert!(!compile_ok_check(
+        r#"
         class Locked private constructor()
 
         fun main() {
             Locked()
         }
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn test_factory_function_preserves_private_constructor_access_control() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Box private constructor(val value: String) {
             companion object {
                 fun from(value: String): Box = Box(value)
@@ -270,13 +303,15 @@ fn test_factory_function_preserves_private_constructor_access_control() {
         fun main() {
             println(Box.from("x").value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["x"]);
 }
 
 #[test]
 fn test_private_setter_restricts_direct_mutation() {
-    assert!(!compile_ok_check(r#"
+    assert!(!compile_ok_check(
+        r#"
         class Count {
             var value: Int = 0
                 private set
@@ -287,12 +322,14 @@ fn test_private_setter_restricts_direct_mutation() {
             count.value = 4
             println(count.value)
         }
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn test_public_setter_allows_external_mutation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Count {
             var value: Int = 0
         }
@@ -302,13 +339,15 @@ fn test_public_setter_allows_external_mutation() {
             count.value = 4
             println(count.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["4"]);
 }
 
 #[test]
 fn test_internal_properties_work_within_single_module() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Item {
             internal var tag: String = "mod"
         }
@@ -318,13 +357,15 @@ fn test_internal_properties_work_within_single_module() {
             item.tag = "ok"
             println(item.tag)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ok"]);
 }
 
 #[test]
 fn test_private_modifier_prevents_override_for_members() {
-    assert!(!compile_ok_check(r#"
+    assert!(!compile_ok_check(
+        r#"
         open class Base {
             private fun hidden() = "x"
         }
@@ -334,12 +375,14 @@ fn test_private_modifier_prevents_override_for_members() {
                 return base.hidden()
             }
         }
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn test_private_members_are_visible_inside_companion_object_methods() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Token {
             private val secret = "ok"
 
@@ -351,13 +394,15 @@ fn test_private_members_are_visible_inside_companion_object_methods() {
         fun main() {
             println(Token.reveal(Token()))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ok"]);
 }
 
 #[test]
 fn test_inner_class_can_read_outer_private_member() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Vault {
             private val secret = "vault"
 
@@ -370,13 +415,15 @@ fn test_inner_class_can_read_outer_private_member() {
             val vault = Vault()
             println(vault.Reader().open())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["vault"]);
 }
 
 #[test]
 fn test_private_function_is_inaccessible_from_extension_function() {
-    assert!(!compile_ok_check(r#"
+    assert!(!compile_ok_check(
+        r#"
         class Item {
             private fun secret(): String = "x"
         }
@@ -386,12 +433,14 @@ fn test_private_function_is_inaccessible_from_extension_function() {
         fun main() {
             println(Item().exposed())
         }
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn test_private_function_can_be_called_via_same_file_extension_only_when_redeclaration_absent() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Item {
             private fun secret(): String = "inside"
         }
@@ -403,13 +452,15 @@ fn test_private_function_can_be_called_via_same_file_extension_only_when_redecla
         fun main() {
             println(itemSecret(Item()))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["inside"]);
 }
 
 #[test]
 fn test_private_constructor_is_restricted_to_same_scope() {
-    assert!(!compile_ok_check(r#"
+    assert!(!compile_ok_check(
+        r#"
         class Core private constructor(val value: String) {
             companion object {
                 fun from(value: String): Core = Core(value)
@@ -425,12 +476,14 @@ fn test_private_constructor_is_restricted_to_same_scope() {
         fun main() {
             println(Factory().create("x"))
         }
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn test_protected_getter_can_be_read_only_outside_but_not_settable_from_subclass_reference() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             protected var value: Int = 1
         }
@@ -446,13 +499,15 @@ fn test_protected_getter_can_be_read_only_outside_but_not_settable_from_subclass
             child.view = 10
             println(child.view)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["10"]);
 }
 
 #[test]
 fn test_override_with_weaker_visibility_is_rejected_for_member() {
-    assert!(!compile_ok_check(r#"
+    assert!(!compile_ok_check(
+        r#"
         open class Base {
             protected open fun label(): String = "base"
         }
@@ -460,12 +515,14 @@ fn test_override_with_weaker_visibility_is_rejected_for_member() {
         class Child : Base() {
             private override fun label(): String = "child"
         }
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn test_protected_function_visible_in_deeper_subclass() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             protected open fun label(): String = "base"
         }
@@ -481,13 +538,15 @@ fn test_protected_function_visible_in_deeper_subclass() {
         fun main() {
             println(Child().text())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["mid"]);
 }
 
 #[test]
 fn test_protected_function_cannot_be_called_on_unrelated_reference() {
-    assert!(!compile_ok_check(r#"
+    assert!(!compile_ok_check(
+        r#"
         open class Base {
             protected fun label(): String = "base"
         }
@@ -497,24 +556,28 @@ fn test_protected_function_cannot_be_called_on_unrelated_reference() {
         fun main() {
             println(call(Base()))
         }
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn test_internal_class_and_members_are_visible_in_same_file_scope() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         internal class Vault(val value: Int)
 
         fun main() {
             println(Vault(7).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7"]);
 }
 
 #[test]
 fn test_internal_member_allows_rebinding_within_same_module() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Box {
             internal var value: Int = 2
             fun bump() {
@@ -528,13 +591,15 @@ fn test_internal_member_allows_rebinding_within_same_module() {
             box.value = 9
             println(box.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["9"]);
 }
 
 #[test]
 fn test_private_setter_is_not_accessible_for_extension_receiver() {
-    assert!(!compile_ok_check(r#"
+    assert!(!compile_ok_check(
+        r#"
         class Counter {
             var value: Int = 0
                 private set
@@ -547,12 +612,14 @@ fn test_private_setter_is_not_accessible_for_extension_receiver() {
         fun main() {
             Counter().bump()
         }
-    "#));
+    "#
+    ));
 }
 
 #[test]
 fn test_private_setter_does_not_block_reading_property() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Counter {
             var value: Int = 4
                 private set
@@ -569,13 +636,15 @@ fn test_private_setter_does_not_block_reading_property() {
             counter.increment()
             println(counter.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5", "6"]);
 }
 
 #[test]
 fn test_public_setter_can_overwrite_private_getter_state() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Item {
             private var value = "x"
             var display: String
@@ -595,13 +664,15 @@ fn test_public_setter_can_overwrite_private_getter_state() {
             item.reset("y")
             println(item.display)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["x", "y"]);
 }
 
 #[test]
 fn test_private_constructor_enforced_even_with_factory_style_use() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Config private constructor(val value: Int) {
             companion object {
                 fun create(value: Int): Config = Config(value)
@@ -611,13 +682,15 @@ fn test_private_constructor_enforced_even_with_factory_style_use() {
         fun main() {
             println(Config.create(3).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_visibility_default_is_public_for_top_level_members() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Item {
             fun status(): String = "public"
         }
@@ -626,13 +699,15 @@ fn test_visibility_default_is_public_for_top_level_members() {
             val item = Item()
             println(item.status())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["public"]);
 }
 
 #[test]
 fn test_private_field_in_data_class_still_part_of_public_api_via_copy() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Holder(private val secret: String, val value: String) {
             fun reveal(): String = secret
         }
@@ -643,6 +718,7 @@ fn test_private_field_in_data_class_still_part_of_public_api_via_copy() {
             println(holder.reveal())
             println(holder.copy(value = "z").value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["y", "x", "z"]);
 }

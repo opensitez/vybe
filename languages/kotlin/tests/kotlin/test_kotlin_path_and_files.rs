@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_path_file_name_and_parent() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.nio.file.Paths
 
         fun main() {
@@ -12,13 +13,15 @@ fn test_path_file_name_and_parent() {
             println(path.parent?.fileName?.toString())
             println(path.root?.toString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["data.txt", "8", "beta", "/"]);
 }
 
 #[test]
 fn test_files_temp_write_read_delete_roundtrip() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.nio.file.Files
         import java.nio.file.Path
 
@@ -33,13 +36,15 @@ fn test_files_temp_write_read_delete_roundtrip() {
             println(Files.readString(moved))
             Files.delete(moved)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["hello", "false", "true", "hello"]);
 }
 
 #[test]
 fn test_path_resolve_and_normalize() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.nio.file.Paths
 
         fun main() {
@@ -48,13 +53,15 @@ fn test_path_resolve_and_normalize() {
             println(child.toString())
             println(child.endsWith("b.txt"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["/tmp/base/b.txt", "true"]);
 }
 
 #[test]
 fn test_files_copy_and_delete_if_exists() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.nio.file.Files
         import java.nio.file.StandardCopyOption
 
@@ -70,13 +77,15 @@ fn test_files_copy_and_delete_if_exists() {
             println(Files.exists(src))
             Files.delete(dst)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["alpha", "true", "false"]);
 }
 
 #[test]
 fn test_files_size_and_exists_checks() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.nio.file.Files
 
         fun main() {
@@ -88,13 +97,15 @@ fn test_files_size_and_exists_checks() {
             Files.delete(path)
             println(Files.exists(path))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "true", "6", "false"]);
 }
 
 #[test]
 fn test_directory_walk_with_filter() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.nio.file.Files
         import java.nio.file.Paths
 
@@ -116,13 +127,15 @@ fn test_directory_walk_with_filter() {
             Files.delete(a)
             Files.delete(base)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "1"]);
 }
 
 #[test]
 fn test_path_iterate_name_count() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.nio.file.Paths
 
         fun main() {
@@ -135,13 +148,15 @@ fn test_path_iterate_name_count() {
             println(parts)
             println(path.getName(1).toString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "x/y/z/file.data/", "y"]);
 }
 
 #[test]
 fn test_copy_to_multiple_targets_preserves_contents() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.nio.file.Files
         import java.nio.file.StandardCopyOption
 
@@ -158,13 +173,15 @@ fn test_copy_to_multiple_targets_preserves_contents() {
             Files.delete(d1)
             Files.delete(d2)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["data", "data"]);
 }
 
 #[test]
 fn test_paths_to_file_and_delete_on_exit_flag() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.nio.file.Files
 
         fun main() {
@@ -173,6 +190,7 @@ fn test_paths_to_file_and_delete_on_exit_flag() {
             println(path.toFile().exists())
             println(path.toFile().canWrite())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "true"]);
 }

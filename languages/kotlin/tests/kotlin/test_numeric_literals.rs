@@ -76,11 +76,7 @@ kotlin_run_test!(
     &["7"]
 );
 
-kotlin_run_test!(
-    test_zero_suffix,
-    r#"fun main() { println(0) }"#,
-    &["0"]
-);
+kotlin_run_test!(test_zero_suffix, r#"fun main() { println(0) }"#, &["0"]);
 
 kotlin_run_test!(
     test_mixed_hex_and_decimal_addition,

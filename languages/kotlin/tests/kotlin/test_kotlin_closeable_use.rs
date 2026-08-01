@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_use_closes_closeable_resource_after_use() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.io.Closeable
 
         class Tracker : Closeable {
@@ -19,13 +20,15 @@ fn test_use_closes_closeable_resource_after_use() {
             }
             println(tracker.closed)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["false", "true"]);
 }
 
 #[test]
 fn test_use_returns_lambda_result() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.io.Closeable
 
         class Tracker : Closeable {
@@ -44,13 +47,15 @@ fn test_use_returns_lambda_result() {
             println(out)
             println(tracker.closed)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["done", "true"]);
 }
 
 #[test]
 fn test_use_nests_and_closes_in_order() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.io.Closeable
 
         val events = StringBuilder()
@@ -70,13 +75,15 @@ fn test_use_nests_and_closes_in_order() {
             }
             println(events.toString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ba"]);
 }
 
 #[test]
 fn test_use_closes_on_exception() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.io.Closeable
 
         class Tracker : Closeable {
@@ -98,13 +105,15 @@ fn test_use_closes_on_exception() {
             }
             println(closed)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["before", "IllegalStateException", "true"]);
 }
 
 #[test]
 fn test_byte_array_input_stream_use_block_reads() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.io.ByteArrayInputStream
 
         fun main() {
@@ -121,13 +130,15 @@ fn test_byte_array_input_stream_use_block_reads() {
                 println("closed")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1,b,c", "closed"]);
 }
 
 #[test]
 fn test_file_writer_use_appends_and_closes() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val root = java.lang.System.getProperty("java.io.tmpdir")
             val file = java.io.File(root, "vybe_closeable_file_" + System.nanoTime() + ".txt")
@@ -142,13 +153,15 @@ fn test_file_writer_use_appends_and_closes() {
             println(afterWrite)
             println(len == "8")
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["start-end", "true"]);
 }
 
 #[test]
 fn test_use_with_custom_resource_multiple_closes_prohibited() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.io.Closeable
 
         class Counted : Closeable {
@@ -170,13 +183,15 @@ fn test_use_with_custom_resource_multiple_closes_prohibited() {
             }
             println(tracked.closeCount)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "1", "extra", "2"]);
 }
 
 #[test]
 fn test_reader_reader_use() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import java.io.BufferedReader
         import java.io.StringReader
 
@@ -188,6 +203,7 @@ fn test_reader_reader_use() {
             }
             println(out)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["alpha|beta"]);
 }

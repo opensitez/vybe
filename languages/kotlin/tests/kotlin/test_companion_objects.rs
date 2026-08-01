@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_companion_object_counter_tracks_instance_creations() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Token {
             companion object {
                 var total = 0
@@ -19,13 +20,15 @@ fn test_companion_object_counter_tracks_instance_creations() {
             Token()
             println(Token.total)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_companion_object_factory_returns_instances() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Widget private constructor(val label: String) {
             companion object {
                 fun create(label: String): Widget = Widget(label)
@@ -38,13 +41,15 @@ fn test_companion_object_factory_returns_instances() {
             println(first.label)
             println(second.label)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["a", "b"]);
 }
 
 #[test]
 fn test_companion_access_through_outer_name_is_stable() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Counter {
             companion object {
                 val start = 5
@@ -55,13 +60,15 @@ fn test_companion_access_through_outer_name_is_stable() {
             println(Counter.start)
             println(Counter.Companion.start)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5", "5"]);
 }
 
 #[test]
 fn test_companion_object_with_internal_state_and_mutation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Store {
             companion object {
                 private var next: Int = 0
@@ -76,13 +83,15 @@ fn test_companion_object_with_internal_state_and_mutation() {
             println(Store.take())
             println(Store.take())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "2"]);
 }
 
 #[test]
 fn test_companion_method_uses_its_own_properties() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Calculator {
             companion object {
                 private const val scale = 10
@@ -93,13 +102,15 @@ fn test_companion_method_uses_its_own_properties() {
         fun main() {
             println(Calculator.scaled(3))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["30"]);
 }
 
 #[test]
 fn test_companion_object_in_nested_class_is_addressable() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             class Nested {
                 companion object {
@@ -111,13 +122,15 @@ fn test_companion_object_in_nested_class_is_addressable() {
         fun main() {
             println(Holder.Nested.label(7))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["id:7"]);
 }
 
 #[test]
 fn test_companion_object_companion_init_block_runs_once() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Probe {
             companion object {
                 var value = 0
@@ -131,13 +144,15 @@ fn test_companion_object_companion_init_block_runs_once() {
             println(Probe.value)
             println(Probe.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7", "7"]);
 }
 
 #[test]
 fn test_companion_object_methods_can_return_receiver_instance() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             val marker: String
             private constructor(marker: String) {
@@ -152,13 +167,15 @@ fn test_companion_object_methods_can_return_receiver_instance() {
         fun main() {
             println(Holder.create().marker)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ok"]);
 }
 
 #[test]
 fn test_companion_object_shares_state_across_imported_instances() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Registry {
             companion object {
                 var values = 0
@@ -175,13 +192,15 @@ fn test_companion_object_shares_state_across_imported_instances() {
             bump()
             println(Registry.values)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "2"]);
 }
 
 #[test]
 fn test_companion_with_extension_style_call_site() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Labeler {
             companion object {
                 fun from(prefix: String, value: Int): String = prefix + value.toString()
@@ -191,13 +210,15 @@ fn test_companion_with_extension_style_call_site() {
         fun main() {
             println(Labeler.from("v", 4))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["v4"]);
 }
 
 #[test]
 fn test_companion_object_isolated_state_per_host_type() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Left {
             companion object {
                 var value = 1
@@ -216,13 +237,15 @@ fn test_companion_object_isolated_state_per_host_type() {
             println(Left.value)
             println(Right.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "15"]);
 }
 
 #[test]
 fn test_companion_object_stores_cached_lookup_results() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Dictionary {
             companion object {
                 private val cache = mutableMapOf<String, String>()
@@ -246,13 +269,15 @@ fn test_companion_object_stores_cached_lookup_results() {
             println(Dictionary.lookup("x"))
             println(Dictionary.count())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "one", "2"]);
 }
 
 #[test]
 fn test_companion_object_can_implement_an_interface() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Stamp {
             fun stamp(value: String): String
         }
@@ -267,13 +292,15 @@ fn test_companion_object_can_implement_an_interface() {
             println(Tagger.stamp("a"))
             println(Tagger.stamp("b"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["tagged-a", "tagged-b"]);
 }
 
 #[test]
 fn test_companion_object_uses_named_instance_reference() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Counter {
             companion object Factory {
                 private var next = 0
@@ -291,13 +318,15 @@ fn test_companion_object_uses_named_instance_reference() {
             println(first)
             println(second)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "2"]);
 }
 
 #[test]
 fn test_companion_object_with_init_block_runs_once() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Loader {
             companion object {
                 var status = "cold"
@@ -312,13 +341,15 @@ fn test_companion_object_with_init_block_runs_once() {
             println(Loader.status)
             println(Loader.status)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["warm", "warm"]);
 }
 
 #[test]
 fn test_companion_object_exposes_computed_property() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Converter {
             companion object {
                 const val base = 100
@@ -331,13 +362,15 @@ fn test_companion_object_exposes_computed_property() {
             println(Converter.base)
             println(Converter.scaled)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["100", "200"]);
 }
 
 #[test]
 fn test_companion_object_factory_preserves_private_constructor_rules() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Token private constructor(val label: String) {
             companion object {
                 fun create(prefix: String, suffix: Int): Token {
@@ -349,13 +382,15 @@ fn test_companion_object_factory_preserves_private_constructor_rules() {
         fun main() {
             println(Token.create("x", 9).label)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["x:9"]);
 }
 
 #[test]
 fn test_companion_object_can_return_function_values() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Math {
             companion object {
                 fun build(prefix: String): (Int) -> Int {
@@ -368,13 +403,15 @@ fn test_companion_object_can_return_function_values() {
             val add = Math.build("hello")
             println(add(5))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["10"]);
 }
 
 #[test]
 fn test_generic_companion_factory_preserves_inferred_type() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder<T>(val value: T) {
             companion object {
                 fun <T> make(value: T): Holder<T> = Holder(value)
@@ -387,13 +424,15 @@ fn test_generic_companion_factory_preserves_inferred_type() {
             println(text)
             println(number)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["kotlin", "12"]);
 }
 
 #[test]
 fn test_companion_calls_from_nested_types_share_parent_state() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Board {
             companion object {
                 private var tokens = 0
@@ -413,13 +452,15 @@ fn test_companion_calls_from_nested_types_share_parent_state() {
             println(Board.Checker().hit())
             println(Board.hit())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "2", "3"]);
 }
 
 #[test]
 fn test_named_companion_object_can_be_used_as_type() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Parser {
             companion object Validator {
                 fun ok(value: String): Boolean = value.isNotEmpty()
@@ -432,13 +473,15 @@ fn test_named_companion_object_can_be_used_as_type() {
             println(valid)
             println(invalid)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "false"]);
 }
 
 #[test]
 fn test_companion_object_accepts_top_level_helpers() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun stampPrefix(value: String): String = "[" + value + "]"
 
         class Packet {
@@ -450,13 +493,15 @@ fn test_companion_object_accepts_top_level_helpers() {
         fun main() {
             println(Packet.label("x"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["[x]"]);
 }
 
 #[test]
 fn test_companion_object_implements_function_type() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Prefixer {
             companion object : (String) -> String {
                 override fun invoke(value: String): String = ">> " + value
@@ -468,13 +513,15 @@ fn test_companion_object_implements_function_type() {
             println(value("a"))
             println(Prefixer.Companion("b"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &[">> a", ">> b"]);
 }
 
 #[test]
 fn test_companion_object_state_mutation_is_shared_with_factory_calls() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Counter {
             companion object {
                 private var next = 0
@@ -494,13 +541,15 @@ fn test_companion_object_state_mutation_is_shared_with_factory_calls() {
             println(Counter.next())
             println(Counter.current())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "4", "5", "5"]);
 }
 
 #[test]
 fn test_companion_object_init_only_runs_once_for_multiple_member_reads() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var init_log = ""
 
         class Tracker {
@@ -519,13 +568,15 @@ fn test_companion_object_init_only_runs_once_for_multiple_member_reads() {
             println(Tracker.tag)
             println(init_log)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["", "ok", "ok", "init;"]);
 }
 
 #[test]
 fn test_companion_object_can_be_used_as_an_interface_value() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Named {
             fun name(): String
         }
@@ -543,13 +594,15 @@ fn test_companion_object_can_be_used_as_an_interface_value() {
             println(label(source))
             println(label(Factory.Companion))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["factory", "factory"]);
 }
 
 #[test]
 fn test_companion_object_can_implement_comparator_for_custom_sorting() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         data class Entry(val value: Int)
 
         class Holder {
@@ -565,13 +618,15 @@ fn test_companion_object_can_implement_comparator_for_custom_sorting() {
             val sorted = values.sortedWith(Holder.Companion)
             println(sorted.joinToString(",") { it.value.toString() })
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3,2,1"]);
 }
 
 #[test]
 fn test_companion_object_for_nested_class_share_state_across_nested_instances() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Container {
             class Unit {
                 companion object {
@@ -595,13 +650,15 @@ fn test_companion_object_for_nested_class_share_state_across_nested_instances() 
             println(three)
             println(four)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "2", "3"]);
 }
 
 #[test]
 fn test_companion_object_can_store_private_initializer_output() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Builder {
             companion object {
                 private const val prefix = "id:"
@@ -620,13 +677,15 @@ fn test_companion_object_can_store_private_initializer_output() {
         fun main() {
             println(Builder.label(4))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["id:14"]);
 }
 
 #[test]
 fn test_companion_object_default_state_is_isolated_from_instance_state() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             companion object {
                 var global = 0
@@ -647,6 +706,7 @@ fn test_companion_object_default_state_is_isolated_from_instance_state() {
             println(second.local)
             println(Holder.global)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "1", "2"]);
 }

@@ -6,13 +6,10 @@
 
 use vybe_runtime::Chunk;
 
-pub fn dispatch(
-    name: &str,
-    chunks: &mut Vec<Chunk>,
-    current: usize,
-    argc: u8,
-    line: u32,
-) -> bool {
+pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
+    if name.starts_with("java.") {
+        return vybe_language_java::emitter::dispatch::dispatch(name, chunks, current, argc, line);
+    }
     match name {
         "kotlin.print" => {
             crate::emitter::tostring::emit_print(chunks, current, argc, line);
@@ -28,6 +25,10 @@ pub fn dispatch(
         }
         "kotlin.tostring" => {
             crate::emitter::tostring::emit_to_string(chunks, current, line);
+            true
+        }
+        "kotlin.join_to_string" => {
+            crate::emitter::tostring::emit_join_to_string(chunks, current, argc, line);
             true
         }
         _ => false,

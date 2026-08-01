@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_method_dispatch_chooses_most_specific_override() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open fun label(): String = "base"
         }
@@ -15,13 +16,15 @@ fn test_method_dispatch_chooses_most_specific_override() {
             val value: Base = Child()
             println(value.label())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["child"]);
 }
 
 #[test]
 fn test_field_access_uses_declared_reference_type() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             val value: String = "base"
         }
@@ -36,13 +39,15 @@ fn test_field_access_uses_declared_reference_type() {
             println(base.value)
             println(value.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["child", "child"]);
 }
 
 #[test]
 fn test_super_calls_parent_implementation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open fun label(): String = "base"
         }
@@ -54,13 +59,15 @@ fn test_super_calls_parent_implementation() {
         fun main() {
             println(Child().label())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["base:child"]);
 }
 
 #[test]
 fn test_interface_dispatch_is_polymorphic() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Reader {
             fun read(): String
         }
@@ -84,13 +91,15 @@ fn test_interface_dispatch_is_polymorphic() {
         fun main() {
             println(emit(arrayOf(A(), B())))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ab"]);
 }
 
 #[test]
 fn test_multiple_interface_implementations_can_override_both() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface A {
             fun tag(): String = "A"
         }
@@ -106,13 +115,15 @@ fn test_multiple_interface_implementations_can_override_both() {
         fun main() {
             println(C().tag())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["A+B"]);
 }
 
 #[test]
 fn test_abstract_dispatch_from_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         abstract class Base {
             abstract fun emit(): Int
             open fun value(): Int = emit() * 2
@@ -126,13 +137,15 @@ fn test_abstract_dispatch_from_chain() {
             val item: Base = Child()
             println(item.value())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["6"]);
 }
 
 #[test]
 fn test_open_property_can_be_mutated_in_child_override() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open var value: Int = 0
         }
@@ -146,13 +159,15 @@ fn test_open_property_can_be_mutated_in_child_override() {
             item.value += 3
             println(item.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["4"]);
 }
 
 #[test]
 fn test_constructor_chain_preserves_virtual_dispatch() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base(value: Int) {
             init {
                 if (value < 0) {
@@ -170,13 +185,15 @@ fn test_constructor_chain_preserves_virtual_dispatch() {
         fun main() {
             Child(3)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["child"]);
 }
 
 #[test]
 fn test_subclass_without_override_uses_base_behavior() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open fun text(): String = "base"
         }
@@ -186,13 +203,15 @@ fn test_subclass_without_override_uses_base_behavior() {
         fun main() {
             println(Direct().text())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["base"]);
 }
 
 #[test]
 fn test_generic_inheritance_dispatch_on_bounds() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface ValueCarrier {
             fun value(): Int
         }
@@ -215,13 +234,15 @@ fn test_generic_inheritance_dispatch_on_bounds() {
             println(item.value())
             println(direct.value())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7", "7"]);
 }
 
 #[test]
 fn test_virtual_method_is_dispatched_from_parent_reference() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open fun label(): String = "base"
         }
@@ -234,13 +255,15 @@ fn test_virtual_method_is_dispatched_from_parent_reference() {
             val item: Base = Child()
             println(item.label())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["child"]);
 }
 
 #[test]
 fn test_virtual_property_dispatch_in_inheritance_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open val value: Int = 1
             open fun total(): Int = value + 1
@@ -256,13 +279,15 @@ fn test_virtual_property_dispatch_in_inheritance_chain() {
             println(item.value)
             println(item.total())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "5"]);
 }
 
 #[test]
 fn test_interface_default_implementation_can_be_overridden() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Messenger {
             fun text(): String = "default"
         }
@@ -277,13 +302,15 @@ fn test_interface_default_implementation_can_be_overridden() {
             println(Custom().text())
             println(InheritDefault().text())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["custom", "default"]);
 }
 
 #[test]
 fn test_interface_conflict_resolution_with_two_defaults() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface A {
             fun text(): String = "a"
         }
@@ -299,13 +326,15 @@ fn test_interface_conflict_resolution_with_two_defaults() {
         fun main() {
             println(C().text())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["a,b"]);
 }
 
 #[test]
 fn test_abstract_overrides_are_required_by_concrete_class() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         abstract class Base {
             abstract val title: String
         }
@@ -317,13 +346,15 @@ fn test_abstract_overrides_are_required_by_concrete_class() {
         fun main() {
             println(Leaf().title)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["leaf"]);
 }
 
 #[test]
 fn test_super_call_in_overridden_method_uses_parent_behavior() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open fun score(value: Int): Int = value * 2
         }
@@ -335,13 +366,15 @@ fn test_super_call_in_overridden_method_uses_parent_behavior() {
         fun main() {
             println(Child().score(3))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7"]);
 }
 
 #[test]
 fn test_multiple_class_levels_share_virtual_method() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open fun route(): String = "base"
         }
@@ -361,13 +394,15 @@ fn test_multiple_class_levels_share_virtual_method() {
             println(emit(Mid()))
             println(emit(Leaf()))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["base", "mid", "leaf"]);
 }
 
 #[test]
 fn test_base_class_members_remain_when_override() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open fun label(): String = "base"
         }
@@ -382,13 +417,15 @@ fn test_base_class_members_remain_when_override() {
             println(child.label())
             println(child.asBase().label())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["child", "child"]);
 }
 
 #[test]
 fn test_open_var_override_preserves_mutability_contract() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open var value: Int = 1
         }
@@ -402,13 +439,15 @@ fn test_open_var_override_preserves_mutability_contract() {
             child.value += 2
             println(child.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7"]);
 }
 
 #[test]
 fn test_implementation_of_multiple_interfaces_is_dispatched_as_expected() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Read {
             fun read(): String = "read"
         }
@@ -428,13 +467,15 @@ fn test_implementation_of_multiple_interfaces_is_dispatched_as_expected() {
             println(device.read())
             println(writer.write())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["device-read", "device-write"]);
 }
 
 #[test]
 fn test_generic_dispatch_on_inheritance() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Box {
             fun value(): Int
         }
@@ -457,13 +498,15 @@ fn test_generic_dispatch_on_inheritance() {
             println(item.value())
             println(typed.value())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["4", "4"]);
 }
 
 #[test]
 fn test_polymorphic_array_dispatch_processes_dynamic_types() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Node {
             open fun kind(): String = "node"
         }
@@ -489,13 +532,15 @@ fn test_polymorphic_array_dispatch_processes_dynamic_types() {
             val nodes: Array<Node> = arrayOf(Node(), Leaf(), Branch())
             println(summarize(nodes))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["node;leaf;branch;"]);
 }
 
 #[test]
 fn test_dispatch_from_rebound_base_reference() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Printer {
             open fun emit(prefix: String): String = prefix + ":base"
         }
@@ -513,13 +558,15 @@ fn test_dispatch_from_rebound_base_reference() {
             printer = Loud()
             println(emitTwice(printer))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["x:loud,y:loud"]);
 }
 
 #[test]
 fn test_override_chain_across_multiple_levels() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open fun route(): String = "base"
         }
@@ -536,13 +583,15 @@ fn test_override_chain_across_multiple_levels() {
             val node: Base = Leaf()
             println(node.route())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["leafmidbase"]);
 }
 
 #[test]
 fn test_casting_between_class_and_interface_preserves_dispatch() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Labeled {
             fun label(): String = "interface"
         }
@@ -565,13 +614,15 @@ fn test_casting_between_class_and_interface_preserves_dispatch() {
             println((root as Widget).label())
             println(callThroughInterface(viaInterface))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["widget", "widget"]);
 }
 
 #[test]
 fn test_getter_and_setter_overrides_are_used_from_base_reference() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open var value: Int = 0
         }
@@ -592,13 +643,15 @@ fn test_getter_and_setter_overrides_are_used_from_base_reference() {
             println(base.value)
             println((base as Child).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["8", "8"]);
 }
 
 #[test]
 fn test_interface_default_method_can_be_selected_with_super() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Counter {
             fun value(): String = "default"
         }
@@ -615,13 +668,15 @@ fn test_interface_default_method_can_be_selected_with_super() {
             println(custom.value())
             println(plain.value())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["default-custom", "default"]);
 }
 
 #[test]
 fn test_dispatch_in_higher_order_function_argument() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Labelled {
             open fun text(): String = "base"
         }
@@ -639,13 +694,15 @@ fn test_dispatch_in_higher_order_function_argument() {
             println(mapLabel(item) { it.text() })
             println(mapLabel(item) { target -> "[" + target.text() + "]" })
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["dynamic", "[dynamic]"]);
 }
 
 #[test]
 fn test_interface_default_with_class_super_resolution() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Tracer {
             fun route(): String = "trace"
         }
@@ -663,13 +720,15 @@ fn test_interface_default_with_class_super_resolution() {
             println(logger.route())
             println((logger as Logger).route())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["trace:base", "trace:base"]);
 }
 
 #[test]
 fn test_generic_override_dispatches_by_dynamic_type() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base<T> {
             open fun describe(value: T): String = "base:" + value.toString()
         }
@@ -683,13 +742,15 @@ fn test_generic_override_dispatches_by_dynamic_type() {
             println(item.describe("ok"))
             println((item as Text).describe("x"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["text:ok", "text:x"]);
 }
 
 #[test]
 fn test_chained_super_calls_build_expected_behavior() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open fun label(): String = "base"
         }
@@ -706,6 +767,7 @@ fn test_chained_super_calls_build_expected_behavior() {
             val value: Base = Leaf()
             println(value.label())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["base:mid:leaf"]);
 }

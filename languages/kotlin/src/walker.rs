@@ -1,6 +1,7 @@
 use crate::emitter::tostring::SET_MARKER;
-use pest::iterators::Pair;
 use pest::Parser;
+use pest::iterators::Pair;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vybe_ast::*;
 
@@ -12,27 +13,450 @@ fn gen_tmp_name() -> String {
     format!("__kt_tmp_{}", NEXT_TMP_ID.fetch_add(1, Ordering::Relaxed))
 }
 
+thread_local! {
+    /// Every method name some class in this source declares.
+    static USER_MEMBER_NAMES: std::cell::RefCell<std::collections::HashSet<(String, usize)>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static USER_METHOD_OVERLOADS: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<usize, Vec<Vec<String>>>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Every property name some class in this source declares — the same
+    /// problem one level down: `.values`, `.size`, `.keys`, `.first` are
+    /// rewritten to dict/collection primitives on SPELLING, so a data class
+    /// with `val values: MutableList<Int>` had `a.values` return the OBJECT's
+    /// members instead of the list.
+    static USER_PROPERTY_NAMES: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Source-declared types. These shadow stdlib constructor helpers such as
+    /// `Pair(...)` / `Triple(...)`; a user data class named `Pair` must still
+    /// normalize to `New(Pair, ...)`, not to the tuple literal helper.
+    static USER_CLASS_NAMES: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Names bound by each enclosing function being walked — its parameters and
+    /// everything its body declares.
+    static ENCLOSING_LOCALS: std::cell::RefCell<Vec<std::collections::HashSet<String>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Local class -> the enclosing locals it reads. Kotlin gives a local class
+    /// synthetic storage for the values it captures; declaring them as leading
+    /// constructor parameters is that lowering, and it is the frontend's job.
+    static LOCAL_CLASS_CAPTURES: std::cell::RefCell<std::collections::HashMap<String, Vec<String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// The superclass of each class whose body is being walked. `super<X>.f()`
+    /// means the PARENT's `f` when `X` is that parent, and an interface
+    /// DEFAULT when it is not — two different lowerings.
+    static CURRENT_CLASS_PARENT: std::cell::RefCell<Vec<Option<String>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// `(interface, member)` pairs reached as `super<I>.m(...)` in the class
+    /// being walked. Each becomes an additive `AugmentAdjustment` alias on that
+    /// interface's augmentation, which is how the shared fold already exposes a
+    /// contributed member under a second name (PHP `use A { m as alias; }`).
+    static SUPER_QUALIFIED_USES: std::cell::RefCell<Vec<Vec<(String, String)>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Top-level `fun Receiver.name(...)` declarations. An extension is a plain
+    /// function whose first parameter is the receiver, so `x.name(a)` has to be
+    /// rewritten to `name(x, a)` — the same lowering VB's walker applies to
+    /// `<Extension()>` methods.
+    static EXTENSION_FUNCTIONS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    static EXTENSION_PROPERTIES: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Class name -> the members it declares. An extension body reads the
+    /// receiver's members unqualified (`val P.twice get() = n * 2`), so those
+    /// names have to resolve to `this.<name>`.
+    static CLASS_MEMBERS: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashSet<String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// The receiver's members, while an extension declaration's body is walked.
+    static EXT_RECEIVER_MEMBERS: std::cell::RefCell<Vec<std::collections::HashSet<String>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static CURRENT_CLASS_STACK: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static INNER_CLASS_QUALIFIED: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static INNER_OUTER_MEMBERS: std::cell::RefCell<Vec<Vec<(String, std::collections::HashSet<String>)>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn outer_this(depth: usize) -> Expression {
+    let mut expr = Expression::new(ExprKind::This);
+    for _ in 0..depth {
+        expr = Expression::new(ExprKind::Member {
+            object: Box::new(expr),
+            field: "__kt_outer".to_string(),
+            null_safe: false,
+        });
+    }
+    expr
+}
+
+fn current_local_has(name: &str) -> bool {
+    ENCLOSING_LOCALS.with(|stack| stack.borrow().last().is_some_and(|s| s.contains(name)))
+}
+
+fn inner_outer_read(name: &str) -> Option<Expression> {
+    if current_local_has(name) {
+        return None;
+    }
+    INNER_OUTER_MEMBERS.with(|stack| {
+        stack.borrow().last().and_then(|outers| {
+            outers
+                .iter()
+                .enumerate()
+                .find(|(_, (_, members))| members.contains(name))
+                .map(|(idx, _)| {
+                    Expression::new(ExprKind::Member {
+                        object: Box::new(outer_this(idx + 1)),
+                        field: name.to_string(),
+                        null_safe: false,
+                    })
+                })
+        })
+    })
+}
+
+fn qualified_inner_class(name: &str) -> Option<String> {
+    INNER_CLASS_QUALIFIED.with(|m| m.borrow().get(name).cloned())
+}
+
+fn qualified_type_expr(path: &str) -> Expression {
+    let mut parts = path.split('.');
+    let Some(first) = parts.next() else {
+        return Expression::ident(path);
+    };
+    let mut expr = Expression::ident(first);
+    for part in parts {
+        expr = Expression::new(ExprKind::Member {
+            object: Box::new(expr),
+            field: part.to_string(),
+            null_safe: false,
+        });
+    }
+    expr
+}
+
+/// `name` resolved inside an extension body: a member of the receiver becomes
+/// `this.<name>`, everything else stays itself.
+fn extension_receiver_read(name: &str) -> Option<Expression> {
+    EXT_RECEIVER_MEMBERS.with(|stack| {
+        stack.borrow().last().and_then(|members| {
+            members.contains(name).then(|| {
+                Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::This)),
+                    field: name.to_string(),
+                    null_safe: false,
+                })
+            })
+        })
+    })
+}
+
+/// Push the receiver's member set for the duration of an extension body.
+fn push_ext_receiver(receiver: &str) {
+    let members = CLASS_MEMBERS
+        .with(|m| m.borrow().get(receiver).cloned())
+        .unwrap_or_default();
+    EXT_RECEIVER_MEMBERS.with(|stack| stack.borrow_mut().push(members));
+}
+
+fn pop_ext_receiver() {
+    EXT_RECEIVER_MEMBERS.with(|stack| {
+        stack.borrow_mut().pop();
+    });
+}
+
+/// Top-level `val Receiver.name get() = …`. Read as a member (`x.name`), so
+/// the READ — not a call — becomes `name(x)`.
+fn is_extension_property(name: &str) -> bool {
+    EXTENSION_PROPERTIES.with(|set| set.borrow().contains(name))
+}
+
+/// Whether `name` is declared as an extension function in this source.
+fn is_extension_function(name: &str) -> bool {
+    EXTENSION_FUNCTIONS.with(|set| set.borrow().contains(name))
+}
+
+/// The name a supertype's member is additionally bound under so `super<I>.m()`
+/// can reach it after the class's own `m` has shadowed the default.
+fn super_alias(from: &str, member: &str) -> String {
+    format!("__super_{}_{}", from.replace('.', "_"), member)
+}
+
+/// Every identifier `pair`'s subtree binds: parameters, `val`/`var` names.
+fn bound_names(pair: &Pair<Rule>) -> std::collections::HashSet<String> {
+    fn walk(pair: Pair<Rule>, out: &mut std::collections::HashSet<String>) {
+        match pair.as_rule() {
+            Rule::parameter | Rule::class_parameter | Rule::var_decl | Rule::destructuring_decl => {
+                for sub in pair.clone().into_inner() {
+                    if sub.as_rule() == Rule::identifier {
+                        out.insert(sub.as_str().to_string());
+                    }
+                    if sub.as_rule() == Rule::destructuring_target {
+                        for id in sub.into_inner() {
+                            if id.as_rule() == Rule::identifier {
+                                out.insert(id.as_str().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        for sub in pair.into_inner() {
+            walk(sub, out);
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    walk(pair.clone(), &mut out);
+    out
+}
+
+/// Every identifier `pair`'s subtree READS.
+fn read_names(pair: &Pair<Rule>) -> std::collections::HashSet<String> {
+    fn walk(pair: Pair<Rule>, out: &mut std::collections::HashSet<String>) {
+        if pair.as_rule() == Rule::identifier {
+            out.insert(pair.as_str().to_string());
+        }
+        for sub in pair.into_inner() {
+            walk(sub, out);
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    walk(pair.clone(), &mut out);
+    out
+}
+
+/// Record the methods the source's own classes declare.
+///
+/// The collection rewrites below turn `x.add(v)` into `__coll_push(x, v)` on
+/// SPELLING alone — they cannot see the receiver's type. That stole every user
+/// method sharing one of ~20 collection names: `class Calc { fun add(x: Int) =
+/// base + x }` had `c.add(3)` compiled as an array push and answered `1`.
+///
+/// A member declared by a class in this program always wins, which is Kotlin's
+/// own rule (a member beats an extension). Anything else keeps the rewrite.
+fn collect_user_member_names(root: &Pair<Rule>) {
+    fn walk(
+        pair: Pair<Rule>,
+        out: &mut std::collections::HashSet<(String, usize)>,
+        overloads: &mut std::collections::HashMap<
+            String,
+            std::collections::HashMap<usize, Vec<Vec<String>>>,
+        >,
+        in_class: bool,
+        owner: Option<&str>,
+    ) {
+        let rule = pair.as_rule();
+        // The class this subtree belongs to, so its members can be recorded
+        // against it by name.
+        let owner_here = if matches!(rule, Rule::class_decl | Rule::interface_decl) {
+            pair.clone()
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::identifier)
+                .map(|p| p.as_str().to_string())
+        } else {
+            None
+        };
+        let qualified_owner_here = owner_here.as_ref().map(|class_name| {
+            owner
+                .map(|enclosing| format!("{enclosing}.{class_name}"))
+                .unwrap_or_else(|| class_name.clone())
+        });
+        if let Some(class_name) = &owner_here {
+            USER_CLASS_NAMES.with(|set| {
+                set.borrow_mut().insert(class_name.clone());
+            });
+            let is_inner = pair
+                .clone()
+                .into_inner()
+                .any(|p| p.as_rule() == Rule::modifier && p.as_str().trim() == "inner");
+            if is_inner {
+                if let Some(enclosing) = owner {
+                    INNER_CLASS_QUALIFIED.with(|m| {
+                        m.borrow_mut()
+                            .insert(class_name.clone(), format!("{enclosing}.{class_name}"));
+                    });
+                }
+            }
+        }
+        let owner_ref: Option<&str> = qualified_owner_here.as_deref().or(owner);
+        let record_member = |name: &str| {
+            if let Some(owner) = owner_ref {
+                CLASS_MEMBERS.with(|m| {
+                    m.borrow_mut()
+                        .entry(owner.to_string())
+                        .or_default()
+                        .insert(name.to_string())
+                });
+            }
+        };
+        if rule == Rule::function_decl && in_class {
+            let inners: Vec<_> = pair.clone().into_inner().collect();
+            let name = inners
+                .iter()
+                .find(|p| p.as_rule() == Rule::identifier)
+                .map(|p| p.as_str().to_string());
+            // ARITY too, not the name alone. `interface Summer { fun sum(v:
+            // IntArray): Int }` would otherwise disable the zero-argument
+            // `values.sum()` inside its own implementation.
+            let arity = inners
+                .iter()
+                .find(|p| p.as_rule() == Rule::parameter_list)
+                .map(|p| {
+                    p.clone()
+                        .into_inner()
+                        .filter(|q| q.as_rule() == Rule::parameter)
+                        .count()
+                })
+                .unwrap_or(0);
+            if let Some(name) = name {
+                record_member(&name);
+                let param_types = inners
+                    .iter()
+                    .find(|p| p.as_rule() == Rule::parameter_list)
+                    .map(|p| {
+                        p.clone()
+                            .into_inner()
+                            .filter(|q| q.as_rule() == Rule::parameter)
+                            .map(|param| {
+                                param
+                                    .into_inner()
+                                    .find(|q| q.as_rule() == Rule::type_ref)
+                                    .map(|q| type_hint_text(q.as_str()))
+                                    .unwrap_or_default()
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                overloads
+                    .entry(name.clone())
+                    .or_default()
+                    .entry(arity)
+                    .or_default()
+                    .push(param_types);
+                out.insert((name, arity));
+            }
+        }
+        if rule == Rule::function_decl {
+            let inners: Vec<_> = pair.clone().into_inner().collect();
+            if inners.iter().any(|p| p.as_rule() == Rule::receiver_prefix) {
+                if let Some(id) = inners.iter().find(|p| p.as_rule() == Rule::identifier) {
+                    EXTENSION_FUNCTIONS
+                        .with(|set| set.borrow_mut().insert(id.as_str().to_string()));
+                }
+            }
+        }
+        if rule == Rule::var_decl {
+            let inners: Vec<_> = pair.clone().into_inner().collect();
+            if inners.iter().any(|p| p.as_rule() == Rule::receiver_prefix) {
+                if let Some(id) = inners.iter().find(|p| p.as_rule() == Rule::identifier) {
+                    EXTENSION_PROPERTIES
+                        .with(|set| set.borrow_mut().insert(id.as_str().to_string()));
+                }
+            }
+        }
+        if in_class && matches!(rule, Rule::var_decl | Rule::class_parameter) {
+            // A `class_parameter` is only a property when it says `val`/`var`.
+            let inners: Vec<_> = pair.clone().into_inner().collect();
+            let is_property = rule == Rule::var_decl
+                || inners
+                    .iter()
+                    .any(|p| matches!(p.as_rule(), Rule::val_kw | Rule::var_kw));
+            if is_property {
+                if let Some(id) = inners.iter().find(|p| p.as_rule() == Rule::identifier) {
+                    record_member(id.as_str());
+                    USER_PROPERTY_NAMES
+                        .with(|set| set.borrow_mut().insert(id.as_str().to_string()));
+                }
+            }
+        }
+        // A primary constructor's `val`/`var` parameters are PROPERTIES of the
+        // class even though they sit outside its body — `data class
+        // Counter(val values: MutableList<Int>)` declares `values`.
+        let nested = in_class || matches!(rule, Rule::class_body | Rule::primary_constructor);
+        for sub in pair.into_inner() {
+            walk(sub, out, overloads, nested, owner_ref);
+        }
+    }
+    USER_PROPERTY_NAMES.with(|set| set.borrow_mut().clear());
+    USER_CLASS_NAMES.with(|set| set.borrow_mut().clear());
+    EXTENSION_FUNCTIONS.with(|set| set.borrow_mut().clear());
+    EXTENSION_PROPERTIES.with(|set| set.borrow_mut().clear());
+    CLASS_MEMBERS.with(|m| m.borrow_mut().clear());
+    USER_METHOD_OVERLOADS.with(|map| map.borrow_mut().clear());
+    INNER_CLASS_QUALIFIED.with(|m| m.borrow_mut().clear());
+    USER_MEMBER_NAMES.with(|set| {
+        let mut set = set.borrow_mut();
+        set.clear();
+        let mut overloads = std::collections::HashMap::new();
+        walk(root.clone(), &mut set, &mut overloads, false, None);
+        overloads.retain(|_, by_arity| by_arity.values().map(Vec::len).sum::<usize>() > 1);
+        USER_METHOD_OVERLOADS.with(|map| {
+            *map.borrow_mut() = overloads;
+        });
+    });
+}
+
+/// Whether a class in this source declares a PROPERTY with this name.
+fn is_user_property_name(name: &str) -> bool {
+    USER_PROPERTY_NAMES.with(|set| set.borrow().contains(name))
+}
+
+fn is_user_class_name(name: &str) -> bool {
+    USER_CLASS_NAMES.with(|set| set.borrow().contains(name))
+}
+
+/// Whether a class in this source declares a method with this name and arity.
+fn is_user_member_name(name: &str, arity: usize) -> bool {
+    USER_MEMBER_NAMES.with(|set| set.borrow().contains(&(name.to_string(), arity)))
+}
+
+fn overloaded_storage_name(name: &str, arity: usize) -> Option<String> {
+    USER_METHOD_OVERLOADS.with(|map| {
+        let map = map.borrow();
+        let signatures = map.get(name)?.get(&arity)?;
+        if signatures.len() != 1 {
+            return None;
+        }
+        let param_types = &signatures[0];
+        if param_types.is_empty() {
+            Some(format!("{name}$sig0"))
+        } else if param_types.iter().all(|ty| !ty.is_empty()) {
+            Some(format!("{name}$sig{}", param_types.join("$")))
+        } else {
+            None
+        }
+    })
+}
+
 pub fn parse(source: &str) -> Result<Module, String> {
     let mut pairs = KotlinParser::parse(Rule::program, source)
         .map_err(|e| format!("Kotlin parse error: {}", e))?;
 
-    let root = pairs.next().ok_or_else(|| "Empty parse result".to_string())?;
+    let root = pairs
+        .next()
+        .ok_or_else(|| "Empty parse result".to_string())?;
+    collect_user_member_names(&root);
     let mut body = Vec::new();
-    let mut imports = Vec::new();
+    let imports = collect_imports(&root);
+    let mut package_name: Option<String> = None;
 
     for pair in root.into_inner() {
         match pair.as_rule() {
-            Rule::package_decl => {}
+            Rule::package_decl => {
+                package_name = pair
+                    .into_inner()
+                    .find(|p| p.as_rule() == Rule::dotted_name)
+                    .map(|p| p.as_str().to_string());
+            }
             Rule::import_decl => {
-                if let Some(imp) = walk_import(pair) {
-                    imports.push(imp);
-                }
+                // Already collected recursively above. Imports are declarations
+                // for resolver metadata, not executable statements.
             }
             Rule::top_level_decl => {
                 let mut label_name = None;
                 for inner in pair.into_inner() {
                     match inner.as_rule() {
-                        Rule::label_decl => label_name = Some(inner.as_str().trim_end_matches('@').to_string()),
+                        Rule::label_decl => {
+                            label_name = Some(inner.as_str().trim_end_matches('@').to_string())
+                        }
                         Rule::typealias_decl => {
                             if let Some(stmt) = walk_typealias(inner) {
                                 body.push(stmt);
@@ -58,12 +482,607 @@ pub fn parse(source: &str) -> Result<Module, String> {
         }
     }
 
+    let aliases = kotlin_import_aliases(&imports);
+    rewrite_import_aliases_in_stmts(&mut body, &aliases);
+
+    if let Some(name) = package_name.filter(|name| !name.is_empty()) {
+        let has_main = body.iter().any(|stmt| {
+            matches!(
+                &stmt.kind,
+                StmtKind::FunctionDecl { name, params, .. } if name == "main" && params.is_empty()
+            )
+        });
+        body = vec![Statement::new(StmtKind::NamespaceDecl { name, body })];
+        if has_main {
+            body.push(Statement::new(StmtKind::Expr(Expression::new(
+                ExprKind::Call {
+                    callee: Box::new(Expression::ident("main")),
+                    args: Vec::new(),
+                    optional: false,
+                },
+            ))));
+        }
+    }
+
     Ok(Module {
         name: "main".to_string(),
         language: Lang::Kotlin,
         body,
         imports,
     })
+}
+
+fn collect_imports(root: &Pair<Rule>) -> Vec<Import> {
+    fn walk(pair: Pair<Rule>, imports: &mut Vec<Import>, seen: &mut HashSet<String>) {
+        if pair.as_rule() == Rule::import_decl {
+            if let Some(import) = walk_import(pair.clone()) {
+                let key = match &import.kind {
+                    ImportKind::Simple { path, alias } => {
+                        format!("s:{path}:{}", alias.as_deref().unwrap_or(""))
+                    }
+                    ImportKind::Wildcard { path, alias } => {
+                        format!("w:{path}:{}", alias.as_deref().unwrap_or(""))
+                    }
+                    ImportKind::Named { path, names, level } => {
+                        format!("n:{path}:{level}:{names:?}")
+                    }
+                    ImportKind::Default { path, local } => {
+                        format!("d:{path}:{local}")
+                    }
+                };
+                if seen.insert(key) {
+                    imports.push(import);
+                }
+            }
+            return;
+        }
+        for child in pair.into_inner() {
+            walk(child, imports, seen);
+        }
+    }
+
+    let mut imports = Vec::new();
+    let mut seen = HashSet::new();
+    walk(root.clone(), &mut imports, &mut seen);
+    imports
+}
+
+fn dotted_ident_expr(path: &str) -> Expression {
+    let mut parts = path.split('.');
+    let Some(first) = parts.next() else {
+        return Expression::ident(path);
+    };
+    parts.fold(Expression::ident(first), |object, field| {
+        Expression::new(ExprKind::Member {
+            object: Box::new(object),
+            field: field.to_string(),
+            null_safe: false,
+        })
+    })
+}
+
+fn kotlin_import_aliases(imports: &[Import]) -> HashMap<String, String> {
+    let mut aliases = HashMap::new();
+    for import in imports {
+        match &import.kind {
+            ImportKind::Simple {
+                path,
+                alias: Some(alias),
+            } => {
+                if path.rsplit('.').next() != Some(alias.as_str()) {
+                    aliases.insert(alias.clone(), path.clone());
+                }
+            }
+            ImportKind::Named { path, names, .. } => {
+                for name in names {
+                    if let Some(alias) = &name.alias {
+                        aliases.insert(alias.clone(), format!("{path}.{}", name.name));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    aliases
+}
+
+fn imported_leaf(path: &str) -> Option<&str> {
+    path.rsplit('.').next()
+}
+
+fn imported_leaf_is_value(path: &str) -> bool {
+    imported_leaf(path).is_some_and(|leaf| {
+        leaf.chars()
+            .next()
+            .is_some_and(|ch| !ch.is_ascii_uppercase())
+    })
+}
+
+fn kotlin_import_path(path: &str) -> String {
+    let Some(leaf) = path.rsplit('.').next() else {
+        return path.to_string();
+    };
+    let java_util = match leaf {
+        "ArrayList" | "HashMap" | "HashSet" | "LinkedHashMap" | "LinkedHashSet" => Some(leaf),
+        _ => None,
+    };
+    if path.starts_with("kotlin.collections.") {
+        if let Some(leaf) = java_util {
+            return format!("java.util.{leaf}");
+        }
+    }
+    if path == "kotlin.text.StringBuilder" {
+        return "java.lang.StringBuilder".to_string();
+    }
+    path.to_string()
+}
+
+fn kotlin_import_leaf_is_constant(path: &str) -> bool {
+    let Some(leaf) = path.rsplit('.').next() else {
+        return false;
+    };
+    path.starts_with("kotlin.math.")
+        && leaf.chars().any(|ch| ch.is_ascii_alphabetic())
+        && leaf
+            .chars()
+            .filter(|ch| ch.is_ascii_alphabetic())
+            .all(|ch| ch.is_ascii_uppercase())
+}
+
+fn rewrite_import_aliases_in_stmts(stmts: &mut [Statement], aliases: &HashMap<String, String>) {
+    let mut scope = HashSet::new();
+    for stmt in stmts.iter() {
+        collect_declared_names(stmt, &mut scope);
+    }
+    for stmt in stmts {
+        rewrite_import_aliases_in_stmt(stmt, aliases, &mut scope);
+    }
+}
+
+fn collect_declared_names(stmt: &Statement, names: &mut HashSet<String>) {
+    match &stmt.kind {
+        StmtKind::ClassDecl { name, .. }
+        | StmtKind::InterfaceDecl { name, .. }
+        | StmtKind::EnumDecl { name, .. } => {
+            names.insert(name.clone());
+        }
+        StmtKind::FunctionDecl { name, .. } => {
+            names.insert(name.clone());
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                collect_binding_names(&decl.pattern, names);
+            }
+        }
+        StmtKind::Block(stmts) => {
+            for stmt in stmts {
+                collect_declared_names(stmt, names);
+            }
+        }
+        StmtKind::NamespaceDecl { body, .. } => {
+            for stmt in body {
+                collect_declared_names(stmt, names);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_binding_names(pattern: &BindingPattern, names: &mut HashSet<String>) {
+    match pattern {
+        BindingPattern::Ident(name) => {
+            names.insert(name.clone());
+        }
+        BindingPattern::Array(elems) => {
+            for elem in elems {
+                match elem {
+                    ArrayPatternElem::Pattern(pattern, _) => collect_binding_names(pattern, names),
+                    ArrayPatternElem::Rest(name) => {
+                        names.insert(name.clone());
+                    }
+                    ArrayPatternElem::Hole => {}
+                }
+            }
+        }
+        BindingPattern::Object(props) => {
+            for prop in props {
+                if prop.is_rest {
+                    names.insert(prop.key.clone());
+                } else if let Some(pattern) = &prop.value {
+                    collect_binding_names(pattern, names);
+                } else {
+                    names.insert(prop.key.clone());
+                }
+            }
+        }
+    }
+}
+
+fn rewrite_import_aliases_in_stmt(
+    stmt: &mut Statement,
+    aliases: &HashMap<String, String>,
+    scope: &mut HashSet<String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_import_aliases_in_expr(expr, aliases, scope)
+        }
+        StmtKind::Throw { expr, cause } => {
+            if let Some(expr) = expr {
+                rewrite_import_aliases_in_expr(expr, aliases, scope);
+            }
+            if let Some(cause) = cause {
+                rewrite_import_aliases_in_expr(cause, aliases, scope);
+            }
+        }
+        StmtKind::Echo(exprs) => {
+            for expr in exprs {
+                rewrite_import_aliases_in_expr(expr, aliases, scope);
+            }
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_import_aliases_in_expr(init, aliases, scope);
+                }
+                collect_binding_names(&decl.pattern, scope);
+            }
+        }
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut fn_scope = scope.clone();
+            for param in params {
+                fn_scope.insert(param.name.clone());
+            }
+            for stmt in body.iter() {
+                collect_declared_names(stmt, &mut fn_scope);
+            }
+            rewrite_import_aliases_in_stmts_with_scope(body, aliases, &mut fn_scope);
+        }
+        StmtKind::ClassDecl { members, .. } => {
+            for member in members {
+                match member {
+                    ClassMember::Field {
+                        init: Some(init), ..
+                    } => {
+                        rewrite_import_aliases_in_expr(init, aliases, scope);
+                    }
+                    ClassMember::Method(method) => {
+                        rewrite_import_aliases_in_stmt(method, aliases, scope);
+                    }
+                    ClassMember::Constructor { params, body, .. } => {
+                        let mut ctor_scope = scope.clone();
+                        for param in params {
+                            ctor_scope.insert(param.name.clone());
+                        }
+                        rewrite_import_aliases_in_stmts_with_scope(body, aliases, &mut ctor_scope);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        StmtKind::InterfaceDecl { .. } => {}
+        StmtKind::EnumDecl { body_members, .. } => {
+            for member in body_members {
+                if let ClassMember::Method(method) = member {
+                    rewrite_import_aliases_in_stmt(method, aliases, scope);
+                }
+            }
+        }
+        StmtKind::Block(stmts) | StmtKind::NamespaceDecl { body: stmts, .. } => {
+            let mut inner_scope = scope.clone();
+            for stmt in stmts.iter() {
+                collect_declared_names(stmt, &mut inner_scope);
+            }
+            rewrite_import_aliases_in_stmts_with_scope(stmts, aliases, &mut inner_scope);
+        }
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_import_aliases_in_expr(cond, aliases, scope);
+            rewrite_import_aliases_in_stmts_with_scope(then_body, aliases, &mut scope.clone());
+            for (elif_cond, elif_body) in elifs {
+                rewrite_import_aliases_in_expr(elif_cond, aliases, scope);
+                rewrite_import_aliases_in_stmts_with_scope(elif_body, aliases, &mut scope.clone());
+            }
+            if let Some(else_body) = else_body {
+                rewrite_import_aliases_in_stmts_with_scope(else_body, aliases, &mut scope.clone());
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_import_aliases_in_expr(cond, aliases, scope);
+            rewrite_import_aliases_in_stmts_with_scope(body, aliases, &mut scope.clone());
+            if let Some(else_body) = else_body {
+                rewrite_import_aliases_in_stmts_with_scope(else_body, aliases, &mut scope.clone());
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                rewrite_import_aliases_in_stmt(init, aliases, scope);
+            }
+            if let Some(cond) = cond {
+                rewrite_import_aliases_in_expr(cond, aliases, scope);
+            }
+            if let Some(update) = update {
+                rewrite_import_aliases_in_expr(update, aliases, scope);
+            }
+            rewrite_import_aliases_in_stmts_with_scope(body, aliases, &mut scope.clone());
+        }
+        StmtKind::ForIn {
+            var,
+            key,
+            iter,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_import_aliases_in_expr(iter, aliases, scope);
+            let mut loop_scope = scope.clone();
+            loop_scope.insert(var.clone());
+            if let Some(key) = key {
+                loop_scope.insert(key.clone());
+            }
+            rewrite_import_aliases_in_stmts_with_scope(body, aliases, &mut loop_scope);
+            if let Some(else_body) = else_body {
+                rewrite_import_aliases_in_stmts_with_scope(else_body, aliases, &mut scope.clone());
+            }
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            rewrite_import_aliases_in_stmts_with_scope(body, aliases, &mut scope.clone());
+            for catch in catches {
+                let mut catch_scope = scope.clone();
+                if let Some(name) = &catch.var_name {
+                    catch_scope.insert(name.clone());
+                }
+                if let Some(name) = &catch.stack_var {
+                    catch_scope.insert(name.clone());
+                }
+                if let Some(when_clause) = &mut catch.when_clause {
+                    rewrite_import_aliases_in_expr(when_clause, aliases, &catch_scope);
+                }
+                rewrite_import_aliases_in_stmts_with_scope(
+                    &mut catch.body,
+                    aliases,
+                    &mut catch_scope,
+                );
+            }
+            if let Some(else_body) = else_body {
+                rewrite_import_aliases_in_stmts_with_scope(else_body, aliases, &mut scope.clone());
+            }
+            if let Some(finally) = finally {
+                rewrite_import_aliases_in_stmts_with_scope(finally, aliases, &mut scope.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_import_aliases_in_stmts_with_scope(
+    stmts: &mut [Statement],
+    aliases: &HashMap<String, String>,
+    scope: &mut HashSet<String>,
+) {
+    for stmt in stmts.iter() {
+        collect_declared_names(stmt, scope);
+    }
+    for stmt in stmts {
+        rewrite_import_aliases_in_stmt(stmt, aliases, scope);
+    }
+}
+
+fn rewrite_import_aliases_in_expr(
+    expr: &mut Expression,
+    aliases: &HashMap<String, String>,
+    scope: &HashSet<String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Ident(name) => {
+            if !scope.contains(name) {
+                if let Some(path) = aliases.get(name) {
+                    if imported_leaf_is_value(path) {
+                        if let Some(leaf) = imported_leaf(path) {
+                            *name = leaf.to_string();
+                        }
+                    }
+                }
+            }
+        }
+        ExprKind::Member { object, field, .. } => {
+            rewrite_import_aliases_in_expr(object, aliases, scope);
+            if !scope.contains(field) {
+                if let Some(path) = aliases.get(field) {
+                    if imported_leaf_is_value(path) {
+                        if let Some(real_field) = imported_leaf(path) {
+                            *field = real_field.to_string();
+                        }
+                    }
+                }
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            if let ExprKind::Ident(name) = &mut callee.kind {
+                if !scope.contains(name) {
+                    if let Some(path) = aliases.get(name) {
+                        if imported_leaf_is_value(path) {
+                            if let Some(leaf) = imported_leaf(path) {
+                                *name = leaf.to_string();
+                            }
+                        }
+                    }
+                }
+            } else {
+                rewrite_import_aliases_in_expr(callee, aliases, scope);
+            }
+            for arg in args {
+                rewrite_import_aliases_in_expr(&mut arg.value, aliases, scope);
+            }
+        }
+        ExprKind::New { class, args } => {
+            if let ExprKind::Ident(name) = &mut class.kind {
+                if !scope.contains(name) {
+                    if let Some(path) = aliases.get(name) {
+                        if imported_leaf_is_value(path) {
+                            if let Some(leaf) = imported_leaf(path) {
+                                *name = leaf.to_string();
+                            }
+                        }
+                    }
+                }
+            } else {
+                rewrite_import_aliases_in_expr(class, aliases, scope);
+            }
+            for arg in args {
+                rewrite_import_aliases_in_expr(&mut arg.value, aliases, scope);
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_import_aliases_in_expr(left, aliases, scope);
+            rewrite_import_aliases_in_expr(right, aliases, scope);
+        }
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::Await(expr)
+        | ExprKind::Yield(Some(expr))
+        | ExprKind::Delete(expr) => rewrite_import_aliases_in_expr(expr, aliases, scope),
+        ExprKind::Assign { target, value } => {
+            rewrite_import_aliases_in_expr(target, aliases, scope);
+            rewrite_import_aliases_in_expr(value, aliases, scope);
+        }
+        ExprKind::Index { object, index, .. } => {
+            rewrite_import_aliases_in_expr(object, aliases, scope);
+            rewrite_import_aliases_in_expr(index, aliases, scope);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_import_aliases_in_expr(cond, aliases, scope);
+            rewrite_import_aliases_in_expr(then, aliases, scope);
+            rewrite_import_aliases_in_expr(else_, aliases, scope);
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            rewrite_import_aliases_in_expr(left, aliases, scope);
+            rewrite_import_aliases_in_expr(right, aliases, scope);
+        }
+        ExprKind::Array(elems) => {
+            for elem in elems {
+                if let Some(key) = &mut elem.key {
+                    rewrite_import_aliases_in_expr(key, aliases, scope);
+                }
+                rewrite_import_aliases_in_expr(&mut elem.value, aliases, scope);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { key, value } = prop {
+                    rewrite_import_aliases_in_expr(key, aliases, scope);
+                    rewrite_import_aliases_in_expr(value, aliases, scope);
+                }
+            }
+        }
+        ExprKind::Tuple(items) => {
+            for item in items {
+                rewrite_import_aliases_in_expr(item, aliases, scope);
+            }
+        }
+        ExprKind::Range { start, end, .. } => {
+            rewrite_import_aliases_in_expr(start, aliases, scope);
+            rewrite_import_aliases_in_expr(end, aliases, scope);
+        }
+        ExprKind::Lambda { params, body, .. } => {
+            let mut lambda_scope = scope.clone();
+            for param in params {
+                lambda_scope.insert(param.name.clone());
+            }
+            match body {
+                LambdaBody::Expr(expr) => {
+                    rewrite_import_aliases_in_expr(expr, aliases, &lambda_scope);
+                }
+                LambdaBody::Block(stmts) => {
+                    rewrite_import_aliases_in_stmts_with_scope(stmts, aliases, &mut lambda_scope);
+                }
+            }
+        }
+        _ => {}
+    }
+    if let Some(replacement) = post_alias_kotlin_lowering(expr) {
+        *expr = replacement;
+    }
+}
+
+fn post_alias_kotlin_lowering(expr: &Expression) -> Option<Expression> {
+    match &expr.kind {
+        ExprKind::Member { object, field, .. } if field == "absoluteValue" => {
+            Some(Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident("absoluteValue")),
+                args: vec![Argument::positional(*object.clone())],
+                optional: false,
+            }))
+        }
+        ExprKind::Call { callee, args, .. } => match &callee.kind {
+            ExprKind::Ident(name) if name == "joinToString" && !args.is_empty() => {
+                let separator = args
+                    .get(1)
+                    .map(|arg| arg.value.clone())
+                    .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Str(", ".into()))));
+                Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__coll_join")),
+                    args: vec![
+                        Argument::positional(args[0].value.clone()),
+                        Argument::positional(separator),
+                    ],
+                    optional: false,
+                }))
+            }
+            ExprKind::Member { object, field, .. } if field == "joinToString" => {
+                let separator = args
+                    .first()
+                    .map(|arg| arg.value.clone())
+                    .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Str(", ".into()))));
+                Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__coll_join")),
+                    args: vec![
+                        Argument::positional(*object.clone()),
+                        Argument::positional(separator),
+                    ],
+                    optional: false,
+                }))
+            }
+            ExprKind::Member { object, field, .. } if field == "sortedBy" && args.len() == 1 => {
+                Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: object.clone(),
+                        field: "sort".to_string(),
+                        null_safe: false,
+                    })),
+                    args: args.clone(),
+                    optional: false,
+                }))
+            }
+            ExprKind::Member { object, field, .. } if field == "let" && args.len() == 1 => {
+                Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(args[0].value.clone()),
+                    args: vec![Argument::positional(*object.clone())],
+                    optional: false,
+                }))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn walk_typealias(_pair: Pair<Rule>) -> Option<Statement> {
@@ -120,6 +1139,50 @@ fn is_ident_chain(expr: &Expression) -> bool {
     }
 }
 
+fn callable_ref_lambda(target: Expression) -> Expression {
+    let arg_name = "__kt_ref_arg".to_string();
+    Expression::new(ExprKind::Lambda {
+        params: vec![Param {
+            name: arg_name.clone(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        }],
+        body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
+            callee: Box::new(target),
+            args: vec![Argument::positional(Expression::ident(&arg_name))],
+            optional: false,
+        }))),
+        is_async: false,
+        captures: Vec::new(),
+    })
+}
+
+fn walk_callable_ref(pair: Pair<Rule>) -> Expression {
+    let mut qualifier = None;
+    let mut name = None;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::dotted_name => qualifier = Some(inner.as_str().to_string()),
+            Rule::identifier => name = Some(inner.as_str().to_string()),
+            _ => {}
+        }
+    }
+
+    let Some(name) = name else {
+        return Expression::null();
+    };
+    let target = qualifier
+        .map(|qualifier| dotted_ident_expr(&format!("{qualifier}.{name}")))
+        .unwrap_or_else(|| Expression::ident(&name));
+    callable_ref_lambda(target)
+}
+
 fn walk_import(pair: Pair<Rule>) -> Option<Import> {
     let mut path = String::new();
     let mut alias = None;
@@ -137,8 +1200,19 @@ fn walk_import(pair: Pair<Rule>) -> Option<Import> {
         }
     }
 
+    path = kotlin_import_path(&path);
     let kind = if is_wildcard {
         ImportKind::Wildcard { path, alias }
+    } else if kotlin_import_leaf_is_constant(&path) {
+        let (module, name) = path.rsplit_once('.').unwrap_or(("", path.as_str()));
+        ImportKind::Named {
+            path: module.to_string(),
+            names: vec![ImportName {
+                name: name.to_string(),
+                alias,
+            }],
+            level: 0,
+        }
     } else {
         // Kotlin's import binds the SIMPLE NAME (`import java.time.Instant`
         // makes `Instant` mean `java.time.Instant`), so an import with no
@@ -173,19 +1247,34 @@ fn walk_statement(pair: Pair<Rule>) -> Option<Statement> {
     };
 
     let stmt = match inner_pair.as_rule() {
+        Rule::import_decl => Some(Statement::new(StmtKind::Empty)),
         Rule::typealias_decl => walk_typealias(inner_pair),
         Rule::interface_decl => walk_interface_decl(inner_pair),
         Rule::enum_decl => walk_enum_decl(inner_pair),
         Rule::destructuring_decl => walk_destructuring_decl(inner_pair),
         Rule::function_decl => walk_function_decl(inner_pair),
-        Rule::var_decl => walk_var_decl(inner_pair),
+        Rule::var_decl => {
+            // An extension property is not a variable at all.
+            if inner_pair
+                .clone()
+                .into_inner()
+                .any(|p| p.as_rule() == Rule::receiver_prefix)
+            {
+                walk_extension_property(inner_pair)
+            } else {
+                walk_var_decl(inner_pair)
+            }
+        }
         Rule::class_decl => walk_class_decl(inner_pair),
         Rule::object_decl => walk_object_decl(inner_pair),
         Rule::if_expr => walk_if_stmt(inner_pair),
         Rule::when_expr => walk_when_stmt(inner_pair),
         Rule::try_expr => walk_try_stmt(inner_pair),
         Rule::throw_stmt => {
-            let expr = inner_pair.into_inner().find(|p| p.as_rule() == Rule::expr).map(walk_expr);
+            let expr = inner_pair
+                .into_inner()
+                .find(|p| p.as_rule() == Rule::expr)
+                .map(walk_expr);
             Some(Statement::new(StmtKind::Throw { expr, cause: None }))
         }
         Rule::for_stmt => walk_for_stmt(inner_pair),
@@ -217,7 +1306,9 @@ fn walk_statement(pair: Pair<Rule>) -> Option<Statement> {
                     lbl = Some(csub.as_str().to_string());
                 }
             }
-            let target = lbl.map(ContinueTarget::Label).unwrap_or(ContinueTarget::Implicit);
+            let target = lbl
+                .map(ContinueTarget::Label)
+                .unwrap_or(ContinueTarget::Implicit);
             Some(Statement::new(StmtKind::Continue(target)))
         }
         Rule::expr_stmt => {
@@ -333,8 +1424,9 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Option<Statement> {
                                         // has to survive — `InterfaceMember`
                                         // had nowhere to put it, so every
                                         // default method was silently emptied.
-                                        if let StmtKind::FunctionDecl { body, modifiers, .. } =
-                                            &mut stmt.kind
+                                        if let StmtKind::FunctionDecl {
+                                            body, modifiers, ..
+                                        } = &mut stmt.kind
                                         {
                                             modifiers.is_abstract = body.is_empty();
                                         }
@@ -342,12 +1434,14 @@ fn walk_interface_decl(pair: Pair<Rule>) -> Option<Statement> {
                                     }
                                 }
                                 Rule::var_decl => {
-                                    if let Some(prop) = walk_class_property(inner_member.clone()) {
-                                        members.push(prop);
+                                    let prop = walk_class_property(inner_member.clone());
+                                    if !prop.is_empty() {
+                                        members.extend(prop);
                                         continue;
                                     }
                                     if let Some(stmt) = walk_var_decl(inner_member) {
-                                        if let StmtKind::VarDecl { declarations, kind } = stmt.kind {
+                                        if let StmtKind::VarDecl { declarations, kind } = stmt.kind
+                                        {
                                             for decl in declarations {
                                                 if let BindingPattern::Ident(pname) = decl.pattern {
                                                     members.push(ClassMember::Field {
@@ -494,20 +1588,22 @@ fn walk_destructuring_decl(pair: Pair<Rule>) -> Option<Statement> {
 
     if let Some(init_expr) = init {
         let tmp_name = gen_tmp_name();
-        let decl_kind = if is_readonly { VarDeclKind::Const } else { VarDeclKind::Var };
+        let decl_kind = if is_readonly {
+            VarDeclKind::Const
+        } else {
+            VarDeclKind::Var
+        };
 
-        let mut stmts = vec![
-            Statement::new(StmtKind::VarDecl {
-                declarations: vec![VarDeclarator {
-                    pattern: BindingPattern::Ident(tmp_name.clone()),
-                    type_hint: None,
-                    init: Some(init_expr),
-                    array_bounds: None,
-                    with_events: false,
-                }],
-                kind: decl_kind.clone(),
-            })
-        ];
+        let mut stmts = vec![Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(tmp_name.clone()),
+                type_hint: None,
+                init: Some(init_expr),
+                array_bounds: None,
+                with_events: false,
+            }],
+            kind: decl_kind.clone(),
+        })];
 
         for (idx, name) in names.into_iter().enumerate() {
             let read_expr = Expression::new(ExprKind::Index {
@@ -529,7 +1625,10 @@ fn walk_destructuring_decl(pair: Pair<Rule>) -> Option<Statement> {
 
         Some(Statement::new(StmtKind::Block(stmts)))
     } else {
-        let elems = names.into_iter().map(|n| ArrayPatternElem::Pattern(BindingPattern::Ident(n), None)).collect();
+        let elems = names
+            .into_iter()
+            .map(|n| ArrayPatternElem::Pattern(BindingPattern::Ident(n), None))
+            .collect();
         Some(Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Array(elems),
@@ -538,7 +1637,11 @@ fn walk_destructuring_decl(pair: Pair<Rule>) -> Option<Statement> {
                 array_bounds: None,
                 with_events: false,
             }],
-            kind: if is_readonly { VarDeclKind::Const } else { VarDeclKind::Var },
+            kind: if is_readonly {
+                VarDeclKind::Const
+            } else {
+                VarDeclKind::Var
+            },
         }))
     }
 }
@@ -599,6 +1702,36 @@ fn walk_try_stmt(pair: Pair<Rule>) -> Option<Statement> {
 }
 
 fn walk_function_decl(pair: Pair<Rule>) -> Option<Statement> {
+    // Everything this function binds, so a LOCAL class declared in its body can
+    // tell a captured value from one of its own members.
+    ENCLOSING_LOCALS.with(|stack| stack.borrow_mut().push(bound_names(&pair)));
+    let out = walk_function_decl_inner(pair);
+    ENCLOSING_LOCALS.with(|stack| {
+        stack.borrow_mut().pop();
+    });
+    out
+}
+
+fn walk_function_decl_inner(pair: Pair<Rule>) -> Option<Statement> {
+    // An extension function reads the receiver's members unqualified, the same
+    // as an extension property: `fun P.show() = "n=" + n`.
+    let ext_receiver: Option<String> = pair
+        .clone()
+        .into_inner()
+        .find(|p| p.as_rule() == Rule::receiver_prefix)
+        .and_then(|p| p.into_inner().next())
+        .map(|p| p.as_str().to_string());
+    if let Some(receiver) = &ext_receiver {
+        push_ext_receiver(receiver);
+    }
+    let out = walk_function_decl_body(pair);
+    if ext_receiver.is_some() {
+        pop_ext_receiver();
+    }
+    out
+}
+
+fn walk_function_decl_body(pair: Pair<Rule>) -> Option<Statement> {
     let mut name = String::new();
     let mut receiver_type: Option<String> = None;
     let mut params = Vec::new();
@@ -734,7 +1867,11 @@ fn walk_parameter_list(pair: Pair<Rule>) -> Vec<Param> {
 }
 
 fn walk_var_decl(pair: Pair<Rule>) -> Option<Statement> {
-    if pair.clone().into_inner().any(|p| p.as_rule() == Rule::destructuring_target) {
+    if pair
+        .clone()
+        .into_inner()
+        .any(|p| p.as_rule() == Rule::destructuring_target)
+    {
         return walk_destructuring_decl(pair);
     }
     let mut is_readonly = false;
@@ -777,7 +1914,11 @@ fn walk_var_decl(pair: Pair<Rule>) -> Option<Statement> {
             array_bounds: None,
             with_events: false,
         }],
-        kind: if is_const || is_readonly { VarDeclKind::Const } else { VarDeclKind::Var },
+        kind: if is_const || is_readonly {
+            VarDeclKind::Const
+        } else {
+            VarDeclKind::Var
+        },
     }))
 }
 
@@ -790,7 +1931,9 @@ fn walk_var_decl(pair: Pair<Rule>) -> Option<Statement> {
 fn kt_is_string_expr(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Lit(Literal::Str(_)) => true,
-        ExprKind::Binary { op: BinOp::Concat, .. } => true,
+        ExprKind::Binary {
+            op: BinOp::Concat, ..
+        } => true,
         // `"$a$b".trimIndent()` and friends keep the template's type.
         ExprKind::Member { object, .. } => kt_is_string_expr(object),
         _ => false,
@@ -808,7 +1951,128 @@ fn kt_is_string_expr(expr: &Expression) -> bool {
 /// installs `__get_`/`__set_` accessors from it.
 ///
 /// Returns `None` for a plain stored property, which stays a field.
-fn walk_class_property(pair: Pair<Rule>) -> Option<ClassMember> {
+thread_local! {
+    /// The storage a `field` identifier means, while an accessor body is being
+    /// walked. Empty everywhere else, so `field` stays an ordinary name.
+    static BACKING_FIELD: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `field` inside an accessor is Kotlin's BACKING STORAGE, not a variable.
+///
+/// It is the only way a custom accessor can reach the property's own storage —
+/// `set(v) { field = v + 1 }` — and reading it as a plain identifier left it
+/// `undefined`. Every other identifier passes through untouched.
+fn backing_field_substitution(name: &str) -> String {
+    if name != "field" {
+        return name.to_string();
+    }
+    BACKING_FIELD.with(|stack| {
+        stack
+            .borrow()
+            .last()
+            .cloned()
+            .unwrap_or_else(|| name.to_string())
+    })
+}
+
+/// The storage name a property's `field` resolves to. Distinct per property, so
+/// two properties in one class each writing `field` do not share one slot.
+fn backing_field_name(property: &str) -> String {
+    format!("__kt_field_{}", property)
+}
+
+/// A `var_decl` that declares a PROPERTY, and the backing storage it needs.
+///
+/// Returns the `ClassMember::Property` plus, when the property has an
+/// initializer or its accessors mention `field`, the private field that holds
+/// its value. Kotlin's `var n: Int = 1  get() = field * 2` is NOT an
+/// auto-property: the initializer seeds the BACKING FIELD and the accessors
+/// still run. Reporting it as `auto_field` made the shared model treat it as a
+/// plain field and drop both accessors (`classes.rs` skips auto-properties).
+/// `val Receiver.name: T get() = …` — an extension PROPERTY.
+///
+/// It has no backing field: the accessor is the whole implementation, so it
+/// lowers to a function of the receiver, exactly as an extension function does.
+/// The read site (`x.name`) is rewritten to `name(x)`.
+fn walk_extension_property(pair: Pair<Rule>) -> Option<Statement> {
+    let inners: Vec<_> = pair.into_inner().collect();
+    let receiver = inners
+        .iter()
+        .find(|p| p.as_rule() == Rule::receiver_prefix)?
+        .clone()
+        .into_inner()
+        .next()?
+        .as_str()
+        .to_string();
+    let name = inners
+        .iter()
+        .find(|p| p.as_rule() == Rule::identifier)?
+        .as_str()
+        .to_string();
+
+    push_ext_receiver(&receiver);
+    let mut body = Vec::new();
+    for p in &inners {
+        match p.as_rule() {
+            Rule::property_accessor => {
+                let mut is_get = false;
+                for part in p.clone().into_inner() {
+                    match part.as_rule() {
+                        Rule::get_kw => is_get = true,
+                        Rule::set_kw => is_get = false,
+                        Rule::function_body_expr => {
+                            if is_get {
+                                if let Some(e) = part.into_inner().next() {
+                                    body =
+                                        vec![Statement::new(StmtKind::Return(Some(walk_expr(e))))];
+                                }
+                            }
+                        }
+                        Rule::block => {
+                            if is_get {
+                                body = walk_block_statements(part);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Rule::expr if body.is_empty() => {
+                body = vec![Statement::new(StmtKind::Return(Some(walk_expr(p.clone()))))];
+            }
+            _ => {}
+        }
+    }
+
+    pop_ext_receiver();
+
+    Some(Statement::new(StmtKind::FunctionDecl {
+        name,
+        params: vec![Param {
+            name: "this".to_string(),
+            type_hint: Some(receiver),
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        }],
+        return_type: None,
+        body,
+        modifiers: Modifiers {
+            visibility: Visibility::Public,
+            is_extension: true,
+            ..Default::default()
+        },
+        handles: vec![],
+        is_async: false,
+        is_generator: false,
+        is_sub: false,
+    }))
+}
+
+fn walk_class_property(pair: Pair<Rule>) -> Vec<ClassMember> {
     let inners: Vec<_> = pair.into_inner().collect();
     // `var x = 1` + `private set` declares an ORDINARY stored property whose
     // setter is restricted — the accessor has no body, so there is nothing to
@@ -822,8 +2086,27 @@ fn walk_class_property(pair: Pair<Rule>) -> Option<ClassMember> {
                 .any(|part| matches!(part.as_rule(), Rule::function_body_expr | Rule::block))
     });
     if !has_accessor_body {
-        return None;
+        return Vec::new();
     }
+
+    // The property's own name, needed BEFORE the accessor bodies are walked so
+    // `field` inside them resolves to this property's storage.
+    let property_name = inners
+        .iter()
+        .find(|p| p.as_rule() == Rule::identifier)
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_default();
+    if property_name.is_empty() {
+        return Vec::new();
+    }
+    let backing = backing_field_name(&property_name);
+    let uses_field = inners.iter().any(|p| {
+        p.as_rule() == Rule::property_accessor
+            && p.as_str()
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .any(|word| word == "field")
+    });
+    BACKING_FIELD.with(|stack| stack.borrow_mut().push(backing.clone()));
 
     let mut name = String::new();
     let mut type_hint = None;
@@ -882,24 +2165,40 @@ fn walk_class_property(pair: Pair<Rule>) -> Option<ClassMember> {
         }
     }
 
-    if name.is_empty() {
-        return None;
+    BACKING_FIELD.with(|stack| {
+        stack.borrow_mut().pop();
+    });
+
+    let mut out = Vec::new();
+    // Storage exists when the source says it does: an initializer to hold, or
+    // an accessor that reads or writes `field`.
+    if init.is_some() || uses_field {
+        out.push(ClassMember::Field {
+            name: backing,
+            type_hint: type_hint.clone(),
+            init,
+            modifiers: Modifiers {
+                visibility: Visibility::Private,
+                ..Default::default()
+            },
+            with_events: false,
+            array_bounds: None,
+        });
     }
-    // `var x: Int = 0  get() = field` still has backing storage; a property with
-    // no initializer and a computed getter has none.
-    let is_auto = init.is_some();
-    Some(ClassMember::Property {
+    out.push(ClassMember::Property {
         name,
         type_hint,
         getter,
         setter,
-        is_auto,
+        // Never an auto-property: these accessors have BODIES to run.
+        is_auto: false,
         modifiers: Modifiers {
             visibility: Visibility::Public,
             is_readonly,
             ..Default::default()
         },
-    })
+    });
+    out
 }
 
 /// Whether `text` is a single Kotlin identifier and nothing else.
@@ -925,10 +2224,84 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
     let mut decorators = Vec::new();
     let mut init_stmts = Vec::new();
 
+    // A LOCAL class reads values from the function around it. With
+    // `implicit_self_fields` a bare identifier in a method is a FIELD read, so
+    // those reads never reached the enclosing scope and answered `undefined`.
+    // Kotlin gives a local class synthetic storage for what it captures; that
+    // lowering is declared here, as leading constructor parameters.
+    let captures: Vec<String> = ENCLOSING_LOCALS.with(|stack| {
+        let stack = stack.borrow();
+        let Some(enclosing) = stack.last() else {
+            return Vec::new();
+        };
+        let declared = bound_names(&pair);
+        let mut own: std::collections::HashSet<String> = declared;
+        for sub in pair.clone().into_inner() {
+            if sub.as_rule() == Rule::class_body {
+                for m in sub.into_inner() {
+                    if let Some(inner) = m.into_inner().next() {
+                        if inner.as_rule() == Rule::function_decl {
+                            if let Some(id) = inner
+                                .clone()
+                                .into_inner()
+                                .find(|p| p.as_rule() == Rule::identifier)
+                            {
+                                own.insert(id.as_str().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut caps: Vec<String> = read_names(&pair)
+            .into_iter()
+            .filter(|n| enclosing.contains(n) && !own.contains(n))
+            .collect();
+        caps.sort();
+        caps
+    });
+
     let inner_pairs: Vec<_> = pair.into_inner().collect();
+    if let Some(id) = inner_pairs.iter().find(|p| p.as_rule() == Rule::identifier) {
+        name = id.as_str().to_string();
+    }
+    let is_inner_class = inner_pairs
+        .iter()
+        .any(|p| p.as_rule() == Rule::modifier && p.as_str().trim() == "inner");
+    let enclosing_classes = CURRENT_CLASS_STACK.with(|stack| stack.borrow().clone());
+    let stack_class_name = enclosing_classes
+        .last()
+        .map(|outer| format!("{outer}.{name}"))
+        .unwrap_or_else(|| name.clone());
+    let outer_context = if is_inner_class {
+        CLASS_MEMBERS.with(|members| {
+            let members = members.borrow();
+            enclosing_classes
+                .iter()
+                .rev()
+                .map(|class_name| {
+                    (
+                        class_name.clone(),
+                        members.get(class_name).cloned().unwrap_or_default(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+    } else {
+        Vec::new()
+    };
+    if !outer_context.is_empty() {
+        INNER_OUTER_MEMBERS.with(|stack| stack.borrow_mut().push(outer_context));
+    }
+    if !name.is_empty() {
+        CURRENT_CLASS_STACK.with(|stack| stack.borrow_mut().push(stack_class_name));
+    }
 
     let mut is_data = false;
     let mut primary_prop_names = Vec::new();
+    // Which member is the PRIMARY constructor, so property initializers and
+    // `init` blocks land AFTER its parameter-to-field assignments.
+    let mut primary_ctor_index: Option<usize> = None;
     // `: I by <expr>` — the field the forwarders read, and what fills it.
     // Kotlin stores the delegate; `AugmentDecl::via_field` names STORAGE, so a
     // `by` whose expression is not already a property needs one declared.
@@ -1026,18 +2399,22 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
         }
     }
 
+    // The body walk needs to know which supertype is the SUPERCLASS: a
+    // `super<X>.f()` whose `X` is the parent is an ordinary super call, and one
+    // whose `X` is an implemented interface is a default reached by alias.
+    CURRENT_CLASS_PARENT.with(|stack| stack.borrow_mut().push(parents.first().cloned()));
+    SUPER_QUALIFIED_USES.with(|stack| stack.borrow_mut().push(Vec::new()));
+
     for inner in inner_pairs {
         match inner.as_rule() {
             Rule::annotation => decorators.push(walk_annotation(inner)),
             Rule::interface_kw => is_interface = true,
-            Rule::modifier => {
-                match inner.as_str() {
-                    "abstract" => is_abstract = true,
-                    "sealed" => is_sealed = true,
-                    "data" => is_data = true,
-                    _ => {}
-                }
-            }
+            Rule::modifier => match inner.as_str() {
+                "abstract" => is_abstract = true,
+                "sealed" => is_sealed = true,
+                "data" => is_data = true,
+                _ => {}
+            },
             Rule::identifier => name = inner.as_str().to_string(),
             Rule::primary_constructor => {
                 let mut ctor_params = Vec::new();
@@ -1122,6 +2499,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                     }
                 }
 
+                primary_ctor_index = Some(members.len());
                 members.push(ClassMember::Constructor {
                     name: None,
                     params: ctor_params,
@@ -1148,9 +2526,15 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                     let mut s_base_args = None;
                                     for sc in inner_member.into_inner() {
                                         match sc.as_rule() {
-                                            Rule::parameter_list => s_params = walk_parameter_list(sc),
-                                            Rule::this_kw => s_target = ConstructorInitializerTarget::This,
-                                            Rule::super_kw => s_target = ConstructorInitializerTarget::Base,
+                                            Rule::parameter_list => {
+                                                s_params = walk_parameter_list(sc)
+                                            }
+                                            Rule::this_kw => {
+                                                s_target = ConstructorInitializerTarget::This
+                                            }
+                                            Rule::super_kw => {
+                                                s_target = ConstructorInitializerTarget::Base
+                                            }
                                             Rule::arg_list => {
                                                 let mut bargs = Vec::new();
                                                 for arg_p in sc.into_inner() {
@@ -1189,8 +2573,9 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                     // `val area: Int get() = w * h` is a
                                     // PROPERTY, not a field — it has no storage
                                     // and the accessor has to run on each read.
-                                    if let Some(prop) = walk_class_property(inner_member.clone()) {
-                                        members.push(prop);
+                                    let prop = walk_class_property(inner_member.clone());
+                                    if !prop.is_empty() {
+                                        members.extend(prop);
                                         continue;
                                     }
                                     // `val` is READ-ONLY, not `const`. Only
@@ -1202,10 +2587,10 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                     // `class B { val zz = "b" }` then read
                                     // `B().zz` as `undefined`. `VarDeclKind`
                                     // collapses the two, so ask the source.
-                                    let is_const_val = inner_member
-                                        .clone()
-                                        .into_inner()
-                                        .any(|p| p.as_rule() == Rule::modifier && p.as_str().trim() == "const");
+                                    let is_const_val = inner_member.clone().into_inner().any(|p| {
+                                        p.as_rule() == Rule::modifier
+                                            && p.as_str().trim() == "const"
+                                    });
                                     let is_readonly_val = inner_member
                                         .clone()
                                         .into_inner()
@@ -1244,10 +2629,18 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                 }
                                 Rule::companion_object => {
                                     if let Some(stmt) = walk_object_decl(inner_member) {
-                                        if let StmtKind::ClassDecl { members: comp_members, .. } = stmt.kind {
+                                        if let StmtKind::ClassDecl {
+                                            members: comp_members,
+                                            ..
+                                        } = stmt.kind
+                                        {
                                             for mut cm in comp_members {
                                                 if let ClassMember::Method(ref mut mstmt) = cm {
-                                                    if let StmtKind::FunctionDecl { ref mut modifiers, .. } = mstmt.kind {
+                                                    if let StmtKind::FunctionDecl {
+                                                        ref mut modifiers,
+                                                        ..
+                                                    } = mstmt.kind
+                                                    {
                                                         modifiers.is_static = true;
                                                     }
                                                 }
@@ -1272,6 +2665,185 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
     // block used to hand-build `componentN`, `copy`, `toString`, `equals` and
     // `hashCode` as raw AST, a second class implementation sitting beside the
     // one `classes.rs` already has (§0.1, §4a-ter).
+    CURRENT_CLASS_PARENT.with(|stack| {
+        stack.borrow_mut().pop();
+    });
+    if !name.is_empty() {
+        CURRENT_CLASS_STACK.with(|stack| {
+            stack.borrow_mut().pop();
+        });
+    }
+    if is_inner_class && !enclosing_classes.is_empty() {
+        INNER_OUTER_MEMBERS.with(|stack| {
+            stack.borrow_mut().pop();
+        });
+    }
+    // Every `super<I>.m()` the body used becomes an ADDITIVE alias on `I`'s
+    // augmentation. `bound_names` in the shared fold binds a renamed member
+    // under both its own name and the alias, so the class keeps its own `m`
+    // and still reaches the interface default.
+    let super_uses = SUPER_QUALIFIED_USES
+        .with(|stack| stack.borrow_mut().pop())
+        .unwrap_or_default();
+    for (from, member) in super_uses {
+        for m in &mut members {
+            if let ClassMember::Augment(decl) = m {
+                if decl.from == from
+                    && !decl
+                        .adjustments
+                        .iter()
+                        .any(|a| a.member == member && a.rename_to.is_some())
+                {
+                    decl.adjustments.push(AugmentAdjustment {
+                        member: member.clone(),
+                        rename_to: Some(super_alias(&from, &member)),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
+
+    // Declare the captures: a private field each, a leading constructor
+    // parameter each, and the assignment that binds them. The construction site
+    // passes them (see `LOCAL_CLASS_CAPTURES` at the `New` site).
+    if !captures.is_empty() && !name.is_empty() {
+        LOCAL_CLASS_CAPTURES.with(|m| m.borrow_mut().insert(name.clone(), captures.clone()));
+        for cap in &captures {
+            members.push(ClassMember::Field {
+                name: cap.clone(),
+                type_hint: None,
+                init: None,
+                modifiers: Modifiers {
+                    visibility: Visibility::Private,
+                    is_readonly: true,
+                    ..Default::default()
+                },
+                with_events: false,
+                array_bounds: None,
+            });
+        }
+        let capture_params: Vec<Param> = captures
+            .iter()
+            .map(|cap| Param {
+                name: cap.clone(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: true,
+            })
+            .collect();
+        let capture_assigns: Vec<Statement> = captures
+            .iter()
+            .map(|cap| {
+                Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+                    target: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::new(ExprKind::This)),
+                        field: cap.clone(),
+                        null_safe: false,
+                    })),
+                    value: Box::new(Expression::ident(cap)),
+                })))
+            })
+            .collect();
+        if !members
+            .iter()
+            .any(|m| matches!(m, ClassMember::Constructor { .. }))
+        {
+            primary_ctor_index = Some(members.len());
+            members.push(ClassMember::Constructor {
+                name: None,
+                params: Vec::new(),
+                body: Vec::new(),
+                base_args: base_args.clone(),
+                initializer_target: ConstructorInitializerTarget::Base,
+                visibility: Visibility::Public,
+            });
+        }
+        for member in &mut members {
+            if let ClassMember::Constructor { params, body, .. } = member {
+                let mut p = capture_params.clone();
+                p.extend(std::mem::take(params));
+                *params = p;
+                let mut b = capture_assigns.clone();
+                b.extend(std::mem::take(body));
+                *body = b;
+            }
+        }
+    }
+
+    if is_inner_class && !enclosing_classes.is_empty() {
+        let outer_name = enclosing_classes.last().cloned();
+        members.push(ClassMember::Field {
+            name: "__kt_outer".to_string(),
+            type_hint: outer_name.clone(),
+            init: Some(Expression::ident("__kt_outer")),
+            modifiers: Modifiers {
+                visibility: Visibility::Private,
+                is_readonly: true,
+                ..Default::default()
+            },
+            with_events: false,
+            array_bounds: None,
+        });
+        let outer_param = Param {
+            name: "__kt_outer".to_string(),
+            type_hint: outer_name,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: false,
+            is_nullable: false,
+        };
+        if !members
+            .iter()
+            .any(|m| matches!(m, ClassMember::Constructor { .. }))
+        {
+            primary_ctor_index = Some(members.len());
+            members.push(ClassMember::Constructor {
+                name: None,
+                params: Vec::new(),
+                body: Vec::new(),
+                base_args: base_args.clone(),
+                initializer_target: ConstructorInitializerTarget::Base,
+                visibility: Visibility::Public,
+            });
+        }
+        for member in &mut members {
+            if let ClassMember::Constructor { params, body, .. } = member {
+                params.insert(0, outer_param.clone());
+            }
+        }
+    }
+
+    // `class C : P { constructor() : super(1) { … } }` — no parentheses on `P`,
+    // because a SECONDARY constructor calls the base constructor instead. The
+    // parenthesis rule alone read `P` as an interface, so `C` had no superclass
+    // and every inherited member came back `undefined`. A `super(…)` delegation
+    // is the same statement of intent that `: P(…)` makes.
+    let delegates_to_super = members.iter().any(|m| {
+        matches!(
+            m,
+            ClassMember::Constructor {
+                initializer_target: ConstructorInitializerTarget::Base,
+                base_args: Some(_),
+                ..
+            }
+        )
+    });
+    if delegates_to_super && parents.is_empty() && !interfaces.is_empty() {
+        // Kotlin requires the superclass to be listed first.
+        let base = interfaces.remove(0);
+        members.retain(
+            |m| !matches!(m, ClassMember::Augment(d) if d.from == base && d.via_field.is_none()),
+        );
+        parents.push(base);
+    }
+
     // Give every `by` delegate its storage. A `val`/`var` primary-constructor
     // parameter already declared the field; a PLAIN parameter (`class B(base:
     // Counter) : Counter by base`) did not, and the forwarders read
@@ -1340,7 +2912,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                 visibility: Visibility::Public,
             });
         }
-        for member in &mut members {
+        for (idx, member) in members.iter_mut().enumerate() {
             if let ClassMember::Constructor {
                 body,
                 initializer_target,
@@ -1354,8 +2926,22 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                 if *initializer_target == ConstructorInitializerTarget::This {
                     continue;
                 }
-                let mut combined = init_stmts.clone();
-                combined.extend(std::mem::take(body));
+                // Kotlin runs the primary constructor's parameter bindings
+                // FIRST, then property initializers and `init` blocks in source
+                // order. Putting the initializers first made `class K(val x:
+                // Int) { init { println(this.x) } }` print `undefined` — the
+                // init block ran before `x` was ever assigned. A SECONDARY
+                // constructor is the other way round: the initializers are part
+                // of the object's construction and its own body runs last.
+                let mut combined = if Some(idx) == primary_ctor_index {
+                    std::mem::take(body)
+                } else {
+                    Vec::new()
+                };
+                combined.extend(init_stmts.clone());
+                if Some(idx) != primary_ctor_index {
+                    combined.extend(std::mem::take(body));
+                }
                 *body = combined;
             }
         }
@@ -1426,8 +3012,9 @@ fn walk_object_body_members(class_body: Pair<Rule>, statics: bool) -> Vec<ClassM
                 if !statics {
                     // An accessor-backed property has no storage; the shared
                     // `ClassMember::Property` carries it.
-                    if let Some(prop) = walk_class_property(inner_member.clone()) {
-                        members.push(prop);
+                    let prop = walk_class_property(inner_member.clone());
+                    if !prop.is_empty() {
+                        members.extend(prop);
                         continue;
                     }
                 }
@@ -2083,8 +3670,13 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                 } else {
                     let bin_op = match op_str {
                         "+=" => {
-                            if matches!(rhs.kind, ExprKind::Binary { op: BinOp::Concat, .. } | ExprKind::Lit(Literal::Str(_)))
-                                || matches!(lhs.kind, ExprKind::Lit(Literal::Str(_)))
+                            if matches!(
+                                rhs.kind,
+                                ExprKind::Binary {
+                                    op: BinOp::Concat,
+                                    ..
+                                } | ExprKind::Lit(Literal::Str(_))
+                            ) || matches!(lhs.kind, ExprKind::Lit(Literal::Str(_)))
                             {
                                 BinOp::Concat
                             } else {
@@ -2130,8 +3722,10 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
             while let Some(op_pair) = inner.next() {
                 let next_expr = walk_expr(inner.next().unwrap());
                 let op = match op_pair.as_str() {
-                    "==" | "===" => BinOp::Eq,
-                    "!=" | "!==" => BinOp::NotEq,
+                    "==" => BinOp::Eq,
+                    "!=" => BinOp::NotEq,
+                    "===" => BinOp::StrictEq,
+                    "!==" => BinOp::StrictNotEq,
                     _ => BinOp::Eq,
                 };
                 current = Expression::new(ExprKind::Binary {
@@ -2325,8 +3919,11 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                     // `range step n` — must convert range to 3-arg stepped form.
                     match current.kind.clone() {
                         // (a downTo b) step n  → replace -1 with -n
-                        ExprKind::Call { callee, mut args, optional }
-                            if matches!(&callee.kind, ExprKind::Ident(nm) if nm == "__kt_step_desc") =>
+                        ExprKind::Call {
+                            callee,
+                            mut args,
+                            optional,
+                        } if matches!(&callee.kind, ExprKind::Ident(nm) if nm == "__kt_step_desc") =>
                         {
                             if args.len() == 3 {
                                 args[2] = Argument::positional(Expression::new(ExprKind::Unary {
@@ -2334,10 +3931,18 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     expr: Box::new(next_expr),
                                 }));
                             }
-                            current = Expression::new(ExprKind::Call { callee, args, optional });
+                            current = Expression::new(ExprKind::Call {
+                                callee,
+                                args,
+                                optional,
+                            });
                         }
                         // (a..b) step n  or  (a until b) step n
-                        ExprKind::Range { start, end, inclusive } => {
+                        ExprKind::Range {
+                            start,
+                            end,
+                            inclusive,
+                        } => {
                             let stop = if inclusive {
                                 // inclusive end+1 so the 3-arg exclusive loop includes end
                                 Expression::new(ExprKind::Binary {
@@ -2423,11 +4028,35 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
             Expression::null()
         }
         Rule::postfix | Rule::delegate_expr => {
-            let mut inner = pair.into_inner();
-            let primary_pair = inner.next().unwrap();
+            let parts: Vec<_> = pair.into_inner().collect();
+            let primary_pair = parts[0].clone();
+            // `super<Base>` names WHICH supertype answers. The grammar has
+            // carried the qualifier since generics landed; the walker dropped
+            // it, so `super<A>.tag()` and `super<I>.tag()` compiled the same.
+            let super_qualifier: Option<String> = {
+                fn find_super_type(pair: Pair<Rule>) -> Option<String> {
+                    if pair.as_rule() == Rule::super_expr {
+                        return pair
+                            .into_inner()
+                            .find(|p| p.as_rule() == Rule::type_ref)
+                            .map(|p| p.as_str().trim().to_string());
+                    }
+                    pair.into_inner().find_map(find_super_type)
+                }
+                find_super_type(primary_pair.clone())
+            };
             let mut current = walk_expr(primary_pair);
 
-            for suffix_pair in inner {
+            for (idx, suffix_pair) in parts.iter().skip(1).enumerate() {
+                // Whether a call follows THIS suffix: `super.v` is a property
+                // read, `super.v()` is a call, and only the second is a
+                // `SuperCall`.
+                let next_is_call = parts
+                    .get(idx + 2)
+                    .and_then(|p| p.clone().into_inner().next())
+                    .map(|q| q.as_rule() == Rule::call_suffix)
+                    .unwrap_or(false);
+                let suffix_pair = suffix_pair.clone();
                 let suffix_inner = suffix_pair.into_inner().next().unwrap();
                 match suffix_inner.as_rule() {
                     Rule::type_args => {
@@ -2471,7 +4100,12 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                             }
                         }
 
-                        if let ExprKind::Member { ref object, ref field, null_safe: _ } = current.clone().kind {
+                        if let ExprKind::Member {
+                            ref object,
+                            ref field,
+                            null_safe: _,
+                        } = current.clone().kind
+                        {
                             match field.as_str() {
                                 "put" if args.len() == 2 => {
                                     current = Expression::new(ExprKind::Assign {
@@ -2515,13 +4149,14 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                 // Member block below via __coll_push, which works uniformly
                                 // for both list (array.push) and set (set semantics via
                                 // array.push on the keys array). Do NOT intercept it here.
-
                                 "remove" if args.len() == 1 => {
-                                    current = Expression::new(ExprKind::Delete(Box::new(Expression::new(ExprKind::Index {
-                                        object: object.clone(),
-                                        index: Box::new(args[0].value.clone()),
-                                        null_safe: false,
-                                    }))));
+                                    current = Expression::new(ExprKind::Delete(Box::new(
+                                        Expression::new(ExprKind::Index {
+                                            object: object.clone(),
+                                            index: Box::new(args[0].value.clone()),
+                                            null_safe: false,
+                                        }),
+                                    )));
                                     continue;
                                 }
                                 "clear" if args.is_empty() => {
@@ -2568,15 +4203,32 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         };
 
                         if let Some(ref fn_name) = func_name {
-                            if fn_name == "Pair" && args.len() == 2 {
-                                current = create_pair_expr(args[0].value.clone(), args[1].value.clone());
+                            if fn_name == "Pair" && args.len() == 2 && !is_user_class_name(fn_name)
+                            {
+                                current =
+                                    create_pair_expr(args[0].value.clone(), args[1].value.clone());
                                 continue;
                             }
-                            if fn_name == "Triple" && args.len() == 3 {
-                                current = create_triple_expr(args[0].value.clone(), args[1].value.clone(), args[2].value.clone());
+                            if fn_name == "Triple"
+                                && args.len() == 3
+                                && !is_user_class_name(fn_name)
+                            {
+                                current = create_triple_expr(
+                                    args[0].value.clone(),
+                                    args[1].value.clone(),
+                                    args[2].value.clone(),
+                                );
                                 continue;
                             }
-                            if matches!(fn_name.as_str(), "mapOf" | "mutableMapOf" | "linkedMapOf" | "hashMapOf" | "buildMap" | "emptyMap") {
+                            if matches!(
+                                fn_name.as_str(),
+                                "mapOf"
+                                    | "mutableMapOf"
+                                    | "linkedMapOf"
+                                    | "hashMapOf"
+                                    | "buildMap"
+                                    | "emptyMap"
+                            ) {
                                 let mut props = Vec::new();
                                 for arg in args {
                                     if let ExprKind::Object(ref pair_props) = arg.value.kind {
@@ -2586,15 +4238,22 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                             if let ObjectProperty::KeyValue { key, value } = p {
                                                 if let ExprKind::Lit(Literal::Str(s)) = &key.kind {
                                                     if s == "0" || s == "first" {
-                                                        if k_expr.is_none() { k_expr = Some(value.clone()); }
+                                                        if k_expr.is_none() {
+                                                            k_expr = Some(value.clone());
+                                                        }
                                                     } else if s == "1" || s == "second" {
-                                                        if v_expr.is_none() { v_expr = Some(value.clone()); }
+                                                        if v_expr.is_none() {
+                                                            v_expr = Some(value.clone());
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
                                         if let (Some(k), Some(v)) = (k_expr, v_expr) {
-                                            props.push(ObjectProperty::KeyValue { key: k, value: v });
+                                            props.push(ObjectProperty::KeyValue {
+                                                key: k,
+                                                value: v,
+                                            });
                                             continue;
                                         }
                                     }
@@ -2632,24 +4291,115 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                 current = create_map_expr(props);
                                 continue;
                             }
-                            if matches!(fn_name.as_str(), "setOf" | "mutableSetOf" | "linkedSetOf" | "hashSetOf" | "buildSet" | "emptySet") {
+                            if matches!(
+                                fn_name.as_str(),
+                                "setOf"
+                                    | "mutableSetOf"
+                                    | "linkedSetOf"
+                                    | "hashSetOf"
+                                    | "buildSet"
+                                    | "emptySet"
+                            ) {
                                 let elems = args.into_iter().map(|a| a.value).collect();
                                 current = create_kotlin_set_expr(elems);
                                 continue;
                             }
-                            if matches!(fn_name.as_str(), "listOf" | "mutableListOf" | "arrayOf" | "emptyList" | "intArrayOf" | "doubleArrayOf" | "booleanArrayOf" | "charArrayOf" | "longArrayOf" | "sequenceOf") {
-                                let elements = args.into_iter().map(|a| ArrayElement {
-                                    key: None,
-                                    value: a.value,
-                                    spread: false,
-                                    by_ref: false,
-                                }).collect();
+                            if fn_name == "joinToString" && !args.is_empty() {
+                                let separator =
+                                    args.get(1).map(|arg| arg.value.clone()).unwrap_or_else(|| {
+                                        Expression::new(ExprKind::Lit(Literal::Str(
+                                            ", ".to_string(),
+                                        )))
+                                    });
+                                current = Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::ident("__coll_join")),
+                                    args: vec![
+                                        Argument::positional(args[0].value.clone()),
+                                        Argument::positional(separator),
+                                    ],
+                                    optional: false,
+                                });
+                                continue;
+                            }
+                            if matches!(
+                                fn_name.as_str(),
+                                "listOf"
+                                    | "mutableListOf"
+                                    | "arrayOf"
+                                    | "emptyList"
+                                    | "intArrayOf"
+                                    | "doubleArrayOf"
+                                    | "booleanArrayOf"
+                                    | "charArrayOf"
+                                    | "longArrayOf"
+                                    | "sequenceOf"
+                            ) {
+                                let elements = args
+                                    .into_iter()
+                                    .map(|a| ArrayElement {
+                                        key: None,
+                                        value: a.value,
+                                        spread: false,
+                                        by_ref: false,
+                                    })
+                                    .collect();
                                 current = Expression::new(ExprKind::Array(elements));
                                 continue;
                             }
                         }
 
-                        if let ExprKind::Member { ref object, ref field, .. } = current.kind {
+                        // `x.ext(a)` where `ext` is a top-level `fun X.ext(a)`
+                        // — an extension is a FUNCTION whose first parameter is
+                        // the receiver, so the receiver moves into the argument
+                        // list. A real member of the same name wins, which is
+                        // Kotlin's rule.
+                        if let ExprKind::Member {
+                            ref object,
+                            ref field,
+                            ..
+                        } = current.kind
+                        {
+                            if is_extension_function(field)
+                                && !is_user_member_name(field, args.len())
+                            {
+                                let mut ext_args = vec![Argument::positional(*object.clone())];
+                                ext_args.extend(args);
+                                current = Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::ident(field)),
+                                    args: ext_args,
+                                    optional: false,
+                                });
+                                continue;
+                            }
+                        }
+
+                        if let ExprKind::Member { ref mut field, .. } = current.kind {
+                            if let Some(storage_name) = overloaded_storage_name(field, args.len()) {
+                                *field = storage_name;
+                            }
+                        }
+
+                        // A member some class in this source DECLARES is never
+                        // rewritten to a collection primitive. The rewrites
+                        // below match on SPELLING and cannot see the receiver's
+                        // type, so `class Calc { fun add(x: Int) = base + x }`
+                        // had `c.add(3)` compiled as an array push, answering
+                        // `1`. Twenty collection names were stolen this way from
+                        // every object in the program. A declared member wins,
+                        // which is Kotlin's own rule.
+                        let rewritable = match current.kind {
+                            ExprKind::Member { ref field, .. } => {
+                                !is_user_member_name(field, args.len())
+                            }
+                            _ => false,
+                        };
+                        if let ExprKind::Member {
+                            ref object,
+                            ref field,
+                            ..
+                        } = current.kind
+                            && rewritable
+                        {
                             match field.as_str() {
                                 "put" if args.len() == 2 => {
                                     current = Expression::new(ExprKind::Assign {
@@ -2736,11 +4486,13 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     continue;
                                 }
                                 "remove" if args.len() == 1 => {
-                                    current = Expression::new(ExprKind::Delete(Box::new(Expression::new(ExprKind::Index {
-                                        object: object.clone(),
-                                        index: Box::new(args[0].value.clone()),
-                                        null_safe: false,
-                                    }))));
+                                    current = Expression::new(ExprKind::Delete(Box::new(
+                                        Expression::new(ExprKind::Index {
+                                            object: object.clone(),
+                                            index: Box::new(args[0].value.clone()),
+                                            null_safe: false,
+                                        }),
+                                    )));
                                     continue;
                                 }
                                 "removeAt" if args.len() == 1 => {
@@ -2823,7 +4575,26 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     });
                                     continue;
                                 }
-                                "joinToString" if !args.is_empty() => {
+                                "joinToString" if args.len() >= 2 => {
+                                    let mapped = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__array_map")),
+                                        args: vec![
+                                            Argument::positional(*object.clone()),
+                                            args[1].clone(),
+                                        ],
+                                        optional: false,
+                                    });
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__coll_join")),
+                                        args: vec![
+                                            Argument::positional(mapped),
+                                            Argument::positional(args[0].value.clone()),
+                                        ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "joinToString" if args.len() == 1 => {
                                     current = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::ident("__coll_join")),
                                         args: vec![
@@ -2839,8 +4610,30 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                         callee: Box::new(Expression::ident("__coll_join")),
                                         args: vec![
                                             Argument::positional(*object.clone()),
-                                            Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(", ".to_string())))),
+                                            Argument::positional(Expression::new(ExprKind::Lit(
+                                                Literal::Str(", ".to_string()),
+                                            ))),
                                         ],
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "sortedBy" if args.len() == 1 => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::new(ExprKind::Member {
+                                            object: object.clone(),
+                                            field: "sort".to_string(),
+                                            null_safe: false,
+                                        })),
+                                        args,
+                                        optional: false,
+                                    });
+                                    continue;
+                                }
+                                "contentToString" if args.is_empty() => {
+                                    current = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__kt_tostring")),
+                                        args: vec![Argument::positional(*object.clone())],
                                         optional: false,
                                     });
                                     continue;
@@ -2982,6 +4775,11 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         };
                         let is_class_name = match &current.kind {
                             ExprKind::Ident(name) => is_type_spelling(name),
+                            ExprKind::Member { field, .. }
+                                if qualified_inner_class(field).is_some() =>
+                            {
+                                true
+                            }
                             // Only a chain of plain idents is a qualified type
                             // name; `expr.Foo()` is a method call on a value.
                             ExprKind::Member { object, field, .. } => {
@@ -2991,13 +4789,64 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         };
 
                         if is_class_name {
+                            if let ExprKind::Member { object, field, .. } = &current.kind {
+                                if let Some(qualified) = qualified_inner_class(field) {
+                                    let mut with_outer =
+                                        vec![Argument::positional(*object.clone())];
+                                    with_outer.extend(args);
+                                    args = with_outer;
+                                    current = qualified_type_expr(&qualified);
+                                }
+                            } else if let ExprKind::Ident(cname) = &current.kind {
+                                if let Some(qualified) = qualified_inner_class(cname) {
+                                    let owner = qualified
+                                        .rsplit_once('.')
+                                        .map(|(owner, _)| owner)
+                                        .unwrap_or("");
+                                    let inside_owner = CURRENT_CLASS_STACK.with(|stack| {
+                                        stack.borrow().iter().any(|name| name == owner)
+                                    });
+                                    if inside_owner {
+                                        let mut with_outer = vec![Argument::positional(
+                                            Expression::new(ExprKind::This),
+                                        )];
+                                        with_outer.extend(args);
+                                        args = with_outer;
+                                        current = qualified_type_expr(&qualified);
+                                    }
+                                }
+                            }
+                            // A local class receives what it captured, ahead of
+                            // whatever the source passes.
+                            if let ExprKind::Ident(ref cname) = current.kind {
+                                let caps = LOCAL_CLASS_CAPTURES
+                                    .with(|m| m.borrow().get(cname).cloned())
+                                    .unwrap_or_default();
+                                if !caps.is_empty() {
+                                    let mut with_caps: Vec<Argument> = caps
+                                        .iter()
+                                        .map(|c| Argument::positional(Expression::ident(c)))
+                                        .collect();
+                                    with_caps.extend(args);
+                                    args = with_caps;
+                                }
+                            }
                             current = Expression::new(ExprKind::New {
                                 class: Box::new(current),
                                 args,
                             });
                         } else {
-                            if let ExprKind::Member { ref object, ref field, .. } = current.kind {
-                                if matches!(field.as_str(), "filter" | "filterNot" | "map" | "forEach") && args.len() == 1 {
+                            if let ExprKind::Member {
+                                ref object,
+                                ref field,
+                                ..
+                            } = current.kind
+                            {
+                                if matches!(
+                                    field.as_str(),
+                                    "filter" | "filterNot" | "map" | "forEach"
+                                ) && args.len() == 1
+                                {
                                     let iter_target = Expression::new(ExprKind::Ternary {
                                         cond: Box::new(Expression::new(ExprKind::Call {
                                             callee: Box::new(Expression::ident("__coll_is_array")),
@@ -3064,11 +4913,70 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         }
                     }
                     Rule::member_suffix => {
-                        let field_id = suffix_inner.into_inner().next().unwrap().as_str().to_string();
+                        let field_id = suffix_inner
+                            .into_inner()
+                            .next()
+                            .unwrap()
+                            .as_str()
+                            .to_string();
                         if let ExprKind::Super = current.kind {
-                            current = Expression::new(ExprKind::SuperCall {
-                                method: Some(field_id),
-                                args: vec![],
+                            let parent = CURRENT_CLASS_PARENT
+                                .with(|stack| stack.borrow().last().cloned().flatten());
+                            let qualifies_interface = super_qualifier
+                                .as_ref()
+                                .is_some_and(|q| parent.as_deref() != Some(q.as_str()));
+                            if !next_is_call {
+                                // A stored `override val` shares the base's slot
+                                // and initializers run base-first, so at the
+                                // point the override's initializer runs, the
+                                // field still holds the BASE's value. That is
+                                // exactly what `super.p` names.
+                                current = Expression::new(ExprKind::Member {
+                                    object: Box::new(Expression::new(ExprKind::This)),
+                                    field: field_id,
+                                    null_safe: false,
+                                });
+                            } else if qualifies_interface {
+                                // `super<I>.m()` — the class's own `m` shadowed
+                                // the interface default, so reach it through the
+                                // ALIAS the augmentation binds it under. The
+                                // shared fold's `rename_to` is additive, which
+                                // is the whole mechanism (§4c).
+                                let from = super_qualifier.clone().unwrap();
+                                SUPER_QUALIFIED_USES.with(|stack| {
+                                    if let Some(top) = stack.borrow_mut().last_mut() {
+                                        top.push((from.clone(), field_id.clone()));
+                                    }
+                                });
+                                current = Expression::new(ExprKind::Member {
+                                    object: Box::new(Expression::new(ExprKind::This)),
+                                    field: super_alias(&from, &field_id),
+                                    null_safe: false,
+                                });
+                            } else {
+                                current = Expression::new(ExprKind::SuperCall {
+                                    method: Some(field_id),
+                                    args: vec![],
+                                });
+                            }
+                        } else if is_extension_property(&field_id)
+                            && !is_user_property_name(&field_id)
+                        {
+                            current = Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident(&field_id)),
+                                args: vec![Argument::positional(current)],
+                                optional: false,
+                            });
+                        } else if is_user_property_name(&field_id) {
+                            // A property a class in this source declares is an
+                            // ordinary member read. The rewrites below match on
+                            // SPELLING, so `data class Counter(val values:
+                            // MutableList<Int>)` had `a.values` answer the
+                            // OBJECT's members via `__dict_values`.
+                            current = Expression::new(ExprKind::Member {
+                                object: Box::new(current),
+                                field: field_id.clone(),
+                                null_safe: false,
                             });
                         } else {
                             match field_id.as_str() {
@@ -3170,7 +5078,12 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         }
                     }
                     Rule::safe_call_suffix => {
-                        let field_id = suffix_inner.into_inner().next().unwrap().as_str().to_string();
+                        let field_id = suffix_inner
+                            .into_inner()
+                            .next()
+                            .unwrap()
+                            .as_str()
+                            .to_string();
                         current = Expression::new(ExprKind::Member {
                             object: Box::new(current),
                             field: field_id,
@@ -3179,7 +5092,15 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                     }
                     Rule::index_suffix => {
                         let index_pair = suffix_inner.into_inner().next().unwrap();
-                        let idx_expr = walk_expr(index_pair.into_inner().next().unwrap().into_inner().next().unwrap());
+                        let idx_expr = walk_expr(
+                            index_pair
+                                .into_inner()
+                                .next()
+                                .unwrap()
+                                .into_inner()
+                                .next()
+                                .unwrap(),
+                        );
                         current = Expression::new(ExprKind::Index {
                             object: Box::new(current),
                             index: Box::new(idx_expr),
@@ -3194,7 +5115,11 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                     }
                     Rule::inc_suffix => {
                         let op_str = suffix_inner.as_str();
-                        let bin_op = if op_str == "++" { BinOp::Add } else { BinOp::Sub };
+                        let bin_op = if op_str == "++" {
+                            BinOp::Add
+                        } else {
+                            BinOp::Sub
+                        };
                         current = Expression::new(ExprKind::Assign {
                             target: Box::new(current.clone()),
                             value: Box::new(Expression::new(ExprKind::Binary {
@@ -3212,7 +5137,13 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
         Rule::primary => {
             let inner = pair.into_inner().next().unwrap();
             match inner.as_rule() {
-                Rule::identifier => Expression::ident(inner.as_str()),
+                Rule::identifier => {
+                    let name = backing_field_substitution(inner.as_str());
+                    inner_outer_read(&name)
+                        .or_else(|| extension_receiver_read(&name))
+                        .unwrap_or_else(|| Expression::ident(&name))
+                }
+                Rule::callable_ref => walk_callable_ref(inner),
                 Rule::literal => walk_literal(inner),
                 Rule::this_kw => Expression::new(ExprKind::This),
                 Rule::super_kw => Expression::new(ExprKind::Super),
@@ -3221,7 +5152,25 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                 // itself is still `this` / `super`, so the concept node is the
                 // same one an unqualified occurrence produces and no downstream
                 // path has to learn a second shape.
-                Rule::this_expr => Expression::new(ExprKind::This),
+                Rule::this_expr => {
+                    let text = inner.as_str();
+                    if let Some(label) = text.split_once('@').map(|(_, label)| label.trim()) {
+                        INNER_OUTER_MEMBERS.with(|stack| {
+                            stack
+                                .borrow()
+                                .last()
+                                .and_then(|outers| {
+                                    outers
+                                        .iter()
+                                        .position(|(name, _)| name == label)
+                                        .map(|idx| outer_this(idx + 1))
+                                })
+                                .unwrap_or_else(|| Expression::new(ExprKind::This))
+                        })
+                    } else {
+                        Expression::new(ExprKind::This)
+                    }
+                }
                 Rule::super_expr => Expression::new(ExprKind::Super),
                 Rule::lambda_literal => walk_lambda(inner),
                 Rule::object_expr => {
@@ -3255,32 +5204,96 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                 }
                             }
                             Rule::class_body => {
-                                members.extend(walk_object_body_members(osub, false));
+                                let mut body_members = walk_object_body_members(osub, false);
+                                // An anonymous object has no constructor of its
+                                // own, so its property initializers had nothing
+                                // to run them — `object { val v = 4 }` left `v`
+                                // undefined. Give it the one Kotlin gives it.
+                                let mut inits = Vec::new();
+                                for m in &mut body_members {
+                                    if let ClassMember::Field {
+                                        name: fname,
+                                        init: field_init,
+                                        ..
+                                    } = m
+                                    {
+                                        if let Some(value) = field_init.take() {
+                                            inits.push(Statement::new(StmtKind::Expr(
+                                                Expression::new(ExprKind::Assign {
+                                                    target: Box::new(Expression::new(
+                                                        ExprKind::Member {
+                                                            object: Box::new(Expression::new(
+                                                                ExprKind::This,
+                                                            )),
+                                                            field: fname.clone(),
+                                                            null_safe: false,
+                                                        },
+                                                    )),
+                                                    value: Box::new(value),
+                                                }),
+                                            )));
+                                        }
+                                    }
+                                }
+                                members.extend(body_members);
+                                if !inits.is_empty() {
+                                    members.push(ClassMember::Constructor {
+                                        name: None,
+                                        params: Vec::new(),
+                                        body: inits,
+                                        base_args: None,
+                                        initializer_target: ConstructorInitializerTarget::Base,
+                                        visibility: Visibility::Public,
+                                    });
+                                }
                             }
                             _ => {}
                         }
                     }
-                    Expression::new(ExprKind::ClassExpr {
-                        name: None,
-                        parent,
-                        interfaces,
-                        members,
+                    // Kotlin's `object : I { … }` evaluates to an INSTANCE, not
+                    // to the class. `ClassExpr` alone leaves the class object on
+                    // the stack (that is JS's `class {}` expression), so every
+                    // property read on it answered `undefined` and every method
+                    // ran with the class as receiver.
+                    Expression::new(ExprKind::New {
+                        class: Box::new(Expression::new(ExprKind::ClassExpr {
+                            name: None,
+                            parent,
+                            interfaces,
+                            members,
+                        })),
+                        args: Vec::new(),
                     })
                 }
                 Rule::if_expr => {
                     let stmt = walk_if_stmt(inner).unwrap();
-                    if let StmtKind::If { cond, then_body, else_body, .. } = stmt.kind {
-                        let then_expr = then_body.into_iter().last().and_then(|s| match s.kind {
-                            StmtKind::Expr(e) => Some(e),
-                            StmtKind::Return(Some(e)) => Some(e),
-                            _ => None,
-                        }).unwrap_or_else(Expression::null);
+                    if let StmtKind::If {
+                        cond,
+                        then_body,
+                        else_body,
+                        ..
+                    } = stmt.kind
+                    {
+                        let then_expr = then_body
+                            .into_iter()
+                            .last()
+                            .and_then(|s| match s.kind {
+                                StmtKind::Expr(e) => Some(e),
+                                StmtKind::Return(Some(e)) => Some(e),
+                                _ => None,
+                            })
+                            .unwrap_or_else(Expression::null);
 
-                        let else_expr = else_body.unwrap_or_default().into_iter().last().and_then(|s| match s.kind {
-                            StmtKind::Expr(e) => Some(e),
-                            StmtKind::Return(Some(e)) => Some(e),
-                            _ => None,
-                        }).unwrap_or_else(Expression::null);
+                        let else_expr = else_body
+                            .unwrap_or_default()
+                            .into_iter()
+                            .last()
+                            .and_then(|s| match s.kind {
+                                StmtKind::Expr(e) => Some(e),
+                                StmtKind::Return(Some(e)) => Some(e),
+                                _ => None,
+                            })
+                            .unwrap_or_else(Expression::null);
 
                         Expression::new(ExprKind::Ternary {
                             cond: Box::new(cond),
@@ -3362,11 +5375,7 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                             }
                         }
 
-                        let conditions = if is_else {
-                            None
-                        } else {
-                            Some(cond_exprs)
-                        };
+                        let conditions = if is_else { None } else { Some(cond_exprs) };
 
                         arms.push(MatchArm {
                             conditions,
@@ -3446,13 +5455,14 @@ fn infix_bitwise_op(op: &str) -> Option<BinOp> {
 fn parse_int_literal(raw: &str) -> i64 {
     let cleaned: String = raw.chars().filter(|c| *c != '_').collect();
     let body = cleaned.trim_end_matches(['L', 'l', 'u', 'U']);
-    let (digits, radix) = if let Some(rest) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
-        (rest, 16)
-    } else if let Some(rest) = body.strip_prefix("0b").or_else(|| body.strip_prefix("0B")) {
-        (rest, 2)
-    } else {
-        (body, 10)
-    };
+    let (digits, radix) =
+        if let Some(rest) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+            (rest, 16)
+        } else if let Some(rest) = body.strip_prefix("0b").or_else(|| body.strip_prefix("0B")) {
+            (rest, 2)
+        } else {
+            (body, 10)
+        };
     i64::from_str_radix(digits, radix).unwrap_or(0)
 }
 
@@ -3564,7 +5574,10 @@ fn interpolated_part(expr: Expression) -> Expression {
 fn collect_string_parts(pair: Pair<Rule>, parts: &mut Vec<Expression>) {
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::raw_string_literal | Rule::plain_string_literal | Rule::string_content | Rule::raw_string_content => {
+            Rule::raw_string_literal
+            | Rule::plain_string_literal
+            | Rule::string_content
+            | Rule::raw_string_content => {
                 collect_string_parts(child, parts);
             }
             Rule::str_text | Rule::raw_str_text => {
@@ -3599,13 +5612,17 @@ fn collect_string_parts(pair: Pair<Rule>, parts: &mut Vec<Expression>) {
             }
             Rule::str_interpolated_var => {
                 if let Some(id_pair) = child.into_inner().next() {
-                    parts.push(interpolated_part(Expression::ident(id_pair.as_str())));
+                    let name = backing_field_substitution(id_pair.as_str());
+                    let expr = inner_outer_read(&name)
+                        .or_else(|| extension_receiver_read(&name))
+                        .unwrap_or_else(|| Expression::ident(&name));
+                    parts.push(interpolated_part(expr));
                 }
             }
             Rule::str_interpolated_expr => {
                 let raw = child.as_str();
                 if raw.starts_with("${") && raw.ends_with('}') {
-                    let inner_str = raw[2..raw.len()-1].trim();
+                    let inner_str = raw[2..raw.len() - 1].trim();
                     let unescaped = inner_str.replace("\\\"", "\"");
                     if let Ok(mut pairs) = KotlinParser::parse(Rule::expr, &unescaped) {
                         if let Some(epair) = pairs.next() {

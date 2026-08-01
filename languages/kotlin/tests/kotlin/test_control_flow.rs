@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_if_else() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val x = 10
             if (x > 5) {
@@ -11,26 +12,30 @@ fn test_if_else() {
                 println("smaller")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["greater"]);
 }
 
 #[test]
 fn test_if_expression() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val a = 7
             val b = 12
             val max = if (a > b) a else b
             println(max)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["12"]);
 }
 
 #[test]
 fn test_while_loop() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var i = 0
             while (i < 3) {
@@ -38,25 +43,29 @@ fn test_while_loop() {
                 i += 1
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "1", "2"]);
 }
 
 #[test]
 fn test_for_range() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             for (i in 1..3) {
                 println(i)
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "2", "3"]);
 }
 
 #[test]
 fn test_do_while_loop() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var x = 5
             do {
@@ -64,13 +73,15 @@ fn test_do_while_loop() {
                 x -= 2
             } while (x > 0)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5", "3", "1"]);
 }
 
 #[test]
 fn test_break_and_continue() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             for (i in 1..5) {
                 if (i == 2) continue
@@ -78,13 +89,15 @@ fn test_break_and_continue() {
                 println(i)
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "3"]);
 }
 
 #[test]
 fn test_if_else_if_ladder() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val score = 85
             if (score >= 90) {
@@ -95,13 +108,15 @@ fn test_if_else_if_ladder() {
                 println("C")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["B"]);
 }
 
 #[test]
 fn test_nested_loops() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             for (i in 1..2) {
                 for (j in 1..2) {
@@ -109,13 +124,15 @@ fn test_nested_loops() {
                 }
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["11", "12", "21", "22"]);
 }
 
 #[test]
 fn test_while_with_break() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var count = 0
             while (true) {
@@ -124,13 +141,15 @@ fn test_while_with_break() {
                 count += 1
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "1", "2"]);
 }
 
 #[test]
 fn test_while_with_continue() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var i = 0
             while (i < 5) {
@@ -139,24 +158,28 @@ fn test_while_with_continue() {
                 println(i)
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "3", "5"]);
 }
 
 #[test]
 fn test_single_line_if() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val x = 10
             if (x > 0) println("positive")
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["positive"]);
 }
 
 #[test]
 fn test_when_statement_basic() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val x = 2
             when (x) {
@@ -164,13 +187,15 @@ fn test_when_statement_basic() {
                 2 -> println("two")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["two"]);
 }
 
 #[test]
 fn test_when_statement_else() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val x = 99
             when (x) {
@@ -178,13 +203,15 @@ fn test_when_statement_else() {
                 else -> println("other")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["other"]);
 }
 
 #[test]
 fn test_for_loop_accumulation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var total = 0
             for (i in 1..4) {
@@ -192,13 +219,15 @@ fn test_for_loop_accumulation() {
             }
             println(total)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["10"]);
 }
 
 #[test]
 fn test_nested_if_expressions() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val a = 5
             val b = 10
@@ -206,13 +235,15 @@ fn test_nested_if_expressions() {
             val max = if (a > b) (if (a > c) a else c) else (if (b > c) b else c)
             println(max)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["15"]);
 }
 
 #[test]
 fn test_for_range_with_step() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var sum = 0
             for (i in 1..7 step 2) {
@@ -220,13 +251,15 @@ fn test_for_range_with_step() {
             }
             println(sum)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["16"]);
 }
 
 #[test]
 fn test_do_while_terminates() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var i = 0
             do {
@@ -234,13 +267,15 @@ fn test_do_while_terminates() {
                 i += 1
             } while (i < 3)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "1", "2", "3"]);
 }
 
 #[test]
 fn test_while_with_nested_break() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var outer = 0
             while (outer < 3) {
@@ -253,13 +288,15 @@ fn test_while_with_nested_break() {
                 outer += 1
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "10", "20"]);
 }
 
 #[test]
 fn test_when_as_expression_in_assignment() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val score = 77
             val grade = when (score) {
@@ -270,13 +307,15 @@ fn test_when_as_expression_in_assignment() {
             }
             println(grade)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["C"]);
 }
 
 #[test]
 fn test_if_guard_in_when() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val x = 10
             when {
@@ -285,13 +324,15 @@ fn test_if_guard_in_when() {
                 x > 0 -> println("positive")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["positive"]);
 }
 
 #[test]
 fn test_if_else_nested_with_scopes() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val score = 82
             if (score >= 70) {
@@ -304,13 +345,15 @@ fn test_if_else_nested_with_scopes() {
                 println("fail")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["pass-a"]);
 }
 
 #[test]
 fn test_while_not_entered() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var entered = false
             while (false) {
@@ -318,13 +361,15 @@ fn test_while_not_entered() {
             }
             println(entered)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["false"]);
 }
 
 #[test]
 fn test_for_with_destructuring_loop() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var total = 0
             for ((x, y) in arrayOf(Pair(1, 2), Pair(3, 4))) {
@@ -332,13 +377,15 @@ fn test_for_with_destructuring_loop() {
             }
             println(total)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["10"]);
 }
 
 #[test]
 fn test_do_while_runs_once_when_false() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var n = 0
             do {
@@ -346,13 +393,15 @@ fn test_do_while_runs_once_when_false() {
             } while (n > 10)
             println(n)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1"]);
 }
 
 #[test]
 fn test_while_with_continue_and_nested_if() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var count = 0
             var i = 0
@@ -365,13 +414,15 @@ fn test_while_with_continue_and_nested_if() {
             }
             println(count)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["12"]);
 }
 
 #[test]
 fn test_for_range_down_to_accumulator() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var total = 0
             for (i in 8 downTo 3) {
@@ -379,13 +430,15 @@ fn test_for_range_down_to_accumulator() {
             }
             println(total)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["33"]);
 }
 
 #[test]
 fn test_while_with_if_assignment() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var total = 0
             var i = 0
@@ -396,13 +449,15 @@ fn test_while_with_if_assignment() {
             }
             println(total)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["8"]);
 }
 
 #[test]
 fn test_while_inner_nested_break() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var outer = 0
             while (outer < 4) {
@@ -420,13 +475,15 @@ fn test_while_inner_nested_break() {
                 }
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "2"]);
 }
 
 #[test]
 fn test_when_with_boolean_branches() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val isReady = true
             when {
@@ -435,25 +492,29 @@ fn test_when_with_boolean_branches() {
                 else -> println("maybe")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["yes"]);
 }
 
 #[test]
 fn test_if_expression_used_in_assignment() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val count = 6
             val label = if (count > 10) "large" else if (count >= 5) "medium" else "small"
             println(label)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["medium"]);
 }
 
 #[test]
 fn test_until_range_excludes_upper_bound() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var total = 0
             for (i in 1 until 4) {
@@ -461,13 +522,15 @@ fn test_until_range_excludes_upper_bound() {
             }
             println(total)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["6"]);
 }
 
 #[test]
 fn test_for_loop_with_indices_and_stride() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val nums = arrayOf(2, 4, 6, 8, 10)
             var total = 0
@@ -476,13 +539,15 @@ fn test_for_loop_with_indices_and_stride() {
             }
             println(total)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["18"]);
 }
 
 #[test]
 fn test_while_with_postcondition_and_early_exit() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var i = 1
             var total = 0
@@ -494,13 +559,15 @@ fn test_while_with_postcondition_and_early_exit() {
             println(total)
             println(i)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["6", "3"]);
 }
 
 #[test]
 fn test_labeled_break_exits_outer_loop_only() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var values = ""
             outer@ for (outer in 1..3) {
@@ -513,13 +580,15 @@ fn test_labeled_break_exits_outer_loop_only() {
             }
             println(values)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["111;112;21;"]);
 }
 
 #[test]
 fn test_labeled_continue_skips_to_next_outer_iteration() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var values = ""
             outer@ for (outer in 1..3) {
@@ -530,13 +599,15 @@ fn test_labeled_continue_skips_to_next_outer_iteration() {
             }
             println(values)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["11;21;31;"]);
 }
 
 #[test]
 fn test_while_loop_as_expression_in_assignment() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var i = 0
             val sum = run {
@@ -549,13 +620,15 @@ fn test_while_loop_as_expression_in_assignment() {
             }
             println(sum)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_when_with_guard_and_fallthrough_logic() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val score = 92
             val label = when (score) {
@@ -565,13 +638,15 @@ fn test_when_with_guard_and_fallthrough_logic() {
             }
             println(label)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["A"]);
 }
 
 #[test]
 fn test_when_with_is_type_checks() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val value: Any = "kotlin"
             val category = when (value) {
@@ -582,13 +657,15 @@ fn test_when_with_is_type_checks() {
             }
             println(category)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["string"]);
 }
 
 #[test]
 fn test_if_expression_chain_and_type_flow() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val x = 10
             val tier = if (x > 20) "high" else if (x > 5) "mid" else "low"
@@ -597,13 +674,15 @@ fn test_if_expression_chain_and_type_flow() {
                 println("statement")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["mid", "statement"]);
 }
 
 #[test]
 fn test_do_while_with_continue_and_break() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var i = 0
             var out = ""
@@ -615,13 +694,15 @@ fn test_do_while_with_continue_and_break() {
             } while (i < 6)
             println(out)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["134"]);
 }
 
 #[test]
 fn test_repeat_iterates_exact_times() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var total = 0
             repeat(4) { index ->
@@ -634,13 +715,15 @@ fn test_repeat_iterates_exact_times() {
             }
             println(markers.isEmpty())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["6", "true"]);
 }
 
 #[test]
 fn test_char_range_for_loop() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var letters = ""
             for (c in 'a'..'d') {
@@ -648,13 +731,15 @@ fn test_char_range_for_loop() {
             }
             println(letters)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["abcd"]);
 }
 
 #[test]
 fn test_for_down_to_step_negative_offset() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var nums = ""
             for (n in 9 downTo 3 step 2) {
@@ -662,13 +747,15 @@ fn test_for_down_to_step_negative_offset() {
             }
             println(nums)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["9753"]);
 }
 
 #[test]
 fn test_while_loop_with_labeled_break() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var trace = ""
             var outer = 0
@@ -685,7 +772,8 @@ fn test_while_loop_with_labeled_break() {
             }
             println(trace)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0-0;0-1;"]);
 }
 
@@ -700,7 +788,8 @@ fn test_while_loop_with_labeled_continue() {
     // "111" is the discriminating answer: each round records `1`, then
     // `continue@outer` abandons the rest of the INNER loop *and* the rest of
     // the outer body. If the label were ignored this would print "134134134".
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var trace = ""
             var rounds = 0
@@ -718,13 +807,15 @@ fn test_while_loop_with_labeled_continue() {
             }
             println(trace)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["111"]);
 }
 
 #[test]
 fn test_while_else_if_in_loop_condition() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var i = 0
             var evenCount = 0
@@ -740,13 +831,15 @@ fn test_while_else_if_in_loop_condition() {
             println(evenCount)
             println(oddCount)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "3"]);
 }
 
 #[test]
 fn test_when_without_subject_uses_guard_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val score = 58
             val band = when {
@@ -758,13 +851,15 @@ fn test_when_without_subject_uses_guard_chain() {
             }
             println(band)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["D"]);
 }
 
 #[test]
 fn test_if_expression_skips_false_branch_side_effects() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var hits = 0
 
         fun bump(): Int {
@@ -781,13 +876,15 @@ fn test_if_expression_skips_false_branch_side_effects() {
             println(value)
             println(hits)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7", "0"]);
 }
 
 #[test]
 fn test_for_loop_with_if_filter_in_body() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var values = ""
             for (i in 1..8) {
@@ -798,13 +895,15 @@ fn test_for_loop_with_if_filter_in_body() {
             }
             println(values)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2468"]);
 }
 
 #[test]
 fn test_while_loop_condition_function_calls_evaluate_per_iteration() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var calls = 0
 
         fun shouldContinue(): Boolean {
@@ -820,13 +919,15 @@ fn test_while_loop_condition_function_calls_evaluate_per_iteration() {
             println(count)
             println(calls)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "3"]);
 }
 
 #[test]
 fn test_labeled_continue_from_nested_for() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
     fun main() {
             var out = ""
             outer@ for (row in 1..4) {
@@ -837,13 +938,15 @@ fn test_labeled_continue_from_nested_for() {
             }
             println(out)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["11|12|21|22|31|32|41|42|"]);
 }
 
 #[test]
 fn test_return_from_run_block_with_label() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val found = run {
                 for (i in 1..4) {
@@ -855,13 +958,15 @@ fn test_return_from_run_block_with_label() {
             }
             println(found)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_when_as_statement_with_multiple_checks_same_line() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val x = 5
             when (x) {
@@ -870,13 +975,15 @@ fn test_when_as_statement_with_multiple_checks_same_line() {
                 else -> println("other")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["middle"]);
 }
 
 #[test]
 fn test_nested_when_and_for_interaction() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val input = arrayOf(1, 2, 3, 4)
             var marks = ""
@@ -889,13 +996,15 @@ fn test_nested_when_and_for_interaction() {
             }
             println(marks)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ABBC"]);
 }
 
 #[test]
 fn test_do_while_condition_uses_updated_variable() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var x = 0
             do {
@@ -903,13 +1012,15 @@ fn test_do_while_condition_uses_updated_variable() {
                 x += 3
             } while (x < 8)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "3", "6"]);
 }
 
 #[test]
 fn test_repeat_zero_with_side_effect() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var seen = 0
         fun main() {
             repeat(0) {
@@ -917,13 +1028,15 @@ fn test_repeat_zero_with_side_effect() {
             }
             println(seen)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0"]);
 }
 
 #[test]
 fn test_while_true_with_labeled_break_and_finally() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var steps = 0
             try {
@@ -938,13 +1051,15 @@ fn test_while_true_with_labeled_break_and_finally() {
             }
             println("done")
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "done"]);
 }
 
 #[test]
 fn test_repeat_negative_count_throws() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 repeat(-1) {
@@ -954,13 +1069,15 @@ fn test_repeat_negative_count_throws() {
                 println("caught")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["caught"]);
 }
 
 #[test]
 fn test_for_empty_down_to_range_skips_body() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var seen = ""
             for (i in 5 downTo 10) {
@@ -968,13 +1085,15 @@ fn test_for_empty_down_to_range_skips_body() {
             }
             println(seen.isEmpty())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true"]);
 }
 
 #[test]
 fn test_for_while_do_when_combination() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var trace = ""
             for (i in 1..6) {
@@ -987,25 +1106,29 @@ fn test_for_while_do_when_combination() {
             }
             println(trace)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["abab"]);
 }
 
 #[test]
 fn test_repeat_zero_iteration() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var count = 0
             repeat(0) { count += 1 }
             println(count)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0"]);
 }
 
 #[test]
 fn test_while_loop_condition_reflects_external_change() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var done = false
 
         fun shouldRun(): Boolean {
@@ -1021,6 +1144,7 @@ fn test_while_loop_condition_reflects_external_change() {
             println(total)
             println(shouldRun())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "false"]);
 }

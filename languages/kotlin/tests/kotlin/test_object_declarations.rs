@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_singleton_object_holds_mutable_state() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Counter {
             var value = 0
             fun inc() { value += 1 }
@@ -13,13 +14,15 @@ fn test_singleton_object_holds_mutable_state() {
             Counter.inc()
             println(Counter.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2"]);
 }
 
 #[test]
 fn test_object_can_implement_interface() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Handler {
             fun call(value: Int): Int
         }
@@ -33,13 +36,15 @@ fn test_object_can_implement_interface() {
         fun main() {
             println(apply(PlusOne, 4))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5"]);
 }
 
 #[test]
 fn test_object_used_as_stateful_factory_target() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Factory {
             fun create(label: String): Holder = Holder(label)
         }
@@ -49,13 +54,15 @@ fn test_object_used_as_stateful_factory_target() {
         fun main() {
             println(Factory.create("x").label)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["x"]);
 }
 
 #[test]
 fn test_nested_object_declaration() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             object Defaults {
                 val label = "ok"
@@ -65,25 +72,29 @@ fn test_nested_object_declaration() {
         fun main() {
             println(Holder.Defaults.label)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ok"]);
 }
 
 #[test]
 fn test_object_without_state_is_reusable_singleton_reference() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Marker
 
         fun main() {
             println(Marker === Marker)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true"]);
 }
 
 #[test]
 fn test_object_access_in_companion_with_private_constructor() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Widget private constructor(val label: String) {
             companion object Holder {
                 val shared = Maker
@@ -97,13 +108,15 @@ fn test_object_access_in_companion_with_private_constructor() {
         fun main() {
             println(Widget.Holder.shared("x").label)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["x"]);
 }
 
 #[test]
 fn test_object_reference_stability_across_calls() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Counter {
             var value = 1
             fun reset() { value = 0 }
@@ -120,13 +133,15 @@ fn test_object_reference_stability_across_calls() {
             println(touch())
             println(Counter.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "2", "2"]);
 }
 
 #[test]
 fn test_object_properties_can_reference_companion() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Config {
             val enabled = true
         }
@@ -138,13 +153,15 @@ fn test_object_properties_can_reference_companion() {
         fun main() {
             println(Processor().active())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["yes"]);
 }
 
 #[test]
 fn test_object_expression_and_object_declaration_difference() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Labeler {
             fun label(value: Int): String = "v" + value
         }
@@ -156,13 +173,15 @@ fn test_object_expression_and_object_declaration_difference() {
             println(value.label(4))
             println(Labeler.label(4))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["local4", "v4"]);
 }
 
 #[test]
 fn test_object_can_hold_private_functions() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Counter {
             private fun step(value: Int): Int = value + 1
             fun next(value: Int): Int = step(value)
@@ -171,13 +190,15 @@ fn test_object_can_hold_private_functions() {
         fun main() {
             println(Counter.next(4))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5"]);
 }
 
 #[test]
 fn test_object_with_init_like_setup_function() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Registry {
             var value = 0
             fun setup() {
@@ -189,13 +210,15 @@ fn test_object_with_init_like_setup_function() {
             Registry.setup()
             println(Registry.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_object_implements_multiple_interfaces() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Named {
             fun name(): String
         }
@@ -213,13 +236,15 @@ fn test_object_implements_multiple_interfaces() {
             println(Metadata.name())
             println(Metadata.version())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["meta", "1"]);
 }
 
 #[test]
 fn test_nested_object_members_can_be_shared_state() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Container {
             object State {
                 var value = 0
@@ -231,13 +256,15 @@ fn test_nested_object_members_can_be_shared_state() {
             Container.State.value += 1
             println(Container.State.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5"]);
 }
 
 #[test]
 fn test_object_expression_uses_local_capture() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val prefix = "ok"
             val value = object {
@@ -245,13 +272,15 @@ fn test_object_expression_uses_local_capture() {
             }
             println(value.label(3))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ok3"]);
 }
 
 #[test]
 fn test_object_expression_can_implement_custom_interface() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Printer {
             fun print(): String
         }
@@ -262,13 +291,15 @@ fn test_object_expression_can_implement_custom_interface() {
             }
             println(value.print())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["done"]);
 }
 
 #[test]
 fn test_object_reference_comparison_is_identity() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Holder {
             val value = 3
         }
@@ -277,13 +308,15 @@ fn test_object_reference_comparison_is_identity() {
             println(Holder === Holder)
             println(Holder === object : Any() { val value = 3 })
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "false"]);
 }
 
 #[test]
 fn test_object_as_factory_function_type() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Factory {
             fun build(prefix: String): String = prefix + "hash"
         }
@@ -292,13 +325,15 @@ fn test_object_as_factory_function_type() {
             println(Factory.build("a"))
             println(Factory.build("b"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ahash", "bhash"]);
 }
 
 #[test]
 fn test_object_can_be_extended_from_open_class() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base {
             open fun tag(): String = "base"
         }
@@ -310,13 +345,15 @@ fn test_object_can_be_extended_from_open_class() {
         fun main() {
             println(Child.tag())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["child"]);
 }
 
 #[test]
 fn test_object_can_implement_function_interface() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Incrementer : (Int) -> Int {
             override fun invoke(value: Int): Int = value + 1
         }
@@ -325,13 +362,15 @@ fn test_object_can_implement_function_interface() {
             println(Incrementer(2))
             println(Incrementer.invoke(4))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "5"]);
 }
 
 #[test]
 fn test_object_declaration_inside_function_has_local_scope() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             object Local {
                 val value = "local"
@@ -339,13 +378,15 @@ fn test_object_declaration_inside_function_has_local_scope() {
 
             println(Local.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["local"]);
 }
 
 #[test]
 fn test_object_expression_returns_distinct_instance_each_call() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun builder(): Any {
             return object {
                 val value = 1
@@ -357,13 +398,15 @@ fn test_object_expression_returns_distinct_instance_each_call() {
             val second = builder()
             println(first === second)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["false"]);
 }
 
 #[test]
 fn test_object_singleton_can_be_forwarded_through_function() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Service {
             fun id(): Int = 1
         }
@@ -377,13 +420,15 @@ fn test_object_singleton_can_be_forwarded_through_function() {
             println(getService() !== null)
             println(Service.id())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "true", "1"]);
 }
 
 #[test]
 fn test_object_can_override_open_class_members() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Logger {
             open fun level(): String = "base"
         }
@@ -395,13 +440,15 @@ fn test_object_can_override_open_class_members() {
         fun main() {
             println(Runtime.level())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["runtime"]);
 }
 
 #[test]
 fn test_object_can_implement_generic_interface() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Transformer<T, U> {
             fun map(value: T): U
         }
@@ -417,13 +464,15 @@ fn test_object_can_implement_generic_interface() {
         fun main() {
             println(emit(IntToText, 3))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["v3"]);
 }
 
 #[test]
 fn test_object_with_private_state_exposes_only_public_api() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Registry {
             private var next = 0
             fun next(): Int {
@@ -436,13 +485,15 @@ fn test_object_with_private_state_exposes_only_public_api() {
             println(Registry.next())
             println(Registry.next())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "2"]);
 }
 
 #[test]
 fn test_nested_object_in_class_is_shared_across_instances() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             object Cache {
                 var value = 0
@@ -454,13 +505,15 @@ fn test_nested_object_in_class_is_shared_across_instances() {
             Holder.Cache.value += 2
             println(Holder.Cache.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_object_expression_as_interface_provider_is_type_stable() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Printer {
             fun print(): String
         }
@@ -477,13 +530,15 @@ fn test_object_expression_as_interface_provider_is_type_stable() {
             println(first.print())
             println(second.print())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["a!", "b!"]);
 }
 
 #[test]
 fn test_object_expression_interface_results_are_distinct_instances() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Counter {
             fun next(): Int
         }
@@ -505,13 +560,15 @@ fn test_object_expression_interface_results_are_distinct_instances() {
             println((second as Counter).next())
             println(first === second)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "1", "false"]);
 }
 
 #[test]
 fn test_object_expression_can_satisfy_multiple_interfaces_at_once() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Named {
             fun name(): String
         }
@@ -532,13 +589,15 @@ fn test_object_expression_can_satisfy_multiple_interfaces_at_once() {
             println((item as Named).name())
             println((item as Valued).value())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ok", "7"]);
 }
 
 #[test]
 fn test_object_can_delegate_to_map_behavior() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Cache : Map<String, Int> by mapOf("a" to 1, "b" to 2) {
             val keysText = keys.joinToString("-")
         }
@@ -548,13 +607,15 @@ fn test_object_can_delegate_to_map_behavior() {
             println(Cache.keysText)
             println(Cache.size)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "a-b", "2"]);
 }
 
 #[test]
 fn test_object_can_be_used_as_factory_for_function_type() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Builder : (String, String) -> String {
             override fun invoke(left: String, right: String): String {
                 return left + right
@@ -566,13 +627,15 @@ fn test_object_can_be_used_as_factory_for_function_type() {
             println(value("a", "b"))
             println(Builder.invoke("c", "d"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ab", "cd"]);
 }
 
 #[test]
 fn test_object_with_init_like_function_call_order_is_deterministic() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         object Log {
             val value: Int
             init {
@@ -586,6 +649,7 @@ fn test_object_with_init_like_function_call_order_is_deterministic() {
             println(Log.value)
             println(Log.value())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["10", "10"]);
 }

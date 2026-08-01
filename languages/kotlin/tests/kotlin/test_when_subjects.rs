@@ -131,7 +131,7 @@ kotlin_run_test!(
 );
 
 kotlin_run_test!(
-        test_when_in_set_or_range,
+    test_when_in_set_or_range,
     r#"
         fun classify(x: Int): String = when (x) {
             1, 2, 3 -> "small"
@@ -339,7 +339,7 @@ kotlin_run_test!(
 );
 
 kotlin_run_test!(
-        test_when_subject_and_guarded_in_array,
+    test_when_subject_and_guarded_in_array,
     r#"
         fun classify(x: Int): String = when (x) {
             2, 4, 6 -> "even-basic"
@@ -373,7 +373,7 @@ kotlin_run_test!(
 );
 
 kotlin_run_test!(
-        test_when_inline_subject,
+    test_when_inline_subject,
     r#"
         fun main() {
             val n = 8
@@ -405,7 +405,7 @@ kotlin_run_test!(
 );
 
 kotlin_run_test!(
-        test_when_subject_order,
+    test_when_subject_order,
     r#"
         fun pick(x: Int): String = when (x) {
             in 1..5 -> "low"

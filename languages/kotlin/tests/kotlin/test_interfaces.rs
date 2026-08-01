@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_interface_declaration() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Printable {
             fun printMsg()
         }
@@ -17,13 +18,15 @@ fn test_interface_declaration() {
             val printer = MessagePrinter()
             printer.printMsg()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["interface message"]);
 }
 
 #[test]
 fn test_multiple_interface_implementation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Named {
             fun getName(): String
         }
@@ -42,13 +45,15 @@ fn test_multiple_interface_implementation() {
             println(c.getName())
             println(c.getAge())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["Bob", "40"]);
 }
 
 #[test]
 fn test_interface_default_method() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Notifier {
             fun notify(): String {
                 return "notified"
@@ -61,13 +66,15 @@ fn test_interface_default_method() {
             val n: Notifier = SilentNotifier()
             println(n.notify())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["notified"]);
 }
 
 #[test]
 fn test_interface_property_contract() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Identified {
             val id: Int
         }
@@ -78,13 +85,15 @@ fn test_interface_property_contract() {
             val item: Identified = Item(7)
             println(item.id)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7"]);
 }
 
 #[test]
 fn test_interface_inheritance() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Named {
             fun name(): String
         }
@@ -103,13 +112,15 @@ fn test_interface_inheritance() {
             println(p.name())
             println(p.description())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["p", "prod"]);
 }
 
 #[test]
 fn test_interface_default_and_override_method() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Messenger {
             fun send(message: String): String {
                 return "default:" + message
@@ -126,13 +137,15 @@ fn test_interface_default_and_override_method() {
             val base: Messenger = Push()
             println(base.send("ok"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["push:ok"]);
 }
 
 #[test]
 fn test_interface_property_requirements() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Identifiable {
             val id: Int
         }
@@ -143,13 +156,15 @@ fn test_interface_property_requirements() {
             val r: Identifiable = Record(12)
             println(r.id)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["12"]);
 }
 
 #[test]
 fn test_interface_with_implementation_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Speaker {
             fun speak(): String
         }
@@ -166,13 +181,15 @@ fn test_interface_with_implementation_chain() {
             val a = Alarm()
             println(a.speak())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["loud"]);
 }
 
 #[test]
 fn test_interface_typed_reference_calls_override() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Worker {
             fun work(): Int
         }
@@ -188,13 +205,15 @@ fn test_interface_typed_reference_calls_override() {
         fun main() {
             println(report(Engineer()))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_interface_default_to_override() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Source {
             fun value(): Int {
                 return 1
@@ -211,13 +230,15 @@ fn test_interface_default_to_override() {
             val s: Source = Provider()
             println(s.value())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "2"]);
 }
 
 #[test]
 fn test_interface_mixed_implementation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface A {
             fun name(): String
         }
@@ -236,13 +257,15 @@ fn test_interface_mixed_implementation() {
             println(c.name())
             println(c.count())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["item", "4"]);
 }
 
 #[test]
 fn test_interface_object_reference_dispatch() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Status {
             fun code(): Int
         }
@@ -263,165 +286,205 @@ fn test_interface_object_reference_dispatch() {
             println(describe(Offline()))
             println(describe(Online()))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["off", "on"]);
 }
 
 #[test]
 fn test_interface_default_property() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Identity { val id: Int }; class Item(override val id: Int): Identity; fun main() { println(Item(7).id) }
-"#);
+"#,
+    );
     assert_eq!(out, &["7"]);
 }
 
 #[test]
 fn test_interface_multiple_defaults() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface A { fun x(): String = "a" }; interface B { fun y(): String = "b" }; class C : A, B; fun main() { val b: B = C(); println(b.y()) }
-"#);
+"#,
+    );
     assert_eq!(out, &["b"]);
 }
 
 #[test]
 fn test_interface_inheritance_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Root { fun name(): String }; interface Mid : Root { fun suffix(): String = ".mid" }; interface Leaf : Mid { fun tail(): String = ".leaf" }; class Thing : Leaf { override fun name(): String = "t" }; fun main() { val t = Thing(); println(t.name() + t.suffix() + t.tail()) }
-"#);
+"#,
+    );
     assert_eq!(out, &["t.mid.leaf"]);
 }
 
 #[test]
 fn test_interface_property_override() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Readable { val value: String }; class A : Readable { override val value = "alpha" }; fun main() { val r: Readable = A(); println(r.value) }
-"#);
+"#,
+    );
     assert_eq!(out, &["alpha"]);
 }
 
 #[test]
 fn test_interface_as_function_argument() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Caller { fun call(): Int }; class Num : Caller { override fun call(): Int = 8 }; fun invoke(c: Caller) = c.call(); fun main() { println(invoke(Num())) }
-"#);
+"#,
+    );
     assert_eq!(out, &["8"]);
 }
 
 #[test]
 fn test_interface_casting_behavior() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface X { fun value(): Int }; class Y: X { override fun value(): Int = 4 }; class Z : X { override fun value(): Int = 9 }; fun main() { val x: X = Y(); println(x.value() + Z().value()) }
-"#);
+"#,
+    );
     assert_eq!(out, &["13"]);
 }
 
 #[test]
 fn test_interface_reflection_call() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Noting { fun tick(): String }; class Engine : Noting { override fun tick(): String = "ok" }; fun log(n: Noting) { println(n.tick()) }; fun main() { log(Engine()) }
-"#);
+"#,
+    );
     assert_eq!(out, &["ok"]);
 }
 
 #[test]
 fn test_interface_with_data_like_impl() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Shape { fun area(): Int }; class Square(val side: Int) : Shape { override fun area(): Int = side * side }; fun main() { val s: Shape = Square(6); println(s.area()) }
-"#);
+"#,
+    );
     assert_eq!(out, &["36"]);
 }
 
 #[test]
 fn test_interface_default_and_override() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Source { fun text(): String = "base" }; class OverrideSource : Source { override fun text(): String = "child" }; fun main() { val s: Source = OverrideSource(); println(s.text()) }
-"#);
+"#,
+    );
     assert_eq!(out, &["child"]);
 }
 
 #[test]
 fn test_interface_with_property_state() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Counted { var count: Int }; class Counter: Counted { override var count: Int = 0 }; fun main() { val c: Counted = Counter(); c.count = 3; println(c.count) }
-"#);
+"#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_interface_static_lookup_like() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Id { fun id(): Int }; class One : Id { override fun id(): Int = 1 }; class Two : Id { override fun id(): Int = 2 }; fun main() { val list: Array<Id> = arrayOf(One(), Two()); println(list[0].id() + list[1].id()) }
-"#);
+"#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_interface_default_message() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Message { fun msg(): String = "hi" }; class Holder: Message; fun main() { val value: Message = Holder(); println(value.msg()) }
-"#);
+"#,
+    );
     assert_eq!(out, &["hi"]);
 }
 
 #[test]
 fn test_interface_boundaries() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Counter { fun value(): Int }; class A : Counter { override fun value(): Int = 1 }; class B : Counter { override fun value(): Int = 2 }; fun main() { println(A().value()); println(B().value()) }
-"#);
+"#,
+    );
     assert_eq!(out, &["1", "2"]);
 }
 
 #[test]
 fn test_interface_object_dispatch() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Op { fun run(x: Int): Int }; class Add : Op { override fun run(x: Int): Int = x + 1 }; class Mul : Op { override fun run(x: Int): Int = x * 2 }; fun apply(op: Op, value: Int): Int = op.run(value); fun main() { println(apply(Add(), 3)); println(apply(Mul(), 3)) }
-"#);
+"#,
+    );
     assert_eq!(out, &["4", "6"]);
 }
 
 #[test]
 fn test_interface_maybe_aliasing() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Named { fun name(): String }; class L : Named { override fun name(): String = "lab" }; fun main() { val n: Named = L(); val m: Named = n; println(m.name()) }
-"#);
+"#,
+    );
     assert_eq!(out, &["lab"]);
 }
 
 #[test]
 fn test_interface_in_while_condition() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Marker { fun hit(): Boolean }; class Yes: Marker { override fun hit(): Boolean = true }; class No: Marker { override fun hit(): Boolean = false }; fun main() { var score = 0; for (m in arrayOf(Yes(), No())) { if (m.hit()) score += 1 }; println(score) }
-"#);
+"#,
+    );
     assert_eq!(out, &["1"]);
 }
 
 #[test]
 fn test_interface_with_returning_impl() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Factory { fun make(): Int }; class Maker : Factory { override fun make(): Int = 10 }; fun makeSomething(factory: Factory): Int = factory.make(); fun main() { println(makeSomething(Maker())) }
-"#);
+"#,
+    );
     assert_eq!(out, &["10"]);
 }
 
 #[test]
 fn test_interface_nested_implementation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Reader { fun read(): String }; class Bundle { fun create(): Reader = object : Reader { override fun read(): String = "yes" } }; fun main() { val b = Bundle(); println(b.create().read()) }
-"#);
+"#,
+    );
     assert_eq!(out, &["yes"]);
 }
 
 #[test]
 fn test_interface_property_polymorphism() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 interface Flag { val code: Int }; class True: Flag { override val code = 1 }; class False: Flag { override val code = 0 }; fun main() { val f: Flag = True(); val g: Flag = False(); println(f.code + g.code) }
-"#);
+"#,
+    );
     assert_eq!(out, &["1"]);
 }
 
 #[test]
 fn test_interface_default_method_conflict_and_explicit_super() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Left {
             fun label(): String = "left"
         }
@@ -439,13 +502,15 @@ fn test_interface_default_method_conflict_and_explicit_super() {
             println(both.label())
             println((both as Right).label())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["left", "left"]);
 }
 
 #[test]
 fn test_interface_mutable_property_backing_access() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Counter {
             var value: Int
         }
@@ -460,13 +525,15 @@ fn test_interface_mutable_property_backing_access() {
             c.value += 5
             println(c.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "7"]);
 }
 
 #[test]
 fn test_interface_generic_method_bound_by_implementer() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Formatter {
             fun <T : Number> format(value: T): String
         }
@@ -480,13 +547,15 @@ fn test_interface_generic_method_bound_by_implementer() {
             println(f.format(12))
             println(f.format(12.4))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["n:12", "n:12"]);
 }
 
 #[test]
 fn test_interface_anonymous_object_with_capture() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Supplier {
             fun value(): String
         }
@@ -498,13 +567,15 @@ fn test_interface_anonymous_object_with_capture() {
             }
             println(supplier.value())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["hello world"]);
 }
 
 #[test]
 fn test_interface_nullable_receiver_and_safe_call() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Reporter {
             fun report(): String
         }
@@ -519,13 +590,15 @@ fn test_interface_nullable_receiver_and_safe_call() {
             println(good?.report() ?: "missing")
             println(bad?.report() ?: "missing")
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ok", "missing"]);
 }
 
 #[test]
 fn test_interface_extension_with_override_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Parent {
             fun base(): String = "base"
         }
@@ -544,13 +617,15 @@ fn test_interface_extension_with_override_chain() {
             println((c as Parent).base())
             println(c.base())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["child:tagged", "child", "child"]);
 }
 
 #[test]
 fn test_interface_array_dispatch_across_types() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Token {
             fun kind(): String
         }
@@ -576,13 +651,15 @@ fn test_interface_array_dispatch_across_types() {
             println(alpha)
             println(beta)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "1"]);
 }
 
 #[test]
 fn test_interface_default_method_conflict_override() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface A {
             fun label(): String = "A"
         }
@@ -596,13 +673,15 @@ fn test_interface_default_method_conflict_override() {
             val value: A = C()
             println(value.label())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["A+B"]);
 }
 
 #[test]
 fn test_interface_property_backing_state() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Counter {
             var count: Int
         }
@@ -620,13 +699,15 @@ fn test_interface_property_backing_state() {
             c.count += 4
             println(c.count)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "5"]);
 }
 
 #[test]
 fn test_interface_generic_contract() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Boxed<T> {
             val payload: T
             fun unwrap(): T
@@ -641,13 +722,15 @@ fn test_interface_generic_contract() {
             println(value.unwrap())
             println(value.payload)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["9", "9"]);
 }
 
 #[test]
 fn test_interface_generic_constraint_in_function() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Convertible<T> {
             fun convert(): T
         }
@@ -663,13 +746,15 @@ fn test_interface_generic_constraint_in_function() {
         fun main() {
             println(render(WrapInt()))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["x"]);
 }
 
 #[test]
 fn test_interface_implements_in_local_scope() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Callable {
             fun call(): Int
         }
@@ -682,13 +767,15 @@ fn test_interface_implements_in_local_scope() {
             val c: Callable = item
             println(c.call())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["4"]);
 }
 
 #[test]
 fn test_interface_object_expression_mutating_capture() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Mutator {
             fun next(): Int
         }
@@ -705,13 +792,15 @@ fn test_interface_object_expression_mutating_capture() {
             println(m.next())
             println(m.next())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "2"]);
 }
 
 #[test]
 fn test_interface_array_dispatch() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Score { fun score(): Int }
         class A : Score { override fun score(): Int = 1 }
         class B : Score { override fun score(): Int = 2 }
@@ -728,13 +817,15 @@ fn test_interface_array_dispatch() {
         fun main() {
             println(total(arrayOf(A(), B(), C())))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["6"]);
 }
 
 #[test]
 fn test_interface_extension_dispatch() {
-    let out = run_prints(r##"
+    let out = run_prints(
+        r##"
         interface Taggable {
             fun tag(): String
         }
@@ -751,13 +842,15 @@ fn test_interface_extension_dispatch() {
             val value: Taggable = Item()
             println(value.label())
         }
-    "##);
+    "##,
+    );
     assert_eq!(out, &["item#"]);
 }
 
 #[test]
 fn test_interface_null_cast_to_nullable() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Reader { fun read(): Int }
 
         class NumberReader : Reader {
@@ -770,13 +863,15 @@ fn test_interface_null_cast_to_nullable() {
             println(value == null)
             println((NumberReader() as Reader).read())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "7"]);
 }
 
 #[test]
 fn test_interface_casting_wrong_type_falls_back() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface First { fun id(): Int }
         interface Second { fun mark(): String }
 
@@ -789,13 +884,15 @@ fn test_interface_casting_wrong_type_falls_back() {
             println(first.id())
             println(second == null)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5", "true"]);
 }
 
 #[test]
 fn test_interface_inheritance_property_override_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Read {
             val source: String
         }
@@ -814,13 +911,15 @@ fn test_interface_inheritance_property_override_chain() {
             println(item.source)
             println(item.open())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["in-memory", "cached:in-memory"]);
 }
 
 #[test]
 fn test_interface_default_used_for_abstract_missing_impl() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Protocol {
             fun route(): String = "default-route"
             fun name(): String
@@ -842,6 +941,7 @@ fn test_interface_default_used_for_abstract_missing_impl() {
             println(base.name())
             println(overrideSvc.route())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["default-route", "svc", "custom-route"]);
 }

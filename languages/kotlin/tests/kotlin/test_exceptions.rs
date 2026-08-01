@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_try_finally_flow() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 println("try start")
@@ -10,13 +11,15 @@ fn test_try_finally_flow() {
                 println("finally block")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["try start", "finally block"]);
 }
 
 #[test]
 fn test_try_catch_flow() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 println("try start")
@@ -25,13 +28,15 @@ fn test_try_catch_flow() {
                 println("catch block")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["try start", "catch block"]);
 }
 
 #[test]
 fn test_try_catch_finally_combined() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 println("working")
@@ -42,13 +47,15 @@ fn test_try_catch_finally_combined() {
                 println("cleanup done")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["working", "handled arg error", "cleanup done"]);
 }
 
 #[test]
 fn test_try_without_exception() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 println("normal flow")
@@ -56,13 +63,15 @@ fn test_try_without_exception() {
                 println("error")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["normal flow"]);
 }
 
 #[test]
 fn test_throw_and_catch_specific() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 throw Exception("boom")
@@ -74,13 +83,15 @@ fn test_throw_and_catch_specific() {
                 println("complete")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["general", "complete"]);
 }
 
 #[test]
 fn test_require_helper() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 require(false)
@@ -88,13 +99,15 @@ fn test_require_helper() {
                 println("require failed")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["require failed"]);
 }
 
 #[test]
 fn test_check_helper() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 check(false)
@@ -102,13 +115,15 @@ fn test_check_helper() {
                 println("check failed")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["check failed"]);
 }
 
 #[test]
 fn test_nested_try_finally() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 try {
@@ -122,13 +137,15 @@ fn test_nested_try_finally() {
                 println("outer finally")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["inner catch", "inner finally", "outer finally"]);
 }
 
 #[test]
 fn test_nested_try_catch_with_success_path() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 try {
@@ -144,13 +161,15 @@ fn test_nested_try_catch_with_success_path() {
                 println("outer done")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["inner", "inner done", "outer done"]);
 }
 
 #[test]
 fn test_try_catch_multiple_handlers() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 throw IllegalArgumentException("bad")
@@ -160,13 +179,15 @@ fn test_try_catch_multiple_handlers() {
                 println("general")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["arg"]);
 }
 
 #[test]
 fn test_try_with_finally_no_exception() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 println("ok")
@@ -174,13 +195,15 @@ fn test_try_with_finally_no_exception() {
                 println("cleanup")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ok", "cleanup"]);
 }
 
 #[test]
 fn test_throw_in_nested_function() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun fail() {
             throw Exception("inner")
         }
@@ -192,13 +215,15 @@ fn test_throw_in_nested_function() {
                 println("caught")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["caught"]);
 }
 
 #[test]
 fn test_try_finally_only_with_error() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 throw Exception("panic")
@@ -206,13 +231,15 @@ fn test_try_finally_only_with_error() {
                 println("ended")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ended"]);
 }
 
 #[test]
 fn test_multiple_exceptions_cascading() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 try {
@@ -224,13 +251,15 @@ fn test_multiple_exceptions_cascading() {
                 println("wrapped")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["wrapped"]);
 }
 
 #[test]
 fn test_require_false_path_with_message() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 require(false)
@@ -239,13 +268,15 @@ fn test_require_false_path_with_message() {
             }
             println("done")
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["require", "done"]);
 }
 
 #[test]
 fn test_check_false_path_in_nested_context() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun assertPositive(n: Int) {
             check(n > 0)
         }
@@ -257,13 +288,15 @@ fn test_check_false_path_in_nested_context() {
                 println("invalid")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["invalid"]);
 }
 
 #[test]
 fn test_try_catch_finally_with_return_value() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun calc(): Int {
             try {
                 return 5
@@ -277,13 +310,15 @@ fn test_try_catch_finally_with_return_value() {
         fun main() {
             println(calc())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["finally", "5"]);
 }
 
 #[test]
 fn test_exception_no_throw_in_try() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     try {
         println("safe")
@@ -293,13 +328,15 @@ fun main() {
         println("done")
     }
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["safe", "done"]);
 }
 
 #[test]
 fn test_exception_catch_supertype() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     try {
         throw IllegalArgumentException("bad")
@@ -307,13 +344,15 @@ fun main() {
         println("caught")
     }
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["caught"]);
 }
 
 #[test]
 fn test_exception_with_else_path() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     try {
         throw Exception()
@@ -323,13 +362,15 @@ fun main() {
         println("general")
     }
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["general"]);
 }
 
 #[test]
 fn test_exception_nested_finally_order() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     try {
         try {
@@ -341,13 +382,15 @@ fun main() {
         println("outer finally")
     }
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["inner", "inner finally", "outer finally"]);
 }
 
 #[test]
 fn test_exception_try_in_function() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun risky(value: Int) {
     if (value < 0) {
         throw Exception("no")
@@ -361,13 +404,15 @@ fun main() {
         println("blocked")
     }
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["blocked"]);
 }
 
 #[test]
 fn test_exception_return_value_ignored_by_finally() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun result(): Int {
     try {
         return 10
@@ -379,13 +424,15 @@ fun result(): Int {
 fun main() {
     println(result())
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["end", "10"]);
 }
 
 #[test]
 fn test_exception_multiple_guarded_calls() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun fail(v: Int) {
     if (v == 1) {
         throw Exception("x")
@@ -402,13 +449,15 @@ fun main() {
         }
     }
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["0", "err", "2"]);
 }
 
 #[test]
 fn test_exception_nested_catch_chained() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     try {
         throw Exception("top")
@@ -420,13 +469,15 @@ fun main() {
         }
     }
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["nested"]);
 }
 
 #[test]
 fn test_exception_finally_with_continue_path() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     for (v in 1..3) {
         try {
@@ -436,13 +487,15 @@ fun main() {
         }
     }
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["1", "tick", "2", "tick", "3", "tick"]);
 }
 
 #[test]
 fn test_exception_try_finalize_no_catch() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     try {
         println("go")
@@ -450,13 +503,15 @@ fun main() {
         println("final")
     }
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["go", "final"]);
 }
 
 #[test]
 fn test_exception_require_like_guard() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     try {
         require(false)
@@ -466,13 +521,15 @@ fun main() {
         println("released")
     }
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["guarded", "released"]);
 }
 
 #[test]
 fn test_exception_check_like_guard() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun validate(ok: Boolean): Int {
     return if (ok) 1 else 0
 }
@@ -486,13 +543,15 @@ fun main() {
         println("bad")
     }
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["bad"]);
 }
 
 #[test]
 fn test_exception_nested_function_throwing() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun inner(): Int {
     throw Exception("inner")
 }
@@ -508,13 +567,15 @@ fun outer() {
 fun main() {
     outer()
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["outer"]);
 }
 
 #[test]
 fn test_exception_resource_like_flow() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun run() {
     try {
         println("open")
@@ -526,13 +587,15 @@ fun run() {
 fun main() {
     run()
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["open", "closed"]);
 }
 
 #[test]
 fn test_exception_custom_exception_class_matches_catch() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 class NetworkError(message: String) : Exception(message)
 
 fun main() {
@@ -543,13 +606,15 @@ fun main() {
         println(e.message)
     }
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["custom", "down"]);
 }
 
 #[test]
 fn test_exception_constructor_failure_is_caught() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 class Exploding {
     init {
         println("init")
@@ -566,13 +631,15 @@ fun main() {
         println(e.message)
     }
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["init", "caught", "explode"]);
 }
 
 #[test]
 fn test_exception_throw_in_catch_and_finally_executes() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     try {
         try {
@@ -588,13 +655,23 @@ fun main() {
         println(e.message)
     }
 }
-"#);
-    assert_eq!(out, &["caught-inner", "inner-finally", "caught-outer", "from-catch"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        &[
+            "caught-inner",
+            "inner-finally",
+            "caught-outer",
+            "from-catch"
+        ]
+    );
 }
 
 #[test]
 fn test_exception_throw_in_finally_overrides_body_exception() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     try {
         try {
@@ -607,13 +684,15 @@ fun main() {
         println(e.message)
     }
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["body-finally", "finally"]);
 }
 
 #[test]
 fn test_exception_finally_with_loop_break() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     for (value in 1..4) {
         try {
@@ -627,13 +706,18 @@ fun main() {
     }
     println("done")
 }
-"#);
-    assert_eq!(out, &["1", "finally", "2", "finally", "3", "finally", "done"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        &["1", "finally", "2", "finally", "3", "finally", "done"]
+    );
 }
 
 #[test]
 fn test_exception_finally_does_not_modify_returned_value_binding() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun compute(): Int {
     var result = 1
     try {
@@ -649,13 +733,15 @@ fun compute(): Int {
 fun main() {
     println(compute())
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["try", "finally", "5"]);
 }
 
 #[test]
 fn test_exception_throw_in_outer_catch_is_represented() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     try {
         try {
@@ -668,13 +754,15 @@ fun main() {
         println(e.message)
     }
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["caught", "outer"]);
 }
 
 #[test]
 fn test_exception_finally_around_return_from_nested_context() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun evaluate(): Int {
     return try {
         throw Exception("primary")
@@ -689,13 +777,15 @@ fun evaluate(): Int {
 fun main() {
     println(evaluate())
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["inner-catch", "inner-finally", "7"]);
 }
 
 #[test]
 fn test_exception_nested_finally_and_catch_cleanup_order() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     try {
         try {
@@ -713,13 +803,24 @@ fun main() {
         println("outer-finally")
     }
 }
-"#);
-assert_eq!(out, &["inner-try", "inner-catch", "inner-finally", "outer-catch", "outer-finally"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        &[
+            "inner-try",
+            "inner-catch",
+            "inner-finally",
+            "outer-catch",
+            "outer-finally"
+        ]
+    );
 }
 
 #[test]
 fn test_exception_catch_variable_scope_isolated_from_outer() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     val message = "root"
     try {
@@ -729,13 +830,15 @@ fun main() {
     }
     println("root")
 }
-"#);
+"#,
+    );
     assert_eq!(out, &["inner", "root"]);
 }
 
 #[test]
 fn test_exception_try_with_continue_in_catch_then_finally() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     for (value in 1..4) {
         try {
@@ -753,13 +856,20 @@ fun main() {
     }
     println("done")
 }
-"#);
-    assert_eq!(out, &["1", "finally", "caught", "finally", "3", "finally", "4", "finally", "done"]);
+"#,
+    );
+    assert_eq!(
+        out,
+        &[
+            "1", "finally", "caught", "finally", "3", "finally", "4", "finally", "done"
+        ]
+    );
 }
 
 #[test]
 fn test_exception_require_and_finally_cleanup() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
 fun main() {
     try {
         try {
@@ -771,13 +881,15 @@ fun main() {
         println("caught")
     }
 }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["cleanup", "caught"]);
 }
 
 #[test]
 fn test_run_catching_recover_with_default() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val bad = runCatching {
                 throw Exception("oops")
@@ -786,13 +898,15 @@ fn test_run_catching_recover_with_default() {
             println(bad.isFailure)
             println(bad.getOrElse { "fallback" })
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["false", "true", "fallback"]);
 }
 
 #[test]
 fn test_run_catching_ok_path_preserves_value() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val good = runCatching {
                 val value = 3 + 4
@@ -802,13 +916,15 @@ fn test_run_catching_ok_path_preserves_value() {
             println(good.getOrNull())
             println(good.getOrElse { 0 })
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "14", "14"]);
 }
 
 #[test]
 fn test_try_expression_as_value_with_finally_cleanup() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val value = try {
                 println("body")
@@ -818,13 +934,15 @@ fn test_try_expression_as_value_with_finally_cleanup() {
             }
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["body", "closed", "9"]);
 }
 
 #[test]
 fn test_try_expression_value_on_failure_path() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val value = try {
                 throw Exception("boom")
@@ -834,13 +952,15 @@ fn test_try_expression_value_on_failure_path() {
             println(value)
             println("done")
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5", "done"]);
 }
 
 #[test]
 fn test_try_expression_finally_with_no_catch() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun status(flag: Boolean): String {
             return try {
                 if (flag) "ok" else throw Exception("bad")
@@ -856,13 +976,15 @@ fn test_try_expression_finally_with_no_catch() {
                 println(e.message)
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["cleanup", "bad"]);
 }
 
 #[test]
 fn test_run_catching_map_and_recover_flow() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val value = runCatching { "k".toInt() }
                 .map { it + 1 }
@@ -872,13 +994,15 @@ fn test_run_catching_map_and_recover_flow() {
             println(value.getOrNull())
             println(value.isFailure)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["fail", "9", "false"]);
 }
 
 #[test]
 fn test_run_catching_with_typed_match() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val result = runCatching {
                 throw IllegalArgumentException("bad")
@@ -888,13 +1012,15 @@ fn test_run_catching_with_typed_match() {
             println(result.isFailure)
             println(message)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "bad"]);
 }
 
 #[test]
 fn test_exception_type_hierarchy_catch_order() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class BaseError : Exception("base")
         class DerivedError : BaseError()
 
@@ -909,6 +1035,7 @@ fn test_exception_type_hierarchy_catch_order() {
                 println("general")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["derived"]);
 }

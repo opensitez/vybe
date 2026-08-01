@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_local_return_from_for_each() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val out = mutableListOf<Int>()
             listOf(1, 2, 3, 4).forEach {
@@ -11,13 +12,15 @@ fn test_local_return_from_for_each() {
             }
             println(out.joinToString(","))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1,2,4"]);
 }
 
 #[test]
 fn test_local_return_from_while_like_loop() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var i = 0
             val out = StringBuilder()
@@ -28,13 +31,15 @@ fn test_local_return_from_while_like_loop() {
             }
             println(out.toString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0124"]);
 }
 
 #[test]
 fn test_local_return_lambda_named() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             fun run(items: List<Int>): String {
                 val r = StringBuilder()
@@ -46,13 +51,15 @@ fn test_local_return_lambda_named() {
             }
             println(run(listOf(1, 2, 3)))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["13"]);
 }
 
 #[test]
 fn test_local_return_non_local_from_inline() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun sum(values: List<Int>): Int {
             var s = 0
             values.forEach {
@@ -65,13 +72,15 @@ fn test_local_return_non_local_from_inline() {
             println(sum(listOf(1, 2, 3)))
             println(sum(listOf(-1, 2)))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["6", "0"]);
 }
 
 #[test]
 fn test_local_return_named_label_in_run() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val result = run label@{
                 listOf(1, 2).forEach {
@@ -81,13 +90,15 @@ fn test_local_return_named_label_in_run() {
             }
             println(result)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["first"]);
 }
 
 #[test]
 fn test_local_return_in_apply() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val result = apply("") {
                 this += "x"
@@ -95,13 +106,15 @@ fn test_local_return_in_apply() {
             }
             println(result)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["x"]);
 }
 
 #[test]
 fn test_local_return_in_with() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val value = with(0) {
                 if (this < 0) return@with 0
@@ -109,13 +122,15 @@ fn test_local_return_in_with() {
             }
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1"]);
 }
 
 #[test]
 fn test_local_return_in_let_binding() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val v = "x".let {
                 if (it.isEmpty()) return@let "empty"
@@ -123,13 +138,15 @@ fn test_local_return_in_let_binding() {
             }
             println(v)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["val=x"]);
 }
 
 #[test]
 fn test_local_return_in_also() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val n = 4
             val out = n.also {
@@ -137,37 +154,43 @@ fn test_local_return_in_also() {
             }
             println(out)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["4"]);
 }
 
 #[test]
 fn test_local_return_in_take_if() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val v = 3
             val out = v.takeIf { it > 1 } ?: 0
             println(out)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_local_return_in_take_unless() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val v = 0
             val out = v.takeUnless { it > 1 } ?: 9
             println(out)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["9"]);
 }
 
 #[test]
 fn test_local_return_in_anonymous_function() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val f: (Int) -> Int = fun(x: Int): Int {
                 if (x == 0) return 5
@@ -176,13 +199,15 @@ fn test_local_return_in_anonymous_function() {
             println(f(0))
             println(f(2))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5", "2"]);
 }
 
 #[test]
 fn test_local_return_from_try() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val out = run {
                 try {
@@ -194,13 +219,15 @@ fn test_local_return_from_try() {
             }
             println(out)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["err"]);
 }
 
 #[test]
 fn test_local_return_from_when() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun status(v: Int): String {
             return when (v) {
                 in 1..3 -> "small"
@@ -211,13 +238,15 @@ fn test_local_return_from_when() {
             println(status(2))
             println(status(10))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["small", "other"]);
 }
 
 #[test]
 fn test_local_return_in_builder() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val result = StringBuilder().apply {
                 append("a")
@@ -226,13 +255,15 @@ fn test_local_return_in_builder() {
             }
             println(result.toString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ab"]);
 }
 
 #[test]
 fn test_local_return_breakout_loop() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val out = StringBuilder()
             for (i in 1..5) {
@@ -241,13 +272,15 @@ fn test_local_return_breakout_loop() {
             }
             println(out.toString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["123"]);
 }
 
 #[test]
 fn test_local_return_continue_loop() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val out = StringBuilder()
             for (i in 1..4) {
@@ -256,13 +289,15 @@ fn test_local_return_continue_loop() {
             }
             println(out.toString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["134"]);
 }
 
 #[test]
 fn test_local_return_nested_for_each() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val result = StringBuilder()
             outer@ for (r in 1..2) {
@@ -273,13 +308,15 @@ fn test_local_return_nested_for_each() {
             }
             println(result.toString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["11123131"]);
 }
 
 #[test]
 fn test_local_return_in_repeat() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val out = StringBuilder()
             repeat(4) { index ->
@@ -288,13 +325,15 @@ fn test_local_return_in_repeat() {
             }
             println(out.toString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["013"]);
 }
 
 #[test]
 fn test_local_return_in_each_indexed() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val out = StringBuilder()
             listOf(1, 2, 3).forEachIndexed { index, value ->
@@ -303,13 +342,15 @@ fn test_local_return_in_each_indexed() {
             }
             println(out.toString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["13"]);
 }
 
 #[test]
 fn test_local_return_in_map_filter() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val filtered = listOf(1, 2, 3).filter {
                 if (it % 2 == 0) return@filter false
@@ -317,13 +358,15 @@ fn test_local_return_in_map_filter() {
             }
             println(filtered.joinToString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1, 3"]);
 }
 
 #[test]
 fn test_local_return_in_any() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val anyEven = listOf(1, 3, 4).any {
                 if (it == 2) return@any false
@@ -331,13 +374,15 @@ fn test_local_return_in_any() {
             }
             println(anyEven)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true"]);
 }
 
 #[test]
 fn test_local_return_in_all() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val allPositive = listOf(1, 2, -1).all {
                 if (it < 0) return@all false
@@ -345,13 +390,15 @@ fn test_local_return_in_all() {
             }
             println(allPositive)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["false"]);
 }
 
 #[test]
 fn test_local_return_in_fold() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val total = listOf(1, 2, 3).fold(0) { acc, value ->
                 if (value == 2) return@fold acc
@@ -359,13 +406,15 @@ fn test_local_return_in_fold() {
             }
             println(total)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["4"]);
 }
 
 #[test]
 fn test_local_return_nonlocal_for_each() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun search(values: List<Int>): String {
             for (v in values) {
                 if (v == 3) return "found"
@@ -376,13 +425,15 @@ fn test_local_return_nonlocal_for_each() {
             println(search(listOf(1, 2, 3)))
             println(search(listOf(1, 2)))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["found", "none"]);
 }
 
 #[test]
 fn test_local_return_with_map_update() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val out = mutableMapOf<Int, Int>()
             for (i in 1..4) {
@@ -391,13 +442,15 @@ fn test_local_return_with_map_update() {
             }
             println(out.size)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_local_return_empty_block() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val result = run {
                 val v = 0
@@ -406,13 +459,15 @@ fn test_local_return_empty_block() {
             }
             println(result)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0"]);
 }
 
 #[test]
 fn test_local_return_in_sequence_map() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val out = sequenceOf(1, 2, 3).map {
                 if (it == 1) return@map 10
@@ -420,13 +475,15 @@ fn test_local_return_in_sequence_map() {
             }.toList().joinToString(",")
             println(out)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["10,2,3"]);
 }
 
 #[test]
 fn test_local_return_in_run_block_string() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val text = "abc"
             val out = run {
@@ -435,13 +492,15 @@ fn test_local_return_in_run_block_string() {
             }
             println(out)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["abc"]);
 }
 
 #[test]
 fn test_local_return_in_when_guard() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val value = 5
             val label = when {
@@ -451,13 +510,15 @@ fn test_local_return_in_when_guard() {
             }
             println(label)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5"]);
 }
 
 #[test]
 fn test_local_return_in_list_any_match() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val hasLarge = listOf(1, 2, 8, 9).any {
                 if (it >= 8) return@any true
@@ -465,13 +526,15 @@ fn test_local_return_in_list_any_match() {
             }
             println(hasLarge)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true"]);
 }
 
 #[test]
 fn test_local_return_in_flat_map() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val data = listOf(1, 2, 3).flatMap {
                 if (it == 2) return@flatMap listOf<Int>()
@@ -479,13 +542,15 @@ fn test_local_return_in_flat_map() {
             }
             println(data.joinToString("/"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1/3"]);
 }
 
 #[test]
 fn test_local_return_in_map_get() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val map = mapOf("a" to 1, "b" to 2)
             val value = map["c"] ?: run {
@@ -493,13 +558,15 @@ fn test_local_return_in_map_get() {
             }
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["99"]);
 }
 
 #[test]
 fn test_local_return_lambda_with_label() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val out = listOf(1, 2, 3).filterIndexed { index, value ->
                 if (index == 1) return@filterIndexed false
@@ -507,13 +574,15 @@ fn test_local_return_lambda_with_label() {
             }
             println(out.joinToString(","))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1,3"]);
 }
 
 #[test]
 fn test_local_return_in_try_finally() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val out = run {
                 try {
@@ -524,13 +593,15 @@ fn test_local_return_in_try_finally() {
             }
             println(out)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["fin", "ok"]);
 }
 
 #[test]
 fn test_local_return_in_repeat_with_indices() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val out = StringBuilder()
             repeat(3) {
@@ -539,13 +610,15 @@ fn test_local_return_in_repeat_with_indices() {
             }
             println(out.toString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["02"]);
 }
 
 #[test]
 fn test_local_return_in_while_conditional() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var i = 0
             while (i < 4) {
@@ -555,6 +628,7 @@ fn test_local_return_in_while_conditional() {
                 println(i)
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "3"]);
 }

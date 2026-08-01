@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_secondary_constructor() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Person {
             val name: String
             constructor(name: String) {
@@ -14,13 +15,15 @@ fn test_secondary_constructor() {
             val p = Person("Alice")
             println(p.name)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["Alice"]);
 }
 
 #[test]
 fn test_secondary_constructor_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Rectangle {
             val width: Int
             val height: Int
@@ -40,13 +43,15 @@ fn test_secondary_constructor_chain() {
             println(square.width)
             println(square.height)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["square", "3", "3"]);
 }
 
 #[test]
 fn test_constructor_property_assignment() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Rectangle {
             val width: Int
             val height: Int
@@ -69,13 +74,15 @@ fn test_constructor_property_assignment() {
             println(r2.width)
             println(r2.height)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["square", "2", "3", "4", "4"]);
 }
 
 #[test]
 fn test_constructor_chain_with_this() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Margin {
             val top: Int
             val right: Int
@@ -101,13 +108,15 @@ fn test_constructor_chain_with_this() {
             println(m.bottom)
             println(m.left)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["all", "7", "7", "7", "7"]);
 }
 
 #[test]
 fn test_constructor_super_call() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Animal(val name: String)
 
         class Dog : Animal {
@@ -128,13 +137,15 @@ fn test_constructor_super_call() {
             println(b.name)
             println(b.age)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["Rex", "5", "Buddy", "1"]);
 }
 
 #[test]
 fn test_constructor_default_behavior() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Timer {
             val seconds: Int
 
@@ -151,13 +162,15 @@ fn test_constructor_default_behavior() {
             println(Timer().seconds)
             println(Timer(30).seconds)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "30"]);
 }
 
 #[test]
 fn test_constructor_three_levels() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Scale {
             val unit: Int
 
@@ -179,13 +192,15 @@ fn test_constructor_three_levels() {
             Scale(4)
             Scale(5, 2)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["scaled", "scaled", "10"]);
 }
 
 #[test]
 fn test_secondary_no_default_init() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class A {
             val value: Int
             constructor(v: Int) {
@@ -196,13 +211,15 @@ fn test_secondary_no_default_init() {
         fun main() {
             println(A(3).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_secondary_double_constructor() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class B {
             val a: Int
             val b: Int
@@ -222,13 +239,15 @@ fn test_secondary_double_constructor() {
             println(x.a)
             println(x.b)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "9"]);
 }
 
 #[test]
 fn test_secondary_three_level_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class C {
             val value: Int
 
@@ -250,13 +269,15 @@ fn test_secondary_three_level_chain() {
             println(C(4).value)
             println(C(4, 5).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "4", "9"]);
 }
 
 #[test]
 fn test_secondary_with_super_base() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class P(val id: Int)
 
         class C : P {
@@ -276,13 +297,15 @@ fn test_secondary_with_super_base() {
             println(C(3).id)
             println(C(3).tag)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "3", "6"]);
 }
 
 #[test]
 fn test_secondary_printing_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Trace {
             val value: Int
 
@@ -301,13 +324,15 @@ fn test_secondary_printing_chain() {
             Trace()
             Trace(5)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["zero", "5"]);
 }
 
 #[test]
 fn test_secondary_companion_use() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Factory {
             val size: Int
             companion object {
@@ -325,13 +350,15 @@ fn test_secondary_companion_use() {
             println(Factory.create(4))
             println(Factory.create(Factory(6).size))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["8", "12"]);
 }
 
 #[test]
 fn test_secondary_chain_with_defaults() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Packet {
             val x: Int
 
@@ -352,13 +379,15 @@ fn test_secondary_chain_with_defaults() {
             val p = Packet(2, 3, 4)
             println(p.x)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["9"]);
 }
 
 #[test]
 fn test_secondary_reassigning_value() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Counter {
             var value: Int
 
@@ -379,13 +408,15 @@ fn test_secondary_reassigning_value() {
             println(Counter(3, true).value)
             println(Counter(3, false).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["6", "3"]);
 }
 
 #[test]
 fn test_secondary_empty_parameter() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Label {
             val value: String
 
@@ -400,13 +431,15 @@ fn test_secondary_empty_parameter() {
             println(Label().value)
             println(Label("yes").value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["none", "yes"]);
 }
 
 #[test]
 fn test_secondary_with_mutable_property() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class State {
             var total: Int
 
@@ -427,13 +460,15 @@ fn test_secondary_with_mutable_property() {
             val s = State(4, 5)
             println(s.total)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["9"]);
 }
 
 #[test]
 fn test_secondary_noisy_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Log {
             val step: Int
 
@@ -456,13 +491,15 @@ fn test_secondary_noisy_chain() {
             Log(2)
             Log(3, 4)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["s", "e"]);
 }
 
 #[test]
 fn test_secondary_with_interface() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Marker
 
         class D : Marker {
@@ -481,13 +518,15 @@ fn test_secondary_with_interface() {
             println(D().value)
             println(D(8).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "8"]);
 }
 
 #[test]
 fn test_secondary_boolean_constructor() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Flag {
             val value: Boolean
 
@@ -504,13 +543,15 @@ fn test_secondary_boolean_constructor() {
             println(Flag().value)
             println(Flag(true).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["false", "true"]);
 }
 
 #[test]
 fn test_secondary_chain_of_three() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Ring {
             val value: Int
 
@@ -535,13 +576,15 @@ fn test_secondary_chain_of_three() {
             println(Ring(2, 3).value)
             println(Ring(2, 3, 4).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5", "9"]);
 }
 
 #[test]
 fn test_secondary_text_constructs() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Text {
             val value: String
 
@@ -558,13 +601,15 @@ fn test_secondary_text_constructs() {
             println(Text("a").value)
             println(Text("a", "b").value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["a", "ab"]);
 }
 
 #[test]
 fn test_secondary_nullable_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Value {
             val value: Int?
 
@@ -579,13 +624,15 @@ fn test_secondary_nullable_chain() {
             println(Value(true).value)
             println(Value(false).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "0"]);
 }
 
 #[test]
 fn test_secondary_float_constructor() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Box {
             val value: Int
 
@@ -601,13 +648,15 @@ fn test_secondary_float_constructor() {
         fun main() {
             println(Box(4.9).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["4"]);
 }
 
 #[test]
 fn test_secondary_with_array_input() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Bucket {
             val size: Int
 
@@ -622,13 +671,15 @@ fn test_secondary_with_array_input() {
             println(Bucket(5).size)
             println(Bucket(arrayOf(1, 2, 3)).size)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "3"]);
 }
 
 #[test]
 fn test_secondary_nested_class_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             val x: Int
             class Child
@@ -650,13 +701,15 @@ fn test_secondary_nested_class_chain() {
             val h = Holder(7, Holder.Child())
             println(h.x)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7"]);
 }
 
 #[test]
 fn test_secondary_counter_reset() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Seq {
             val n: Int
 
@@ -673,13 +726,15 @@ fn test_secondary_counter_reset() {
             println(Seq().n)
             println(Seq(12).n)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "12"]);
 }
 
 #[test]
 fn test_secondary_computed_value() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Compute {
             val value: Int
 
@@ -696,13 +751,15 @@ fn test_secondary_computed_value() {
             val c = Compute(4, 5)
             println(c.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["9"]);
 }
 
 #[test]
 fn test_secondary_with_init_printing() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Track {
             val value: Int
             init {
@@ -722,13 +779,15 @@ fn test_secondary_with_init_printing() {
             Track()
             Track(3)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["init", "init"]);
 }
 
 #[test]
 fn test_secondary_constructor_and_mutability() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Counter {
             var value: Int
 
@@ -748,13 +807,15 @@ fn test_secondary_constructor_and_mutability() {
         fun main() {
             println(Counter(5, 1, 1).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5"]);
 }
 
 #[test]
 fn test_secondary_constructor_chain_side_effect_count() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class SequenceTracker {
             val value: Int
 
@@ -779,13 +840,15 @@ fn test_secondary_constructor_chain_side_effect_count() {
             println(SequenceTracker(3).value)
             println(SequenceTracker(3, 4).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["base", "0", "fromStart", "3", "fromStep", "7"]);
 }
 
 #[test]
 fn test_secondary_constructor_accessing_other_constructor_results() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Range {
             val min: Int
             val max: Int
@@ -808,13 +871,15 @@ fn test_secondary_constructor_accessing_other_constructor_results() {
             println(a.width())
             println(b.width())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "6"]);
 }
 
 #[test]
 fn test_secondary_constructor_reassigns_var_property() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Box {
             var value: Int
 
@@ -831,13 +896,15 @@ fn test_secondary_constructor_reassigns_var_property() {
             println(Box().value)
             println(Box(5).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["10", "15"]);
 }
 
 #[test]
 fn test_secondary_constructor_with_nested_class_argument() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Host {
             val name: String
             class Config
@@ -856,13 +923,15 @@ fn test_secondary_constructor_with_nested_class_argument() {
             println(Host("root").name)
             println(Host(Host.Config(), "inner").name)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "root", "inner"]);
 }
 
 #[test]
 fn test_secondary_constructor_with_default_boolean_flag() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Marker {
             val active: Boolean
             val label: String
@@ -884,13 +953,15 @@ fn test_secondary_constructor_with_default_boolean_flag() {
             println(a.label)
             println(b.label)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["false", "x", "x!"]);
 }
 
 #[test]
 fn test_secondary_constructor_readonly_property_preserved() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Metric {
             val total: Int
             var tag: String
@@ -913,13 +984,15 @@ fn test_secondary_constructor_readonly_property_preserved() {
             println(two.total)
             println(two.tag)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "base", "5", "custom"]);
 }
 
 #[test]
 fn test_secondary_constructor_with_array_destructure_input() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Matrix {
             val rows: Int
             val cols: Int
@@ -940,13 +1013,15 @@ fn test_secondary_constructor_with_array_destructure_input() {
             println(b.rows)
             println(b.cols)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "3", "3", "2"]);
 }
 
 #[test]
 fn test_secondary_constructor_private_validation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class PositiveCounter {
             val value: Int
 
@@ -964,13 +1039,15 @@ fn test_secondary_constructor_private_validation() {
             println(PositiveCounter(5, false).value)
             println(PositiveCounter(5, true).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["built", "built", "built", "0", "0", "5"]);
 }
 
 #[test]
 fn test_secondary_constructor_delegation_argument_evaluation_order() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var order = ""
 
         fun mark(value: String): Int {
@@ -998,13 +1075,15 @@ fn test_secondary_constructor_delegation_argument_evaluation_order() {
             println(probe.first)
             println(probe.second)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["leftright", "1", "5"]);
 }
 
 #[test]
 fn test_secondary_constructor_vararg_forwarding() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class VarArgProbe {
             val text: String
 
@@ -1019,13 +1098,15 @@ fn test_secondary_constructor_vararg_forwarding() {
             println(VarArgProbe("v", 1, 2, 3).text)
             println(VarArgProbe(4).text)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["v:1:2:3", "n:4:5"]);
 }
 
 #[test]
 fn test_secondary_constructor_body_executes_after_delegation_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var trace = ""
 
         class Chain {
@@ -1052,13 +1133,15 @@ fn test_secondary_constructor_body_executes_after_delegation_chain() {
             println(trace)
             println(c.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["root;inner;leaf;", "5"]);
 }
 
 #[test]
 fn test_secondary_constructor_super_argument_is_evaluated_for_derived_init() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var calls = ""
 
         open class Parent(val seed: Int) {
@@ -1084,13 +1167,15 @@ fn test_secondary_constructor_super_argument_is_evaluated_for_derived_init() {
             println(c.offset)
             println(calls)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["71", "8", "7"]);
 }
 
 #[test]
 fn test_secondary_constructor_constructor_can_throw_and_fail() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Guard {
             val value: Int
 
@@ -1109,6 +1194,7 @@ fn test_secondary_constructor_constructor_can_throw_and_fail() {
                 println("caught")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["caught"]);
 }

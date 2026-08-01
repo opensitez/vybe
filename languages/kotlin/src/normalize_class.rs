@@ -1,10 +1,10 @@
 //! Kotlin `ClassDecl` → `NormalClass` normalization pass.
 
+use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
 use vybe_ast::{
     Argument, BinOp, ClassKind, ClassMember, ClassModifiers, ConstructorInitializerTarget,
     ExprKind, Expression, Modifiers, Param, PassBy, PropertySetter, Span, Statement, StmtKind,
 };
-use vybe_ast::class_normalize::{build_normal_method, from_method_stmt, types::*, NormalMembers};
 
 /// `this.<name>`.
 /// A component read from inside a derived member.
@@ -378,7 +378,12 @@ pub fn normalize_class(
                 // access, which resolves `__get_<Name>` / `__set_<Name>` by the
                 // EXACT source spelling — so the canonical name keeps its case.
                 let access = Access::from(m.visibility);
-                let getter_method = getter.as_ref().map(|body| {
+                let synthetic_backing_getter =
+                    !*is_auto && getter.is_none() && setter.is_some();
+                let getter_body = getter
+                    .clone()
+                    .or_else(|| synthetic_backing_getter.then(|| ret(this_field(&format!("__kt_field_{}", pname)))));
+                let getter_method = getter_body.as_ref().map(|body| {
                     build_normal_method(
                         span.clone(),
                         pname,

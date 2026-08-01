@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_if_with_guarded_branching() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun classify(v: Int): String = if (v > 0) {
             "positive"
         } else if (v < 0) {
@@ -16,13 +17,15 @@ fn test_if_with_guarded_branching() {
             println(classify(-1))
             println(classify(0))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["positive", "negative", "zero"]);
 }
 
 #[test]
 fn test_when_with_range_and_equality_guards() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun status(code: Int): String = when {
             code in 200..299 -> "ok"
             code in 400..499 -> "client"
@@ -36,6 +39,7 @@ fn test_when_with_range_and_equality_guards() {
             println(status(501))
             println(status(101))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ok", "client", "server", "other"]);
 }

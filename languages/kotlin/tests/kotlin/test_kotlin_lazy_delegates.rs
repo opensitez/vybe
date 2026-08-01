@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_lazy_default_initializes_once() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var initCount = 0
             val x: Int by lazy {
@@ -14,13 +15,15 @@ fn test_lazy_default_initializes_once() {
             println(x)
             println(initCount)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "8", "8", "1"]);
 }
 
 #[test]
 fn test_lazy_thread_safety_modes() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import kotlin.LazyThreadSafetyMode
         fun main() {
             var count = 0
@@ -38,13 +41,15 @@ fn test_lazy_thread_safety_modes() {
             println(b)
             println(count)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["a", "a", "b", "b", "11"]);
 }
 
 #[test]
 fn test_lazy_returns_computation_result_once_even_with_side_effects() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var sideEffect = 0
         fun load(): Int {
             sideEffect += 2
@@ -57,13 +62,15 @@ fn test_lazy_returns_computation_result_once_even_with_side_effects() {
             println(value)
             println(sideEffect)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "2", "2"]);
 }
 
 #[test]
 fn test_lazy_property_as_declaration_output() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             private val raw: Int = 3
             val doubled by lazy { raw * 2 }
@@ -74,13 +81,15 @@ fn test_lazy_property_as_declaration_output() {
             println(h.doubled)
             println(h.doubled)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["6", "6"]);
 }
 
 #[test]
 fn test_delegates_observable_records_changes() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import kotlin.properties.Delegates
 
         fun main() {
@@ -93,13 +102,15 @@ fn test_delegates_observable_records_changes() {
             println(events)
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1:2;2:5;", "5"]);
 }
 
 #[test]
 fn test_delegates_vetoable_rejects_invalid_value() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import kotlin.properties.Delegates
 
         fun main() {
@@ -111,13 +122,15 @@ fn test_delegates_vetoable_rejects_invalid_value() {
             value = -10
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "3"]);
 }
 
 #[test]
 fn test_delegates_not_null_requires_assignment_before_read() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         import kotlin.properties.Delegates
 
         fun main() {
@@ -135,13 +148,15 @@ fn test_delegates_not_null_requires_assignment_before_read() {
             holder.name = "ok"
             println(holder.name)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["IllegalStateException", "ok"]);
 }
 
 #[test]
 fn test_lazy_uses_value_once_per_instance() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var count = 0
             class Holder {
@@ -154,13 +169,15 @@ fn test_lazy_uses_value_once_per_instance() {
             println(second.value)
             println(count)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["x", "x", "x", "2"]);
 }
 
 #[test]
 fn test_lazy_after_mutation_from_other_property() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             var seed = 1
             val value by lazy { seed * 10 }
@@ -173,6 +190,7 @@ fn test_lazy_after_mutation_from_other_property() {
             h.seed = 9
             println(h.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["30", "30"]);
 }

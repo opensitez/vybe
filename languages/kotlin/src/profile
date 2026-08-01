@@ -95,7 +95,7 @@ __coll_insert     = { emit = "common:collections.insert", min_args = 3, max_args
 __coll_clear      = { emit = "common:collections.clear", min_args = 1, max_args = 1 }
 __coll_sorted     = { emit = "common:collections.sorted", min_args = 1, max_args = 1 }
 __coll_reverse    = { emit = "common:collections.reverse", min_args = 1, max_args = 1 }
-__coll_join       = { emit = "common:collections.join", min_args = 2, max_args = 2 }
+__coll_join       = { emit = "common:kotlin.join_to_string", min_args = 2, max_args = 2 }
 __coll_slice      = { emit = "common:collections.slice", min_args = 3, max_args = 3 }
 __coll_sum        = { emit = "common:collections.sum", min_args = 1, max_args = 1 }
 __coll_min        = { emit = "common:collections.min", min_args = 1, max_args = 1 }
@@ -166,9 +166,13 @@ __kt_step_asc  = { emit = "common:collections.range_step", min_args = 3, max_arg
 __kt_step_desc = { emit = "common:collections.range_step", min_args = 3, max_args = 3 }
 
 # Math Primitives
+# Qualified `kotlin.math.*` calls resolve through the JVM platform namespace
+# tree. These bare names model Kotlin's default/imported top-level stdlib
+# surface until import-mount lowering is fully migrated.
 max   = { emit = "host:ecma:math:maxOf", min_args = 1, max_args = 255 }
 min   = { emit = "host:ecma:math:minOf", min_args = 1, max_args = 255 }
 abs   = { emit = "host:ecma:math:abs",   min_args = 1, max_args = 1 }
+absoluteValue = { emit = "host:ecma:math:abs", min_args = 1, max_args = 1 }
 sqrt  = { emit = "host:ecma:math:sqrt",  min_args = 1, max_args = 1 }
 pow   = { emit = "host:ecma:math:pow",   min_args = 2, max_args = 2 }
 round = { emit = "host:ecma:math:round", min_args = 1, max_args = 1 }
@@ -190,6 +194,34 @@ IllegalStateException      = { emit = "common:errors.illegal_state", min_args = 
 NullPointerException       = { emit = "common:errors.null_pointer", min_args = 0, max_args = 1 }
 IndexOutOfBoundsException  = { emit = "common:errors.index_out_of_bounds", min_args = 0, max_args = 1 }
 
+[builtin_return_types]
+"kotlin.math.sign" = "Double"
+"kotlin.math.sqrt" = "Double"
+"kotlin.math.pow" = "Double"
+"kotlin.math.round" = "Double"
+"kotlin.math.ceil" = "Double"
+"kotlin.math.floor" = "Double"
+"kotlin.math.sin" = "Double"
+"kotlin.math.cos" = "Double"
+"kotlin.math.tan" = "Double"
+"kotlin.math.asin" = "Double"
+"kotlin.math.acos" = "Double"
+"kotlin.math.atan" = "Double"
+"kotlin.math.atan2" = "Double"
+"kotlin.math.sinh" = "Double"
+"kotlin.math.cosh" = "Double"
+"kotlin.math.tanh" = "Double"
+"kotlin.math.exp" = "Double"
+"kotlin.math.ln" = "Double"
+"kotlin.math.log10" = "Double"
+"kotlin.math.hypot" = "Double"
+"kotlin.math.max" = "Double"
+"kotlin.math.min" = "Double"
+"kotlin.math.ulp" = "Double"
+"kotlin.math.nextafter" = "Double"
+"kotlin.math.nextup" = "Double"
+"kotlin.math.nextdown" = "Double"
+
 [value_methods]
 
 # ── kotlin.Any.toString ─────────────────────────────────────────────────────
@@ -209,6 +241,7 @@ isNaN      = { emit = "host:ecma:number:isNaN",   min_args = 0, max_args = 0 }
 # Kotlin's `toInt()`/`toLong()` TRUNCATE toward zero (`4.9.toInt() == 4`,
 # `(-4.9).toInt() == -4`) — `Math.trunc`, not `floor`, which would answer -5.
 toInt      = { emit = "host:ecma:math:trunc",     min_args = 0, max_args = 0 }
+roundToInt = { emit = "host:ecma:math:round",     min_args = 0, max_args = 0 }
 toLong     = { emit = "host:ecma:math:trunc",     min_args = 0, max_args = 0 }
 # Every number is an f64 at runtime, so widening is the identity. The
 # conversion still has to EXIST — `x.toDouble()` is how Kotlin code opts out of
@@ -219,6 +252,9 @@ isFinite   = { emit = "host:ecma:number:isFinite", min_args = 0, max_args = 0 }
 # No host fn answers this one: ECMA has `isFinite` and `isNaN` but nothing for
 # "infinite", which is neither. Composed in `emitter/tostring.rs`' sibling.
 isInfinite = { emit = "common:kotlin.is_infinite", min_args = 0, max_args = 0 }
+uppercase  = { emit = "common:strings.to_upper", min_args = 0, max_args = 0 }
+lowercase  = { emit = "common:strings.to_lower", min_args = 0, max_args = 0 }
+capitalize = { emit = "intrinsic:capitalize", min_args = 0, max_args = 0 }
 
 # Kotlin's spellings of the shared built-in types — builtinslotplan.md step 4a.
 #
@@ -302,4 +338,17 @@ to_string = "common:kotlin.print_double"
 # every JDK spelling resolves without per-language mount or ambient data.
 
 [namespaces]
-type_scopes = ["java"]
+type_scopes = ["java", "kotlin"]
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "kotlin"
+path = "kotlin"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "kotlin"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "kotlin.math"

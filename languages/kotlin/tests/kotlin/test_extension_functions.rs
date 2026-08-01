@@ -2,31 +2,36 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_extension_function_on_primitive() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun Int.incremented(): Int = this + 1
 
         fun main() {
             println(3.incremented())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["4"]);
 }
 
 #[test]
 fn test_extension_function_with_multiple_parameters() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun Int.add(value: Int, scale: Int): Int = (this + value) * scale
 
         fun main() {
             println(2.add(3, 4))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["20"]);
 }
 
 #[test]
 fn test_extension_function_on_class_instance() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Box(val value: Int)
 
         fun Box.labeled(prefix: String): String = prefix + ":" + value
@@ -34,13 +39,15 @@ fn test_extension_function_on_class_instance() {
         fun main() {
             println(Box(7).labeled("v"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["v:7"]);
 }
 
 #[test]
 fn test_extension_property_getter() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Point(val x: Int, val y: Int)
 
         val Point.sum: Int
@@ -49,13 +56,15 @@ fn test_extension_property_getter() {
         fun main() {
             println(Point(2, 5).sum)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7"]);
 }
 
 #[test]
 fn test_extension_property_with_setter_like_behavior() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder(var value: Int)
 
         var Holder.doubled: Int
@@ -68,13 +77,15 @@ fn test_extension_property_with_setter_like_behavior() {
             println(holder.value)
             println(holder.doubled)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5", "10"]);
 }
 
 #[test]
 fn test_extension_function_for_nullable_receiver() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun Int?.orZero(): Int = this ?: 0
 
         fun main() {
@@ -83,25 +94,29 @@ fn test_extension_function_for_nullable_receiver() {
             println(value.orZero())
             println(second.orZero())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "7"]);
 }
 
 #[test]
 fn test_local_extension_function_scope() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             fun String.shout(): String = this.uppercase()
             fun use(value: String): String = value.shout()
             println(use("go"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["GO"]);
 }
 
 #[test]
 fn test_overload_resolution_between_extension_and_member() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Box {
             fun value(): Int = 1
         }
@@ -111,39 +126,45 @@ fn test_overload_resolution_between_extension_and_member() {
         fun main() {
             println(Box().value())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1"]);
 }
 
 #[test]
 fn test_generic_extension_transform() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun <T> List<T>.wrapCount(): String = "count=" + this.size
 
         fun main() {
             println(listOf(1, 2, 3).wrapCount())
             println(listOf("a").wrapCount())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["count=3", "count=1"]);
 }
 
 #[test]
 fn test_extension_on_generic_with_bounds() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun <T : Number> T.asIntText(): Int = this.toInt()
 
         fun main() {
             println(4.9.asIntText())
             println(7.asIntText())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["4", "7"]);
 }
 
 #[test]
 fn test_extension_function_chain_with_let() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun String.repeatPrefix(prefix: String, count: Int): String = prefix.repeat(count) + this
 
         fun main() {
@@ -152,13 +173,15 @@ fn test_extension_function_chain_with_let() {
                 .repeatPrefix("b", 2)
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["bbaaaak"]);
 }
 
 #[test]
 fn test_extension_function_with_default_parameter() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun String.wrap(prefix: String = "x", suffix: String = "!"): String {
             return prefix + this + suffix
         }
@@ -168,13 +191,15 @@ fn test_extension_function_with_default_parameter() {
             println("a".wrap("z"))
             println("a".wrap("z", "?"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["xa!", "za!", "za?"]);
 }
 
 #[test]
 fn test_extension_function_on_any_type() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun Any.described(): String = when (this) {
             is Int -> "Int"
             is String -> "String"
@@ -188,13 +213,15 @@ fn test_extension_function_on_any_type() {
             println("x".described())
             println(Item().described())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["Int", "String", "Any"]);
 }
 
 #[test]
 fn test_extension_property_with_nullable_receiver() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         val Int?.orZero: Int
             get() = this ?: 0
 
@@ -204,26 +231,30 @@ fn test_extension_property_with_nullable_receiver() {
             println(left.orZero)
             println(right.orZero)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "12"]);
 }
 
 #[test]
 fn test_extension_receiver_shadowing_from_scope() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun String.show(): String = "global-" + this
 
         fun main() {
             fun String.show(): String = "local-" + this
             println("x".show())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["local-x"]);
 }
 
 #[test]
 fn test_extension_function_with_vararg_receiver() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun Int.joinWith(vararg values: Int): String {
             var total = this
             for (value in values) {
@@ -236,13 +267,15 @@ fn test_extension_function_with_vararg_receiver() {
             println(1.joinWith(2, 3, 4))
             println(0.joinWith())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["10", "0"]);
 }
 
 #[test]
 fn test_extension_to_collection_can_transform() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun <T> Collection<T>.asTagged(tag: String): String {
             return tag + ":" + this.size
         }
@@ -251,13 +284,15 @@ fn test_extension_to_collection_can_transform() {
             println(listOf(1, 2, 3).asTagged("count"))
             println(setOf("a").asTagged("single"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["count:3", "single:1"]);
 }
 
 #[test]
 fn test_extension_function_for_sequence_order() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun Int.next(): Int = this + 1
         fun Int.prev(): Int = this - 1
 
@@ -265,13 +300,15 @@ fn test_extension_function_for_sequence_order() {
             val base = 4
             println(base.next().prev().next())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5"]);
 }
 
 #[test]
 fn test_extension_function_can_return_receiver_again() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun String.trimAndRepeat(times: Int): String {
             val clean = this.trim()
             return clean.repeat(times)
@@ -281,13 +318,15 @@ fn test_extension_function_can_return_receiver_again() {
             println("  x ".trimAndRepeat(3))
             println("z".trimAndRepeat(1))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["xxx", "z"]);
 }
 
 #[test]
 fn test_extension_in_generic_bounded_receiver() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun <T> T.describeIfString(default: String): String where T : Any? {
             return this?.toString() ?: default
         }
@@ -297,13 +336,15 @@ fn test_extension_in_generic_bounded_receiver() {
             println("hello".describeIfString("none"))
             println(value.describeIfString("none"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["hello", "none"]);
 }
 
 #[test]
 fn test_extension_property_can_be_computed_multiple_times() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var Int.squareCount: Int
             get() = this * this
             set(value) {}
@@ -313,26 +354,30 @@ fn test_extension_property_can_be_computed_multiple_times() {
             println(value.squareCount)
             println(value.squareCount)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["16", "16"]);
 }
 
 #[test]
 fn test_infix_extension_function_supports_chained_usage() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         infix fun String.tagWith(prefix: String): String = prefix + this
 
         fun main() {
             val result = "world" tagWith "hello-" tagWith "!"
             println(result)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["!hello-world"]);
 }
 
 #[test]
 fn test_extension_function_on_number_list_maps_all_values() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun List<Int>.doubleAndSum(): Int {
             var total = 0
             for (value in this) {
@@ -345,13 +390,15 @@ fn test_extension_function_on_number_list_maps_all_values() {
             println(listOf(1, 2, 3).doubleAndSum())
             println(listOf(10).doubleAndSum())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["12", "20"]);
 }
 
 #[test]
 fn test_extension_function_on_int_array_returns_product() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun IntArray.product(): Int {
             var total = 1
             for (value in this) {
@@ -363,13 +410,15 @@ fn test_extension_function_on_int_array_returns_product() {
         fun main() {
             println(intArrayOf(2, 3, 4).product())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["24"]);
 }
 
 #[test]
 fn test_extension_property_on_map_reports_key_count() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         val Map<String, Int>.keyText: String
             get() = keys.joinToString("|")
 
@@ -378,26 +427,30 @@ fn test_extension_property_on_map_reports_key_count() {
             println(values.keyText)
             println(values.keyText)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["a|b|c", "a|b|c"]);
 }
 
 #[test]
 fn test_extension_function_for_boolean_returns_numeric_projection() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun Boolean.intValue(): Int = if (this) 1 else 0
 
         fun main() {
             println(true.intValue())
             println(false.intValue())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "0"]);
 }
 
 #[test]
 fn test_extension_function_with_receiver_parameter() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun Int.addWithOffset(offset: Int, label: String): String {
             return label + (this + offset).toString()
         }
@@ -405,26 +458,30 @@ fn test_extension_function_with_receiver_parameter() {
         fun main() {
             println(2.addWithOffset(3, "x"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["x5"]);
 }
 
 #[test]
 fn test_extension_function_on_pair_exposes_projection_like_accessor() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun Pair<Int, Int>.delta(): Int = second - first
 
         fun main() {
             val value = Pair(4, 9)
             println(value.delta())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5"]);
 }
 
 #[test]
 fn test_extension_function_can_be_inference_targeted_by_generic_constraint() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun <T : Number> T.isBig(): Boolean = this.toDouble() > 10.0
 
         fun main() {
@@ -432,13 +489,15 @@ fn test_extension_function_can_be_inference_targeted_by_generic_constraint() {
             println((42).isBig())
             println(0.5.isBig())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["false", "true", "false"]);
 }
 
 #[test]
 fn test_extension_receiver_can_be_nullable_and_differentiated() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun String?.orEmptyTag(): String {
             return if (this == null) "none" else "ok:" + this
         }
@@ -448,13 +507,15 @@ fn test_extension_receiver_can_be_nullable_and_differentiated() {
             println("x".orEmptyTag())
             println(left.orEmptyTag())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ok:x", "none"]);
 }
 
 #[test]
 fn test_extension_function_dispatch_uses_static_receiver_type() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base
         class Child : Base()
 
@@ -466,13 +527,15 @@ fn test_extension_function_dispatch_uses_static_receiver_type() {
             println(static_base.label())
             println(Child().label())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["base", "child"]);
 }
 
 #[test]
 fn test_extension_property_on_iterable_reports_head_or_fallback() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         val <T> Iterable<T>.headOrFallback: String
             get() = if (iterator().hasNext()) iterator().next().toString() else "fallback"
 
@@ -480,13 +543,15 @@ fn test_extension_property_on_iterable_reports_head_or_fallback() {
             println(listOf("a", "b").headOrFallback)
             println(listOf<Int>().headOrFallback)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["a", "fallback"]);
 }
 
 #[test]
 fn test_extension_function_on_function_type_calls_receiver_twice() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun (() -> Int).callTwice(): Int {
             return this() + this()
         }
@@ -498,13 +563,15 @@ fn test_extension_function_on_function_type_calls_receiver_twice() {
             println(value.callTwice())
             println(state)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "7", "4"]);
 }
 
 #[test]
 fn test_extension_for_companion_object_acts_like_factory() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Factory private constructor(val value: Int) {
             companion object
         }
@@ -514,13 +581,15 @@ fn test_extension_for_companion_object_acts_like_factory() {
         fun main() {
             println(Factory.from(7).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7"]);
 }
 
 #[test]
 fn test_extension_function_over_object_expression_receiver() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun StringBuilder.enclosed(): String {
             this.append("]")
             this.insert(0, "[")
@@ -531,13 +600,15 @@ fn test_extension_function_over_object_expression_receiver() {
             val value = StringBuilder("ok").enclosed()
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["[ok]"]);
 }
 
 #[test]
 fn test_extension_function_for_nullable_interface_receiver() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Labelable {
             fun label(): String
         }
@@ -553,6 +624,7 @@ fn test_extension_function_for_nullable_interface_receiver() {
             println(item.labelOrFallback())
             println(missing.labelOrFallback())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ok", "missing"]);
 }

@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_kotlin_io_writes_and_reads_text() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_text_" + System.nanoTime() + "_a.txt")
             file.writeText("hello")
@@ -10,16 +11,15 @@ fn test_kotlin_io_writes_and_reads_text() {
             println(file.readText())
             file.delete()
         }
-    "#);
-    assert_eq!(out, &[
-        "true",
-        "hello"
-    ]);
+    "#,
+    );
+    assert_eq!(out, &["true", "hello"]);
 }
 
 #[test]
 fn test_kotlin_io_append_text_extends_existing_content() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_append_" + System.nanoTime() + ".txt")
             file.writeText("a")
@@ -28,13 +28,15 @@ fn test_kotlin_io_append_text_extends_existing_content() {
             println(file.readText())
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["abc"]);
 }
 
 #[test]
 fn test_kotlin_io_write_text_overwrites_previous_content() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_overwrite_" + System.nanoTime() + ".txt")
             file.writeText("first")
@@ -42,13 +44,15 @@ fn test_kotlin_io_write_text_overwrites_previous_content() {
             println(file.readText())
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["second"]);
 }
 
 #[test]
 fn test_kotlin_io_read_lines_preserves_blank_entries() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_lines_" + System.nanoTime() + ".txt")
             file.writeText("a\n\n b\n")
@@ -57,16 +61,15 @@ fn test_kotlin_io_read_lines_preserves_blank_entries() {
             println(lines.joinToString("|"))
             file.delete()
         }
-    "#);
-    assert_eq!(out, &[
-        "3",
-        "a|| b"
-    ]);
+    "#,
+    );
+    assert_eq!(out, &["3", "a|| b"]);
 }
 
 #[test]
 fn test_kotlin_io_for_each_line_collects_each_line() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_foreach_" + System.nanoTime() + ".txt")
             file.writeText("u\nv\nw")
@@ -75,13 +78,15 @@ fn test_kotlin_io_for_each_line_collects_each_line() {
             println(joined.toString())
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["u.v.w."]);
 }
 
 #[test]
 fn test_kotlin_io_use_lines_counts_lines() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_use_lines_" + System.nanoTime() + ".txt")
             file.writeText("1\n2\n3")
@@ -89,13 +94,15 @@ fn test_kotlin_io_use_lines_counts_lines() {
             println(count)
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_kotlin_io_write_and_read_bytes() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_bytes_" + System.nanoTime() + ".bin")
             file.writeBytes(byteArrayOf(1, 2, 3, 4))
@@ -103,13 +110,15 @@ fn test_kotlin_io_write_and_read_bytes() {
             println(bytes.joinToString(","))
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1,2,3,4"]);
 }
 
 #[test]
 fn test_kotlin_io_copy_to_duplicate_file() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val dir = java.io.File(java.lang.System.getProperty("java.io.tmpdir"))
             val src = java.io.File(dir, "vybe_io_copy_src_" + System.nanoTime() + ".txt")
@@ -121,13 +130,15 @@ fn test_kotlin_io_copy_to_duplicate_file() {
             src.delete()
             dst.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["copy", "true"]);
 }
 
 #[test]
 fn test_kotlin_io_stream_copy_between_files() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val dir = java.io.File(java.lang.System.getProperty("java.io.tmpdir"))
             val src = java.io.File(dir, "vybe_io_stream_src_" + System.nanoTime() + ".txt")
@@ -142,13 +153,15 @@ fn test_kotlin_io_stream_copy_between_files() {
             src.delete()
             dst.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["stream"]);
 }
 
 #[test]
 fn test_kotlin_io_rename_to_new_file() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val dir = java.io.File(java.lang.System.getProperty("java.io.tmpdir"))
             val src = java.io.File(dir, "vybe_io_rename_src_" + System.nanoTime() + ".txt")
@@ -160,13 +173,15 @@ fn test_kotlin_io_rename_to_new_file() {
             println(dst.readText())
             dst.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "false", "rename"]);
 }
 
 #[test]
 fn test_kotlin_io_create_nested_directory_and_list_children() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val parent = java.io.File(java.lang.System.getProperty("java.io.tmpdir"), "vybe_io_dir_" + System.nanoTime())
             parent.mkdirs()
@@ -182,13 +197,15 @@ fn test_kotlin_io_create_nested_directory_and_list_children() {
             childB.delete()
             parent.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["a.txt,b.txt", "false"]);
 }
 
 #[test]
 fn test_kotlin_io_walk_top_down_includes_nested_files() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val parent = java.io.File(java.lang.System.getProperty("java.io.tmpdir"), "vybe_io_walk_" + System.nanoTime())
             val nested = java.io.File(parent, "nested")
@@ -204,13 +221,15 @@ fn test_kotlin_io_walk_top_down_includes_nested_files() {
             nested.delete()
             parent.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "true", "true"]);
 }
 
 #[test]
 fn test_kotlin_io_walk_by_depth() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val parent = java.io.File(java.lang.System.getProperty("java.io.tmpdir"), "vybe_io_walk_depth_" + System.nanoTime())
             val level1 = java.io.File(parent, "level1")
@@ -225,13 +244,15 @@ fn test_kotlin_io_walk_by_depth() {
             level1.delete()
             parent.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "4"]);
 }
 
 #[test]
 fn test_kotlin_io_path_properties() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_props_" + System.nanoTime() + ".dat")
             file.writeText("p")
@@ -240,13 +261,15 @@ fn test_kotlin_io_path_properties() {
             println(file.nameWithoutExtension.contains("vybe_io_props_"))
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "dat", "true"]);
 }
 
 #[test]
 fn test_kotlin_io_absolute_and_parent_paths() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_abs_" + System.nanoTime() + ".txt")
             file.writeText("x")
@@ -256,13 +279,15 @@ fn test_kotlin_io_absolute_and_parent_paths() {
             println(parent != null)
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "true"]);
 }
 
 #[test]
 fn test_kotlin_io_file_delete() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_delete_" + System.nanoTime() + ".txt")
             file.writeText("gone")
@@ -272,13 +297,15 @@ fn test_kotlin_io_file_delete() {
             println(deleted)
             println(file.exists())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "true", "false"]);
 }
 
 #[test]
 fn test_kotlin_io_file_permissions_approx() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_perm_" + System.nanoTime() + ".txt")
             file.writeText("perm")
@@ -286,13 +313,15 @@ fn test_kotlin_io_file_permissions_approx() {
             println(file.canWrite())
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "true"]);
 }
 
 #[test]
 fn test_kotlin_io_last_modified_is_time_like() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_mtime_" + System.nanoTime() + ".txt")
             file.writeText("time")
@@ -300,13 +329,15 @@ fn test_kotlin_io_last_modified_is_time_like() {
             println(mtime > 0)
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true"]);
 }
 
 #[test]
 fn test_kotlin_io_is_file_and_is_directory() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_kind_" + System.nanoTime() + ".txt")
             file.writeText("kind")
@@ -317,13 +348,15 @@ fn test_kotlin_io_is_file_and_is_directory() {
             file.delete()
             dir.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "true"]);
 }
 
 #[test]
 fn test_kotlin_io_empty_file_reads_empty_lines() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_empty_" + System.nanoTime() + ".txt")
             file.writeText("")
@@ -333,13 +366,15 @@ fn test_kotlin_io_empty_file_reads_empty_lines() {
             println(lines.size)
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "0"]);
 }
 
 #[test]
 fn test_kotlin_io_file_exists_false_before_create() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_missing_" + System.nanoTime() + ".txt")
             println(file.exists())
@@ -347,13 +382,15 @@ fn test_kotlin_io_file_exists_false_before_create() {
             println(file.exists())
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["false", "true"]);
 }
 
 #[test]
 fn test_kotlin_io_copy_to_fails_without_overwrite() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val dir = java.io.File(java.lang.System.getProperty("java.io.tmpdir"))
             val src = java.io.File(dir, "vybe_io_cfail_src_" + System.nanoTime() + ".txt")
@@ -369,13 +406,15 @@ fn test_kotlin_io_copy_to_fails_without_overwrite() {
             src.delete()
             dst.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["FileAlreadyExistsException"]);
 }
 
 #[test]
 fn test_kotlin_io_copy_to_can_force_overwrite() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val dir = java.io.File(java.lang.System.getProperty("java.io.tmpdir"))
             val src = java.io.File(dir, "vybe_io_cov_src_" + System.nanoTime() + ".txt")
@@ -387,13 +426,15 @@ fn test_kotlin_io_copy_to_can_force_overwrite() {
             src.delete()
             dst.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["src"]);
 }
 
 #[test]
 fn test_kotlin_io_directory_file_count() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val parent = java.io.File(java.lang.System.getProperty("java.io.tmpdir"), "vybe_io_count_" + System.nanoTime())
             parent.mkdirs()
@@ -409,13 +450,15 @@ fn test_kotlin_io_directory_file_count() {
             java.io.File(parent, "a").delete()
             parent.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "1"]);
 }
 
 #[test]
 fn test_kotlin_io_walk_with_depth_limit() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val parent = java.io.File(java.lang.System.getProperty("java.io.tmpdir"), "vybe_io_depth_" + System.nanoTime())
             val d1 = java.io.File(parent, "d1")
@@ -429,13 +472,15 @@ fn test_kotlin_io_walk_with_depth_limit() {
             d1.delete()
             parent.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "4"]);
 }
 
 #[test]
 fn test_kotlin_io_temp_file_names_are_distinct() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val a = java.io.File.createTempFile("vybe", "io")
             val b = java.io.File.createTempFile("vybe", "io")
@@ -445,13 +490,15 @@ fn test_kotlin_io_temp_file_names_are_distinct() {
             a.delete()
             b.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "true", "true"]);
 }
 
 #[test]
 fn test_kotlin_io_temporary_file_delete() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val temp = java.io.File.createTempFile("vybe_io_ttl", ".tmp")
             temp.writeText("ttl")
@@ -461,13 +508,15 @@ fn test_kotlin_io_temporary_file_delete() {
             println(deleted)
             println(temp.exists())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "true", "false"]);
 }
 
 #[test]
 fn test_kotlin_io_reader_writer_round_trip() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_rw_" + System.nanoTime() + ".txt")
             val writer = java.io.OutputStreamWriter(file.outputStream())
@@ -480,13 +529,15 @@ fn test_kotlin_io_reader_writer_round_trip() {
             println(text)
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["rw"]);
 }
 
 #[test]
 fn test_kotlin_io_file_uri_and_name() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_uri_" + System.nanoTime() + ".txt")
             file.writeText("uri")
@@ -495,13 +546,15 @@ fn test_kotlin_io_file_uri_and_name() {
             println(file.name.startsWith("vybe_io_uri_"))
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "true"]);
 }
 
 #[test]
 fn test_kotlin_io_file_name_with_path_methods() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_name_" + System.nanoTime() + ".txt")
             file.writeText("x")
@@ -510,13 +563,15 @@ fn test_kotlin_io_file_name_with_path_methods() {
             println(file.toPath().fileName.toString().endsWith(".txt"))
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "true", "true"]);
 }
 
 #[test]
 fn test_kotlin_io_walk_sorted_names() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val parent = java.io.File(java.lang.System.getProperty("java.io.tmpdir"), "vybe_io_sorted_" + System.nanoTime())
             parent.mkdirs()
@@ -530,13 +585,15 @@ fn test_kotlin_io_walk_sorted_names() {
             java.io.File(parent, "c.txt").delete()
             parent.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["a.txt,b.txt,c.txt"]);
 }
 
 #[test]
 fn test_kotlin_io_file_append_and_for_each_line() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_append_lines_" + System.nanoTime() + ".txt")
             file.writeText("1\n")
@@ -549,13 +606,15 @@ fn test_kotlin_io_file_append_and_for_each_line() {
             println(first.toString())
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "123"]);
 }
 
 #[test]
 fn test_kotlin_io_file_parent_is_directory() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val file = java.io.File(java.lang.System.getProperty("java.io.tmpdir") + "/vybe_io_parent_" + System.nanoTime() + ".txt")
             file.writeText("x")
@@ -564,6 +623,7 @@ fn test_kotlin_io_file_parent_is_directory() {
             println(file.toPath().parent != null)
             file.delete()
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "true"]);
 }

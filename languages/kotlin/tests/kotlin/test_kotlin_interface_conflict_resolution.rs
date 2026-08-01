@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_interface_default_conflict_is_resolved_with_explicit_super_calls() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface First {
             fun origin(): String = "first"
         }
@@ -18,13 +19,15 @@ fn test_interface_default_conflict_is_resolved_with_explicit_super_calls() {
         fun main() {
             println(Composite().origin())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["first/second"]);
 }
 
 #[test]
 fn test_interface_property_conflict_is_resolved_by_override() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Marker {
             val label: String
                 get() = "marker"
@@ -42,6 +45,7 @@ fn test_interface_property_conflict_is_resolved_by_override() {
         fun main() {
             println(Item().label)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["item"]);
 }

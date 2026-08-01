@@ -448,7 +448,11 @@ kotlin_run_test!(
             }
         }
     "#,
-    &["IllegalArgumentException", "IllegalStateException", "Exception"]
+    &[
+        "IllegalArgumentException",
+        "IllegalStateException",
+        "Exception"
+    ]
 );
 
 kotlin_run_test!(

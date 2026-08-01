@@ -226,7 +226,7 @@ fun main() {
     val p = `Pair Data`(1, 2)
     val q = p.copy(`right value` = 3)
     println(q.`left value` + q.`right value`)
-}"# ,
+}"#,
     &["4"]
 );
 

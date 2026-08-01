@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_throw_caught_and_recovered() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             fun mustBePositive(value: Int): Int {
                 if (value <= 0) throw Exception("bad")
@@ -17,13 +18,15 @@ fn test_throw_caught_and_recovered() {
                 println("done")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "done"]);
 }
 
 #[test]
 fn test_caught_exception_can_be_rethrown() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             try {
                 try {
@@ -36,6 +39,7 @@ fn test_caught_exception_can_be_rethrown() {
                 println("outer")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["inner", "outer"]);
 }

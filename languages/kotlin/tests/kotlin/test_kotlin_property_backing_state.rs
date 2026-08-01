@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_property_setter_normalizes_invalid_values() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Metric {
             private var _count: Int = 0
             var count: Int
@@ -19,13 +20,15 @@ fn test_property_setter_normalizes_invalid_values() {
             m.count = 8
             println(m.count)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["0", "8"]);
 }
 
 #[test]
 fn test_property_getter_derived_field() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Timer {
             private var total = 0
             var seconds: Int
@@ -44,6 +47,7 @@ fn test_property_getter_derived_field() {
             println(t.seconds)
             println(t.isZero)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "3", "false"]);
 }

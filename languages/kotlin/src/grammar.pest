@@ -71,13 +71,23 @@ noinline_kw    = @{ "noinline" ~ !(ASCII_ALPHANUMERIC | "_") }
 crossinline_kw = @{ "crossinline" ~ !(ASCII_ALPHANUMERIC | "_") }
 reified_kw     = @{ "reified" ~ !(ASCII_ALPHANUMERIC | "_") }
 
+// Kotlin's HARD keywords — the only words that can never be an identifier.
+//
+// `open`, `abstract`, `override`, `sealed`, `data`, `inner`, `companion`,
+// `const`, `vararg`, `internal`, `private`, `protected`, `public`, `enum`,
+// `catch`, `finally`, `import` and the rest are SOFT keywords: Kotlin reserves
+// them only where a modifier is expected, and every one of them is a legal
+// name. Listing them here made `fun open(): String = …` unparseable — the
+// member `open` on `interface Cache : Read` failed the `identifier` rule, so
+// `function_decl` was abandoned and the whole declaration fell through to
+// `interface_decl` ("expected interface_kw"). `open`/`close` are ordinary
+// method names in any I/O-shaped interface.
 keyword = @{
-    fun_kw | val_kw | var_kw | class_kw | enum_kw | open_kw | abstract_kw | override_kw
-  | companion_kw | interface_kw | object_kw | package_kw | import_kw | when_kw | if_kw
-  | else_kw | for_kw | while_kw | do_kw | return_kw | break_kw | continue_kw | is_kw
-  | not_is_kw | as_kw | safe_as_kw | in_kw | not_in_kw | null_kw | true_kw | false_kw
-  | this_kw | super_kw | private_kw | protected_kw | public_kw | internal_kw | vararg_kw
-  | try_kw | catch_kw | finally_kw | throw_kw | const_kw | sealed_kw
+    fun_kw | val_kw | var_kw | class_kw | interface_kw | object_kw | package_kw
+  | when_kw | if_kw | else_kw | for_kw | while_kw | do_kw | return_kw | break_kw
+  | continue_kw | is_kw | not_is_kw | as_kw | safe_as_kw | in_kw | not_in_kw
+  | null_kw | true_kw | false_kw | this_kw | super_kw | try_kw | throw_kw
+  | typealias_kw
 }
 
 // `out` and `where` are SOFT keywords in Kotlin — legal identifiers everywhere
@@ -103,7 +113,7 @@ where_clause    = { where_kw ~ type_constraint ~ ("," ~ type_constraint)* }
 type_constraint = { identifier ~ ":" ~ type_ref }
 
 // Program structure
-program = { SOI ~ eat_terminators ~ package_decl? ~ eat_terminators ~ (import_decl ~ eat_terminators)* ~ (top_level_decl ~ eat_terminators)* ~ EOI }
+program = { SOI ~ eat_terminators ~ package_decl? ~ eat_terminators ~ ((import_decl | top_level_decl) ~ eat_terminators)* ~ EOI }
 
 package_decl = { package_kw ~ dotted_name ~ (";" | NEWLINE) }
 import_decl  = { import_kw ~ dotted_name ~ ("." ~ "*")? ~ (as_kw ~ identifier)? ~ (";" | NEWLINE) }
@@ -151,7 +161,7 @@ parameter = { annotation* ~ vararg_kw? ~ identifier ~ ":" ~ type_ref ~ ("=" ~ ex
 
 // Variables, Properties & Destructuring
 var_decl = !{
-    annotation* ~ modifier* ~ (val_kw | var_kw) ~ (destructuring_target | identifier) ~ (":" ~ type_ref)? ~ ("=" ~ expr | by_kw ~ expr)? ~ eat_terminators ~ property_accessor*
+    annotation* ~ modifier* ~ (val_kw | var_kw) ~ receiver_prefix? ~ (destructuring_target | identifier) ~ (":" ~ type_ref)? ~ ("=" ~ expr | by_kw ~ expr)? ~ (eat_terminators ~ property_accessor)*
 }
 
 destructuring_target = !{ "(" ~ eat_terminators ~ identifier ~ (eat_terminators ~ "," ~ eat_terminators ~ identifier)* ~ eat_terminators ~ ")" }
@@ -204,7 +214,7 @@ inheritance_specifier = { type_ref ~ ("(" ~ eat_terminators ~ arg_list? ~ eat_te
 delegate_expr = { primary ~ (!"{" ~ postfix_suffix)* }
 
 class_body = { "{" ~ eat_terminators ~ (class_member ~ eat_terminators)* ~ "}" }
-class_member = { init_block | secondary_constructor | companion_object | enum_decl | function_decl | var_decl | class_decl | object_decl | interface_decl }
+class_member = { import_decl | init_block | secondary_constructor | companion_object | enum_decl | function_decl | var_decl | class_decl | object_decl | interface_decl }
 init_block = { "init" ~ block }
 
 secondary_constructor = { annotation* ~ modifier* ~ constructor_kw ~ parameter_list ~ (":" ~ (this_kw | super_kw) ~ "(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ (block | eat_terminators) }
@@ -220,7 +230,8 @@ block = { "{" ~ eat_terminators ~ (statement ~ eat_terminators)* ~ "}" }
 // Statements
 statement = {
     label_decl? ~ (
-      typealias_decl
+      import_decl
+    | typealias_decl
     | enum_decl
     | interface_decl
     | function_decl
@@ -311,9 +322,9 @@ call_suffix = {
     "(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")"? ~ eat_terminators ~ lambda_literal?
   | lambda_literal
 }
-index_suffix = { "[" ~ eat_terminators ~ arg_list ~ eat_terminators ~ "]" }
-safe_call_suffix = { "?." ~ identifier }
-member_suffix = { "." ~ identifier }
+index_suffix = { eat_terminators ~ "[" ~ eat_terminators ~ arg_list ~ eat_terminators ~ "]" }
+safe_call_suffix = { eat_terminators ~ "?." ~ identifier }
+member_suffix = { eat_terminators ~ "." ~ identifier }
 null_assert_suffix = { "!!" }
 inc_suffix = { "++" | "--" }
 
@@ -328,12 +339,15 @@ primary = {
   | try_expr
   | object_expr
   | lambda_literal
+  | callable_ref
   | "(" ~ expr ~ ")"
   | literal
   | identifier
   | this_expr
   | super_expr
 }
+
+callable_ref = { dotted_name? ~ "::" ~ identifier }
 
 // `this@Outer` reaches an outer receiver from an inner class or a scope
 // function; `super<Base>.f()` picks WHICH supertype's default implementation to
@@ -419,4 +433,3 @@ str_text = @{ (!"\"" ~ !"\\" ~ !"$") ~ ANY }
 char_literal = ${ "'" ~ (char_escaped | char_text) ~ "'" }
 char_escaped = @{ "\\u" ~ ASCII_HEX_DIGIT{4} | "\\" ~ ANY }
 char_text = @{ (!"'" ~ !"\\") ~ ANY }
-

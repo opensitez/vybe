@@ -104,7 +104,7 @@ kotlin_run_test!(
 
 kotlin_run_test!(
     test_do_while_negative_start,
-        r#"
+    r#"
         fun main() {
             var i = -3
             var out = 0
@@ -168,7 +168,7 @@ kotlin_run_test!(
 );
 
 kotlin_run_test!(
-        test_do_while_expression_result,
+    test_do_while_expression_result,
     r#"
         fun main() {
             var x = 0
@@ -300,7 +300,7 @@ kotlin_run_test!(
 );
 
 kotlin_run_test!(
-        test_do_while_zero_to_one,
+    test_do_while_zero_to_one,
     r#"
         fun main() {
             var i = 0

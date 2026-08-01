@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_simple_class_delegation_forwards_call() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Greeter { fun hello(): String }
 
         class Base(private val name: String) : Greeter {
@@ -15,13 +16,15 @@ fn test_simple_class_delegation_forwards_call() {
             val w = Wrapper(Base("kotlin"))
             println(w.hello())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["hello:kotlin"]);
 }
 
 #[test]
 fn test_class_delegation_with_custom_members() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Counter {
             fun value(): Int
         }
@@ -39,13 +42,15 @@ fn test_class_delegation_with_custom_members() {
             println(c.id())
             println(c.value())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["offset", "3"]);
 }
 
 #[test]
 fn test_class_delegation_override_takes_precedence() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Service { fun name(): String }
 
         class Primary : Service {
@@ -59,13 +64,15 @@ fn test_class_delegation_override_takes_precedence() {
         fun main() {
             println(Decorated(Primary()).name())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["decorated"]);
 }
 
 #[test]
 fn test_class_delegation_multiple_interface_members_forwarding() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface A { fun a(): String }
         interface B { fun b(): String }
 
@@ -81,13 +88,15 @@ fn test_class_delegation_multiple_interface_members_forwarding() {
             println(w.a())
             println(w.b())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["A", "B"]);
 }
 
 #[test]
 fn test_list_interface_delegation_size_and_index() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class ReadOnlyList(delegate: List<Int>) : List<Int> by delegate
 
         fun main() {
@@ -96,26 +105,30 @@ fn test_list_interface_delegation_size_and_index() {
             println(l[1])
             println(l.contains(6))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "4", "true"]);
 }
 
 #[test]
 fn test_iterator_forwarded_from_list_delegation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class ReadOnlyList(delegate: List<String>) : Iterable<String> by delegate
 
         fun main() {
             val it: String = ReadOnlyList(listOf("a", "b")).joinToString("")
             println(it)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ab"]);
 }
 
 #[test]
 fn test_set_delegation_uses_set_contract() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class ReadOnlySet(delegate: Set<Int>) : Set<Int> by delegate
 
         fun main() {
@@ -124,13 +137,15 @@ fn test_set_delegation_uses_set_contract() {
             println(s.contains(2))
             println(s.contains(9))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "true", "false"]);
 }
 
 #[test]
 fn test_map_delegation_key_lookup() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class ReadOnlyMap(delegate: Map<String, Int>) : Map<String, Int> by delegate
 
         fun main() {
@@ -138,13 +153,15 @@ fn test_map_delegation_key_lookup() {
             println(m["a"])
             println(m.keys.joinToString(","))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "a,b"]);
 }
 
 #[test]
 fn test_delegation_with_base_property_access() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Counter { val value: Int }
 
         class Base(override val value: Int) : Counter
@@ -154,13 +171,15 @@ fn test_delegation_with_base_property_access() {
         fun main() {
             println(Box(Base(7)).value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7"]);
 }
 
 #[test]
 fn test_delegation_preserves_immutability_of_base_reference() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface View { fun size(): Int }
 
         class Snapshot(private val items: List<Int>) : View {
@@ -174,13 +193,15 @@ fn test_delegation_preserves_immutability_of_base_reference() {
             val wrapped = SnapshotWrapper(original)
             println(wrapped.size())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2"]);
 }
 
 #[test]
 fn test_class_delegation_with_varargs() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Summer {
             fun sum(values: IntArray): Int
         }
@@ -195,13 +216,15 @@ fn test_class_delegation_with_varargs() {
             val wrapper = SumWrapper(Adder())
             println(wrapper.sum(intArrayOf(1, 2, 3)))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["6"]);
 }
 
 #[test]
 fn test_collection_delegation_with_generic_type() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Labeler<T> { fun label(value: T): String }
 
         class StringLabeler : Labeler<String> {
@@ -214,13 +237,15 @@ fn test_collection_delegation_with_generic_type() {
             val l = DelegatingLabeler(StringLabeler())
             println(l.label("x"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["[x]"]);
 }
 
 #[test]
 fn test_nested_delegation_layer() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Printer { fun print(value: Int): String }
 
         class BasePrinter : Printer {
@@ -233,13 +258,15 @@ fn test_nested_delegation_layer() {
         fun main() {
             println(WrapperPrinter(BasePrinter()).print(4))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["base=4"]);
 }
 
 #[test]
 fn test_delegate_object_expression() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Messenger { fun message(): String }
 
         class Proxy(delegate: Messenger) : Messenger by delegate
@@ -250,13 +277,15 @@ fn test_delegate_object_expression() {
             })
             println(p.message())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["from object"]);
 }
 
 #[test]
 fn test_delegate_multiple_wrapped_calls_chain() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Op { fun run(x: Int): Int }
 
         class A : Op { override fun run(x: Int) = x + 1 }
@@ -267,13 +296,15 @@ fn test_delegate_multiple_wrapped_calls_chain() {
             val c = C(B(A()))
             println(c.run(5))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["6"]);
 }
 
 #[test]
 fn test_delegation_with_default_to_string_from_delegate() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Named { fun title(): String }
 
         class NamedImpl : Named {
@@ -288,13 +319,15 @@ fn test_delegation_with_default_to_string_from_delegate() {
             println(value.title())
             println(value.toString())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["named", "impl"]);
 }
 
 #[test]
 fn test_delegation_with_nullable_delegate_reference() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Marker { fun tag(): String }
 
         class MarkerImpl : Marker {
@@ -307,13 +340,15 @@ fn test_delegation_with_nullable_delegate_reference() {
             val h = Holder(MarkerImpl())
             println(h.tag())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["ok"]);
 }
 
 #[test]
 fn test_delegation_property_getter_forwarding() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Counter {
             val count: Int
         }
@@ -326,13 +361,15 @@ fn test_delegation_property_getter_forwarding() {
             val value = Holder(State(12))
             println(value.count)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["12"]);
 }
 
 #[test]
 fn test_delegation_with_custom_method_using_delegate() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Adder { fun add(a: Int): Int }
 
         class BaseAdder : Adder {
@@ -347,13 +384,15 @@ fn test_delegation_with_custom_method_using_delegate() {
             val value = WrapperAdder(BaseAdder())
             println(value.addTwice(4))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["28"]);
 }
 
 #[test]
 fn test_delegation_with_collection_methods() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Store {
             fun put(key: String, value: Int)
             fun get(key: String): Int?
@@ -372,13 +411,15 @@ fn test_delegation_with_collection_methods() {
             store.put("a", 3)
             println(store.get("a"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_delegate_class_for_multiple_calls() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Calc { fun step(v: Int): Int }
 
         class Base : Calc {
@@ -392,13 +433,15 @@ fn test_delegate_class_for_multiple_calls() {
             println(c.step(0))
             println(c.step(9))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "10"]);
 }
 
 #[test]
 fn test_delegate_when_base_state_changes() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface MutableCounter { var value: Int }
 
         class Counter(var value: Int) : MutableCounter
@@ -412,13 +455,15 @@ fn test_delegate_when_base_state_changes() {
             println(p.value)
             println(c.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "3"]);
 }
 
 #[test]
 fn test_delegate_chain_keeps_same_reference() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Marker { fun marker(): String }
 
         class First : Marker { override fun marker() = "first" }
@@ -429,13 +474,15 @@ fn test_delegate_chain_keeps_same_reference() {
             val t = Third(Second(First()))
             println(t.marker())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["first"]);
 }
 
 #[test]
 fn test_delegate_with_extensionless_interface() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Identity { fun id(): String }
 
         class A : Identity { override fun id() = "A" }
@@ -445,13 +492,15 @@ fn test_delegate_with_extensionless_interface() {
             val h = Holder(A())
             println(h.id())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["A"]);
 }
 
 #[test]
 fn test_delegate_inheritance_not_allowed_not_used() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Base { fun kind(): String }
 
         open class Root : Base {
@@ -463,13 +512,15 @@ fn test_delegate_inheritance_not_allowed_not_used() {
         fun main() {
             println(Child(Root()).kind())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["root"]);
 }
 
 #[test]
 fn test_delegate_with_custom_extension_function_usage() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         interface Text { fun text(): String }
 
         class Source : Text {
@@ -484,6 +535,7 @@ fn test_delegate_with_custom_extension_function_usage() {
             val d = Delegate(Source())
             println(d.enhancedSuffix())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["value!"]);
 }

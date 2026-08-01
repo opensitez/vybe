@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_function_args_evaluate_left_to_right() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var order = ""
             fun lhs(): Int { order += "L"; return 1 }
@@ -16,13 +17,15 @@ fn test_function_args_evaluate_left_to_right() {
             f(lhs(), mid(0), rhs(0))
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "1", "2", "LMR"]);
 }
 
 #[test]
 fn test_default_arguments_evaluate_when_omitted() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var order = ""
             fun value(prefix: String = "d"): String {
@@ -36,13 +39,15 @@ fn test_default_arguments_evaluate_when_omitted() {
             report("x")
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["x", "b", "v"]);
 }
 
 #[test]
 fn test_constructor_arg_order() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Tracker {
             constructor(a: Int, b: Int) {
                 println(a)
@@ -57,13 +62,15 @@ fn test_constructor_arg_order() {
             Tracker(first(), second())
             println(log)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "2", "12"]);
 }
 
 #[test]
 fn test_property_initializer_runs_before_next_access() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         var order = ""
         val one = run {
             order += "1"
@@ -77,13 +84,15 @@ fn test_property_initializer_runs_before_next_access() {
             println(one + two)
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "12"]);
 }
 
 #[test]
 fn test_when_subject_and_guard_order() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var order = ""
             val v = run {
@@ -103,13 +112,15 @@ fn test_when_subject_and_guard_order() {
             println(out)
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["yes", "sgt"]);
 }
 
 #[test]
 fn test_elvis_uses_rhs_only_when_lhs_null() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val lhs: String? = null
             var order = ""
@@ -118,13 +129,15 @@ fn test_elvis_uses_rhs_only_when_lhs_null() {
             println(out)
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["value", "rhs"]);
 }
 
 #[test]
 fn test_elvis_skips_rhs_when_non_null() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val lhs: String? = "left"
             var order = ""
@@ -132,13 +145,15 @@ fn test_elvis_skips_rhs_when_non_null() {
             println(out)
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["left", ""]);
 }
 
 #[test]
 fn test_range_loop_evaluates_bounds_left_to_right() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var order = ""
             val start = run { order += "s"; 1 }
@@ -147,13 +162,15 @@ fn test_range_loop_evaluates_bounds_left_to_right() {
             println(values)
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1,2,3", "se"]);
 }
 
 #[test]
 fn test_binary_ops_left_to_right_operands() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var order = ""
             fun left(): Int { order += "L"; return 1 }
@@ -161,13 +178,15 @@ fn test_binary_ops_left_to_right_operands() {
             println(left() + right())
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "LR"]);
 }
 
 #[test]
 fn test_assignment_expression_order() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var a = 0
             var b = 0
@@ -179,13 +198,15 @@ fn test_assignment_expression_order() {
             println(a + b)
             println(list.joinToString(","))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "1,2"]);
 }
 
 #[test]
 fn test_nested_calls_evaluate_outer_before_inner_return() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun combine(x: Int, y: Int): Int = x * 10 + y
         fun main() {
             var order = ""
@@ -196,13 +217,15 @@ fn test_nested_calls_evaluate_outer_before_inner_return() {
             println(out)
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["26", "fghg"]);
 }
 
 #[test]
 fn test_for_each_loop_evaluates_initializer_before_body() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var order = ""
             val list = run {
@@ -217,37 +240,43 @@ fn test_for_each_loop_evaluates_initializer_before_body() {
             println(sum)
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "init--"]);
 }
 
 #[test]
 fn test_ternary_like_when_not_available() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val value = if (true) "yes" else "no"
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["yes"]);
 }
 
 #[test]
 fn test_conditional_operator_right_hand_only_on_false() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var log = ""
             val value = if (true) { log += "t"; 1 } else { log += "f"; 2 }
             println(value)
             println(log)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1", "t"]);
 }
 
 #[test]
 fn test_early_return_in_lambda_skips_subsequent_calls() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var order = ""
             fun side(): Int {
@@ -265,13 +294,15 @@ fn test_early_return_in_lambda_skips_subsequent_calls() {
             }
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "rs"]);
 }
 
 #[test]
 fn test_not_operator_takes_single_evaluation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var order = ""
             fun flag(): Boolean {
@@ -281,13 +312,15 @@ fn test_not_operator_takes_single_evaluation() {
             println(!flag())
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "f"]);
 }
 
 #[test]
 fn test_multiple_expressions_in_block_preserve_order() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val order = run {
                 val out = StringBuilder()
@@ -298,13 +331,15 @@ fn test_multiple_expressions_in_block_preserve_order() {
             }
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["abc"]);
 }
 
 #[test]
 fn test_list_of_with_mixed_evals_in_initializer() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var order = ""
             fun a(): Int { order += "A"; return 1 }
@@ -314,13 +349,15 @@ fn test_list_of_with_mixed_evals_in_initializer() {
             println(values.joinToString(","))
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1,2,3", "ABC"]);
 }
 
 #[test]
 fn test_string_interpolation_eval_order_left_to_right() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var order = ""
             fun left(): String { order += "L"; return "x" }
@@ -329,13 +366,15 @@ fn test_string_interpolation_eval_order_left_to_right() {
             println(result)
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["xy", "LR"]);
 }
 
 #[test]
 fn test_operator_precedence_evaluation_still_left_to_right_for_same_level() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var order = ""
             fun a(): Int { order += "a"; return 1 }
@@ -345,13 +384,15 @@ fn test_operator_precedence_evaluation_still_left_to_right_for_same_level() {
             println(out)
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7", "abc"]);
 }
 
 #[test]
 fn test_method_chain_evaluates_receiver_then_argument() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var order = ""
             fun arg(v: Int): Int {
@@ -364,6 +405,7 @@ fn test_method_chain_evaluates_receiver_then_argument() {
             println(out)
             println(order)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["6", "a1a2a3"]);
 }

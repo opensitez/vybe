@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_top_level_and_local_scope_isolation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         val label = "global"
 
         fun echo(value: String): String {
@@ -14,13 +15,15 @@ fn test_top_level_and_local_scope_isolation() {
             println(echo("one"))
             println(label)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["global:one", "local"]);
 }
 
 #[test]
 fn test_shadowing_in_nested_blocks() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val mode = "outer"
             println(mode)
@@ -30,13 +33,15 @@ fn test_shadowing_in_nested_blocks() {
             }
             println(mode)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["outer", "inner", "outer"]);
 }
 
 #[test]
 fn test_scope_in_function_parameter_binding() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun square(value: Int): Int {
             return value * value
         }
@@ -50,13 +55,15 @@ fn test_scope_in_function_parameter_binding() {
             println(emit(4))
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["9", "5", "3"]);
 }
 
 #[test]
 fn test_local_function_captures_enclosing_scope() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var total = 0
             fun add(step: Int) {
@@ -66,13 +73,15 @@ fn test_local_function_captures_enclosing_scope() {
             add(4)
             println(total)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7"]);
 }
 
 #[test]
 fn test_scope_limited_block_variable_lifetime() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var value = 1
             if (value == 1) {
@@ -81,13 +90,15 @@ fn test_scope_limited_block_variable_lifetime() {
             }
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["9"]);
 }
 
 #[test]
 fn test_member_and_receiver_scope_split() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class ScopeProbe {
             val value = 2
             fun combine(): Int {
@@ -99,13 +110,15 @@ fn test_member_and_receiver_scope_split() {
         fun main() {
             println(ScopeProbe().combine())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["6"]);
 }
 
 #[test]
 fn test_nested_block_rebinds_local_name() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val token = "global"
             {
@@ -114,13 +127,15 @@ fn test_nested_block_rebinds_local_name() {
             }
             println(token)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["inner", "global"]);
 }
 
 #[test]
 fn test_function_parameter_shadows_outer_value() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun compute(value: Int): Int {
             return value * 2
         }
@@ -130,13 +145,15 @@ fn test_function_parameter_shadows_outer_value() {
             println(compute(value))
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["10", "5"]);
 }
 
 #[test]
 fn test_local_function_reads_enclosing_immutables() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val base = 10
             fun bump(): Int {
@@ -148,13 +165,15 @@ fn test_local_function_reads_enclosing_immutables() {
             println(bump())
             println(bumpTwice())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["11", "12"]);
 }
 
 #[test]
 fn test_local_function_shadow_parameter() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val value = 3
             fun inner(value: Int): Int {
@@ -163,13 +182,15 @@ fn test_local_function_shadow_parameter() {
             println(inner(4))
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5", "3"]);
 }
 
 #[test]
 fn test_lambda_reads_outer_var_before_and_after_change() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var total = 1
             val addOne = { total += 1 }
@@ -179,13 +200,15 @@ fn test_lambda_reads_outer_var_before_and_after_change() {
             addOne()
             println(total)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "11"]);
 }
 
 #[test]
 fn test_lambda_parameter_shadowing_outer_name() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var value = 7
             val toString = { value: Int -> value + 1 }
@@ -193,13 +216,15 @@ fn test_lambda_parameter_shadowing_outer_name() {
             println(toString(3))
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["7", "4", "7"]);
 }
 
 #[test]
 fn test_if_else_scoped_binding() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun pick(flag: Boolean): String {
             return if (flag) {
                 val value = "yes"
@@ -214,13 +239,15 @@ fn test_if_else_scoped_binding() {
             println(pick(true))
             println(pick(false))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["yes", "no"]);
 }
 
 #[test]
 fn test_when_branch_scoped_names() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun describe(value: Int): String {
             return when (value) {
                 1 -> {
@@ -243,13 +270,15 @@ fn test_when_branch_scoped_names() {
             println(describe(2))
             println(describe(4))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["one", "two", "other"]);
 }
 
 #[test]
 fn test_loop_index_scope_with_outer_name() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var total = 0
             val label = 5
@@ -259,13 +288,15 @@ fn test_loop_index_scope_with_outer_name() {
             println(label)
             println(total)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["5", "6"]);
 }
 
 #[test]
 fn test_while_scope_and_mutation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var total = 0
             var index = 0
@@ -276,13 +307,15 @@ fn test_while_scope_and_mutation() {
             }
             println(total)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["6"]);
 }
 
 #[test]
 fn test_nested_scope_with_return_value_capture() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun make() : Int {
             val prefix = 1
             fun inner(): Int {
@@ -295,13 +328,15 @@ fn test_nested_scope_with_return_value_capture() {
         fun main() {
             println(make())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_block_reused_name_after_scope() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var name = "outer"
             {
@@ -311,13 +346,15 @@ fn test_block_reused_name_after_scope() {
             name = "next"
             println(name)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["inner", "next"]);
 }
 
 #[test]
 fn test_try_catch_scope_separation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val state = "ok"
             try {
@@ -328,13 +365,15 @@ fn test_try_catch_scope_separation() {
             }
             println(state)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["caught", "ok"]);
 }
 
 #[test]
 fn test_nested_try_without_escape() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val value = 1
             try {
@@ -345,13 +384,15 @@ fn test_nested_try_without_escape() {
             }
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["inner", "1"]);
 }
 
 #[test]
 fn test_catch_binding_does_not_clobber_outer_scope() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val message = "root"
             try {
@@ -361,13 +402,15 @@ fn test_catch_binding_does_not_clobber_outer_scope() {
             }
             println("root")
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["boom", "root"]);
 }
 
 #[test]
 fn test_scope_split_between_fields_and_locals() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Probe {
             val source = "field"
             fun valueOf(input: String): String {
@@ -379,13 +422,15 @@ fn test_scope_split_between_fields_and_locals() {
         fun main() {
             println(Probe().valueOf("local"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["field-local"]);
 }
 
 #[test]
 fn test_scope_in_function_inside_object_expression() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var total = 0
             val maker = object : Any() {
@@ -399,13 +444,15 @@ fn test_scope_in_function_inside_object_expression() {
             total += maker.add(2)
             println(total)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3"]);
 }
 
 #[test]
 fn test_local_scope_inside_class_member() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Box {
             var value = 0
             fun addStep(step: Int): Int {
@@ -423,13 +470,15 @@ fn test_local_scope_inside_class_member() {
             println(b.addStep(4))
             println(b.value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["4", "8"]);
 }
 
 #[test]
 fn test_nested_blocks_inside_expression() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val value = 2
             val result = {
@@ -439,13 +488,15 @@ fn test_nested_blocks_inside_expression() {
             println(value)
             println(result)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["2", "15"]);
 }
 
 #[test]
 fn test_scope_after_if_scope_restore() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val value = "start"
             if (true) {
@@ -454,13 +505,15 @@ fn test_scope_after_if_scope_restore() {
             }
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["if-branch", "start"]);
 }
 
 #[test]
 fn test_scope_in_nested_for_loops() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var total = 0
             for (row in arrayOf(arrayOf(1, 2), arrayOf(3, 4))) {
@@ -471,13 +524,15 @@ fn test_scope_in_nested_for_loops() {
             }
             println(total)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["20"]);
 }
 
 #[test]
 fn test_scope_with_shadowed_loop_variables() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val i = 100
             var output = 0
@@ -487,13 +542,15 @@ fn test_scope_with_shadowed_loop_variables() {
             println(i)
             println(output)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["100", "6"]);
 }
 
 #[test]
 fn test_outer_scope_after_lambda_call() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val value = "outer"
             val action = {
@@ -503,13 +560,15 @@ fn test_outer_scope_after_lambda_call() {
             action()
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["inner", "outer"]);
 }
 
 #[test]
 fn test_nested_local_fun_uses_outer_var_and_updates_var() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var value = 1
             fun inc(step: Int) {
@@ -522,13 +581,15 @@ fn test_nested_local_fun_uses_outer_var_and_updates_var() {
             println(value)
             println(value == 9)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["9", "9", "true"]);
 }
 
 #[test]
 fn test_inner_scope_does_not_modify_shadowed_outer() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val marker = "root"
             if (marker == "root") {
@@ -537,13 +598,15 @@ fn test_inner_scope_does_not_modify_shadowed_outer() {
             }
             println(marker)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["inner", "root"]);
 }
 
 #[test]
 fn test_scope_across_returned_function_body() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun makeGreeter(prefix: String): (Int) -> String {
             val suffix = "!"
             return { value ->
@@ -557,13 +620,15 @@ fn test_scope_across_returned_function_body() {
             println(greet(1))
             println(greet(2))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["x1!", "x2!"]);
 }
 
 #[test]
 fn test_function_literal_scope_with_block_shadowing() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val value = 1
             val add = { input: Int ->
@@ -573,13 +638,15 @@ fn test_function_literal_scope_with_block_shadowing() {
             println(add(3))
             println(value)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["4", "1"]);
 }
 
 #[test]
 fn test_scope_after_smart_cast_branch_isolated_by_type() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun label(value: Any): String {
             return when (value) {
                 is String -> "str:" + value.length
@@ -595,13 +662,15 @@ fn test_scope_after_smart_cast_branch_isolated_by_type() {
             println(label(true))
             println(label(2.5))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["str:3", "int:9", "bool:true", "other"]);
 }
 
 #[test]
 fn test_scope_nested_function_mutates_outer_var_after_shadowing() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var value = 5
 
@@ -621,13 +690,15 @@ fn test_scope_nested_function_mutates_outer_var_after_shadowing() {
             }
             println(useShadowed())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["8", "11"]);
 }
 
 #[test]
 fn test_scope_in_for_each_lambda_and_outer_capture() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var total = 0
             val source = listOf(1, 2, 3)
@@ -638,13 +709,15 @@ fn test_scope_in_for_each_lambda_and_outer_capture() {
             println(total)
             println(source.size)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["12", "3"]);
 }
 
 #[test]
 fn test_scope_qualified_this_preserves_outer_reference() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Container {
             val factor = 3
 
@@ -660,13 +733,15 @@ fn test_scope_qualified_this_preserves_outer_reference() {
             val c = Container()
             println(c.makeTag("id"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["id-3"]);
 }
 
 #[test]
 fn test_scope_object_expression_captures_outer_binding() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         open class Base(val label: String)
 
         fun main() {
@@ -678,13 +753,15 @@ fn test_scope_object_expression_captures_outer_binding() {
             prefix = "two"
             println(instance.label)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["one", "base"]);
 }
 
 #[test]
 fn test_scope_try_catch_variable_not_visible_after_block() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val status = "start"
             val result = try {
@@ -697,13 +774,15 @@ fn test_scope_try_catch_variable_not_visible_after_block() {
             }
             println(result)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["start", "caught"]);
 }
 
 #[test]
 fn test_scope_receiver_and_outer_this_with_with_expression() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Holder {
             val source = "outer"
             fun label(tag: String): String {
@@ -717,13 +796,15 @@ fn test_scope_receiver_and_outer_this_with_with_expression() {
         fun main() {
             println(Holder().label("inner"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["inner-outer"]);
 }
 
 #[test]
 fn test_scope_destructuring_bindings_are_block_local() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val (first, second) = Pair("left", "right")
 
@@ -736,13 +817,15 @@ fn test_scope_destructuring_bindings_are_block_local() {
             println(second)
             println(inner)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["left", "right", "inner-left:inner-right"]);
 }
 
 #[test]
 fn test_scope_if_expression_has_its_own_binding_scope() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val label = "outer"
             val result = if (true) {
@@ -756,13 +839,15 @@ fn test_scope_if_expression_has_its_own_binding_scope() {
             println(label)
             println(result)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["outer", "then"]);
 }
 
 #[test]
 fn test_scope_lambda_sees_updated_outer_binding() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var prefix = "before"
             val format = { value: String ->
@@ -774,13 +859,15 @@ fn test_scope_lambda_sees_updated_outer_binding() {
             prefix = "after"
             println(format("two"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["before:one", "after:two"]);
 }
 
 #[test]
 fn test_scope_shadowed_loop_variable_stays_local_to_iteration_body() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val values = arrayOf(1, 2, 3)
             var sum = 0
@@ -794,13 +881,15 @@ fn test_scope_shadowed_loop_variable_stays_local_to_iteration_body() {
 
             println(sum)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["60"]);
 }
 
 #[test]
 fn test_scope_function_apply_returns_receiver_reference() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val text = StringBuilder()
                 .apply {
@@ -810,13 +899,15 @@ fn test_scope_function_apply_returns_receiver_reference() {
             println(text.toString())
             println(text === StringBuilder("kotlin"))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["kotlin", "false"]);
 }
 
 #[test]
 fn test_scope_function_let_scopes_nullable_and_outer_state() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val prefix = "x"
             val result = prefix.let {
@@ -826,13 +917,15 @@ fn test_scope_function_let_scopes_nullable_and_outer_state() {
             println(result)
             println(prefix)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["X!", "x"]);
 }
 
 #[test]
 fn test_scope_function_also_chain_and_outer_capture() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var marker = "base"
             val values = mutableListOf(1, 2, 3)
@@ -846,13 +939,15 @@ fn test_scope_function_also_chain_and_outer_capture() {
             println(values.joinToString(","))
             println(marker)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["1,2,3,4", "after"]);
 }
 
 #[test]
 fn test_scope_function_with_receiver_preserves_outer_scope_name() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         class Box {
             val value = "outer"
             fun label(): String {
@@ -866,13 +961,15 @@ fn test_scope_function_with_receiver_preserves_outer_scope_name() {
         fun main() {
             println(Box().label())
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["inner-outer"]);
 }
 
 #[test]
 fn test_scope_try_finally_alters_and_observes_outer_mutation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             var state = "open"
             try {
@@ -882,6 +979,7 @@ fn test_scope_try_finally_alters_and_observes_outer_mutation() {
             }
             println(state)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["processing-done"]);
 }

@@ -12,7 +12,7 @@ kotlin_run_test!(
             println(service::class.simpleName)
         }
     "#,
-    &[{"Service"}]
+    &[{ "Service" }]
 );
 
 kotlin_run_test!(

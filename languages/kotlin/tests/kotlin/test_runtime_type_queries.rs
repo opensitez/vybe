@@ -2,7 +2,8 @@ use crate::helpers::run_prints;
 
 #[test]
 fn test_is_check_on_primitives_vs_wrappers() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val a: Any = 5
             val b: Any = "kotlin"
@@ -11,13 +12,15 @@ fn test_is_check_on_primitives_vs_wrappers() {
             println(b is String)
             println(b is Number)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "false", "true", "false"]);
 }
 
 #[test]
 fn test_safe_cast_with_as_question_mark() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val a: Any = "hello"
             val cast1 = a as? String
@@ -25,13 +28,15 @@ fn test_safe_cast_with_as_question_mark() {
             println(cast1 ?: "none")
             println(cast2?.toString() ?: "none")
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["hello", "none"]);
 }
 
 #[test]
 fn test_unsafe_cast_fails_with_exception() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val a: Any = 7
             try {
@@ -41,13 +46,15 @@ fn test_unsafe_cast_fails_with_exception() {
                 println("err")
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["err"]);
 }
 
 #[test]
 fn test_when_type_guarding_with_is() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val values: List<Any> = listOf("k", 12, 3.4)
             val tags = values.map { value ->
@@ -60,13 +67,15 @@ fn test_when_type_guarding_with_is() {
             }
             println(tags.joinToString(","))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["string,int,double"]);
 }
 
 #[test]
 fn test_nullable_is_checks() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val v: String? = null
             println(v is String)
@@ -75,13 +84,15 @@ fn test_nullable_is_checks() {
             println(w is String?)
             println(w is Int?)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["false", "true", "true", "true"]);
 }
 
 #[test]
 fn test_smart_cast_after_is() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val value: Any = "abc"
             if (value is String) {
@@ -94,25 +105,29 @@ fn test_smart_cast_after_is() {
                 println(boxed + 1)
             }
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["3", "124"]);
 }
 
 #[test]
 fn test_generic_type_checks_star_projection() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             val values: Any = listOf(1, 2, 3)
             println(values is List<*>)
             println(values is Set<*>)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "false"]);
 }
 
 #[test]
 fn test_sealed_type_exhaustive_when() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         sealed interface Node
         data class Leaf(val value: Int) : Node
         data class Branch(val left: Node, val right: Node) : Node
@@ -128,13 +143,15 @@ fn test_sealed_type_exhaustive_when() {
             println(classify(a))
             println(classify(b))
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["leaf", "branch"]);
 }
 
 #[test]
 fn test_instanceof_interface_and_implementation() {
-    let out = run_prints(r#"
+    let out = run_prints(
+        r#"
         fun main() {
             interface Marker
             class A : Marker
@@ -146,6 +163,7 @@ fn test_instanceof_interface_and_implementation() {
             println(a !is B)
             println(b is B)
         }
-    "#);
+    "#,
+    );
     assert_eq!(out, &["true", "false", "true", "true"]);
 }

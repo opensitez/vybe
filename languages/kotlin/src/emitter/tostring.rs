@@ -25,8 +25,8 @@
 //! `loops`) rather than emitting raw opcodes wherever one exists.
 
 use vybe_compiler::primitives::{dict, expressions, loops, ops, strings, tuples};
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// The property that tells a Kotlin `Set` from a `Map`.
 ///
@@ -37,7 +37,14 @@ use vybe_runtime::Chunk;
 /// every reserved key uses, so a Kotlin program cannot collide with it.
 pub const SET_MARKER: &str = "__kt_set";
 
-fn call_import(chunks: &mut [Chunk], current: usize, module: &str, func: &str, argc: u8, line: u32) {
+fn call_import(
+    chunks: &mut [Chunk],
+    current: usize,
+    module: &str,
+    func: &str,
+    argc: u8,
+    line: u32,
+) {
     let idx = chunks[current].add_import(module, func);
     chunks[current].emit_call(idx, argc, line);
 }
@@ -59,9 +66,8 @@ fn emit_is_object(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
 /// here, and the presence of `__keys` is the honest question to ask.
 fn emit_has_dict_keys(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
-    let key = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
-        "__keys",
-    )));
+    let key =
+        chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__keys")));
     chunks[current].emit_op_u16(Op::STRUCT_GET, key, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
@@ -179,8 +185,8 @@ fn emit_array_to_string(chunks: &mut Vec<Chunk>, current: usize, v: u16, line: u
     chunks[current].emit_end(line);
 }
 
-/// Join the array in `arr_slot` with `sep`, rendering each ELEMENT through
-/// `ecma:string.String` so an element's own `toString` is honoured.
+/// Join the array in `arr_slot` with `sep`, rendering each ELEMENT through the
+/// class `ToString` slot when present.
 ///
 /// `ecma:array.join` would be shorter, but it stringifies elements the host's
 /// way — a nested list inside a list would come back as `1,2` instead of
@@ -190,6 +196,20 @@ fn emit_join_rendered(
     current: usize,
     arr_slot: u16,
     sep: &str,
+    skip: Option<&str>,
+    line: u32,
+) {
+    let sep_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_string_const(sep, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, sep_slot, line);
+    emit_join_rendered_local(chunks, current, arr_slot, sep_slot, skip, line);
+}
+
+fn emit_join_rendered_local(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    arr_slot: u16,
+    sep_slot: u16,
     skip: Option<&str>,
     line: u32,
 ) {
@@ -204,8 +224,7 @@ fn emit_join_rendered(
     let state = loops::emit_for_in_start(chunks, current, arr_slot, idx, line);
     // Stack: [element]
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, elem, line);
-    call_import(chunks, current, "ecma:string", "String", 1, line);
+    expressions::emit_rich_to_string(&mut chunks[current], elem, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, text, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
@@ -221,10 +240,10 @@ fn emit_join_rendered(
         chunks[current].emit_if_value(line);
         chunks[current].emit_string_const("", line);
         chunks[current].emit_else(line);
-        emit_separated_text(chunks, current, out, text, sep, line);
+        emit_separated_text(chunks, current, out, text, sep_slot, line);
         chunks[current].emit_end(line);
     } else {
-        emit_separated_text(chunks, current, out, text, sep, line);
+        emit_separated_text(chunks, current, out, text, sep_slot, line);
     }
 
     strings::emit_concat(&mut chunks[current], 2, line);
@@ -241,7 +260,7 @@ fn emit_separated_text(
     current: usize,
     out: u16,
     text: u16,
-    sep: &str,
+    sep_slot: u16,
     line: u32,
 ) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
@@ -251,10 +270,24 @@ fn emit_separated_text(
     chunks[current].emit_if_value(line);
     chunks[current].emit_string_const("", line);
     chunks[current].emit_else(line);
-    chunks[current].emit_string_const(sep, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sep_slot, line);
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);
     strings::emit_concat(&mut chunks[current], 2, line);
+}
+
+/// Kotlin `joinToString(separator)` — render elements through the same class
+/// `ToString` slot path as `println`.
+pub fn emit_join_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    if argc != 2 {
+        chunks[current].emit_op(Op::NULL, line);
+        return;
+    }
+    let sep = chunks[current].alloc_scratch(1);
+    let arr = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, sep, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
+    emit_join_rendered_local(chunks, current, arr, sep, None, line);
 }
 
 /// `{a=1, b=2}` — Kotlin's map rendering. `=` between key and value, `, `
@@ -265,6 +298,9 @@ fn emit_map_to_string(chunks: &mut Vec<Chunk>, current: usize, v: u16, line: u32
     let out = chunks[current].alloc_scratch(1);
     let idx = chunks[current].alloc_scratch(1);
     let key = chunks[current].alloc_scratch(1);
+    let value = chunks[current].alloc_scratch(1);
+    let text_key = chunks[current].alloc_scratch(1);
+    let text_value = chunks[current].alloc_scratch(1);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
     dict::emit_keys(chunks, current, line);
@@ -275,8 +311,16 @@ fn emit_map_to_string(chunks: &mut Vec<Chunk>, current: usize, v: u16, line: u32
 
     let state = loops::emit_for_in_start(chunks, current, keys, idx, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+    dict::emit_get_dynamic(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+    expressions::emit_rich_to_string(&mut chunks[current], key, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text_key, line);
+    expressions::emit_rich_to_string(&mut chunks[current], value, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, text_value, line);
 
-    // out += (i == 0 ? "" : ", ") + String(key) + "=" + String(map[key])
+    // out += (i == 0 ? "" : ", ") + key.toString() + "=" + value.toString()
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -285,13 +329,9 @@ fn emit_map_to_string(chunks: &mut Vec<Chunk>, current: usize, v: u16, line: u32
     chunks[current].emit_else(line);
     chunks[current].emit_string_const("", line);
     chunks[current].emit_end(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
-    call_import(chunks, current, "ecma:string", "String", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_key, line);
     chunks[current].emit_string_const("=", line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
-    dict::emit_get_dynamic(chunks, current, line);
-    call_import(chunks, current, "ecma:string", "String", 1, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, text_value, line);
     strings::emit_concat(&mut chunks[current], 5, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
 

@@ -1,4 +1,22 @@
 kotlin_run_test!(
+    test_package_decl_uses_common_namespace_for_user_classes,
+    r#"
+        package demo.core
+
+        class User(val name: String) {
+            fun label(): String = name
+        }
+
+        fun make(): User = User("Ada")
+
+        fun main() {
+            println(demo.core.make().label())
+        }
+    "#,
+    &["Ada"]
+);
+
+kotlin_run_test!(
     test_import_alias_for_function,
     r#"
         import kotlin.math.abs as kotlinAbs

@@ -1,8 +1,8 @@
 //! Kotlin `Double`/`Float` classification predicates.
 
 use vybe_compiler::primitives::ops;
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// `println(x)` where `x` is statically a `Double`.
 ///
@@ -49,12 +49,7 @@ pub fn emit_double_to_string(chunks: &mut Vec<Chunk>, current: usize, line: u32)
 
 /// Push i32 `1` when the rendered number already shows a fraction or exponent
 /// (`.`, `e`, `E`) or is not a finite decimal at all (`NaN`, `Infinity`).
-fn emit_contains_non_integral_mark(
-    chunks: &mut Vec<Chunk>,
-    current: usize,
-    text: u16,
-    line: u32,
-) {
+fn emit_contains_non_integral_mark(chunks: &mut Vec<Chunk>, current: usize, text: u16, line: u32) {
     let mut first = true;
     for mark in [".", "e", "E", "N", "I"] {
         chunks[current].emit_op_u16(Op::LOCAL_GET, text, line);

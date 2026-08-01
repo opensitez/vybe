@@ -238,105 +238,147 @@ fn ast_shape() {
 /// exist under `java.lang` in the tree, so this is the collision to watch.
 #[test]
 fn kotlin_names_not_shadowed_by_java_ambients() {
-    probe("kt-string-ops", r#"fun main() {
+    probe(
+        "kt-string-ops",
+        r#"fun main() {
     val s = "hello"
     println(s.length)
     println(s.uppercase())
     println(s.substring(1, 3))
 }
 main()
-"#);
-    probe("kt-double", r#"fun main() {
+"#,
+    );
+    probe(
+        "kt-double",
+        r#"fun main() {
     val d: Double = 2.5
     println(d + 1.0)
 }
 main()
-"#);
-    probe("kt-stringbuilder", r#"fun main() {
+"#,
+    );
+    probe(
+        "kt-stringbuilder",
+        r#"fun main() {
     val sb = StringBuilder()
     sb.append("a")
     sb.append("b")
     println(sb.toString())
 }
 main()
-"#);
-    probe("kt-listof", r#"fun main() {
+"#,
+    );
+    probe(
+        "kt-listof",
+        r#"fun main() {
     val xs = listOf(1, 2, 3)
     println(xs.size)
 }
 main()
-"#);
+"#,
+    );
 }
 
 /// Breadth of the JDK surface reachable FROM KOTLIN, with zero `java.*`
 /// declarations in Kotlin's profile. Each line is a different package.
 #[test]
 fn kotlin_reaches_the_jdk_surface() {
-    probe("jdk-uuid", r#"fun main() {
+    probe(
+        "jdk-uuid",
+        r#"fun main() {
     val u = java.util.UUID.randomUUID()
     println(u != null)
 }
 main()
-"#);
-    probe("jdk-bigint", r#"fun main() {
+"#,
+    );
+    probe(
+        "jdk-bigint",
+        r#"fun main() {
     val b = java.math.BigInteger("123")
     println(b)
 }
 main()
-"#);
-    probe("jdk-hashmap", r#"import java.util.HashMap
+"#,
+    );
+    probe(
+        "jdk-hashmap",
+        r#"import java.util.HashMap
 fun main() {
     val m = HashMap<String, Int>()
     println(m)
 }
 main()
-"#);
-    probe("jdk-duration", r#"fun main() {
+"#,
+    );
+    probe(
+        "jdk-duration",
+        r#"fun main() {
     val d = java.time.Duration.ofSeconds(90)
     println(d != null)
 }
 main()
-"#);
-    probe("jdk-zoneid", r#"fun main() {
+"#,
+    );
+    probe(
+        "jdk-zoneid",
+        r#"fun main() {
     val z = java.time.ZoneId.of("UTC")
     println(z)
 }
 main()
-"#);
-    probe("jdk-objects-hash", r#"fun main() {
+"#,
+    );
+    probe(
+        "jdk-objects-hash",
+        r#"fun main() {
     println(java.util.Objects.isNull(null))
 }
 main()
-"#);
+"#,
+    );
 }
 
 /// Statics resolve; do INSTANCE methods on the returned JDK object?
 #[test]
 fn kotlin_jdk_instance_members() {
-    probe("static-only", r#"fun main() {
+    probe(
+        "static-only",
+        r#"fun main() {
     val d = java.time.LocalDate.parse("2024-06-15")
     println("parsed")
 }
 main()
-"#);
-    probe("instance-prop", r#"fun main() {
+"#,
+    );
+    probe(
+        "instance-prop",
+        r#"fun main() {
     val d = java.time.LocalDate.parse("2024-06-15")
     println(d.year)
 }
 main()
-"#);
-    probe("instance-method", r#"fun main() {
+"#,
+    );
+    probe(
+        "instance-method",
+        r#"fun main() {
     val d = java.time.LocalDate.parse("2024-06-15")
     println(d.isLeapYear())
 }
 main()
-"#);
-    probe("list-instance-method", r#"import java.util.ArrayList
+"#,
+    );
+    probe(
+        "list-instance-method",
+        r#"import java.util.ArrayList
 fun main() {
     val xs = ArrayList<Int>()
     xs.add(1)
     println(xs.size)
 }
 main()
-"#);
+"#,
+    );
 }
