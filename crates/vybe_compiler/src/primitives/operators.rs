@@ -280,6 +280,37 @@ impl Compiler {
         self.emit_contains_target_call(target);
     }
 
+    /// The language's `==` target — `[builtin_slots.string] eq`.
+    ///
+    /// The OPERATOR's semantics, not a container rule: PHP's `==` coerces
+    /// (`"1" == 1`), and that decision belongs to the language. Housed on the
+    /// `string` row for the same reason `compare` is — that is where languages
+    /// diverge, and the operand types are not statically known.
+    ///
+    /// LANGUAGE table only: the platform's `==` is `ops::emit_dyn_eq`, and a
+    /// language that declares nothing keeps it.
+    fn loose_eq_target(&self) -> Option<String> {
+        self.loose_cmp_target(vybe_ast::ProtocolSlot::Eq)
+    }
+
+    /// `!=`'s own binding — `[builtin_slots.string] ne`.
+    ///
+    /// A SEPARATE target rather than `Eq` plus a logical not: the language's
+    /// emitter materializes a real Bool, and negating its result with
+    /// `emit_dyn_not` throws that away, so `$a != $b` printed a raw `0` instead
+    /// of `bool(false)`. PHP's `emit_php_loose_eq` already takes a `negate`
+    /// flag for exactly this.
+    fn loose_ne_target(&self) -> Option<String> {
+        self.loose_cmp_target(vybe_ast::ProtocolSlot::Ne)
+    }
+
+    fn loose_cmp_target(&self, slot: vybe_ast::ProtocolSlot) -> Option<String> {
+        self.profile
+            .builtin_slots
+            .get(vybe_ast::builtin_slots::BuiltinType::String, slot)
+            .map(str::to_string)
+    }
+
     /// The language's STRUCTURAL equality target for composite built-ins —
     /// `[builtin_slots.array] eq`.
     ///
@@ -655,6 +686,12 @@ impl Compiler {
                 common::math::emit_pow(self.chunk(), l);
             }
             BinOp::Eq => {
+                // `[builtin_slots.string] eq` — the language's own `==`.
+                if let Some(target) = self.loose_eq_target() {
+                    let line = self.line;
+                    self.emit_slot_target(&target, 2, line, "string eq");
+                    return;
+                }
                 if self.profile.abstract_equality {
                     let idx = self.import("ecma:value", "abstractEq");
                     self.emit_host_call(idx, 2);
@@ -704,6 +741,12 @@ impl Compiler {
                 }
             }
             BinOp::NotEq => {
+                // `[builtin_slots.string] ne` — its OWN target, see there.
+                if let Some(target) = self.loose_ne_target() {
+                    let line = self.line;
+                    self.emit_slot_target(&target, 2, line, "string ne");
+                    return;
+                }
                 if self.profile.abstract_equality {
                     let idx = self.import("ecma:value", "abstractNe");
                     self.emit_host_call(idx, 2);

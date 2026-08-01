@@ -5093,6 +5093,25 @@ impl Compiler {
                 // (sets `__js_this` via the JS method-call protocol),
                 // then `"" + primitive` produces the final string.
                 let use_to_primitive = self.profile.ecma_to_primitive;
+                // How ONE substitution becomes a string is the LANGUAGE's rule,
+                // not a shared one: PHP renders `null` and `false` as `""` and
+                // `true` as `"1"`, Ruby calls `to_s`, JS follows ToString. This
+                // arm already conceded that with `ecma_to_primitive` — a bool
+                // for one language — so the general form is the binding.
+                //
+                // Same `[builtin_slots.string] to_string` the `.`/`..` concat
+                // operator reads (§3i). Interpolation was hardcoded to
+                // `strings::emit_to_string`, which is the ECMA coercion, so
+                // `"{$x}"` on a null printed `null` and on a missing array key
+                // `undefined` where PHP prints nothing.
+                let interp_to_string = self
+                    .profile
+                    .builtin_slots
+                    .get(
+                        vybe_ast::builtin_slots::BuiltinType::String,
+                        vybe_ast::ProtocolSlot::ToString,
+                    )
+                    .map(str::to_string);
                 self.emit_const(Value::String(Arc::from("")));
                 let acc_slot = self.define_local("__interp_acc");
                 self.emit_u16(Op::LOCAL_SET, acc_slot);
@@ -5137,7 +5156,12 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_SET, value_slot);
                                 self.emit_u16(Op::LOCAL_GET, value_slot);
                                 let line = self.line;
-                                common::strings::emit_to_string(self.chunk(), line);
+                                match &interp_to_string {
+                                    Some(target) => {
+                                        self.emit_slot_target(target, 1, line, "string to_string")
+                                    }
+                                    None => common::strings::emit_to_string(self.chunk(), line),
+                                }
                             }
                         }
                     }

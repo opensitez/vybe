@@ -1116,6 +1116,9 @@ impl ReflectKind {
             vybe_ast::ClassKind::Mixin => ReflectKind::Mixin,
             vybe_ast::ClassKind::Module => ReflectKind::Module,
             vybe_ast::ClassKind::Struct => ReflectKind::Struct,
+            // A record IS a class at run time — it reflects as one. The kind
+            // only changes what normalization DERIVES for it.
+            vybe_ast::ClassKind::Record => ReflectKind::Class,
         }
     }
 }

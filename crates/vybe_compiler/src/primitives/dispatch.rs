@@ -25,7 +25,9 @@ use vybe_runtime::opcode::Op;
 
 use crate::primitives::threading as thread_adapter;
 use crate::primitives::{
-    collections, dict, heap, io, object, ops, reflection, strings, threading, xml,
+    collections, dict, heap, http_cookie, http_form, http_request_env, http_session, io, object, ops,
+    reflection, strings,
+    threading, xml,
 };
 
 /// Handle common ops that need only a chunk and line.
@@ -64,6 +66,42 @@ pub fn emit_common(
         }
     }
     match name {
+        // ── Request environment ──
+        // The request as language-neutral data, read from `wasi:http`. PHP's
+        // `$_SERVER`/`$_GET`, WSGI `environ` and Rack `env` are all renames of
+        // these; see `documentation/httpserver.md` §4a.
+        "http_request.method" => http_request_env::emit_method(chunks, current, line),
+        "http_request.path" => http_request_env::emit_path(chunks, current, line),
+        "http_request.path_with_query" => http_request_env::emit_path_with_query(chunks, current, line),
+        "http_request.query_string" => http_request_env::emit_query_string(chunks, current, line),
+        "http_request.scheme" => http_request_env::emit_scheme(chunks, current, line),
+        "http_request.authority" => http_request_env::emit_authority(chunks, current, line),
+        "http_request.headers" => http_request_env::emit_headers(chunks, current, line),
+        "http_request.environ" => http_request_env::emit_environ(chunks, current, line),
+        // Cookies are not in any spec surface — see `primitives/http_cookie`.
+        "http_cookie.serialize" => http_cookie::emit_serialize(chunks, current, argc, line),
+        "http_cookie.request_cookies" => http_cookie::emit_request_cookies(chunks, current, line),
+        "http_form.parsed_body" => http_form::emit_parsed_body(chunks, current, line),
+        "http_form.fields" => http_form::emit_body_fields(chunks, current, line),
+        "http_form.files" => http_form::emit_body_files(chunks, current, line),
+        "http_session.id" => http_session::emit_id(chunks, current, "SESSIONID", line),
+        "http_session.new_id" => http_session::emit_new_id(chunks, current, line),
+        "http_session.set_id" => http_session::emit_set_id(chunks, current, line),
+        "http_session.name" => http_session::emit_name(chunks, current, "SESSIONID", line),
+        "http_session.set_name" => http_session::emit_set_name(chunks, current, line),
+        "http_session.status" => http_session::emit_status(chunks, current, line),
+        "http_session.data" => http_session::emit_data(chunks, current, line),
+        "http_session.start" => http_session::emit_start(chunks, current, "SESSIONID", line),
+        "http_session.regenerate_id" => http_session::emit_regenerate_id(chunks, current, line),
+        "http_session.destroy" => http_session::emit_destroy(chunks, current, line),
+        "http_session.unset" => http_session::emit_unset(chunks, current, line),
+        "http_request.body" => http_request_env::emit_body(chunks, current, line),
+        "http_request.request_params" => http_request_env::emit_request_params(chunks, current, line),
+        "http_request.query_params" => http_request_env::emit_query_params(chunks, current, line),
+        "http_form.parse_multipart" => http_form::emit_parse_multipart(chunks, current, line),
+        "http_form.parse_urlencoded" => http_form::emit_parse_urlencoded(chunks, current, line),
+        "http_cookie.parse" => http_cookie::emit_parse_cookie_header(chunks, current, line),
+
         // ── Output buffering ──
         // Language-neutral on purpose: `ob_*` is PHP's SPELLING of a capability
         // (capture what would have been written), not a PHP feature. A language
@@ -610,6 +648,7 @@ pub fn emit_common(
 
         // ── Dynamic ops (profile common:dyn_*) ──
         "dyn_eq" => ops::emit_dyn_eq(&mut chunks[current], line),
+        "dyn_ne" => ops::emit_dyn_ne(&mut chunks[current], line),
         "dyn_to_bool" => ops::emit_dyn_to_bool(&mut chunks[current], line),
 
         // ── Ref ops (profile common:ref_*) ──

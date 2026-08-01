@@ -63,6 +63,15 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
     b.insert(BuiltinType::String, ProtocolSlot::Contains, "common:str_contains");
     b.insert(BuiltinType::String, ProtocolSlot::Add, "common:str_concat");
     b.insert(BuiltinType::String, ProtocolSlot::Compare, "common:str_compare");
+    // The platform answer for `==` / `!=` IS `ops::emit_dyn_eq` — that is what
+    // `BinOp::Eq` falls back to when no language declares otherwise. Recording
+    // it makes the default a decision on record (§2e) instead of an emergent
+    // property of one `else` branch, and removes the old claim that "no emit
+    // target exists" — `common:dyn_eq` always had one.
+    //
+    // PHP overrides both: its `==` coerces (`"1" == 1`).
+    b.insert(BuiltinType::String, ProtocolSlot::Eq, "common:dyn_eq");
+    b.insert(BuiltinType::String, ProtocolSlot::Ne, "common:dyn_ne");
 
     // ── array ───────────────────────────────────────────────────────────
     b.insert(BuiltinType::Array, ProtocolSlot::Len, "common:collections.length");
@@ -109,12 +118,10 @@ pub fn unbound_reason(ty: BuiltinType, slot: ProtocolSlot) -> Option<&'static st
     use BuiltinType as T;
     use ProtocolSlot as S;
     Some(match (ty, slot) {
-        (T::String, S::Eq) | (T::String, S::Ne) => {
-            "No emit target exists yet. String equality is currently decided by \
-             `LanguageHooks::value_eq` (Python) and `::relational_compare` (PHP) \
-             — private callbacks this plan retires in step 6. Binding it needs \
-             `common:ops.eq_*` emitters that do not exist today."
-        }
+        // `(String, Eq)` and `(String, Ne)` are NOT here any more: PHP binds
+        // both (`common:php.loose_eq` / `.loose_ne`) and the platform default
+        // is `ops::emit_dyn_eq`. The old reason claimed no emit target existed;
+        // measurement showed `common:dyn_eq` always had.
         (T::String, S::Bool) | (T::Array, S::Bool) | (T::Map, S::Bool) => {
             "Truthiness is emitted inline by `ops::emit_dyn_to_bool` rather than \
              through a dispatchable target. PHP is the only language that \
@@ -135,11 +142,17 @@ pub fn unbound_reason(ty: BuiltinType, slot: ProtocolSlot) -> Option<&'static st
             "Derived from `Compare`'s sign per flexclassplan §2c-bis — not \
              bound separately."
         }
+        // `GetItem` IS bound above, so the blanket arm must not claim it —
+        // the same contradiction `(Int, Mod)` had once Python bound it.
+        (T::Bytes, S::GetItem) => return None,
         (T::Bytes, _) => {
             "`Literal::Bytes` now exists (unifiedstringplan.md §3c) and \
              `GetItem` is bound above; the remaining bytes slots are unmeasured, \
              not blocked."
         }
+        // `(Int, Mod)` is bound by Python (floored `%`), so `Int` can no longer
+        // claim a blanket reason — only the slots nobody has measured.
+        (T::Int, S::Mod) => return None,
         (T::Int, _) | (T::Double, _) | (T::BigInt, _) => {
             "No target chosen yet. The numeric slots were left out of the \
              default table deliberately: §3a measured STRING behaviour across \
@@ -234,6 +247,57 @@ mod tests {
                     || target.starts_with("stdlib:"),
                 "{ty:?}/{slot:?} -> {target:?} is not an emit target"
             );
+        }
+    }
+
+    /// A `common:` default must name something a dispatcher CLAIMS.
+    ///
+    /// The prefix check above is shape-only, and a well-formed name nobody
+    /// dispatches emits NOTHING — stranding operands on the stack far from the
+    /// table that named it. `common:dyn_ne` was added as the `Ne` default and
+    /// had no arm; this is what caught it.
+    ///
+    /// Runs the dispatcher against a scratch chunk purely to see whether it
+    /// claims the name. The emitted bytecode is discarded.
+    #[test]
+    fn every_common_default_is_actually_dispatched() {
+        for (ty, slot, target) in platform_defaults().iter() {
+            let Some(name) = target.strip_prefix("common:") else {
+                continue;
+            };
+            let mut chunks = vec![vybe_runtime::Chunk::new("<probe>")];
+            let claimed =
+                crate::primitives::dispatch::emit_common(name, &mut chunks, 0, 2, 0);
+            assert!(
+                claimed,
+                "{ty:?}/{slot:?} defaults to `common:{name}`, which no dispatcher \
+                 claims — it would emit nothing and corrupt the stack"
+            );
+        }
+    }
+
+    /// A pair any LANGUAGE binds must not also claim to be unbound.
+    ///
+    /// `a_bound_pair_never_claims_to_be_unbound` checks only the PLATFORM
+    /// table, so it cannot see a language binding — and three reasons went
+    /// stale exactly that way: PHP bound `(String, Eq)`/`(String, Ne)` and
+    /// Python bound `(Int, Mod)` while all three still read "no emit target
+    /// exists". §5 asks for a reader OR a reason; both at once is a
+    /// contradiction, and this is what enforces it.
+    #[test]
+    fn no_language_binding_contradicts_an_unbound_reason() {
+        for lang in crate::languages::all() {
+            let Ok(profile) = vybe_runtime::profile::parse_profile((lang.profile_source)()) else {
+                continue;
+            };
+            for (ty, slot, target) in profile.builtin_slots.iter() {
+                assert!(
+                    unbound_reason(ty, slot).is_none(),
+                    "{} binds {ty:?}/{slot:?} to {target:?}, yet `unbound_reason` \
+                     still says the pair has no target — one of the two is stale",
+                    lang.name
+                );
+            }
         }
     }
 
@@ -338,7 +402,6 @@ mod tests {
     fn deliberately_unbound_pairs_carry_a_reason() {
         let d = platform_defaults();
         for (ty, slot) in [
-            (BuiltinType::String, ProtocolSlot::Eq),
             (BuiltinType::String, ProtocolSlot::Bool),
             (BuiltinType::String, ProtocolSlot::Hash),
             (BuiltinType::String, ProtocolSlot::Iterator),
@@ -359,6 +422,9 @@ mod tests {
             (BuiltinType::Map, ProtocolSlot::GetItem),
             (BuiltinType::Array, ProtocolSlot::GetItem),
             (BuiltinType::String, ProtocolSlot::GetItem),
+            (BuiltinType::Bytes, ProtocolSlot::GetItem),
+            (BuiltinType::String, ProtocolSlot::Eq),
+            (BuiltinType::String, ProtocolSlot::Ne),
         ] {
             assert!(
                 d.get(ty, slot).is_some(),

@@ -691,6 +691,35 @@ impl Compiler {
             .map(|m| self.js_member_storage_name_for_class(name, &m.source_name))
             .collect();
 
+        // A method's SIGNATURE, in the declaration pass — not only when the
+        // class body compiles.
+        //
+        // `compile_normal_class` registers this, but a function body compiles
+        // BEFORE any class body does, so `obj.f(y = 9)` inside a `fun` found no
+        // signature and every named argument bound positionally. A free
+        // function was fine (its own declaration pass ran first), which is what
+        // made this look like a class bug rather than an ordering one.
+        //
+        // Same `CallSignature::from_params` and the same key as the definition
+        // site, so the later registration is a no-op repeat rather than a
+        // second, different answer. Skipped when an entry already exists: two
+        // classes can declare the same method name, and the definition pass
+        // still appends the genuine overloads.
+        for (m, bound_name) in nc.instance_methods.iter().zip(instance_member_names.iter()) {
+            if self.function_signatures.contains_key(bound_name) {
+                continue;
+            }
+            self.function_signatures
+                .insert(bound_name.clone(), vec![CallSignature::from_params(&m.params)]);
+        }
+        for (m, bound_name) in nc.static_methods.iter().zip(static_method_names.iter()) {
+            if self.function_signatures.contains_key(bound_name) {
+                continue;
+            }
+            self.function_signatures
+                .insert(bound_name.clone(), vec![CallSignature::from_params(&m.params)]);
+        }
+
         let bases: Vec<String> = parents.iter().map(|p| self.canon(p)).collect();
         let parent = bases.first().cloned();
         self.pending_classes

@@ -107,6 +107,8 @@ pub fn apply_augmentations(
     // The class's own name, taken before the member loops borrow `class`
     // mutably — a promoted forwarder needs it for the receiver's type.
     let class_name = class.name.clone();
+    // Read alongside the name, before the member loops borrow `class` mutably.
+    let explicit_self = class.explicit_self_param;
     let augmentations = class.augmentations.clone();
     for aug in &augmentations {
         let Some(source) = available.get(&aug.from) else {
@@ -279,9 +281,14 @@ pub fn apply_augmentations(
                         // different fields. What the class gains is a
                         // FORWARDER; the rebinding is the whole point of the
                         // mode.
-                        (AugmentationMode::Promote, Some(field)) => {
-                            promoted(method, &name, field, &class_name, adjustment.as_ref())
-                        }
+                        (AugmentationMode::Promote, Some(field)) => promoted(
+                            method,
+                            &name,
+                            field,
+                            &class_name,
+                            explicit_self,
+                            adjustment.as_ref(),
+                        ),
                         _ => contributed(method, &name, adjustment.as_ref()),
                     };
                     let target = if is_static {
@@ -547,30 +554,43 @@ fn promoted(
     name: &str,
     via_field: &str,
     outer_class: &str,
+    explicit_self_param: bool,
     adjustment: Option<&AugmentationAdjustment>,
 ) -> NormalMethod {
     use vybe_ast::{Argument, ExprKind, Expression, Statement, StmtKind};
 
     let mut out = contributed(method, name, adjustment);
-    // The receiver is a declared parameter in every language that promotes
-    // (Go writes it `func (o Outer) M()`), so params[0] IS the receiver and
-    // its type is now the OUTER struct.
-    let receiver = out
-        .params
-        .first()
-        .map(|param| param.name.clone())
-        .unwrap_or_else(|| "self".to_string());
-    if let Some(param) = out.params.first_mut() {
-        param.type_hint = Some(outer_class.to_string());
-    }
+    // WHICH parameter is the receiver is a language convention, and the class
+    // model already states it — so this asks rather than infers.
+    //
+    // Go / Python / Lua / Fortran declare the receiver FIRST (`func (o Outer)
+    // M()`), and its type becomes the OUTER struct. Kotlin / Java / C# / Dart /
+    // PHP leave it implicit, so there is no `params[0]` to take and no
+    // parameter to skip. Reading it off the list unconditionally gave every
+    // implicit-receiver language the literal identifier `self` — unbound, so
+    // the forwarder threw "undefined is not callable" — and silently dropped
+    // the first real argument of any method that had one.
+    let (receiver, skip) = if explicit_self_param {
+        let name = out
+            .params
+            .first()
+            .map(|param| param.name.clone())
+            .unwrap_or_else(|| "self".to_string());
+        if let Some(param) = out.params.first_mut() {
+            param.type_hint = Some(outer_class.to_string());
+        }
+        (Expression::ident(&name), 1)
+    } else {
+        (Expression::new(ExprKind::This), 0)
+    };
     let args: Vec<Argument> = out
         .params
         .iter()
-        .skip(1)
+        .skip(skip)
         .map(|param| Argument::positional(Expression::ident(&param.name)))
         .collect();
     let inner = Expression::new(ExprKind::Member {
-        object: Box::new(Expression::ident(&receiver)),
+        object: Box::new(receiver),
         field: via_field.to_string(),
         null_safe: false,
     });
