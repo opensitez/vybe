@@ -745,6 +745,18 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             );
             crate::emitter::string_adapter::emit_strlen(chunks, current, argc, line)
         }
+        "php.parse_url" => {
+            crate::emitter::string_adapter::emit_parse_url(chunks, current, argc, line)
+        }
+        "php.mb_substr" => {
+            crate::emitter::string_adapter::emit_mb_substr(chunks, current, argc, line)
+        }
+        "php.mb_strpos" => {
+            crate::emitter::string_adapter::emit_mb_strpos(chunks, current, argc, line)
+        }
+        "php.mb_str_split" => {
+            crate::emitter::string_adapter::emit_mb_str_split(chunks, current, argc, line)
+        }
         "php.count_chars" => {
             crate::emitter::string_adapter::emit_count_chars(chunks, current, argc, line)
         }
@@ -1171,6 +1183,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::misc_adapter::emit_php_setrawcookie(chunks, current, argc, line)
         }
         "php.header" => crate::emitter::misc_adapter::emit_php_header(chunks, current, argc, line),
+        "php.sapi_name" => {
+            crate::emitter::misc_adapter::emit_php_sapi_name(chunks, current, argc, line)
+        }
         "php.http_response_code" => {
             crate::emitter::misc_adapter::emit_php_http_response_code(chunks, current, argc, line)
         }

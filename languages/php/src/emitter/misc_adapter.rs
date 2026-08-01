@@ -234,6 +234,26 @@ fn emit_apply_header(
     chunk.emit_end(line);
 }
 
+/// PHP `php_sapi_name()` — which SAPI this script is running under.
+///
+/// A SAPI is a PHP concept; Node has no notion of one, so a `php_sapi_name`
+/// host function was PHP's function name sitting in `node:http`. Whether a
+/// request is in flight is answered by the shared request primitive, the same
+/// source `$_SERVER` reads.
+pub fn emit_php_sapi_name(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let request = chunk.add_constant(Value::String(Arc::from(
+        vybe_compiler::primitives::http_request_env::REQUEST_GLOBAL,
+    )));
+    chunk.emit_op_u16(Op::GLOBAL_GET, request, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if(line);
+    push_str(chunk, "cli", line);
+    chunk.emit_else(line);
+    push_str(chunk, "vybex-server", line);
+    chunk.emit_end(line);
+}
+
 /// PHP `http_response_code()` — get with no argument, set with one.
 ///
 /// Arity-based get/set is PHP's calling convention, not Node's. Node has a

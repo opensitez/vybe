@@ -12,17 +12,22 @@
 //! - [`context`]  — per-request state + thread-local + drop guard
 //! - [`request`]  — `node:http.*` (raw + parsed accessors)
 //! - [`response`] — `node:http.*` (status, headers, write, end)
-//! - [`meta`]     — `node:http.*` (mode, server_software, request_id)
+//! - [`tables`]   — `node:http.STATUS_CODES` / `.METHODS`
 //!
-//! Additional utility sub-modules (url, cookie, form, mime, date, etag,
-//! range, negotiate, compress, auth, ws, sse, session, static_serve,
-//! server) will land in subsequent slices.
+//! What belongs here is Node's `http` module and nothing else. Request
+//! shaping — the CGI environment, cookies, query pairs, form bodies — is
+//! `wasi:http` read through `vybe_compiler::primitives::http_*`, and PHP's
+//! own spellings (`header()`, `http_response_code()`, `php_sapi_name()`)
+//! live in the PHP emitter. A `node:http` function with no counterpart in
+//! Node is a bug, not a convenience.
 
 pub mod client;
 pub mod context;
-pub mod meta;
 pub mod request;
 pub mod response;
+pub mod tables;
+pub mod server;
+pub mod validate;
 
 pub use context::{
     RequestBodyReader, RequestContext, ResponseMessage, ResponseState, install_context,
@@ -40,6 +45,8 @@ use vybe_runtime::VM;
 pub fn register(vm: &mut VM) {
     request::register(vm);
     response::register(vm);
-    meta::register(vm);
     client::register(vm);
+    tables::register(vm);
+    validate::register(vm);
+    server::register(vm);
 }

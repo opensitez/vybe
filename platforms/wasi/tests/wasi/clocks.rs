@@ -3,7 +3,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use vybe_runtime::value::Value;
+use vybe_runtime::value::{Object, Value};
 use vybe_runtime::{Chunk, Op, VM};
 use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
@@ -142,5 +142,90 @@ fn proposal_monotonic_clock_wait_for_import_is_registered() {
     assert!(
         has_import("wasi:clocks/monotonic-clock", "wait-for"),
         "wasi:clocks/monotonic-clock.wait-for should be covered by the clocks category"
+    );
+}
+
+// ── wasi:clocks/timezone ────────────────────────────────────────────────────
+
+/// New York is UTC−5 in January and UTC−4 in July.
+///
+/// One assertion covers the whole TZif reader at once: selecting the 64-bit
+/// data block over the v1 one, searching the transition list, and reporting the
+/// daylight-saving flag. The reader is what `utc-offset` and `iana-id` answer
+/// from, so a parse regression shows up here rather than as a silently wrong
+/// timestamp somewhere downstream.
+#[test]
+fn tzif_reader_finds_both_sides_of_a_dst_transition() {
+    let Ok(bytes) = std::fs::read("/usr/share/zoneinfo/America/New_York") else {
+        eprintln!("no system tzdb on this host; skipping");
+        return;
+    };
+
+    // 2021-01-01T00:00:00Z and 2021-07-01T00:00:00Z.
+    let january = vybe_platform_wasi::clock::tzif_type_at_bytes(&bytes, 1_609_459_200);
+    let july = vybe_platform_wasi::clock::tzif_type_at_bytes(&bytes, 1_625_097_600);
+
+    assert_eq!(january, Some((-5 * 3600, false)), "EST is UTC-5, not DST");
+    assert_eq!(july, Some((-4 * 3600, true)), "EDT is UTC-4, in DST");
+}
+
+/// `utc-offset` answers `option<s64>` NANOSECONDS.
+///
+/// The older interface returned `s32` SECONDS and always produced a value; a
+/// host that cannot determine its zone now answers nothing, because `0` would
+/// claim UTC for every machine that simply has no tzdb.
+#[test]
+fn utc_offset_is_nanoseconds_or_absent() {
+    let mut instant = Object::new();
+    instant
+        .properties
+        .insert("seconds".into(), Value::F64(1_609_459_200.0));
+    instant
+        .properties
+        .insert("nanoseconds".into(), Value::F64(0.0));
+    let when = Value::Object(vybe_runtime::heap::alloc(instant));
+
+    match invoke("wasi:clocks/timezone", "utc-offset", vec![when]) {
+        Value::Null => {} // no zone configured on this host — permitted
+        other => {
+            let nanos = other.as_f64();
+            assert_eq!(
+                nanos % 1_000_000_000.0,
+                0.0,
+                "a whole-second offset must be a whole number of nanoseconds, got {nanos}"
+            );
+            assert!(
+                nanos.abs() < 86_400_000_000_000.0,
+                "the interface bounds the magnitude below one day, got {nanos}"
+            );
+        }
+    }
+}
+
+/// `iana-id` is `option<string>` — a zone name or nothing, never `""`.
+#[test]
+fn iana_id_is_a_zone_name_or_nothing() {
+    match invoke("wasi:clocks/timezone", "iana-id", vec![]) {
+        Value::Null => {}
+        Value::String(id) => assert!(!id.is_empty(), "an empty id must be reported as none"),
+        other => panic!("iana-id must be option<string>, got {other:?}"),
+    }
+}
+
+/// `system-clock` is the current name for what used to be `wall-clock`; both
+/// are bound and must agree, since they are one clock.
+#[test]
+fn system_clock_and_wall_clock_are_the_same_clock() {
+    let system = invoke("wasi:clocks/system-clock", "now", vec![]);
+    let wall = invoke("wasi:clocks/wall-clock", "now", vec![]);
+    let seconds_of = |value: &Value| prop(value, "seconds").as_f64();
+    assert!(
+        (seconds_of(&system) - seconds_of(&wall)).abs() <= 1.0,
+        "system-clock and wall-clock must report the same moment"
+    );
+    assert_eq!(
+        invoke("wasi:clocks/system-clock", "get-resolution", vec![]),
+        Value::F64(1.0),
+        "get-resolution answers a duration in nanoseconds, not a record"
     );
 }

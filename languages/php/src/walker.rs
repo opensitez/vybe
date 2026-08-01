@@ -3615,23 +3615,12 @@ class __PHP_Incomplete_Class {}
 /// currently drops the value inside functions — a single ternary is used
 /// instead. See project_php_url_functions.
 const URL_FUNCTIONS_PRELUDE: &str = r##"
-function parse_url($url, $component = -1) {
-    $pattern = '/^(?:([^:\/?#]+):)?(?:\/\/(?:([^:@\/?#]+)(?::([^@\/?#]*))?@)?([^:\/?#]*)(?::(\d+))?)?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/';
-    preg_match($pattern, $url, $m);
-    $r = [];
-    if (isset($m[1]) && $m[1] !== '') $r['scheme'] = $m[1];
-    if (isset($m[2]) && $m[2] !== '') $r['user'] = $m[2];
-    if (isset($m[3]) && $m[3] !== '') $r['pass'] = $m[3];
-    if (isset($m[4]) && $m[4] !== '') $r['host'] = $m[4];
-    if (isset($m[5]) && $m[5] !== '') $r['port'] = (int)$m[5];
-    if (isset($m[6]) && $m[6] !== '') $r['path'] = $m[6];
-    if (isset($m[7]) && $m[7] !== '') $r['query'] = $m[7];
-    if (isset($m[8]) && $m[8] !== '') $r['fragment'] = $m[8];
-    if ($component == -1) return $r;
-    $keys = [0 => 'scheme', 1 => 'host', 2 => 'port', 3 => 'user', 4 => 'pass', 5 => 'path', 6 => 'query', 7 => 'fragment'];
-    $kk = isset($keys[$component]) ? $keys[$component] : null;
-    return ($kk !== null && isset($r[$kk])) ? $r[$kk] : null;
-}
+// `parse_url` is no longer a PHP-source prelude: it is the SHARED parser,
+// `primitives::url::emit_parse(ParseOptions::php())`, reached through
+// `common:php.parse_url`. Python's `urlsplit` uses the same parser with
+// `lowercase_scheme: true` — the two languages differ by a flag, not by an
+// implementation. This definition also shadowed the emitter while it existed,
+// and its RFC 3986 regex is what the primitive now carries.
 function __vybe_hbq_pairs($data, $prefix, $np) {
     $pairs = [];
     foreach ($data as $k => $v) {
@@ -3807,8 +3796,9 @@ function php_uname($mode = 'a') {
 ///
 /// The data is `wasi:http`'s, reached through `primitives/http_request_env`,
 /// `http_form` and `http_cookie` — the same primitives WSGI's `environ` and
-/// Rack's `env` will read. All PHP contributes is the spelling, which is why
-/// this is six assignments and not a parser.
+/// Rack's `env` will read; `$_ENV` is `wasi:cli/environment` directly. All PHP
+/// contributes is the spelling, which is why this is seven assignments and not
+/// a parser.
 ///
 /// Statement order is load-bearing: [`php_superglobal_prelude`] picks
 /// statements out of this group by index, so a script that only mentions
@@ -3820,6 +3810,7 @@ $_POST = __vybe_superglobal_post();
 $_FILES = __vybe_php_files();
 $_COOKIE = __vybe_superglobal_cookie();
 $_REQUEST = __vybe_superglobal_request();
+$_ENV = __vybe_php_env();
 function __vybe_php_files() {
     $out = [];
     foreach (__vybe_superglobal_files() as $field => $upload) {
@@ -3833,10 +3824,21 @@ function __vybe_php_files() {
     }
     return $out;
 }
+function __vybe_php_env() {
+    $out = [];
+    foreach (__vybe_env_pairs() as $pair) {
+        $out[$pair[0]] = $pair[1];
+    }
+    return $out;
+}
+$_SERVER['PHP_SELF'] = isset($_SERVER['SCRIPT_NAME']) ? $_SERVER['SCRIPT_NAME'] : '';
 "##;
 
 /// Index of the `$_FILES` statement in [`SUPERGLOBALS_PRELUDE`].
 const SUPERGLOBAL_FILES: usize = 3;
+
+/// Index of the `$_ENV` statement in [`SUPERGLOBALS_PRELUDE`].
+const SUPERGLOBAL_ENV: usize = 6;
 
 /// Index of the `__vybe_php_files` declaration in [`SUPERGLOBALS_PRELUDE`].
 ///
@@ -3845,14 +3847,34 @@ const SUPERGLOBAL_FILES: usize = 3;
 /// `name`/`tmp_name`/`error` are PHP's spellings for it. Renaming in PHP source
 /// keeps that out of `primitives/http_form.rs`, where a `$_FILES` key would be
 /// one language's vocabulary in shared code.
-const SUPERGLOBAL_FILES_HELPER: usize = 6;
+const SUPERGLOBAL_FILES_HELPER: usize = 7;
+
+/// Index of the `__vybe_php_env` declaration in [`SUPERGLOBALS_PRELUDE`].
+///
+/// WASI reports the environment as `list<tuple<string, string>>`; PHP wants it
+/// keyed by name. The reshape is four lines of PHP for the same reason
+/// `__vybe_php_files` is: `$_ENV` is a PHP spelling, and a spelling does not
+/// belong in a spec module.
+const SUPERGLOBAL_ENV_HELPER: usize = 8;
+
+/// Index of the `$_SERVER['PHP_SELF']` statement in [`SUPERGLOBALS_PRELUDE`].
+///
+/// `PHP_SELF` is PHP's name for `SCRIPT_NAME` (plus `PATH_INFO`, which this
+/// server folds into the same value). The transport used to set it, which put
+/// one language's vocabulary in `crates/vybex`; deriving it here keeps the CGI
+/// map language-neutral. Bound to the `$_SERVER` flag, and ordered AFTER the
+/// assignment it edits.
+const SUPERGLOBAL_PHP_SELF: usize = 9;
+
+/// Index of the `$_SERVER` statement in [`SUPERGLOBALS_PRELUDE`].
+const SUPERGLOBAL_SERVER: usize = 0;
 
 /// The superglobal bindings this script actually needs, in prelude order.
 ///
 /// Off the request path these all yield empty maps rather than trapping (see
 /// `every_request_op_survives_with_no_request`), which is what real PHP does
 /// on the command line — `$_GET` is `[]`, not an error.
-fn php_superglobal_prelude(names: &[bool; 6]) -> Vec<Statement> {
+fn php_superglobal_prelude(names: &[bool; 7]) -> Vec<Statement> {
     if !names.iter().any(|needed| *needed) {
         return Vec::new();
     }
@@ -3861,11 +3883,61 @@ fn php_superglobal_prelude(names: &[bool; 6]) -> Vec<Statement> {
         .enumerate()
         .filter(|(index, _)| match *index {
             SUPERGLOBAL_FILES_HELPER => names[SUPERGLOBAL_FILES],
+            SUPERGLOBAL_ENV_HELPER => names[SUPERGLOBAL_ENV],
+            SUPERGLOBAL_PHP_SELF => names[SUPERGLOBAL_SERVER],
             other => names[other],
         })
         .map(|(_, stmt)| stmt)
         .collect()
 }
+
+/// `getenv()` / `putenv()` over `wasi:cli/environment`.
+///
+/// The profile used to point `getenv` at `host:wasi:cli:getEnv` — a module that
+/// does not exist, so every call died with `Unresolved import`. The spec surface
+/// is `get-environment() -> list<tuple<string, string>>`, read-only; PHP's
+/// arity-overloaded lookup, its `false`-for-missing and `putenv`'s MUTATION are
+/// PHP's semantics, so they live here rather than as an extension to a WASI
+/// module.
+///
+/// `putenv` writes to an overlay consulted before the real environment, which is
+/// what PHP's own `putenv` is: process-local, gone when the process exits, and
+/// invisible to `$_ENV` (real PHP does not update `$_ENV` either).
+const ENV_FUNCTIONS_PRELUDE: &str = r##"
+$__vybe_env_overlay = [];
+function getenv($name = null) {
+    global $__vybe_env_overlay;
+    if ($name === null) {
+        $out = [];
+        foreach (__vybe_env_pairs() as $pair) {
+            $out[$pair[0]] = $pair[1];
+        }
+        foreach ($__vybe_env_overlay as $k => $v) {
+            $out[$k] = $v;
+        }
+        return $out;
+    }
+    if (array_key_exists($name, $__vybe_env_overlay)) {
+        return $__vybe_env_overlay[$name];
+    }
+    foreach (__vybe_env_pairs() as $pair) {
+        if ($pair[0] === $name) {
+            return $pair[1];
+        }
+    }
+    return false;
+}
+function putenv($assignment) {
+    global $__vybe_env_overlay;
+    $pos = strpos($assignment, '=');
+    if ($pos === false) {
+        unset($__vybe_env_overlay[$assignment]);
+        return true;
+    }
+    $__vybe_env_overlay[substr($assignment, 0, $pos)] = substr($assignment, $pos + 1);
+    return true;
+}
+"##;
 
 const COPY_ON_ASSIGN_PRELUDE: &str = r##"
 function __php_copy_on_assign($v) {
@@ -3982,9 +4054,11 @@ struct PhpPreludeNeeds {
     ini: bool,
     version: bool,
     copy_on_assign: bool,
+    env_functions: bool,
     /// One flag per superglobal, in `SUPERGLOBALS_PRELUDE` order:
-    /// `$_SERVER`, `$_GET`, `$_POST`, `$_FILES`, `$_COOKIE`, `$_REQUEST`.
-    superglobals: [bool; 6],
+    /// `$_SERVER`, `$_GET`, `$_POST`, `$_FILES`, `$_COOKIE`, `$_REQUEST`,
+    /// `$_ENV`.
+    superglobals: [bool; 7],
 }
 
 #[derive(Clone, Copy)]
@@ -3995,6 +4069,7 @@ enum PhpPreludeGroup {
     Ini,
     Version,
     Copy,
+    Env,
     Superglobals,
 }
 
@@ -4009,6 +4084,7 @@ fn cached_php_prelude_group(group: PhpPreludeGroup) -> Vec<Statement> {
     static INI: std::sync::OnceLock<Vec<Statement>> = std::sync::OnceLock::new();
     static VERSION: std::sync::OnceLock<Vec<Statement>> = std::sync::OnceLock::new();
     static COPY: std::sync::OnceLock<Vec<Statement>> = std::sync::OnceLock::new();
+    static ENV: std::sync::OnceLock<Vec<Statement>> = std::sync::OnceLock::new();
 
     static SUPERGLOBALS: std::sync::OnceLock<Vec<Statement>> = std::sync::OnceLock::new();
 
@@ -4020,6 +4096,7 @@ fn cached_php_prelude_group(group: PhpPreludeGroup) -> Vec<Statement> {
         PhpPreludeGroup::Ini => (&INI, INI_FUNCTIONS_PRELUDE),
         PhpPreludeGroup::Version => (&VERSION, VERSION_PRELUDE),
         PhpPreludeGroup::Copy => (&COPY, COPY_ON_ASSIGN_PRELUDE),
+        PhpPreludeGroup::Env => (&ENV, ENV_FUNCTIONS_PRELUDE),
     };
 
     cache
@@ -4060,6 +4137,9 @@ fn cached_php_prelude_for(stmts: &[Statement]) -> Vec<Statement> {
     }
     if needs.copy_on_assign {
         prelude.append(&mut cached_php_prelude_group(PhpPreludeGroup::Copy));
+    }
+    if needs.env_functions {
+        prelude.append(&mut cached_php_prelude_group(PhpPreludeGroup::Env));
     }
     prelude
 }
@@ -4122,14 +4202,18 @@ fn php_prelude_needs(stmts: &[Statement]) -> PhpPreludeNeeds {
 
     // Bind only the superglobals this script names. `$_POST` costs a body read,
     // so a page that only looks at `$_GET` must not pay for one.
-    for (slot, name) in ["$_SERVER", "$_GET", "$_POST", "$_FILES", "$_COOKIE", "$_REQUEST"]
-        .iter()
-        .enumerate()
+    for (slot, name) in [
+        "$_SERVER", "$_GET", "$_POST", "$_FILES", "$_COOKIE", "$_REQUEST", "$_ENV",
+    ]
+    .iter()
+    .enumerate()
     {
         needs.superglobals[slot] = ast.contains(name);
     }
     // `$_REQUEST` is `$_GET` + `$_POST` + `$_COOKIE` merged, but the MERGE lives
     // in the primitive, so naming it does not drag the other three in here.
+
+    needs.env_functions = ["getenv", "putenv"].iter().any(|name| ast.contains(name));
 
     needs.url = [
         "parse_url",
@@ -29076,11 +29160,22 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
         //   3-arg: `__php_substr($s, $start, $length)`
         // The compiler intrinsic lowers this directly to wasm:js-string.substring,
         // which keeps dynamic receivers safe (e.g. `$_SERVER[...]`).
-        "substr" | "mb_substr" if args.len() == 2 => mk_call(
+        // `substr` and `mb_substr` are NOT the same function: `substr` counts
+        // UTF-8 bytes, `mb_substr` counts code points. Collapsing them made
+        // `mb_substr("a😀b", 1, 1)` return half a surrogate pair.
+        "mb_substr" if args.len() == 2 => mk_call(
+            Expression::with_span(ExprKind::Ident("__php_mb_substr".to_string()), span.clone()),
+            vec![arg(0)?, arg(1)?],
+        ),
+        "mb_substr" if args.len() >= 3 => mk_call(
+            Expression::with_span(ExprKind::Ident("__php_mb_substr".to_string()), span.clone()),
+            vec![arg(0)?, arg(1)?, arg(2)?],
+        ),
+        "substr" if args.len() == 2 => mk_call(
             Expression::with_span(ExprKind::Ident("__php_substr".to_string()), span.clone()),
             vec![arg(0)?, arg(1)?],
         ),
-        "substr" | "mb_substr" if args.len() >= 3 => mk_call(
+        "substr" if args.len() >= 3 => mk_call(
             Expression::with_span(ExprKind::Ident("__php_substr".to_string()), span.clone()),
             vec![arg(0)?, arg(1)?, arg(2)?],
         ),

@@ -24,6 +24,14 @@ pub struct SocketState {
     tcp_listeners: HashMap<u64, TcpListener>,
     pending_accepts: HashMap<u64, Vec<TcpStream>>,
     udp_sockets: HashMap<u64, UdpSocket>,
+    /// Sockets that exist but have not yet become a listener or a stream.
+    ///
+    /// WASI 0.3 separates `create` from `bind` from `listen`/`connect`, which
+    /// POSIX has always done and `std::net` cannot: `TcpListener::bind` and
+    /// `TcpStream::connect` each create AND commit the socket in one call. A
+    /// socket lives here from `tcp-socket.create` until it commits, at which
+    /// point it moves into `tcp_listeners` or `tcp_streams` under the same id.
+    raw_sockets: HashMap<u64, socket2::Socket>,
 }
 
 pub fn get_state() -> Arc<Mutex<SocketState>> {
@@ -36,6 +44,7 @@ pub fn get_state() -> Arc<Mutex<SocketState>> {
                 tcp_listeners: HashMap::new(),
                 pending_accepts: HashMap::new(),
                 udp_sockets: HashMap::new(),
+                raw_sockets: HashMap::new(),
             }))
         })
         .clone()
@@ -49,6 +58,7 @@ pub fn reset() {
         s.tcp_listeners.clear();
         s.pending_accepts.clear();
         s.udp_sockets.clear();
+        s.raw_sockets.clear();
     }
 }
 
@@ -323,6 +333,1069 @@ pub fn register(vm: &mut VM) {
     register_wasi_io(vm);
     register_wasi_sockets(vm);
     register_wasi_sockets_method_forms(vm);
+    register_wasi_sockets_0_3(vm);
+}
+
+// ── wasi:sockets@0.3.0 — `types` ────────────────────────────────────────────
+//
+// 0.3 collapses 0.2's `tcp`, `udp`, `tcp-create-socket`, `udp-create-socket`
+// and `instance-network` into ONE `types` interface: a socket comes from
+// `tcp-socket.create` / `udp-socket.create`, the start/finish pairs become
+// single calls, and `accept` disappears because `listen` itself yields a
+// `stream<tcp-socket>`.
+//
+// Nothing here is a second socket stack. The handles are the same objects the
+// 0.2 functions take, the OS sockets live in the same `get_state()` maps, and
+// addresses go through the same `parse_ip_socket_address` /
+// `socket_addr_to_value` helpers — so a socket bound through 0.3 can be
+// accepted through 0.2 and vice versa.
+
+/// `error-code` per `proposals/sockets/wit/types.wit`, matching the
+/// representation `wasi:http` uses for its own `result` error side.
+fn socket_err(code: &str) -> Value {
+    let mut object = Object::new();
+    object
+        .properties
+        .insert("__wasi_error".into(), Value::String(Arc::from(code)));
+    Value::Object(vybe_runtime::heap::alloc(object))
+}
+
+/// Map a std IO error onto the closest `error-code` variant.
+fn socket_err_from(error: &std::io::Error) -> Value {
+    use std::io::ErrorKind::*;
+    socket_err(match error.kind() {
+        PermissionDenied => "access-denied",
+        AddrInUse => "address-in-use",
+        AddrNotAvailable => "address-not-bindable",
+        ConnectionRefused => "connection-refused",
+        ConnectionReset => "connection-reset",
+        ConnectionAborted => "connection-aborted",
+        BrokenPipe => "connection-broken",
+        TimedOut => "timeout",
+        InvalidInput => "invalid-argument",
+        Unsupported => "not-supported",
+        _ => "other",
+    })
+}
+
+/// The handle's `__socket_id`, or 0.
+fn socket_id_of(handle: &Arc<Mutex<Object>>) -> u64 {
+    handle
+        .lock()
+        .unwrap()
+        .properties
+        .get("__socket_id")
+        .map(|value| value.as_f64() as u64)
+        .unwrap_or(0)
+}
+
+fn handle_string(handle: &Arc<Mutex<Object>>, key: &str) -> Option<String> {
+    match handle.lock().unwrap().properties.get(key) {
+        Some(Value::String(text)) => Some(text.to_string()),
+        _ => None,
+    }
+}
+
+fn set_handle(handle: &Arc<Mutex<Object>>, key: &str, value: Value) {
+    handle.lock().unwrap().properties.insert(key.into(), value);
+}
+
+/// A freshly created, unbound socket resource.
+///
+/// `get-address-family` and `get-is-listening` return bare values rather than
+/// results, so they must answer correctly on a socket that has been created
+/// and nothing else — which is why the family is written here and not deferred
+/// to `bind`.
+fn new_socket_handle(kind: &str, family: &str) -> Value {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let mut object = Object::new();
+    object
+        .properties
+        .insert("__type".into(), Value::String(Arc::from(kind)));
+    object
+        .properties
+        .insert("__socket_id".into(), Value::F64(id as f64));
+    object
+        .properties
+        .insert("__address_family".into(), Value::String(Arc::from(family)));
+    object
+        .properties
+        .insert("__state".into(), Value::String(Arc::from("unbound")));
+    object
+        .properties
+        .insert("islistening".into(), Value::Bool(false));
+    Value::Object(vybe_runtime::heap::alloc(object))
+}
+
+fn family_arg(args: &[Value], index: usize) -> String {
+    match args.get(index) {
+        Some(Value::String(text)) if text.as_ref() == "ipv6" => "ipv6".to_string(),
+        _ => "ipv4".to_string(),
+    }
+}
+
+fn socket2_domain(family: &str) -> socket2::Domain {
+    if family == "ipv6" {
+        socket2::Domain::IPV6
+    } else {
+        socket2::Domain::IPV4
+    }
+}
+
+/// Resolve a `ip-socket-address` argument to a `SocketAddr`.
+fn resolve_socket_addr(value: &Value) -> Option<SocketAddr> {
+    let (host, port, _) = parse_ip_socket_address(value)?;
+    format!("{host}:{port}").parse::<SocketAddr>().ok()
+}
+
+/// Run `body` with the socket handle from `args[0]`, or answer `invalid-state`.
+fn with_socket(args: &[Value], body: impl FnOnce(&Arc<Mutex<Object>>, u64) -> Value) -> Value {
+    match socket_arg(args) {
+        Some(handle) => {
+            let id = socket_id_of(&handle);
+            body(&handle, id)
+        }
+        None => socket_err("invalid-state"),
+    }
+}
+
+/// Apply `body` to the raw (created but uncommitted) socket for `id`.
+fn with_raw_socket(id: u64, body: impl FnOnce(&socket2::Socket) -> Value) -> Value {
+    let state = get_state();
+    let guard = state.lock().unwrap();
+    match guard.raw_sockets.get(&id) {
+        Some(socket) => body(socket),
+        None => socket_err("invalid-state"),
+    }
+}
+
+/// A socket option lives on the raw socket before it commits and on the
+/// connected `TcpStream` afterwards; both are the same OS socket, so an option
+/// call has to look in whichever map currently owns it.
+fn with_socket2_view(id: u64, body: impl FnOnce(&socket2::Socket) -> Value) -> Value {
+    let state = get_state();
+    let guard = state.lock().unwrap();
+    if let Some(socket) = guard.raw_sockets.get(&id) {
+        return body(socket);
+    }
+    // `SockRef` borrows the fd without taking ownership, so the stream stays
+    // usable and is not closed when the view is dropped.
+    if let Some(stream) = guard.tcp_streams.get(&id) {
+        return body(&socket2::SockRef::from(stream));
+    }
+    if let Some(listener) = guard.tcp_listeners.get(&id) {
+        return body(&socket2::SockRef::from(listener));
+    }
+    socket_err("invalid-state")
+}
+
+fn register_tcp_socket_0_3(vm: &mut VM) {
+    // `create: static func(address-family) -> result<tcp-socket, error-code>`
+    // The OS socket exists from here, so options can be set before `bind` —
+    // which is the order POSIX requires for `SO_RCVBUF`/`SO_SNDBUF`.
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[static]tcp-socket.create",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let family = family_arg(args, 0);
+            let socket = match socket2::Socket::new(
+                socket2_domain(&family),
+                socket2::Type::STREAM,
+                Some(socket2::Protocol::TCP),
+            ) {
+                Ok(socket) => socket,
+                Err(error) => return socket_err_from(&error),
+            };
+            let handle = new_socket_handle("tcp-socket", &family);
+            if let Value::Object(object) = &handle {
+                let id = socket_id_of(object);
+                get_state().lock().unwrap().raw_sockets.insert(id, socket);
+            }
+            handle
+        }),
+    );
+
+    // `bind: func(local-address) -> result<_, error-code>`
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.bind",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |handle, id| {
+                let Some(address) = method_arg(args, 0).and_then(resolve_socket_addr) else {
+                    return socket_err("invalid-argument");
+                };
+                let outcome = with_raw_socket(id, |socket| match socket.bind(&address.into()) {
+                    Ok(()) => Value::Null,
+                    Err(error) => socket_err_from(&error),
+                });
+                if matches!(outcome, Value::Null) {
+                    // "If the port is zero the socket is bound to a random free
+                    // port" — so the BOUND address is read back, never the
+                    // requested one, or `get-local-address` reports port 0.
+                    let bound = with_raw_socket(id, |socket| {
+                        socket
+                            .local_addr()
+                            .ok()
+                            .and_then(|addr| addr.as_socket())
+                            .map(socket_addr_to_value)
+                            .unwrap_or(Value::Null)
+                    });
+                    set_handle(handle, "__local_address", bound);
+                    set_handle(handle, "__state", Value::String(Arc::from("bound")));
+                }
+                outcome
+            })
+        }),
+    );
+
+    // `connect: async func(remote-address) -> result<_, error-code>`
+    //
+    // The socket leaves `raw_sockets` and becomes a `TcpStream` under the same
+    // id, which is what the 0.2 `tcp.accept` / `io/streams` functions read.
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.connect",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |handle, id| {
+                let Some(address) = method_arg(args, 0).and_then(resolve_socket_addr) else {
+                    return socket_err("invalid-argument");
+                };
+                let state = get_state();
+                let mut guard = state.lock().unwrap();
+                let Some(socket) = guard.raw_sockets.remove(&id) else {
+                    return socket_err("invalid-state");
+                };
+                if let Err(error) = socket.connect(&address.into()) {
+                    guard.raw_sockets.insert(id, socket);
+                    return socket_err_from(&error);
+                }
+                let local = socket
+                    .local_addr()
+                    .ok()
+                    .and_then(|addr| addr.as_socket())
+                    .map(socket_addr_to_value);
+                guard.tcp_streams.insert(id, TcpStream::from(socket));
+                drop(guard);
+
+                set_handle(handle, "__state", Value::String(Arc::from("connected")));
+                set_handle(handle, "__remote_address", socket_addr_to_value(address));
+                if let Some(local) = local {
+                    set_handle(handle, "__local_address", local);
+                }
+                Value::Null
+            })
+        }),
+    );
+
+    // `listen: func() -> result<stream<tcp-socket>, error-code>`
+    //
+    // 0.3 has no `accept`: the stream of inbound sockets IS the return value.
+    // The VM's `stream` is an eager buffer — values are pushed and the stream
+    // is closed — so it cannot express "connections keep arriving". What this
+    // returns is therefore the connections already pending when `listen` was
+    // called, and the listener stays registered so `wasi:sockets/tcp.accept`
+    // continues to hand over later ones. That shortfall is the same
+    // component-model `stream<T>` gap that removing `wasi:io` in 0.3 implies;
+    // it is a KNOWN limitation, not a silent one.
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.listen",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |handle, id| {
+                let backlog = handle
+                    .lock()
+                    .unwrap()
+                    .properties
+                    .get("__listen_backlog")
+                    .map(|value| value.as_f64() as i32)
+                    .unwrap_or(128);
+                let state = get_state();
+                let mut guard = state.lock().unwrap();
+                let Some(socket) = guard.raw_sockets.remove(&id) else {
+                    return socket_err("invalid-state");
+                };
+                if let Err(error) = socket.listen(backlog) {
+                    guard.raw_sockets.insert(id, socket);
+                    return socket_err_from(&error);
+                }
+                let listener = TcpListener::from(socket);
+                let _ = listener.set_nonblocking(true);
+                let mut inbound = Vec::new();
+                while let Ok((stream, peer)) = listener.accept() {
+                    inbound.push((stream, peer));
+                }
+                guard.tcp_listeners.insert(id, listener);
+
+                let mut accepted = Vec::new();
+                for (stream, peer) in inbound {
+                    let child_id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+                    let family = if peer.is_ipv6() { "ipv6" } else { "ipv4" };
+                    guard.tcp_streams.insert(child_id, stream);
+                    let child = new_socket_handle("tcp-socket", family);
+                    if let Value::Object(object) = &child {
+                        object
+                            .lock()
+                            .unwrap()
+                            .properties
+                            .insert("__socket_id".into(), Value::F64(child_id as f64));
+                        object.lock().unwrap().properties.insert(
+                            "__state".into(),
+                            Value::String(Arc::from("connected")),
+                        );
+                        object
+                            .lock()
+                            .unwrap()
+                            .properties
+                            .insert("__remote_address".into(), socket_addr_to_value(peer));
+                    }
+                    accepted.push(child);
+                }
+                drop(guard);
+
+                set_handle(handle, "__state", Value::String(Arc::from("listening")));
+                set_handle(handle, "islistening", Value::Bool(true));
+                set_handle(handle, "__listener_id", Value::F64(id as f64));
+
+                let (stream_val, stream_id) = ctx.create_stream();
+                for socket in accepted {
+                    ctx.stream_push(stream_id, socket);
+                }
+                ctx.stream_close(stream_id);
+                stream_val
+            })
+        }),
+    );
+
+    // `send: func(data: stream<u8>) -> future<result<_, error-code>>`
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.send",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let handle = socket_arg(args);
+            let bytes = match method_arg(args, 0) {
+                Some(value) => ctx.stream_drain(value),
+                None => Vec::new(),
+            };
+            let outcome = match handle {
+                Some(handle) => {
+                    let id = socket_id_of(&handle);
+                    let state = get_state();
+                    let mut guard = state.lock().unwrap();
+                    match guard.tcp_streams.get_mut(&id) {
+                        Some(stream) => match stream.write_all(&bytes).and_then(|()| stream.flush())
+                        {
+                            Ok(()) => Value::Null,
+                            Err(error) => socket_err_from(&error),
+                        },
+                        None => socket_err("invalid-state"),
+                    }
+                }
+                None => socket_err("invalid-state"),
+            };
+            let (future_val, future_id) = ctx.create_future();
+            ctx.resolve_future(future_id, outcome);
+            future_val
+        }),
+    );
+
+    // `receive: func() -> tuple<stream<u8>, future<result<_, error-code>>>`
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.receive",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let mut buffer = Vec::new();
+            let mut failure = Value::Null;
+            if let Some(handle) = socket_arg(args) {
+                let id = socket_id_of(&handle);
+                let state = get_state();
+                let mut guard = state.lock().unwrap();
+                match guard.tcp_streams.get_mut(&id) {
+                    Some(stream) => {
+                        let mut chunk = [0u8; 65536];
+                        match stream.read(&mut chunk) {
+                            Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+                            Err(error)
+                                if error.kind() == std::io::ErrorKind::WouldBlock
+                                    || error.kind() == std::io::ErrorKind::TimedOut => {}
+                            Err(error) => failure = socket_err_from(&error),
+                        }
+                    }
+                    None => failure = socket_err("invalid-state"),
+                }
+            } else {
+                failure = socket_err("invalid-state");
+            }
+
+            let (stream_val, stream_id) = ctx.create_stream();
+            for byte in &buffer {
+                ctx.stream_push(stream_id, Value::I32(*byte as i32));
+            }
+            ctx.stream_close(stream_id);
+            let (future_val, future_id) = ctx.create_future();
+            ctx.resolve_future(future_id, failure);
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                stream_val, future_val,
+            ])))
+        }),
+    );
+
+    register_socket_address_getters_0_3(vm, "tcp-socket");
+
+    // `get-is-listening: func() -> bool` — infallible, so it must answer on a
+    // socket that has only been created.
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.get-is-listening",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            Value::Bool(matches!(
+                socket_arg(args).and_then(|handle| handle_string(&handle, "__state")),
+                Some(state) if state == "listening"
+            ))
+        }),
+    );
+
+    // `set-listen-backlog-size: func(value: u64) -> result<_, error-code>`
+    // Recorded for `listen` to apply, because POSIX takes the backlog at
+    // `listen(2)` and there is no socket option for it.
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.set-listen-backlog-size",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |handle, _id| {
+                let value = method_arg(args, 0).map(|v| v.as_f64()).unwrap_or(0.0);
+                if value < 1.0 {
+                    return socket_err("invalid-argument");
+                }
+                set_handle(handle, "__listen_backlog", Value::F64(value));
+                Value::Null
+            })
+        }),
+    );
+
+    register_tcp_socket_options_0_3(vm);
+}
+
+/// `get-local-address` / `get-remote-address` / `get-address-family`, shared by
+/// both socket resources — the wording and behaviour are identical in 0.3.
+fn register_socket_address_getters_0_3(vm: &mut VM, resource: &'static str) {
+    for (suffix, key) in [
+        ("get-local-address", "__local_address"),
+        ("get-remote-address", "__remote_address"),
+    ] {
+        vm.register_host_fn(
+            "wasi:sockets/types",
+            &format!("[method]{resource}.{suffix}"),
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                let Some(handle) = socket_arg(args) else {
+                    return socket_err("invalid-state");
+                };
+                match handle.lock().unwrap().properties.get(key) {
+                    Some(Value::Null) | None => socket_err("invalid-state"),
+                    Some(value) => value.clone(),
+                }
+            }),
+        );
+    }
+
+    // `get-address-family: func() -> ip-address-family` — infallible.
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        &format!("[method]{resource}.get-address-family"),
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let family = socket_arg(args)
+                .and_then(|handle| handle_string(&handle, "__address_family"))
+                .unwrap_or_else(|| "ipv4".to_string());
+            Value::String(Arc::from(family.as_str()))
+        }),
+    );
+}
+
+/// Is this handle's socket IPv6? Decides TTL vs IPv6 unicast hops.
+fn handle_is_ipv6(args: &[Value]) -> bool {
+    socket_arg(args)
+        .and_then(|handle| handle_string(&handle, "__address_family"))
+        .map(|family| family == "ipv6")
+        .unwrap_or(false)
+}
+
+/// `duration` is u64 NANOSECONDS in `wasi:clocks/types`.
+fn duration_arg(args: &[Value], index: usize) -> Option<Duration> {
+    let nanos = method_arg(args, index)?.as_f64();
+    if nanos < 0.0 {
+        return None;
+    }
+    Some(Duration::from_nanos(nanos as u64))
+}
+
+fn duration_value(duration: Duration) -> Value {
+    Value::F64(duration.as_nanos() as f64)
+}
+
+fn io_result(result: std::io::Result<()>) -> Value {
+    match result {
+        Ok(()) => Value::Null,
+        Err(error) => socket_err_from(&error),
+    }
+}
+
+/// The `tcp-socket` options: keep-alive, hop limit and buffer sizes.
+///
+/// `std::net` exposes none of these beyond TTL, which is why `socket2` is a
+/// dependency — the alternative was answering `not-supported` to twelve of the
+/// interface's functions.
+fn register_tcp_socket_options_0_3(vm: &mut VM) {
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.get-keep-alive-enabled",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |_handle, id| {
+                with_socket2_view(id, |socket| match socket.keepalive() {
+                    Ok(enabled) => Value::Bool(enabled),
+                    Err(error) => socket_err_from(&error),
+                })
+            })
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.set-keep-alive-enabled",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |_handle, id| {
+                let enabled = method_arg(args, 0)
+                    .map(|value| value.as_bool())
+                    .unwrap_or(false);
+                with_socket2_view(id, |socket| io_result(socket.set_keepalive(enabled)))
+            })
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.get-keep-alive-idle-time",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |_handle, id| {
+                with_socket2_view(id, |socket| match socket.keepalive_time() {
+                    Ok(duration) => duration_value(duration),
+                    Err(error) => socket_err_from(&error),
+                })
+            })
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.set-keep-alive-idle-time",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |_handle, id| {
+                let Some(duration) = duration_arg(args, 0) else {
+                    return socket_err("invalid-argument");
+                };
+                with_socket2_view(id, |socket| {
+                    io_result(
+                        socket.set_tcp_keepalive(&socket2::TcpKeepalive::new().with_time(duration)),
+                    )
+                })
+            })
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.get-keep-alive-interval",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |_handle, id| {
+                with_socket2_view(id, |socket| match socket.keepalive_interval() {
+                    Ok(duration) => duration_value(duration),
+                    Err(error) => socket_err_from(&error),
+                })
+            })
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.set-keep-alive-interval",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |_handle, id| {
+                let Some(duration) = duration_arg(args, 0) else {
+                    return socket_err("invalid-argument");
+                };
+                with_socket2_view(id, |socket| {
+                    io_result(
+                        socket.set_tcp_keepalive(
+                            &socket2::TcpKeepalive::new().with_interval(duration),
+                        ),
+                    )
+                })
+            })
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.get-keep-alive-count",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |_handle, id| {
+                with_socket2_view(id, |socket| match socket.keepalive_retries() {
+                    Ok(count) => Value::F64(count as f64),
+                    Err(error) => socket_err_from(&error),
+                })
+            })
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.set-keep-alive-count",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |_handle, id| {
+                let count = method_arg(args, 0).map(|value| value.as_f64()).unwrap_or(0.0);
+                if count < 1.0 {
+                    return socket_err("invalid-argument");
+                }
+                with_socket2_view(id, |socket| {
+                    io_result(
+                        socket.set_tcp_keepalive(
+                            &socket2::TcpKeepalive::new().with_retries(count as u32),
+                        ),
+                    )
+                })
+            })
+        }),
+    );
+
+    // `hop-limit` is IPv4's TTL and IPv6's unicast hop limit — one interface
+    // function over two socket options, chosen by the socket's family.
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.get-hop-limit",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let ipv6 = handle_is_ipv6(args);
+            with_socket(args, |_handle, id| {
+                with_socket2_view(id, |socket| {
+                    let hops = if ipv6 {
+                        socket.unicast_hops_v6()
+                    } else {
+                        socket.ttl()
+                    };
+                    match hops {
+                        Ok(value) => Value::F64(value as f64),
+                        Err(error) => socket_err_from(&error),
+                    }
+                })
+            })
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]tcp-socket.set-hop-limit",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let ipv6 = handle_is_ipv6(args);
+            with_socket(args, |_handle, id| {
+                let value = method_arg(args, 0).map(|v| v.as_f64()).unwrap_or(0.0);
+                // "A value of 0 is not allowed" — types.wit, `set-hop-limit`.
+                if !(1.0..=255.0).contains(&value) {
+                    return socket_err("invalid-argument");
+                }
+                with_socket2_view(id, |socket| {
+                    io_result(if ipv6 {
+                        socket.set_unicast_hops_v6(value as u32)
+                    } else {
+                        socket.set_ttl(value as u32)
+                    })
+                })
+            })
+        }),
+    );
+
+    register_buffer_size_options_0_3(vm, "tcp-socket");
+}
+
+/// `get/set-receive-buffer-size` and `get/set-send-buffer-size` — identical on
+/// both socket resources.
+fn register_buffer_size_options_0_3(vm: &mut VM, resource: &'static str) {
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        &format!("[method]{resource}.get-receive-buffer-size"),
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |_handle, id| {
+                with_socket2_view(id, |socket| match socket.recv_buffer_size() {
+                    Ok(size) => Value::F64(size as f64),
+                    Err(error) => socket_err_from(&error),
+                })
+            })
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        &format!("[method]{resource}.set-receive-buffer-size"),
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |_handle, id| {
+                let size = method_arg(args, 0).map(|v| v.as_f64()).unwrap_or(0.0);
+                if size < 1.0 {
+                    return socket_err("invalid-argument");
+                }
+                with_socket2_view(id, |socket| {
+                    io_result(socket.set_recv_buffer_size(size as usize))
+                })
+            })
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        &format!("[method]{resource}.get-send-buffer-size"),
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |_handle, id| {
+                with_socket2_view(id, |socket| match socket.send_buffer_size() {
+                    Ok(size) => Value::F64(size as f64),
+                    Err(error) => socket_err_from(&error),
+                })
+            })
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        &format!("[method]{resource}.set-send-buffer-size"),
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |_handle, id| {
+                let size = method_arg(args, 0).map(|v| v.as_f64()).unwrap_or(0.0);
+                if size < 1.0 {
+                    return socket_err("invalid-argument");
+                }
+                with_socket2_view(id, |socket| {
+                    io_result(socket.set_send_buffer_size(size as usize))
+                })
+            })
+        }),
+    );
+}
+
+/// The `udp-socket` resource.
+///
+/// Deliberately NOT unified with `tcp-socket`: 0.3 gives UDP plain
+/// `list<u8>` payloads rather than streams, and `receive` answers the peer
+/// address alongside the datagram because a UDP socket hears from many peers.
+fn register_udp_socket_0_3(vm: &mut VM) {
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[static]udp-socket.create",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let family = family_arg(args, 0);
+            let socket = match socket2::Socket::new(
+                socket2_domain(&family),
+                socket2::Type::DGRAM,
+                Some(socket2::Protocol::UDP),
+            ) {
+                Ok(socket) => socket,
+                Err(error) => return socket_err_from(&error),
+            };
+            let handle = new_socket_handle("udp-socket", &family);
+            if let Value::Object(object) = &handle {
+                let id = socket_id_of(object);
+                get_state().lock().unwrap().raw_sockets.insert(id, socket);
+            }
+            handle
+        }),
+    );
+
+    // `bind` commits the datagram socket immediately — unlike TCP there is no
+    // later listen/connect decision, so it moves straight into `udp_sockets`.
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]udp-socket.bind",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |handle, id| {
+                let Some(address) = method_arg(args, 0).and_then(resolve_socket_addr) else {
+                    return socket_err("invalid-argument");
+                };
+                let state = get_state();
+                let mut guard = state.lock().unwrap();
+                let Some(socket) = guard.raw_sockets.remove(&id) else {
+                    return socket_err("invalid-state");
+                };
+                if let Err(error) = socket.bind(&address.into()) {
+                    guard.raw_sockets.insert(id, socket);
+                    return socket_err_from(&error);
+                }
+                let bound = socket
+                    .local_addr()
+                    .ok()
+                    .and_then(|addr| addr.as_socket())
+                    .map(socket_addr_to_value);
+                guard.udp_sockets.insert(id, UdpSocket::from(socket));
+                drop(guard);
+
+                set_handle(handle, "__state", Value::String(Arc::from("bound")));
+                if let Some(bound) = bound {
+                    set_handle(handle, "__local_address", bound);
+                }
+                Value::Null
+            })
+        }),
+    );
+
+    // `connect` on a datagram socket only fixes the default peer.
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]udp-socket.connect",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |handle, id| {
+                let Some(address) = method_arg(args, 0).and_then(resolve_socket_addr) else {
+                    return socket_err("invalid-argument");
+                };
+                let state = get_state();
+                let guard = state.lock().unwrap();
+                let outcome = match guard.udp_sockets.get(&id) {
+                    Some(socket) => io_result(socket.connect(address)),
+                    None => match guard.raw_sockets.get(&id) {
+                        Some(socket) => io_result(socket.connect(&address.into())),
+                        None => socket_err("invalid-state"),
+                    },
+                };
+                drop(guard);
+                if matches!(outcome, Value::Null) {
+                    set_handle(handle, "__remote_address", socket_addr_to_value(address));
+                }
+                outcome
+            })
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]udp-socket.disconnect",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |handle, id| {
+                let state = get_state();
+                let guard = state.lock().unwrap();
+                let Some(socket) = guard.udp_sockets.get(&id) else {
+                    return socket_err("invalid-state");
+                };
+                let outcome = io_result(udp_disassociate(socket));
+                drop(guard);
+                if matches!(outcome, Value::Null) {
+                    set_handle(handle, "__remote_address", Value::Null);
+                }
+                outcome
+            })
+        }),
+    );
+
+    // `send: async func(data: list<u8>, remote-address: option<ip-socket-address>)`
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]udp-socket.send",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |_handle, id| {
+                let bytes = match method_arg(args, 0) {
+                    Some(value) => bytes_from_value(value),
+                    None => Vec::new(),
+                };
+                let remote = method_arg(args, 1).and_then(resolve_socket_addr);
+                let state = get_state();
+                let guard = state.lock().unwrap();
+                let Some(socket) = guard.udp_sockets.get(&id) else {
+                    return socket_err("invalid-state");
+                };
+                let sent = match remote {
+                    Some(address) => socket.send_to(&bytes, address),
+                    None => socket.send(&bytes),
+                };
+                match sent {
+                    Ok(_) => Value::Null,
+                    Err(error) => socket_err_from(&error),
+                }
+            })
+        }),
+    );
+
+    // `receive: async func() -> result<tuple<list<u8>, ip-socket-address>, error-code>`
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]udp-socket.receive",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            with_socket(args, |_handle, id| {
+                let state = get_state();
+                let guard = state.lock().unwrap();
+                let Some(socket) = guard.udp_sockets.get(&id) else {
+                    return socket_err("invalid-state");
+                };
+                let mut chunk = [0u8; 65536];
+                match socket.recv_from(&mut chunk) {
+                    Ok((read, peer)) => {
+                        let payload: Vec<Value> = chunk[..read]
+                            .iter()
+                            .map(|byte| Value::I32(*byte as i32))
+                            .collect();
+                        Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(payload))),
+                            socket_addr_to_value(peer),
+                        ])))
+                    }
+                    Err(error) => socket_err_from(&error),
+                }
+            })
+        }),
+    );
+
+    register_socket_address_getters_0_3(vm, "udp-socket");
+
+    // UDP's hop limit is spelled `unicast-hop-limit`; same two socket options.
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]udp-socket.get-unicast-hop-limit",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let ipv6 = handle_is_ipv6(args);
+            with_socket(args, |_handle, id| {
+                with_socket2_view_udp(id, |socket| {
+                    let hops = if ipv6 {
+                        socket.unicast_hops_v6()
+                    } else {
+                        socket.ttl()
+                    };
+                    match hops {
+                        Ok(value) => Value::F64(value as f64),
+                        Err(error) => socket_err_from(&error),
+                    }
+                })
+            })
+        }),
+    );
+
+    vm.register_host_fn(
+        "wasi:sockets/types",
+        "[method]udp-socket.set-unicast-hop-limit",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let ipv6 = handle_is_ipv6(args);
+            with_socket(args, |_handle, id| {
+                let value = method_arg(args, 0).map(|v| v.as_f64()).unwrap_or(0.0);
+                if !(1.0..=255.0).contains(&value) {
+                    return socket_err("invalid-argument");
+                }
+                with_socket2_view_udp(id, |socket| {
+                    io_result(if ipv6 {
+                        socket.set_unicast_hops_v6(value as u32)
+                    } else {
+                        socket.set_ttl(value as u32)
+                    })
+                })
+            })
+        }),
+    );
+
+    register_buffer_size_options_udp_0_3(vm);
+}
+
+/// Dissolve a datagram socket's association with its default peer.
+///
+/// POSIX spells this `connect(2)` to a `sockaddr` whose family is `AF_UNSPEC`
+/// — NOT to the unspecified address. Connecting a UDP socket to `0.0.0.0:0`
+/// fails with `EADDRNOTAVAIL` on BSD-derived systems, so that shortcut looks
+/// right and is not. Neither `std::net::UdpSocket` nor `socket2` can express an
+/// `AF_UNSPEC` address, which is why this reaches for the raw call.
+#[cfg(unix)]
+fn udp_disassociate(socket: &UdpSocket) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let mut address: libc::sockaddr = unsafe { std::mem::zeroed() };
+    address.sa_family = libc::AF_UNSPEC as libc::sa_family_t;
+    let result = unsafe {
+        libc::connect(
+            socket.as_raw_fd(),
+            &address as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr>() as libc::socklen_t,
+        )
+    };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    // Several BSDs report `EAFNOSUPPORT` from this call while still having
+    // performed the disassociation, which is long-standing documented
+    // behaviour rather than a failure.
+    if error.raw_os_error() == Some(libc::EAFNOSUPPORT) {
+        return Ok(());
+    }
+    Err(error)
+}
+
+#[cfg(not(unix))]
+fn udp_disassociate(socket: &UdpSocket) -> std::io::Result<()> {
+    socket.connect(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
+}
+
+/// Datagram sockets live in `udp_sockets` once bound and in `raw_sockets`
+/// before that; both are the same OS socket seen through `socket2`.
+fn with_socket2_view_udp(id: u64, body: impl FnOnce(&socket2::Socket) -> Value) -> Value {
+    let state = get_state();
+    let guard = state.lock().unwrap();
+    if let Some(socket) = guard.raw_sockets.get(&id) {
+        return body(socket);
+    }
+    if let Some(socket) = guard.udp_sockets.get(&id) {
+        return body(&socket2::SockRef::from(socket));
+    }
+    socket_err("invalid-state")
+}
+
+/// The buffer-size options against the UDP socket maps.
+fn register_buffer_size_options_udp_0_3(vm: &mut VM) {
+    for (suffix, apply) in [
+        (
+            "get-receive-buffer-size",
+            (|socket: &socket2::Socket, _size: Option<usize>| match socket.recv_buffer_size() {
+                Ok(size) => Value::F64(size as f64),
+                Err(error) => socket_err_from(&error),
+            }) as fn(&socket2::Socket, Option<usize>) -> Value,
+        ),
+        ("get-send-buffer-size", |socket, _size| {
+            match socket.send_buffer_size() {
+                Ok(size) => Value::F64(size as f64),
+                Err(error) => socket_err_from(&error),
+            }
+        }),
+        ("set-receive-buffer-size", |socket, size| {
+            io_result(socket.set_recv_buffer_size(size.unwrap_or(0)))
+        }),
+        ("set-send-buffer-size", |socket, size| {
+            io_result(socket.set_send_buffer_size(size.unwrap_or(0)))
+        }),
+    ] {
+        let is_setter = suffix.starts_with("set-");
+        vm.register_host_fn(
+            "wasi:sockets/types",
+            &format!("[method]udp-socket.{suffix}"),
+            Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                with_socket(args, |_handle, id| {
+                    let size = if is_setter {
+                        let raw = method_arg(args, 0).map(|v| v.as_f64()).unwrap_or(0.0);
+                        if raw < 1.0 {
+                            return socket_err("invalid-argument");
+                        }
+                        Some(raw as usize)
+                    } else {
+                        None
+                    };
+                    with_socket2_view_udp(id, |socket| apply(socket, size))
+                })
+            }),
+        );
+    }
+}
+
+pub fn register_wasi_sockets_0_3(vm: &mut VM) {
+    register_tcp_socket_0_3(vm);
+    register_udp_socket_0_3(vm);
+
+    // `resolve-addresses: async func(name: string) -> result<list<ip-address>,
+    // error-code>` — already bound by the 0.2 registration under the same
+    // interface name (`ip-name-lookup` is unchanged in 0.3), so it is not
+    // re-registered here.
 }
 
 fn register_wasi_io(vm: &mut VM) {

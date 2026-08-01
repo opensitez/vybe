@@ -971,3 +971,137 @@ fn proposal_node_http_surface_is_registered() {
         .collect::<Vec<_>>();
     assert!(missing.is_empty(), "missing node:http imports: {missing:?}");
 }
+
+// ── Node surface added after the non-Node functions were removed ─────────────
+
+#[test]
+fn status_codes_maps_codes_to_node_reason_phrases() {
+    let codes = call_http("status_codes", vec![]);
+    let Value::Object(object) = &codes else {
+        panic!("STATUS_CODES should be an object, got {codes:?}")
+    };
+    let object = object.lock().unwrap();
+    let ObjectKind::Map(entries) = &object.kind else {
+        panic!("STATUS_CODES should be a map")
+    };
+    let get = |key: &str| {
+        entries
+            .iter()
+            .find(|(k, _)| matches!(k, Value::String(s) if s.as_ref() == key))
+            .map(|(_, v)| format!("{v}"))
+    };
+    // Keys are STRINGS — a JS object with numeric keys stringifies them.
+    assert_eq!(get("404").as_deref(), Some("Not Found"));
+    assert_eq!(get("500").as_deref(), Some("Internal Server Error"));
+    assert_eq!(get("418").as_deref(), Some("I'm a Teapot"));
+}
+
+#[test]
+fn methods_are_sorted_and_include_the_verbs_node_parses() {
+    let methods = call_http("methods", vec![]);
+    let Value::Object(object) = &methods else {
+        panic!("METHODS should be an array")
+    };
+    let object = object.lock().unwrap();
+    let ObjectKind::Array(items) = &object.kind else {
+        panic!("METHODS should be an array")
+    };
+    let names: Vec<String> = items.iter().map(|v| format!("{v}")).collect();
+    for verb in ["GET", "POST", "PATCH", "PROPFIND", "UNSUBSCRIBE"] {
+        assert!(names.iter().any(|n| n == verb), "missing {verb}");
+    }
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "http.METHODS is sorted in Node");
+}
+
+#[test]
+fn get_header_is_undefined_when_never_set() {
+    // Node returns `undefined`, not "" — the difference is observable to
+    // `if (res.getHeader('x') === undefined)`.
+    assert_eq!(
+        call_http("get_header", vec![Value::String("x-absent".into())]),
+        Value::Undefined
+    );
+}
+
+#[test]
+fn status_message_falls_back_to_the_registered_reason_phrase() {
+    // With no response in flight the status reads 0, which has no phrase.
+    assert_eq!(as_string(&call_http("status_message", vec![])), "");
+}
+
+#[test]
+fn reading_the_body_returns_null_at_end_of_stream() {
+    // `readable.read()` yields null at EOF; an empty chunk would loop forever.
+    assert_eq!(call_http("read", vec![]), Value::Null);
+}
+
+#[test]
+fn http_version_is_reported() {
+    assert_eq!(as_string(&call_http("http_version", vec![])), "1.1");
+}
+
+#[test]
+fn validate_header_name_rejects_non_token_characters() {
+    // RFC 9110 §5.6.2 — a field name is a token. Node throws; the host has no
+    // exception channel, so it answers with the WASI-style error object.
+    assert_eq!(
+        call_http("validate_header_name", vec![Value::String("X-Ok".into())]),
+        Value::Null
+    );
+    for bad in ["", "X Bad", "X:Bad", "X\nBad"] {
+        let got = call_http("validate_header_name", vec![Value::String(bad.into())]);
+        assert!(
+            matches!(&got, Value::Object(_)),
+            "{bad:?} should be rejected, got {got:?}"
+        );
+    }
+}
+
+#[test]
+fn validate_header_value_rejects_injection_and_padding() {
+    let ok = call_http(
+        "validate_header_value",
+        vec![Value::String("X".into()), Value::String("fine".into())],
+    );
+    assert_eq!(ok, Value::Null);
+    // CR/LF is header injection; leading/trailing space is invalid per §5.5.
+    for bad in ["bad\r\nInjected: 1", "bad\nx", " leading", "trailing "] {
+        let got = call_http(
+            "validate_header_value",
+            vec![Value::String("X".into()), Value::String(bad.into())],
+        );
+        assert!(
+            matches!(&got, Value::Object(_)),
+            "{bad:?} should be rejected, got {got:?}"
+        );
+    }
+}
+
+#[test]
+fn max_header_size_is_nodes_16kib_default() {
+    assert_eq!(call_http("max_header_size", vec![]), Value::F64(16384.0));
+}
+
+#[test]
+fn server_timeouts_report_nodes_defaults() {
+    assert_eq!(call_http("keep_alive_timeout", vec![]), Value::F64(5000.0));
+    assert_eq!(call_http("headers_timeout", vec![]), Value::F64(60000.0));
+    assert_eq!(call_http("request_timeout", vec![]), Value::F64(300000.0));
+    assert_eq!(call_http("timeout", vec![]), Value::F64(0.0));
+}
+
+#[test]
+fn a_timeout_that_is_set_reads_back() {
+    // Storing the value is the point — a setter that discarded it would be a
+    // shim that reports Node's default forever.
+    call_http("set_keep_alive_timeout", vec![Value::F64(1234.0)]);
+    assert_eq!(call_http("keep_alive_timeout", vec![]), Value::F64(1234.0));
+    call_http("set_keep_alive_timeout", vec![Value::F64(5000.0)]);
+}
+
+#[test]
+fn listening_is_false_with_no_server() {
+    assert_eq!(call_http("listening", vec![]), Value::Bool(false));
+}

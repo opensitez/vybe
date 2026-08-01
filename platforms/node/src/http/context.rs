@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 /// Streaming reader over the request body.
 ///
@@ -97,6 +97,18 @@ pub enum ResponseMessage {
 /// that are ignored (with a debug warning).
 pub struct ResponseState {
     pub status: u16,
+    /// `ServerResponse.statusMessage` — the reason phrase. `None` means Node
+    /// fills it from `STATUS_CODES` at send time.
+    pub status_message: Option<String>,
+    /// Interim (1xx) responses already emitted: `writeContinue` and
+    /// `writeEarlyHints`. An interim response does NOT end the exchange, so it
+    /// is kept apart from `status`/`headers` — the final response still comes.
+    pub interim: Vec<(u16, Vec<(String, String)>)>,
+    /// `ServerResponse.setTimeout(ms)` — 0 means no timeout, Node's default.
+    pub timeout_ms: u64,
+    /// `ServerResponse.addTrailers` — fields sent AFTER the body. Only
+    /// meaningful for a chunked response that announced them in `Trailer`.
+    pub trailers: Vec<(String, String)>,
     pub headers: Vec<(String, String)>,
     pub headers_sent: bool,
     pub ended: bool,
@@ -108,6 +120,10 @@ impl ResponseState {
     pub fn new(sender: Option<std::sync::mpsc::Sender<ResponseMessage>>) -> Self {
         Self {
             status: 200,
+            status_message: None,
+            interim: Vec::new(),
+            timeout_ms: 0,
+            trailers: Vec::new(),
             headers: Vec::new(),
             headers_sent: false,
             ended: false,
@@ -176,24 +192,19 @@ pub struct RequestContext {
     pub query: String,
     pub scheme: String,
     pub host: String,
-    pub port: u16,
-    pub protocol: String,
     pub headers: Vec<(String, String)>,
+    /// DEPLOYMENT metadata only — document root, script path, server identity.
+    /// Everything derivable from the MESSAGE comes from `wasi:http` through
+    /// `primitives/http_request_env`, not from here.
     pub env: HashMap<String, String>,
     pub remote_addr: String,
     pub remote_port: u16,
-    pub request_id: String,
 
     // Streaming body reader.
     pub body: Mutex<RequestBodyReader>,
 
     // Outbound response state.
     pub response: Mutex<ResponseState>,
-
-    // Lazily parsed, cached. Parsed once from headers/query per request,
-    // accessed O(1) by every language's adapter thereafter.
-    pub cookies: OnceLock<Vec<(String, String)>>,
-    pub query_pairs: OnceLock<Vec<(String, String)>>,
 }
 
 thread_local! {

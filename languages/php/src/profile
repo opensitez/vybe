@@ -125,7 +125,7 @@ ord                 = { emit = "host:wasm:js-string:charCodeAt", min_args = 1, m
 # PHP `strpos` / `mb_strpos`: return position or `false`, and the 3rd
 # arg is an offset rather than JS's direct `indexOf` shape.
 strpos              = { emit = "common:php.strpos",          min_args = 2, max_args = 3 }
-mb_strpos           = { emit = "common:php.strpos",          min_args = 2, max_args = 3 }
+mb_strpos           = { emit = "common:php.mb_strpos",        min_args = 2, max_args = 3 }
 # stripos walker-normalized to strpos(strtolower(h), strtolower(n)) in walker.rs
 # Path utilities — routed through the PHP filesystem emitter so PHP keeps a
 # language-local boundary even when the underlying host call is a thin path op.
@@ -144,11 +144,13 @@ ctype_xdigit        = { emit = "common:php.ctype_xdigit",    min_args = 1, max_a
 ctype_punct         = { emit = "common:php.ctype_punct",     min_args = 1, max_args = 1 }
 ctype_print         = { emit = "common:php.ctype_print",     min_args = 1, max_args = 1 }
 ctype_cntrl         = { emit = "common:php.ctype_cntrl",     min_args = 1, max_args = 1 }
-mb_strlen           = { emit = "common:str_length",          min_args = 1, max_args = 2 }
+# `mb_*` counts CODE POINTS; the plain functions count BYTES. They are two
+# different index units (`unifiedstringplan.md` Axis 1), not aliases.
+mb_strlen           = { emit = "common:str_scalar_length",   min_args = 1, max_args = 2 }
 mb_strtolower       = { emit = "common:str_to_lower",        min_args = 1, max_args = 2 }
 mb_strtoupper       = { emit = "common:php.strtoupper",      min_args = 1, max_args = 2 }
-# `mb_substr` walker-rewritten alongside `substr` (Vybe stores strings
-# as Rust UTF-8 — code-point indexing matches mb_substr semantics).
+# `mb_substr` walker-rewritten to `__php_mb_substr` (see below) — NOT to
+# `__php_substr`, whose bound math runs in UTF-16 units.
 strrev              = { emit = "common:str_reverse",         min_args = 1, max_args = 1 }
 strrpos             = { emit = "common:php.strrpos",          min_args = 2, max_args = 3 }
 strriios            = { emit = "common:str_last_index_of",   min_args = 2, max_args = 3 }
@@ -189,6 +191,9 @@ htmlentities        = { emit = "common:php.htmlentities",    min_args = 1, max_a
 htmlspecialchars_decode = { emit = "common:php.htmlspecialchars_decode", min_args = 1, max_args = 4 }
 html_entity_decode  = { emit = "common:php.html_entity_decode", min_args = 1, max_args = 3 }
 nl2br               = { emit = "common:php.nl2br",           min_args = 1, max_args = 2 }
+# `parse_url` is the SHARED parser (`url::ParseOptions::php()`), the same one
+# python `urlsplit` uses — the languages differ by a flag, not an impl.
+parse_url           = { emit = "common:php.parse_url",       min_args = 1, max_args = 2 }
 urlencode           = { emit = "common:php.urlencode",       min_args = 1, max_args = 1 }
 rawurlencode        = { emit = "common:php.rawurlencode",    min_args = 1, max_args = 1 }
 urldecode           = { emit = "common:php.urldecode",       min_args = 1, max_args = 1 }
@@ -219,7 +224,7 @@ mb_str_pad          = { emit = "common:php.str_pad",            min_args = 2, ma
 mb_strrpos          = { emit = "common:php.strripos",           min_args = 2, max_args = 3 }
 mb_check_encoding   = { emit = "common:php.mb_check_enc",       min_args = 0, max_args = 2 }
 mb_detect_encoding  = { emit = "common:php.mb_detect_enc",      min_args = 0, max_args = 3 }
-mb_str_split        = { emit = "common:php.str_split",          min_args = 1, max_args = 2 }
+mb_str_split        = { emit = "common:php.mb_str_split",       min_args = 1, max_args = 2 }
 mb_substr_count     = { emit = "common:php.substr_count",       min_args = 2, max_args = 3 }
 mb_convert_case     = { emit = "common:php.mb_convert_case",    min_args = 2, max_args = 3 }
 mb_strwidth         = { emit = "common:php.mb_strwidth",        min_args = 1, max_args = 2 }
@@ -609,6 +614,7 @@ sprintf             = { emit = "common:sprintf.format",     min_args = 1, max_ar
 __php_increment     = { emit = "common:php.inc",                 min_args = 1, max_args = 1 }
 __php_decrement     = { emit = "common:php.dec",                 min_args = 1, max_args = 1 }
 __php_substr        = { emit = "intrinsic:php_substr",          min_args = 2, max_args = 3 }
+__php_mb_substr     = { emit = "common:php.mb_substr",          min_args = 2, max_args = 3 }
 __php_strpos        = { emit = "common:php.strpos",             min_args = 2, max_args = 3 }
 __php_array_search  = { emit = "intrinsic:php_array_search",    min_args = 2, max_args = 3 }
 __php_array_slice   = { emit = "intrinsic:php_array_slice",     min_args = 2, max_args = 4 }
@@ -669,7 +675,12 @@ stream_get_meta_data = { emit = "common:php.stream_get_meta_data", min_args = 1,
 
 # ── Environment / CLI ───────────────────────────────────────────────────────
 
-getenv              = { emit = "host:wasi:cli:getEnv",       min_args = 1, max_args = 1 }
+# `getenv`/`putenv` are PHP FUNCTIONS declared in the walker's env prelude, over
+# `__vybe_env_pairs` below. They are not mapped here: PHP's arity overload
+# (`getenv()` returns every variable), its `false` for a missing name, and
+# `putenv`'s process-local mutation are PHP semantics, and `wasi:cli/environment`
+# is read-only by spec. This line used to read `host:wasi:cli:getEnv` — a module
+# that has never existed, so every `getenv()` call died with `Unresolved import`.
 # extension_loaded/get_loaded_extensions/php_uname defined by VERSION_PRELUDE.
 phpversion          = { emit = "common:php.phpversion",       min_args = 0, max_args = 1 }
 phpinfo             = { emit = "common:php.phpinfo",         min_args = 0, max_args = 1 }
@@ -710,7 +721,8 @@ spl_autoload_register = { emit = "common:php.spl_autoload_register", min_args = 
 spl_autoload_unregister = { emit = "common:php.spl_autoload_unregister", min_args = 1, max_args = 1 }
 spl_autoload_functions = { emit = "common:php.spl_autoload_functions", min_args = 0, max_args = 0 }
 spl_autoload_call   = { emit = "common:php.spl_autoload_call",   min_args = 1, max_args = 1 }
-php_sapi_name       = { emit = "host:node:http:php_sapi_name", min_args = 0, max_args = 0 }
+# A SAPI is a PHP concept — Node has none, so this cannot live in `node:http`.
+php_sapi_name       = { emit = "common:php.sapi_name",             min_args = 0, max_args = 0 }
 getcwd              = { emit = "host:wasi:cli:cwd",          min_args = 0, max_args = 0 }
 gethostname         = { emit = "host:wasi:cli:machineName",  min_args = 0, max_args = 0 }
 
@@ -755,6 +767,12 @@ __vybe_superglobal_post    = { emit = "common:http_form.fields",           min_a
 __vybe_superglobal_files   = { emit = "common:http_form.files",            min_args = 0, max_args = 0 }
 __vybe_superglobal_cookie  = { emit = "common:http_cookie.request_cookies", min_args = 0, max_args = 0 }
 __vybe_superglobal_request = { emit = "common:http_request.request_params", min_args = 0, max_args = 0 }
+# `$_ENV` is the ONE superglobal that is not the HTTP message: it is the process
+# environment, which WASI already exposes. Spec shape is
+# `get-environment() -> list<tuple<string, string>>`, so the walker's
+# `__vybe_php_env()` turns the pair list into PHP's name-keyed array — the same
+# division of labour as `__vybe_php_files()`.
+__vybe_env_pairs           = { emit = "host:wasi:cli/environment:get-environment", min_args = 0, max_args = 0 }
 header_remove       = { emit = "host:node:http:remove_header",     min_args = 0, max_args = 1 }
 
 # ── Miscellaneous ───────────────────────────────────────────────────────────

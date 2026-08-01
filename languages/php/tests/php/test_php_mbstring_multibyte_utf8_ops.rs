@@ -160,3 +160,52 @@ echo mb_strrchr("caféc", "é") === "éc" ? "tail" : "no";
     );
     assert_eq!(out, vec!["missing|tail"]);
 }
+
+// ── Astral (non-BMP) code points ───────────────────────────────────────
+//
+// `mb_*` counts CODE POINTS; `strlen`/`substr` count BYTES. Outside the BMP
+// one code point is TWO UTF-16 units, which is where both units diverge from
+// the UTF-16 count the emitters used to produce — `mb_substr` returned half a
+// surrogate pair. Every value below is measured against real `php`.
+//
+// Each case is written TWICE, once with a literal receiver and once through a
+// function so the value is not constant-foldable. The walker folds `mb_strlen`
+// on any expression `lit_str_arg` can resolve — including a simple variable —
+// so a literal-only test passes without the emitter being reached at all.
+
+#[test]
+fn test_php_mb_astral_literal_receiver() {
+    let out = run_prints(
+        r#"<?php
+echo mb_strlen("a😀b€c") . " " . mb_substr("a😀b€c", 1, 1) . " " . mb_strpos("a😀b€c", "€") . " " . implode(",", mb_str_split("a😀b"));
+"#,
+    );
+    assert_eq!(out, vec!["5 😀 3 a,😀,b"]);
+}
+
+#[test]
+fn test_php_mb_astral_dynamic_receiver() {
+    let out = run_prints(
+        r#"<?php
+function f($x) { return $x; }
+$s = f("a😀b€c");
+echo mb_strlen($s) . " " . mb_substr($s, 1, 1) . " " . mb_substr($s, 1, 2) . " " . mb_strpos($s, "€") . " " . mb_substr($s, -2) . " " . strlen($s);
+"#,
+    );
+    assert_eq!(out, vec!["5 😀 😀b 3 €c 10"]);
+}
+
+/// `mb_strpos` answers `false`, not `-1`, when the needle is absent — and the
+/// offset argument counts in the same unit as the result.
+#[test]
+fn test_php_mb_strpos_absent_and_offset() {
+    let out = run_prints(
+        r#"<?php
+function f($x) { return $x; }
+$s = f("a😀b😀c");
+var_dump(mb_strpos($s, "z"));
+echo mb_strpos($s, "😀", 2);
+"#,
+    );
+    assert_eq!(out, vec!["bool(false)", "3"]);
+}

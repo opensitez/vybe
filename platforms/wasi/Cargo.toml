@@ -22,6 +22,11 @@ sha3 = { workspace = true }
 blake2 = { workspace = true }
 ripemd = { workspace = true }
 getrandom = { workspace = true }
+socket2 = { workspace = true }
+# `udp-socket.disconnect` is a `connect(2)` to an AF_UNSPEC address — the only
+# way POSIX dissolves a datagram association, and neither `std::net` nor
+# `socket2` can express it. Already in the lockfile.
+libc = { workspace = true }
 
 [dev-dependencies]
 vybe_compiler = { workspace = true }

@@ -96,6 +96,17 @@ fn next_f64() -> f64 {
     (next_u64() >> 11) as f64 / (1u64 << 53) as f64
 }
 
+/// `tuple<u64, u64>` — the shape both `insecure-seed` (0.2) and
+/// `get-insecure-seed` (0.3) return.
+fn insecure_seed_pair() -> Value {
+    let a = next_u64();
+    let b = next_u64();
+    Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+        Value::F64(a as f64),
+        Value::F64(b as f64),
+    ])))
+}
+
 fn bytes_to_list(bytes: &[u8]) -> Value {
     let values: Vec<Value> = bytes.iter().map(|b| Value::F64(*b as f64)).collect();
     Value::Object(vybe_runtime::heap::alloc(Object::new_array(values)))
@@ -174,12 +185,16 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "wasi:random/insecure-seed",
         "insecure-seed",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
-            let a = next_u64();
-            let b = next_u64();
-            let pair = vec![Value::F64(a as f64), Value::F64(b as f64)];
-            Value::Object(vybe_runtime::heap::alloc(Object::new_array(pair)))
-        }),
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| insecure_seed_pair()),
+    );
+
+    // 0.3.0 renamed the function to `get-insecure-seed`
+    // (`proposals/random/wit/insecure-seed.wit`); the 0.2 name stays bound so
+    // components built against either revision resolve.
+    vm.register_host_fn(
+        "wasi:random/insecure-seed",
+        "get-insecure-seed",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| insecure_seed_pair()),
     );
 
     // ── Convenience extensions under wasi:random/random ───────────────

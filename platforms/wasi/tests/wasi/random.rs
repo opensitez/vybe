@@ -233,3 +233,27 @@ fn proposal_insecure_seed_import_resolves() {
         "wasi:random/insecure-seed.insecure-seed should be covered by the random category"
     );
 }
+
+/// `get-insecure-seed` is the current name for `insecure-seed`. Both are bound
+/// and both must answer the same `tuple<u64, u64>` shape — the rename is a
+/// rename, not a second generator.
+#[test]
+fn get_insecure_seed_answers_the_same_shape_as_the_older_name() {
+    for name in ["insecure-seed", "get-insecure-seed"] {
+        let result = invoke("wasi:random/insecure-seed", name, vec![]);
+        assert_eq!(array_len(&result), 2, "{name} must answer two values");
+        let Value::Object(object) = result else {
+            panic!("{name} should return an array");
+        };
+        let object = object.lock().unwrap();
+        let ObjectKind::Array(values) = &object.kind else {
+            panic!("{name} should return an array");
+        };
+        for value in values {
+            assert!(
+                matches!(value, Value::F64(n) if *n >= 0.0),
+                "{name} must answer non-negative numbers, got {value:?}"
+            );
+        }
+    }
+}

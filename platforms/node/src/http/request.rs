@@ -16,6 +16,53 @@ use vybe_runtime::{HostContext, VM, Value};
 use super::context::with_context;
 
 pub fn register(vm: &mut VM) {
+    // ── IncomingMessage as a Readable ──────────────────────────────────────
+    //
+    // Node reads a request body by treating `IncomingMessage` as a stream:
+    // `readable.read([size])` returns the next chunk, or `null` at end of
+    // stream (Node docs, `stream.Readable.read`). That null-at-EOF contract is
+    // what tells a consumer to stop; a sentinel empty string would loop.
+    vm.register_host_fn(
+        "node:http",
+        "read",
+        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+            let size = match args.first() {
+                Some(Value::F64(n)) if *n > 0.0 => *n as usize,
+                Some(Value::I32(n)) if *n > 0 => *n as usize,
+                _ => 64 * 1024,
+            };
+            with_context(|c| {
+                let mut body = c.body.lock().unwrap();
+                if body.eof() {
+                    return Value::Null;
+                }
+                let bytes = body.read(size);
+                if bytes.is_empty() {
+                    return Value::Null;
+                }
+                let elems: Vec<Value> = bytes.into_iter().map(|b| Value::I32(b as i32)).collect();
+                Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems)))
+            })
+            .unwrap_or(Value::Null)
+        }),
+    );
+
+    // `readable.readableEnded` — true once the stream is exhausted.
+    vm.register_host_fn(
+        "node:http",
+        "readable_ended",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| {
+            with_context(|c| Value::Bool(c.body.lock().unwrap().eof())).unwrap_or(Value::Bool(true))
+        }),
+    );
+
+    // `message.httpVersion` — the version the request came in on.
+    vm.register_host_fn(
+        "node:http",
+        "http_version",
+        Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::String(Arc::from("1.1"))),
+    );
+
     // Raw accessors ────────────────────────────────────────────────────────
     vm.register_host_fn(
         "node:http",
@@ -35,56 +82,11 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    vm.register_host_fn(
-        "node:http",
-        "path",
-        Box::new(|_ctx, _| {
-            with_context(|c| Value::String(Arc::from(c.path.as_str())))
-                .unwrap_or_else(|| Value::String(Arc::from("")))
-        }),
-    );
 
-    vm.register_host_fn(
-        "node:http",
-        "query",
-        Box::new(|_ctx, _| {
-            with_context(|c| Value::String(Arc::from(c.query.as_str())))
-                .unwrap_or_else(|| Value::String(Arc::from("")))
-        }),
-    );
 
-    vm.register_host_fn(
-        "node:http",
-        "scheme",
-        Box::new(|_ctx, _| {
-            with_context(|c| Value::String(Arc::from(c.scheme.as_str())))
-                .unwrap_or_else(|| Value::String(Arc::from("")))
-        }),
-    );
 
-    vm.register_host_fn(
-        "node:http",
-        "host",
-        Box::new(|_ctx, _| {
-            with_context(|c| Value::String(Arc::from(c.host.as_str())))
-                .unwrap_or_else(|| Value::String(Arc::from("")))
-        }),
-    );
 
-    vm.register_host_fn(
-        "node:http",
-        "port",
-        Box::new(|_ctx, _| with_context(|c| Value::F64(c.port as f64)).unwrap_or(Value::F64(0.0))),
-    );
 
-    vm.register_host_fn(
-        "node:http",
-        "protocol",
-        Box::new(|_ctx, _| {
-            with_context(|c| Value::String(Arc::from(c.protocol.as_str())))
-                .unwrap_or_else(|| Value::String(Arc::from("")))
-        }),
-    );
 
     vm.register_host_fn(
         "node:http",
@@ -151,158 +153,17 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
-    // CGI env ──────────────────────────────────────────────────────────────
-    vm.register_host_fn(
-        "node:http",
-        "env",
-        Box::new(|_ctx, args| {
-            let name = string_arg(args, 0);
-            with_context(|c| match c.env.get(&name) {
-                Some(v) => Value::String(Arc::from(v.as_str())),
-                None => Value::Null,
-            })
-            .unwrap_or(Value::Null)
-        }),
-    );
 
-    vm.register_host_fn(
-        "node:http",
-        "envs",
-        Box::new(|_ctx, _| {
-            with_context(|c| {
-                let items: Vec<Value> = c.env.iter().map(|(k, v)| pair_object(k, v)).collect();
-                array_value(items)
-            })
-            .unwrap_or_else(|| array_value(Vec::new()))
-        }),
-    );
 
-    // Body streaming ───────────────────────────────────────────────────────
-    vm.register_host_fn(
-        "node:http",
-        "body_length",
-        Box::new(|_ctx, _| {
-            with_context(|c| match c.body.lock().unwrap().length() {
-                Some(n) => Value::F64(n as f64),
-                None => Value::Null,
-            })
-            .unwrap_or(Value::Null)
-        }),
-    );
 
-    vm.register_host_fn(
-        "node:http",
-        "body_eof",
-        Box::new(|_ctx, _| {
-            with_context(|c| Value::Bool(c.body.lock().unwrap().eof())).unwrap_or(Value::Bool(true))
-        }),
-    );
 
-    vm.register_host_fn(
-        "node:http",
-        "body_read",
-        Box::new(|_ctx, args| {
-            let max = args.first().map(|v| v.as_f64() as usize).unwrap_or(0);
-            with_context(|c| {
-                let bytes = c.body.lock().unwrap().read(max);
-                // Phase 1: return as a string. Binary-correctness upgrade
-                // (ArrayBuffer / bytes value) tracked for Phase 2 once we
-                // commit to a bytes type.
-                Value::String(Arc::from(String::from_utf8_lossy(&bytes).as_ref()))
-            })
-            .unwrap_or_else(|| Value::String(Arc::from("")))
-        }),
-    );
 
-    vm.register_host_fn(
-        "node:http",
-        "body_read_all",
-        Box::new(|_ctx, _| {
-            with_context(|c| {
-                let bytes = c.body.lock().unwrap().read_all();
-                Value::String(Arc::from(String::from_utf8_lossy(&bytes).as_ref()))
-            })
-            .unwrap_or_else(|| Value::String(Arc::from("")))
-        }),
-    );
 
-    vm.register_host_fn(
-        "node:http",
-        "request_id",
-        Box::new(|_ctx, _| {
-            with_context(|c| Value::String(Arc::from(c.request_id.as_str())))
-                .unwrap_or_else(|| Value::String(Arc::from("")))
-        }),
-    );
 
-    // Parsed accessors (centralized — every language's adapter uses these) ─
-    vm.register_host_fn(
-        "node:http",
-        "cookies",
-        Box::new(|_ctx, _| {
-            with_context(|c| {
-                let parsed = c
-                    .cookies
-                    .get_or_init(|| parse_cookies_from_headers(&c.headers));
-                let items: Vec<Value> = parsed.iter().map(|(n, v)| pair_object(n, v)).collect();
-                array_value(items)
-            })
-            .unwrap_or_else(|| array_value(Vec::new()))
-        }),
-    );
 
-    vm.register_host_fn(
-        "node:http",
-        "query_pairs",
-        Box::new(|_ctx, _| {
-            with_context(|c| {
-                let parsed = c.query_pairs.get_or_init(|| parse_query(&c.query));
-                let items: Vec<Value> = parsed.iter().map(|(n, v)| pair_object(n, v)).collect();
-                array_value(items)
-            })
-            .unwrap_or_else(|| array_value(Vec::new()))
-        }),
-    );
 }
 
-// Parsing helpers — the ONE implementation. Every language's stdlib calls
-// the host fn instead of rolling its own parser.
-fn parse_cookies_from_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for (n, v) in headers {
-        if !n.eq_ignore_ascii_case("cookie") {
-            continue;
-        }
-        // Multiple Cookie headers per RFC 6265 are joined with `; `.
-        for part in v.split(';') {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
-            match part.split_once('=') {
-                Some((name, value)) => {
-                    // Cookie values may be quoted; strip one layer.
-                    let value = value.trim();
-                    let value = value
-                        .strip_prefix('"')
-                        .and_then(|s| s.strip_suffix('"'))
-                        .unwrap_or(value);
-                    out.push((name.trim().to_string(), value.to_string()));
-                }
-                None => {
-                    out.push((part.to_string(), String::new()));
-                }
-            }
-        }
-    }
-    out
-}
 
-fn parse_query(query: &str) -> Vec<(String, String)> {
-    form_urlencoded::parse(query.as_bytes())
-        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-        .collect()
-}
 
 // Helpers ──────────────────────────────────────────────────────────────────
 

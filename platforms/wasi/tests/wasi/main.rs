@@ -22,3 +22,4 @@ mod random;
 mod sockets;
 mod sockets_contracts;
 mod tls;
+mod interface_coverage;

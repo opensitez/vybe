@@ -138,6 +138,23 @@ echo $_FILES['doc']['error'] === UPLOAD_ERR_OK ? 'ok' : 'err';
         ["ok"]
     };
 
+    // `$_ENV` is the process environment, so it is bound WITHOUT the script
+    // assigning it — the walker's superglobal prelude reads
+    // `wasi:cli/environment.get-environment` and keys the pair list by name.
+    // Every other case in this file assigns the superglobal first, which would
+    // hide a binding that never happened (before this, `$_ENV` was undefined
+    // outside `--serve` and `count($_ENV)` threw).
+    //
+    // Asserts the BINDING, not a variable: naming one real key would make the
+    // test depend on the runner's environment, and a scrubbed env is a flake,
+    // not a failure.
+    env_superglobal_bound_from_process_environment => {
+        r#"<?php
+echo isset($_ENV) && is_array($_ENV) ? 'bound' : 'unbound';
+"#,
+        ["bound"]
+    };
+
     env_superglobal_null_coalesce_default => {
         r#"<?php
 $_ENV = [];

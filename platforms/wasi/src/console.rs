@@ -91,6 +91,97 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
+    // wasi:cli/stdin — 0.3 `read-via-stream: func() -> tuple<stream<u8>,
+    // future<result<_, error-code>>>` (`proposals/cli/wit/stdio.wit`).
+    //
+    // The stream carries stdin's bytes and the future signals how the read
+    // ended: resolved with success at clean EOF, with an `error-code` if the
+    // read failed. When stdin is a terminal the stream is closed empty rather
+    // than blocking the process waiting for a key — interactive reads are the
+    // 0.2 `get-stdin` + `input-stream.blocking-read` path, which stays bound
+    // above and is what a prompting program uses.
+    vm.register_host_fn(
+        "wasi:cli/stdin",
+        "read-via-stream",
+        Box::new(|ctx: &mut HostContext, _args: &[Value]| {
+            use std::io::{IsTerminal, Read};
+
+            let (stream_val, stream_id) = ctx.create_stream();
+            let mut failure: Option<&str> = None;
+            if !std::io::stdin().is_terminal() {
+                let mut buffer = Vec::new();
+                match std::io::stdin().read_to_end(&mut buffer) {
+                    Ok(_) => {
+                        for byte in &buffer {
+                            ctx.stream_push(stream_id, Value::I32(*byte as i32));
+                        }
+                    }
+                    // `error-code` in `wasi:cli/types`: io, illegal-byte-sequence, pipe.
+                    Err(error) => {
+                        failure = Some(match error.kind() {
+                            std::io::ErrorKind::BrokenPipe => "pipe",
+                            std::io::ErrorKind::InvalidData => "illegal-byte-sequence",
+                            _ => "io",
+                        })
+                    }
+                }
+            }
+            ctx.stream_close(stream_id);
+
+            let (future_val, future_id) = ctx.create_future();
+            let outcome = match failure {
+                Some(code) => Value::String(Arc::from(code)),
+                None => Value::Null,
+            };
+            ctx.resolve_future(future_id, outcome);
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                stream_val, future_val,
+            ])))
+        }),
+    );
+
+    // wasi:cli/terminal-{stdin,stdout,stderr} — 0.3
+    // `get-terminal-*: func() -> option<terminal-{input,output}>`
+    // (`proposals/cli/wit/terminal.wit`). The resources carry no methods yet;
+    // their presence IS the answer to "is this stream a terminal".
+    for (module, name, kind, fd) in [
+        ("wasi:cli/terminal-stdin", "get-terminal-stdin", "terminal-input", 0),
+        (
+            "wasi:cli/terminal-stdout",
+            "get-terminal-stdout",
+            "terminal-output",
+            1,
+        ),
+        (
+            "wasi:cli/terminal-stderr",
+            "get-terminal-stderr",
+            "terminal-output",
+            2,
+        ),
+    ] {
+        vm.register_host_fn(
+            module,
+            name,
+            Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
+                use std::io::IsTerminal;
+                let attached = match fd {
+                    0 => std::io::stdin().is_terminal(),
+                    1 => std::io::stdout().is_terminal(),
+                    _ => std::io::stderr().is_terminal(),
+                };
+                if !attached {
+                    return Value::Null;
+                }
+                let mut handle = Object::new();
+                handle.properties.insert("fd".into(), Value::I32(fd));
+                handle
+                    .properties
+                    .insert("__type".into(), Value::String(Arc::from(kind)));
+                Value::Object(vybe_runtime::heap::alloc(handle))
+            }),
+        );
+    }
+
     // wasi:cli/stdout|stderr — 0.3 write-via-stream
     vm.register_host_fn(
         "wasi:cli/stdout",
