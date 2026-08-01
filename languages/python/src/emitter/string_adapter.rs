@@ -31,6 +31,22 @@ fn call_import(
 
 /// Pop `argc` stack values (deepest first) into freshly allocated scratch slots
 /// and return the base slot. `base + 0` is the receiver, `base + i` the i-th arg.
+fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+}
+
+fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
+}
+
+fn alloc_local(chunk: &mut Chunk) -> u16 {
+    chunk.alloc_scratch(1)
+}
+
+fn push_i32(chunk: &mut Chunk, v: i32, line: u32) {
+    chunk.emit_i32_const(v, line);
+}
+
 fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 {
     let base = chunks[current].alloc_scratch(argc as u16);
     for offset in (0..argc as u16).rev() {
@@ -209,95 +225,6 @@ pub fn emit_expandtabs(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
 /// with `chars`, removes any leading/trailing character contained in the set.
 /// The two edges are trimmed by symmetric `while` loops that peel one code unit
 /// at a time while it is a member of `chars` (`ecma:string.includes`).
-pub fn emit_strip(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let base = stash_args(chunks, current, argc, line);
-    let s = base;
-
-    if argc <= 1 {
-        chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-        call_import(chunks, current, "ecma:string", "trim", 1, line);
-        return;
-    }
-
-    let chars = base + 1;
-
-    // ── lstrip: while s and s[0] in chars: s = s[1:] ──
-    let block = chunks[current].emit_block(line);
-    let lp = chunks[current].emit_loop_s(line).0;
-    // break when empty
-    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-    strings::emit_length(&mut chunks[current], line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_br_if(1, line);
-    // break when s[0] not in chars
-    chunks[current].emit_op_u16(Op::LOCAL_GET, chars, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-    chunks[current].emit_i32_const(0, line);
-    chunks[current].emit_i32_const(1, line);
-    strings::emit_substring(&mut chunks[current], line);
-    call_import(chunks, current, "ecma:string", "includes", 2, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_br_if(1, line);
-    // s = s[1:]
-    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-    chunks[current].emit_i32_const(1, line);
-    chunks[current].emit_i32_const(0x7FFF_FFFF, line);
-    strings::emit_substring(&mut chunks[current], line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
-    chunks[current].emit_br(0, line);
-    chunks[current].emit_end(line);
-    chunks[current].patch_loop(lp);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(block);
-
-    // ── rstrip: while s and s[-1] in chars: s = s[:-1] ──
-    let block2 = chunks[current].emit_block(line);
-    let lp2 = chunks[current].emit_loop_s(line).0;
-    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-    strings::emit_length(&mut chunks[current], line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_br_if(1, line);
-    // last char = s[len-1:]
-    chunks[current].emit_op_u16(Op::LOCAL_GET, chars, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-    strings::emit_length(&mut chunks[current], line);
-    chunks[current].emit_i32_const(1, line);
-    chunks[current].emit_op(Op::I32_SUB, line);
-    chunks[current].emit_i32_const(0x7FFF_FFFF, line);
-    strings::emit_substring(&mut chunks[current], line);
-    call_import(chunks, current, "ecma:string", "includes", 2, line);
-    ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_op(Op::I32_EQZ, line);
-    chunks[current].emit_br_if(1, line);
-    // s = s[:len-1]
-    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-    chunks[current].emit_i32_const(0, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-    strings::emit_length(&mut chunks[current], line);
-    chunks[current].emit_i32_const(1, line);
-    chunks[current].emit_op(Op::I32_SUB, line);
-    strings::emit_substring(&mut chunks[current], line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
-    chunks[current].emit_br(0, line);
-    chunks[current].emit_end(line);
-    chunks[current].patch_loop(lp2);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(block2);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-}
-
-/// Python `str.split([sep[, maxsplit]])`.
-/// - No `sep` → split on runs of whitespace, dropping the empty edge parts
-///   (`ecma:regexp.split` on `\s+` after trimming). (Note: an all-whitespace or
-///   empty input yields `['']` rather than `[]`; matches every non-trivial case.)
-/// - `sep` only → plain split (`ecma:string.split`), identical to the prior
-///   `common:strings.split` mapping.
-/// - `sep, maxsplit` → at most `maxsplit` splits; the unsplit remainder stays
-///   joined as the final element. JS's `split(sep, limit)` truncates and *drops*
-///   the remainder, so we split fully and re-join the tail.
 pub fn emit_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let base = stash_args(chunks, current, argc, line);
     let s = base;
@@ -1016,4 +943,142 @@ fn emit_title_of(chunks: &mut [Chunk], current: usize, src: u16, line: u32) {
     chunks[current].patch_block(block);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result, line);
+}
+
+// ── str.find / str.rfind / str.rindex ──────────────────────────────────
+//
+// Python string indices count CODE POINTS (`unifiedstringplan.md` Axis 1,
+// Python's unit is `scalar`), so these must agree with `len`, `s[i]` and
+// `s[a:b]`. They were bound straight to `common:strings.index_of` /
+// `common:str_last_index_of`, which are UTF-16 — `"a😀b".find("b")` answered
+// 3 instead of 2.
+//
+// Those raw bindings also ignored `argc`: `str.find(sub, start[, end])` left
+// the extra arguments on the stack, so `"abcabc".find("b", 2)` produced
+// `-1abcabc` (stack garbage) rather than 4. Stashing by `argc` fixes that as a
+// side effect of needing the bounds at all.
+//
+// `end` defaults to the code-point length, `start` to 0; both wrap from the end
+// and clamp, as `s[start:end]` does.
+
+/// Python `str.find` / `str.rfind` / `str.index` / `str.rindex` on a string.
+/// Stack: `[s, sub]`, `[s, sub, start]` or `[s, sub, start, end]` → `[i32]`.
+/// `last` picks the final occurrence; `raises` turns the `-1` miss into
+/// `ValueError`, which is the only difference between `find` and `index`.
+pub fn emit_str_search(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+    last: bool,
+    raises: bool,
+) {
+    let chunk = &mut chunks[current];
+    let s_slot = alloc_local(chunk);
+    let sub_slot = alloc_local(chunk);
+    let start_slot = alloc_local(chunk);
+    let end_slot = alloc_local(chunk);
+    let len_slot = alloc_local(chunk);
+    let idx_slot = alloc_local(chunk);
+
+    // Stack (bottom→top): s, sub, [start, [end]] — pop in reverse.
+    if argc >= 4 {
+        vybe_compiler::primitives::convert::emit_to_int(chunk, line);
+        lset(chunk, end_slot, line);
+    }
+    if argc >= 3 {
+        vybe_compiler::primitives::convert::emit_to_int(chunk, line);
+        lset(chunk, start_slot, line);
+    }
+    lset(chunk, sub_slot, line);
+    lset(chunk, s_slot, line);
+    if argc < 3 {
+        push_i32(chunk, 0, line);
+        lset(chunk, start_slot, line);
+    }
+
+    lget(chunk, s_slot, line);
+    let _ = chunk;
+    vybe_compiler::primitives::strings::emit_scalar_length(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, len_slot, line);
+    if argc < 4 {
+        lget(chunk, len_slot, line);
+        lset(chunk, end_slot, line);
+    }
+    clamp_index(chunk, start_slot, len_slot, line);
+    clamp_index(chunk, end_slot, len_slot, line);
+
+    // Search the window, then shift the answer back into whole-string space.
+    lget(chunk, s_slot, line);
+    lget(chunk, start_slot, line);
+    lget(chunk, end_slot, line);
+    let _ = chunk;
+    vybe_compiler::primitives::strings::emit_scalar_substring(chunks, current, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, sub_slot, line);
+    let _ = chunk;
+    if last {
+        vybe_compiler::primitives::strings::emit_scalar_last_index_of(chunks, current, line);
+    } else {
+        vybe_compiler::primitives::strings::emit_scalar_index_of(chunks, current, line);
+    }
+    let chunk = &mut chunks[current];
+    lset(chunk, idx_slot, line);
+
+    lget(chunk, idx_slot, line);
+    push_i32(chunk, 0, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    if raises {
+        chunk.emit_if(line);
+        // `emit_exception_new_finalize` wants `[obj, obj, msg]`.
+        chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunk.emit_dup(line);
+        chunk.emit_string_const("substring not found", line);
+        vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "ValueError", line);
+        vybe_compiler::primitives::errors::emit_throw(chunk, line);
+        chunk.emit_end(line);
+        lget(chunk, idx_slot, line);
+        lget(chunk, start_slot, line);
+        chunk.emit_op(Op::I32_ADD, line);
+    } else {
+        chunk.emit_if_value(line);
+        push_i32(chunk, -1, line);
+        chunk.emit_else(line);
+        lget(chunk, idx_slot, line);
+        lget(chunk, start_slot, line);
+        chunk.emit_op(Op::I32_ADD, line);
+        chunk.emit_end(line);
+    }
+}
+
+/// `slot < 0 → slot += len`, then clamp into `[0, len]` — Python slice bounds.
+fn clamp_index(chunk: &mut Chunk, slot: u16, len_slot: u16, line: u32) {
+    lget(chunk, slot, line);
+    push_i32(chunk, 0, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, len_slot, line);
+    lget(chunk, slot, line);
+    chunk.emit_op(Op::I32_ADD, line);
+    lset(chunk, slot, line);
+    chunk.emit_end(line);
+    lget(chunk, slot, line);
+    push_i32(chunk, 0, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    push_i32(chunk, 0, line);
+    lset(chunk, slot, line);
+    chunk.emit_end(line);
+    lget(chunk, slot, line);
+    lget(chunk, len_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    lget(chunk, len_slot, line);
+    lset(chunk, slot, line);
+    chunk.emit_end(line);
 }

@@ -14182,7 +14182,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     });
                 }
             }
-            if !in_assignment_target() {
+            if !in_assignment_target() && !index_is_slice(&index) {
                 match &object.kind {
                     ExprKind::Array(elems) if elems.is_empty() => {
                         return py_raise_expr("IndexError", Some("list index out of range"));
@@ -14257,6 +14257,20 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     "__py_chainmap_get",
                     vec![desugar_member_reads(*object), desugar_member_reads(*index)],
                 );
+            }
+            // A slice subscript on a builtin sequence (`a[i:j]`, `a[i:j:k]`) is a
+            // sequence operation, not a key lookup, and must stay an `Index` so
+            // the shared slice emitter sees it. `__py_getitem` below takes a
+            // scalar key, so a slice reaching it is read as a key and traps.
+            // Deliberately after the user-`__getitem__` rewrite above: a user
+            // class really does receive a `slice` object, so that route stays.
+            // `walk_postfix` already guards the same way.
+            if index_is_slice(&index) {
+                return Expression::new(ExprKind::Index {
+                    object: Box::new(desugar_member_reads(*object)),
+                    index: Box::new(desugar_slice_bounds(*index)),
+                    null_safe,
+                });
             }
             if !in_assignment_target() {
                 return call_ident(
@@ -16992,6 +17006,40 @@ fn python_index_operand(object: &Expression, index: Expression) -> Expression {
         ],
         optional: false,
     })
+}
+
+/// Is this subscript index a slice rather than a scalar key?
+fn index_is_slice(index: &Expression) -> bool {
+    matches!(
+        index.kind,
+        ExprKind::Slice { .. } | ExprKind::Range { .. }
+    )
+}
+
+/// Desugar the bound expressions inside a slice/range index. `desugar_member_reads`
+/// falls through to its catch-all for `Slice`/`Range`, so a bound like
+/// `l[obj.start:2]` would otherwise keep a raw `Member` that never gets rewritten
+/// into the subscript form the rest of the walker produces.
+fn desugar_slice_bounds(index: Expression) -> Expression {
+    let desugar_opt =
+        |b: Option<Box<Expression>>| b.map(|e| Box::new(desugar_member_reads(*e)));
+    match index.kind {
+        ExprKind::Slice { lower, upper, step } => Expression::new(ExprKind::Slice {
+            lower: desugar_opt(lower),
+            upper: desugar_opt(upper),
+            step: desugar_opt(step),
+        }),
+        ExprKind::Range {
+            start,
+            end,
+            inclusive,
+        } => Expression::new(ExprKind::Range {
+            start: Box::new(desugar_member_reads(*start)),
+            end: Box::new(desugar_member_reads(*end)),
+            inclusive,
+        }),
+        _ => index,
+    }
 }
 
 fn walk_subscript_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {

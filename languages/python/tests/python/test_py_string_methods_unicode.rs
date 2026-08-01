@@ -146,3 +146,57 @@ print("Hello World".istitle())
         vec!["True", "True", "True", "False", "True"]
     );
 }
+
+// ── Search methods: code-point indices and the start/end window ────────
+//
+// Python string indices count CODE POINTS (`unifiedstringplan.md` Axis 1,
+// unit `scalar`), so `find`/`index`/`rfind`/`rindex` must agree with `len`,
+// `s[i]` and `s[a:b]`. They were bound to the UTF-16 helpers, which answered
+// 3 for `"a😀b".find("b")`.
+//
+// The receiver goes through a function in the astral case so the value is not
+// constant-foldable — a literal receiver can be resolved at compile time and
+// never reach the emitter.
+
+#[test]
+fn test_py_search_methods_count_code_points() {
+    let src = r#"
+def f(x): return x
+s = f("a\U0001F600b\U0001F600c")
+print(s.index("b"), s.find("b"), s.rfind("c"), s.rindex("c"))
+print(len(s), s[1], s[1:3])
+"#;
+    assert_eq!(run_python(src), vec!["2 2 4 4", "5 😀 😀b"]);
+}
+
+/// `ord` is a CODE POINT. `charCodeAt(s, 0)` answers 55357 for `😀` — the
+/// leading surrogate — which is not a character Python can name.
+#[test]
+fn test_py_ord_is_a_code_point() {
+    let src = r#"
+print(ord("a"), ord("é"), ord("\U0001F600"))
+"#;
+    assert_eq!(run_python(src), vec!["97 233 128512"]);
+}
+
+/// `find`/`rfind` take an optional `start` and `end`, and the answer stays in
+/// whole-string coordinates. The raw binding ignored the extra arguments and
+/// left them on the stack, so `"abcabc".find("b", 2)` produced stack garbage
+/// rather than 4 — on pure ASCII, with no test covering it.
+#[test]
+fn test_py_find_start_and_end_window() {
+    let src = r#"
+def f(x): return x
+t = f("abcabc")
+print(t.find("b"), t.find("b", 2), t.find("z"), t.rfind("b"))
+print(t.find("b", 2, 3), t.find("c", -2), t.rfind("b", 0, 2))
+try:
+    t.rindex("z")
+except ValueError:
+    print("ValueError")
+"#;
+    assert_eq!(
+        run_python(src),
+        vec!["1 4 -1 4", "-1 5 1", "ValueError"]
+    );
+}

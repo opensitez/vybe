@@ -179,9 +179,16 @@ pub fn emit_environment_get(chunks: &mut [Chunk], current: usize, argc: u8, line
     let chunk = &mut chunks[current];
     chunk.emit_end(line);
     chunk.patch_block(fallback_block);
-    chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
+    // `get-environment` takes NO argument and answers the whole
+    // `list<tuple<string, string>>` (wasi-cli `wit/environment.wit`). Keying it
+    // by name is this adapter's job, not the interface's, so the pairs become a
+    // map and the lookup happens here.
     chunk.emit_op_u16(Op::CALL_IMPORT, get_env, line);
-    chunk.emit(1, line);
+    chunk.emit(0, line);
+    host::emit(chunk, "ecma:map", "fromEntries", 1, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
+    collections::emit_get(chunks, current, line);
+    let chunk = &mut chunks[current];
     chunk.emit_end(line);
     chunk.patch_block(done);
 }

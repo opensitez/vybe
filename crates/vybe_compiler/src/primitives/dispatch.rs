@@ -25,9 +25,8 @@ use vybe_runtime::opcode::Op;
 
 use crate::primitives::threading as thread_adapter;
 use crate::primitives::{
-    collections, dict, heap, http_cookie, http_form, http_request_env, http_session, io, object, ops,
-    reflection, strings,
-    threading, xml,
+    collections, dict, heap, http_cookie, http_form, http_request_env, http_session, io, object,
+    ops, reflection, strings, threading, url, xml,
 };
 
 /// Handle common ops that need only a chunk and line.
@@ -72,7 +71,9 @@ pub fn emit_common(
         // these; see `documentation/httpserver.md` §4a.
         "http_request.method" => http_request_env::emit_method(chunks, current, line),
         "http_request.path" => http_request_env::emit_path(chunks, current, line),
-        "http_request.path_with_query" => http_request_env::emit_path_with_query(chunks, current, line),
+        "http_request.path_with_query" => {
+            http_request_env::emit_path_with_query(chunks, current, line)
+        }
         "http_request.query_string" => http_request_env::emit_query_string(chunks, current, line),
         "http_request.scheme" => http_request_env::emit_scheme(chunks, current, line),
         "http_request.authority" => http_request_env::emit_authority(chunks, current, line),
@@ -96,7 +97,9 @@ pub fn emit_common(
         "http_session.destroy" => http_session::emit_destroy(chunks, current, line),
         "http_session.unset" => http_session::emit_unset(chunks, current, line),
         "http_request.body" => http_request_env::emit_body(chunks, current, line),
-        "http_request.request_params" => http_request_env::emit_request_params(chunks, current, line),
+        "http_request.request_params" => {
+            http_request_env::emit_request_params(chunks, current, line)
+        }
         "http_request.query_params" => http_request_env::emit_query_params(chunks, current, line),
         "http_form.parse_multipart" => http_form::emit_parse_multipart(chunks, current, line),
         "http_form.parse_urlencoded" => http_form::emit_parse_urlencoded(chunks, current, line),
@@ -434,10 +437,9 @@ pub fn emit_common(
         // Floored modulo — the result takes the DIVISOR's sign, so `-7 % 3` is
         // 2 and not -1. Python's `%` and Dart's both work this way; C's and
         // JS's `%` truncate instead. Reached as the `Mod` slot binding.
-        "math.floor_mod" => crate::primitives::math::emit_python_floor_mod(
-            &mut chunks[current],
-            line,
-        ),
+        "math.floor_mod" => {
+            crate::primitives::math::emit_python_floor_mod(&mut chunks[current], line)
+        }
         "collections.index_of" => collections::emit_index_of(chunks, current, line),
         "collections.last_index_of" => collections::emit_last_index_of(chunks, current, line),
         "collections.remove_at" => collections::emit_remove_at(chunks, current, line),
@@ -480,10 +482,10 @@ pub fn emit_common(
             let tmp = chunks[current].alloc_scratch(2);
             chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, tmp, line);
             chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, tmp + 1, line);
-            chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, tmp, line);     // end
+            chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, tmp, line); // end
             chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, tmp + 1, line); // start
-            collections::emit_range(chunks, current, 2, true, line);  // [end..=start]
-            collections::emit_reverse(chunks, current, line);          // reversed → [start..end]
+            collections::emit_range(chunks, current, 2, true, line); // [end..=start]
+            collections::emit_reverse(chunks, current, line); // reversed → [start..end]
         }
         // `collections.range_step` – 3-arg strided: (start, stop_exclusive, step)
         "collections.range_step" => collections::emit_range(chunks, current, 3, false, line),
@@ -591,6 +593,75 @@ pub fn emit_common(
         // ── String ops (profile common:str_*) ──
         "str_reverse" => strings::emit_str_reverse(&mut chunks[current], line),
         "str_length" => strings::emit_length(&mut chunks[current], line),
+        // `scalar` unit (Unicode code points) — the counterparts to the UTF-16
+        // `str_*` arms above. A language binds these where its surface counts
+        // code points (PHP `mb_*`, Python `str`). See strings.rs.
+        "str_scalar_length" => strings::emit_scalar_length(chunks, current, line),
+        "str_scalar_substring" => strings::emit_scalar_substring(chunks, current, line),
+        "str_scalar_index_of" => strings::emit_scalar_index_of(chunks, current, line),
+        "str_scalar_chars" => strings::emit_scalar_chars(&mut chunks[current], line),
+        // Charlist trim — the adapter primitive. `ecma:string.trim` takes no
+        // character set, so php/python/ruby each grew a copy. Languages whose
+        // default set IS the ECMA one bind the `_ws` forms, which delegate.
+        // URL percent-encoding, reachable from ANY profile so a language
+        // BINDS the shared codec instead of reimplementing it. The four
+        // variants are measured: php `urlencode` == java `URLEncoder`
+        // (`form`), go `QueryEscape` == python `quote_plus`
+        // (`form_rfc3986`), php `rawurlencode`/.NET `EscapeDataString`
+        // (`rfc3986`), python `quote` (`path`).
+        // Canonical component reads, receiver on the stack — what a
+        // PROFILE builtin gets. java `getProtocol`, php `parse_url` and
+        // python `urlsplit` all read the same nine components.
+        "url.component_scheme" => url::emit_component_of(
+            chunks, current, url::UrlField::Scheme, line),
+        "url.component_user" => url::emit_component_of(
+            chunks, current, url::UrlField::User, line),
+        "url.component_pass" => url::emit_component_of(
+            chunks, current, url::UrlField::Pass, line),
+        "url.component_host" => url::emit_component_of(
+            chunks, current, url::UrlField::Host, line),
+        "url.component_port" => url::emit_component_of(
+            chunks, current, url::UrlField::Port, line),
+        "url.component_netloc" => url::emit_component_of(
+            chunks, current, url::UrlField::Netloc, line),
+        "url.component_path" => url::emit_component_of(
+            chunks, current, url::UrlField::Path, line),
+        "url.component_query" => url::emit_component_of(
+            chunks, current, url::UrlField::Query, line),
+        "url.component_fragment" => url::emit_component_of(
+            chunks, current, url::UrlField::Fragment, line),
+        "url.encode_form" => url::emit_percent_encode(
+            chunks, current, url::PercentOptions::form(), line),
+        "url.encode_form_rfc3986" => url::emit_percent_encode(
+            chunks, current, url::PercentOptions::form_rfc3986(), line),
+        "url.encode_rfc3986" => url::emit_percent_encode(
+            chunks, current, url::PercentOptions::rfc3986(), line),
+        "url.encode_path" => url::emit_percent_encode(
+            chunks, current, url::PercentOptions::path(), line),
+        "url.decode_form" => url::emit_percent_decode(
+            chunks, current, url::PercentOptions::form(), line),
+        "url.decode_rfc3986" => url::emit_percent_decode(
+            chunks, current, url::PercentOptions::rfc3986(), line),
+        "str_trim_chars" => strings::emit_trim_chars(
+            chunks,
+            current,
+            argc,
+            strings::TrimOptions::both(None),
+            line,
+        ),
+        "str_trim_start_chars" => strings::emit_trim_chars(
+            chunks,
+            current,
+            argc,
+            strings::TrimOptions::start(None),
+            line,
+        ),
+        "str_trim_end_chars" => {
+            strings::emit_trim_chars(chunks, current, argc, strings::TrimOptions::end(None), line)
+        }
+        "str_scalar_last_index_of" => strings::emit_scalar_last_index_of(chunks, current, line),
+        "str_code_point_at" => strings::emit_code_point_at(&mut chunks[current], line),
+        "str_first_code_point" => strings::emit_first_code_point(&mut chunks[current], line),
         "str_to_upper" => strings::emit_to_upper(&mut chunks[current], line),
         "str_to_lower" => strings::emit_to_lower(&mut chunks[current], line),
         "str_trim" => strings::emit_trim(&mut chunks[current], line),

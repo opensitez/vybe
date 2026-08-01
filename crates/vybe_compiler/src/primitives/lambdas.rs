@@ -40,7 +40,11 @@ impl Compiler {
             .any(|capture| !Self::split_explicit_capture(capture).0)
         {
             return self.compile_lambda_with_explicit_captures(
-                params, body, captures, is_async, is_generator,
+                params,
+                body,
+                captures,
+                is_async,
+                is_generator,
             );
         }
 

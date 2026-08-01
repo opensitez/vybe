@@ -268,7 +268,9 @@ float           = { emit = "host:ecma:number:Number",        min_args = 1, max_a
 str             = { emit = "common:python.str",              min_args = 0, max_args = 1 }
 bool            = { emit = "common:dyn_to_bool",            min_args = 1, max_args = 1 }
 chr             = { emit = "common:str_from_char_code",     min_args = 1, max_args = 1 }
-ord             = { emit = "intrinsic:asc",                  min_args = 1, max_args = 1 }
+# `ord` is a CODE POINT, not a UTF-16 unit: `ord("\U0001F600")` is 128512,
+# where `charCodeAt(s,0)` answers 55357 (the leading surrogate).
+ord             = { emit = "common:str_first_code_point",    min_args = 1, max_args = 1 }
 hex             = { emit = "common:python.hex",                  min_args = 1, max_args = 1 }
 oct             = { emit = "common:python.oct",                  min_args = 1, max_args = 1 }
 bin             = { emit = "common:python.bin",                  min_args = 1, max_args = 1 }
@@ -833,18 +835,23 @@ every     = "__array_every"
 # String instance methods
 upper           = { emit = "common:strings.to_upper",         min_args = 0, max_args = 0 }
 lower           = { emit = "common:strings.to_lower",         min_args = 0, max_args = 0 }
-strip           = { emit = "common:python.str_strip",         min_args = 0, max_args = 1 }
-lstrip          = { emit = "common:str_trim_start",           min_args = 0, max_args = 1 }
-rstrip          = { emit = "common:str_trim_end",             min_args = 0, max_args = 1 }
+# Charlist trim is the shared adapter primitive — `ecma:string.trim` takes no
+# character set. `lstrip`/`rstrip` were bound to the plain ECMA trim, which
+# DROPPED the argument and left it on the stack.
+strip           = { emit = "common:str_trim_chars",           min_args = 0, max_args = 1 }
+lstrip          = { emit = "common:str_trim_start_chars",     min_args = 0, max_args = 1 }
+rstrip          = { emit = "common:str_trim_end_chars",       min_args = 0, max_args = 1 }
 split           = { emit = "common:python.str_split",         min_args = 0, max_args = 2 }
 rsplit          = { emit = "common:python.str_rsplit",        min_args = 0, max_args = 2 }
 splitlines      = { emit = "common:python.str_splitlines",    min_args = 0, max_args = 1 }
 join            = { emit = "common:collections.join",          min_args = 1, max_args = 1 }
 replace         = { emit = "common:python.str_replace", min_args = 2, max_args = 3 }
-find            = { emit = "common:strings.index_of",         min_args = 1, max_args = 3 }
-rfind           = { emit = "common:str_last_index_of",        min_args = 1, max_args = 3 }
+# Python string indices count CODE POINTS (Axis 1, unit `scalar`), and
+# `find`/`rfind` take optional start/end — the raw bindings did neither.
+find            = { emit = "common:python.str_find",          min_args = 1, max_args = 3 }
+rfind           = { emit = "common:python.str_rfind",         min_args = 1, max_args = 3 }
 index           = { emit = "common:python.index",             min_args = 1, max_args = 3 }
-rindex          = { emit = "common:str_last_index_of",        min_args = 1, max_args = 3 }
+rindex          = { emit = "common:python.str_rindex",        min_args = 1, max_args = 3 }
 count           = { emit = "common:python.str_count",        min_args = 1, max_args = 3 }
 startswith      = { emit = "common:python.str_startswith",    min_args = 1, max_args = 3 }
 # `threading.Thread` spawns on construction (common:threading.task_run), so

@@ -193,7 +193,6 @@ impl Compiler {
         self.variable_name_body(name).len() != name.len()
     }
 
-
     /// Canonical global name for a *type* reference: [`Self::canon`] plus
     /// namespace-separator normalization.
     ///

@@ -4957,13 +4957,13 @@ pub fn emit_stamp_class_members(
 
     // One member token: an 8-element array, all elements compile-time known.
     let push_token = |chunks: &mut [Chunk],
-                          kind: &str,
-                          name: &str,
-                          param_count: usize,
-                          type_name: &Option<String>,
-                          return_type: &Option<String>,
-                          param_types: &[String],
-                          modifiers: i64| {
+                      kind: &str,
+                      name: &str,
+                      param_count: usize,
+                      type_name: &Option<String>,
+                      return_type: &Option<String>,
+                      param_types: &[String],
+                      modifiers: i64| {
         chunks[current].emit_string_const(kind, line);
         chunks[current].emit_string_const(class_name, line);
         chunks[current].emit_string_const(name, line);
@@ -4997,7 +4997,8 @@ pub fn emit_stamp_class_members(
         );
     }
     chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, fields.len() as u16, line);
-    let fields_key = chunks[current].add_constant(Value::String(Arc::from(reflection::FIELD_FIELDS)));
+    let fields_key =
+        chunks[current].add_constant(Value::String(Arc::from(reflection::FIELD_FIELDS)));
     let fields_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, fields_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, ctor_slot, line);

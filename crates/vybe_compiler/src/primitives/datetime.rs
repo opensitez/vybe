@@ -25,7 +25,9 @@
 //! Everything that varies by language is a [`DateTimePolicy`] parameter, never
 //! a language check — see that type for why each knob exists.
 
-use vybe_ast::datetime::{DateTimePolicy, EpochPrecision, MonthIndexing, MonthOverflow, WeekdayBase};
+use vybe_ast::datetime::{
+    DateTimePolicy, EpochPrecision, MonthIndexing, MonthOverflow, WeekdayBase,
+};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -273,6 +275,10 @@ pub const MS_PER_MINUTE: f64 = 60_000.0;
 pub const MS_PER_HOUR: f64 = 3_600_000.0;
 pub const MS_PER_DAY: f64 = 86_400_000.0;
 pub const MS_PER_WEEK: f64 = 604_800_000.0;
+pub const DOTNET_DATETIME_MIN_UNIX_MS: f64 = -62_135_596_800_000.0;
+pub const DOTNET_DATETIME_MAX_UNIX_MS: f64 = 253_402_300_799_999.0;
+pub const DOTNET_TICKS_PER_MS: f64 = 10_000.0;
+pub const DOTNET_TICKS_AT_UNIX_EPOCH: f64 = 621_355_968_000_000_000.0;
 
 /// `ms + n * unit_ms` — every fixed-unit add and subtract. Subtraction is the
 /// caller negating `n`, which is why there is no `emit_sub_scaled`.
@@ -400,6 +406,7 @@ mod tests {
         assert_eq!(MS_PER_HOUR, MS_PER_MINUTE * 60.0);
         assert_eq!(MS_PER_DAY, MS_PER_HOUR * 24.0);
         assert_eq!(MS_PER_WEEK, MS_PER_DAY * 7.0);
+        assert_eq!(DOTNET_TICKS_PER_MS, 10_000.0);
     }
 
     /// The two month-overflow answers must actually differ, or the policy is

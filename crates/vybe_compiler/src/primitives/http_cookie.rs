@@ -134,7 +134,6 @@ pub fn emit_request_cookies(chunks: &mut [Chunk], current: usize, line: u32) {
 /// through one is invisible to the next.
 const COOKIE_CACHE_GLOBAL: &str = "__vybe_request_cookies";
 
-
 /// Build a `Set-Cookie` header VALUE. Stack: [name, value, attrs?] → [string].
 ///
 /// RFC 6265 §4.1.1 serialization — the mirror of `emit_parse_cookie_header`,

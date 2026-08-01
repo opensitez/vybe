@@ -857,9 +857,7 @@ impl Compiler {
                         left_slot,
                         right_slot,
                         &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Lt),
-                        common::expressions::RichFallback::Op(
-                            crate::primitives::ops::emit_dyn_lt,
-                        ),
+                        common::expressions::RichFallback::Op(crate::primitives::ops::emit_dyn_lt),
                         line,
                     );
                     if self.profile.materialize_bool_results {
@@ -899,9 +897,7 @@ impl Compiler {
                         left_slot,
                         right_slot,
                         &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Gt),
-                        common::expressions::RichFallback::Op(
-                            crate::primitives::ops::emit_dyn_gt,
-                        ),
+                        common::expressions::RichFallback::Op(crate::primitives::ops::emit_dyn_gt),
                         line,
                     );
                     if self.profile.materialize_bool_results {
@@ -941,9 +937,7 @@ impl Compiler {
                         left_slot,
                         right_slot,
                         &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Le),
-                        common::expressions::RichFallback::Op(
-                            crate::primitives::ops::emit_dyn_le,
-                        ),
+                        common::expressions::RichFallback::Op(crate::primitives::ops::emit_dyn_le),
                         line,
                     );
                     if self.profile.materialize_bool_results {
@@ -983,9 +977,7 @@ impl Compiler {
                         left_slot,
                         right_slot,
                         &vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Ge),
-                        common::expressions::RichFallback::Op(
-                            crate::primitives::ops::emit_dyn_ge,
-                        ),
+                        common::expressions::RichFallback::Op(crate::primitives::ops::emit_dyn_ge),
                         line,
                     );
                     if self.profile.materialize_bool_results {

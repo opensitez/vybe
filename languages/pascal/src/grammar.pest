@@ -350,7 +350,7 @@ param_clause = { "(" ~ param_list? ~ ")" }
 
 param_list = { param ~ (";" ~ param)* }
 
-param = { param_mode? ~ identifier_list ~ ":" ~ type_ref ~ param_default? }
+param = { param_mode? ~ identifier_list ~ (":" ~ type_ref ~ param_default?)? }
 
 param_mode = { ^"constref" | ^"var" | ^"const" | ^"out" }
 

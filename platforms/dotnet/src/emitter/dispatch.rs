@@ -1201,6 +1201,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.datetime_parse" => {
             crate::emitter::core::datetime_adapter::emit_datetime_parse(chunks, current, line)
         }
+        "dotnet.datetime_try_parse" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_try_parse(chunks, current, line)
+        }
         "dotnet.datetime_parse_exact" => {
             crate::emitter::core::datetime_adapter::emit_datetime_parse_exact(
                 chunks, current, argc, line,
@@ -1265,6 +1268,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.datetime_add_months" => {
             crate::emitter::core::datetime_adapter::emit_datetime_add_months(chunks, current, line)
+        }
+        "dotnet.datetime_add_years" => {
+            crate::emitter::core::datetime_adapter::emit_datetime_add_years(chunks, current, line)
         }
         "dotnet.datetime_days_in_month" => {
             crate::emitter::core::datetime_adapter::emit_datetime_days_in_month(
@@ -1344,6 +1350,97 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dotnet.datetime_subtract_datetime" => {
             crate::emitter::core::datetime_adapter::emit_datetime_subtract(chunks, current, line)
+        }
+        "dotnet.datetimeoffset_new" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_new(chunks, current, line)
+        }
+        "dotnet.datetimeoffset_now" | "dotnet.datetimeoffset_utc_now" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_utc_now(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetimeoffset_min_value" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_min_value(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetimeoffset_max_value" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_max_value(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetimeoffset_parse" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_parse(chunks, current, line)
+        }
+        "dotnet.datetimeoffset_try_parse" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_try_parse(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetimeoffset_from_unix_time_seconds" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_from_unix_time_seconds(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetimeoffset_from_unix_time_milliseconds" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_from_unix_time_milliseconds(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetimeoffset_add_hours" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_add_hours(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetimeoffset_to_universal_time" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_to_universal_time(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetimeoffset_to_offset" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_to_offset(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetimeoffset_to_unix_time_seconds" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_to_unix_time_seconds(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetimeoffset_to_unix_time_milliseconds" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_to_unix_time_milliseconds(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetimeoffset_compare" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_compare(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetimeoffset_subtract" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_subtract(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetimeoffset_equals" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_equals(
+                chunks, current, false, line,
+            )
+        }
+        "dotnet.datetimeoffset_equals_exact" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_equals(
+                chunks, current, true, line,
+            )
+        }
+        "dotnet.datetimeoffset_get_hash_code" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_get_hash_code(
+                chunks, current, line,
+            )
+        }
+        "dotnet.datetimeoffset_to_string" => {
+            crate::emitter::core::datetime_adapter::emit_datetimeoffset_to_string(
+                chunks, current, argc, line,
+            )
         }
 
         // ── PHP DateTime / DateTimeImmutable / DateInterval adapters ──

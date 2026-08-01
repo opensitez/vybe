@@ -132,6 +132,16 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
         let mut c = Capabilities::safe();
         c.grant(Capability::FileRead);
         c.grant(Capability::HttpServer);
+        // A served script READS the request it was handed and WRITES its
+        // response — both are `wasi:http`, which the wasi plugin gates on
+        // `Capability::Http`. Without this every superglobal dies with
+        // `Unresolved import: "wasi:http/types" …`, because the request is no
+        // longer mirrored into Rust-side globals. Note this grants no outbound
+        // reach on its own: making a request needs `outgoing-handler`, and the
+        // sandbox still withholds `Sockets`.
+        c.grant(Capability::Http);
+        // `$_ENV` / `getenv()` are `wasi:cli/environment`.
+        c.grant(Capability::Environment);
         c
     };
 
@@ -220,14 +230,16 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
     ctx.response.lock().unwrap().end();
 }
 
-/// Seed the session, and `$_ENV`, into `vm.globals`.
+/// Seed the session into `vm.globals`.
 ///
-/// **`$_SERVER`, `$_GET`, `$_POST`, `$_FILES`, `$_COOKIE` and `$_REQUEST` are
-/// no longer built here.** They are bound by the PHP walker to the shared
-/// request primitives, which read `wasi:http` — see `SUPERGLOBALS_PRELUDE` in
-/// `languages/php/src/walker.rs` and `documentation/httpserver.md` §4a. This
-/// function used to re-parse the query string, the `Cookie:` header and
-/// multipart bodies in Rust, which meant one request had two representations
+/// **No superglobal is built here any more.** `$_SERVER`, `$_GET`, `$_POST`,
+/// `$_FILES`, `$_COOKIE` and `$_REQUEST` are bound by the PHP walker to the
+/// shared request primitives, which read `wasi:http`; `$_ENV` is bound to
+/// `wasi:cli/environment.get-environment` the same way — see
+/// `SUPERGLOBALS_PRELUDE` in `languages/php/src/walker.rs` and
+/// `documentation/httpserver.md` §4a. This function used to re-parse the query
+/// string, the `Cookie:` header and multipart bodies in Rust and read
+/// `std::env::vars()` itself, which meant one request had two representations
 /// and only PHP under `--serve` could ever reach the second one.
 ///
 /// What is left is the part with no primitive behind it yet: session state
@@ -239,8 +251,6 @@ fn run_vm(script_path: &Path, ctx: Arc<RequestContext>, no_sandbox: bool) {
 fn inject_superglobals(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
     use std::sync::Arc as StdArc;
     use vybe_runtime::Value;
-
-    let env = make_string_map_value(std::env::vars());
 
     let cookie_header = ctx
         .headers
@@ -267,7 +277,6 @@ fn inject_superglobals(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
     // PHP variables and functions live in separate namespaces; the
     // walker preserves the `$` sigil on variable identifiers so a
     // function `foo` and a variable `$foo` don't collide.
-    vm.globals.insert("$_ENV".to_string(), env);
     vm.globals.insert("$_SESSION".to_string(), session);
     vm.globals.insert(
         PHP_SESSION_ID_GLOBAL.to_string(),
@@ -327,17 +336,6 @@ fn make_map_value(
     let mut obj = Object::new();
     obj.kind = ObjectKind::Map(im);
     Value::Object(StdArc::new(StdMutex::new(obj)))
-}
-
-fn make_string_map_value(
-    pairs: impl IntoIterator<Item = (String, String)>,
-) -> vybe_runtime::Value {
-    make_map_value(pairs.into_iter().map(|(k, v)| {
-        (
-            k,
-            vybe_runtime::Value::String(std::sync::Arc::from(v.as_str())),
-        )
-    }))
 }
 
 fn persist_superglobals(vm: &vybe_runtime::VM, _ctx: &Arc<RequestContext>) {
@@ -942,35 +940,16 @@ fn publish_server_env(vm: &mut vybe_runtime::VM, ctx: &Arc<RequestContext>) {
     use vybe_runtime::Value;
     use vybe_runtime::value::{Object, ObjectKind};
 
-    const DEPLOYMENT_KEYS: &[&str] = &[
-        "DOCUMENT_ROOT",
-        "DOCUMENT_URI",
-        "GATEWAY_INTERFACE",
-        "PATH_TRANSLATED",
-        "PHP_SELF",
-        "REMOTE_HOST",
-        "REQUEST_TIME",
-        "REQUEST_TIME_FLOAT",
-        "SCRIPT_FILENAME",
-        "SCRIPT_NAME",
-        "SCRIPT_URI",
-        "SCRIPT_URL",
-        "SERVER_ADDR",
-        "SERVER_ADMIN",
-        "SERVER_PORT",
-        "SERVER_PROTOCOL",
-        "SERVER_SIGNATURE",
-        "SERVER_SOFTWARE",
-    ];
-
+    // No key list: `build_cgi_env` builds the deployment half and NOTHING else,
+    // so publishing it whole is publishing exactly those keys. The literal
+    // 18-name filter that used to sit here was a second copy of that function's
+    // key set, kept in step by hand.
     let mut entries: IndexMap<Value, Value> = IndexMap::new();
-    for key in DEPLOYMENT_KEYS {
-        if let Some(value) = ctx.env.get(*key) {
-            entries.insert(
-                Value::String(std::sync::Arc::from(*key)),
-                Value::String(std::sync::Arc::from(value.as_str())),
-            );
-        }
+    for (key, value) in &ctx.env {
+        entries.insert(
+            Value::String(std::sync::Arc::from(key.as_str())),
+            Value::String(std::sync::Arc::from(value.as_str())),
+        );
     }
     // Peer address is the socket's, not the message's.
     entries.insert(

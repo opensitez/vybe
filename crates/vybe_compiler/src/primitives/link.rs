@@ -370,7 +370,9 @@ impl Compiler {
                             }
                             self.function_param_modes
                                 .entry(function_name.clone())
-                                .or_insert_with(|| params.iter().map(|param| param.pass_by).collect());
+                                .or_insert_with(|| {
+                                    params.iter().map(|param| param.pass_by).collect()
+                                });
                             self.function_param_types
                                 .entry(function_name.clone())
                                 .or_insert_with(|| {
@@ -381,7 +383,9 @@ impl Compiler {
                                 .or_insert_with(|| {
                                     params
                                         .iter()
-                                        .take_while(|param| param.default.is_none() && !param.is_rest)
+                                        .take_while(|param| {
+                                            param.default.is_none() && !param.is_rest
+                                        })
                                         .count()
                                 });
                             self.function_signatures
@@ -709,15 +713,19 @@ impl Compiler {
             if self.function_signatures.contains_key(bound_name) {
                 continue;
             }
-            self.function_signatures
-                .insert(bound_name.clone(), vec![CallSignature::from_params(&m.params)]);
+            self.function_signatures.insert(
+                bound_name.clone(),
+                vec![CallSignature::from_params(&m.params)],
+            );
         }
         for (m, bound_name) in nc.static_methods.iter().zip(static_method_names.iter()) {
             if self.function_signatures.contains_key(bound_name) {
                 continue;
             }
-            self.function_signatures
-                .insert(bound_name.clone(), vec![CallSignature::from_params(&m.params)]);
+            self.function_signatures.insert(
+                bound_name.clone(),
+                vec![CallSignature::from_params(&m.params)],
+            );
         }
 
         let bases: Vec<String> = parents.iter().map(|p| self.canon(p)).collect();
@@ -805,7 +813,8 @@ impl Compiler {
             }
         }
 
-        self.defined_globals.insert(crate::primitives::classes::ctor_global_for(&name, 0));
+        self.defined_globals
+            .insert(crate::primitives::classes::ctor_global_for(&name, 0));
         self.pending_classes
             .entry(name.to_string())
             .or_insert(PendingClass {
@@ -1195,8 +1204,8 @@ impl Compiler {
 
     pub(crate) fn resolve_source_type_alias(&self, name: &str) -> String {
         let normalized = Self::strip_global_namespace_prefix(name);
-        let trimmed = crate::primitives::generics::erased_type_name(normalized.trim())
-            .replace('\\', ".");
+        let trimmed =
+            crate::primitives::generics::erased_type_name(normalized.trim()).replace('\\', ".");
         let (head, tail) = trimmed
             .split_once('.')
             .map(|(head, tail)| (head.trim(), Some(tail.trim())))

@@ -681,9 +681,8 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
     }
     if class.eq_ignore_ascii_case("DateTime") {
         return match method_name.to_ascii_lowercase().as_str() {
-            "add" | "adddays" | "addhours" | "addmonths" | "touniversaltime" | "tolocaltime" => {
-                Some("DateTime".into())
-            }
+            "add" | "adddays" | "addhours" | "addmonths" | "addyears" | "touniversaltime"
+            | "tolocaltime" => Some("DateTime".into()),
             "subtract" => Some("TimeSpan".into()),
             "compareto" | "gethashcode" => Some("Int32".into()),
             "equals" => Some("Boolean".into()),
@@ -1063,6 +1062,18 @@ pub fn static_member_constant(prefix: &str, member_name: &str) -> Option<&'stati
             "local" => "Local",
             _ => "Unspecified",
         });
+    }
+    if normalized.eq_ignore_ascii_case("DateTimeStyles")
+        || normalized.eq_ignore_ascii_case("System.Globalization.DateTimeStyles")
+    {
+        return match member_name.to_ascii_lowercase().as_str() {
+            "none" => Some("None"),
+            "allowwhitespaces" => Some("AllowWhiteSpaces"),
+            "adjusttouniversal" => Some("AdjustToUniversal"),
+            "assumeuniversal" => Some("AssumeUniversal"),
+            "roundtripkind" => Some("RoundtripKind"),
+            _ => None,
+        };
     }
     if (normalized.eq_ignore_ascii_case("NotifyCollectionChangedAction")
         || normalized

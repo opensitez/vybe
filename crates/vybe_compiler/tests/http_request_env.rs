@@ -131,7 +131,13 @@ fn environ(method: &str, path_with_query: &str, scheme: &str) -> Value {
         .insert(http_request_env::REQUEST_GLOBAL.to_string(), handle);
 
     let mut chunks = vec![Chunk::new("<environ-test>")];
-    assert!(dispatch::emit_common("http_request.environ", &mut chunks, 0, 0, 0));
+    assert!(dispatch::emit_common(
+        "http_request.environ",
+        &mut chunks,
+        0,
+        0,
+        0
+    ));
     chunks[0].emit_op(Op::RETURN, 0);
     vm.run(chunks).expect("VM run failed")
 }

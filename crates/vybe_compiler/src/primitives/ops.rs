@@ -9,8 +9,8 @@
 //! No flat-offset BR_IF_FALSE / BR_IF_TRUE / BR_IF_NULL custom opcodes.
 
 use std::sync::Arc;
-use vybe_runtime::{Chunk, Value};
 use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 // ── helpers ────────────────────────────────────────────────────────────
 
@@ -66,7 +66,13 @@ fn f64_const(chunk: &mut Chunk, v: f64, line: u32) {
     chunk.emit_f64_const(v, line);
 }
 
-fn emit_object_field_to_slot(chunk: &mut Chunk, src_slot: u16, dst_slot: u16, field: &str, line: u32) {
+fn emit_object_field_to_slot(
+    chunk: &mut Chunk,
+    src_slot: u16,
+    dst_slot: u16,
+    field: &str,
+    line: u32,
+) {
     let field_key = chunk.add_constant(Value::String(Arc::from(field)));
     load(chunk, src_slot, line);
     chunk.emit_op_u16(Op::STRUCT_GET, field_key, line);
@@ -346,7 +352,15 @@ pub fn emit_dyn_eq(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::I64_EQ, line);
     chunk.emit_else(line);
     // DateTime-like comparable objects carry a numeric `__time` field.
-    emit_both_object_field_present(chunk, a_slot, b_slot, a_time_slot, b_time_slot, "Ticks", line);
+    emit_both_object_field_present(
+        chunk,
+        a_slot,
+        b_slot,
+        a_time_slot,
+        b_time_slot,
+        "Ticks",
+        line,
+    );
     chunk.emit_if(line);
     load(chunk, a_time_slot, line);
     call1(chunk, to_f64, line);
@@ -572,7 +586,15 @@ fn emit_dyn_cmp(chunk: &mut Chunk, line: u32, op: CmpOp) {
     chunk.emit_op(i64_cmp_op(&op), line);
     chunk.emit_else(line);
     // DateTime-like comparable objects carry a numeric `__time` field.
-    emit_both_object_field_present(chunk, a_slot, b_slot, a_time_slot, b_time_slot, "Ticks", line);
+    emit_both_object_field_present(
+        chunk,
+        a_slot,
+        b_slot,
+        a_time_slot,
+        b_time_slot,
+        "Ticks",
+        line,
+    );
     chunk.emit_if(line);
     load(chunk, a_time_slot, line);
     call1(chunk, to_f64, line);
@@ -964,7 +986,15 @@ pub fn emit_dyn_eq_into(_imports: &mut Chunk, code: &mut Chunk, line: u32) {
     load(code, b_slot, line);
     code.emit_op(Op::I64_EQ, line);
     code.emit_else(line);
-    emit_both_object_field_present(code, a_slot, b_slot, a_time_slot, b_time_slot, "Ticks", line);
+    emit_both_object_field_present(
+        code,
+        a_slot,
+        b_slot,
+        a_time_slot,
+        b_time_slot,
+        "Ticks",
+        line,
+    );
     code.emit_if(line);
     load(code, a_time_slot, line);
     call1(code, to_f64, line);
@@ -1043,7 +1073,15 @@ fn emit_dyn_cmp_into(_imports: &mut Chunk, code: &mut Chunk, line: u32, op: CmpO
     load(code, b_slot, line);
     code.emit_op(i64_cmp_op(&op), line);
     code.emit_else(line);
-    emit_both_object_field_present(code, a_slot, b_slot, a_time_slot, b_time_slot, "Ticks", line);
+    emit_both_object_field_present(
+        code,
+        a_slot,
+        b_slot,
+        a_time_slot,
+        b_time_slot,
+        "Ticks",
+        line,
+    );
     code.emit_if(line);
     load(code, a_time_slot, line);
     call1(code, to_f64, line);

@@ -414,12 +414,7 @@ pub fn emit_symbol_kind_test(
 /// across the language boundary.
 ///
 /// Stack: `[symbol_ref] -> [symbol_ref]`, or throws.
-pub fn emit_throw_if_unresolved(
-    chunk: &mut Chunk,
-    exception_name: &str,
-    message: &str,
-    line: u32,
-) {
+pub fn emit_throw_if_unresolved(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
     let symbol_slot = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, symbol_slot, line);
 

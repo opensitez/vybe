@@ -26,12 +26,28 @@
 //!
 //! # A caution about the existing `str_*` surface
 //!
-//! It is already split and cannot be used wholesale. `common:str_length` is
-//! `strings::emit_length` → `wasm:js-string.length`, which counts **UTF-8
-//! bytes**; but `common:str_char_at` and `common:str_contains` already call
-//! `ecma:string`, which is **UTF-16**. Picking `common:str_*` uniformly would
-//! therefore encode a self-inconsistent default. Each entry below names the
-//! target whose measured behaviour matches, not the one whose name matches.
+//! Each entry below names the target whose measured behaviour matches, not the
+//! one whose name matches.
+//!
+//! **Corrected 2026-08-01.** This note previously claimed `common:str_length`
+//! (`strings::emit_length` → `wasm:js-string.length`) counts **UTF-8 bytes**,
+//! and that the `str_*` surface was therefore split between byte and UTF-16
+//! semantics. That is FALSE, read from the registration sites:
+//!
+//! - `wasm:js-string.length` — `s.encode_utf16().count()` as `I32`
+//!   (`crates/vybe_runtime/src/js_string_builtins.rs`)
+//! - `ecma:string.length` — `s.encode_utf16().count()` as `F64`
+//!   (`platforms/ecma/src/string.rs`)
+//!
+//! Both are **UTF-16 code units**; they differ only in return type. The `str_*`
+//! surface is unit-CONSISTENT, and the default below is uniform rather than
+//! carefully picked around a split that does not exist.
+//!
+//! The real consequence is the opposite of what the old note implied: the
+//! platform has **no shared byte-length primitive at all**. PHP built its own
+//! (`php::string_adapter::emit_strlen`, a UTF-16 walk summing UTF-8 widths),
+//! and it is the only one. A language that wants bytes has nothing to bind to
+//! — see `unifiedstringplan.md` §1a.
 
 use crate::primitives::Compiler;
 use std::sync::OnceLock;
@@ -49,7 +65,11 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
     // ── string ──────────────────────────────────────────────────────────
     // UTF-16 code units: ECMA-262 `String.prototype.length`. NOT
     // `common:str_length`, which is the byte count.
-    b.insert(BuiltinType::String, ProtocolSlot::Len, "host:ecma:string:length");
+    b.insert(
+        BuiltinType::String,
+        ProtocolSlot::Len,
+        "host:ecma:string:length",
+    );
     // `s[i]` yields a one-character string. Verified against Dart 2026-07-30:
     // `"café"[3]` is `é`; routing this through `ecma:array.get` returned null
     // for every index.
@@ -59,10 +79,22 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
     // in-range indexing was verified to agree; a language whose out-of-range
     // answer differs declares `[builtin_slots.string] get_item`. Read an
     // out-of-range failure as this caveat, not as a new finding.
-    b.insert(BuiltinType::String, ProtocolSlot::GetItem, "common:str_char_at");
-    b.insert(BuiltinType::String, ProtocolSlot::Contains, "common:str_contains");
+    b.insert(
+        BuiltinType::String,
+        ProtocolSlot::GetItem,
+        "common:str_char_at",
+    );
+    b.insert(
+        BuiltinType::String,
+        ProtocolSlot::Contains,
+        "common:str_contains",
+    );
     b.insert(BuiltinType::String, ProtocolSlot::Add, "common:str_concat");
-    b.insert(BuiltinType::String, ProtocolSlot::Compare, "common:str_compare");
+    b.insert(
+        BuiltinType::String,
+        ProtocolSlot::Compare,
+        "common:str_compare",
+    );
     // The platform answer for `==` / `!=` IS `ops::emit_dyn_eq` — that is what
     // `BinOp::Eq` falls back to when no language declares otherwise. Recording
     // it makes the default a decision on record (§2e) instead of an emergent
@@ -74,12 +106,32 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
     b.insert(BuiltinType::String, ProtocolSlot::Ne, "common:dyn_ne");
 
     // ── array ───────────────────────────────────────────────────────────
-    b.insert(BuiltinType::Array, ProtocolSlot::Len, "common:collections.length");
+    b.insert(
+        BuiltinType::Array,
+        ProtocolSlot::Len,
+        "common:collections.length",
+    );
     // Same out-of-range caveat as `String`/`GetItem` above.
-    b.insert(BuiltinType::Array, ProtocolSlot::GetItem, "common:collections.get");
-    b.insert(BuiltinType::Array, ProtocolSlot::SetItem, "common:collections.set");
-    b.insert(BuiltinType::Array, ProtocolSlot::Contains, "common:collections.contains");
-    b.insert(BuiltinType::Array, ProtocolSlot::Add, "common:collections.concat");
+    b.insert(
+        BuiltinType::Array,
+        ProtocolSlot::GetItem,
+        "common:collections.get",
+    );
+    b.insert(
+        BuiltinType::Array,
+        ProtocolSlot::SetItem,
+        "common:collections.set",
+    );
+    b.insert(
+        BuiltinType::Array,
+        ProtocolSlot::Contains,
+        "common:collections.contains",
+    );
+    b.insert(
+        BuiltinType::Array,
+        ProtocolSlot::Add,
+        "common:collections.concat",
+    );
 
     // ── map ─────────────────────────────────────────────────────────────
     b.insert(BuiltinType::Map, ProtocolSlot::Len, "common:dict.size");
@@ -91,7 +143,11 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
     // table existed, because binding it centrally made Dart's `json['body']`
     // on an empty map return `undefined` where it must be `null`. That is the
     // whole reason overrides exist, so the two landed together.
-    b.insert(BuiltinType::Map, ProtocolSlot::GetItem, "common:dict.get_dynamic");
+    b.insert(
+        BuiltinType::Map,
+        ProtocolSlot::GetItem,
+        "common:dict.get_dynamic",
+    );
 
     // ── bytes ───────────────────────────────────────────────────────────
     // Indexing a byte string yields the INTEGER byte in Python, Go and PHP 8
@@ -103,7 +159,11 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
         ProtocolSlot::GetItem,
         "host:ecma:uint8array:at",
     );
-    b.insert(BuiltinType::Map, ProtocolSlot::SetItem, "common:dict.set_dynamic");
+    b.insert(
+        BuiltinType::Map,
+        ProtocolSlot::SetItem,
+        "common:dict.set_dynamic",
+    );
     b.insert(BuiltinType::Map, ProtocolSlot::Contains, "common:dict.has");
 
     b
@@ -266,8 +326,7 @@ mod tests {
                 continue;
             };
             let mut chunks = vec![vybe_runtime::Chunk::new("<probe>")];
-            let claimed =
-                crate::primitives::dispatch::emit_common(name, &mut chunks, 0, 2, 0);
+            let claimed = crate::primitives::dispatch::emit_common(name, &mut chunks, 0, 2, 0);
             assert!(
                 claimed,
                 "{ty:?}/{slot:?} defaults to `common:{name}`, which no dispatcher \

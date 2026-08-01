@@ -294,6 +294,11 @@ pub fn try_parse_desugar(
         || recv.eq_ignore_ascii_case("System.Guid")
         || recv.eq_ignore_ascii_case("Version")
         || recv.eq_ignore_ascii_case("System.Version")
+        || recv.eq_ignore_ascii_case("DateTime")
+        || recv.eq_ignore_ascii_case("System.DateTime")
+        || recv.eq_ignore_ascii_case("Date")
+        || recv.eq_ignore_ascii_case("DateTimeOffset")
+        || recv.eq_ignore_ascii_case("System.DateTimeOffset")
     {
         let success = Expression::new(ExprKind::Binary {
             op: BinOp::NotEq,

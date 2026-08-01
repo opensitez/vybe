@@ -440,7 +440,6 @@ fn emit_http_header_keys(chunks: &mut [Chunk], current: usize, map: u16, line: u
     chunks[current].emit_end(line);
 }
 
-
 /// The request body as a string. Stack: [] → [string].
 ///
 /// `wasi:http` gives the body up exactly ONCE — `incoming-request.consume`
@@ -544,10 +543,16 @@ pub fn emit_body(chunks: &mut [Chunk], current: usize, line: u32) {
 /// `GET` and ASP.NET `Request.Query`. Memoised so every language sees the
 /// same object — a request is one request even when PHP calls into C#.
 pub fn emit_query_params(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_memoised(chunks, current, QUERY_PARAMS_CACHE_GLOBAL, line, |chunks, current, line| {
-        emit_query_string(chunks, current, line);
-        super::http_form::emit_parse_urlencoded(chunks, current, line);
-    });
+    emit_memoised(
+        chunks,
+        current,
+        QUERY_PARAMS_CACHE_GLOBAL,
+        line,
+        |chunks, current, line| {
+            emit_query_string(chunks, current, line);
+            super::http_form::emit_parse_urlencoded(chunks, current, line);
+        },
+    );
 }
 
 const QUERY_PARAMS_CACHE_GLOBAL: &str = "__vybe_request_query_params";
@@ -582,7 +587,6 @@ pub fn emit_memoised(
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
 }
-
 
 /// Query, body and cookie values merged into one map. Stack: [] → [map].
 ///

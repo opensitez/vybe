@@ -149,6 +149,15 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.get" => crate::emitter::collections_adapter::emit_get(chunks, current, argc, line),
         "python.pop" => crate::emitter::collections_adapter::emit_pop(chunks, current, argc, line),
+        "python.str_find" => {
+            crate::emitter::string_adapter::emit_str_search(chunks, current, argc, line, false, false)
+        }
+        "python.str_rfind" => {
+            crate::emitter::string_adapter::emit_str_search(chunks, current, argc, line, true, false)
+        }
+        "python.str_rindex" => {
+            crate::emitter::string_adapter::emit_str_search(chunks, current, argc, line, true, true)
+        }
         "python.index" => {
             crate::emitter::collections_adapter::emit_index(chunks, current, argc, line)
         }
@@ -687,9 +696,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "python.str_splitlines" => {
             crate::emitter::string_adapter::emit_splitlines(chunks, current, argc, line)
-        }
-        "python.str_strip" => {
-            crate::emitter::string_adapter::emit_strip(chunks, current, argc, line)
         }
         "python.str_expandtabs" => {
             crate::emitter::string_adapter::emit_expandtabs(chunks, current, argc, line)

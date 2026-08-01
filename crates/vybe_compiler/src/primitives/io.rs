@@ -701,12 +701,7 @@ pub fn emit_ob_get_status(
 /// `default_name` is what a frame with no handler reports. The shared primitive
 /// has no word for "no handler" — PHP spells it `"default output handler"` —
 /// so the language supplies its own.
-pub fn emit_ob_list_handlers(
-    chunks: &mut [Chunk],
-    current: usize,
-    default_name: &str,
-    line: u32,
-) {
+pub fn emit_ob_list_handlers(chunks: &mut [Chunk], current: usize, default_name: &str, line: u32) {
     let stack_slot = chunks[current].alloc_scratch(1);
     let out_slot = chunks[current].alloc_scratch(1);
     let i_slot = chunks[current].alloc_scratch(1);

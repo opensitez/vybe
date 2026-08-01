@@ -260,6 +260,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     MethodBody::Common("dotnet.datetime_parse".into()),
                 ))
                 .with_method(MethodDef::static_method(
+                    "TryParse",
+                    1,
+                    MethodBody::Common("dotnet.datetime_try_parse".into()),
+                ))
+                .with_method(MethodDef::static_method(
                     "ParseExact",
                     3,
                     MethodBody::Common("dotnet.datetime_parse_exact".into()),
@@ -323,6 +328,11 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "AddMonths",
                     1,
                     MethodBody::Common("dotnet.datetime_add_months".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AddYears",
+                    1,
+                    MethodBody::Common("dotnet.datetime_add_years".into()),
                 ))
                 .with_method(MethodDef::new(
                     "Add",
@@ -398,6 +408,108 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "GetHashCode",
                     0,
                     MethodBody::Common("dotnet.datetime_get_hash_code".into()),
+                )),
+        ),
+        DotnetClassExport::new(
+            "dotnet.System",
+            ClassType::new("DateTimeOffset")
+                .with_constructor(
+                    ConstructorDef::new(7).with_common_backing("dotnet.datetimeoffset_new"),
+                )
+                .with_method(MethodDef::static_method(
+                    "Now",
+                    0,
+                    MethodBody::Common("dotnet.datetimeoffset_now".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "UtcNow",
+                    0,
+                    MethodBody::Common("dotnet.datetimeoffset_utc_now".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "MinValue",
+                    0,
+                    MethodBody::Common("dotnet.datetimeoffset_min_value".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "MaxValue",
+                    0,
+                    MethodBody::Common("dotnet.datetimeoffset_max_value".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Parse",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_parse".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "TryParse",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_try_parse".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FromUnixTimeSeconds",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_from_unix_time_seconds".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "FromUnixTimeMilliseconds",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_from_unix_time_milliseconds".into()),
+                ))
+                .with_method(MethodDef::static_method(
+                    "Subtract",
+                    2,
+                    MethodBody::Common("dotnet.datetimeoffset_subtract".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "AddHours",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_add_hours".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToUniversalTime",
+                    0,
+                    MethodBody::Common("dotnet.datetimeoffset_to_universal_time".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToOffset",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_to_offset".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToUnixTimeSeconds",
+                    0,
+                    MethodBody::Common("dotnet.datetimeoffset_to_unix_time_seconds".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToUnixTimeMilliseconds",
+                    0,
+                    MethodBody::Common("dotnet.datetimeoffset_to_unix_time_milliseconds".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "Equals",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_equals".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "EqualsExact",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_equals_exact".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "CompareTo",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_compare".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "GetHashCode",
+                    0,
+                    MethodBody::Common("dotnet.datetimeoffset_get_hash_code".into()),
+                ))
+                .with_method(MethodDef::new(
+                    "ToString",
+                    1,
+                    MethodBody::Common("dotnet.datetimeoffset_to_string".into()),
                 )),
         ),
         DotnetClassExport::new(

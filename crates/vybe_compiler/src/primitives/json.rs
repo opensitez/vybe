@@ -347,7 +347,15 @@ pub fn emit_stringify_props(chunks: &mut Vec<Chunk>, current: usize, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_SET, sort_slot, line);
     chunks[current].emit_bool_const(true, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, props_slot, line);
-    emit_normalize(chunks, current, value_slot, default_slot, sort_slot, props_slot, line);
+    emit_normalize(
+        chunks,
+        current,
+        value_slot,
+        default_slot,
+        sort_slot,
+        props_slot,
+        line,
+    );
     add_call(&mut chunks[current], "ecma:json", "stringify", 1, line);
 }
 

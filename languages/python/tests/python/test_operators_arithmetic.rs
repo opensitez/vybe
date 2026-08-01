@@ -265,3 +265,65 @@ fn modulo_float_operands_floors() {
 fn modulo_negative_float_takes_divisor_sign() {
     assert_eq!(run_print("-7.5 % 2"), "0.5");
 }
+
+// ── `len()` counts CODE POINTS, not UTF-16 code units ──────────────────────
+//
+// `unifiedstringplan.md` Axis 1 names Python's index unit `scalar`, and Python
+// is the only language on that axis. The shared length helper counts UTF-16
+// units, so every character outside the BMP was off by one: `len("😀")` was 2
+// and `len("a😀b")` was 4.
+//
+// `Array.from` walks a string with the STRING ITERATOR, which yields code
+// points, so its length is the scalar count — the `[...s].length` idiom over
+// primitives that already existed. No host function was added.
+//
+// Values measured against real `python3`.
+
+#[test]
+fn len_of_non_bmp_char_is_one_code_point() {
+    assert_eq!(run_print(r#"len("\U0001F600")"#), "1");
+}
+
+#[test]
+fn len_counts_code_points_around_a_non_bmp_char() {
+    assert_eq!(run_print(r#"len("a\U0001F600b")"#), "3");
+}
+
+#[test]
+fn len_of_accented_string_is_unchanged() {
+    assert_eq!(run_print(r#"len("café")"#), "4");
+}
+
+#[test]
+fn len_of_empty_string_is_zero() {
+    assert_eq!(run_print(r#"len("")"#), "0");
+}
+
+// `len` is polymorphic — the string leg must not disturb the others.
+#[test]
+fn len_of_list_is_element_count() {
+    assert_eq!(run_print("len([1, 2, 3])"), "3");
+}
+
+#[test]
+fn len_of_dict_is_key_count() {
+    assert_eq!(run_print("len({'a': 1})"), "1");
+}
+
+#[test]
+fn len_of_set_is_element_count() {
+    assert_eq!(run_print("len({1, 2})"), "2");
+}
+
+#[test]
+fn len_of_bytes_is_byte_count() {
+    assert_eq!(run_print(r#"len(b"abc")"#), "3");
+}
+
+#[test]
+fn len_uses_user_dunder_len() {
+    assert_eq!(
+        run_print("class C:\n    def __len__(s): return 7\nlen(C())"),
+        "7"
+    );
+}

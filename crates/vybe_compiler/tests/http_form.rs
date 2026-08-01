@@ -206,7 +206,11 @@ fn multipart_separates_files_from_fields() {
         CT,
     );
     assert_eq!(key(&sub(&form, "fields"), "note").as_deref(), Some("hello"));
-    assert_eq!(len(&sub(&form, "fields")), 1, "the upload must not be a field");
+    assert_eq!(
+        len(&sub(&form, "fields")),
+        1,
+        "the upload must not be a field"
+    );
     assert_eq!(
         upload(&form, "doc", "content").as_deref(),
         Some("FILE BODY")
@@ -259,7 +263,9 @@ fn multipart_ignores_preamble_and_epilogue() {
     // Splitting on the delimiter yields a leading segment before the first
     // boundary and a trailing `--`; neither is a part.
     let mut body = String::from("ignored preamble\r\n");
-    body.push_str(&multipart(&["Content-Disposition: form-data; name=\"a\"\r\n\r\n1"]));
+    body.push_str(&multipart(&[
+        "Content-Disposition: form-data; name=\"a\"\r\n\r\n1",
+    ]));
     let form = parse_multipart(&body, CT);
     assert_eq!(len(&sub(&form, "fields")), 1);
     assert_eq!(key(&sub(&form, "fields"), "a").as_deref(), Some("1"));
@@ -314,13 +320,15 @@ fn multipart_accepts_filename_before_name() {
     // RFC 7578 fixes no parameter order. A bare substring search finds `name=`
     // inside `filename=`, filing the upload under the file's name.
     let form = parse_multipart(
-        &multipart(&[
-            "Content-Disposition: form-data; filename=\"x.txt\"; name=\"f\"\r\n\r\nBODY",
-        ]),
+        &multipart(&["Content-Disposition: form-data; filename=\"x.txt\"; name=\"f\"\r\n\r\nBODY"]),
         CT,
     );
     assert_eq!(upload(&form, "f", "content").as_deref(), Some("BODY"));
-    assert_eq!(len(&sub(&form, "fields")), 0, "must not be filed as a field");
+    assert_eq!(
+        len(&sub(&form, "fields")),
+        0,
+        "must not be filed as a field"
+    );
 }
 
 #[test]

@@ -1004,14 +1004,15 @@ impl Compiler {
                 // `profile.name == "c"` (§3c).
                 let expr_is_integral = |compiler: &Compiler, expr: &Expression| {
                     matches!(expr.kind, ExprKind::Lit(Literal::Int(_)))
-                        || compiler.infer_expr_type_hint(expr).as_deref().is_some_and(
-                            |hint| {
+                        || compiler
+                            .infer_expr_type_hint(expr)
+                            .as_deref()
+                            .is_some_and(|hint| {
                                 vybe_ast::builtin_types::classify_with(
                                     &compiler.profile.builtin_type_spellings,
                                     hint,
                                 ) == Some(vybe_ast::builtin_slots::BuiltinType::Int)
-                            },
-                        )
+                            })
                 };
 
                 // Short-circuit for And/Or — generic path for all languages.
@@ -1916,6 +1917,7 @@ impl Compiler {
                             ReflectionBinding::Method {
                                 type_name,
                                 method_name,
+                                ..
                             },
                             "IsStatic",
                         ) => {
@@ -1928,6 +1930,96 @@ impl Compiler {
                             return Ok(());
                         }
                         (
+                            ReflectionBinding::Method {
+                                type_name,
+                                method_name,
+                                generic_args,
+                            },
+                            "ReturnType",
+                        ) => {
+                            let return_type = self
+                                .reflection_type_metadata(&type_name)
+                                .and_then(|meta| meta.methods.get(&method_name))
+                                .and_then(|meta| {
+                                    meta.return_type.as_deref().map(|return_type| {
+                                        if let Some(index) = meta
+                                            .generic_params
+                                            .iter()
+                                            .position(|param| param.eq_ignore_ascii_case(return_type))
+                                            .filter(|index| *index < generic_args.len())
+                                        {
+                                            generic_args[index].clone()
+                                        } else {
+                                            return_type.to_string()
+                                        }
+                                    })
+                                })
+                                .unwrap_or_else(|| "System.Void".to_string());
+                            self.compile_reflection_type_value(&return_type)?;
+                            return Ok(());
+                        }
+                        (
+                            ReflectionBinding::Method {
+                                type_name,
+                                method_name,
+                                ..
+                            },
+                            "IsAbstract",
+                        ) => {
+                            let value = self
+                                .reflection_type_metadata(&type_name)
+                                .and_then(|meta| meta.methods.get(&method_name))
+                                .map(|meta| meta.is_abstract)
+                                .unwrap_or(false);
+                            inst!(self, core_wasm::bool_const, value);
+                            return Ok(());
+                        }
+                        (
+                            ReflectionBinding::Method {
+                                type_name,
+                                method_name,
+                                ..
+                            },
+                            "IsVirtual",
+                        ) => {
+                            let value = self
+                                .reflection_type_metadata(&type_name)
+                                .and_then(|meta| meta.methods.get(&method_name))
+                                .map(|meta| meta.is_virtual)
+                                .unwrap_or(false);
+                            inst!(self, core_wasm::bool_const, value);
+                            return Ok(());
+                        }
+                        (
+                            ReflectionBinding::Method {
+                                type_name,
+                                method_name,
+                                generic_args,
+                            },
+                            "IsGenericMethodDefinition",
+                        ) => {
+                            let value = self
+                                .reflection_type_metadata(&type_name)
+                                .and_then(|meta| meta.methods.get(&method_name))
+                                .map(|meta| !meta.generic_params.is_empty() && generic_args.is_empty())
+                                .unwrap_or(false);
+                            inst!(self, core_wasm::bool_const, value);
+                            return Ok(());
+                        }
+                        (
+                            ReflectionBinding::Property {
+                                type_name,
+                                property_name,
+                            },
+                            "CanRead",
+                        ) => {
+                            let can_read = self
+                                .reflection_property_metadata(&type_name, &property_name)
+                                .is_some();
+                            inst!(self, core_wasm::bool_const, can_read);
+                            return Ok(());
+                        }
+                        (
                             ReflectionBinding::Property {
                                 type_name,
                                 property_name,
@@ -1935,11 +2027,128 @@ impl Compiler {
                             "CanWrite",
                         ) => {
                             let can_write = self
-                                .reflection_type_metadata(&type_name)
-                                .and_then(|meta| meta.properties.get(&property_name))
+                                .reflection_property_metadata(&type_name, &property_name)
+                                .map(|(_, meta)| meta)
                                 .map(|meta| meta.can_write)
                                 .unwrap_or(false);
                             inst!(self, core_wasm::bool_const, can_write);
+                            return Ok(());
+                        }
+                        (
+                            ReflectionBinding::Field {
+                                type_name,
+                                field_name,
+                            },
+                            "IsPublic",
+                        ) => {
+                            let value = self
+                                .reflection_field_metadata(&type_name, &field_name)
+                                .map(|(_, meta)| {
+                                    matches!(meta.visibility, vybe_ast::Visibility::Public)
+                                })
+                                .unwrap_or(false);
+                            inst!(self, core_wasm::bool_const, value);
+                            return Ok(());
+                        }
+                        (
+                            ReflectionBinding::Constructor {
+                                type_name,
+                                param_types,
+                            },
+                            "IsPublic",
+                        ) => {
+                            let value = self
+                                .reflection_type_metadata(&type_name)
+                                .and_then(|meta| {
+                                    meta.constructors
+                                        .iter()
+                                        .find(|ctor| ctor.param_types == param_types)
+                                })
+                                .map(|meta| matches!(meta.visibility, vybe_ast::Visibility::Public))
+                                .unwrap_or(false);
+                            inst!(self, core_wasm::bool_const, value);
+                            return Ok(());
+                        }
+                        (
+                            ReflectionBinding::Constructor {
+                                type_name,
+                                param_types,
+                            },
+                            "IsPrivate",
+                        ) => {
+                            let value = self
+                                .reflection_type_metadata(&type_name)
+                                .and_then(|meta| {
+                                    meta.constructors
+                                        .iter()
+                                        .find(|ctor| ctor.param_types == param_types)
+                                })
+                                .map(|meta| matches!(meta.visibility, vybe_ast::Visibility::Private))
+                                .unwrap_or(false);
+                            inst!(self, core_wasm::bool_const, value);
+                            return Ok(());
+                        }
+                        (
+                            ReflectionBinding::Constructor {
+                                type_name,
+                                param_types,
+                            },
+                            "IsStatic",
+                        ) => {
+                            let value = self
+                                .reflection_type_metadata(&type_name)
+                                .and_then(|meta| {
+                                    meta.constructors
+                                        .iter()
+                                        .find(|ctor| ctor.param_types == param_types)
+                                })
+                                .map(|meta| meta.is_static)
+                                .unwrap_or(false);
+                            inst!(self, core_wasm::bool_const, value);
+                            return Ok(());
+                        }
+                        (
+                            ReflectionBinding::Field {
+                                type_name,
+                                field_name,
+                            },
+                            "IsPrivate",
+                        ) => {
+                            let value = self
+                                .reflection_field_metadata(&type_name, &field_name)
+                                .map(|(_, meta)| {
+                                    matches!(meta.visibility, vybe_ast::Visibility::Private)
+                                })
+                                .unwrap_or(false);
+                            inst!(self, core_wasm::bool_const, value);
+                            return Ok(());
+                        }
+                        (
+                            ReflectionBinding::Field {
+                                type_name,
+                                field_name,
+                            },
+                            "IsStatic",
+                        ) => {
+                            let value = self
+                                .reflection_field_metadata(&type_name, &field_name)
+                                .map(|(_, meta)| meta.is_static)
+                                .unwrap_or(false);
+                            inst!(self, core_wasm::bool_const, value);
+                            return Ok(());
+                        }
+                        (
+                            ReflectionBinding::Field {
+                                type_name,
+                                field_name,
+                            },
+                            "IsInitOnly",
+                        ) => {
+                            let value = self
+                                .reflection_field_metadata(&type_name, &field_name)
+                                .map(|(_, meta)| !meta.can_write)
+                                .unwrap_or(false);
+                            inst!(self, core_wasm::bool_const, value);
                             return Ok(());
                         }
                         _ => {}
@@ -3918,7 +4127,8 @@ impl Compiler {
                             Some(fixed) => fixed + 1,
                             None => args.len(),
                         };
-                        let overload_global = crate::primitives::classes::ctor_global_for(&canon_type, effective_len);
+                        let overload_global =
+                            crate::primitives::classes::ctor_global_for(&canon_type, effective_len);
                         let ctor_global = if self.defined_globals.contains(&overload_global) {
                             overload_global
                         } else {
@@ -4005,7 +4215,10 @@ impl Compiler {
                                 let flattened_canon = self.canon(flattened_name);
                                 if self.defined_classes.contains(&flattened_canon) {
                                     let overload_global =
-                                        crate::primitives::classes::ctor_global_for(&flattened_canon, args.len());
+                                        crate::primitives::classes::ctor_global_for(
+                                            &flattened_canon,
+                                            args.len(),
+                                        );
                                     let ctor_global =
                                         if self.defined_globals.contains(&overload_global) {
                                             overload_global
@@ -4030,7 +4243,8 @@ impl Compiler {
                         let last = class_parts.last().unwrap();
                         let canon_last = self.canon(last);
                         if self.defined_classes.contains(&canon_last) {
-                            let autoload_name = autoload_source_name.as_deref().unwrap_or(type_name);
+                            let autoload_name =
+                                autoload_source_name.as_deref().unwrap_or(type_name);
                             self.emit_constructor_global_ref(&canon_last, autoload_name);
                             for a in args {
                                 self.compile_expr(&a.value)?;
@@ -4329,8 +4543,7 @@ impl Compiler {
                         } else {
                             bare_str.to_lowercase()
                         };
-                        let autoload_name =
-                            autoload_source_name.as_deref().unwrap_or(type_name);
+                        let autoload_name = autoload_source_name.as_deref().unwrap_or(type_name);
                         self.emit_constructor_global_ref(&ctor_name, autoload_name);
                         for a in args {
                             self.compile_expr(&a.value)?;
@@ -4370,7 +4583,10 @@ impl Compiler {
                                     .next()
                                     .unwrap_or(autoload_name.as_str());
                                 let fallback_ctor = self.canon(ctor_base);
-                                let primary_ctor = crate::primitives::classes::ctor_global_for(&fallback_ctor, args.len());
+                                let primary_ctor = crate::primitives::classes::ctor_global_for(
+                                    &fallback_ctor,
+                                    args.len(),
+                                );
                                 self.emit_dynamic_constructor_global_ref(
                                     &primary_ctor,
                                     Some(&fallback_ctor),
@@ -5750,7 +5966,8 @@ impl Compiler {
                     if let Some(user_type) = self.user_value_type_name_from_hint(type_name) {
                         if matches!(&inner.kind, ExprKind::Object(_)) {
                             let ctor_global = {
-                                let overload = crate::primitives::classes::ctor_global_for(&user_type, 0);
+                                let overload =
+                                    crate::primitives::classes::ctor_global_for(&user_type, 0);
                                 if self.defined_globals.contains(&overload) {
                                     overload
                                 } else {

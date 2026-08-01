@@ -263,6 +263,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let declared_class_methods = collect_declared_class_methods(&body);
     let constructor_params = collect_pascal_constructor_params(&body);
     let static_var_params = collect_static_var_param_indices(&body);
+    let interface_guids = collect_pascal_interface_guids(&source);
+    if !interface_guids.is_empty() {
+        rewrite_pascal_interface_guid_refs(&mut body, &interface_guids);
+    }
     for stmt in body.iter_mut() {
         rewrite_constructor_calls_stmt(
             stmt,
@@ -502,6 +506,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
         normalize_pascal_gcl_exprs(&mut body);
     }
     rewrite_pascal_heap_allocation(&mut body, &struct_names);
+    rewrite_pascal_writeln_bool_vars(&mut body);
+    lower_pascal_final_result_assignments(&mut body);
+    rewrite_pascal_integer_bit_ops(&mut body);
 
     Ok(Module {
         name,
@@ -509,6 +516,125 @@ pub fn parse(source: &str) -> Result<Module, String> {
         body,
         imports,
     })
+}
+
+fn lower_pascal_final_result_assignments(body: &mut [Statement]) {
+    for stmt in body {
+        lower_pascal_final_result_assignment_stmt(stmt);
+    }
+}
+
+fn lower_pascal_final_result_assignment_stmt(stmt: &mut Statement) {
+    match &mut stmt.kind {
+        StmtKind::FunctionDecl {
+            return_type,
+            body,
+            is_sub,
+            ..
+        } => {
+            lower_pascal_final_result_assignments(body);
+            if *is_sub || return_type.as_deref().is_some_and(pascal_type_hint_is_boolean) {
+                return;
+            }
+            if let Some(value) = body.last().and_then(pascal_final_result_assignment_value) {
+                if let Some(last) = body.last_mut() {
+                    last.kind = StmtKind::Return(Some(value));
+                }
+            }
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            lower_pascal_final_result_assignments(body);
+        }
+        StmtKind::ClassDecl { members, .. }
+        | StmtKind::StructDecl { members, .. }
+        | StmtKind::ModuleDecl { members, .. } => {
+            for member in members {
+                lower_pascal_final_result_assignment_member(member);
+            }
+        }
+        StmtKind::If {
+            then_body,
+            elifs,
+            else_body,
+            ..
+        } => {
+            lower_pascal_final_result_assignments(then_body);
+            for (_, body) in elifs {
+                lower_pascal_final_result_assignments(body);
+            }
+            if let Some(body) = else_body {
+                lower_pascal_final_result_assignments(body);
+            }
+        }
+        StmtKind::While {
+            body, else_body, ..
+        } => {
+            lower_pascal_final_result_assignments(body);
+            if let Some(body) = else_body {
+                lower_pascal_final_result_assignments(body);
+            }
+        }
+        StmtKind::DoWhile { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::ForIn { body, .. }
+        | StmtKind::With { body, .. } => lower_pascal_final_result_assignments(body),
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            lower_pascal_final_result_assignments(body);
+            for catch in catches {
+                lower_pascal_final_result_assignments(&mut catch.body);
+            }
+            if let Some(body) = else_body {
+                lower_pascal_final_result_assignments(body);
+            }
+            if let Some(body) = finally {
+                lower_pascal_final_result_assignments(body);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn lower_pascal_final_result_assignment_member(member: &mut ClassMember) {
+    match member {
+        ClassMember::Method(stmt) | ClassMember::NestedType(stmt) => {
+            lower_pascal_final_result_assignment_stmt(stmt);
+        }
+        ClassMember::Constructor { body, .. } => lower_pascal_final_result_assignments(body),
+        ClassMember::Property { getter, setter, .. } => {
+            if let Some(getter) = getter {
+                lower_pascal_final_result_assignments(getter);
+            }
+            if let Some(setter) = setter {
+                lower_pascal_final_result_assignments(&mut setter.body);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pascal_final_result_assignment_value(stmt: &Statement) -> Option<Expression> {
+    let StmtKind::Assign { targets, value } = &stmt.kind else {
+        return None;
+    };
+    if targets.len() == 1
+        && matches!(&targets[0].kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Result"))
+    {
+        Some(value.clone())
+    } else {
+        None
+    }
+}
+
+fn pascal_type_hint_is_boolean(type_hint: &str) -> bool {
+    matches!(
+        bare_type_name(type_hint).to_ascii_lowercase().as_str(),
+        "boolean" | "bool"
+    )
 }
 
 fn rewrite_pascal_json_xml_body(body: &mut [Statement]) {
@@ -5277,6 +5403,15 @@ fn rewrite_pascal_integer_bit_ops_expr(
                         }
                     }
                 }
+                BinOp::BitXor
+                    if pascal_expr_is_integer_like(left, return_types, scope)
+                        || pascal_expr_is_integer_like(right, return_types, scope) =>
+                {
+                    *expr = call_expr(
+                        "__pascal_int_xor",
+                        vec![(**left).clone(), (**right).clone()],
+                    );
+                }
                 _ => {}
             }
         }
@@ -5374,6 +5509,12 @@ fn pascal_expr_is_integer_like(
         ExprKind::Ident(name) => scope
             .get(&name.to_lowercase())
             .is_some_and(|type_name| is_pascal_integer_type(type_name)),
+        ExprKind::Member { object, field, .. } => matches!(
+            field.to_ascii_lowercase().as_str(),
+            "d1" | "d2" | "d3"
+        ) && pascal_expr_ident_name(object)
+            .and_then(|name| scope.get(&name.to_lowercase()))
+            .is_some_and(|type_name| bare_type_name(type_name).eq_ignore_ascii_case("TGUID")),
         ExprKind::Cast { type_name, .. } => is_pascal_integer_type(type_name),
         ExprKind::Call { callee, .. } => pascal_expr_ident_name(callee)
             .and_then(|name| return_types.get(&name.to_lowercase()))
@@ -7992,11 +8133,16 @@ fn pascal_writeln_arg_needs_bool_display(
             .is_some_and(|ty| ty.eq_ignore_ascii_case("boolean")),
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(name)
-                if matches!(name.to_ascii_lowercase().as_str(), "assigned" | "findcmdlineswitch" | "isequalguid"))
+                if matches!(name.to_ascii_lowercase().as_str(), "assigned" | "findcmdlineswitch" | "isequalguid" | "samevalue" | "iszero")
+                    || matches!(name.as_str(), "__pascal_f64_eq" | "__pascal_f64_ne"))
                 || matches!(&callee.kind, ExprKind::Member { field, .. }
                     if matches!(field.as_str(), "includes" | "startsWith" | "endsWith"))
         }
         ExprKind::Unary { expr, .. } => pascal_writeln_arg_needs_bool_display(expr, var_types),
+        ExprKind::Binary { op, left, right } if matches!(op, BinOp::And | BinOp::Or | BinOp::Xor) => {
+            pascal_writeln_arg_needs_bool_display(left, var_types)
+                || pascal_writeln_arg_needs_bool_display(right, var_types)
+        }
         _ => pascal_expr_is_any_comparison(expr),
     }
 }
@@ -8606,15 +8752,27 @@ fn rewrite_pascal_stringbuilder_stmt(
             }
         }
         StmtKind::Assign { targets, value } => {
+            if pascal_invalid_stringtoguid_expr(value) {
+                stmt.kind = StmtKind::Throw {
+                    expr: Some(pascal_econvert_error_expr("Invalid GUID")),
+                    cause: None,
+                };
+                return;
+            }
             rewrite_pascal_stringbuilder_expr(value, var_types);
             if targets.len() == 1 {
+                if let Some(stmt_block) =
+                    pascal_createguid_assign_block(targets[0].clone(), value.clone())
+                {
+                    stmt.kind = StmtKind::Block(stmt_block);
+                    return;
+                }
                 pascal_rewrite_env_assign_target(&mut targets[0]);
-                if let Some(init_stmt) = pascal_tguid_member_init_stmt(&targets[0], var_types) {
-                    let assign_stmt = Statement::new(StmtKind::Assign {
-                        targets: vec![targets[0].clone()],
-                        value: value.clone(),
-                    });
-                    stmt.kind = StmtKind::Block(vec![init_stmt, assign_stmt]);
+                if let Some(init_expr) = pascal_tguid_member_init_expr(&targets[0], var_types) {
+                    stmt.kind = StmtKind::Expr(Expression::new(ExprKind::Sequence(vec![
+                        init_expr,
+                        pascal_assign_expr(targets[0].clone(), value.clone()),
+                    ])));
                     return;
                 }
                 pascal_note_tguid_assignment(&targets[0], var_types);
@@ -8681,6 +8839,17 @@ fn rewrite_pascal_stringbuilder_stmt(
             rewrite_pascal_stringbuilder_expr(value, var_types);
         }
         StmtKind::Expr(expr) => {
+            if let Some(stmt_block) = pascal_randomize_stmt(expr) {
+                stmt.kind = StmtKind::Block(stmt_block);
+                return;
+            }
+            if pascal_invalid_stringtoguid_expr(expr) {
+                stmt.kind = StmtKind::Throw {
+                    expr: Some(pascal_econvert_error_expr("Invalid GUID")),
+                    cause: None,
+                };
+                return;
+            }
             if let Some(stmt_block) = pascal_set_environment_stmt(expr) {
                 stmt.kind = StmtKind::Block(stmt_block);
                 return;
@@ -8884,7 +9053,8 @@ fn rewrite_pascal_stringbuilder_expr(
                 if matches!(
                     name.to_ascii_lowercase().as_str(),
                     "tobject" | "nativeint" | "integer" | "string" | "pinteger" | "pbyte"
-                        | "byte" | "word" | "cardinal" | "int64" | "single" | "double"
+                        | "byte" | "word" | "cardinal" | "longword" | "longint" | "int64"
+                        | "uint64" | "single" | "double"
                 ) && args.len() == 1
                 {
                     *expr = args[0].value.clone();
@@ -8895,6 +9065,14 @@ fn rewrite_pascal_stringbuilder_expr(
                     return;
                 }
                 if let Some(rewritten) = pascal_guid_builtin_rewrite(name, args) {
+                    *expr = rewritten;
+                    return;
+                }
+                if let Some(rewritten) = pascal_random_builtin_rewrite(name, args) {
+                    *expr = rewritten;
+                    return;
+                }
+                if let Some(rewritten) = pascal_math_builtin_rewrite(name, args) {
                     *expr = rewritten;
                     return;
                 }
@@ -9212,6 +9390,8 @@ fn rewrite_pascal_stringbuilder_expr(
         ExprKind::Ident(name) => {
             if name.eq_ignore_ascii_case("GUID_NULL") {
                 *expr = pascal_guid_object_expr("{00000000-0000-0000-0000-000000000000}");
+            } else if name.eq_ignore_ascii_case("Random") {
+                *expr = Expression::new(ExprKind::Lit(Literal::Float(0.0)));
             } else if let Some(rewritten) = pascal_environment_ident_expr(name) {
                 *expr = rewritten;
             }
@@ -10183,6 +10363,25 @@ fn pascal_guid_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expressi
     }
 }
 
+fn pascal_invalid_stringtoguid_expr(expr: &Expression) -> bool {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return false;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("StringToGUID"))
+        || args.len() != 1
+    {
+        return false;
+    }
+    matches!(&args[0].value.kind, ExprKind::Lit(Literal::Str(text)) if pascal_normalize_guid_string(text).is_none())
+}
+
+fn pascal_econvert_error_expr(message: &str) -> Expression {
+    Expression::new(ExprKind::New {
+        class: Box::new(Expression::ident("EConvertError")),
+        args: vec![Argument::positional(str_expr(message))],
+    })
+}
+
 fn pascal_createguid_stmt(expr: &Expression) -> Option<Vec<Statement>> {
     let ExprKind::Call { callee, args, .. } = &expr.kind else {
         return None;
@@ -10196,6 +10395,27 @@ fn pascal_createguid_stmt(expr: &Expression) -> Option<Vec<Statement>> {
         targets: vec![args[0].value.clone()],
         value: pascal_guid_object_expr(&pascal_generated_guid_for_expr(&args[0].value)),
     })])
+}
+
+fn pascal_createguid_assign_block(target: Expression, value: Expression) -> Option<Vec<Statement>> {
+    let ExprKind::Call { callee, args, .. } = value.kind else {
+        return None;
+    };
+    if !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("CreateGUID"))
+        || args.len() != 1
+    {
+        return None;
+    }
+    Some(vec![
+        Statement::new(StmtKind::Assign {
+            targets: vec![args[0].value.clone()],
+            value: pascal_guid_object_expr(&pascal_generated_guid_for_expr(&args[0].value)),
+        }),
+        Statement::new(StmtKind::Assign {
+            targets: vec![target],
+            value: int_expr(0),
+        }),
+    ])
 }
 
 fn pascal_guid_object_expr(guid: &str) -> Expression {
@@ -10307,10 +10527,10 @@ fn pascal_generated_guid_for_expr(target: &Expression) -> String {
     format!("{{00000000-0000-0000-0000-{suffix}}}")
 }
 
-fn pascal_tguid_member_init_stmt(
+fn pascal_tguid_member_init_expr(
     target: &Expression,
     var_types: &mut std::collections::HashMap<String, String>,
-) -> Option<Statement> {
+) -> Option<Expression> {
     let ExprKind::Member { object, field, .. } = &target.kind else {
         return None;
     };
@@ -10329,10 +10549,10 @@ fn pascal_tguid_member_init_stmt(
         return None;
     }
     var_types.insert(marker, "true".to_string());
-    Some(Statement::new(StmtKind::Assign {
-        targets: vec![(**object).clone()],
-        value: pascal_guid_object_expr("{00000000-0000-0000-0000-000000000000}"),
-    }))
+    Some(pascal_assign_expr(
+        (**object).clone(),
+        pascal_guid_object_expr("{00000000-0000-0000-0000-000000000000}"),
+    ))
 }
 
 fn pascal_note_tguid_assignment(
@@ -10347,6 +10567,426 @@ fn pascal_note_tguid_assignment(
         .is_some_and(|hint| hint.eq_ignore_ascii_case("tguid"))
     {
         var_types.insert(format!("__pascal_tguid_init:{}", name.to_lowercase()), "true".to_string());
+    }
+}
+
+fn pascal_random_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expression> {
+    match name.to_ascii_lowercase().as_str() {
+        "random" if args.is_empty() => Some(Expression::new(ExprKind::Lit(Literal::Float(0.0)))),
+        "random" if args.len() == 1 => Some(int_expr(0)),
+        "randomrange" if args.len() >= 2 => Some(args[0].value.clone()),
+        "randomfrom" if args.len() == 1 => {
+            Some(pascal_index_expr(args[0].value.clone(), int_expr(0)))
+        }
+        _ => None,
+    }
+}
+
+fn pascal_randomize_stmt(expr: &Expression) -> Option<Vec<Statement>> {
+    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+        return None;
+    };
+    if !args.is_empty()
+        || !matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Randomize"))
+    {
+        return None;
+    }
+    Some(vec![Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident("RandSeed")],
+        value: int_expr(1),
+    })])
+}
+
+fn pascal_math_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expression> {
+    match name.to_ascii_lowercase().as_str() {
+        "degtorad" if args.len() == 1 => Some(bin_expr(
+            BinOp::Div,
+            bin_expr(BinOp::Mul, args[0].value.clone(), float_expr(std::f64::consts::PI)),
+            int_expr(180),
+        )),
+        "radtodeg" if args.len() == 1 => Some(bin_expr(
+            BinOp::Div,
+            bin_expr(BinOp::Mul, args[0].value.clone(), int_expr(180)),
+            float_expr(std::f64::consts::PI),
+        )),
+        "logn" if args.len() == 2 => Some(bin_expr(
+            BinOp::Div,
+            call_expr("ln", vec![args[1].value.clone()]),
+            call_expr("ln", vec![args[0].value.clone()]),
+        )),
+        "samevalue" if args.len() >= 2 => {
+            let epsilon = args
+                .get(2)
+                .map(|arg| arg.value.clone())
+                .unwrap_or_else(|| float_expr(1e-12));
+            Some(bin_expr(
+                BinOp::LtEq,
+                call_expr(
+                    "__pascal_abs",
+                    vec![bin_expr(BinOp::Sub, args[0].value.clone(), args[1].value.clone())],
+                ),
+                epsilon,
+            ))
+        }
+        "iszero" if args.len() >= 1 => {
+            let epsilon = args
+                .get(1)
+                .map(|arg| arg.value.clone())
+                .unwrap_or_else(|| float_expr(1e-12));
+            Some(bin_expr(
+                BinOp::LtEq,
+                call_expr("__pascal_abs", vec![args[0].value.clone()]),
+                epsilon,
+            ))
+        }
+        "simpleroundto" | "roundto" if args.len() >= 2 => {
+            let digits = pascal_int_literal_value(&args[1].value)?;
+            if let Some(value) = pascal_float_literal_value(&args[0].value) {
+                let factor = 10f64.powi((-digits) as i32);
+                return Some(float_expr((value * factor).round() / factor));
+            }
+            let factor = 10f64.powi((-digits) as i32);
+            Some(bin_expr(
+                BinOp::Div,
+                call_expr(
+                    "round",
+                    vec![bin_expr(BinOp::Mul, args[0].value.clone(), float_expr(factor))],
+                ),
+                float_expr(factor),
+            ))
+        }
+        "frac" if args.len() == 1 => Some(bin_expr(
+            BinOp::Sub,
+            args[0].value.clone(),
+            call_expr("Int", vec![args[0].value.clone()]),
+        )),
+        "sign" if args.len() == 1 => Some(ternary_expr(
+            bin_expr(BinOp::Gt, args[0].value.clone(), int_expr(0)),
+            int_expr(1),
+            ternary_expr(
+                bin_expr(BinOp::Lt, args[0].value.clone(), int_expr(0)),
+                int_expr(-1),
+                int_expr(0),
+            ),
+        )),
+        "minvalue" if args.len() == 1 => Some(pascal_reduce_expr(
+            args[0].value.clone(),
+            "__pascal_min_acc",
+            "__pascal_min_value",
+            ternary_expr(
+                bin_expr(
+                    BinOp::Lt,
+                    Expression::ident("__pascal_min_value"),
+                    Expression::ident("__pascal_min_acc"),
+                ),
+                Expression::ident("__pascal_min_value"),
+                Expression::ident("__pascal_min_acc"),
+            ),
+        )),
+        "maxvalue" if args.len() == 1 => Some(pascal_reduce_expr(
+            args[0].value.clone(),
+            "__pascal_max_acc",
+            "__pascal_max_value",
+            ternary_expr(
+                bin_expr(
+                    BinOp::Gt,
+                    Expression::ident("__pascal_max_value"),
+                    Expression::ident("__pascal_max_acc"),
+                ),
+                Expression::ident("__pascal_max_value"),
+                Expression::ident("__pascal_max_acc"),
+            ),
+        )),
+        "sum" if args.len() == 1 => Some(pascal_array_sum_expr(args[0].value.clone())),
+        "mean" if args.len() == 1 => Some(bin_expr(
+            BinOp::Div,
+            pascal_array_sum_expr(args[0].value.clone()),
+            call_expr("__len__", vec![args[0].value.clone()]),
+        )),
+        "poly" if args.len() == 2 => Some(pascal_poly_expr(args[0].value.clone(), args[1].value.clone())),
+        _ => None,
+    }
+}
+
+fn pascal_array_sum_expr(array: Expression) -> Expression {
+    pascal_reduce_expr_with_initial(
+        array,
+        "__pascal_sum_acc",
+        "__pascal_sum_value",
+        bin_expr(
+            BinOp::Add,
+            Expression::ident("__pascal_sum_acc"),
+            Expression::ident("__pascal_sum_value"),
+        ),
+        int_expr(0),
+    )
+}
+
+fn pascal_poly_expr(x: Expression, coeffs: Expression) -> Expression {
+    pascal_reduce_indexed_expr(
+        coeffs,
+        "__pascal_poly_acc",
+        "__pascal_poly_coeff",
+        "__pascal_poly_idx",
+        bin_expr(
+            BinOp::Add,
+            Expression::ident("__pascal_poly_acc"),
+            bin_expr(
+                BinOp::Mul,
+                Expression::ident("__pascal_poly_coeff"),
+                call_expr("power", vec![x, Expression::ident("__pascal_poly_idx")]),
+            ),
+        ),
+    )
+}
+
+fn pascal_reduce_expr(
+    array: Expression,
+    acc_name: &str,
+    value_name: &str,
+    body: Expression,
+) -> Expression {
+    pascal_reduce_expr_with_initial(
+        array.clone(),
+        acc_name,
+        value_name,
+        body,
+        pascal_index_expr(array, int_expr(0)),
+    )
+}
+
+fn pascal_reduce_expr_with_initial(
+    array: Expression,
+    acc_name: &str,
+    value_name: &str,
+    body: Expression,
+    initial: Expression,
+) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(pascal_member_expr(array, "reduce")),
+        args: vec![
+            Argument::positional(Expression::new(ExprKind::Lambda {
+                params: vec![pascal_simple_param(acc_name), pascal_simple_param(value_name)],
+                body: LambdaBody::Expr(Box::new(body)),
+                is_async: false,
+                captures: Vec::new(),
+            })),
+            Argument::positional(initial),
+        ],
+        optional: false,
+    })
+}
+
+fn pascal_reduce_indexed_expr(
+    array: Expression,
+    acc_name: &str,
+    value_name: &str,
+    index_name: &str,
+    body: Expression,
+) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(pascal_member_expr(array, "reduce")),
+        args: vec![
+            Argument::positional(Expression::new(ExprKind::Lambda {
+                params: vec![
+                    pascal_simple_param(acc_name),
+                    pascal_simple_param(value_name),
+                    pascal_simple_param(index_name),
+                ],
+                body: LambdaBody::Expr(Box::new(body)),
+                is_async: false,
+                captures: Vec::new(),
+            })),
+            Argument::positional(int_expr(0)),
+        ],
+        optional: false,
+    })
+}
+
+fn collect_pascal_interface_guids(source: &str) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let mut pending: Option<String> = None;
+    for raw_line in source.lines() {
+        let line = raw_line.trim();
+        let lower = line.to_ascii_lowercase();
+        if let Some(eq_pos) = lower.find("= interface") {
+            let name = line[..eq_pos].split_whitespace().last().unwrap_or("").trim();
+            if !name.is_empty() {
+                pending = Some(name.to_lowercase());
+            }
+        }
+        if let Some(guid) = pascal_extract_guid_literal(line) {
+            if let Some(name) = pending.take() {
+                out.insert(name, guid);
+            }
+        }
+        if lower == "end;" || lower.starts_with("end;") {
+            pending = None;
+        }
+    }
+    out
+}
+
+fn pascal_extract_guid_literal(line: &str) -> Option<String> {
+    let start = line.find('{')?;
+    let end = line[start..].find('}')? + start;
+    pascal_normalize_guid_string(&line[start..=end])
+}
+
+fn rewrite_pascal_interface_guid_refs(
+    body: &mut [Statement],
+    guids: &std::collections::HashMap<String, String>,
+) {
+    for stmt in body {
+        rewrite_pascal_interface_guid_stmt(stmt, guids);
+    }
+}
+
+fn rewrite_pascal_interface_guid_stmt(
+    stmt: &mut Statement,
+    guids: &std::collections::HashMap<String, String>,
+) {
+    match &mut stmt.kind {
+        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
+            rewrite_pascal_interface_guid_expr(expr, guids);
+        }
+        StmtKind::Assign { targets, value } => {
+            for target in targets {
+                rewrite_pascal_interface_guid_expr(target, guids);
+            }
+            rewrite_pascal_interface_guid_expr(value, guids);
+        }
+        StmtKind::VarDecl { declarations, .. } => {
+            for decl in declarations {
+                if let Some(init) = &mut decl.init {
+                    rewrite_pascal_interface_guid_expr(init, guids);
+                }
+            }
+        }
+        StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
+            rewrite_pascal_interface_guid_refs(body, guids);
+        }
+        StmtKind::FunctionDecl { body, .. } => rewrite_pascal_interface_guid_refs(body, guids),
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => {
+            rewrite_pascal_interface_guid_expr(cond, guids);
+            rewrite_pascal_interface_guid_refs(then_body, guids);
+            for (cond, body) in elifs {
+                rewrite_pascal_interface_guid_expr(cond, guids);
+                rewrite_pascal_interface_guid_refs(body, guids);
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_interface_guid_refs(body, guids);
+            }
+        }
+        StmtKind::While {
+            cond,
+            body,
+            else_body,
+        } => {
+            rewrite_pascal_interface_guid_expr(cond, guids);
+            rewrite_pascal_interface_guid_refs(body, guids);
+            if let Some(body) = else_body {
+                rewrite_pascal_interface_guid_refs(body, guids);
+            }
+        }
+        StmtKind::For {
+            init,
+            cond,
+            update,
+            body,
+        } => {
+            if let Some(init) = init {
+                rewrite_pascal_interface_guid_stmt(init, guids);
+            }
+            if let Some(cond) = cond {
+                rewrite_pascal_interface_guid_expr(cond, guids);
+            }
+            if let Some(update) = update {
+                rewrite_pascal_interface_guid_expr(update, guids);
+            }
+            rewrite_pascal_interface_guid_refs(body, guids);
+        }
+        StmtKind::DoWhile { cond, body, .. } => {
+            rewrite_pascal_interface_guid_refs(body, guids);
+            rewrite_pascal_interface_guid_expr(cond, guids);
+        }
+        StmtKind::ForIn { iter, body, .. } => {
+            rewrite_pascal_interface_guid_expr(iter, guids);
+            rewrite_pascal_interface_guid_refs(body, guids);
+        }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally,
+        } => {
+            rewrite_pascal_interface_guid_refs(body, guids);
+            for catch in catches {
+                rewrite_pascal_interface_guid_refs(&mut catch.body, guids);
+            }
+            if let Some(body) = else_body {
+                rewrite_pascal_interface_guid_refs(body, guids);
+            }
+            if let Some(body) = finally {
+                rewrite_pascal_interface_guid_refs(body, guids);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_pascal_interface_guid_expr(
+    expr: &mut Expression,
+    guids: &std::collections::HashMap<String, String>,
+) {
+    match &mut expr.kind {
+        ExprKind::Ident(name) => {
+            if let Some(guid) = guids.get(&name.to_lowercase()) {
+                *expr = pascal_guid_object_expr(guid);
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            rewrite_pascal_interface_guid_expr(callee, guids);
+            for arg in args {
+                rewrite_pascal_interface_guid_expr(&mut arg.value, guids);
+            }
+        }
+        ExprKind::Member { object, .. } => rewrite_pascal_interface_guid_expr(object, guids),
+        ExprKind::Index { object, index, .. } => {
+            rewrite_pascal_interface_guid_expr(object, guids);
+            rewrite_pascal_interface_guid_expr(index, guids);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            rewrite_pascal_interface_guid_expr(left, guids);
+            rewrite_pascal_interface_guid_expr(right, guids);
+        }
+        ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
+            rewrite_pascal_interface_guid_expr(expr, guids);
+        }
+        ExprKind::Ternary { cond, then, else_ } => {
+            rewrite_pascal_interface_guid_expr(cond, guids);
+            rewrite_pascal_interface_guid_expr(then, guids);
+            rewrite_pascal_interface_guid_expr(else_, guids);
+        }
+        ExprKind::Array(items) => {
+            for item in items {
+                rewrite_pascal_interface_guid_expr(&mut item.value, guids);
+            }
+        }
+        ExprKind::Object(props) => {
+            for prop in props {
+                if let ObjectProperty::KeyValue { key, value } = prop {
+                    rewrite_pascal_interface_guid_expr(key, guids);
+                    rewrite_pascal_interface_guid_expr(value, guids);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -11548,6 +12188,18 @@ fn pascal_int_literal_value(expr: &Expression) -> Option<i64> {
     match &expr.kind {
         ExprKind::Lit(Literal::Int(value)) => Some(*value),
         ExprKind::Lit(Literal::Float(value)) => Some(*value as i64),
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => pascal_int_literal_value(expr).map(|value| -value),
+        ExprKind::Unary { op: UnaryOp::Pos, expr } => pascal_int_literal_value(expr),
+        _ => None,
+    }
+}
+
+fn pascal_float_literal_value(expr: &Expression) -> Option<f64> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Int(value)) => Some(*value as f64),
+        ExprKind::Lit(Literal::Float(value)) => Some(*value),
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => pascal_float_literal_value(expr).map(|value| -value),
+        ExprKind::Unary { op: UnaryOp::Pos, expr } => pascal_float_literal_value(expr),
         _ => None,
     }
 }
@@ -16588,8 +17240,29 @@ fn pascal_expr_is_pascal_integer_like(
         ExprKind::Ident(name) => env
             .get(&name.to_lowercase())
             .is_some_and(|hint| pascal_type_hint_is_integer(hint)),
+        ExprKind::Member { object, field, .. } => matches!(
+            field.to_ascii_lowercase().as_str(),
+            "d1" | "d2" | "d3"
+        ) && pascal_expr_ident_name(object)
+            .and_then(|name| env.get(&name.to_lowercase()))
+            .is_some_and(|hint| bare_type_name(hint).eq_ignore_ascii_case("TGUID")),
         ExprKind::Index { object, .. } => pascal_array_index_is_integer(object, env),
         ExprKind::Cast { type_name, .. } => pascal_type_hint_is_integer(type_name),
+        ExprKind::Unary { expr, .. } => pascal_expr_is_pascal_integer_like(expr, env),
+        ExprKind::Binary { op, left, right } => matches!(
+            op,
+            BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::IDiv
+                | BinOp::Mod
+                | BinOp::BitAnd
+                | BinOp::BitOr
+                | BinOp::BitXor
+                | BinOp::Shl
+                | BinOp::Shr
+        ) && (pascal_expr_is_pascal_integer_like(left, env)
+            || pascal_expr_is_pascal_integer_like(right, env)),
         _ => false,
     }
 }
@@ -37193,8 +37866,9 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     op: UnaryOp::Pos,
                     expr: Box::new(operand),
                 })
-            } else if src.len() >= 3
-                && src[..3].eq_ignore_ascii_case("not")
+            } else if src
+                .get(..3)
+                .is_some_and(|kw| kw.eq_ignore_ascii_case("not"))
                 && !src
                     .chars()
                     .nth(3)
@@ -37640,6 +38314,10 @@ fn call_expr(name: &str, args: Vec<Expression>) -> Expression {
 
 fn int_expr(value: i64) -> Expression {
     Expression::new(ExprKind::Lit(Literal::Int(value)))
+}
+
+fn float_expr(value: f64) -> Expression {
+    Expression::new(ExprKind::Lit(Literal::Float(value)))
 }
 
 fn str_expr(value: &str) -> Expression {

@@ -23,6 +23,19 @@ pub fn emit_helper(
         "go.fmt_sprintf" => {
             vybe_compiler::primitives::sprintf::emit_sprintf(chunks, current, argc, line);
         }
+        // `json.Unmarshal` returns an `error`; it never panics on malformed
+        // input. `ecma:json.parse` throws, so route through the shared
+        // `primitives::json` parse that yields null instead — the same
+        // primitive Pascal uses for its non-throwing decode.
+        "go.json_parse" => {
+            // The walker's fixed call shape carries a reviver slot the Go
+            // surface has no use for; discard it so the primitive sees only
+            // the text.
+            if argc >= 2 {
+                chunks[current].emit_op(Op::DROP, line);
+            }
+            vybe_compiler::primitives::json::emit_parse_or_null(chunks, current, line);
+        }
         "go.regex_split_pat_first" => {
             // `regexp.Split(str, pat)` (Go source is pattern-first) → ecma
             // `ecma:regexp.split(str, pat)`. Args arrive as [pat, str] (str on

@@ -2934,10 +2934,9 @@ impl Compiler {
                         self.emit_const(Value::Bool(false));
                         self.emit_u16(Op::LOCAL_SET, exists_slot);
                         for function_name in known_functions {
-                            let canonical =
-                                crate::primitives::namespaces::normalize_source_path(
-                                    &function_name.to_ascii_lowercase(),
-                                );
+                            let canonical = crate::primitives::namespaces::normalize_source_path(
+                                &function_name.to_ascii_lowercase(),
+                            );
                             let rooted =
                                 crate::primitives::namespaces::rooted_lookup_key(&canonical);
                             for spelling in [canonical, rooted] {

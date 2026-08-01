@@ -368,3 +368,14 @@ fn char_is_letter_via_ranges() {
         &["1", "0"]
     );
 }
+
+/// A non-BMP literal must survive the walker. The `not`-keyword probe sliced
+/// the source at byte 3 (`src[..3]`), which lands inside a 4-byte astral
+/// sequence and panicked the compiler on any program containing one.
+#[test]
+fn astral_literal_does_not_panic_the_walker() {
+    assert_eq!(
+        run_pascal("program T; begin WriteLn('café \u{1F600}'); end."),
+        &["café \u{1F600}"]
+    );
+}

@@ -21,6 +21,50 @@ fn dotnet_descriptor_runtime_type_name(interface: &str, name: &str) -> String {
     }
 }
 
+fn reflection_generic_params_from_method(
+    name: &str,
+    params: &[Param],
+    return_type: Option<&str>,
+) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut add_candidate = |candidate: &str| {
+        let trimmed = candidate.trim().trim_end_matches('?').trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let leaf = trimmed.rsplit('.').next().unwrap_or(trimmed);
+        let is_generic_param = leaf.len() <= 3
+            && leaf
+                .chars()
+                .next()
+                .is_some_and(|ch| ch == 'T' || ch == 'U')
+            && leaf
+                .chars()
+                .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit());
+        if is_generic_param && !names.iter().any(|existing| existing == leaf) {
+            names.push(leaf.to_string());
+        }
+    };
+
+    if let Some(inner) = name
+        .split_once("(Of")
+        .and_then(|(_, rest)| rest.rsplit_once(')').map(|(inner, _)| inner))
+    {
+        for part in inner.split(',') {
+            add_candidate(part);
+        }
+    }
+    if let Some(return_type) = return_type {
+        add_candidate(return_type);
+    }
+    for param in params {
+        if let Some(type_hint) = param.type_hint.as_deref() {
+            add_candidate(type_hint);
+        }
+    }
+    names
+}
+
 impl Compiler {
     pub(super) fn parse_pascal_array_bound_token(token: &str) -> Option<(i64, bool)> {
         let trimmed = token.trim();
@@ -169,6 +213,16 @@ impl Compiler {
             if let Some(constructor) = class.constructor {
                 metadata.constructors.push(ReflectionConstructorMetadata {
                     param_types: vec!["System.Object".to_string(); constructor.arity as usize],
+                    params: (0..constructor.arity)
+                        .map(|index| ReflectionParamMetadata {
+                            name: format!("arg{index}"),
+                            decorators: Vec::new(),
+                            type_name: Some("System.Object".to_string()),
+                        })
+                        .collect(),
+                    decorators: Vec::new(),
+                    visibility: Visibility::Public,
+                    is_static: false,
                 });
             }
             for property in class.properties {
@@ -178,6 +232,9 @@ impl Compiler {
                         decorators: Vec::new(),
                         is_static: false,
                         can_write: property.setter.is_some(),
+                        type_name: None,
+                        params: Vec::new(),
+                        visibility: Visibility::Public,
                     },
                 );
             }
@@ -190,9 +247,15 @@ impl Compiler {
                             .map(|index| ReflectionParamMetadata {
                                 name: format!("arg{index}"),
                                 decorators: Vec::new(),
+                                type_name: Some("System.Object".to_string()),
                             })
                             .collect(),
                         is_static: method.is_static,
+                        return_type: None,
+                        visibility: Visibility::Public,
+                        is_abstract: false,
+                        is_virtual: false,
+                        generic_params: Vec::new(),
                     },
                 );
             }
@@ -335,10 +398,29 @@ impl Compiler {
                     if let StmtKind::FunctionDecl {
                         name,
                         params,
+                        return_type,
                         modifiers,
                         ..
                     } = &stmt.kind
                     {
+                        if name == "__static_init__" {
+                            metadata.constructors.push(ReflectionConstructorMetadata {
+                                param_types: vec!["<static>".to_string()],
+                                params: params
+                                    .iter()
+                                    .map(|param| ReflectionParamMetadata {
+                                        name: param.name.clone(),
+                                        decorators: Vec::new(),
+                                        type_name: param.type_hint.as_deref().map(|type_name| {
+                                            self.reflection_runtime_type_name(type_name, None)
+                                        }),
+                                    })
+                                    .collect(),
+                                decorators: modifiers.decorators.clone(),
+                                visibility: modifiers.visibility,
+                                is_static: true,
+                            });
+                        }
                         let mut method_decorators = Vec::new();
                         let mut param_decorators: HashMap<usize, Vec<Expression>> = HashMap::new();
                         for decorator in &modifiers.decorators {
@@ -355,6 +437,17 @@ impl Compiler {
                             ReflectionMethodMetadata {
                                 decorators: method_decorators,
                                 is_static: modifiers.is_static,
+                                return_type: return_type.as_deref().map(|type_name| {
+                                    self.reflection_runtime_type_name(type_name, None)
+                                }),
+                                visibility: modifiers.visibility,
+                                is_abstract: modifiers.is_abstract,
+                                is_virtual: modifiers.is_virtual || modifiers.is_override,
+                                generic_params: reflection_generic_params_from_method(
+                                    name,
+                                    params,
+                                    return_type.as_deref(),
+                                ),
                                 params: params
                                     .iter()
                                     .enumerate()
@@ -363,6 +456,9 @@ impl Compiler {
                                         decorators: param_decorators
                                             .remove(&index)
                                             .unwrap_or_default(),
+                                        type_name: param.type_hint.as_deref().map(|type_name| {
+                                            self.reflection_runtime_type_name(type_name, None)
+                                        }),
                                     })
                                     .collect(),
                             },
@@ -371,6 +467,7 @@ impl Compiler {
                 }
                 ClassMember::Property {
                     name,
+                    type_hint,
                     setter,
                     modifiers,
                     ..
@@ -381,22 +478,37 @@ impl Compiler {
                             decorators: modifiers.decorators.clone(),
                             is_static: modifiers.is_static,
                             can_write: setter.is_some(),
+                            type_name: type_hint.as_deref().map(|type_name| {
+                                self.reflection_runtime_type_name(type_name, None)
+                            }),
+                            params: Vec::new(),
+                            visibility: modifiers.visibility,
                         },
                     );
                 }
                 ClassMember::Field {
-                    name, modifiers, ..
+                    name,
+                    type_hint,
+                    modifiers,
+                    ..
                 } => {
                     metadata.fields.insert(
                         name.clone(),
                         ReflectionMemberMetadata {
                             decorators: modifiers.decorators.clone(),
                             is_static: modifiers.is_static,
-                            can_write: true,
+                            can_write: !modifiers.is_readonly,
+                            type_name: type_hint.as_deref().map(|type_name| {
+                                self.reflection_runtime_type_name(type_name, None)
+                            }),
+                            params: Vec::new(),
+                            visibility: modifiers.visibility,
                         },
                     );
                 }
-                ClassMember::Constructor { params, .. } => {
+                ClassMember::Constructor {
+                    params, visibility, ..
+                } => {
                     metadata.constructors.push(ReflectionConstructorMetadata {
                         param_types: params
                             .iter()
@@ -407,6 +519,19 @@ impl Compiler {
                                 )
                             })
                             .collect(),
+                        params: params
+                            .iter()
+                            .map(|param| ReflectionParamMetadata {
+                                name: param.name.clone(),
+                                decorators: Vec::new(),
+                                type_name: param.type_hint.as_deref().map(|type_name| {
+                                    self.reflection_runtime_type_name(type_name, None)
+                                }),
+                            })
+                            .collect(),
+                        decorators: Vec::new(),
+                        visibility: *visibility,
+                        is_static: false,
                     });
                 }
                 ClassMember::NestedType(stmt) => {
@@ -425,6 +550,38 @@ impl Compiler {
                     nested_types.push(stmt);
                 }
                 _ => {}
+            }
+        }
+
+        let indexer_method = metadata
+            .methods
+            .iter()
+            .find(|(name, _)| {
+                let canon = self.canon(name);
+                canon == "__call__"
+                    || canon == "__getitem__"
+                    || canon.starts_with("__call__")
+                    || canon.starts_with("__getitem__")
+            })
+            .map(|(_, meta)| meta.clone());
+        if let Some(method_meta) = indexer_method {
+            if let Some(property_meta) = metadata.properties.get_mut("Item") {
+                property_meta.params = method_meta.params;
+            } else {
+                metadata.properties.insert(
+                    "Item".to_string(),
+                    ReflectionMemberMetadata {
+                        decorators: Vec::new(),
+                        is_static: false,
+                        can_write: metadata.methods.keys().any(|name| {
+                            let canon = self.canon(name);
+                            canon == "__setitem__" || canon.starts_with("__setitem__")
+                        }),
+                        type_name: None,
+                        params: method_meta.params,
+                        visibility: Visibility::Public,
+                    },
+                );
             }
         }
 
@@ -511,11 +668,11 @@ impl Compiler {
             // .NET BCL scheme (C#/VB): map primitives and root under `System.`.
             ReflectionTypeNaming::Dotnet => {
                 let normalized = match base {
-                    "int" | "Int32" => "Int32",
+                    "int" | "Integer" | "Int32" => "Int32",
                     "uint" | "UInt32" => "UInt32",
-                    "long" | "Int64" => "Int64",
+                    "long" | "Long" | "Int64" => "Int64",
                     "ulong" | "UInt64" => "UInt64",
-                    "short" | "Int16" => "Int16",
+                    "short" | "Short" | "Int16" => "Int16",
                     "ushort" | "UInt16" => "UInt16",
                     "byte" | "Byte" => "Byte",
                     "sbyte" | "SByte" => "SByte",
@@ -571,14 +728,11 @@ impl Compiler {
                 format!("{raw_name}Attribute")
             };
             let attr_suffix = format!(".{attr_leaf}");
-            let mut class_matches = self
-                .defined_classes
-                .iter()
-                .filter(|known| {
-                    known.eq_ignore_ascii_case(&raw_name)
-                        || known.eq_ignore_ascii_case(&attr_leaf)
-                        || known.ends_with(&attr_suffix)
-                });
+            let mut class_matches = self.defined_classes.iter().filter(|known| {
+                known.eq_ignore_ascii_case(&raw_name)
+                    || known.eq_ignore_ascii_case(&attr_leaf)
+                    || known.ends_with(&attr_suffix)
+            });
             if let Some(resolved) = class_matches.next().cloned() {
                 if class_matches.next().is_none() {
                     return Some(self.reflection_runtime_type_name(&resolved, None));
@@ -625,6 +779,29 @@ impl Compiler {
     }
 
     pub(crate) fn reflection_type_lookup_name(&self, type_name: &str) -> String {
+        let trimmed = type_name.trim().trim_end_matches('?').trim();
+        if self.reflection_types.contains_key(trimmed) {
+            return trimmed.to_string();
+        }
+        if let Some(existing) = self
+            .reflection_types
+            .keys()
+            .find(|known| known.eq_ignore_ascii_case(trimmed))
+        {
+            return existing.clone();
+        }
+        if let Some(system_stripped) = trimmed.strip_prefix("System.") {
+            if self.reflection_types.contains_key(system_stripped) {
+                return system_stripped.to_string();
+            }
+            if let Some(existing) = self
+                .reflection_types
+                .keys()
+                .find(|known| known.eq_ignore_ascii_case(system_stripped))
+            {
+                return existing.clone();
+            }
+        }
         self.reflection_runtime_type_name(type_name, None)
     }
 
@@ -639,12 +816,22 @@ impl Compiler {
     pub(crate) fn reflection_type_short_name(&self, type_name: &str) -> String {
         let erased = common::generics::erased_type_name(type_name);
         let trimmed = erased.trim().trim_end_matches('?').trim();
-        trimmed
+        let short = trimmed
             .rsplit('.')
             .next()
             .unwrap_or(trimmed)
             .trim()
-            .to_string()
+            .to_string();
+        if !trimmed.starts_with("System.")
+            && short.chars().all(|ch| !ch.is_ascii_uppercase())
+            && short.chars().any(|ch| ch.is_ascii_alphabetic())
+        {
+            let mut chars = short.chars();
+            if let Some(first) = chars.next() {
+                return first.to_ascii_uppercase().to_string() + chars.as_str();
+            }
+        }
+        short
     }
 
     pub(crate) fn reflection_type_full_name(&self, type_name: &str) -> String {

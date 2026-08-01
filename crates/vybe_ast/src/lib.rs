@@ -818,6 +818,19 @@ pub enum ClassKind {
     /// Ruby `module` — an augmentation source, and a namespace.
     Module,
     Struct,
+    /// Kotlin `data class`, Java `record`, C# `record` — a declaration whose
+    /// members are DERIVED from its primary constructor's components:
+    /// component accessors, a copy/`with` constructor, and structural
+    /// `ToString` / `Eq` / `Hash`.
+    ///
+    /// Without this, a frontend has no way to tell the normalizer that a
+    /// declaration is derived, so each one synthesized the members in its
+    /// WALKER as hand-built AST — Kotlin in `walk_class_decl`, Java at
+    /// `walker.rs:2534`. That is the duplication flexclassplan §4a-ter
+    /// collapses: the shape is derived from `constructors[0].params`, which is
+    /// the same computation in every language, and it belongs in normalization
+    /// where the bindings can be `ProtocolSlot`s rather than spellings (§2a).
+    Record,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

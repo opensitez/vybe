@@ -17,16 +17,16 @@
 // `impl Compiler` walkers alongside them are one layer now — this crate IS
 // the emitter, so there is no second module to route through.
 pub mod addressable_storage;
+pub mod builtin_slots;
 pub mod bundle;
 pub mod codepoints;
 pub mod collections;
 pub mod complex;
 pub mod convert;
-pub mod delegates;
 pub mod datetime;
+pub mod delegates;
 pub mod dict;
 pub mod dispatch;
-pub mod builtin_slots;
 pub mod dynamic_symbols;
 pub mod errors;
 pub mod functions;
@@ -51,11 +51,14 @@ pub mod random;
 pub mod runtime_helpers;
 pub mod sorted_collection;
 pub mod sprintf;
+pub mod string_encoding;
+pub mod string_similarity;
 pub mod strings;
 pub mod target;
 pub mod threading;
 pub mod tuples;
 pub mod type_registry;
+pub mod url;
 pub mod xml;
 pub use runtime_helpers::RuntimeHelpers;
 pub use target::Target;
@@ -101,6 +104,10 @@ pub mod r#enum;
 mod enums;
 pub mod events;
 pub mod expressions;
+pub mod http_cookie;
+pub mod http_form;
+pub mod http_request_env;
+pub mod http_session;
 pub mod imports;
 mod lambdas;
 mod link;
@@ -111,11 +118,7 @@ mod overloads;
 pub mod promises;
 pub mod prototypes;
 pub mod references;
-pub mod http_cookie;
-pub mod http_form;
 pub mod reflection;
-pub mod http_request_env;
-pub mod http_session;
 mod resolver;
 mod scope;
 pub mod slices;
@@ -283,6 +286,7 @@ impl Default for AttributeUsageMetadata {
 pub(crate) struct ReflectionParamMetadata {
     pub name: String,
     pub decorators: Vec<Expression>,
+    pub type_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -290,6 +294,11 @@ pub(crate) struct ReflectionMethodMetadata {
     pub decorators: Vec<Expression>,
     pub params: Vec<ReflectionParamMetadata>,
     pub is_static: bool,
+    pub return_type: Option<String>,
+    pub visibility: Visibility,
+    pub is_abstract: bool,
+    pub is_virtual: bool,
+    pub generic_params: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -297,11 +306,18 @@ pub(crate) struct ReflectionMemberMetadata {
     pub decorators: Vec<Expression>,
     pub is_static: bool,
     pub can_write: bool,
+    pub type_name: Option<String>,
+    pub params: Vec<ReflectionParamMetadata>,
+    pub visibility: Visibility,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ReflectionConstructorMetadata {
     pub param_types: Vec<String>,
+    pub params: Vec<ReflectionParamMetadata>,
+    pub decorators: Vec<Expression>,
+    pub visibility: Visibility,
+    pub is_static: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -323,12 +339,12 @@ pub(crate) enum ReflectionBinding {
     Type(String),
     Constructor {
         type_name: String,
-        #[allow(dead_code)]
         param_types: Vec<String>,
     },
     Method {
         type_name: String,
         method_name: String,
+        generic_args: Vec<String>,
     },
     Property {
         type_name: String,

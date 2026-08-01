@@ -95,6 +95,10 @@ fn listen_host_fn(ctx: &mut HostContext, args: &[Value]) -> Value {
 
     let handler = args.get(1).cloned().unwrap_or(Value::Null);
 
+    // `server.listening` must report the truth rather than a guess, so it is
+    // flipped where the address actually parses and the runtime is spawned.
+    vybe_platform_node::http::server::set_listening(true);
+
     let (event_tx, event_rx) = std_mpsc::channel::<ServerEvent>();
 
     // Spawn the hyper + tokio runtime on a background thread. It pushes

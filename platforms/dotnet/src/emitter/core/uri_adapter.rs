@@ -243,22 +243,35 @@ pub fn emit_uri_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     struct_get(&mut chunks[current], "href", line);
 }
 
+/// `Uri.EscapeDataString` — RFC 3986 percent-encoding.
+///
+/// Routed through the SHARED codec `primitives::url`, the same one php
+/// `rawurlencode`, python `quote`, java `URLEncoder` and go `QueryEscape` use.
+/// The four differ only by `PercentOptions`; .NET is the plain RFC 3986
+/// variant. Behaviour is unchanged — `rfc3986()` emits exactly the
+/// `encodeURIComponent` this used to call directly — but .NET now moves with
+/// the codec instead of drifting from it.
+///
+/// Known pre-existing gap, NOT introduced here: real `Uri.EscapeDataString`
+/// escapes `!*'()` (its unreserved set is only `A-Za-z0-9-._~`) where
+/// `encodeURIComponent` leaves them. That is a future `PercentOptions` field,
+/// not a reason to fork.
 pub fn emit_uri_escape(chunks: &mut [Chunk], current: usize, line: u32) {
-    host::emit(
-        &mut chunks[current],
-        "ecma:string",
-        "encodeURIComponent",
-        1,
+    vybe_compiler::primitives::url::emit_percent_encode(
+        chunks,
+        current,
+        vybe_compiler::primitives::url::PercentOptions::rfc3986(),
         line,
     );
 }
 
+/// `Uri.UnescapeDataString` — the inverse, through the same shared codec.
+/// `+` stays literal in RFC 3986 mode, which is .NET's behaviour.
 pub fn emit_uri_unescape(chunks: &mut [Chunk], current: usize, line: u32) {
-    host::emit(
-        &mut chunks[current],
-        "ecma:string",
-        "decodeURIComponent",
-        1,
+    vybe_compiler::primitives::url::emit_percent_decode(
+        chunks,
+        current,
+        vybe_compiler::primitives::url::PercentOptions::rfc3986(),
         line,
     );
 }

@@ -28,7 +28,8 @@ impl Compiler {
                 .or_else(|| self.resolve_known_enum_type(name)),
             ExprKind::Member { object, .. } => {
                 if let Some(path) = Self::member_access_path(object) {
-                    if let Some(enum_type) = self.resolve_known_enum_type(strip_generic_suffix(&path))
+                    if let Some(enum_type) =
+                        self.resolve_known_enum_type(strip_generic_suffix(&path))
                     {
                         return Some(enum_type);
                     }

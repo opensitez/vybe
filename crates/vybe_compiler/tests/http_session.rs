@@ -68,7 +68,8 @@ fn a_new_id_is_32_lowercase_hex_chars() {
     let id = text(&run(&mut vm, &["http_session.new_id"]));
     assert_eq!(id.len(), 32, "got {id:?}");
     assert!(
-        id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
+        id.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
         "got {id:?}"
     );
 }
@@ -137,7 +138,13 @@ fn setting_the_name_changes_which_cookie_is_read() {
         1,
         0
     ));
-    assert!(dispatch::emit_common("http_session.id", &mut chunks, 0, 0, 0));
+    assert!(dispatch::emit_common(
+        "http_session.id",
+        &mut chunks,
+        0,
+        0,
+        0
+    ));
     chunks[0].emit_op(Op::RETURN, 0);
     assert_eq!(text(&vm.run(chunks).expect("VM run failed")), "fromcookie");
 }
@@ -221,11 +228,20 @@ fn regenerate_id_changes_the_id_but_keeps_the_data() {
     chunks[0].emit_string_const("alice", 0);
     vybe_compiler::primitives::collections::emit_set(&mut chunks, 0, 0);
     chunks[0].emit_op(Op::DROP, 0);
-    assert!(dispatch::emit_common("http_session.id", &mut chunks, 0, 0, 0));
+    assert!(dispatch::emit_common(
+        "http_session.id",
+        &mut chunks,
+        0,
+        0,
+        0
+    ));
     chunks[0].emit_op(Op::RETURN, 0);
     let before = text(&vm.run(chunks).expect("VM run failed"));
 
-    let after = text(&run(&mut vm, &["http_session.regenerate_id!", "http_session.id"]));
+    let after = text(&run(
+        &mut vm,
+        &["http_session.regenerate_id!", "http_session.id"],
+    ));
     assert_ne!(after, before, "the id must change");
     assert_eq!(after.len(), 32);
 

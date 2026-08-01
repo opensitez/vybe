@@ -114,11 +114,23 @@ __pascal_assert_message = { emit = "common:pascal.assert_message", min_args = 1,
 sin           = { emit = "host:ecma:math:sin",             min_args = 1, max_args = 1 }
 cos           = { emit = "host:ecma:math:cos",             min_args = 1, max_args = 1 }
 tan           = { emit = "host:ecma:math:tan",             min_args = 1, max_args = 1 }
+arcsin        = { emit = "host:ecma:math:asin",            min_args = 1, max_args = 1 }
+arccos        = { emit = "host:ecma:math:acos",            min_args = 1, max_args = 1 }
 arctan        = { emit = "host:ecma:math:atan",            min_args = 1, max_args = 1 }
 arctan2       = { emit = "host:ecma:math:atan2",           min_args = 2, max_args = 2 }
+sinh          = { emit = "host:ecma:math:sinh",            min_args = 1, max_args = 1 }
+cosh          = { emit = "host:ecma:math:cosh",            min_args = 1, max_args = 1 }
+tanh          = { emit = "host:ecma:math:tanh",            min_args = 1, max_args = 1 }
+arcsinh       = { emit = "host:ecma:math:asinh",           min_args = 1, max_args = 1 }
+arccosh       = { emit = "host:ecma:math:acosh",           min_args = 1, max_args = 1 }
+arctanh       = { emit = "host:ecma:math:atanh",           min_args = 1, max_args = 1 }
 exp           = { emit = "host:ecma:math:exp",             min_args = 1, max_args = 1 }
 ln            = { emit = "host:ecma:math:log",             min_args = 1, max_args = 1 }
+log10         = { emit = "host:ecma:math:log10",           min_args = 1, max_args = 1 }
+log2          = { emit = "host:ecma:math:log2",            min_args = 1, max_args = 1 }
+hypot         = { emit = "host:ecma:math:hypot",           min_args = 2, max_args = 2 }
 power         = { emit = "host:ecma:math:pow",             min_args = 2, max_args = 2 }
+intpower      = { emit = "host:ecma:math:pow",             min_args = 2, max_args = 2 }
 random        = { emit = "common:pascal.random",           min_args = 0, max_args = 1 }
 randomize     = { emit = "noop",                           min_args = 0, max_args = 0 }
 
@@ -227,6 +239,9 @@ __pascal_string_replace = { emit = "host:ecma:string:replace", min_args = 3, max
 __pascal_structured_clone = { emit = "host:ecma:structured-clone:clone", min_args = 1, max_args = 1 }
 sort          = { emit = "common:pascal.sort_in_place",   min_args = 1, max_args = 1 }
 reverse       = { emit = "host:ecma:array:reverse",        min_args = 1, max_args = 1 }
+
+[array_methods]
+reduce        = "__array_reduce"
 
 # ── Object lifecycle ─────────────────────────────────────────────────────────
 

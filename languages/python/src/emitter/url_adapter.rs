@@ -2,17 +2,14 @@
 //!
 //! `web:url` is already the URL parser for JS (`new URL(...)`,
 //! `URLSearchParams`) and node's `url` module, so nothing new is registered
-//! here — this only reshapes WHATWG's field names into CPython's.
+//! here.
 //!
-//! The two spellings differ in punctuation and in one composite field:
-//!
-//! | CPython `SplitResult` | WHATWG URL |
-//! |---|---|
-//! | `scheme`   (`"https"`)              | `protocol` (`"https:"`) |
-//! | `netloc`   (`"u:p@host:8080"`)      | `username`+`password`+`host` |
-//! | `path`                              | `pathname` |
-//! | `query`    (`"a=1"`)                | `search`   (`"?a=1"`) |
-//! | `fragment` (`"top"`)                | `hash`     (`"#top"`) |
+//! **The WHATWG→canonical reshaping lives in `primitives::url`**, not here —
+//! `protocol` minus its trailing colon, the composite `netloc`, the `?`/`#`
+//! prefixes. php `parse_url` needs exactly the same reshaping, so it is shared
+//! (`url::UrlField`, `url::emit_component`). What remains in this file is only
+//! what is python's: the `SplitResult` named tuple, `parse_qs`/`parse_qsl`
+//! shapes, and python's argument conventions.
 //!
 //! `urljoin` needs no reshaping at all: WHATWG relative-URL resolution against
 //! a base IS RFC 3986 §5, which is what CPython implements.
@@ -21,6 +18,7 @@
 //! convention shared with `os_path_adapter` / `math_adapter`.
 
 use vybe_runtime::Chunk;
+use vybe_compiler::primitives::url;
 use vybe_runtime::opcode::Op;
 
 use vybe_compiler::primitives::tuples;
@@ -44,13 +42,6 @@ fn lset(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
 }
 
-fn sget(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
-    let k = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, k, line);
-}
-
-/// Pop `argc` values (deepest first) into fresh scratch slots; `base + i` is
-/// the i-th argument.
 fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 {
     let base = chunks[current].alloc_scratch(argc as u16);
     for offset in (0..argc as u16).rev() {
@@ -59,248 +50,310 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
     base
 }
 
-/// Read `url[field]` and drop its leading punctuation character (`?` from
-/// `search`, `#` from `hash`). An empty field stays empty — `substring(1)` on
-/// `""` is `""`, so no guard is needed.
-fn field_without_prefix(chunks: &mut [Chunk], current: usize, url: u16, field: &str, line: u32) {
-    lget(chunks, current, url, line);
-    sget(chunks, current, field, line);
-    chunks[current].emit_i32_const(1, line);
-    chunks[current].emit_i32_const(END, line);
-    call_import(chunks, current, "ecma:string", "substring", 3, line);
-}
+// ── percent-encoding ──────────────────────────────────────────────────
+//
+// The CODEC is `primitives::url`; only python's argument handling is here.
 
-/// Read `url.protocol` (`"https:"`) as CPython's `scheme` (`"https"`) by
-/// dropping the trailing colon.
-fn scheme_field(chunks: &mut [Chunk], current: usize, url: u16, line: u32) {
-    lget(chunks, current, url, line);
-    sget(chunks, current, "protocol", line);
-    chunks[current].emit_i32_const(0, line);
-    chunks[current].emit_i32_const(-1, line);
-    call_import(chunks, current, "ecma:string", "slice", 3, line);
-}
-
-/// CPython's `netloc` — `[user[:password]@]host[:port]`. WHATWG splits the
-/// credentials out, so recombine them; `host` already carries `:port`.
-fn netloc_field(chunks: &mut [Chunk], current: usize, url: u16, line: u32) {
-    let out = chunks[current].alloc_scratch(1);
-    let user = chunks[current].alloc_scratch(1);
-
-    lget(chunks, current, url, line);
-    sget(chunks, current, "username", line);
-    lset(chunks, current, user, line);
-
-    lget(chunks, current, url, line);
-    sget(chunks, current, "host", line);
-    lset(chunks, current, out, line);
-
-    // username non-empty → prepend "user[:pass]@"
-    lget(chunks, current, user, line);
-    call_import(chunks, current, "wasm:js-string", "length", 1, line);
-    chunks[current].emit_i32_const(0, line);
-    chunks[current].emit_op(Op::I32_NE, line);
-    chunks[current].emit_if(line);
-    {
-        let pass = chunks[current].alloc_scratch(1);
-        lget(chunks, current, url, line);
-        sget(chunks, current, "password", line);
-        lset(chunks, current, pass, line);
-
-        lget(chunks, current, user, line);
-        // password non-empty → ":pass"
-        lget(chunks, current, pass, line);
-        call_import(chunks, current, "wasm:js-string", "length", 1, line);
-        chunks[current].emit_i32_const(0, line);
-        chunks[current].emit_op(Op::I32_NE, line);
-        chunks[current].emit_if_value(line);
-        chunks[current].emit_string_const(":", line);
-        lget(chunks, current, pass, line);
-        call_import(chunks, current, "wasm:js-string", "concat", 2, line);
-        chunks[current].emit_else(line);
-        chunks[current].emit_string_const("", line);
-        chunks[current].emit_end(line);
-        call_import(chunks, current, "wasm:js-string", "concat", 2, line);
-
-        chunks[current].emit_string_const("@", line);
-        call_import(chunks, current, "wasm:js-string", "concat", 2, line);
-        lget(chunks, current, out, line);
-        call_import(chunks, current, "wasm:js-string", "concat", 2, line);
-        lset(chunks, current, out, line);
-    }
-    chunks[current].emit_end(line);
-
-    lget(chunks, current, out, line);
-}
-
-/// `urljoin(base, url)` → WHATWG relative resolution, which IS RFC 3986 §5.
-/// Stack: `[base, url] -> [string]`.
-pub fn emit_urljoin(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    if argc < 2 {
+fn emit_percent(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+    opts: url::PercentOptions,
+    decode: bool,
+) {
+    if argc == 0 {
         chunks[current].emit_string_const("", line);
         return;
     }
     let base = stash_args(chunks, current, argc, line);
-    let rel = base + 1;
-    // web:url.new(input, base) — note the argument ORDER is the reverse of
-    // CPython's, which takes the base first.
-    lget(chunks, current, rel, line);
     lget(chunks, current, base, line);
-    call_import(chunks, current, "web:url", "new", 2, line);
-    let url = chunks[current].alloc_scratch(1);
-    lset(chunks, current, url, line);
-
-    // Unparseable → CPython returns the relative reference unchanged.
-    lget(chunks, current, url, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_if_value(line);
-    lget(chunks, current, rel, line);
-    chunks[current].emit_else(line);
-    lget(chunks, current, url, line);
-    sget(chunks, current, "href", line);
-    chunks[current].emit_end(line);
+    if decode {
+        url::emit_percent_decode(chunks, current, opts, line);
+    } else {
+        url::emit_percent_encode(chunks, current, opts, line);
+    }
 }
 
-/// `urlsplit(url)` → `SplitResult(scheme, netloc, path, query, fragment)`.
+/// `quote(s)` — CPython's default `safe='/'`, so `/` survives.
+pub fn emit_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_percent(chunks, current, argc, line, url::PercentOptions::path(), false);
+}
+
+/// `quote_plus(s)` — space becomes `+` AND `/` is escaped.
 ///
-/// A NAMED tuple, so `.scheme`/`.netloc`/… resolve through the shared
-/// named-tuple metadata (`tuples::emit_named_tuple` stamps a by-name key per
-/// field) while `urlunsplit(split)` still receives the plain 5-element array
-/// it indexes. Both forms come free from one shape; nothing needs a walker
-/// rewrite of the attribute names.
-/// Stack: `[url] -> [tuple]`.
+/// Deliberately not `path()` plus a space fixup: CPython escapes `/` here.
+/// Building this on `quote` (which keeps `/` safe) made `quote_plus("a b/c")`
+/// return `a+b/c` where python gives `a+b%2Fc`.
+pub fn emit_quote_plus(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_percent(chunks, current, argc, line, url::PercentOptions::form_rfc3986(), false);
+}
+
+/// `unquote(s)` — `+` stays literal.
+pub fn emit_unquote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_percent(chunks, current, argc, line, url::PercentOptions::rfc3986(), true);
+}
+
+/// `unquote_plus(s)` — `+` decodes back to a space.
+pub fn emit_unquote_plus(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    emit_percent(chunks, current, argc, line, url::PercentOptions::form_rfc3986(), true);
+}
+
+// ── structural: split / unsplit / join ────────────────────────────────
+//
+// `web:url.new` is the WHATWG parser already registered for JS `new URL(...)`;
+// the reshapers above turn its field names into CPython's.
+
+/// `urlsplit(url)` / `urlparse(url)` → `SplitResult(scheme, netloc, path,
+/// query, fragment)`, a NAMED tuple so `.scheme` etc. read by name.
 pub fn emit_urlsplit(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc == 0 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_string_const("", line);
+        return;
     }
-    let arg = chunks[current].alloc_scratch(1);
-    lset(chunks, current, arg, line);
+    let base = stash_args(chunks, current, argc, line);
+    let parsed = chunks[current].alloc_scratch(1);
 
-    lget(chunks, current, arg, line);
-    call_import(chunks, current, "web:url", "new", 1, line);
-    let url = chunks[current].alloc_scratch(1);
-    lset(chunks, current, url, line);
+    lget(chunks, current, base, line);
+    url::emit_parse(chunks, current, url::ParseOptions::python(), line);
+    lset(chunks, current, parsed, line);
 
-    // A relative reference has no scheme, so WHATWG refuses it outright. Give
-    // back CPython's shape for that case: everything in `path`.
-    lget(chunks, current, url, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_if_value(line);
-    {
-        chunks[current].emit_string_const("", line);
-        chunks[current].emit_string_const("", line);
-        lget(chunks, current, arg, line);
-        chunks[current].emit_string_const("", line);
-        chunks[current].emit_string_const("", line);
-        emit_split_result(chunks, current, line);
+    // Component reads are the SHARED superset — the WHATWG→canonical reshaping
+    // (`protocol` minus its colon, the composite `netloc`, `?`/`#` prefixes)
+    // is identical for php `parse_url` and belongs in one place.
+    for field in [
+        url::UrlField::Scheme,
+        url::UrlField::Netloc,
+        url::UrlField::Path,
+        url::UrlField::Query,
+        url::UrlField::Fragment,
+    ] {
+        url::emit_component(chunks, current, parsed, field, line);
     }
-    chunks[current].emit_else(line);
-    {
-        scheme_field(chunks, current, url, line);
-        netloc_field(chunks, current, url, line);
-        lget(chunks, current, url, line);
-        sget(chunks, current, "pathname", line);
-        field_without_prefix(chunks, current, url, "search", line);
-        field_without_prefix(chunks, current, url, "hash", line);
-        emit_split_result(chunks, current, line);
-    }
-    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 5, line);
+    let fields = [
+        Some("scheme".to_string()),
+        Some("netloc".to_string()),
+        Some("path".to_string()),
+        Some("query".to_string()),
+        Some("fragment".to_string()),
+    ];
+    tuples::emit_named_tuple(chunks, current, &fields, Some("SplitResult"), line);
 }
 
-/// Pack the five components on the stack into CPython's `SplitResult`.
-/// Stack: `[scheme, netloc, path, query, fragment] -> [named tuple]`.
-fn emit_split_result(chunks: &mut [Chunk], current: usize, line: u32) {
-    const FIELDS: [&str; 5] = ["scheme", "netloc", "path", "query", "fragment"];
-    let base = chunks[current].alloc_scratch(5);
-    vybe_compiler::primitives::collections::emit_pack_n(chunks, current, 5, base, line);
-    let names: Vec<Option<String>> = FIELDS.iter().map(|f| Some((*f).to_string())).collect();
-    tuples::emit_named_tuple(chunks, current, &names, Some("SplitResult"), line);
-}
-
-/// `urlunsplit((scheme, netloc, path, query, fragment))` — the textual inverse
-/// of `urlsplit`, per RFC 3986 §5.3: each component contributes its own
-/// delimiter and an empty component contributes nothing.
-/// Stack: `[tuple] -> [string]`.
+/// `urlunsplit(parts)` / `urlunparse(parts)` — reassemble, and it must
+/// round-trip: `urlunsplit(urlsplit(u)) == u`.
+///
+/// Each separator is emitted only when its component is non-empty, which is
+/// what makes a URL with no query or no fragment come back unchanged.
 pub fn emit_urlunsplit(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc == 0 {
         chunks[current].emit_string_const("", line);
         return;
     }
-    let parts = chunks[current].alloc_scratch(1);
-    lset(chunks, current, parts, line);
+    let base = stash_args(chunks, current, argc, line);
     let out = chunks[current].alloc_scratch(1);
-    let piece = chunks[current].alloc_scratch(1);
+    let part = chunks[current].alloc_scratch(1);
 
+    // scheme -> "scheme:" when present
+    emit_part(chunks, current, base, 0, part, line);
+    emit_if_non_empty(chunks, current, part, line);
+    lget(chunks, current, part, line);
+    chunks[current].emit_string_const(":", line);
+    call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+    chunks[current].emit_else(line);
     chunks[current].emit_string_const("", line);
+    chunks[current].emit_end(line);
     lset(chunks, current, out, line);
 
-    // (index, prefix-when-non-empty)
-    for (index, prefix) in [(0usize, ":"), (1, "//"), (2, ""), (3, "?"), (4, "#")] {
-        lget(chunks, current, parts, line);
-        chunks[current].emit_i32_const(index as i32, line);
-        chunks[current].emit_op(Op::ARRAY_GET, line);
-        lset(chunks, current, piece, line);
-
-        lget(chunks, current, piece, line);
-        call_import(chunks, current, "wasm:js-string", "length", 1, line);
-        chunks[current].emit_i32_const(0, line);
-        chunks[current].emit_op(Op::I32_NE, line);
-        chunks[current].emit_if(line);
-        {
-            lget(chunks, current, out, line);
-            // `scheme` takes its delimiter AFTER, every other one BEFORE.
-            if index == 0 {
-                lget(chunks, current, piece, line);
-                call_import(chunks, current, "wasm:js-string", "concat", 2, line);
-                chunks[current].emit_string_const(prefix, line);
-                call_import(chunks, current, "wasm:js-string", "concat", 2, line);
-            } else {
-                chunks[current].emit_string_const(prefix, line);
-                call_import(chunks, current, "wasm:js-string", "concat", 2, line);
-                lget(chunks, current, piece, line);
-                call_import(chunks, current, "wasm:js-string", "concat", 2, line);
-            }
-            lset(chunks, current, out, line);
-        }
-        chunks[current].emit_end(line);
-    }
+    emit_append_prefixed(chunks, current, base, 1, out, part, "//", line);
+    emit_append_prefixed(chunks, current, base, 2, out, part, "", line);
+    emit_append_prefixed(chunks, current, base, 3, out, part, "?", line);
+    emit_append_prefixed(chunks, current, base, 4, out, part, "#", line);
 
     lget(chunks, current, out, line);
 }
 
-/// `urlencode(dict)` → `"a=1&b=2"` with `application/x-www-form-urlencoded`
-/// escaping, which is what `URLSearchParams.toString()` produces — including
-/// the `+` for a space that `quote` does NOT use.
-/// Stack: `[dict] -> [string]`.
+/// `parts[i]` into `slot`.
+fn emit_part(chunks: &mut [Chunk], current: usize, base: u16, i: i32, slot: u16, line: u32) {
+    lget(chunks, current, base, line);
+    chunks[current].emit_i32_const(i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    lset(chunks, current, slot, line);
+}
+
+/// Push i32 bool `slot.length != 0` and open an `if`.
+fn emit_if_non_empty(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    lget(chunks, current, slot, line);
+    call_import(chunks, current, "wasm:js-string", "length", 1, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_NE, line);
+    chunks[current].emit_if_value(line);
+}
+
+/// `out += prefix + parts[i]`, but only when `parts[i]` is non-empty.
+fn emit_append_prefixed(
+    chunks: &mut [Chunk],
+    current: usize,
+    base: u16,
+    i: i32,
+    out: u16,
+    part: u16,
+    prefix: &str,
+    line: u32,
+) {
+    emit_part(chunks, current, base, i, part, line);
+    lget(chunks, current, out, line);
+    emit_if_non_empty(chunks, current, part, line);
+    if prefix.is_empty() {
+        lget(chunks, current, part, line);
+    } else {
+        chunks[current].emit_string_const(prefix, line);
+        lget(chunks, current, part, line);
+        call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+    }
+    chunks[current].emit_else(line);
+    chunks[current].emit_string_const("", line);
+    chunks[current].emit_end(line);
+    call_import(chunks, current, "wasm:js-string", "concat", 2, line);
+    lset(chunks, current, out, line);
+}
+
+/// `urljoin(base, url)` — WHATWG relative resolution against a base IS
+/// RFC 3986 §5, which is what CPython implements, so no reshaping is needed.
+pub fn emit_urljoin(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc < 2 {
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    lget(chunks, current, base + 1, line);
+    lget(chunks, current, base, line);
+    call_import(chunks, current, "web:url", "new", 2, line);
+    call_import(chunks, current, "web:url", "urlToString", 1, line);
+}
+
+// ── query strings ─────────────────────────────────────────────────────
+//
+// `web:url`'s `searchParams*` surface is the WHATWG query parser, already
+// registered for JS `URLSearchParams`. CPython's three shapes are views over
+// the same pairs: `parse_qsl` the ordered pair list, `parse_qs` those pairs
+// grouped by key, `urlencode` the inverse.
+
+/// Build a `URLSearchParams` over the query string at `slot`.
+fn search_params(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    lget(chunks, current, slot, line);
+    call_import(chunks, current, "web:url", "searchParamsNew", 1, line);
+}
+
+/// `parse_qsl(q)` → `[(key, value), …]` in order, duplicates preserved.
+pub fn emit_parse_qsl(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    search_params(chunks, current, base, line);
+    call_import(chunks, current, "web:url", "searchParamsEntries", 1, line);
+    // `searchParamsEntries` yields 2-element arrays; CPython yields TUPLES,
+    // and the difference is visible in `repr` — `('a', '1')` not `['a', '1']`.
+    emit_tag_pairs_as_tuples(chunks, current, line);
+}
+
+/// `parse_qs(q)` → `{key: [value, …]}`, grouping duplicates.
+pub fn emit_parse_qs(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc == 0 {
+        call_import(chunks, current, "ecma:map", "new", 0, line);
+        return;
+    }
+    let base = stash_args(chunks, current, argc, line);
+    let params = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let keys = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let n = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+
+    search_params(chunks, current, base, line);
+    lset(chunks, current, params, line);
+    call_import(chunks, current, "ecma:map", "new", 0, line);
+    lset(chunks, current, out, line);
+
+    // Distinct keys, in first-seen order.
+    lget(chunks, current, params, line);
+    call_import(chunks, current, "web:url", "searchParamsKeys", 1, line);
+    lset(chunks, current, keys, line);
+    chunks[current].emit_i32_const(0, line);
+    lset(chunks, current, i, line);
+    lget(chunks, current, keys, line);
+    call_import(chunks, current, "ecma:array", "length", 1, line);
+    lset(chunks, current, n, line);
+
+    let block = chunks[current].emit_block(line);
+    let lp = chunks[current].emit_loop_s(line).0;
+    lget(chunks, current, i, line);
+    lget(chunks, current, n, line);
+    chunks[current].emit_op(Op::I32_GE_S, line);
+    chunks[current].emit_br_if(1, line);
+
+    lget(chunks, current, keys, line);
+    lget(chunks, current, i, line);
+    chunks[current].emit_op(Op::ARRAY_GET, line);
+    lset(chunks, current, key, line);
+
+    // out[key] = params.getAll(key)  — idempotent for a repeated key.
+    lget(chunks, current, out, line);
+    lget(chunks, current, key, line);
+    lget(chunks, current, params, line);
+    lget(chunks, current, key, line);
+    call_import(chunks, current, "web:url", "searchParamsGetAll", 2, line);
+    call_import(chunks, current, "ecma:map", "set", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    lget(chunks, current, i, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    lset(chunks, current, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(lp);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(block);
+
+    lget(chunks, current, out, line);
+}
+
+/// `urlencode(mapping)` → `k=v&k=v`, each part `quote_plus`d.
+///
+/// CPython uses `quote_plus` here, so a space is `+` and `&` is `%26` —
+/// `{"name": "Alice & Bob"}` gives `name=Alice+%26+Bob`.
 pub fn emit_urlencode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc == 0 {
         chunks[current].emit_string_const("", line);
         return;
     }
-    let dict = chunks[current].alloc_scratch(1);
-    lset(chunks, current, dict, line);
-
+    let base = stash_args(chunks, current, argc, line);
     let params = chunks[current].alloc_scratch(1);
+
     call_import(chunks, current, "web:url", "searchParamsNew", 0, line);
     lset(chunks, current, params, line);
 
-    // A Python dict is a Map; iterate its entries as [key, value] pairs.
     let entries = chunks[current].alloc_scratch(1);
-    lget(chunks, current, dict, line);
-    call_import(chunks, current, "ecma:map", "entries", 1, line);
-    call_import(chunks, current, "ecma:array", "from", 1, line);
-    lset(chunks, current, entries, line);
-
     let i = chunks[current].alloc_scratch(1);
     let n = chunks[current].alloc_scratch(1);
     let pair = chunks[current].alloc_scratch(1);
+
+    lget(chunks, current, base, line);
+    call_import(chunks, current, "ecma:object", "entries", 1, line);
+    lset(chunks, current, entries, line);
     chunks[current].emit_i32_const(0, line);
     lset(chunks, current, i, line);
     lget(chunks, current, entries, line);
-    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    call_import(chunks, current, "ecma:array", "length", 1, line);
     lset(chunks, current, n, line);
 
     let block = chunks[current].emit_block(line);
-    let (lp, _) = chunks[current].emit_loop_s(line);
+    let lp = chunks[current].emit_loop_s(line).0;
     lget(chunks, current, i, line);
     lget(chunks, current, n, line);
     chunks[current].emit_op(Op::I32_GE_S, line);
@@ -335,60 +388,31 @@ pub fn emit_urlencode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     call_import(chunks, current, "web:url", "searchParamsToString", 1, line);
 }
 
-/// `parse_qs(query)` → `{key: [values]}`. CPython gives every key a LIST,
-/// which is what distinguishes it from `parse_qsl`.
-/// Stack: `[query] -> [dict]`.
-pub fn emit_parse_qs(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    if argc == 0 {
-        chunks[current].emit_string_const("", line);
-    }
-    let query = chunks[current].alloc_scratch(1);
-    lset(chunks, current, query, line);
-
-    let params = chunks[current].alloc_scratch(1);
-    lget(chunks, current, query, line);
-    call_import(chunks, current, "web:url", "searchParamsNew", 1, line);
-    lset(chunks, current, params, line);
-
-    let out = chunks[current].alloc_scratch(1);
-    call_import(chunks, current, "ecma:map", "new", 0, line);
-    lset(chunks, current, out, line);
-
-    let keys = chunks[current].alloc_scratch(1);
-    lget(chunks, current, params, line);
-    call_import(chunks, current, "web:url", "searchParamsKeys", 1, line);
-    call_import(chunks, current, "ecma:array", "from", 1, line);
-    lset(chunks, current, keys, line);
-
+/// Re-tag each `[k, v]` pair in the array on TOS as a TUPLE, so `repr` prints
+/// `('a', '1')` the way CPython's `parse_qsl` does.
+fn emit_tag_pairs_as_tuples(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr = chunks[current].alloc_scratch(1);
     let i = chunks[current].alloc_scratch(1);
     let n = chunks[current].alloc_scratch(1);
-    let key = chunks[current].alloc_scratch(1);
+
+    lset(chunks, current, arr, line);
     chunks[current].emit_i32_const(0, line);
     lset(chunks, current, i, line);
-    lget(chunks, current, keys, line);
-    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+    lget(chunks, current, arr, line);
+    call_import(chunks, current, "ecma:array", "length", 1, line);
     lset(chunks, current, n, line);
 
     let block = chunks[current].emit_block(line);
-    let (lp, _) = chunks[current].emit_loop_s(line);
+    let lp = chunks[current].emit_loop_s(line).0;
     lget(chunks, current, i, line);
     lget(chunks, current, n, line);
     chunks[current].emit_op(Op::I32_GE_S, line);
     chunks[current].emit_br_if(1, line);
 
-    lget(chunks, current, keys, line);
+    lget(chunks, current, arr, line);
     lget(chunks, current, i, line);
     chunks[current].emit_op(Op::ARRAY_GET, line);
-    lset(chunks, current, key, line);
-
-    // out.set(key, [...getAll(key)]) — repeated keys collapse to one entry
-    // because `set` overwrites, matching CPython's single list per key.
-    lget(chunks, current, out, line);
-    lget(chunks, current, key, line);
-    lget(chunks, current, params, line);
-    lget(chunks, current, key, line);
-    call_import(chunks, current, "web:url", "searchParamsGetAll", 2, line);
-    call_import(chunks, current, "ecma:map", "set", 3, line);
+    tuples::emit_tag(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
     lget(chunks, current, i, line);
@@ -401,132 +425,7 @@ pub fn emit_parse_qs(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_end(line);
     chunks[current].patch_block(block);
 
-    lget(chunks, current, out, line);
-}
-
-/// `parse_qsl(query)` → `[(key, value), …]` — the ORDERED pair list, keeping
-/// duplicate keys as separate entries (the difference from `parse_qs`, which
-/// groups them into one list per key).
-/// Stack: `[query] -> [list of tuples]`.
-pub fn emit_parse_qsl(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    if argc == 0 {
-        chunks[current].emit_string_const("", line);
-    }
-    let query = chunks[current].alloc_scratch(1);
-    lset(chunks, current, query, line);
-
-    let entries = chunks[current].alloc_scratch(1);
-    lget(chunks, current, query, line);
-    call_import(chunks, current, "web:url", "searchParamsNew", 1, line);
-    call_import(chunks, current, "web:url", "searchParamsEntries", 1, line);
-    call_import(chunks, current, "ecma:array", "from", 1, line);
-    lset(chunks, current, entries, line);
-
-    // The entries arrive as plain 2-element arrays; Python wants TUPLES, which
-    // repr as `('a', '1')` rather than `['a', '1']`. Re-tag in place.
-    let out = chunks[current].alloc_scratch(1);
-    let i = chunks[current].alloc_scratch(1);
-    let n = chunks[current].alloc_scratch(1);
-    let pair = chunks[current].alloc_scratch(1);
-
-    let new_len = chunks[current].add_import("vybe:js-array", "newWithLength");
-    chunks[current].emit_i32_const(0, line);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, new_len, line);
-    chunks[current].emit(1u8, line);
-    lset(chunks, current, out, line);
-
-    chunks[current].emit_i32_const(0, line);
-    lset(chunks, current, i, line);
-    lget(chunks, current, entries, line);
-    chunks[current].emit_op(Op::ARRAY_LENGTH, line);
-    lset(chunks, current, n, line);
-
-    let block = chunks[current].emit_block(line);
-    let (lp, _) = chunks[current].emit_loop_s(line);
-    lget(chunks, current, i, line);
-    lget(chunks, current, n, line);
-    chunks[current].emit_op(Op::I32_GE_S, line);
-    chunks[current].emit_br_if(1, line);
-
-    lget(chunks, current, entries, line);
-    lget(chunks, current, i, line);
-    chunks[current].emit_op(Op::ARRAY_GET, line);
-    lset(chunks, current, pair, line);
-
-    lget(chunks, current, out, line);
-    lget(chunks, current, pair, line);
-    chunks[current].emit_i32_const(0, line);
-    chunks[current].emit_op(Op::ARRAY_GET, line);
-    lget(chunks, current, pair, line);
-    chunks[current].emit_i32_const(1, line);
-    chunks[current].emit_op(Op::ARRAY_GET, line);
-    tuples::emit_tuple(chunks, current, 2, line);
-    call_import(chunks, current, "ecma:array", "push", 2, line);
-    chunks[current].emit_op(Op::DROP, line);
-
-    lget(chunks, current, i, line);
-    chunks[current].emit_i32_const(1, line);
-    chunks[current].emit_op(Op::I32_ADD, line);
-    lset(chunks, current, i, line);
-    chunks[current].emit_br(0, line);
-    chunks[current].emit_end(line);
-    chunks[current].patch_loop(lp);
-    chunks[current].emit_end(line);
-    chunks[current].patch_block(block);
-
-    lget(chunks, current, out, line);
-}
-
-/// `quote(s)` — percent-encoding that leaves `/` alone (CPython's default
-/// `safe='/'`). `encodeURIComponent` escapes `/`, so put it back; the reverse
-/// swap on a placeholder is not needed because `encodeURIComponent` never
-/// produces a bare `/`.
-/// Stack: `[s] -> [string]`.
-pub fn emit_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    if argc == 0 {
-        chunks[current].emit_string_const("", line);
-        return;
-    }
-    // Extra args (`safe=`, `encoding=`) are not modelled; drop them.
-    let base = stash_args(chunks, current, argc, line);
-    lget(chunks, current, base, line);
-    call_import(chunks, current, "ecma:string", "encodeURIComponent", 1, line);
-    chunks[current].emit_string_const("%2F", line);
-    chunks[current].emit_string_const("/", line);
-    call_import(chunks, current, "ecma:string", "replaceAll", 3, line);
-}
-
-/// `quote_plus(s)` — `quote` but a space becomes `+`, not `%20`.
-/// Stack: `[s] -> [string]`.
-pub fn emit_quote_plus(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_quote(chunks, current, argc, line);
-    chunks[current].emit_string_const("%20", line);
-    chunks[current].emit_string_const("+", line);
-    call_import(chunks, current, "ecma:string", "replaceAll", 3, line);
-}
-
-/// `unquote(s)`. Stack: `[s] -> [string]`.
-pub fn emit_unquote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    if argc == 0 {
-        chunks[current].emit_string_const("", line);
-        return;
-    }
-    let base = stash_args(chunks, current, argc, line);
-    lget(chunks, current, base, line);
-    call_import(chunks, current, "ecma:string", "decodeURIComponent", 1, line);
-}
-
-/// `unquote_plus(s)` — `+` decodes back to a space before percent-decoding.
-/// Stack: `[s] -> [string]`.
-pub fn emit_unquote_plus(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    if argc == 0 {
-        chunks[current].emit_string_const("", line);
-        return;
-    }
-    let base = stash_args(chunks, current, argc, line);
-    lget(chunks, current, base, line);
-    chunks[current].emit_string_const("+", line);
-    chunks[current].emit_string_const(" ", line);
-    call_import(chunks, current, "ecma:string", "replaceAll", 3, line);
-    call_import(chunks, current, "ecma:string", "decodeURIComponent", 1, line);
+    // Only the PAIRS are tuples. `parse_qsl` returns a LIST of them —
+    // tagging the outer array too printed `(('a','1'), …)` for `[('a','1'), …]`.
+    lget(chunks, current, arr, line);
 }

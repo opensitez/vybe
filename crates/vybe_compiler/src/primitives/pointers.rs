@@ -121,11 +121,7 @@ fn carray_byte_index(ptr: Expression, offset: Expression, byte_width: i64) -> Ex
 ///
 /// The underlying carray remains element-addressed for cross-language pointer
 /// interop; this helper converts byte offsets to element slots for typed reads.
-pub fn carray_byte_offset_read(
-    ptr: Expression,
-    offset: Expression,
-    byte_width: i64,
-) -> Expression {
+pub fn carray_byte_offset_read(ptr: Expression, offset: Expression, byte_width: i64) -> Expression {
     e(ExprKind::Index {
         object: Box::new(member(ptr.clone(), CARRAY_BASE_KEY)),
         index: Box::new(carray_byte_index(ptr, offset, byte_width)),

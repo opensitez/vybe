@@ -53,7 +53,7 @@ materialize_bool_results = true
 "__go_parse_int"     = { emit = "host:ecma:number:parseInt",    min_args = 1, max_args = 2 }
 "__go_parse_float"   = { emit = "host:ecma:number:parseFloat",  min_args = 1, max_args = 1 }
 "__go_json_stringify" = { emit = "host:ecma:json:stringify",    min_args = 1, max_args = 3 }
-"__go_json_parse"     = { emit = "host:ecma:json:parse",        min_args = 1, max_args = 2 }
+"__go_json_parse"     = { emit = "common:go.json_parse",        min_args = 1, max_args = 2 }
 "__go_xml_name"       = { emit = "common:xml.name",             min_args = 3, max_args = 3 }
 "__go_xml_name_local" = { emit = "common:xml.local",            min_args = 1, max_args = 1 }
 "__go_xml_name_space" = { emit = "common:xml.namespace",        min_args = 1, max_args = 1 }
@@ -211,7 +211,14 @@ materialize_bool_results = true
 
 # ── net/url primitives (WHATWG URL host, shared with JS) ─────────────────────
 "__go_url_parse"  = { emit = "host:web:url:parse",                     min_args = 1, max_args = 2 }
+# The SHARED percent codec, not a per-language reimplementation. `QueryEscape`
+# is byte-identical to python `quote_plus` (`+` for space, `~` left alone) —
+# measured against real `go` and `python3`.
 "__go_url_esc"    = { emit = "host:ecma:string:encodeURIComponent",    min_args = 1, max_args = 1 }
+"__go_url_qesc"   = { emit = "common:url.encode_form_rfc3986",         min_args = 1, max_args = 1 }
+# `QueryUnescape` decodes `+` back to a space; plain `__go_url_unesc` does not
+# and must stay rfc3986 — `__go_url_parse_query` already handles `+` itself.
+"__go_url_qunesc" = { emit = "common:url.decode_form",                 min_args = 1, max_args = 1 }
 "__go_url_unesc"  = { emit = "host:ecma:string:decodeURIComponent",    min_args = 1, max_args = 1 }
 
 # ── File I/O ─────────────────────────────────────────────────────────────────

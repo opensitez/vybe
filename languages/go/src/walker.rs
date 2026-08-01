@@ -940,9 +940,9 @@ func (u __goURL) ResolveReference(ref __goURL) __goURL {
 	return r
 }
 
-func __go_url_qesc(s string) string {
-	return strings.ReplaceAll(__go_url_esc(s), "%20", "+")
-}
+// __go_url_qesc is no longer a Go-source prelude: it binds the SHARED percent
+// codec (`common:url.encode_form_rfc3986`), the same one python `quote_plus`
+// uses — the two are byte-identical, measured against both real runtimes.
 
 func __go_url_parse_query(raw string) __goValues {
 	v := __goValues{}
@@ -13215,7 +13215,7 @@ fn go_rewrite_json_call(
             Some(go_tuple_with_nil(json))
         }
         "json.Unmarshal" => {
-            let input = go_arg_value(args, 0);
+            let input = go_json_text_input(go_arg_value(args, 0), env, signatures);
             let target = go_arg_value(args, 1);
             let target_place = go_json_unmarshal_target(&target);
             if go_expr_type_hint(&target_place, env, signatures).as_deref()
@@ -13276,6 +13276,39 @@ fn go_rewrite_json_call(
             }))
         }
         _ => None,
+    }
+}
+
+/// `json.Unmarshal(data []byte, …)` — the shared JSON parse takes text, so the
+/// byte slice has to come back as a string. Unwrap the `[]byte(s)` conversion
+/// where the source is right there instead of round-tripping: the encode side
+/// (`__go_io_string_to_bytes`) is UTF-8 via TextEncoder while the decode side
+/// (`__go_io_bytes_to_string`) builds the string one char code at a time, so a
+/// round trip mangles anything non-ASCII. `json.RawMessage` is already held as
+/// JSON text and passes through untouched.
+fn go_json_text_input(
+    expr: Expression,
+    env: &GoNormalizeEnv,
+    signatures: &HashMap<String, GoFunctionSignature>,
+) -> Expression {
+    match &expr.kind {
+        ExprKind::Call { callee, args, .. }
+            if go_expr_call_name(callee).as_deref() == Some("__go_io_string_to_bytes")
+                && args.len() == 1 =>
+        {
+            return args[0].value.clone();
+        }
+        ExprKind::Cast {
+            expr: inner,
+            type_name,
+        } if matches!(type_name.trim(), "[]byte" | "[]uint8") => {
+            return (**inner).clone();
+        }
+        _ => {}
+    }
+    match go_expr_type_hint(&expr, env, signatures).as_deref() {
+        Some("string" | "__goRawMessage") => expr,
+        _ => go_builtin_call("__go_io_bytes_to_string", vec![expr]),
     }
 }
 
@@ -15928,7 +15961,7 @@ fn go_rewrite_url_call(call_name: &str, args: &[Argument]) -> Option<Expression>
             vec![go_arg_value(args, 0)],
         )),
         "url.QueryUnescape" => Some(go_builtin_call(
-            "__go_url_unesc",
+            "__go_url_qunesc",
             vec![go_arg_value(args, 0)],
         )),
         "url.User" => Some(go_builtin_call(

@@ -1230,6 +1230,67 @@ pub fn emit_getitem(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, obj, line);
 
+    // STRING leg — there was none, so `s[0]` on a receiver whose type the
+    // compiler could not resolve fell through to the dict/object path and
+    // raised `KeyError`, surfacing as `RuntimeError: [object]`. Only a LITERAL
+    // worked, because a resolved receiver substitutes the `(String, GetItem)`
+    // binding instead of ever reaching here.
+    //
+    // Indexes in CODE POINTS, matching `len` — `unifiedstringplan.md` Axis 1
+    // names Python's unit `scalar`. `Array.from` walks the string iterator, so
+    // `"a😀b"[1]` is the emoji, not half of it.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    {
+        let chars = chunks[current].alloc_scratch(1);
+        let n = chunks[current].alloc_scratch(1);
+        let idx = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+        call_import(chunks, current, "ecma:array", "from", 1, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, chars, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, chars, line);
+        chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+
+        // Python allows a negative index: `s[-1]` is the last character.
+        chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+        chunks[current].emit_i32_const(0, line);
+        ops::emit_dyn_lt(&mut chunks[current], line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+        ops::emit_dyn_add(&mut chunks[current], line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+        chunks[current].emit_end(line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+        chunks[current].emit_i32_const(0, line);
+        ops::emit_dyn_lt(&mut chunks[current], line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+        ops::emit_dyn_ge(&mut chunks[current], line);
+        chunks[current].emit_op(Op::I32_OR, line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        emit_throw_python_exception(
+            &mut chunks[current],
+            "IndexError",
+            "string index out of range",
+            line,
+        );
+        chunks[current].emit_end(line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, chars, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+        chunks[current].emit_op(Op::ARRAY_GET, line);
+    }
+    chunks[current].emit_else(line);
+
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -1270,6 +1331,8 @@ pub fn emit_getitem(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 
     chunks[current].emit_end(line);
+    // closes the STRING leg's if/else added at the top
+    chunks[current].emit_end(line);
 }
 
 /// `len(obj) + idx` — helper for the from-end wrap. Stack: `[]` → `[value]`.
@@ -1291,7 +1354,9 @@ pub fn emit_index(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, needle, line);
-    strings::emit_index_of(&mut chunks[current], line);
+    // CODE POINTS, matching `len` and `s[i]` — `unifiedstringplan.md` Axis 1.
+    // The UTF-16 `emit_index_of` answered 3 for `"a\u{1F600}b".index("b")`.
+    strings::emit_scalar_index_of(chunks, current, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, needle, line);
@@ -2097,13 +2162,25 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
     chunks[current].emit_else(line);
 
-    // isString(recv) → string length
+    // isString(recv) → CODE POINTS, not UTF-16 code units.
+    //
+    // `unifiedstringplan.md` Axis 1 names Python's index unit `scalar`, and
+    // this is the one language on that axis. `len("😀")` is 1 in Python and
+    // `len("a😀b")` is 3; the shared `strings::emit_length` counts UTF-16
+    // units and answered 2 and 4 — every character outside the BMP was off by
+    // one.
+    //
+    // `Array.from` iterates a string with the STRING ITERATOR, which yields
+    // code points, so its length is the scalar count. Verified against `node`:
+    // `Array.from("😀").length` is 1. No host function is added — this is the
+    // `[...s].length` idiom over primitives that already exist.
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     host::emit(&mut chunks[current], "wasm:js-string", "test", 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    strings::emit_length(&mut chunks[current], line);
+    call_import(chunks, current, "ecma:array", "from", 1, line);
+    collections::emit_len(chunks, current, line);
     chunks[current].emit_else(line);
 
     // isArray(recv) → element count

@@ -180,10 +180,7 @@ fn expires_becomes_an_http_date() {
     // Callers pass unix seconds; `Expires` is an IMF-fixdate (RFC 9110 §5.6.7).
     // Emitting the raw timestamp would make the cookie never expire.
     let out = serialize("k", "v", &[("expires", Value::F64(1_754_006_400.0))]);
-    assert!(
-        out.starts_with("k=v; Expires="),
-        "got {out:?}"
-    );
+    assert!(out.starts_with("k=v; Expires="), "got {out:?}");
     assert!(out.ends_with(" GMT"), "got {out:?}");
     assert!(
         !out.contains("1754006400"),
