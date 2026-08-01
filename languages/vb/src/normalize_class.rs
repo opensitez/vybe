@@ -89,7 +89,8 @@ pub fn normalize_class(
                     out.auto_init_methods.push(src_name.clone());
                 }
 
-                let (canonical, special_kind) = crate::protocol::canonical_method(src_name);
+                let (canonical, name_kind) = crate::protocol::canonical_method(src_name);
+                let special_kind = m.protocol_slot.or(name_kind);
                 let access = Access::from(m.visibility);
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, access) else {
                     continue;
@@ -275,19 +276,23 @@ fn vb_default_field_init(type_hint: &Option<String>) -> Option<vybe_ast::Express
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vybe_ast::Modifiers;
+    use vybe_ast::{Modifiers, ProtocolSlot};
 
     fn dummy_span() -> Span {
         Span::default()
     }
 
     fn make_method(src_name: &str) -> ClassMember {
+        make_method_with_modifiers(src_name, Modifiers::default())
+    }
+
+    fn make_method_with_modifiers(src_name: &str, modifiers: Modifiers) -> ClassMember {
         ClassMember::Method(Box::new(vybe_ast::Statement::new(StmtKind::FunctionDecl {
             name: src_name.into(),
             params: vec![],
             return_type: None,
             body: vec![],
-            modifiers: Modifiers::default(),
+            modifiers,
             handles: vec![],
             is_async: false,
             is_generator: false,
@@ -335,5 +340,20 @@ mod tests {
         );
         assert_eq!(nc.auto_init_methods.len(), 1);
         assert!(nc.auto_init_methods[0].eq_ignore_ascii_case("InitializeComponent"));
+    }
+
+    #[test]
+    fn walker_declared_protocol_slot_wins_over_name_guessing() {
+        let mut modifiers = Modifiers::default();
+        modifiers.protocol_slot = Some(ProtocolSlot::Add);
+        let nc = normalize_class(
+            dummy_span(),
+            "Vector",
+            &[],
+            &[],
+            &[make_method_with_modifiers("operator", modifiers)],
+            &ClassModifiers::default(),
+        );
+        assert_eq!(nc.special_methods[0].kind, SpecialMethodKind::Add);
     }
 }

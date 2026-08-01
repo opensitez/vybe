@@ -408,7 +408,7 @@ structure_decl = {
     attribute_line* ~ visibility_modifier? ~ ^"Structure" ~ identifier ~ generic_suffix?
     ~ (structure_inline_body | structure_block_body)
 }
-structure_member = _{ class_decl | interface_decl | structure_decl | auto_property_line | property_decl | operator_decl | sub_decl | function_decl | const_statement_line | custom_event_decl | event_line | field_line | dim_line | enum_decl | NEWLINE | COMMENT }
+structure_member = _{ class_decl | interface_decl | structure_decl | auto_property_line | property_decl | operator_decl | sub_decl | function_decl | const_statement_line | custom_event_decl | event_line | field_line | dim_line | enum_decl | attribute_line | NEWLINE | COMMENT }
 structure_inline_clause = _{ implements_statement | class_decl | interface_decl | structure_decl | auto_property_decl | property_decl | operator_decl | sub_decl | function_decl | const_statement | custom_event_decl | event_decl | field_decl | dim_statement | enum_decl }
 structure_inline_body = _{ (":" ~ structure_end) | (":" ~ structure_inline_clause ~ (":" ~ structure_inline_clause)* ~ ":" ~ structure_end) }
 structure_block_body = _{ (NEWLINE | EOI) ~ implements_line? ~ (!structure_end ~ structure_member)* ~ structure_end }
@@ -696,6 +696,8 @@ boolean_literal = { ^"True" | ^"False" }
 
 // Types: support dotted type names like System.Windows.Forms.Form
 type_name = {
+    tuple_type
+    |
     (
         (^"Integer" | ^"Long" | ^"Single" | ^"Double" | ^"String" | ^"Boolean" | ^"Variant" | ^"Object")
         ~ !(ASCII_ALPHANUMERIC | "_")
@@ -703,6 +705,8 @@ type_name = {
     ) ~ fixed_length_suffix? ~ (generic_suffix | array_type_suffix)? ~ ("." ~ member_identifier ~ (generic_suffix | array_type_suffix)?)* ~ "*"* ~ "?"?
 }
 
+tuple_type = { "(" ~ tuple_type_element ~ ("," ~ tuple_type_element)+ ~ ")" }
+tuple_type_element = { (identifier ~ ^"As")? ~ type_name }
 fixed_length_suffix = { "*" ~ numeric_literal }
 array_type_suffix = { "(" ~ ","* ~ ")" }
 generic_suffix = { "(" ~ ^"Of" ~ generic_param ~ ("," ~ generic_param)* ~ ")" }
