@@ -911,7 +911,7 @@ fn array_new_fixed_and_length() {
         c.emit_op_u16(Op::CONST, i10, 0);
         c.emit_op_u16(Op::CONST, i20, 0);
         c.emit_op_u16(Op::CONST, i30, 0);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
+        c.emit_array_new_fixed(0, 3, 0);
         c.emit_op(Op::ARRAY_LENGTH, 0);
     });
     assert_eq!(r.as_i32(), 3);
@@ -926,7 +926,7 @@ fn array_get() {
         c.emit_op_u16(Op::CONST, i10, 0);
         c.emit_op_u16(Op::CONST, i20, 0);
         c.emit_op_u16(Op::CONST, i30, 0);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
+        c.emit_array_new_fixed(0, 3, 0);
         // array_get arr 1 → 20
         let one = c.add_constant(Value::I32(1));
         c.emit_op_u16(Op::CONST, one, 0);
@@ -946,7 +946,7 @@ fn array_set_then_get() {
         c.emit_op_u16(Op::CONST, i1, 0);
         c.emit_op_u16(Op::CONST, i2, 0);
         c.emit_op_u16(Op::CONST, i3, 0);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
+        c.emit_array_new_fixed(0, 3, 0);
         // Save to slot 0
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
         // arr[1] = 99

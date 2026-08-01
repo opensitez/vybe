@@ -1383,10 +1383,19 @@ fn emit_gc_op(
         }
         _ if op == Op::ARRAY_NEW_FIXED => {
             // Spec: `array.new_fixed $t N` (0xFB 0x08), pops N values.
+            // Our bytecode now carries both immediates. A 0 type index means a
+            // dynamic-language array literal, which maps to the module's
+            // generic `(array (mut externref))`; a stamped index names its own
+            // array type.
+            let typeidx = read_u16(&chunk.code, ip);
             let elem_count = read_u16(&chunk.code, ip);
             body.push(0xFB);
             write_leb128_u32(body, 0x08);
-            write_leb128_u32(body, type_ctx.array_type_idx);
+            write_leb128_u32(body, if typeidx == 0 {
+                type_ctx.array_type_idx
+            } else {
+                typeidx as u32
+            });
             write_leb128_u32(body, elem_count as u32);
             emit_externalize(body); // (ref $arr) → externref
         }
@@ -1512,6 +1521,38 @@ fn emit_gc_op(
                 body,
                 wasm_struct_type_for_chunk_type(chunk, type_ctx, typeidx),
             );
+        }
+        // The descriptor-comparing casts:
+        //   ref.cast_desc_eq (ref ht)         → 0xFB 0x23 <heaptype>
+        //   ref.cast_desc_eq (ref null ht)    → 0xFB 0x24 <heaptype>
+        //   br_on_cast_desc_eq $l ht1 ht2     → 0xFB 0x25 castflags labelidx ht ht
+        //   br_on_cast_desc_eq_fail ...       → 0xFB 0x26 castflags labelidx ht ht
+        //
+        // Our bytecode operand for the target type is a constant-pool index
+        // for a type NAME, which has no typeidx to map onto — the same
+        // situation as `ref.cast`, so we emit the same conservative `any`
+        // heaptype it does.
+        _ if op == Op::REF_CAST_DESC_EQ || op == Op::REF_CAST_DESC_EQ_NULL => {
+            let name_idx = read_u16(&chunk.code, ip) as usize;
+            let ht_bytes = resolve_heaptype_from_name(chunk, name_idx, type_ctx);
+            body.push(0xFB);
+            write_leb128_u32(body, op.sub() as u32);
+            body.extend_from_slice(&ht_bytes);
+        }
+        _ if op == Op::BR_ON_CAST_DESC_EQ || op == Op::BR_ON_CAST_DESC_EQ_FAIL => {
+            let name_idx = read_u16(&chunk.code, ip) as usize;
+            let depth = chunk.code[*ip];
+            *ip += 1;
+            let ht_bytes = resolve_heaptype_from_name(chunk, name_idx, type_ctx);
+            body.push(0xFB);
+            write_leb128_u32(body, op.sub() as u32);
+            // castflags: bit 0 = ht1 nullable, bit 1 = ht2 nullable. Same
+            // hardcoded 0x00 as `br_on_cast` — the nullable forms are a
+            // pre-existing GC MVP gap, not a Custom Descriptors one.
+            body.push(0x00);
+            write_leb128_u32(body, depth as u32);
+            body.push(HT_ANY); // ht1: source
+            body.extend_from_slice(&ht_bytes); // ht2: target
         }
         _ if op == Op::STRUCT_GET_S || op == Op::STRUCT_GET_U => {
             // Our struct.get uses a field-name-constant u16 operand;

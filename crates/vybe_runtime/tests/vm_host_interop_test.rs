@@ -566,7 +566,7 @@ fn object_with_array_property_host_reads() {
     main.emit_op_u16(Op::CONST, c10, 0);
     main.emit_op_u16(Op::CONST, c20, 0);
     main.emit_op_u16(Op::CONST, c30, 0);
-    main.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
+    main.emit_array_new_fixed(0, 3, 0);
 
     // Wrap in object: {items: [10,20,30]}
     let k_items = main.add_constant(Value::String(Arc::from("items")));
@@ -678,7 +678,7 @@ fn host_receives_array_reads_elements() {
     main.emit_op_u16(Op::CONST, c1, 0);
     main.emit_op_u16(Op::CONST, c2, 0);
     main.emit_op_u16(Op::CONST, c3, 0);
-    main.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
+    main.emit_array_new_fixed(0, 3, 0);
     emit_call_import(&mut main, imp, 1);
     main.emit_op(Op::HALT, 0);
 
@@ -736,7 +736,7 @@ fn vm_array_to_host_returns_length() {
     main.emit_op_u16(Op::CONST, c3, 0);
     main.emit_op_u16(Op::CONST, c4, 0);
     main.emit_op_u16(Op::CONST, c5, 0);
-    main.emit_op_u16(Op::ARRAY_NEW_FIXED, 5, 0);
+    main.emit_array_new_fixed(0, 5, 0);
     emit_call_import(&mut main, imp, 1);
     main.emit_op(Op::HALT, 0);
 

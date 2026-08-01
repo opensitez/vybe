@@ -811,7 +811,7 @@ fn array_new_and_length() {
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
     chunk.emit_op_u16(Op::CONST, c, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
+    chunk.emit_array_new_fixed(0, 3, 0);
     chunk.emit_op(Op::ARRAY_LENGTH, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_i32(&run_chunks(vec![chunk]), 3);
@@ -827,7 +827,7 @@ fn array_get_valid_index() {
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
     chunk.emit_op_u16(Op::CONST, c, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
+    chunk.emit_array_new_fixed(0, 3, 0);
     // array_get: stack [obj, key] => [val]
     let idx = chunk.add_constant(Value::I32(1));
     chunk.emit_op_u16(Op::CONST, idx, 0);
@@ -842,7 +842,7 @@ fn array_get_out_of_bounds() {
     chunk.local_count = 2;
     let a = chunk.add_constant(Value::I32(10));
     chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, 0);
+    chunk.emit_array_new_fixed(0, 1, 0);
     let idx = chunk.add_constant(Value::I32(99));
     chunk.emit_op_u16(Op::CONST, idx, 0);
     chunk.emit_op(Op::ARRAY_GET, 0);
@@ -863,7 +863,7 @@ fn array_set() {
     let b = chunk.add_constant(Value::I32(20));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
+    chunk.emit_array_new_fixed(0, 2, 0);
     // store in local for reuse
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
     // array_set: stack [obj, key, val] => [val]
@@ -897,7 +897,7 @@ fn array_fill() {
     for _ in 0..5 {
         chunk.emit_op_u16(Op::CONST, z, 0);
     }
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 5, 0);
+    chunk.emit_array_new_fixed(0, 5, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
     // `array.fill $t : [(ref null $t) i32 t i32] -> []` — the operand order is
     // arrayref, INDEX, VALUE, count (WASM GC spec). Pushing value before the

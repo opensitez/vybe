@@ -399,7 +399,7 @@ fn array_new_fixed_and_get() {
         c.emit_op_u16(Op::CONST, a, 0);
         c.emit_op_u16(Op::CONST, b, 0);
         c.emit_op_u16(Op::CONST, n, 0);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0); // 3 elements
+        c.emit_array_new_fixed(0, 3, 0); // 3 elements
         // get element at index 1 (=20)
         let idx = c.add_constant(Value::I32(1));
         c.emit_op_u16(Op::CONST, idx, 0);
@@ -419,7 +419,7 @@ fn array_set_updates_element() {
         c.emit_op_u16(Op::CONST, zero, 0);
         c.emit_op_u16(Op::CONST, zero, 0);
         c.emit_op_u16(Op::CONST, zero, 0);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
+        c.emit_array_new_fixed(0, 3, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         // arr[1] = 77: push arr, idx, val
@@ -444,7 +444,7 @@ fn array_length() {
         c.emit_op_u16(Op::CONST, v, 0);
         c.emit_op_u16(Op::CONST, v, 0);
         c.emit_op_u16(Op::CONST, v, 0);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 4, 0);
+        c.emit_array_new_fixed(0, 4, 0);
         c.emit_op(Op::ARRAY_LENGTH, 0);
     });
     assert_eq!(r.as_i32(), 4);
@@ -460,7 +460,7 @@ fn array_fill_sets_range() {
         for _ in 0..5 {
             c.emit_op_u16(Op::CONST, zero, 0);
         }
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 5, 0);
+        c.emit_array_new_fixed(0, 5, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         // array.fill spec stack: [arrayref, index, value, count].
@@ -491,14 +491,14 @@ fn array_copy_copies_range() {
         c.emit_op_u16(Op::CONST, v5, 0);
         c.emit_op_u16(Op::CONST, v5, 0);
         c.emit_op_u16(Op::CONST, v5, 0);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
+        c.emit_array_new_fixed(0, 3, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         // dst = [0,0,0]
         c.emit_op_u16(Op::CONST, v0, 0);
         c.emit_op_u16(Op::CONST, v0, 0);
         c.emit_op_u16(Op::CONST, v0, 0);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
+        c.emit_array_new_fixed(0, 3, 0);
         c.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
         // array.copy dst dst_offset=0 src src_offset=0 count=3
@@ -695,7 +695,7 @@ fn array_get_s_on_regular_array_reads_element() {
     let r = run(|c| {
         let v = c.add_constant(Value::I32(42));
         c.emit_op_u16(Op::CONST, v, 0);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, 0);
+        c.emit_array_new_fixed(0, 1, 0);
         let idx = c.add_constant(Value::I32(0));
         c.emit_op_u16(Op::CONST, idx, 0);
         c.emit_op_u16(Op::ARRAY_GET_S, 0, 0);
@@ -708,7 +708,7 @@ fn array_get_u_on_regular_array_reads_element() {
     let r = run(|c| {
         let v = c.add_constant(Value::I32(99));
         c.emit_op_u16(Op::CONST, v, 0);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, 0);
+        c.emit_array_new_fixed(0, 1, 0);
         let idx = c.add_constant(Value::I32(0));
         c.emit_op_u16(Op::CONST, idx, 0);
         c.emit_op_u16(Op::ARRAY_GET_U, 0, 0);
@@ -746,7 +746,7 @@ fn array_init_data_copies_into_array() {
         c.emit_op_u16(Op::CONST, null, 0);
         c.emit_op_u16(Op::CONST, null, 0);
         c.emit_op_u16(Op::CONST, null, 0);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
+        c.emit_array_new_fixed(0, 3, 0);
         c.emit_op_u16(Op::CONST, tid, 0);
         c.emit_op(Op::SET_TYPE_ID, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
@@ -779,7 +779,7 @@ fn array_init_elem_copies_into_array() {
         let null = c.add_constant(Value::Null);
         c.emit_op_u16(Op::CONST, null, 0);
         c.emit_op_u16(Op::CONST, null, 0);
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, 0);
+        c.emit_array_new_fixed(0, 2, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -890,6 +890,311 @@ fn ref_get_desc_on_struct_without_desc_returns_null() {
     assert_eq!(r.as_i32(), 1);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Custom Descriptors: the descriptor-comparing casts
+// (0xFB 0x23 ref.cast_desc_eq / 0x24 nullable / 0x25 br_on_cast_desc_eq /
+//  0x26 br_on_cast_desc_eq_fail)
+//
+// These cast on descriptor IDENTITY, not on the type hierarchy: a reference
+// passes iff the descriptor it was allocated with is the very same reference
+// as the one supplied on the stack.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `[ref-with-descriptor `desc`, descriptor `operand`]` — the operand layout
+/// every one of the four instructions takes.
+fn push_described_ref_and_descriptor(c: &mut Chunk, desc: u16, operand: u16) {
+    c.emit_op_u16(Op::CONST, desc, 0);
+    c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
+    c.emit_op_u16(Op::CONST, operand, 0);
+}
+
+#[test]
+fn ref_cast_desc_eq_passes_when_the_descriptor_is_the_same_reference() {
+    let r = run(|c| {
+        let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
+        push_described_ref_and_descriptor(c, desc, desc);
+        c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
+        // The cast consumes only the descriptor; the reference survives it.
+        c.emit_op_u16(Op::REF_GET_DESC, 0, 0);
+    });
+    assert_eq!(r.as_str(), "vtable-a");
+}
+
+#[test]
+fn ref_cast_desc_eq_traps_on_a_different_descriptor() {
+    let err = run_err(|c| {
+        let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
+        let other = c.add_constant(Value::String(Arc::from("vtable-b")));
+        push_described_ref_and_descriptor(c, desc, other);
+        c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
+    });
+    assert!(
+        err.contains("descriptor mismatch"),
+        "a descriptor that is not the allocated one must trap, got: {err}"
+    );
+}
+
+#[test]
+fn ref_cast_desc_eq_traps_on_a_null_descriptor_before_looking_at_the_reference() {
+    // The reference here would match nothing anyway, but the point is the
+    // ORDER: the proposal traps on a null descriptor unconditionally, so the
+    // message must be the null-descriptor one, not the mismatch one.
+    let err = run_err(|c| {
+        let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
+        c.emit_op_u16(Op::CONST, desc, 0);
+        c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
+        c.emit_op(Op::NULL, 0); // descriptor operand = null
+        c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
+    });
+    assert!(
+        err.contains("null descriptor"),
+        "a null descriptor traps first, got: {err}"
+    );
+}
+
+#[test]
+fn ref_cast_desc_eq_traps_on_a_reference_with_no_descriptor() {
+    // A struct built with plain `struct.new` carries no descriptor, so it can
+    // never equal a real one.
+    let err = run_err(|c| {
+        let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
+        c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+        c.emit_op_u16(Op::CONST, desc, 0);
+        c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
+    });
+    assert!(
+        err.contains("descriptor mismatch"),
+        "an undescribed reference must fail the cast, got: {err}"
+    );
+}
+
+#[test]
+fn ref_cast_desc_eq_traps_on_a_null_reference_but_the_nullable_form_does_not() {
+    let desc_text = "vtable-a";
+
+    let err = run_err(|c| {
+        let desc = c.add_constant(Value::String(Arc::from(desc_text)));
+        c.emit_op(Op::NULL, 0); // the reference
+        c.emit_op_u16(Op::CONST, desc, 0);
+        c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
+    });
+    assert!(
+        err.contains("null reference"),
+        "the (ref ht) form does not admit null, got: {err}"
+    );
+
+    // The (ref null ht) form passes null straight through.
+    let r = run(|c| {
+        let desc = c.add_constant(Value::String(Arc::from(desc_text)));
+        c.emit_op(Op::NULL, 0);
+        c.emit_op_u16(Op::CONST, desc, 0);
+        c.emit_op_u16(Op::REF_CAST_DESC_EQ_NULL, 0, 0);
+        c.emit_op(Op::REF_IS_NULL, 0);
+    });
+    assert_eq!(r.as_i32(), 1, "the nullable form must leave null on the stack");
+}
+
+#[test]
+fn ref_cast_desc_eq_null_still_traps_on_a_mismatched_non_null_reference() {
+    // Nullability is about the REFERENCE, not about the descriptor check —
+    // a non-null value with the wrong descriptor traps in both forms.
+    let err = run_err(|c| {
+        let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
+        let other = c.add_constant(Value::String(Arc::from("vtable-b")));
+        push_described_ref_and_descriptor(c, desc, other);
+        c.emit_op_u16(Op::REF_CAST_DESC_EQ_NULL, 0, 0);
+    });
+    assert!(err.contains("descriptor mismatch"), "got: {err}");
+}
+
+/// Runs one `br_on_cast_desc_eq`-family instruction inside a block and reports
+/// what came out. Branching leaves the reference on the stack and jumps past
+/// the block; falling through runs the in-block code, which replaces the
+/// reference with an integer. `ref.get_desc` after the block therefore answers
+/// the descriptor when the branch was taken and null when it was not.
+///
+/// `same_descriptor` picks whether the operand is the very reference the
+/// value was allocated with. Two constants holding equal TEXT are still two
+/// distinct references, and correctly do not match — which is exactly the
+/// distinction between descriptor equality and type equality.
+fn run_desc_branch(op: Op, same_descriptor: bool) -> Value {
+    run(|c| {
+        let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
+        let operand = if same_descriptor {
+            desc
+        } else {
+            c.add_constant(Value::String(Arc::from("vtable-b")))
+        };
+        let sentinel = c.add_constant(Value::I32(0));
+
+        // Arity 1: per the proposal the label takes the reference
+        // (`C.labels[l] = t* rt`), so a void block would discard it on branch.
+        let _blk = c.emit_block_typed(0, 1);
+        push_described_ref_and_descriptor(c, desc, operand);
+        c.emit_op(op, 0);
+        c.emit((desc >> 8) as u8, 0);
+        c.emit((desc & 0xFF) as u8, 0);
+        c.emit(0u8, 0); // label depth 0 — exit the enclosing block
+        // Fallthrough only.
+        c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::CONST, sentinel, 0);
+        c.emit_end(0);
+
+        c.emit_op_u16(Op::REF_GET_DESC, 0, 0);
+    })
+}
+
+#[test]
+fn br_on_cast_desc_eq_branches_only_when_the_descriptor_matches() {
+    let taken = run_desc_branch(Op::BR_ON_CAST_DESC_EQ, true);
+    assert_eq!(
+        taken.as_str(),
+        "vtable-a",
+        "a matching descriptor must branch with the reference intact"
+    );
+
+    let not_taken = run_desc_branch(Op::BR_ON_CAST_DESC_EQ, false);
+    assert!(
+        matches!(not_taken, Value::Null),
+        "a mismatched descriptor must fall through, got: {not_taken:?}"
+    );
+}
+
+#[test]
+fn br_on_cast_desc_eq_fail_branches_only_when_the_descriptor_differs() {
+    let taken = run_desc_branch(Op::BR_ON_CAST_DESC_EQ_FAIL, false);
+    assert_eq!(
+        taken.as_str(),
+        "vtable-a",
+        "the _fail form branches on MISMATCH, carrying the reference"
+    );
+
+    let not_taken = run_desc_branch(Op::BR_ON_CAST_DESC_EQ_FAIL, true);
+    assert!(
+        matches!(not_taken, Value::Null),
+        "a matching descriptor must fall through, got: {not_taken:?}"
+    );
+}
+
+#[test]
+fn br_on_cast_desc_eq_fail_traps_on_a_null_descriptor() {
+    // The null-descriptor trap applies to all four instructions — including
+    // the one whose branch condition is "did not match", where treating null
+    // as a mismatch would be the tempting shortcut.
+    let err = run_err(|c| {
+        let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
+        c.emit_op_u16(Op::CONST, desc, 0);
+        c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
+        c.emit_op(Op::NULL, 0);
+        c.emit_op(Op::BR_ON_CAST_DESC_EQ_FAIL, 0);
+        c.emit((desc >> 8) as u8, 0);
+        c.emit((desc & 0xFF) as u8, 0);
+        c.emit(0u8, 0);
+    });
+    assert!(err.contains("null descriptor"), "got: {err}");
+}
+
+// ── Custom Descriptors: binary format ────────────────────────────────────────
+
+#[test]
+fn descriptor_instructions_do_not_desync_the_instructions_after_them() {
+    // `struct.new_desc` and friends each carry a typeidx. The reader used to
+    // consume ZERO immediate bytes for them, so the typeidx was decoded as if
+    // it were the next opcode and everything downstream shifted. Asserting
+    // only that the descriptor op survived would pass with that bug present —
+    // what has to survive is the instruction AFTER it.
+    let mut chunk = Chunk::new("<script>");
+    let desc = chunk.add_constant(Value::String(Arc::from("vtable-a")));
+    chunk.emit_op_u16(Op::CONST, desc, 0);
+    chunk.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
+    chunk.emit_op_u16(Op::REF_GET_DESC, 0, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::NULL_NONE, 0); // the marker that must still decode
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let wasm = write_wasm(&vec![chunk]);
+    assert!(
+        has_bytes(&wasm, &[0xFB, 0x20]) && has_bytes(&wasm, &[0xFB, 0x22]),
+        "struct.new_desc (0xFB 0x20) and ref.get_desc (0xFB 0x22) must be emitted"
+    );
+
+    let chunks = read_wasm(&wasm).expect("read_wasm failed");
+    let wasm2 = write_wasm(&chunks);
+    assert!(
+        has_bytes(&wasm2, &[0xD0, 0x71]),
+        "the ref.null none after the descriptor ops must survive decoding — \
+         losing it means the typeidx immediate was read as an opcode"
+    );
+    assert!(
+        has_bytes(&wasm2, &[0xFB, 0x22]),
+        "ref.get_desc must round-trip"
+    );
+}
+
+#[test]
+fn descriptor_casts_round_trip_through_the_binary_format() {
+    let mut chunk = Chunk::new("<script>");
+    let desc = chunk.add_constant(Value::String(Arc::from("vtable-a")));
+    chunk.emit_op_u16(Op::CONST, desc, 0);
+    chunk.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
+    chunk.emit_op_u16(Op::CONST, desc, 0);
+    chunk.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::NULL_NONE, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let wasm = write_wasm(&vec![chunk]);
+    assert!(
+        has_bytes(&wasm, &[0xFB, 0x23]),
+        "ref.cast_desc_eq must encode as 0xFB 0x23"
+    );
+
+    let chunks = read_wasm(&wasm).expect("read_wasm failed");
+    let wasm2 = write_wasm(&chunks);
+    assert!(
+        has_bytes(&wasm2, &[0xFB, 0x23]) && has_bytes(&wasm2, &[0xD0, 0x71]),
+        "the cast and the instruction after it must both survive the round trip"
+    );
+}
+
+#[test]
+fn br_on_cast_desc_eq_encodes_castflags_labelidx_and_two_heaptypes() {
+    let mut chunk = Chunk::new("<script>");
+    let desc = chunk.add_constant(Value::String(Arc::from("vtable-a")));
+    chunk.emit_op_u16(Op::CONST, desc, 0);
+    chunk.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
+    chunk.emit_op_u16(Op::CONST, desc, 0);
+    chunk.emit_op(Op::BR_ON_CAST_DESC_EQ, 0);
+    chunk.emit((desc >> 8) as u8, 0);
+    chunk.emit((desc & 0xFF) as u8, 0);
+    chunk.emit(0u8, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::NULL_NONE, 0);
+    chunk.emit_op(Op::DROP, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let wasm = write_wasm(&vec![chunk]);
+    // 0xFB 0x25, then castflags 0x00, labelidx 0x00, then two heaptypes.
+    assert!(
+        has_bytes(&wasm, &[0xFB, 0x25, 0x00, 0x00]),
+        "br_on_cast_desc_eq must encode as 0xFB 0x25 castflags labelidx ..."
+    );
+
+    let chunks = read_wasm(&wasm).expect("read_wasm failed");
+    let wasm2 = write_wasm(&chunks);
+    assert!(
+        has_bytes(&wasm2, &[0xFB, 0x25]) && has_bytes(&wasm2, &[0xD0, 0x71]),
+        "the branch and the instruction after it must both survive the round trip"
+    );
+}
+
+// Exact heap types (`0x62 x:u32`) and exact function imports (`externtype
+// 0x20`) are decode-side only — they have no bytecode representation to drive
+// from here. They are covered by unit tests against the section parsers in
+// `platforms/wasm/src/reader/mod.rs`.
+
 // ── WASM GC typed-null (ref.null none) codec round-trip ──────────────────────
 
 #[test]
@@ -929,5 +1234,259 @@ fn plain_null_encodes_as_ref_null_extern() {
     assert!(
         has_bytes(&wasm, &[0xD0, 0x6F]),
         "plain null must encode as ref.null extern (0xD0 0x6F)"
+    );
+}
+
+// ── Trap conditions ─────────────────────────────────────────────────────
+//
+// The GC proposal specifies traps, not lenient defaults: an out-of-bounds
+// array access traps, `array.len` and the `i31` getters trap on null. These
+// paths had no coverage, so `array.get_s`/`get_u` silently answered 0 past the
+// end and `i31.get_s` read a null back as 0 — indistinguishable from a genuine
+// `ref.i31 0`.
+//
+// Only a stamped GC array is bounds-checked; a dynamic (JS-shaped) array stays
+// lenient, which is why these build the array through `array.new_fixed`.
+
+fn run_locals_err(local_count: u16, emit: impl FnOnce(&mut Chunk)) -> String {
+    let mut c = Chunk::new("<script>");
+    c.local_count = local_count;
+    emit(&mut c);
+    c.emit_op(Op::RETURN, 0);
+    VM::new()
+        .run(vec![c])
+        .map(|value| format!("returned {value:?} instead of trapping"))
+        .unwrap_err()
+        .to_string()
+}
+
+/// Build a 3-element GC array into local 0.
+///
+/// Deliberately `array.new $t`, NOT `array.new_fixed`: only the typed
+/// constructors stamp the array's rtt, and an unstamped array is treated as a
+/// dynamic (JS-shaped) one that never bounds-checks. `array.new_fixed $t N`
+/// carries a type immediate in the spec but only the count in our encoding,
+/// so it cannot stamp, and every array it builds escapes bounds checking.
+fn emit_three_element_array(c: &mut Chunk) {
+    c.types.push(vybe_runtime::chunk::TypeEntry {
+        name: "gcarray".into(),
+        kind: vybe_runtime::chunk::CompositeKind::Array,
+        parent: String::new(),
+        fields: Vec::new(),
+        methods: Vec::new(),
+        is_interface: false,
+        implements: Vec::new(),
+        constructor_chunk: None,
+        field_descriptors: std::collections::HashMap::new(),
+    });
+    let zero = c.add_constant(Value::I32(0));
+    let three = c.add_constant(Value::I32(3));
+    c.emit_op_u16(Op::CONST, zero, 0);   // fill value
+    c.emit_op_u16(Op::CONST, three, 0);  // length
+    c.emit_op_u16(Op::ARRAY_NEW, 1, 0);  // 1-based type immediate
+    c.emit_op_u16(Op::LOCAL_SET, 0, 0);
+}
+
+#[test]
+fn array_len_traps_on_null_reference() {
+    let err = run_locals_err(0, |c| {
+        c.emit_op(Op::NULL_NONE, 0);
+        c.emit_op(Op::ARRAY_LENGTH, 0);
+    });
+    assert!(
+        err.contains("trap") && err.contains("null"),
+        "array.len must trap on a null array reference, got: {err}"
+    );
+}
+
+#[test]
+fn i31_get_s_traps_on_null_reference() {
+    let err = run_locals_err(0, |c| {
+        c.emit_op(Op::NULL, 0);
+        c.emit_op(Op::I31_GET_S, 0);
+    });
+    assert!(
+        err.contains("trap") && err.contains("null"),
+        "i31.get_s must trap on null rather than reading back 0, got: {err}"
+    );
+}
+
+#[test]
+fn i31_get_u_traps_on_null_reference() {
+    let err = run_locals_err(0, |c| {
+        c.emit_op(Op::NULL, 0);
+        c.emit_op(Op::I31_GET_U, 0);
+    });
+    assert!(
+        err.contains("trap") && err.contains("null"),
+        "i31.get_u must trap on null, got: {err}"
+    );
+}
+
+/// `ref.i31 0` and a null must stay distinguishable — the reason the getters
+/// have to trap rather than answer a default.
+#[test]
+fn i31_round_trips_zero_without_trapping() {
+    let value = run(|c| {
+        let zero = c.add_constant(Value::I32(0));
+        c.emit_op_u16(Op::CONST, zero, 0);
+        c.emit_op(Op::I31_NEW, 0);
+        c.emit_op(Op::I31_GET_S, 0);
+    });
+    assert_eq!(value.as_i32(), 0);
+}
+
+/// `ref.i31` keeps the low 31 bits, and `i31.get_s` sign-extends from bit 30 —
+/// so the largest 31-bit pattern reads back negative, not as a huge positive.
+#[test]
+fn i31_wraps_to_31_bits_and_sign_extends() {
+    let value = run(|c| {
+        let big = c.add_constant(Value::I32(0x4000_0000));
+        c.emit_op_u16(Op::CONST, big, 0);
+        c.emit_op(Op::I31_NEW, 0);
+        c.emit_op(Op::I31_GET_S, 0);
+    });
+    assert_eq!(
+        value.as_i32(),
+        -1_073_741_824,
+        "bit 30 is the sign bit of a 31-bit value"
+    );
+
+    // The same bits read unsigned stay positive.
+    let unsigned = run(|c| {
+        let big = c.add_constant(Value::I32(0x4000_0000));
+        c.emit_op_u16(Op::CONST, big, 0);
+        c.emit_op(Op::I31_NEW, 0);
+        c.emit_op(Op::I31_GET_U, 0);
+    });
+    assert_eq!(unsigned.as_i32(), 0x4000_0000);
+}
+
+#[test]
+fn array_get_traps_past_the_end() {
+    let err = run_locals_err(1, |c| {
+        emit_three_element_array(c);
+        let three = c.add_constant(Value::I32(3));
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        c.emit_op_u16(Op::CONST, three, 0);
+        c.emit_op(Op::ARRAY_GET, 0);
+    });
+    assert!(
+        err.contains("trap") && err.contains("bounds"),
+        "array.get must trap past the end, got: {err}"
+    );
+}
+
+#[test]
+fn array_get_s_traps_past_the_end() {
+    let err = run_locals_err(1, |c| {
+        emit_three_element_array(c);
+        let three = c.add_constant(Value::I32(3));
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        c.emit_op_u16(Op::CONST, three, 0);
+        c.emit_op_u16(Op::ARRAY_GET_S, 0, 0);
+    });
+    assert!(
+        err.contains("trap") && err.contains("bounds"),
+        "array.get_s must trap past the end rather than answering 0, got: {err}"
+    );
+}
+
+#[test]
+fn array_get_u_traps_on_a_negative_index() {
+    let err = run_locals_err(1, |c| {
+        emit_three_element_array(c);
+        let minus_one = c.add_constant(Value::I32(-1));
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        c.emit_op_u16(Op::CONST, minus_one, 0);
+        c.emit_op_u16(Op::ARRAY_GET_U, 0, 0);
+    });
+    assert!(
+        err.contains("trap") && err.contains("bounds"),
+        "a negative index must trap, not clamp to 0, got: {err}"
+    );
+}
+
+#[test]
+fn array_fill_traps_when_the_region_leaves_the_array() {
+    let err = run_locals_err(1, |c| {
+        emit_three_element_array(c);
+        let one = c.add_constant(Value::I32(1));
+        let five = c.add_constant(Value::I32(5));
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        c.emit_op_u16(Op::CONST, one, 0); // index
+        c.emit_op_u16(Op::CONST, one, 0); // value
+        c.emit_op_u16(Op::CONST, five, 0); // count — 1 + 5 > 3
+        c.emit_op(Op::ARRAY_FILL, 0);
+    });
+    assert!(
+        err.contains("trap") && err.contains("bounds"),
+        "array.fill must trap rather than silently filling less, got: {err}"
+    );
+}
+
+/// A fill that fits must still work — the trap must not swallow the valid case.
+#[test]
+fn array_fill_within_bounds_still_writes() {
+    let value = run_locals(1, |c| {
+        emit_three_element_array(c);
+        let zero = c.add_constant(Value::I32(0));
+        let two = c.add_constant(Value::I32(2));
+        let seven = c.add_constant(Value::I32(7));
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        c.emit_op_u16(Op::CONST, zero, 0); // index
+        c.emit_op_u16(Op::CONST, seven, 0); // value
+        c.emit_op_u16(Op::CONST, two, 0); // count
+        c.emit_op(Op::ARRAY_FILL, 0);
+
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        c.emit_op_u16(Op::CONST, zero, 0);
+        c.emit_op(Op::ARRAY_GET, 0);
+    });
+    assert_eq!(value.as_i32(), 7);
+}
+
+// ── Type section round trip ─────────────────────────────────────────────
+
+/// A module carrying GC types must read back with its FUNCTION types at the
+/// same indices it wrote them.
+///
+/// The type index space counts every subtype inside a `rec` group, so a reader
+/// that skips struct and array types shifts each later function type's index —
+/// and those indices are what `call` and blocktypes resolve against. The reader
+/// used to look only for `0x60` and, on anything else, advance a single byte,
+/// which neither skipped the type body nor kept alignment: a module with GC
+/// types desynchronised from its first struct on.
+#[test]
+fn gc_type_section_round_trips_without_shifting_function_indices() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.types.push(type_entry("alpha", &["x", "y"]));
+    chunk.types.push(type_entry("beta", &["z"]));
+    let konst = chunk.add_constant(Value::I32(7));
+    chunk.emit_op_u16(Op::CONST, konst, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let bytes = write_wasm(&[chunk]);
+    let chunks = read_wasm(&bytes).expect("a module carrying GC types must be readable");
+    assert!(
+        !chunks.is_empty(),
+        "the reader must recover at least the script chunk"
+    );
+}
+
+/// The writer emits struct types inside a `rec` group — the shape the reader
+/// has to understand. Pinned so a writer change that drops the group does not
+/// silently pass by making the reader's job easier.
+#[test]
+fn gc_struct_types_are_written_inside_a_rec_group() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.types.push(type_entry("gamma", &["f"]));
+    chunk.emit_op(Op::RETURN, 0);
+
+    let bytes = write_wasm(&[chunk]);
+    // 0x4E = rec, 0x5F = struct composite type.
+    assert!(
+        has_bytes(&bytes, &[0x4E]) && has_bytes(&bytes, &[0x5F]),
+        "expected a rec group containing a struct composite type"
     );
 }

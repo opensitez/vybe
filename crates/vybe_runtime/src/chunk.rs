@@ -489,6 +489,21 @@ impl Chunk {
         self.emit(operand, line);
     }
 
+    /// `array.new_fixed $t N` — BOTH immediates, in spec order.
+    ///
+    /// The type index is what stamps the array's rtt, and that stamp is what
+    /// makes `array.get`/`set`/`fill`/`copy` bounds-check per the GC proposal.
+    /// This instruction used to carry only `N`, so every array it built was
+    /// indistinguishable from a dynamic one and could never trap. Pass `0` for
+    /// a dynamic-language array literal, which is deliberately lenient.
+    pub fn emit_array_new_fixed(&mut self, typeidx: u16, count: u16, line: u32) {
+        self.emit_op(Op::ARRAY_NEW_FIXED, line);
+        self.emit((typeidx >> 8) as u8, line);
+        self.emit((typeidx & 0xff) as u8, line);
+        self.emit((count >> 8) as u8, line);
+        self.emit((count & 0xff) as u8, line);
+    }
+
     pub fn emit_op_u8_u8(&mut self, op: Op, first: u8, second: u8, line: u32) {
         self.emit_op(op, line);
         self.emit(first, line);

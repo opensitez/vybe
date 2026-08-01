@@ -224,8 +224,19 @@ struct ImportDetail {
     type_index: u32,
 }
 
+/// Custom Descriptors adds `externtype ::= ... | 0x20 x:typeidx => func exact x`
+/// — the same payload as an ordinary function import (`0x00`), refined so a
+/// `ref.func` on it may be typed exactly. The refinement is a validation-time
+/// property with no representation in our bytecode, so an exact function
+/// import is normalised to kind 0 here. That matters: every `kind == 0` site
+/// counts imported functions, and an unrecognised kind would shift the whole
+/// function index space.
+fn normalize_import_kind(kind: u8) -> u8 {
+    if kind == EXTERNTYPE_FUNC_EXACT { 0 } else { kind }
+}
+
 fn skip_import_descriptor(data: &[u8], pos: &mut usize, kind: u8) {
-    match kind {
+    match normalize_import_kind(kind) {
         0 => skip_leb128(data, pos), // type index
         1 => {
             skip_leb128(data, pos); // reftype
@@ -258,7 +269,7 @@ fn parse_import_details(data: &[u8]) -> Result<Vec<ImportDetail>, String> {
         if pos >= data.len() {
             return Err("Invalid WASM: malformed import section".into());
         }
-        let kind = data[pos];
+        let kind = normalize_import_kind(data[pos]);
         pos += 1;
         let type_index = if kind == 0 {
             let (type_index, read) = read_leb128_u32(&data[pos..]);
@@ -393,6 +404,12 @@ fn validate_exports(data: &[u8], func_count: usize) -> Result<(), String> {
         }
         let kind = data[pos];
         pos += 1;
+        // Exports never declare exactness: an exported function is exact iff
+        // its internal type is. Custom Descriptors states outright that an
+        // export section using 0x20 is malformed.
+        if kind == EXTERNTYPE_FUNC_EXACT {
+            return Err("Invalid WASM: exact function type in export section".into());
+        }
         let (idx, read) = read_leb128_u32(&data[pos..]);
         pos += read;
         if kind == 0 && idx as usize >= func_count {
@@ -855,9 +872,10 @@ fn decode_blocktype(
     }
     if (0x63..=0x7F).contains(&b) {
         *pos += 1;
-        // (ref ht) / (ref null ht) shorthands carry a heaptype immediate
+        // (ref ht) / (ref null ht) shorthands carry a heaptype immediate,
+        // which may be `(exact $x)` — two lebs, not one.
         if b == 0x63 || b == 0x64 {
-            skip_leb128(code, pos);
+            skip_heaptype(code, pos);
         }
         return Ok((0, 1));
     }
@@ -1227,16 +1245,53 @@ fn validate_instruction_stream(
                 let (sub, read) = read_leb128_u32(&code[pos..]);
                 pos += read;
                 match sub {
-                    0x00..=0x01 | 0x06..=0x08 | 0x14..=0x19 => {
+                    // One typeidx: struct.new/new_default, array.new/new_default.
+                    0x00..=0x01 | 0x06..=0x07 => {
                         skip_leb128(code, &mut pos);
                     }
+                    // array.new_fixed is typeidx + N, not one immediate — the
+                    // same two-leb shape the decoder reads.
+                    0x08 => {
+                        skip_leb128(code, &mut pos);
+                        skip_leb128(code, &mut pos);
+                    }
+                    // typeidx + fieldidx / dataidx / elemidx.
                     0x02..=0x05 | 0x09..=0x0A | 0x12..=0x13 => {
                         skip_leb128(code, &mut pos);
                         skip_leb128(code, &mut pos);
                     }
+                    // ref.test / ref.cast take a heaptype, which is two lebs
+                    // when it is `(exact $x)`.
+                    0x14..=0x17 => {
+                        skip_heaptype(code, &mut pos);
+                    }
+                    // br_on_cast / br_on_cast_fail: castflags, labelidx, and
+                    // TWO heaptypes — not a single immediate.
+                    0x18..=0x19 => {
+                        pos = pos.saturating_add(1).min(code.len()); // castflags
+                        skip_leb128(code, &mut pos); // labelidx
+                        skip_heaptype(code, &mut pos);
+                        skip_heaptype(code, &mut pos);
+                    }
                     0x1C => {
                         st.pop(1, "ref.i31")?;
                         st.push(1);
+                    }
+                    // Custom Descriptors: struct.new_desc, struct.new_default_desc
+                    // and ref.get_desc each take a typeidx.
+                    0x20..=0x22 => {
+                        skip_leb128(code, &mut pos);
+                    }
+                    // ref.cast_desc_eq, in its non-null and nullable forms.
+                    0x23..=0x24 => {
+                        skip_heaptype(code, &mut pos);
+                    }
+                    // br_on_cast_desc_eq / _fail — same shape as br_on_cast.
+                    0x25..=0x26 => {
+                        pos = pos.saturating_add(1).min(code.len()); // castflags
+                        skip_leb128(code, &mut pos); // labelidx
+                        skip_heaptype(code, &mut pos);
+                        skip_heaptype(code, &mut pos);
                     }
                     _ => {}
                 }
@@ -2372,11 +2427,15 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             }
         }
         _ if op == Op::ARRAY_NEW_FIXED => {
-            let (_type_idx, read) = read_leb128_u32(&wasm[*pos..]);
+            // `array.new_fixed $t N` carries BOTH immediates, and our bytecode
+            // now does too — the type index used to be read and thrown away,
+            // which is what left every fixed array unstamped and therefore
+            // exempt from the spec's bounds traps.
+            let (type_idx, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
             let (extra, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
-            chunk.emit_op_u16(op, extra as u16, 0);
+            chunk.emit_array_new_fixed(type_idx as u16, extra as u16, 0);
         }
         _ if op == Op::ARRAY_NEW_DATA
             || op == Op::ARRAY_NEW_ELEM
@@ -2407,7 +2466,11 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             let idx = chunk.add_constant(Value::String(Arc::from("__wasm_heaptype")));
             chunk.emit_op_u16(op, idx, 0);
         }
-        _ if op == Op::BR_ON_CAST || op == Op::BR_ON_CAST_FAIL => {
+        _ if op == Op::BR_ON_CAST
+            || op == Op::BR_ON_CAST_FAIL
+            || op == Op::BR_ON_CAST_DESC_EQ
+            || op == Op::BR_ON_CAST_DESC_EQ_FAIL =>
+        {
             skip_leb128(wasm, pos); // flags
             let (depth, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
@@ -2416,6 +2479,25 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             let idx = chunk.add_constant(Value::String(Arc::from("__wasm_heaptype")));
             chunk.emit_op_u16(op, idx, 0);
             chunk.emit(depth as u8, 0);
+        }
+        // ── Custom Descriptors ────────────────────────────────────────────
+        // `struct.new_desc` / `struct.new_default_desc` / `ref.get_desc` each
+        // carry a typeidx, and `ref.cast_desc_eq` carries a heaptype. These
+        // used to fall through to the operand-less default arm, so the bytes
+        // of the immediate were decoded as if they were the NEXT instruction —
+        // desynchronising everything after the first descriptor op in a module.
+        _ if op == Op::STRUCT_NEW_DESC
+            || op == Op::STRUCT_NEW_DEFAULT_DESC
+            || op == Op::REF_GET_DESC =>
+        {
+            let (type_idx, read) = read_leb128_u32(&wasm[*pos..]);
+            *pos += read;
+            chunk.emit_op_u16(op, type_idx as u16, 0);
+        }
+        _ if op == Op::REF_CAST_DESC_EQ || op == Op::REF_CAST_DESC_EQ_NULL => {
+            skip_heaptype(wasm, pos);
+            let idx = chunk.add_constant(Value::String(Arc::from("__wasm_heaptype")));
+            chunk.emit_op_u16(op, idx, 0);
         }
         _ => chunk.emit_op(op, 0),
     }
@@ -2612,6 +2694,19 @@ fn parse_tag_section(data: &[u8], types: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
     arities
 }
 
+/// Parse the type section into one `(params, results)` entry per type index.
+///
+/// The section is `vec(rectype)`, but the TYPE INDEX SPACE counts each subtype
+/// INSIDE a rec group — one `rec` of four subtypes occupies indices 0..3 while
+/// being a single element of the vector. Struct and array types therefore get a
+/// placeholder entry rather than being skipped: dropping them would shift every
+/// later function type's index, and those indices are what `call` and
+/// blocktypes resolve against.
+///
+/// This used to look only for `0x60` and, on anything else, advance a SINGLE
+/// byte and continue — which neither skipped the type nor kept alignment, so a
+/// module carrying GC types desynchronised the parse from its first struct on.
+/// Encodings per `proposals/gc/proposals/gc/MVP.md` §Binary Format.
 fn parse_type_section(data: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
     if data.is_empty() {
         return vec![];
@@ -2621,22 +2716,136 @@ fn parse_type_section(data: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
     pos += read;
     let mut types = Vec::new();
     for _ in 0..count {
-        if pos >= data.len() || data[pos] != TYPE_FUNC {
-            pos += 1;
-            continue;
+        if pos >= data.len() {
+            break;
         }
-        pos += 1; // skip 0x60
-        let (param_count, read) = read_leb128_u32(&data[pos..]);
-        pos += read;
-        let params: Vec<u8> = data[pos..pos + param_count as usize].to_vec();
-        pos += param_count as usize;
-        let (result_count, read) = read_leb128_u32(&data[pos..]);
-        pos += read;
-        let results: Vec<u8> = data[pos..pos + result_count as usize].to_vec();
-        pos += result_count as usize;
-        types.push((params, results));
+        if data[pos] == GC_REC {
+            pos += 1;
+            let (group_len, read) = read_leb128_u32(&data[pos..]);
+            pos += read;
+            for _ in 0..group_len {
+                if !parse_subtype(data, &mut pos, &mut types) {
+                    return types;
+                }
+            }
+        } else if !parse_subtype(data, &mut pos, &mut types) {
+            return types;
+        }
     }
     types
+}
+
+/// One `subtype`: an optional `sub`/`sub final` header, then a composite type.
+/// Returns false if the bytes ran out, so the caller stops rather than looping
+/// on a truncated section.
+fn parse_subtype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8>)>) -> bool {
+    let Some(&tag) = data.get(*pos) else {
+        return false;
+    };
+    if tag == GC_SUB || tag == GC_SUB_FINAL {
+        *pos += 1;
+        // vec(typeidx) of supertypes.
+        let (supers, read) = read_leb128_u32(&data[*pos..]);
+        *pos += read;
+        for _ in 0..supers {
+            skip_leb128(data, pos);
+        }
+        // Custom Descriptors may insert `(descriptor $x)` / `(describes $x)`
+        // between the supertype vector and the composite type.
+        while matches!(data.get(*pos), Some(&CD_DESCRIPTOR) | Some(&CD_DESCRIBES)) {
+            *pos += 1;
+            skip_leb128(data, pos);
+        }
+    }
+    parse_comptype(data, pos, types)
+}
+
+/// One `comptype`: `func`, `struct` or `array`.
+fn parse_comptype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8>)>) -> bool {
+    let Some(&tag) = data.get(*pos) else {
+        return false;
+    };
+    *pos += 1;
+    match tag {
+        TYPE_FUNC => {
+            let (param_count, read) = read_leb128_u32(&data[*pos..]);
+            *pos += read;
+            let mut params = Vec::with_capacity(param_count as usize);
+            for _ in 0..param_count {
+                match read_value_type(data, pos) {
+                    Some(byte) => params.push(byte),
+                    None => return false,
+                }
+            }
+            let (result_count, read) = read_leb128_u32(&data[*pos..]);
+            *pos += read;
+            let mut results = Vec::with_capacity(result_count as usize);
+            for _ in 0..result_count {
+                match read_value_type(data, pos) {
+                    Some(byte) => results.push(byte),
+                    None => return false,
+                }
+            }
+            types.push((params, results));
+            true
+        }
+        GC_STRUCT => {
+            let (field_count, read) = read_leb128_u32(&data[*pos..]);
+            *pos += read;
+            for _ in 0..field_count {
+                if !skip_field_type(data, pos) {
+                    return false;
+                }
+            }
+            // Occupies a type index without being callable.
+            types.push((Vec::new(), Vec::new()));
+            true
+        }
+        GC_ARRAY => {
+            if !skip_field_type(data, pos) {
+                return false;
+            }
+            types.push((Vec::new(), Vec::new()));
+            true
+        }
+        // An unknown composite tag means the encoding moved on without us;
+        // stopping beats returning a table whose indices are quietly wrong.
+        _ => false,
+    }
+}
+
+/// `fieldtype = storagetype mutability`. Storage adds the packed types `i8`
+/// and `i16`, which are legal ONLY here and never as a value type.
+fn skip_field_type(data: &[u8], pos: &mut usize) -> bool {
+    match data.get(*pos) {
+        Some(&PACKED_I8) | Some(&PACKED_I16) => *pos += 1,
+        Some(_) => {
+            if read_value_type(data, pos).is_none() {
+                return false;
+            }
+        }
+        None => return false,
+    }
+    // Mutability byte.
+    if *pos >= data.len() {
+        return false;
+    }
+    *pos += 1;
+    true
+}
+
+/// One value type, returning its leading byte.
+///
+/// `(ref ht)` (0x64) and `(ref null ht)` (0x63) carry a heaptype immediate
+/// encoded as `s33`; every other value type is a single byte.
+fn read_value_type(data: &[u8], pos: &mut usize) -> Option<u8> {
+    let &byte = data.get(*pos)?;
+    *pos += 1;
+    if byte == 0x63 || byte == 0x64 {
+        // The heaptype may itself be `(exact $x)`, which is two lebs.
+        skip_heaptype(data, pos);
+    }
+    Some(byte)
 }
 
 fn parse_memory_section(data: &[u8]) -> Vec<u64> {
@@ -3032,7 +3241,7 @@ fn parse_import_section(data: &[u8]) -> Vec<(String, String, u8)> {
             .unwrap_or("")
             .to_string();
         pos += nlen as usize;
-        let kind = data[pos];
+        let kind = normalize_import_kind(data[pos]);
         pos += 1;
         skip_import_descriptor(data, &mut pos, kind);
         imports.push((module, name, kind));
@@ -3267,7 +3476,19 @@ fn skip_memarg_for_memory_width(data: &[u8], pos: &mut usize, _is_memory64: bool
     skip_memarg(data, pos);
 }
 
+/// One heaptype immediate.
+///
+/// Normally an `s33` — negative values are the abstract heap types, positive
+/// ones are type indices. Custom Descriptors adds `0x62 x:u32` for `(exact
+/// $x)`, so a leading `HEAPTYPE_EXACT` is followed by a SECOND leb that must
+/// also be consumed. Missing it leaves the type index to be decoded as an
+/// instruction.
 fn skip_heaptype(data: &[u8], pos: &mut usize) {
+    if data.get(*pos) == Some(&HEAPTYPE_EXACT) {
+        *pos += 1;
+        skip_leb128(data, pos); // u32 typeidx
+        return;
+    }
     skip_leb128(data, pos);
 }
 
@@ -3498,3 +3719,120 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
 
 // ============================================================
 // Helpers
+
+// ============================================================
+// Unit tests for the Custom Descriptors type-system encodings.
+//
+// Exact heap types and exact function imports exist only on the decode side —
+// they have no representation in our bytecode, so they cannot be driven from
+// an integration test through `write_wasm`. These exercise the section
+// parsers directly.
+// ============================================================
+#[cfg(test)]
+mod custom_descriptor_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn exact_heaptype_does_not_shift_later_type_indices() {
+        // `heaptype ::= 0x62 x:u32 => exact x` is TWO lebs where every other
+        // heaptype is one. A reader that consumes only the 0x62 goes on to
+        // read the type index as the next value type, and the whole table
+        // slides — which is how a single unread immediate corrupts every
+        // function signature after it.
+        //
+        // type 0 = (func (param (ref null (exact 1))))
+        // type 1 = (func (result i32))
+        let mut section = vec![0x02];
+        section.extend_from_slice(&[0x60, 0x01, 0x63, HEAPTYPE_EXACT, 0x01, 0x00]);
+        section.extend_from_slice(&[0x60, 0x00, 0x01, 0x7F]);
+
+        let parsed = parse_type_section(&section);
+        assert_eq!(parsed.len(), 2, "both types must be recovered");
+        assert_eq!(
+            parsed[0],
+            (vec![0x63u8], vec![]),
+            "the exact heaptype's index must be consumed as part of the param"
+        );
+        assert_eq!(
+            parsed[1],
+            (vec![], vec![0x7Fu8]),
+            "the type AFTER the exact heaptype must still be (func (result i32))"
+        );
+    }
+
+    #[test]
+    fn exact_heaptype_is_accepted_as_a_struct_field_type() {
+        // (rec (type 0 (descriptor 1) (struct)) (type 1 (describes 0) (struct (field (ref (exact 0))))))
+        // followed by a plain function type whose recovery proves the rec
+        // group was consumed exactly.
+        let mut section = vec![0x02];
+        section.push(GC_REC);
+        section.push(0x02);
+        section.extend_from_slice(&[GC_SUB_FINAL, 0x00, CD_DESCRIPTOR, 0x01, GC_STRUCT, 0x00]);
+        section.extend_from_slice(&[
+            GC_SUB_FINAL,
+            0x00,
+            CD_DESCRIBES,
+            0x00,
+            GC_STRUCT,
+            0x01,
+            0x64,
+            HEAPTYPE_EXACT,
+            0x00,
+            GC_IMMUT,
+        ]);
+        section.extend_from_slice(&[0x60, 0x00, 0x01, 0x7F]);
+
+        let parsed = parse_type_section(&section);
+        assert_eq!(
+            parsed.len(),
+            3,
+            "the two struct types must each occupy an index"
+        );
+        assert_eq!(
+            parsed[2],
+            (vec![], vec![0x7Fu8]),
+            "the function type after the rec group must land at index 2"
+        );
+    }
+
+    #[test]
+    fn exact_function_import_is_counted_as_a_function_import() {
+        // `externtype ::= 0x20 x:typeidx => func exact x`. Miscounting it as
+        // something other than a function import would shift the entire
+        // function index space, so it must normalise to kind 0 and keep its
+        // type index.
+        let mut section = vec![0x01];
+        section.extend_from_slice(&[0x01, b'm', 0x01, b'f']);
+        section.push(EXTERNTYPE_FUNC_EXACT);
+        section.push(0x07); // typeidx
+
+        let details = parse_import_details(&section).expect("import section must parse");
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].kind, 0, "an exact function import is a function import");
+        assert_eq!(details[0].type_index, 7, "its type index must be read");
+
+        let imports = parse_import_section(&section);
+        assert_eq!(imports, vec![("m".to_string(), "f".to_string(), 0u8)]);
+    }
+
+    #[test]
+    fn exact_function_type_in_the_export_section_is_malformed() {
+        // "An export section using 0x20 is malfomed." — exports never declare
+        // exactness; an exported function is exact iff its internal type is.
+        let mut section = vec![0x01];
+        section.extend_from_slice(&[0x01, b'f']);
+        section.push(EXTERNTYPE_FUNC_EXACT);
+        section.push(0x00);
+
+        let err = validate_exports(&section, 1).expect_err("0x20 must be rejected");
+        assert!(err.contains("exact function type"), "got: {err}");
+
+        // The ordinary function export at the same index still validates.
+        let mut ok = vec![0x01];
+        ok.extend_from_slice(&[0x01, b'f']);
+        ok.push(0x00);
+        ok.push(0x00);
+        validate_exports(&ok, 1).expect("a plain function export must still validate");
+    }
+}

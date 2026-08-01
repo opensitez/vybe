@@ -206,6 +206,46 @@ fn wasm_bool(value: bool) -> Value {
     Value::I32(if value { 1 } else { 0 })
 }
 
+/// The custom descriptor attached to a reference, or `Null` when it has none.
+///
+/// Custom Descriptors stores the descriptor in the object's `__descriptor`
+/// property slot at construction (`struct.new_desc`); this is the single
+/// reader used by `ref.get_desc` and by the descriptor-comparing casts, so
+/// they can never disagree about where a descriptor lives.
+fn descriptor_of(value: &Value) -> Value {
+    match value {
+        Value::Object(o) => o
+            .lock()
+            .unwrap()
+            .properties
+            .get("__descriptor")
+            .cloned()
+            .unwrap_or(Value::Null),
+        _ => Value::Null,
+    }
+}
+
+/// `ref.eq` — reference identity. Shared by the `REF_EQ` opcode and by the
+/// descriptor-comparing casts, which the proposal defines in terms of
+/// descriptor *equality*, i.e. the same reference.
+fn ref_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        // All nulls (typed or plain) are ref.eq.
+        _ if a.is_null_ref() && b.is_null_ref() => true,
+        (Value::Undefined, Value::Undefined) => true,
+        // Pure WASM `ref.eq`: reference identity only. Two `ref.func $f`
+        // tear-offs of the same capture-free function are identical because
+        // `REF_FUNC` INTERNS them (one canonical object per function) —
+        // identity is established at creation, not faked here. Closures with
+        // captures stay distinct, as do bound methods (which capture `self`),
+        // so `C().f is C().f` is correctly false.
+        (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b),
+        (Value::Symbol(a), Value::Symbol(b)) => Arc::ptr_eq(a, b),
+        (Value::String(a), Value::String(b)) => Arc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
 /// The stringref "WTF-8 position treatment": a byte offset past the end clamps
 /// to the length; an offset that lands inside a multi-byte codepoint is advanced
 /// forward to the next codepoint boundary (or the end). Used by the
@@ -2525,15 +2565,25 @@ impl VM {
                 }
                 // `array.new_fixed $t N` — pops N values off the stack
                 // and allocates an N-element array initialised from them.
+                // `array.new_fixed $t N` — [v1..vN] -> [array].
+                //
+                // BOTH immediates, matching `array.new` / `array.new_default`:
+                // the type index stamps the rtt, and that stamp is what makes
+                // the array bounds-check per spec. This used to read only `N`,
+                // so a fixed array could never be a GC array and `array.get` /
+                // `set` / `fill` / `copy` could never trap on one — the trap
+                // code existed but was unreachable for anything built here.
+                // Type index 0 = dynamic-language array literal (lenient).
                 _ if op == Op::ARRAY_NEW_FIXED => {
+                    let typeidx = self.read_u16() as usize;
                     let count = self.read_u16() as usize;
                     let count = count.min(self.stack.len());
                     let start = self.stack.len() - count;
                     let elems: Vec<Value> = self.stack[start..].to_vec();
                     self.stack.truncate(start);
-                    self.push(Value::Object(crate::heap::alloc(Object::new_array(
-                        elems,
-                    ))))?;
+                    let mut obj = Object::new_array(elems);
+                    obj.type_id = self.resolve_gc_array_rtt(typeidx);
+                    self.push(Value::Object(crate::heap::alloc(obj)))?;
                 }
                 // `array.new $t` — [value, length] -> [array of length,
                 // every lane = value].
@@ -2634,8 +2684,32 @@ impl VM {
                 _ if op == Op::ARRAY_GET_S || op == Op::ARRAY_GET_U => {
                     let _typeidx = self.read_u16();
                     let is_signed = op == Op::ARRAY_GET_S;
-                    let idx = self.pop().as_i32().max(0) as usize;
+                    let raw_idx = self.pop().as_i32();
                     let arr = self.pop();
+                    // Same trap discipline as `array.get`: a GC array reference
+                    // is bounds-checked and a typed null traps, while dynamic
+                    // (JS-shaped) arrays stay lenient. These two used to clamp a
+                    // negative index to 0 and answer 0 past the end, so a
+                    // packed-field read could never fail — unlike `array.get`
+                    // directly above, which has always trapped.
+                    if matches!(arr, Value::TypedNull(_)) {
+                        return Err(VMError::new("trap: array.get on null reference"));
+                    }
+                    let gc_len = match &arr {
+                        Value::Object(o) if self.is_gc_array_obj(o) => {
+                            match &o.lock().unwrap().kind {
+                                ObjectKind::Array(a) => Some(a.len()),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(len) = gc_len {
+                        if raw_idx < 0 || raw_idx as usize >= len {
+                            return Err(VMError::new("trap: array.get out of bounds"));
+                        }
+                    }
+                    let idx = raw_idx.max(0) as usize;
                     let val = if let Value::Object(obj) = arr {
                         let o = obj.lock().unwrap();
                         match &o.kind {
@@ -2850,17 +2924,63 @@ impl VM {
                 _ if op == Op::REF_GET_DESC => {
                     let _typeidx = self.read_u16();
                     let val = self.pop();
-                    let desc = if let Value::Object(o) = &val {
-                        o.lock()
-                            .unwrap()
-                            .properties
-                            .get("__descriptor")
-                            .cloned()
-                            .unwrap_or(Value::Null)
-                    } else {
-                        Value::Null
-                    };
+                    let desc = descriptor_of(&val);
                     self.push(desc)?;
+                }
+                // `ref.cast_desc_eq (ref ht)` / `(ref null ht)` — cast keyed on
+                // descriptor identity rather than on the type hierarchy.
+                //
+                //   [ref, descriptor] -> [ref]
+                //
+                // The descriptor operand is popped; the reference stays on the
+                // stack, exactly like `ref.cast`. Per the proposal a NULL
+                // descriptor traps unconditionally — before the reference is
+                // even looked at — so the null check comes first for all four
+                // of these instructions.
+                _ if op == Op::REF_CAST_DESC_EQ || op == Op::REF_CAST_DESC_EQ_NULL => {
+                    let _typeidx = self.read_u16();
+                    let expected = self.pop();
+                    if expected.is_null_ref() {
+                        return Err(VMError::new("trap: ref.cast_desc_eq on null descriptor"));
+                    }
+                    let val = self.peek(0).clone();
+                    if val.is_null_ref() {
+                        // The `(ref ht)` form does not admit null; the
+                        // `(ref null ht)` form passes it through untouched.
+                        if op == Op::REF_CAST_DESC_EQ {
+                            return Err(VMError::new("trap: ref.cast_desc_eq on null reference"));
+                        }
+                    } else if !ref_eq(&descriptor_of(&val), &expected) {
+                        return Err(VMError::new(
+                            "trap: ref.cast_desc_eq failed: descriptor mismatch",
+                        ));
+                    }
+                }
+                // `br_on_cast_desc_eq $l ht ht` / `..._fail` — the branching
+                // forms. Same operand discipline as `br_on_cast`: (u16
+                // type-name-idx, u8 label depth). The descriptor is consumed
+                // either way; the reference stays for both the branch and the
+                // fallthrough.
+                _ if op == Op::BR_ON_CAST_DESC_EQ || op == Op::BR_ON_CAST_DESC_EQ_FAIL => {
+                    let _typeidx = self.read_u16();
+                    let depth = self.read_byte() as usize;
+                    let expected = self.pop();
+                    if expected.is_null_ref() {
+                        return Err(VMError::new("trap: br_on_cast_desc_eq on null descriptor"));
+                    }
+                    let val = self.peek(0).clone();
+                    let matched =
+                        !val.is_null_ref() && ref_eq(&descriptor_of(&val), &expected);
+                    let take = if op == Op::BR_ON_CAST_DESC_EQ {
+                        matched
+                    } else {
+                        !matched
+                    };
+                    if take {
+                        if let Some(entry) = self.label_stack.iter().rev().nth(depth).copied() {
+                            self.branch_to_label(depth, entry);
+                        }
+                    }
                 }
                 // `struct.get_s $t i` / `struct.get_u $t i` — packed field
                 // variants. Our structs have externref fields only, so
@@ -2973,23 +3093,7 @@ impl VM {
                 _ if op == Op::REF_EQ => {
                     let b = self.pop();
                     let a = self.pop();
-                    let eq = match (&a, &b) {
-                        // All nulls (typed or plain) are ref.eq.
-                        _ if a.is_null_ref() && b.is_null_ref() => true,
-                        (Value::Undefined, Value::Undefined) => true,
-                        // Pure WASM `ref.eq`: reference identity only. Two
-                        // `ref.func $f` tear-offs of the same capture-free
-                        // function are identical because `REF_FUNC` INTERNS them
-                        // (one canonical object per function) — identity is
-                        // established at creation, not faked here. Closures with
-                        // captures stay distinct, as do bound methods (which
-                        // capture `self`), so `C().f is C().f` is correctly false.
-                        (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b),
-                        (Value::Symbol(a), Value::Symbol(b)) => Arc::ptr_eq(a, b),
-                        (Value::String(a), Value::String(b)) => Arc::ptr_eq(a, b),
-                        _ => false,
-                    };
-                    self.push(wasm_bool(eq))?;
+                    self.push(wasm_bool(ref_eq(&a, &b)))?;
                 }
 
                 // -- Type checks --
@@ -3053,7 +3157,14 @@ impl VM {
                     self.push(Value::I32(v & 0x7FFF_FFFF))?; // mask to 31 bits
                 }
                 _ if op == Op::I31_GET_S => {
-                    let v = self.pop().as_i32();
+                    // Both getters take `(ref null i31)` and trap on null; a
+                    // null used to read back as 0, indistinguishable from a
+                    // genuine `ref.i31 0`.
+                    let raw = self.pop();
+                    if raw.is_null_ref() {
+                        return Err(VMError::new("trap: i31.get_s on null reference"));
+                    }
+                    let v = raw.as_i32();
                     // Sign extend from 31 bits
                     let extended = if v & 0x4000_0000 != 0 {
                         v | !0x7FFF_FFFF_u32 as i32
@@ -3063,8 +3174,11 @@ impl VM {
                     self.push(Value::I32(extended))?;
                 }
                 _ if op == Op::I31_GET_U => {
-                    let v = self.pop().as_i32();
-                    self.push(Value::I32(v & 0x7FFF_FFFF))?;
+                    let raw = self.pop();
+                    if raw.is_null_ref() {
+                        return Err(VMError::new("trap: i31.get_u on null reference"));
+                    }
+                    self.push(Value::I32(raw.as_i32() & 0x7FFF_FFFF))?;
                 }
 
                 // ── Stringref proposal ────────────────────────────────────
@@ -4352,6 +4466,10 @@ impl VM {
                 // -- Array builtins --
                 _ if op == Op::ARRAY_LENGTH => {
                     let arr = self.pop();
+                    // `array.len` takes `(ref null array)` and traps on null.
+                    if matches!(arr, Value::TypedNull(_)) {
+                        return Err(VMError::new("trap: array.len on null reference"));
+                    }
                     let len = if let Value::Object(obj) = &arr {
                         let o = obj.lock().unwrap();
                         if let ObjectKind::Array(a) = &o.kind {
@@ -4392,6 +4510,21 @@ impl VM {
                     let arr = self.pop();
                     if matches!(arr, Value::TypedNull(_)) {
                         return Err(VMError::new("trap: array.fill on null reference"));
+                    }
+                    // `array.fill` traps when the filled region leaves the
+                    // array, exactly as `array.copy` does — clamping to the end
+                    // silently wrote less than asked. Dynamic arrays stay
+                    // lenient; only a stamped GC array is bounds-checked.
+                    if let Value::Object(obj) = &arr {
+                        if self.is_gc_array_obj(obj) {
+                            let len = match &obj.lock().unwrap().kind {
+                                ObjectKind::Array(a) => a.len(),
+                                _ => 0,
+                            };
+                            if start + count > len {
+                                return Err(VMError::new("trap: array.fill out of bounds"));
+                            }
+                        }
                     }
                     if let Value::Object(obj) = &arr {
                         let mut o = obj.lock().unwrap();

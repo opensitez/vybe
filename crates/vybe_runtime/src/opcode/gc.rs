@@ -56,6 +56,13 @@ impl Op {
     pub const STRUCT_NEW_DESC: Op = Op::new(0xFB, 0x20); // struct.new_desc $typeidx
     pub const STRUCT_NEW_DEFAULT_DESC: Op = Op::new(0xFB, 0x21); // struct.new_default_desc $typeidx
     pub const REF_GET_DESC: Op = Op::new(0xFB, 0x22); // ref.get_desc $typeidx
+    // Descriptor-comparing casts. The proposal encodes the two `ref.cast_desc_eq`
+    // forms as separate opcodes (non-null / nullable result) rather than a flag,
+    // mirroring `ref.cast` / `ref.cast_null`.
+    pub const REF_CAST_DESC_EQ: Op = Op::new(0xFB, 0x23); // ref.cast_desc_eq (ref ht)
+    pub const REF_CAST_DESC_EQ_NULL: Op = Op::new(0xFB, 0x24); // ref.cast_desc_eq (ref null ht)
+    pub const BR_ON_CAST_DESC_EQ: Op = Op::new(0xFB, 0x25); // br_on_cast_desc_eq $l ht ht
+    pub const BR_ON_CAST_DESC_EQ_FAIL: Op = Op::new(0xFB, 0x26); // br_on_cast_desc_eq_fail $l ht ht
 
     // Stringref proposal (0x80..=0xB7). Byte values per proposals/stringref
     // Overview.md. Strings map onto `Value::String`. Ops carrying a `$mem`
@@ -151,6 +158,13 @@ opcode_category! {
     [0x20] struct_new_desc         => U16, "struct.new_desc";
     [0x21] struct_new_default_desc => U16, "struct.new_default_desc";
     [0x22] ref_get_desc            => U16, "ref.get_desc";
+    // The descriptor-comparing casts carry the same operand shapes as their
+    // plain counterparts: a u16 type-name constant index, plus a u8 label
+    // depth for the branching forms.
+    [0x23] ref_cast_desc_eq        => U16,    "ref.cast_desc_eq";
+    [0x24] ref_cast_desc_eq_null   => U16,    "ref.cast_desc_eq_null";
+    [0x25] br_on_cast_desc_eq      => U16_U8, "br_on_cast_desc_eq";
+    [0x26] br_on_cast_desc_eq_fail => U16_U8, "br_on_cast_desc_eq_fail";
 
     // ── Stringref proposal (0x80..=0xB7) ──────────────────────────────────
     // operand_format is None for ALL of these: the ops that take a `$mem`

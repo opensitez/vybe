@@ -132,7 +132,7 @@ fn pack_unpack() {
     chunk.emit_op_u16(Op::CONST, c2, 0);
     chunk.emit_op_u16(Op::CONST, c3, 0);
     // pack/unpack removed — test array_new instead (3 values → array)
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
+    chunk.emit_array_new_fixed(0, 3, 0);
     // Get last element: array[2] = 30
     let idx = chunk.add_constant(Value::I32(2));
     chunk.emit_op_u16(Op::CONST, idx, 0);

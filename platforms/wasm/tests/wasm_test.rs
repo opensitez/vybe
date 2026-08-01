@@ -784,7 +784,7 @@ fn array_length_op() {
     chunk.emit_op_u16(Op::CONST, c1, 0);
     chunk.emit_op_u16(Op::CONST, c2, 0);
     chunk.emit_op_u16(Op::CONST, c3, 0);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 3, 0);
+    chunk.emit_array_new_fixed(0, 3, 0);
     chunk.emit_op(Op::ARRAY_LENGTH, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);

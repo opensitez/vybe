@@ -88,7 +88,7 @@ fn capture_pre_migration_baseline() {
     // ── Array ops (current VM opcodes — will go away in Phase E) ──
 
     let push_get = run_and_time("vybe:js-array.push + length", |chunk| {
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, 0);
+        chunk.emit_array_new_fixed(0, 0, 0);
         let arr_slot = 0;
         chunk.local_count = chunk.local_count.max(1);
         chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, 0);
@@ -110,7 +110,7 @@ fn capture_pre_migration_baseline() {
         // Pre-populate with one element
         let v = chunk.add_constant(Value::I32(7));
         chunk.emit_op_u16(Op::CONST, v, 0);
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, 0);
+        chunk.emit_array_new_fixed(0, 1, 0);
         let arr_slot = 0;
         chunk.local_count = chunk.local_count.max(1);
         chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, 0);

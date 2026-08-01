@@ -33,8 +33,23 @@ pub const TYPE_VOID: u8 = 0x40;
 // GC type encoding
 pub const GC_STRUCT: u8 = 0x5F; // -0x21: struct composite type
 pub const GC_ARRAY: u8 = 0x5E; // -0x22: array composite type
+pub const GC_SUB: u8 = 0x50; // -0x30: sub (open — further subtyping allowed)
 pub const GC_SUB_FINAL: u8 = 0x4F; // -0x31: sub final
 pub const GC_REC: u8 = 0x4E; // -0x32: recursive type group
+// Custom Descriptors proposal — prefixes that may sit between a subtype's
+// supertype vector and its composite type.
+pub const CD_DESCRIBES: u8 = 0x4C; // (describes $x)
+pub const CD_DESCRIPTOR: u8 = 0x4D; // (descriptor $x)
+// `heaptype ::= ... | 0x62 x:u32 => exact x`. The index is a plain `u32`,
+// NOT the `s33` every other heaptype uses — deliberately, so that an exact
+// ABSTRACT heap type cannot be encoded. As an s33, 0x62 reads back as -30,
+// which sits in the reserved negative space, so a leading 0x62 is never
+// ambiguous with a typeidx.
+pub const HEAPTYPE_EXACT: u8 = 0x62;
+// `externtype ::= ... | 0x20 x:typeidx => func exact x`. Bit 6 is reserved
+// for marking exactness of other externtype kinds later. Exports never
+// declare exactness — an export section using 0x20 is malformed.
+pub const EXTERNTYPE_FUNC_EXACT: u8 = 0x20;
 pub const GC_MUT: u8 = 0x01; // mutable field
 pub const GC_IMMUT: u8 = 0x00; // immutable field
 
