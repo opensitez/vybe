@@ -48,6 +48,43 @@ pub fn load(path: &Path, ext: &str) -> Result<Bundle, String> {
 ///
 /// `EntryPoint::Auto` still applies: the entry is inferred from the code
 /// (`main()`, `Sub Main`, top-level statements) exactly as for one file.
+/// Load several source files as a [`Program`], one unit per language.
+///
+/// `vybex main.vb math_utils.js` used to be rejected outright ("all source
+/// files in one command must be the same language"). Mixing front-ends in a
+/// single *parse* still has no meaning — each language lowers through its own
+/// walker and profile — so instead of concatenating them, each language group
+/// is compiled on its own and the units are linked in the VM.
+///
+/// The first path is the entry file: it names the program and fixes the entry
+/// language, whose unit runs last.
+pub fn load_many_program(paths: &[std::path::PathBuf]) -> Result<crate::projects::Program, String> {
+    let Some((first, _)) = paths.split_first() else {
+        return Err("no source files given".to_string());
+    };
+
+    let entry_lang = super::vybe::language_of(&first.to_string_lossy())?;
+    let name = first
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "main".into());
+
+    let mut read = Vec::new();
+    for path in paths {
+        let code = std::fs::read_to_string(path)
+            .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
+        read.push((path.to_path_buf(), code));
+    }
+
+    let grouped = super::vybe::group_by_language(read)?;
+    Ok(super::vybe::build_program(
+        name,
+        entry_lang.name,
+        grouped,
+        Vec::new(),
+    ))
+}
+
 pub fn load_many(paths: &[std::path::PathBuf]) -> Result<Bundle, String> {
     let Some((first, rest)) = paths.split_first() else {
         return Err("no source files given".to_string());

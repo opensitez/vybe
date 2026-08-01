@@ -6,18 +6,30 @@
 //! entry = "main.vb"
 //!
 //! [sources]
-//! files = ["main.vb", "utils.vb", "math.wasm"]
+//! files = ["main.vb", "math_utils.js", "math.wasm"]
 //!
 //! [host]
 //! gui = false
 //! ```
 //!
-//! Language is auto-detected from the entry file extension.
+//! The entry file's extension picks the *entry* language. Sources in any other
+//! language become their own units of the resulting [`Program`] — they cannot
+//! share one parse, because each language has its own grammar, profile and
+//! prelude. Linking happens in the VM at run time (shared globals and host),
+//! never by concatenating source text across languages.
 
+use super::Program;
 use crate::bundle::{Bundle, EntryPoint, SourceFile, WasmFile};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+/// The entry-language unit alone. Kept for callers that compile or inspect a
+/// single bundle (`--dump`, `--emit-wasm`, hot reload, the debugger's
+/// evaluator); use [`load_program`] to get the other languages too.
 pub fn load(path: &Path) -> Result<Bundle, String> {
+    Ok(load_program(path)?.into_entry())
+}
+
+pub fn load_program(path: &Path) -> Result<Program, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
 
@@ -38,12 +50,6 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
         .to_string();
 
     let entry_str = project.get("entry").and_then(|v| v.as_str()).unwrap_or("");
-
-    let entry_point = if entry_str.is_empty() || entry_str.eq_ignore_ascii_case("auto") {
-        EntryPoint::Auto
-    } else {
-        EntryPoint::Auto
-    };
 
     // [sources]
     let files: Vec<String> = root
@@ -68,7 +74,8 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
         return Err("No source files specified in .vybe project".into());
     }
 
-    // Detect language from entry file or first non-wasm source
+    // The entry file names the entry language; without one, the first
+    // compilable source does.
     let detect_from = if !entry_str.is_empty() {
         entry_str.to_string()
     } else {
@@ -78,51 +85,102 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
             .cloned()
             .unwrap_or_default()
     };
+    let entry_lang = language_of(&detect_from)?;
 
-    let lang_ext = Path::new(&detect_from)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    let lang = crate::languages::find_by_extension(&lang_ext).ok_or_else(|| {
-        format!(
-            "Cannot detect language from '{}' — unsupported extension '.{}'",
-            detect_from, lang_ext
-        )
-    })?;
-
-    // Load source files and WASM binaries
-    let mut sources = Vec::new();
+    // Read every listed file, keeping WASM binaries aside — they are already
+    // compiled, carry no language, and link as chunks on the entry unit.
     let mut wasm_files = Vec::new();
+    let mut grouped: Vec<(String, Vec<SourceFile>)> = Vec::new();
     for rel_path in &file_list {
         let full_path = project_dir.join(rel_path);
         if rel_path.ends_with(".wasm") {
             let data = std::fs::read(&full_path)
                 .map_err(|e| format!("Cannot read WASM '{}': {}", rel_path, e))?;
-            wasm_files.push(WasmFile {
-                path: full_path,
-                data,
-            });
-        } else {
-            let code = std::fs::read_to_string(&full_path)
-                .map_err(|e| format!("Cannot read '{}': {}", rel_path, e))?;
-            sources.push(SourceFile {
-                path: full_path,
-                code,
-            });
+            wasm_files.push(WasmFile { path: full_path, data });
+            continue;
+        }
+        let code = std::fs::read_to_string(&full_path)
+            .map_err(|e| format!("Cannot read '{}': {}", rel_path, e))?;
+        let lang = language_of(rel_path)?;
+        let source = SourceFile { path: full_path, code };
+        match grouped.iter_mut().find(|(n, _)| *n == lang.name) {
+            Some((_, sources)) => sources.push(source),
+            None => grouped.push((lang.name.to_string(), vec![source])),
         }
     }
 
-    if sources.is_empty() {
+    if grouped.is_empty() {
         return Err("No compilable source files in project".into());
     }
 
-    Ok(Bundle {
-        name,
-        language: lang,
-        sources,
-        wasm_files,
-        entry_point,
+    Ok(build_program(name, entry_lang.name, grouped, wasm_files))
+}
+
+/// Assemble the ordered unit list: every secondary language in the order it
+/// first appears, then the entry language LAST, so a library is defined before
+/// the program that uses it.
+pub(super) fn build_program(
+    name: String,
+    entry_lang: &str,
+    grouped: Vec<(String, Vec<SourceFile>)>,
+    wasm_files: Vec<WasmFile>,
+) -> Program {
+    let mut units = Vec::new();
+    let mut entry_unit = None;
+
+    for (lang_name, sources) in grouped {
+        let language = crate::languages::find_by_name(&lang_name)
+            .expect("language was resolved when the group was built");
+        let is_entry = lang_name == entry_lang;
+        let bundle = Bundle {
+            name: if is_entry {
+                name.clone()
+            } else {
+                format!("{name}:{lang_name}")
+            },
+            language,
+            sources,
+            // Pre-compiled WASM links onto the entry unit; it is
+            // language-neutral and appending it twice would duplicate chunks.
+            wasm_files: if is_entry { wasm_files.clone() } else { Vec::new() },
+            entry_point: EntryPoint::Auto,
+        };
+        if is_entry {
+            entry_unit = Some(bundle);
+        } else {
+            units.push(bundle);
+        }
+    }
+
+    if let Some(entry) = entry_unit {
+        units.push(entry);
+    }
+    Program { units }
+}
+
+pub(super) fn language_of(file: &str) -> Result<crate::languages::Language, String> {
+    let ext = Path::new(file)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    crate::languages::find_by_extension(&ext).ok_or_else(|| {
+        format!("Cannot detect language from '{file}' — unsupported extension '.{ext}'")
     })
+}
+
+/// Group already-read sources by language, preserving first-appearance order.
+pub(super) fn group_by_language(
+    sources: Vec<(PathBuf, String)>,
+) -> Result<Vec<(String, Vec<SourceFile>)>, String> {
+    let mut grouped: Vec<(String, Vec<SourceFile>)> = Vec::new();
+    for (path, code) in sources {
+        let lang = language_of(&path.to_string_lossy())?;
+        let source = SourceFile { path, code };
+        match grouped.iter_mut().find(|(n, _)| *n == lang.name) {
+            Some((_, group)) => group.push(source),
+            None => grouped.push((lang.name.to_string(), vec![source])),
+        }
+    }
+    Ok(grouped)
 }

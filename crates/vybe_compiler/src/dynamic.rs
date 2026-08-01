@@ -150,6 +150,32 @@ impl<'vm> RuntimeCompilerService<'vm> {
     }
 
     pub fn run_compiled(&mut self, compiled: DynamicCompilation) -> Result<Value, String> {
+        self.run_compiled_impl(compiled, false)
+    }
+
+    /// Compile and run one non-entry unit of a multi-language program.
+    ///
+    /// This is the linking step. Each language is compiled on its own terms —
+    /// its own grammar, profile and prelude — and then loaded into the *same*
+    /// VM, so its functions and classes land in the shared global table and its
+    /// top-level code runs before the entry unit does. Nothing is concatenated
+    /// across languages; the chunk index, import-table and type-table
+    /// relocation that makes this safe is `VM::run_linked_nested`, the same
+    /// machinery `eval` uses to define real globals in a live VM.
+    ///
+    /// `nested` matters: the unit runs under *its own* resolved import table,
+    /// which is restored afterwards so the entry unit's table is the one active
+    /// when it starts.
+    pub fn run_program_unit(&mut self, bundle: &Bundle) -> Result<Value, String> {
+        let compiled = self.compile_bundle(bundle)?;
+        self.run_compiled_impl(compiled, true)
+    }
+
+    fn run_compiled_impl(
+        &mut self,
+        compiled: DynamicCompilation,
+        nested: bool,
+    ) -> Result<Value, String> {
         ensure_php_runtime_registered(self.vm);
         ensure_js_runtime_registered(self.vm);
         let base_chunk_index = self.vm.chunks.len();
@@ -169,7 +195,13 @@ impl<'vm> RuntimeCompilerService<'vm> {
         );
         let _js_runtime =
             self.js_runtime
-                .activate(self.vm, active_imports, active_resolved_imports);
+                .activate(self.vm, active_imports, active_resolved_imports.clone());
+        if nested {
+            return self
+                .vm
+                .run_linked_nested(compiled.chunks, active_resolved_imports)
+                .map_err(|e| e.to_string());
+        }
         self.vm.run(compiled.chunks).map_err(|e| e.to_string())
     }
 
