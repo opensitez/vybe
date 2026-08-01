@@ -60,13 +60,13 @@ pub fn emit_datatable_new(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     set_field(
         chunk,
         "columns",
-        |c, l| c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, l),
+        |c, l| c.emit_array_new_fixed(0, 0, l),
         line,
     );
     set_field(
         chunk,
         "rows",
-        |c, l| c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, l),
+        |c, l| c.emit_array_new_fixed(0, 0, l),
         line,
     );
     set_field(chunk, "count", |c, l| push_f64(c, 0.0, l), line);
@@ -97,7 +97,7 @@ pub fn emit_dataset_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     set_field(
         chunk,
         "tables",
-        |c, l| c.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, l),
+        |c, l| c.emit_array_new_fixed(0, 0, l),
         line,
     );
 }

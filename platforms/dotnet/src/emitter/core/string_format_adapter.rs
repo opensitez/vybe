@@ -84,7 +84,7 @@ pub fn emit_string_format(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     // `ARRAY_NEW_FIXED n` pops the top n values (in stack order) and
     // builds an array — preserves order, so args[0] is the first
     // placeholder value as written in source.
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, n, line);
+    chunk.emit_array_new_fixed(0, n, line);
 
     // Save args array to a local; stack now `[fmt]`.
     chunk.emit_op_u16(Op::LOCAL_SET, args_slot, line);

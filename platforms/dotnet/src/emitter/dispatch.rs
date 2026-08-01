@@ -46,7 +46,7 @@ fn emit_choose(chunk: &mut Chunk, argc: u8, line: u32) {
     let arr_slot = chunk.alloc_scratch(2);
     let idx_slot = arr_slot + 1;
 
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, n, line);
+    chunk.emit_array_new_fixed(0, n, line);
     chunk.emit_op_u16(Op::LOCAL_SET, arr_slot, line);
     chunk.emit_op(Op::I32_FROM_F64, line);
     core_wasm::i32_const(chunk, line, 1);

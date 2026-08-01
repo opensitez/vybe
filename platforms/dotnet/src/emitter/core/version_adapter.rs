@@ -256,7 +256,7 @@ fn emit_build_version_from_slots(
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Version")), line);
     push_const(chunk, Value::String(Arc::from("Object")), line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    chunk.emit_array_new_fixed(0, 2, line);
     chunk.emit_op_u16(Op::STRUCT_SET, types_key, line);
     chunk.emit_op(Op::DROP, line);
 

@@ -506,7 +506,7 @@ pub fn emit_process_get_by_id(chunks: &mut Vec<Chunk>, current: usize, line: u32
 
 pub fn emit_process_get_processes(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     emit_build_current_process(chunks, current, line);
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
+    chunks[current].emit_array_new_fixed(0, 1, line);
 }
 
 pub fn emit_process_get_processes_by_name(chunks: &mut Vec<Chunk>, current: usize, line: u32) {

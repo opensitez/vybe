@@ -115,7 +115,7 @@ pub fn emit_dns_get_host_entry(chunks: &mut Vec<Chunk>, current: usize, line: u3
     struct_set_drop(chunk, "AddressList", line);
 
     core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     struct_set_drop(chunk, "Aliases", line);
 
     chunk.emit_op(Op::DROP, line);

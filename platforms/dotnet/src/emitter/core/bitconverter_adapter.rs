@@ -27,7 +27,7 @@ pub fn emit_get_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_else(line);
     chunk.emit_i32_const(0, line);
     chunk.emit_end(line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 1, line);
+    chunk.emit_array_new_fixed(0, 1, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     host::emit(chunk, "wasm:js-string", "test", 1, line);
@@ -36,7 +36,7 @@ pub fn emit_get_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_i32_const(0, line);
     host::emit(chunk, "wasm:js-string", "charCodeAt", 2, line);
     chunk.emit_i32_const(0, line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    chunk.emit_array_new_fixed(0, 2, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, to_f64, line);
@@ -56,13 +56,13 @@ pub fn emit_get_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     for _ in 0..7 {
         chunk.emit_i32_const(0, line);
     }
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 8, line);
+    chunk.emit_array_new_fixed(0, 8, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     for _ in 0..3 {
         chunk.emit_i32_const(0, line);
     }
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 4, line);
+    chunk.emit_array_new_fixed(0, 4, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);

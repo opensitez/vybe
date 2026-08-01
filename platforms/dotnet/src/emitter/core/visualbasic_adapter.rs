@@ -736,7 +736,7 @@ pub fn emit_vb_shell_pid(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         push_const(chunk, Value::String(Arc::from("/bin/sh")), line);
         push_const(chunk, Value::String(Arc::from("-c")), line);
         lget(chunk, command_slot, line);
-        chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+        chunk.emit_array_new_fixed(0, 2, line);
         chunk.emit_op_u16(Op::CALL_IMPORT, spawn_sync, line);
         chunk.emit(2, line);
         chunk.emit_op_u16(Op::STRUCT_GET, pid_key, line);
