@@ -1,10 +1,190 @@
 //! Kotlin `ClassDecl` → `NormalClass` normalization pass.
 
 use vybe_ast::{
-    ClassMember, ClassModifiers, ConstructorInitializerTarget, Modifiers, PropertySetter, Span,
-    StmtKind,
+    Argument, BinOp, ClassKind, ClassMember, ClassModifiers, ConstructorInitializerTarget,
+    ExprKind, Expression, Modifiers, Param, PassBy, PropertySetter, Span, Statement, StmtKind,
 };
 use vybe_ast::class_normalize::{build_normal_method, from_method_stmt, types::*, NormalMembers};
+
+/// `this.<name>`.
+/// A component read from inside a derived member.
+///
+/// Explicitly `this.<name>`, never the bare identifier. `copy`'s parameters are
+/// named after the components they replace, so a bare `n` inside `copy(n = …)`
+/// binds to the PARAMETER and every default became its own self-reference.
+fn this_field(name: &str) -> Expression {
+    Expression::new(ExprKind::Member {
+        object: Box::new(Expression::new(ExprKind::This)),
+        field: name.to_string(),
+        null_safe: false,
+    })
+}
+
+/// Render a value the way Kotlin does — `emitter/tostring.rs` dispatches on the
+/// VALUE, so a nested collection or record renders as Kotlin spells it.
+fn kt_render(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__kt_tostring")),
+        args: vec![Argument::positional(expr)],
+        optional: false,
+    })
+}
+
+fn ret(expr: Expression) -> Vec<Statement> {
+    vec![Statement::new(StmtKind::Return(Some(expr)))]
+}
+
+fn no_arg_param(name: &str) -> Param {
+    Param {
+        name: name.to_string(),
+        type_hint: None,
+        default: None,
+        pass_by: PassBy::Value,
+        is_rest: false,
+        is_kwargs: false,
+        is_optional: false,
+        is_nullable: true,
+    }
+}
+
+/// `ClassKind::Record` — derive the members a `data class` gets for free.
+///
+/// This runs in NORMALIZATION, not in the walker: the shape is a function of
+/// the primary constructor's components, which is the same computation in every
+/// language that has records, and the results are bound to `ProtocolSlot`s
+/// rather than published as spellings (flexclassplan §2a). The walker's only
+/// job was to say `kind: Record`.
+fn derive_record_members(class_name: &str, out: &mut NormalMembers) {
+    let Some(primary) = out.constructor.clone() else {
+        return;
+    };
+    let components: Vec<String> = primary.params.iter().map(|p| p.name.clone()).collect();
+    if components.is_empty() {
+        return;
+    }
+
+    // A derived member is named exactly like a hand-written one: SOURCE spelling
+    // for the call site, CANONICAL name for the slot. Naming it after its
+    // spelling twice is what left `toString` unbound to the ToString slot —
+    // `special_methods` keys on the canonical name (classes.rs `class_slots`).
+    let method = |name: &str, params: Vec<Param>, body: Vec<Statement>| {
+        let (canonical, _) = crate::protocol::canonical_method(name);
+        build_normal_method(
+            primary.span.clone(),
+            &canonical,
+            name,
+            params,
+            None,
+            body,
+            Access::Public,
+            false,
+            false,
+            false,
+            Modifiers::default(),
+        )
+    };
+
+    // `component1()` … — what destructuring binds, in declaration order.
+    for (idx, comp) in components.iter().enumerate() {
+        let name = format!("component{}", idx + 1);
+        out.instance_methods
+            .push(method(&name, vec![], ret(this_field(comp))));
+    }
+
+    // `copy(a = this.a, …)` — every component defaults to the current value.
+    let copy_params: Vec<Param> = components
+        .iter()
+        .map(|comp| Param {
+            name: comp.clone(),
+            type_hint: None,
+            default: Some(this_field(comp)),
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: true,
+            is_nullable: false,
+        })
+        .collect();
+    let copy_call = Expression::new(ExprKind::New {
+        class: Box::new(Expression::ident(class_name)),
+        args: components
+            .iter()
+            .map(|comp| Argument::positional(Expression::ident(comp)))
+            .collect(),
+    });
+    out.instance_methods
+        .push(method("copy", copy_params, ret(copy_call)));
+
+    // `toString()` → `Name(a=1, b=2)`, each part through the value renderer so
+    // a nested record prints as its own `toString`.
+    let mut text = Expression::string(&format!("{}({}=", class_name, components[0]));
+    let concat = |left: Expression, right: Expression| {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::Concat,
+            left: Box::new(left),
+            right: Box::new(right),
+        })
+    };
+    text = concat(text, kt_render(this_field(&components[0])));
+    for comp in components.iter().skip(1) {
+        text = concat(text, Expression::string(&format!(", {}=", comp)));
+        text = concat(text, kt_render(this_field(comp)));
+    }
+    text = concat(text, Expression::string(")"));
+    out.instance_methods
+        .push(method("toString", vec![], ret(text)));
+
+    // `equals(other)` — structural over the components.
+    let other = "__kt_other";
+    let mut eq = Expression::new(ExprKind::IsType {
+        expr: Box::new(Expression::ident(other)),
+        type_name: class_name.to_string(),
+    });
+    for comp in &components {
+        eq = Expression::new(ExprKind::Binary {
+            op: BinOp::And,
+            left: Box::new(eq),
+            right: Box::new(Expression::new(ExprKind::Binary {
+                op: BinOp::Eq,
+                left: Box::new(this_field(comp)),
+                right: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::ident(other)),
+                    field: comp.clone(),
+                    null_safe: false,
+                })),
+            })),
+        });
+    }
+    out.instance_methods
+        .push(method("equals", vec![no_arg_param(other)], ret(eq)));
+
+    // `hashCode()` — equal values render alike, so they hash alike.
+    let hash = Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__kt_hash")),
+        args: vec![Argument::positional(kt_render(Expression::new(
+            ExprKind::This,
+        )))],
+        optional: false,
+    });
+    out.instance_methods
+        .push(method("hashCode", vec![], ret(hash)));
+
+    // Bind the SLOTS. `==`, Set membership and Map keys resolve the slot, never
+    // the spelling — which is what makes the derived members reachable from
+    // any language, not just from Kotlin source that spells `equals`.
+    for (spelling, slot) in [
+        ("toString", SpecialMethodKind::ToString),
+        ("equals", SpecialMethodKind::Eq),
+        ("hashCode", SpecialMethodKind::Hash),
+    ] {
+        let (canonical, _) = crate::protocol::canonical_method(spelling);
+        out.special_methods.push(SpecialMethod {
+            kind: slot,
+            canonical_name: canonical,
+            source_name: spelling.to_string(),
+        });
+    }
+}
 
 /// Kotlin's `by` delegation, stated once.
 ///
@@ -78,11 +258,11 @@ fn rename_method(stmt: &vybe_ast::Statement, name: &str) -> vybe_ast::Statement 
 
 pub fn normalize_class(
     span: Span,
-    _name: &str,
+    name: &str,
     parents: &[String],
     _interfaces: &[String],
     members: &[ClassMember],
-    _modifiers: &ClassModifiers,
+    modifiers: &ClassModifiers,
 ) -> NormalClass {
     let mut out = NormalMembers::default();
 
@@ -259,6 +439,13 @@ pub fn normalize_class(
                 out.raw_extra_members.push(other.clone());
             }
         }
+    }
+
+    // `data class` — the derived members are a function of the primary
+    // constructor's components, produced HERE in normalization from the kind
+    // the walker declared. The walker synthesizes nothing.
+    if modifiers.kind == ClassKind::Record {
+        derive_record_members(name, &mut out);
     }
 
     NormalClass {

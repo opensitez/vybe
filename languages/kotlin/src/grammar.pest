@@ -193,7 +193,15 @@ primary_constructor = { (annotation* ~ modifier* ~ constructor_kw)? ~ "(" ~ eat_
 class_parameter = { annotation* ~ modifier* ~ vararg_kw? ~ (val_kw | var_kw)? ~ identifier ~ ":" ~ type_ref ~ ("=" ~ expr)? }
 
 inheritance_list = { inheritance_specifier ~ ("," ~ inheritance_specifier)* }
-inheritance_specifier = { type_ref ~ ("(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ (by_kw ~ expr)? }
+inheritance_specifier = { type_ref ~ ("(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ (by_kw ~ delegate_expr)? }
+
+// The delegate of `: I by <expr>` — NOT plain `expr`.
+//
+// A trailing lambda is a call suffix, so `class B(b: I) : I by b { fun f() … }`
+// parsed the CLASS BODY as an argument to `b`: every member the class declared
+// itself vanished and `b.f()` was called with a lambda. `{` after the delegate
+// always opens the class body, never an argument.
+delegate_expr = { primary ~ (!"{" ~ postfix_suffix)* }
 
 class_body = { "{" ~ eat_terminators ~ (class_member ~ eat_terminators)* ~ "}" }
 class_member = { init_block | secondary_constructor | companion_object | enum_decl | function_decl | var_decl | class_decl | object_decl | interface_decl }

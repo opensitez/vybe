@@ -902,24 +902,14 @@ fn walk_class_property(pair: Pair<Rule>) -> Option<ClassMember> {
     })
 }
 
-/// `this.<name>` — the read a synthesized `data class` member does.
-fn this_field(name: &str) -> Expression {
-    Expression::new(ExprKind::Member {
-        object: Box::new(Expression::new(ExprKind::This)),
-        field: name.to_string(),
-        null_safe: false,
-    })
-}
-
-/// Render a value the way Kotlin does, through the shared renderer rather than
-/// by concatenating it raw. `emitter/tostring.rs` dispatches on the VALUE, so a
-/// nested collection or data class renders as Kotlin spells it.
-fn kt_render(expr: Expression) -> Expression {
-    Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident("__kt_tostring")),
-        args: vec![Argument::positional(expr)],
-        optional: false,
-    })
+/// Whether `text` is a single Kotlin identifier and nothing else.
+fn is_plain_identifier(text: &str) -> bool {
+    let text = text.trim();
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+        && !text.starts_with(|c: char| c.is_ascii_digit())
 }
 
 fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
@@ -939,6 +929,10 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
 
     let mut is_data = false;
     let mut primary_prop_names = Vec::new();
+    // `: I by <expr>` — the field the forwarders read, and what fills it.
+    // Kotlin stores the delegate; `AugmentDecl::via_field` names STORAGE, so a
+    // `by` whose expression is not already a property needs one declared.
+    let mut delegate_storage: Vec<(String, Expression)> = Vec::new();
 
     for inner in &inner_pairs {
         if inner.as_rule() == Rule::inheritance_list {
@@ -975,15 +969,33 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                     }
                                 }
                             }
-                            Rule::expr => by_expr = Some(sub.as_str().to_string()),
+                            Rule::delegate_expr => {
+                                by_expr = Some((sub.as_str().to_string(), walk_expr(sub)))
+                            }
                             _ => {}
                         }
                     }
                     if !parent_name.is_empty() {
-                        if by_expr.is_some() {
+                        if let Some((text, expr)) = by_expr {
+                            // The delegate lives in a FIELD. A bare identifier
+                            // names one directly (`by base`); anything else
+                            // (`by ArrayList()`, `by makeIt()`) is an
+                            // expression Kotlin evaluates once into a synthetic
+                            // property, so declare that property here — a
+                            // forwarder reading `this.ArrayList()` is not a
+                            // read at all.
+                            let field = if is_plain_identifier(&text) {
+                                text.trim().to_string()
+                            } else {
+                                format!("__kt_delegate_{}", parent_name.replace('.', "_"))
+                            };
+                            delegate_storage.push((field.clone(), expr));
+                            // A delegating class IS the interface — `is I` and
+                            // every interface-typed binding depend on it.
+                            interfaces.push(parent_name.clone());
                             members.push(ClassMember::Augment(AugmentDecl {
                                 from: parent_name.clone(),
-                                via_field: by_expr,
+                                via_field: Some(field),
                                 adjustments: vec![],
                             }));
                         } else if calls_constructor && parents.is_empty() && !is_interface {
@@ -1181,11 +1193,28 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                         members.push(prop);
                                         continue;
                                     }
+                                    // `val` is READ-ONLY, not `const`. Only
+                                    // `const val` is a compile-time constant
+                                    // with static storage; a plain `val n = 5`
+                                    // is an instance property, and routing it
+                                    // to `ClassMember::Const` gave EVERY `val`
+                                    // property in a class body static storage —
+                                    // `class B { val zz = "b" }` then read
+                                    // `B().zz` as `undefined`. `VarDeclKind`
+                                    // collapses the two, so ask the source.
+                                    let is_const_val = inner_member
+                                        .clone()
+                                        .into_inner()
+                                        .any(|p| p.as_rule() == Rule::modifier && p.as_str().trim() == "const");
+                                    let is_readonly_val = inner_member
+                                        .clone()
+                                        .into_inner()
+                                        .any(|p| p.as_rule() == Rule::val_kw);
                                     if let Some(stmt) = walk_var_decl(inner_member) {
-                                        if let StmtKind::VarDecl { declarations, kind } = stmt.kind {
+                                        if let StmtKind::VarDecl { declarations, .. } = stmt.kind {
                                             for decl in declarations {
                                                 if let BindingPattern::Ident(fname) = decl.pattern {
-                                                    if kind == VarDeclKind::Const {
+                                                    if is_const_val {
                                                         if let Some(val_expr) = decl.init {
                                                             members.push(ClassMember::Const {
                                                                 name: fname,
@@ -1201,6 +1230,7 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                                             init: decl.init,
                                                             modifiers: Modifiers {
                                                                 visibility: Visibility::Public,
+                                                                is_readonly: is_readonly_val,
                                                                 ..Default::default()
                                                             },
                                                             with_events: false,
@@ -1236,177 +1266,94 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
         }
     }
 
-    if is_data {
-        for (idx, pname) in primary_prop_names.iter().enumerate() {
-            let comp_name = format!("component{}", idx + 1);
-            members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-                name: comp_name,
-                params: vec![],
-                body: vec![Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::Member {
-                    object: Box::new(Expression::new(ExprKind::This)),
-                    field: pname.clone(),
-                    null_safe: false,
-                }))))],
-                return_type: None,
-                modifiers: Modifiers { visibility: Visibility::Public, ..Default::default() },
-                is_async: false,
-                is_generator: false,
-                handles: vec![],
-                is_sub: false,
-            }))));
+    // A `data class` synthesizes NOTHING here. Its members are DERIVED from
+    // the primary constructor, which is `normalize_class.rs`'s job — the
+    // walker only DECLARES what the source said (flexclassplan §0.3). This
+    // block used to hand-build `componentN`, `copy`, `toString`, `equals` and
+    // `hashCode` as raw AST, a second class implementation sitting beside the
+    // one `classes.rs` already has (§0.1, §4a-ter).
+    // Give every `by` delegate its storage. A `val`/`var` primary-constructor
+    // parameter already declared the field; a PLAIN parameter (`class B(base:
+    // Counter) : Counter by base`) did not, and the forwarders read
+    // `this.base` — which is why a delegate that was not also a property came
+    // out `undefined is not callable`.
+    for (field, init) in &delegate_storage {
+        if members
+            .iter()
+            .any(|m| matches!(m, ClassMember::Field { name, .. } if name == field))
+        {
+            continue;
         }
-
-        if !primary_prop_names.is_empty() {
-            // `Box(value=42)` — and each PART is rendered by the value renderer
-            // rather than concatenated raw. A nested `data class` field prints
-            // as its own `toString` this way instead of `[object]`, and a field
-            // whose static type is unknown is never coerced toward a number.
-            let mut str_expr = Expression::string(&format!("{}({}=", name, primary_prop_names[0]));
-            str_expr = Expression::new(ExprKind::Binary {
-                op: BinOp::Concat,
-                left: Box::new(str_expr),
-                right: Box::new(kt_render(this_field(&primary_prop_names[0]))),
-            });
-            for pname in primary_prop_names.iter().skip(1) {
-                str_expr = Expression::new(ExprKind::Binary {
-                    op: BinOp::Concat,
-                    left: Box::new(str_expr),
-                    right: Box::new(Expression::string(&format!(", {}=", pname))),
-                });
-                str_expr = Expression::new(ExprKind::Binary {
-                    op: BinOp::Concat,
-                    left: Box::new(str_expr),
-                    right: Box::new(kt_render(this_field(pname))),
-                });
-            }
-            str_expr = Expression::new(ExprKind::Binary {
-                op: BinOp::Concat,
-                left: Box::new(str_expr),
-                right: Box::new(Expression::string(")")),
-            });
-            members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-                name: "toString".to_string(),
-                params: vec![],
-                body: vec![Statement::new(StmtKind::Return(Some(str_expr)))],
-                return_type: None,
-                modifiers: Modifiers { visibility: Visibility::Public, ..Default::default() },
-                is_async: false,
-                is_generator: false,
-                handles: vec![],
-                is_sub: false,
-            }))));
-
-            let copy_params: Vec<_> = primary_prop_names.iter().map(|pname| Param {
-                name: pname.clone(),
-                type_hint: None,
-                default: Some(Expression::new(ExprKind::Member {
-                    object: Box::new(Expression::new(ExprKind::This)),
-                    field: pname.clone(),
-                    null_safe: false,
-                })),
-                pass_by: PassBy::Value,
-                is_rest: false,
-                is_kwargs: false,
-                is_optional: true,
-                is_nullable: false,
-            }).collect();
-            let copy_args: Vec<_> = primary_prop_names.iter().map(|pname| {
-                Argument::positional(Expression::ident(pname))
-            }).collect();
-            let new_inst = Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident(&name)),
-                args: copy_args,
-                optional: false,
-            });
-            members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-                name: "copy".to_string(),
-                params: copy_params,
-                body: vec![Statement::new(StmtKind::Return(Some(new_inst)))],
-                return_type: None,
-                modifiers: Modifiers { visibility: Visibility::Public, ..Default::default() },
-                is_async: false,
-                is_generator: false,
-                handles: vec![],
-                is_sub: false,
-            }))));
-
-            // `equals` / `hashCode` — Kotlin generates both for a `data class`,
-            // over the PRIMARY-CONSTRUCTOR properties only. `protocol.rs` maps
-            // the two spellings onto the `Eq` and `Hash` slots, so declaring
-            // them as members is all it takes for `==`, `Set` membership and
-            // `Map` keys to become structural. Without them a data class fell
-            // back to reference identity and `P(1,2) == P(1,2)` was `false`.
-            let other = "__kt_other";
-            let mut eq_expr = Expression::new(ExprKind::IsType {
-                expr: Box::new(Expression::ident(other)),
-                type_name: name.clone(),
-            });
-            for pname in &primary_prop_names {
-                eq_expr = Expression::new(ExprKind::Binary {
-                    op: BinOp::And,
-                    left: Box::new(eq_expr),
-                    right: Box::new(Expression::new(ExprKind::Binary {
-                        op: BinOp::Eq,
-                        left: Box::new(this_field(pname)),
-                        right: Box::new(Expression::new(ExprKind::Member {
-                            object: Box::new(Expression::ident(other)),
-                            field: pname.clone(),
-                            null_safe: false,
-                        })),
+        let from_ctor_param = members.iter().any(|m| {
+            matches!(m, ClassMember::Constructor { params, .. }
+                if params.iter().any(|p| &p.name == field))
+        });
+        members.push(ClassMember::Field {
+            name: field.clone(),
+            type_hint: None,
+            // A constructor parameter is only in scope INSIDE the constructor,
+            // so it is assigned there; anything else is an expression the class
+            // owns outright and initialises with the field.
+            init: if from_ctor_param {
+                None
+            } else {
+                Some(init.clone())
+            },
+            modifiers: Modifiers {
+                visibility: Visibility::Private,
+                is_readonly: true,
+                ..Default::default()
+            },
+            with_events: false,
+            array_bounds: None,
+        });
+        if from_ctor_param {
+            init_stmts.push(Statement::new(StmtKind::Expr(Expression::new(
+                ExprKind::Assign {
+                    target: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::new(ExprKind::This)),
+                        field: field.clone(),
+                        null_safe: false,
                     })),
-                });
-            }
-            members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-                name: "equals".to_string(),
-                params: vec![Param {
-                    name: other.to_string(),
-                    type_hint: None,
-                    default: None,
-                    pass_by: PassBy::Value,
-                    is_rest: false,
-                    is_kwargs: false,
-                    is_optional: false,
-                    is_nullable: true,
-                }],
-                body: vec![Statement::new(StmtKind::Return(Some(eq_expr)))],
-                return_type: None,
-                modifiers: Modifiers { visibility: Visibility::Public, ..Default::default() },
-                is_async: false,
-                is_generator: false,
-                handles: vec![],
-                is_sub: false,
-            }))));
-
-            // Kotlin's own shape: `result = 31 * result + field.hashCode()`.
-            // The per-field term is the string hash of the RENDERED field, since
-            // that is the one function every value answers — and it keeps the
-            // contract that matters: equal values render alike, so they hash
-            // alike.
-            members.push(ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-                name: "hashCode".to_string(),
-                params: vec![],
-                body: vec![Statement::new(StmtKind::Return(Some(Expression::new(
-                    ExprKind::Call {
-                        callee: Box::new(Expression::ident("__kt_hash")),
-                        args: vec![Argument::positional(kt_render(Expression::new(
-                            ExprKind::This,
-                        )))],
-                        optional: false,
-                    },
-                ))))],
-                return_type: None,
-                modifiers: Modifiers { visibility: Visibility::Public, ..Default::default() },
-                is_async: false,
-                is_generator: false,
-                handles: vec![],
-                is_sub: false,
-            }))));
+                    value: Box::new(Expression::ident(field)),
+                },
+            ))));
         }
     }
 
     if !init_stmts.is_empty() {
+        // Property initializers and `init` blocks run in the CONSTRUCTOR. A
+        // class with neither a primary constructor nor a secondary one has no
+        // `ClassMember::Constructor` for them to merge into, and they were
+        // silently dropped — `class C { val n = 5 }` left `n` undefined. Give
+        // that class the no-arg constructor Kotlin gives it.
+        if !members
+            .iter()
+            .any(|m| matches!(m, ClassMember::Constructor { .. }))
+        {
+            members.push(ClassMember::Constructor {
+                name: None,
+                params: Vec::new(),
+                body: Vec::new(),
+                base_args: base_args.clone(),
+                initializer_target: ConstructorInitializerTarget::Base,
+                visibility: Visibility::Public,
+            });
+        }
         for member in &mut members {
-            if let ClassMember::Constructor { body, .. } = member {
+            if let ClassMember::Constructor {
+                body,
+                initializer_target,
+                ..
+            } = member
+            {
+                // A secondary constructor that delegates with `: this(…)` must
+                // NOT re-run them — the constructor it delegates to already
+                // did, and running them twice re-initialises every property
+                // after the delegate set it.
+                if *initializer_target == ConstructorInitializerTarget::This {
+                    continue;
+                }
                 let mut combined = init_stmts.clone();
                 combined.extend(std::mem::take(body));
                 *body = combined;
@@ -1430,6 +1377,11 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
             // be one.
             kind: if is_interface {
                 ClassKind::Interface
+            } else if is_data {
+                // `data` is a DECLARED KIND, not a walker instruction. Stating
+                // it here is the whole of the frontend's job; normalization
+                // derives the members.
+                ClassKind::Record
             } else {
                 ClassKind::Class
             },
@@ -1437,6 +1389,101 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
         },
         decorators,
     }))
+}
+
+/// The members of a `class_body` that belongs to an OBJECT — a named `object`,
+/// a `companion object`, or an anonymous `object : I { … }`.
+///
+/// One walk for all three. Each of them used to walk only `function_decl`, so
+/// every `val`/`var` an object declared was dropped: `companion object { val K
+/// = 7 }` read `C.K` as `undefined` and an anonymous object's state did not
+/// exist at all.
+///
+/// `statics` — a named object and a companion are SINGLETONS, so their storage
+/// is static; an anonymous object is an ordinary instance.
+fn walk_object_body_members(class_body: Pair<Rule>, statics: bool) -> Vec<ClassMember> {
+    let mut members = Vec::new();
+    for member_pair in class_body.into_inner() {
+        if member_pair.as_rule() != Rule::class_member {
+            continue;
+        }
+        let Some(inner_member) = member_pair.into_inner().next() else {
+            continue;
+        };
+        match inner_member.as_rule() {
+            Rule::function_decl => {
+                if let Some(mut stmt) = walk_function_decl(inner_member) {
+                    if let StmtKind::FunctionDecl {
+                        ref mut modifiers, ..
+                    } = stmt.kind
+                    {
+                        modifiers.is_static = statics;
+                    }
+                    members.push(ClassMember::Method(Box::new(stmt)));
+                }
+            }
+            Rule::var_decl => {
+                if !statics {
+                    // An accessor-backed property has no storage; the shared
+                    // `ClassMember::Property` carries it.
+                    if let Some(prop) = walk_class_property(inner_member.clone()) {
+                        members.push(prop);
+                        continue;
+                    }
+                }
+                let is_const_val = inner_member
+                    .clone()
+                    .into_inner()
+                    .any(|p| p.as_rule() == Rule::modifier && p.as_str().trim() == "const");
+                let is_readonly_val = inner_member
+                    .clone()
+                    .into_inner()
+                    .any(|p| p.as_rule() == Rule::val_kw);
+                let Some(stmt) = walk_var_decl(inner_member) else {
+                    continue;
+                };
+                let StmtKind::VarDecl { declarations, .. } = stmt.kind else {
+                    continue;
+                };
+                for decl in declarations {
+                    let BindingPattern::Ident(fname) = decl.pattern else {
+                        continue;
+                    };
+                    if is_const_val {
+                        if let Some(value) = decl.init {
+                            members.push(ClassMember::Const {
+                                name: fname,
+                                type_hint: decl.type_hint,
+                                value,
+                                visibility: Visibility::Public,
+                            });
+                        }
+                        continue;
+                    }
+                    members.push(ClassMember::Field {
+                        name: fname,
+                        type_hint: decl.type_hint,
+                        init: decl.init,
+                        modifiers: Modifiers {
+                            visibility: Visibility::Public,
+                            is_static: statics,
+                            is_readonly: is_readonly_val,
+                            ..Default::default()
+                        },
+                        with_events: false,
+                        array_bounds: None,
+                    });
+                }
+            }
+            Rule::class_decl | Rule::object_decl | Rule::interface_decl => {
+                if let Some(stmt) = walk_statement(inner_member) {
+                    members.push(ClassMember::NestedType(Box::new(stmt)));
+                }
+            }
+            _ => {}
+        }
+    }
+    members
 }
 
 fn walk_object_decl(pair: Pair<Rule>) -> Option<Statement> {
@@ -1447,20 +1494,7 @@ fn walk_object_decl(pair: Pair<Rule>) -> Option<Statement> {
         match inner.as_rule() {
             Rule::identifier => name = inner.as_str().to_string(),
             Rule::class_body => {
-                for member_pair in inner.into_inner() {
-                    if member_pair.as_rule() == Rule::class_member {
-                        if let Some(inner_member) = member_pair.into_inner().next() {
-                            if inner_member.as_rule() == Rule::function_decl {
-                                if let Some(mut stmt) = walk_function_decl(inner_member) {
-                                    if let StmtKind::FunctionDecl { ref mut modifiers, .. } = stmt.kind {
-                                        modifiers.is_static = true;
-                                    }
-                                    members.push(ClassMember::Method(Box::new(stmt)));
-                                }
-                            }
-                        }
-                    }
-                }
+                members.extend(walk_object_body_members(inner, true));
             }
             _ => {}
         }
@@ -1529,6 +1563,141 @@ fn walk_if_stmt(pair: Pair<Rule>) -> Option<Statement> {
     }))
 }
 
+/// Whether this `when` condition is a PREDICATE rather than a value to compare
+/// the subject against.
+///
+/// `is T`, `!is T`, `in c` and `!in c` test the subject; they are not values it
+/// could equal. `CaseCondition` (statement `when`) and `MatchArm::conditions`
+/// (expression `when`) both hold values only, so a `when` containing any of
+/// these has to be emitted in the other shape Kotlin already has — see
+/// [`when_condition_predicate`].
+fn when_condition_is_predicate(pair: &Pair<Rule>) -> bool {
+    pair.clone().into_inner().any(|sub| {
+        matches!(
+            sub.as_rule(),
+            Rule::is_kw | Rule::not_is_kw | Rule::in_kw | Rule::not_in_kw
+        )
+    })
+}
+
+/// As [`when_condition_is_predicate`], plus the two forms only the STATEMENT
+/// shape can carry: `MatchArm` has no range and no bare comparison, so an
+/// expression `when` using either has to go predicate-shaped as well.
+fn when_condition_needs_predicate_expr(pair: &Pair<Rule>) -> bool {
+    when_condition_is_predicate(pair)
+        || pair.clone().into_inner().any(|sub| {
+            matches!(
+                sub.as_rule(),
+                Rule::range_condition | Rule::comparison_condition
+            )
+        })
+}
+
+/// One `when` condition rendered as a BOOLEAN test of `subject`.
+///
+/// This is the subjectless shape — `when { cond -> … }`, discriminant `true`,
+/// every condition a bool — which Kotlin has and the compiler already lowers.
+/// Reusing it is what keeps `is`/`in`/range/comparison arms out of a second
+/// switch lowering of their own.
+fn when_condition_predicate(pair: Pair<Rule>, subject: &Expression) -> Option<Expression> {
+    let mut prefix: Option<Rule> = None;
+    let mut out: Option<Expression> = None;
+
+    for sub in pair.into_inner() {
+        match sub.as_rule() {
+            Rule::is_kw | Rule::not_is_kw | Rule::in_kw | Rule::not_in_kw => {
+                prefix = Some(sub.as_rule())
+            }
+            Rule::type_ref => {
+                // Lowercased to match the `is` operator's own walk above —
+                // `IsType` names are compared case-folded.
+                let test = Expression::new(ExprKind::IsType {
+                    expr: Box::new(subject.clone()),
+                    type_name: type_hint_text(sub.as_str()).to_lowercase(),
+                });
+                out = Some(if prefix == Some(Rule::not_is_kw) {
+                    not_expr(test)
+                } else {
+                    test
+                });
+            }
+            Rule::range_condition => {
+                let mut bounds = sub.into_inner();
+                if let (Some(lo), Some(hi)) = (bounds.next(), bounds.next()) {
+                    let lower = Expression::new(ExprKind::Binary {
+                        op: BinOp::GtEq,
+                        left: Box::new(subject.clone()),
+                        right: Box::new(walk_expr(lo)),
+                    });
+                    let upper = Expression::new(ExprKind::Binary {
+                        op: BinOp::LtEq,
+                        left: Box::new(subject.clone()),
+                        right: Box::new(walk_expr(hi)),
+                    });
+                    out = Some(Expression::new(ExprKind::Binary {
+                        op: BinOp::And,
+                        left: Box::new(lower),
+                        right: Box::new(upper),
+                    }));
+                }
+            }
+            Rule::comparison_condition => {
+                let op_str = sub.as_str();
+                let op = if op_str.starts_with(">=") {
+                    BinOp::GtEq
+                } else if op_str.starts_with("<=") {
+                    BinOp::LtEq
+                } else if op_str.starts_with('>') {
+                    BinOp::Gt
+                } else if op_str.starts_with('<') {
+                    BinOp::Lt
+                } else if op_str.starts_with("!=") {
+                    BinOp::NotEq
+                } else {
+                    BinOp::Eq
+                };
+                if let Some(rhs) = sub.into_inner().next() {
+                    out = Some(Expression::new(ExprKind::Binary {
+                        op,
+                        left: Box::new(subject.clone()),
+                        right: Box::new(walk_expr(rhs)),
+                    }));
+                }
+            }
+            Rule::expr => {
+                let value = walk_expr(sub);
+                let membership = |negated: bool| {
+                    let test = Expression::new(ExprKind::Binary {
+                        op: BinOp::In,
+                        left: Box::new(subject.clone()),
+                        right: Box::new(value.clone()),
+                    });
+                    if negated { not_expr(test) } else { test }
+                };
+                out = Some(match prefix {
+                    Some(Rule::in_kw) => membership(false),
+                    Some(Rule::not_in_kw) => membership(true),
+                    _ => Expression::new(ExprKind::Binary {
+                        op: BinOp::Eq,
+                        left: Box::new(subject.clone()),
+                        right: Box::new(value),
+                    }),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    out
+}
+
+fn not_expr(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Unary {
+        op: UnaryOp::Not,
+        expr: Box::new(expr),
+    })
+}
+
 fn walk_when_stmt(pair: Pair<Rule>) -> Option<Statement> {
     let mut disc = None;
     let mut entries = Vec::new();
@@ -1540,6 +1709,19 @@ fn walk_when_stmt(pair: Pair<Rule>) -> Option<Statement> {
             _ => {}
         }
     }
+
+    // A `when` whose subject is TESTED (`is`, `in`) rather than compared can't
+    // be carried by `CaseCondition`, so the whole statement flips to the
+    // subjectless shape: discriminant `true`, every condition a boolean test of
+    // the subject. All or nothing — one switch has one discriminant.
+    let predicate_mode = disc.is_some()
+        && entries.iter().any(|entry| {
+            entry
+                .clone()
+                .into_inner()
+                .any(|p| p.as_rule() == Rule::when_condition && when_condition_is_predicate(&p))
+        });
+    let subject = disc.clone().unwrap_or_else(|| Expression::bool(true));
 
     let mut cases = Vec::new();
     let mut default = None;
@@ -1553,6 +1735,11 @@ fn walk_when_stmt(pair: Pair<Rule>) -> Option<Statement> {
         while let Some(p) = entry_inner.next() {
             match p.as_rule() {
                 Rule::else_kw => is_else = true,
+                Rule::when_condition if predicate_mode => {
+                    if let Some(test) = when_condition_predicate(p, &subject) {
+                        cond_cases.push(CaseCondition::Value(test));
+                    }
+                }
                 Rule::when_condition => {
                     for csub in p.into_inner() {
                         match csub.as_rule() {
@@ -1615,7 +1802,11 @@ fn walk_when_stmt(pair: Pair<Rule>) -> Option<Statement> {
         }
     }
 
-    let discriminator = disc.unwrap_or_else(|| Expression::bool(true));
+    let discriminator = if predicate_mode {
+        Expression::bool(true)
+    } else {
+        subject
+    };
     Some(Statement::new(StmtKind::Switch {
         expr: discriminator,
         cases,
@@ -2231,7 +2422,7 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
             }
             Expression::null()
         }
-        Rule::postfix => {
+        Rule::postfix | Rule::delegate_expr => {
             let mut inner = pair.into_inner();
             let primary_pair = inner.next().unwrap();
             let mut current = walk_expr(primary_pair);
@@ -3042,11 +3233,19 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                             Rule::inheritance_list => {
                                 for spec in osub.into_inner() {
                                     if spec.as_rule() == Rule::inheritance_specifier {
+                                        // Parentheses mark the SUPERCLASS, the
+                                        // same rule `walk_class_decl` uses:
+                                        // `object : Base(), I` extends `Base`.
+                                        // Taking the first supertype made
+                                        // `object : Callback { … }` extend an
+                                        // interface it should have implemented.
+                                        let calls_constructor = spec.as_str().contains('(');
                                         for sub in spec.into_inner() {
                                             if sub.as_rule() == Rule::type_ref {
-                                                let tname = sub.as_str().to_string();
-                                                if parent.is_none() {
-                                                    parent = Some(Box::new(Expression::ident(&tname)));
+                                                let tname = sub.as_str().trim().to_string();
+                                                if calls_constructor && parent.is_none() {
+                                                    parent =
+                                                        Some(Box::new(Expression::ident(&tname)));
                                                 } else {
                                                     interfaces.push(tname);
                                                 }
@@ -3056,17 +3255,7 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                 }
                             }
                             Rule::class_body => {
-                                for member_pair in osub.into_inner() {
-                                    if member_pair.as_rule() == Rule::class_member {
-                                        if let Some(inner_member) = member_pair.into_inner().next() {
-                                            if inner_member.as_rule() == Rule::function_decl {
-                                                if let Some(stmt) = walk_function_decl(inner_member) {
-                                                    members.push(ClassMember::Method(Box::new(stmt)));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                members.extend(walk_object_body_members(osub, false));
                             }
                             _ => {}
                         }
@@ -3114,6 +3303,19 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         }
                     }
 
+                    // See `walk_when_stmt`: `MatchArm::conditions` holds VALUES
+                    // the subject may equal, so any arm that TESTS the subject
+                    // (`is`, `in`, a range, a bare comparison) flips the whole
+                    // expression to the subjectless shape.
+                    let predicate_mode = disc.is_some()
+                        && entries.iter().any(|entry| {
+                            entry.clone().into_inner().any(|p| {
+                                p.as_rule() == Rule::when_condition
+                                    && when_condition_needs_predicate_expr(&p)
+                            })
+                        });
+                    let subject = disc.clone().unwrap_or_else(|| Expression::bool(true));
+
                     let mut arms = Vec::new();
 
                     for entry in entries {
@@ -3125,6 +3327,11 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                         while let Some(p) = entry_inner.next() {
                             match p.as_rule() {
                                 Rule::else_kw => is_else = true,
+                                Rule::when_condition if predicate_mode => {
+                                    if let Some(test) = when_condition_predicate(p, &subject) {
+                                        cond_exprs.push(test);
+                                    }
+                                }
                                 Rule::when_condition => {
                                     for csub in p.into_inner() {
                                         if csub.as_rule() == Rule::expr {
@@ -3168,7 +3375,11 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                     }
 
                     Expression::new(ExprKind::Match {
-                        subject: Box::new(disc.unwrap_or_else(|| Expression::bool(true))),
+                        subject: Box::new(if predicate_mode {
+                            Expression::bool(true)
+                        } else {
+                            subject
+                        }),
                         arms,
                     })
                 }
