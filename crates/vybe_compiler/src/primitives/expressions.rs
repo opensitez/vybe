@@ -821,7 +821,7 @@ impl Compiler {
                         .current_class
                         .as_deref()
                         .and_then(|class_name| {
-                            self.dotnet_framework_instance_method_owner(class_name, "Items", 0)
+                            self.namespace_tree_instance_method_owner(class_name, "Items", 0)
                         })
                         .is_some_and(|owner| {
                             owner.to_ascii_lowercase().contains("observablecollection")
@@ -2885,7 +2885,7 @@ impl Compiler {
                             let normalized = Self::normalize_type_hint(type_hint);
                             normalized.contains("observablecollection")
                                 || self
-                                    .dotnet_framework_instance_method_owner(type_hint, "Count", 0)
+                                    .namespace_tree_instance_method_owner(type_hint, "Count", 0)
                                     .is_some_and(|owner| {
                                         owner.to_ascii_lowercase().contains("observablecollection")
                                     })
@@ -2920,7 +2920,7 @@ impl Compiler {
                             let normalized = Self::normalize_type_hint(type_hint);
                             normalized.contains("observablecollection")
                                 || self
-                                    .dotnet_framework_instance_method_owner(type_hint, "Items", 0)
+                                    .namespace_tree_instance_method_owner(type_hint, "Items", 0)
                                     .is_some_and(|owner| {
                                         owner.to_ascii_lowercase().contains("observablecollection")
                                     })
@@ -2930,7 +2930,7 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.emit_common("dotnet.observable_collection_items", 1, self.line);
                     return Ok(());
-                } else if self.profile.namespaces.use_dotnet
+                } else if !self.profile.namespaces.type_scopes.is_empty()
                     && !*null_safe
                     && let Some(target) = receiver_type_hint.as_deref().and_then(|type_hint| {
                         let class_name = Self::normalize_type_hint(type_hint);
@@ -2969,8 +2969,7 @@ impl Compiler {
                     }
                 }
 
-                let dotnet_instance_zero_arg_method = if self.profile.namespaces.use_dotnet
-                    && self.profile.namespaces.use_dotnet
+                let namespace_tree_zero_arg_method = if !self.profile.namespaces.type_scopes.is_empty()
                     && !*null_safe
                     && !is_csharp_len_accessor
                     && !is_csharp_runtime_count_accessor
@@ -2988,7 +2987,7 @@ impl Compiler {
                     None
                 };
 
-                if let Some(target) = dotnet_instance_zero_arg_method {
+                if let Some(target) = namespace_tree_zero_arg_method {
                     if let vybe_runtime::component_model::InstanceMethodTarget::Common {
                         emit,
                         ..

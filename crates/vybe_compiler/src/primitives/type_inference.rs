@@ -68,8 +68,11 @@ impl Compiler {
         }
     }
 
-    pub(super) fn infer_dotnet_factory_return_type(&self, callee: &Expression) -> Option<String> {
-        if !self.profile.namespaces.use_dotnet {
+    pub(super) fn infer_namespace_tree_factory_return_type(
+        &self,
+        callee: &Expression,
+    ) -> Option<String> {
+        if self.profile.namespaces.type_scopes.is_empty() {
             return None;
         }
         let ExprKind::Member { object, field, .. } = &callee.kind else {
@@ -291,7 +294,8 @@ impl Compiler {
                     .trim()
                     .to_string()
             }),
-            ExprKind::New { class, .. } => Self::expr_terminal_type_name(class),
+            ExprKind::New { class, .. } => Self::expr_terminal_type_name(class)
+                .map(|name| self.resolve_source_type_alias(&name)),
             ExprKind::Array(elements) => Some(format!(
                 "{}()",
                 self.infer_array_element_type_hint(elements.iter().map(|item| &item.value))
@@ -346,7 +350,7 @@ impl Compiler {
                             .map(str::to_string)
                     });
                 }
-                if self.profile.namespaces.use_dotnet {
+                if !self.profile.namespaces.type_scopes.is_empty() {
                     if let ExprKind::Member { object, field, .. } = &callee.kind {
                         if let Some(receiver_type) = self.infer_expr_type_hint(object) {
                             if self
@@ -368,7 +372,7 @@ impl Compiler {
                     }
                 }
                 self.infer_function_return_type(callee)
-                    .or_else(|| self.infer_dotnet_factory_return_type(callee))
+                    .or_else(|| self.infer_namespace_tree_factory_return_type(callee))
             }
             ExprKind::Index { object, .. } => {
                 self.infer_expr_type_hint(object).and_then(|type_hint| {

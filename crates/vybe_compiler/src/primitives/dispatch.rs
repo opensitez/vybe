@@ -600,6 +600,24 @@ pub fn emit_common(
         "str_scalar_substring" => strings::emit_scalar_substring(chunks, current, line),
         "str_scalar_index_of" => strings::emit_scalar_index_of(chunks, current, line),
         "str_scalar_chars" => strings::emit_scalar_chars(&mut chunks[current], line),
+        // `byte` unit (UTF-8 octets) — php `strlen`, Lua `#`, Go `len(s)`. This
+        // is a BINDABLE target on purpose: `unifiedstringplan.md` §3a settled
+        // that the index unit is the VALUE of a `[builtin_slots.string] len`
+        // binding, not a parameter threaded through the emitters, so a language
+        // that counts bytes declares it rather than being special-cased. Until
+        // this arm existed there was nothing on the platform to point at — the
+        // only byte counter was private to php's adapter.
+        "str_byte_length" => strings::emit_byte_length(chunks, current, line),
+        // Shell-style glob matching — php `fnmatch`, python `fnmatch.fnmatch`,
+        // Go `path.Match`, Ruby `File.fnmatch`. Stack: `[name, pattern]`.
+        // `_fold` is the case-insensitive spelling; it is the regex `i` flag,
+        // not a lower-casing of both sides, so `[A-Z]` keeps its meaning.
+        "str_glob_match" => {
+            strings::emit_glob_match(chunks, current, strings::GlobOptions::exact(), line)
+        }
+        "str_glob_match_fold" => {
+            strings::emit_glob_match(chunks, current, strings::GlobOptions::folded(), line)
+        }
         // Charlist trim — the adapter primitive. `ecma:string.trim` takes no
         // character set, so php/python/ruby each grew a copy. Languages whose
         // default set IS the ECMA one bind the `_ws` forms, which delegate.

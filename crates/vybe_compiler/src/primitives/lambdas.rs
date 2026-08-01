@@ -590,7 +590,7 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn try_compile_dotnet_component_call(
+    pub(super) fn try_compile_namespace_component_call(
         &mut self,
         parts: &[String],
         args: &[&Expression],

@@ -4782,43 +4782,31 @@ impl Compiler {
                 }
             }
             "center" => {
-                // Python str.center(width, fill?) — pad symmetrically.
-                // Compose: padStart(ceil((w + len)/2), fill).padEnd(w, fill).
+                // Python `str.center(width, fill?)` — the SHARED centred pad.
+                // php `str_pad(..., STR_PAD_BOTH)` binds the same emitter; the
+                // only difference is which side takes the odd character, and
+                // that is `CenterBias`.
+                //
+                // This used to compute `padStart((w + len + 1) / 2)`, which
+                // moves the extra character LEFT whenever the margin is odd.
+                // CPython moves it left only when the margin AND the width are
+                // both odd, so `'abc'.center(8)` was `'---abc--'` against
+                // CPython's `'--abc---'`.
                 if args.len() >= 2 {
-                    let s_slot = self.define_local("__cen_s");
-                    let w_slot = self.define_local("__cen_w");
-                    let pad_slot = self.define_local("__cen_pad");
                     self.compile_expr(args[0])?;
-                    self.emit_u16(Op::LOCAL_SET, s_slot);
                     self.compile_expr(args[1])?;
-                    common::convert::emit_to_int(self.chunk(), line);
-                    self.emit_u16(Op::LOCAL_SET, w_slot);
                     if args.len() >= 3 {
                         self.compile_expr(args[2])?;
-                    } else {
-                        self.emit_const(Value::String(Arc::from(" ")));
                     }
-                    self.emit_u16(Op::LOCAL_SET, pad_slot);
-                    // Step 1: padStart with target = (w + len) / 2 + len_remainder
-                    // For simplicity: padStart with (w + len + 1)/2.
-                    self.emit_u16(Op::LOCAL_GET, s_slot);
-                    // target = (w + len + 1) / 2
-                    self.emit_u16(Op::LOCAL_GET, w_slot);
-                    self.emit_u16(Op::LOCAL_GET, s_slot);
-                    common::strings::emit_length(self.chunk(), line);
-                    self.emit(Op::I32_ADD);
-                    self.emit_const(Value::I32(1));
-                    self.emit(Op::I32_ADD);
-                    self.emit_const(Value::I32(2));
-                    self.emit(Op::I32_DIV_S);
-                    self.emit_u16(Op::LOCAL_GET, pad_slot);
-                    let pad_start = self.import("ecma:string", "padStart");
-                    self.emit_host_call(pad_start, 3);
-                    // Step 2: padEnd to full width.
-                    self.emit_u16(Op::LOCAL_GET, w_slot);
-                    self.emit_u16(Op::LOCAL_GET, pad_slot);
-                    let pad_end = self.import("ecma:string", "padEnd");
-                    self.emit_host_call(pad_end, 3);
+                    let argc = if args.len() >= 3 { 3 } else { 2 };
+                    common::strings::emit_pad(
+                        &mut self.chunks,
+                        self.current,
+                        argc,
+                        common::strings::PadSide::Both,
+                        common::strings::CenterBias::LeftWhenBothOdd,
+                        line,
+                    );
                 } else {
                     self.emit(Op::NULL);
                 }

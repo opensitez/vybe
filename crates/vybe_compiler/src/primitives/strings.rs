@@ -188,10 +188,91 @@ pub fn emit_str_reverse(chunk: &mut Chunk, line: u32) {
 // yields code points, so `Array.from("😀").length` is 1 — that is the
 // `[...s]` idiom, and it is why no host function was needed.
 //
-// NOT provided, deliberately: the `byte` unit. PHP `strlen`/`substr`, Lua `#`
-// and Go `len` count UTF-8 bytes, and a byte substring can cut a code point in
-// half — which `Value::String` (`Arc<str>`) cannot represent. That half is
-// blocked on `Literal::Bytes` (plan §3c), not merely unwritten.
+// The **`byte`** unit splits in two, and only half of it is blocked.
+//
+// Byte LENGTH is just a count, so it is here — see [`emit_byte_length`]. PHP
+// `strlen`, Lua `#` and Go `len(s)` all want it, and until now the ONLY
+// implementation on the platform was php's private one; `wasm:js-string.length`
+// and `ecma:string.length` are both UTF-16 counts, so there was nothing else to
+// reach for.
+//
+// Byte SUBSTRING is the blocked half: a byte offset can cut a code point in
+// half, and `Value::String` (`Arc<str>`) cannot hold that. It stays out until
+// `Literal::Bytes` (plan §3c) exists — not merely unwritten.
+
+/// UTF-8 byte length. Stack: `[string]` → `[number]`.
+///
+/// `strlen("é")` is 2 and `strlen("😀")` is 4, where the UTF-16 count is 1 and
+/// 2 and the code-point count is 1 and 1. Walks the UTF-16 units, reads each
+/// whole code point, and adds its UTF-8 width — 1 below U+0080, 2 below U+0800,
+/// 3 below U+10000, else 4 — stepping two units across an astral pair so the
+/// low surrogate is never counted twice.
+///
+/// **No coercion here.** PHP's `strlen(123)` is `3` because php coerces first;
+/// that belongs at the call site, not in the shared counter.
+pub fn emit_byte_length(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = chunks[current].alloc_scratch(5);
+    let (s, i, n, bytes, cp) = (base, base + 1, base + 2, base + 3, base + 4);
+
+    set(&mut chunks[current], s, line);
+    chunks[current].emit_f64_const(0.0, line);
+    set(&mut chunks[current], i, line);
+    chunks[current].emit_f64_const(0.0, line);
+    set(&mut chunks[current], bytes, line);
+    get(&mut chunks[current], s, line);
+    emit_length(&mut chunks[current], line);
+    set(&mut chunks[current], n, line);
+
+    let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
+    get(&mut chunks[current], i, line);
+    get(&mut chunks[current], n, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+
+    // cp = s.codePointAt(i) — the WHOLE code point, not a surrogate half.
+    get(&mut chunks[current], s, line);
+    get(&mut chunks[current], i, line);
+    {
+        let idx = chunks[current].add_import("wasm:js-string", "codePointAt");
+        chunks[current].emit_call(idx, 2, line);
+    }
+    set(&mut chunks[current], cp, line);
+
+    // bytes += UTF-8 width of cp
+    for (bound, width) in [(128.0, 1.0), (2048.0, 2.0), (65536.0, 3.0)] {
+        get(&mut chunks[current], cp, line);
+        chunks[current].emit_f64_const(bound, line);
+        crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+        crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_f64_const(width, line);
+        chunks[current].emit_else(line);
+    }
+    chunks[current].emit_f64_const(4.0, line);
+    for _ in 0..3 {
+        chunks[current].emit_end(line);
+    }
+    get(&mut chunks[current], bytes, line);
+    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], bytes, line);
+
+    // i += cp > 0xFFFF ? 2 : 1 — an astral code point spans two UTF-16 units.
+    get(&mut chunks[current], cp, line);
+    chunks[current].emit_f64_const(65535.0, line);
+    crate::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_f64_const(2.0, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], i, line);
+    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], i, line);
+
+    crate::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
+    get(&mut chunks[current], bytes, line);
+}
 
 /// The code points of a string, as an array of one-code-point strings.
 /// Stack: `[string]` → `[array]`. This is `[...s]`, and PHP `mb_str_split`
@@ -338,6 +419,539 @@ fn i32c(chunk: &mut Chunk, v: i32, line: u32) {
 // [`TrimOptions`] from profile properties, never from a language name.
 //
 // Stack: `[s]` or `[s, chars]` → `[string]`.
+
+// ── split with a limit ──────────────────────────────────────────────────────
+//
+// `ecma:string.split` takes a limit, but it TRUNCATES: `"a,b,c".split(",", 2)`
+// is `["a", "b"]` and the rest is thrown away. Every language that spells this
+// keeps the remainder instead, re-joined into the final element — python
+// `split(sep, maxsplit)`, php `explode($sep, $s, $limit)`, java
+// `split(re, limit)`, go `SplitN`. So each one wrote the same "split fully,
+// then re-join the tail" dance; python and php had it verbatim twice.
+//
+// They disagree on exactly TWO things, which is why this is one emitter with
+// two flags rather than two implementations. Measured against real `python3`
+// and `php` on `"a,b,c"`:
+//
+// | limit | py `split(",", n)` | php `explode(",", s, n)` |
+// |---|---|---|
+// | `0` | `["a,b,c"]` | `["a,b,c"]` |
+// | `1` | `["a", "b,c"]` | `["a,b,c"]` |
+// | `2` | `["a", "b", "c"]` | `["a", "b,c"]` |
+// | `-1` | `["a", "b", "c"]` (unlimited) | `["a", "b"]` (drop the last) |
+//
+// python's limit counts SPLITS, php's counts PIECES — an off-by-one, not a
+// different algorithm — and they read a negative limit differently.
+//
+// # What this does NOT cover yet
+//
+// Three limits, recorded so the next binding knows what it is walking into
+// rather than discovering it as a red test:
+//
+// - **Left-to-right only.** python's `rsplit` consumes the limit from the END,
+//   which is not this traversal; `emit_rsplit` in the python adapter still owns
+//   it. Folding it in means a `from_end` flag AND re-joining the HEAD instead
+//   of the tail, so it is a real change here, not a binding.
+// - **Literal separators only.** This delegates to `ecma:string.split`, so a
+//   REGEX separator — java `split(regex, limit)`, php `preg_split`, python
+//   `re.split` — does not route here. Those are regex ops, out of scope per the
+//   plan, but the shared emitter would need a `separator_is_pattern` flag.
+// - **Two negative-limit policies, and java has a THIRD.** php drops trailing
+//   pieces, python reads it as unlimited — and java's negative limit means
+//   "keep trailing empty strings", which is a different axis again (it changes
+//   whether empties SURVIVE, not how many pieces there are). Binding java will
+//   need an enum here, not a bool.
+//
+// Python's no-separator form is also not here: `s.split()` splits on `\s+` runs
+// AND drops leading/trailing empties, which is a different algorithm rather than
+// a parameter, so it stays in the python adapter.
+
+/// What a split limit counts, and what a negative one means.
+#[derive(Clone, Copy)]
+pub struct SplitOptions {
+    /// The limit counts resulting PIECES (php `explode`) rather than the number
+    /// of SPLITS performed (python `maxsplit`).
+    pub limit_is_pieces: bool,
+    /// A negative limit drops that many pieces off the END (php). Otherwise a
+    /// negative limit means "no limit", which is python's `maxsplit=-1`.
+    pub negative_drops_tail: bool,
+}
+
+impl SplitOptions {
+    /// python `str.split(sep, maxsplit)`.
+    pub const fn max_splits() -> SplitOptions {
+        SplitOptions {
+            limit_is_pieces: false,
+            negative_drops_tail: false,
+        }
+    }
+    /// php `explode(separator, string, limit)`.
+    pub const fn max_pieces() -> SplitOptions {
+        SplitOptions {
+            limit_is_pieces: true,
+            negative_drops_tail: true,
+        }
+    }
+}
+
+/// Split on a separator, keeping the remainder past the limit as the final
+/// element. Stack: `[s, sep]` or `[s, sep, limit]` → `[array]`.
+///
+/// With no limit this is plain [`emit_split`] — the ECMA behaviour is the right
+/// behaviour, so it delegates.
+pub fn emit_split_limit(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    opts: SplitOptions,
+    line: u32,
+) {
+    if argc < 3 {
+        emit_split(&mut chunks[current], line);
+        return;
+    }
+
+    let base = chunks[current].alloc_scratch(6);
+    let (limit, sep, s, full, keep, tail) = (base, base + 1, base + 2, base + 3, base + 4, base + 5);
+
+    set(&mut chunks[current], limit, line);
+    set(&mut chunks[current], sep, line);
+    set(&mut chunks[current], s, line);
+
+    get(&mut chunks[current], s, line);
+    get(&mut chunks[current], sep, line);
+    emit_split(&mut chunks[current], line);
+    set(&mut chunks[current], full, line);
+
+    get(&mut chunks[current], limit, line);
+    chunks[current].emit_f64_const(0.0, line);
+    super::ops::emit_dyn_lt(&mut chunks[current], line);
+    super::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    if opts.negative_drops_tail {
+        // `full.slice(0, max(full.length + limit, 0))`.
+        get(&mut chunks[current], full, line);
+        chunks[current].emit_i32_const(0, line);
+        get(&mut chunks[current], full, line);
+        chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+        get(&mut chunks[current], limit, line);
+        chunks[current].emit_op(Op::F64_ADD, line);
+        emit_clamp_low_zero(chunks, current, line);
+        array_call(chunks, current, "slice", 3, line);
+    } else {
+        get(&mut chunks[current], full, line);
+    }
+    chunks[current].emit_else(line);
+    {
+        // How many pieces stay whole before the remainder is re-joined.
+        get(&mut chunks[current], limit, line);
+        if opts.limit_is_pieces {
+            chunks[current].emit_f64_const(1.0, line);
+            chunks[current].emit_op(Op::F64_SUB, line);
+            emit_clamp_low_zero(chunks, current, line);
+        }
+        set(&mut chunks[current], keep, line);
+
+        get(&mut chunks[current], full, line);
+        get(&mut chunks[current], keep, line);
+        chunks[current].emit_i32_const(0x7FFF_FFFF, line);
+        array_call(chunks, current, "slice", 3, line);
+        set(&mut chunks[current], tail, line);
+
+        get(&mut chunks[current], full, line);
+        chunks[current].emit_i32_const(0, line);
+        get(&mut chunks[current], keep, line);
+        array_call(chunks, current, "slice", 3, line);
+        // `head` reuses `full`: the fully-split array is no longer needed.
+        set(&mut chunks[current], full, line);
+
+        get(&mut chunks[current], tail, line);
+        chunks[current].emit_op(Op::ARRAY_LENGTH, line);
+        super::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        get(&mut chunks[current], full, line);
+        get(&mut chunks[current], tail, line);
+        get(&mut chunks[current], sep, line);
+        array_call(chunks, current, "join", 2, line);
+        array_call(chunks, current, "push", 2, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_end(line);
+
+        get(&mut chunks[current], full, line);
+    }
+    chunks[current].emit_end(line);
+}
+
+/// `max(n, 0)`. Stack: `[n]` → `[n]`.
+fn emit_clamp_low_zero(chunks: &mut [Chunk], current: usize, line: u32) {
+    let n = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], n, line);
+    get(&mut chunks[current], n, line);
+    chunks[current].emit_f64_const(0.0, line);
+    super::ops::emit_dyn_lt(&mut chunks[current], line);
+    super::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], n, line);
+    chunks[current].emit_end(line);
+}
+
+fn array_call(chunks: &mut [Chunk], current: usize, name: &str, argc: u8, line: u32) {
+    let idx = chunks[current].add_import("ecma:array", name.to_string());
+    chunks[current].emit_call(idx, argc, line);
+}
+
+// ── pad to a width ──────────────────────────────────────────────────────────
+//
+// `ecma:string.padStart`/`padEnd` (ECMA-262 §22.1.3.16) already do one-sided
+// padding exactly as every language wants it, including the two guards each
+// implementation was re-checking by hand: `StringPad` returns the input
+// unchanged when the target is not longer than the string, and when the filler
+// is the empty string. So one-sided padding DELEGATES and needs nothing here.
+//
+// CENTRED padding is the part ECMA has no operation for, and it was written
+// twice — php `str_pad(..., STR_PAD_BOTH)` and python `str.center`. They agree
+// everywhere except which side gets the odd character. Measured against real
+// `php` and `python3`:
+//
+// | `"ab"`, width | py `center` | php `STR_PAD_BOTH` |
+// |---|---|---|
+// | 5 | `"  ab "` | `"_ab__"` |
+// | 6 | `"  ab  "` | `"__ab__"` |
+// | 7 | `"   ab  "` | `"__ab___"` |
+// | `"abc"`, 8 | `"--abc---"` | `"--abc---"` |
+//
+// php always leaves the extra on the right. CPython's rule is
+// `left = marg/2 + (marg & width & 1)` — the extra moves LEFT only when the
+// margin and the width are both odd, which is why width 8 agrees and 5 and 7
+// do not. That is [`CenterBias`], and it is the whole of the difference.
+
+/// Which side (or sides) of a string the padding goes on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PadSide {
+    /// Right-align — python `rjust`, php `STR_PAD_LEFT`.
+    Start,
+    /// Left-align — python `ljust`, php `STR_PAD_RIGHT`.
+    End,
+    /// Centre — python `center`, php `STR_PAD_BOTH`.
+    Both,
+}
+
+/// Where the odd character goes when a centred pad does not divide evenly.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CenterBias {
+    /// Always on the right — php `STR_PAD_BOTH`.
+    Right,
+    /// On the left when the margin AND the width are both odd, on the right
+    /// otherwise — CPython `str.center`.
+    LeftWhenBothOdd,
+}
+
+/// Pad `s` out to `width`. Stack: `[s, width]` or `[s, width, fill]` → `[string]`.
+///
+/// `argc` counts the values on the stack INCLUDING the string, so `argc >= 3`
+/// means an explicit filler was supplied; otherwise a space is used.
+pub fn emit_pad(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    side: PadSide,
+    bias: CenterBias,
+    line: u32,
+) {
+    if argc < 3 {
+        chunks[current].emit_string_const(" ", line);
+    }
+    match side {
+        PadSide::Start => pad_call(chunks, current, "padStart", line),
+        PadSide::End => pad_call(chunks, current, "padEnd", line),
+        PadSide::Both => emit_pad_both(chunks, current, bias, line),
+    }
+}
+
+fn pad_call(chunks: &mut [Chunk], current: usize, name: &str, line: u32) {
+    let idx = chunks[current].add_import("ecma:string", name.to_string());
+    chunks[current].emit_call(idx, 3, line);
+}
+
+/// Centre `s` in `width`: pad the left to the split point, then the right to
+/// the full width. Both steps are `StringPad`, so a width at or below the
+/// string's own length is a no-op without a guard here.
+fn emit_pad_both(chunks: &mut [Chunk], current: usize, bias: CenterBias, line: u32) {
+    let base = chunks[current].alloc_scratch(4);
+    let (fill, width, s, len) = (base, base + 1, base + 2, base + 3);
+
+    set(&mut chunks[current], fill, line);
+    super::convert::emit_to_int(&mut chunks[current], line);
+    set(&mut chunks[current], width, line);
+    set(&mut chunks[current], s, line);
+
+    get(&mut chunks[current], s, line);
+    emit_length(&mut chunks[current], line);
+    set(&mut chunks[current], len, line);
+
+    // left_target = len + margin/2 [+ 1 when the bias says so]
+    get(&mut chunks[current], s, line);
+    get(&mut chunks[current], len, line);
+    emit_margin(chunks, current, width, len, line);
+    i32c(&mut chunks[current], 2, line);
+    chunks[current].emit_op(Op::I32_DIV_S, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    if bias == CenterBias::LeftWhenBothOdd {
+        emit_margin(chunks, current, width, len, line);
+        get(&mut chunks[current], width, line);
+        chunks[current].emit_op(Op::I32_AND, line);
+        i32c(&mut chunks[current], 1, line);
+        chunks[current].emit_op(Op::I32_AND, line);
+        chunks[current].emit_op(Op::I32_ADD, line);
+    }
+    get(&mut chunks[current], fill, line);
+    pad_call(chunks, current, "padStart", line);
+
+    get(&mut chunks[current], width, line);
+    get(&mut chunks[current], fill, line);
+    pad_call(chunks, current, "padEnd", line);
+}
+
+/// `width - len`. Stack: `-> [i32]`.
+fn emit_margin(chunks: &mut [Chunk], current: usize, width: u16, len: u16, line: u32) {
+    get(&mut chunks[current], width, line);
+    get(&mut chunks[current], len, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+}
+
+// ── glob matching ───────────────────────────────────────────────────────────
+//
+// Shell-style patterns — `*`, `?` — are php `fnmatch`, python
+// `fnmatch.fnmatch`/`fnmatchcase`, Go `path.Match`, Ruby `File.fnmatch`. They
+// were written twice on this platform, in different SHAPES: php as an emitter
+// that rewrites the glob to a regex, python as a hand-written iterative matcher
+// inside a substring-gated Python-source PRELUDE.
+//
+// Both reduce to "escape the regex metacharacters, translate `*` and `?`,
+// anchor". The one behavioural difference is case: python's `fnmatch` folds
+// both sides and `fnmatchcase` does not, while php's never folds. That is
+// [`GlobOptions::fold_case`].
+//
+// Neither implementation supported `[seq]` character classes, which real
+// `fnmatch` has — so this does not either. Recorded rather than silently
+// carried forward: adding it is a change in behaviour for both languages and
+// wants measuring against the real runtimes first.
+
+/// Per-language glob rules.
+#[derive(Clone, Copy)]
+pub struct GlobOptions {
+    /// Lower-case both pattern and subject before matching — python
+    /// `fnmatch.fnmatch`. php `fnmatch` and python `fnmatchcase` do not.
+    pub fold_case: bool,
+}
+
+impl GlobOptions {
+    /// php `fnmatch`, python `fnmatchcase`.
+    pub const fn exact() -> GlobOptions {
+        GlobOptions { fold_case: false }
+    }
+    /// python `fnmatch.fnmatch`.
+    pub const fn folded() -> GlobOptions {
+        GlobOptions { fold_case: true }
+    }
+}
+
+/// The regex metacharacters a glob escapes OUTSIDE a character class. `*`, `?`
+/// and `[` are absent — they are the glob operators, handled by the scan.
+const GLOB_META: &str = "\\.()+^${}|";
+
+/// Translate a glob to an anchored regex SOURCE. Stack: `[pattern]` → `[string]`.
+///
+/// This is python `fnmatch.translate` on its own, and the first half of every
+/// glob match.
+///
+/// A SCAN rather than a chain of `replaceAll` calls, because `[seq]` classes
+/// make the escaping context-dependent: `.` is a metacharacter outside a class
+/// and a literal inside one, and `[`/`]` delimit rather than escape. Both
+/// previous implementations used the chain, escaped `[` and `]`, and so matched
+/// `gr[ae]y` LITERALLY — `fnmatch("*gr[ae]y", "color_is_grey")` was false in
+/// both php and python where both real runtimes say true.
+pub fn emit_glob_to_regex(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = chunks[current].alloc_scratch(6);
+    let (pat, out, i, n, in_class, c) = (base, base + 1, base + 2, base + 3, base + 4, base + 5);
+
+    set(&mut chunks[current], pat, line);
+    chunks[current].emit_string_const("^", line);
+    set(&mut chunks[current], out, line);
+    i32c(&mut chunks[current], 0, line);
+    set(&mut chunks[current], i, line);
+    i32c(&mut chunks[current], 0, line);
+    set(&mut chunks[current], in_class, line);
+    get(&mut chunks[current], pat, line);
+    emit_length(&mut chunks[current], line);
+    set(&mut chunks[current], n, line);
+
+    let loop_state = crate::primitives::loops::emit_loop_start(chunks, current, line);
+    get(&mut chunks[current], i, line);
+    get(&mut chunks[current], n, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::loops::emit_loop_cond(chunks, current, line);
+
+    // c = pat[i]
+    emit_char_at(chunks, current, pat, i, line);
+    set(&mut chunks[current], c, line);
+
+    get(&mut chunks[current], in_class, line);
+    chunks[current].emit_if_value(line);
+    {
+        // Inside `[...]` everything is literal until the closing `]`.
+        get(&mut chunks[current], c, line);
+        chunks[current].emit_string_const("]", line);
+        chunks[current].emit_op(Op::EQ, line);
+        chunks[current].emit_if(line);
+        i32c(&mut chunks[current], 0, line);
+        set(&mut chunks[current], in_class, line);
+        chunks[current].emit_end(line);
+        get(&mut chunks[current], c, line);
+    }
+    chunks[current].emit_else(line);
+    {
+        get(&mut chunks[current], c, line);
+        chunks[current].emit_string_const("*", line);
+        chunks[current].emit_op(Op::EQ, line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_string_const(".*", line);
+        chunks[current].emit_else(line);
+
+        get(&mut chunks[current], c, line);
+        chunks[current].emit_string_const("?", line);
+        chunks[current].emit_op(Op::EQ, line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_string_const(".", line);
+        chunks[current].emit_else(line);
+
+        get(&mut chunks[current], c, line);
+        chunks[current].emit_string_const("[", line);
+        chunks[current].emit_op(Op::EQ, line);
+        chunks[current].emit_if_value(line);
+        {
+            i32c(&mut chunks[current], 1, line);
+            set(&mut chunks[current], in_class, line);
+            // A leading `!` negates in glob; regex spells that `^`. Consume it
+            // here so the scan does not re-emit it as a literal.
+            let nxt = chunks[current].alloc_scratch(1);
+            get(&mut chunks[current], i, line);
+            i32c(&mut chunks[current], 1, line);
+            chunks[current].emit_op(Op::I32_ADD, line);
+            set(&mut chunks[current], nxt, line);
+            emit_char_at(chunks, current, pat, nxt, line);
+            chunks[current].emit_string_const("!", line);
+            chunks[current].emit_op(Op::EQ, line);
+            chunks[current].emit_if_value(line);
+            get(&mut chunks[current], nxt, line);
+            set(&mut chunks[current], i, line);
+            chunks[current].emit_string_const("[^", line);
+            chunks[current].emit_else(line);
+            chunks[current].emit_string_const("[", line);
+            chunks[current].emit_end(line);
+        }
+        chunks[current].emit_else(line);
+        {
+            // Escape only where the character is a regex metacharacter.
+            chunks[current].emit_string_const(GLOB_META, line);
+            get(&mut chunks[current], c, line);
+            emit_index_of(&mut chunks[current], line);
+            i32c(&mut chunks[current], 0, line);
+            crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+            crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+            chunks[current].emit_if_value(line);
+            get(&mut chunks[current], c, line);
+            chunks[current].emit_else(line);
+            chunks[current].emit_string_const("\\", line);
+            get(&mut chunks[current], c, line);
+            concat(chunks, current, line);
+            chunks[current].emit_end(line);
+        }
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+    }
+    chunks[current].emit_end(line);
+
+    // out += <the piece just computed>
+    let piece = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], piece, line);
+    get(&mut chunks[current], out, line);
+    get(&mut chunks[current], piece, line);
+    concat(chunks, current, line);
+    set(&mut chunks[current], out, line);
+
+    get(&mut chunks[current], i, line);
+    i32c(&mut chunks[current], 1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    set(&mut chunks[current], i, line);
+    crate::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
+
+    get(&mut chunks[current], out, line);
+    chunks[current].emit_string_const("$", line);
+    concat(chunks, current, line);
+}
+
+/// One character of `s` at `idx`, as a string. Stack: `-> [string]`.
+fn emit_char_at(chunks: &mut [Chunk], current: usize, s: u16, idx: u16, line: u32) {
+    get(&mut chunks[current], s, line);
+    get(&mut chunks[current], idx, line);
+    get(&mut chunks[current], idx, line);
+    i32c(&mut chunks[current], 1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    emit_substring(&mut chunks[current], line);
+}
+
+/// Match `name` against a shell-style `pattern`, with an explicit REGEX FLAGS
+/// string. Stack: `[name, pattern, flags]` → `[bool]`.
+///
+/// Flags are a stack value because php's `FNM_CASEFOLD` is a runtime argument —
+/// `fnmatch($pat, $s, $flags)` — so the fold decision cannot be compile-time for
+/// every caller. Python's two spellings ARE compile-time and use
+/// [`emit_glob_match`], which pushes the constant for them.
+///
+/// Case-insensitivity is the regex `i` flag rather than lower-casing both
+/// sides. Lower-casing is what python's prelude did, and it is wrong for
+/// classes: `[A-Z]` becomes `[a-z]` and stops meaning what it said.
+pub fn emit_glob_match_flagged(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = chunks[current].alloc_scratch(3);
+    let (flags, pattern, name) = (base, base + 1, base + 2);
+    set(&mut chunks[current], flags, line);
+    set(&mut chunks[current], pattern, line);
+    set(&mut chunks[current], name, line);
+
+    get(&mut chunks[current], pattern, line);
+    emit_glob_to_regex(chunks, current, line);
+    get(&mut chunks[current], flags, line);
+    let new_re = chunks[current].add_import("ecma:regexp", "new");
+    chunks[current].emit_call(new_re, 2, line);
+
+    get(&mut chunks[current], name, line);
+    let exec = chunks[current].add_import("ecma:regexp", "exec");
+    chunks[current].emit_call(exec, 2, line);
+    chunks[current].emit_op(Op::NULL, line);
+    crate::primitives::ops::emit_dyn_ne(&mut chunks[current], line);
+    // `emit_dyn_ne` leaves an i32, and the VM has no true/false — a real
+    // boolean is `wasm:js-boolean.fromI32`. php never noticed (its `?:` coerces),
+    // but python `print` shows the TYPE, so an i32 rendered as `1`/`0` where
+    // real python3 prints `True`/`False`.
+    let from_i32 = chunks[current].add_import("wasm:js-boolean", "fromI32");
+    chunks[current].emit_call(from_i32, 1, line);
+}
+
+/// Match `name` against a shell-style `pattern`.
+/// Stack: `[name, pattern]` → `[bool]`.
+pub fn emit_glob_match(chunks: &mut [Chunk], current: usize, opts: GlobOptions, line: u32) {
+    chunks[current].emit_string_const(if opts.fold_case { "i" } else { "" }, line);
+    emit_glob_match_flagged(chunks, current, line);
+}
+
+fn concat(chunks: &mut [Chunk], current: usize, line: u32) {
+    let idx = chunks[current].add_import("wasm:js-string", "concat");
+    chunks[current].emit_call(idx, 2, line);
+}
 
 /// Which ends to trim, and what to strip when the caller passes no set.
 #[derive(Clone, Copy)]

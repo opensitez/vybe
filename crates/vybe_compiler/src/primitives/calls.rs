@@ -414,7 +414,7 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                     return Some(return_type);
                 }
 
-                if compiler.profile.namespaces.use_dotnet {
+                if !compiler.profile.namespaces.type_scopes.is_empty() {
                     if let Some(receiver_type) = resolve_receiver_type_hint(compiler, object) {
                         if compiler
                             .resolve_pending_class_name_for_type_hint(&receiver_type)
@@ -908,14 +908,12 @@ impl Compiler {
                 .any(|name| name == &method_key)
     }
 
-    /// Resolve an instance method on a typed receiver through the .NET class
-    /// HIERARCHY: walk the receiver's chain (user pending-classes into the
-    /// framework descriptor). A user-declared member of the same name is an
-    /// override → dynamic dispatch (`None`). Otherwise the first framework
-    /// ancestor is returned, so the descriptor resolves the method to a direct
-    /// `vybe:gui` host call. One rule for `Button.Show` and for a
-    /// `class MyForm : Form`'s inherited members — no emitted thunks.
-    pub(super) fn dotnet_framework_instance_method_owner(
+    /// Resolve an instance method on a typed receiver through the shared
+    /// namespace tree: walk user pending-classes into the first registered
+    /// platform type. A user-declared member of the same name is an override
+    /// and stays dynamic (`None`); otherwise the registered type owns the
+    /// method target.
+    pub(super) fn namespace_tree_instance_method_owner(
         &self,
         type_hint: &str,
         method_name: &str,
@@ -2970,7 +2968,7 @@ impl Compiler {
                 if let Some(type_hint) = self.infer_expr_type_hint(object) {
                     let resolved = self.resolve_source_type_alias(&type_hint);
                     if self
-                        .dotnet_framework_instance_method_owner(&resolved, field, 0)
+                        .namespace_tree_instance_method_owner(&resolved, field, 0)
                         .is_some()
                     {
                         // Let descriptor-owned .NET ToString implementations
@@ -3497,7 +3495,7 @@ impl Compiler {
                     .current_class
                     .as_deref()
                     .and_then(|class_name| {
-                        self.dotnet_framework_instance_method_owner(class_name, "Items", 0)
+                        self.namespace_tree_instance_method_owner(class_name, "Items", 0)
                     })
                     .is_some_and(|owner| {
                         owner.to_ascii_lowercase().contains("observablecollection")
@@ -4062,9 +4060,11 @@ impl Compiler {
                 // (`System` -> `dotnet.system`, `Flutter` -> `flutter`, ...)
                 // drive this; a user binding on the leading ident shadows
                 // namespace resolution in any language.
+                let head_key = self.canon(&parts[0]);
+                let mounted_tree_head = self.tree_mounts.contains_key(&head_key);
                 if self.profile.uses_namespace_resolver()
-                    && !self.has_accessible_local_binding(&parts[0])
-                    && self.try_compile_dotnet_component_call(&parts, &arg_exprs)?
+                    && (!self.has_accessible_local_binding(&parts[0]) || mounted_tree_head)
+                    && self.try_compile_namespace_component_call(&parts, &arg_exprs)?
                 {
                     return Ok(());
                 }
@@ -5394,7 +5394,7 @@ impl Compiler {
                 .as_deref()
                 .filter(|_| self.profile.namespaces.use_dotnet)
                 .and_then(|cn| {
-                    self.dotnet_framework_instance_method_owner(cn, field, arg_exprs.len() as u8)
+                    self.namespace_tree_instance_method_owner(cn, field, arg_exprs.len() as u8)
                 });
             let surface_type: Option<String> = match &class_name {
                 _ if framework_method_owner.is_some() => framework_method_owner,
@@ -5404,7 +5404,7 @@ impl Compiler {
                 // `const a=[1,2]; a.reverse()` → the surface's non-mutating
                 // Array.Reverse) — the exact "dotnet adapter leaked into
                 // compiler core" disease namespaceplan.md documents.
-                Some(cn) if self.profile.namespaces.use_dotnet => {
+                Some(cn) if !self.profile.namespaces.type_scopes.is_empty() => {
                     Some(Self::normalize_type_hint(cn))
                 }
                 Some(_) => None,
@@ -5426,7 +5426,7 @@ impl Compiler {
             if let Some(class_name) = surface_type {
                 {
                     let owner = if class_name.eq_ignore_ascii_case("IEnumerable") {
-                        self.dotnet_framework_instance_method_owner(
+                        self.namespace_tree_instance_method_owner(
                             &class_name,
                             field,
                             arg_exprs.len() as u8,
@@ -9263,7 +9263,7 @@ impl Compiler {
                 if !is_local && !is_known_func && !is_known_class {
                     if self.profile.namespaces.use_dotnet {
                         if let Some(current_class) = self.current_class.clone() {
-                            if let Some(owner) = self.dotnet_framework_instance_method_owner(
+                            if let Some(owner) = self.namespace_tree_instance_method_owner(
                                 &current_class,
                                 name,
                                 arg_exprs.len() as u8,

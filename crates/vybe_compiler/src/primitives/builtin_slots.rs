@@ -44,10 +44,24 @@
 //! carefully picked around a split that does not exist.
 //!
 //! The real consequence is the opposite of what the old note implied: the
-//! platform has **no shared byte-length primitive at all**. PHP built its own
+//! platform had **no shared byte-length primitive at all**. PHP built its own
 //! (`php::string_adapter::emit_strlen`, a UTF-16 walk summing UTF-8 widths),
-//! and it is the only one. A language that wants bytes has nothing to bind to
-//! — see `unifiedstringplan.md` §1a.
+//! and it was the only one — so a language that wanted bytes had nothing to
+//! bind to. See `unifiedstringplan.md` §1a.
+//!
+//! **Resolved 2026-08-01.** That counter moved into
+//! `strings::emit_byte_length` and is now reachable as `common:str_byte_length`,
+//! so all three units are bindable targets:
+//!
+//! | unit | target | who counts this way |
+//! |---|---|---|
+//! | UTF-16 code units | `host:ecma:string:length` (the default below) | js, java, dart, c#, vb |
+//! | code points | `common:str_scalar_length` | python `len`, php `mb_strlen` |
+//! | UTF-8 bytes | `common:str_byte_length` | php `strlen`, lua `#`, go `len(s)` |
+//!
+//! Nothing binds the byte target yet — php's `strlen` calls the emitter
+//! directly because it also applies php's own coercion first. The point is that
+//! the unit is now a DECLARABLE value, which is what §3a asked for.
 
 use crate::primitives::Compiler;
 use std::sync::OnceLock;
