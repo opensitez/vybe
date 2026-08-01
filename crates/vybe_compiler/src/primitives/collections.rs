@@ -109,7 +109,7 @@ pub fn emit_array_new(chunks: &mut [Chunk], current: usize, count: u16, line: u3
         core_wasm::i32_const(&mut chunks[current], line, 0);
         emit_import_call(chunks, current, "vybe:js-array", "newWithLength", 1, line);
     } else {
-        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, count, line);
+        chunks[current].emit_array_new_fixed(0, count, line);
     }
 }
 
@@ -1069,7 +1069,7 @@ pub fn emit_array_new_into(imports: &mut Chunk, code: &mut Chunk, count: u16, li
         core_wasm::i32_const(code, line, 0);
         emit_import_call_into(imports, code, "vybe:js-array", "newWithLength", 1, line);
     } else {
-        code.emit_op_u16(Op::ARRAY_NEW_FIXED, count, line);
+        code.emit_array_new_fixed(0, count, line);
     }
 }
 
@@ -1269,7 +1269,7 @@ pub fn emit_range(chunks: &mut [Chunk], current: usize, arg_count: u8, inclusive
     chunks[current].emit_end(line);
 
     // result = []; i = start
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, start_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, i_s, line);

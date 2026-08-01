@@ -313,7 +313,7 @@ impl Compiler {
                 for _ in 0..env_size {
                     self.emit(Op::NULL);
                 }
-                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, env_size, line);
+                self.chunks[self.current].emit_array_new_fixed(0, env_size, line);
                 let env_slot = self.define_local("__shared_env");
                 self.emit_u16(Op::LOCAL_SET, env_slot);
                 self.shared_env_slot = Some(env_slot);

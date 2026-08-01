@@ -386,6 +386,10 @@ pub fn run() {
     };
 
     let source_path: PathBuf;
+    // Units of a multi-language program that run BEFORE the entry unit —
+    // each compiled through its own language, then linked in the shared VM.
+    // Empty for the ordinary single-language case.
+    let mut secondary_units: Vec<vybe_compiler::bundle::Bundle> = Vec::new();
     let bundle = if let Some(source) = eval_source.as_ref() {
         let Some(language_name) = eval_language.as_ref() else {
             eprintln!("--eval requires --lang <name>");
@@ -416,8 +420,11 @@ pub fn run() {
             return;
         }
 
-        match vybe_compiler::projects::load_many(&file_paths) {
-            Ok(b) => b,
+        match vybe_compiler::projects::load_program(&file_paths) {
+            Ok(p) => {
+                secondary_units = p.units;
+                secondary_units.pop().expect("a program has at least one unit")
+            }
             Err(e) => {
                 eprintln!("{e}");
                 std::process::exit(1);
@@ -601,6 +608,19 @@ pub fn run() {
     // ── Run ─────────────────────────────────────────────────────────────────
     let mut runtime_compiler =
         crate::dynamic::RuntimeCompilerService::with_capabilities(&mut vm, dynamic_compile_caps);
+
+    // Link the other languages in first. Each was parsed and compiled by its
+    // own front-end; loading it here puts its functions and classes in the
+    // shared global table and runs its top-level code, so the entry unit
+    // starts with everything already defined.
+    for unit in &secondary_units {
+        eprintln!("[vybex] Linking {} ({})", unit.name, unit.language.name);
+        if let Err(e) = runtime_compiler.run_program_unit(unit) {
+            eprintln!("Error in {} ({}): {e}", unit.name, unit.language.name);
+            std::process::exit(1);
+        }
+    }
+
     match runtime_compiler.run_compiled(compiled) {
         Ok(v) => {
             // A GUI program hasn't really finished when `run_compiled` returns —

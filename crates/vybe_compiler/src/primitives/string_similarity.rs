@@ -297,7 +297,7 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     lset(chunk, n_slot, line);
 
     // prev[j] = j  (distance from "" to b[..j])
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, prev_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, j_slot, line);
@@ -326,7 +326,7 @@ pub fn emit_levenshtein(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
     crate::primitives::loops::emit_loop_end(chunks, current, init_state, line);
 
     // curr = new array of n+1 zeros
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunks[current].emit_array_new_fixed(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, curr_slot, line);
     push_const(&mut chunks[current], Value::F64(0.0), line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, j_slot, line);
@@ -533,7 +533,7 @@ pub fn emit_similar_text(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     }
     lset(chunk, n_slot, line);
 
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     lset(chunk, used_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     lset(chunk, total_slot, line);

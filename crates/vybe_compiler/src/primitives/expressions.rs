@@ -76,7 +76,7 @@ impl Compiler {
         for name in &spec.ancestry {
             self.emit_const(Value::String(std::sync::Arc::from(name.as_str())));
         }
-        self.emit_u16(Op::ARRAY_NEW_FIXED, spec.ancestry.len() as u16);
+        self.emit_array_new_fixed(0, spec.ancestry.len() as u16);
         let tk = self.str_const("__types");
         self.emit_u16(Op::STRUCT_SET, tk);
         self.emit(Op::DROP);
@@ -128,9 +128,9 @@ impl Compiler {
                 self.emit_const(Value::I32(kind));
                 self.emit_const(Value::String(std::sync::Arc::from(key)));
                 self.emit_u16(Op::LOCAL_GET, arg_slots[i]);
-                self.emit_u16(Op::ARRAY_NEW_FIXED, 3);
+                self.emit_array_new_fixed(0, 3);
             }
-            self.emit_u16(Op::ARRAY_NEW_FIXED, spec.fields.len() as u16);
+            self.emit_array_new_fixed(0, spec.fields.len() as u16);
             let ok = self.str_const("__ops");
             self.emit_u16(Op::STRUCT_SET, ok);
             self.emit(Op::DROP);
@@ -754,7 +754,7 @@ impl Compiler {
                     }
                     let line = self.line;
                     self.chunk()
-                        .emit_op_u16(Op::ARRAY_NEW_FIXED, bytes.len() as u16, line);
+                        .emit_array_new_fixed(0, bytes.len() as u16, line);
                     let idx = self.import("ecma:uint8array", "new");
                     self.emit_host_call(idx, 1);
                 }
@@ -4700,7 +4700,7 @@ impl Compiler {
                     for elem in elements {
                         self.compile_expr(&elem.value)?;
                     }
-                    self.emit_u16(Op::ARRAY_NEW_FIXED, elements.len() as u16);
+                    self.emit_array_new_fixed(0, elements.len() as u16);
                     return Ok(());
                 }
 
@@ -4996,10 +4996,10 @@ impl Compiler {
                         if let ObjectProperty::KeyValue { key, value } = prop {
                             self.compile_expr(key)?;
                             self.compile_expr(value)?;
-                            self.emit_u16(Op::ARRAY_NEW_FIXED, 2);
+                            self.emit_array_new_fixed(0, 2);
                         }
                     }
-                    self.emit_u16(Op::ARRAY_NEW_FIXED, n as u16);
+                    self.emit_array_new_fixed(0, n as u16);
                     let idx = self.import("ecma:map", "fromEntries");
                     self.emit_host_call(idx, 1);
                     return Ok(());

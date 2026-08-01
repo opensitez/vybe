@@ -509,7 +509,7 @@ pub fn emit_stamp_exception_ancestors(chunk: &mut Chunk, exc_name: &str, line: u
     for name in chain {
         chunk.emit_string_const(name, line);
     }
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, chain.len() as u16, line);
+    chunk.emit_array_new_fixed(0, chain.len() as u16, line);
     let key = chunk.add_constant(Value::String(Arc::from(reflection::FIELD_TYPES)));
     chunk.emit_op_u16(Op::STRUCT_SET, key, line);
     chunk.emit_op(Op::DROP, line);

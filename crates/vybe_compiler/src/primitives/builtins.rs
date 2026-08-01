@@ -782,15 +782,6 @@ impl Compiler {
             }
             return Ok(true);
         }
-        if self.profile.name == "fortran" && name.eq_ignore_ascii_case("str_getcsv") {
-            for arg in args {
-                self.compile_expr(arg)?;
-            }
-            vybe_runtime::registry::hooks(&self.profile.name)
-                .str_getcsv
-                .unwrap()(&mut self.chunks, self.current, args.len() as u8, line);
-            return Ok(true);
-        }
         if self.profile.name == "fortran" && name.eq_ignore_ascii_case("this_image") {
             self.emit_const(Value::I32(1));
             return Ok(true);
@@ -2000,15 +1991,25 @@ impl Compiler {
                     fn_call!(self, "ecma:string", "split", 2);
                 }
             }
+            // CSV parsing is a SHARED primitive (`primitives/csv.rs`), not a
+            // per-language hook. This used to call
+            // `hooks(profile.name).str_getcsv.unwrap()`, which only php ever
+            // registered — so fortran's own `str_getcsv`, declared in its
+            // profile, unwrapped `None`. A second `profile.name == "fortran"`
+            // branch above routed here and is gone with it.
             "str_getcsv" => {
+                let line = self.line;
                 for arg in args {
                     self.compile_expr(arg)?;
                 }
-                vybe_runtime::registry::hooks(&self.profile.name)
-                    .str_getcsv
-                    .unwrap()(
-                    &mut self.chunks, self.current, args.len() as u8, line
-                );
+                // RFC 4180 defaults for callers that name no dialect.
+                if args.len() < 2 {
+                    self.chunks[self.current].emit_string_const(",", line);
+                } 
+                if args.len() < 3 {
+                    self.chunks[self.current].emit_string_const("\"", line);
+                }
+                common::csv::emit_parse_line(&mut self.chunks, self.current, line);
             }
             "str_repeat" => {
                 if args.len() >= 2 {
@@ -2431,6 +2432,22 @@ impl Compiler {
     ) -> Result<(), String> {
         let line = self.line;
         match name {
+            // CSV parsing — the shared primitive. Declared `intrinsic:str_getcsv`
+            // by fortran, so it must be handled HERE: `emit_builtin_opcode` is a
+            // different dispatch function and an arm there is unreachable for an
+            // `intrinsic:` target.
+            "str_getcsv" => {
+                for arg in args {
+                    self.compile_expr(arg)?;
+                }
+                if args.len() < 2 {
+                    self.chunks[self.current].emit_string_const(",", line);
+                }
+                if args.len() < 3 {
+                    self.chunks[self.current].emit_string_const("\"", line);
+                }
+                common::csv::emit_parse_line(&mut self.chunks, self.current, line);
+            }
             "cstr" => {
                 self.compile_expr(args[0])?;
                 let value_slot = self.define_local("__vb_cstr_value");

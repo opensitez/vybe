@@ -212,7 +212,7 @@ pub fn emit_drain_into_array_into(_imports: &mut Chunk, code: &mut Chunk, line: 
     let val_slot = code.local_count;
     code.alloc_scratch(1);
 
-    code.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line); // empty array
+    code.emit_array_new_fixed(0, 0, line); // empty array
     code.emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
     emit_drain_loop(cont_slot, result_slot, val_slot, code, line);
@@ -231,7 +231,7 @@ pub fn emit_drain_into_array(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, cont_slot, line);
 
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line); // empty array
+    chunks[current].emit_array_new_fixed(0, 0, line); // empty array
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
     emit_drain_loop(cont_slot, result_slot, val_slot, &mut chunks[current], line);
@@ -632,7 +632,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
     // result = []
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
     // Outer block — BR 0 exits with result_slot on stack
@@ -743,7 +743,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
 
     // Loop from 0 to length
     let idx_slot = step_slot; // reuse step_slot for index counter
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_f64_const(0.0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);

@@ -21,6 +21,7 @@ pub mod builtin_slots;
 pub mod bundle;
 pub mod codepoints;
 pub mod collections;
+pub mod csv;
 pub mod complex;
 pub mod convert;
 pub mod datetime;

@@ -802,11 +802,17 @@ impl Compiler {
                 } else {
                     crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
                 }
-                if self.profile.ecma_boolean_operators {
-                    crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-                } else if self.profile.materialize_bool_results {
-                    crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-                }
+                // A comparison RESULT is a boolean — normalized here, not left
+                // to a per-language flag. The VM has no true/false, so the raw
+                // comparison is an i32 and `emit_i32_to_bool` is what makes it a
+                // value; skipping it leaked the i32 to anything that inspects a
+                // TYPE. php never set `materialize_bool_results`, so
+                // `var_dump(1 === 2)` printed `0` where real php prints
+                // `bool(false)` — while `==` was correct, because php binds it
+                // through `[builtin_slots.string] eq` and its own emitter
+                // returns a bool. Languages keep their quirks in the GRAMMAR
+                // (php spells two equalities); the result type is normalized.
+                crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
             }
             BinOp::StrictNotEq => {
                 // JS !==: negate of ===.
@@ -818,11 +824,8 @@ impl Compiler {
                     } else {
                         crate::primitives::ops::emit_dyn_ne(self.chunk(), line);
                     }
-                    if self.profile.ecma_boolean_operators {
-                        crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-                    } else if self.profile.materialize_bool_results {
-                        crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-                    }
+                    // Same normalization as `StrictEq` above.
+                    crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
                 }
             }
             BinOp::Lt => {

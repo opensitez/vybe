@@ -1242,6 +1242,11 @@ impl Compiler {
         let l = self.line;
         self.chunks[self.current].emit_op_u16(op, v, l);
     }
+    /// `array.new_fixed $t N`. Type index `0` = dynamic-language array literal.
+    pub(crate) fn emit_array_new_fixed(&mut self, typeidx: u16, count: u16) {
+        let l = self.line;
+        self.chunks[self.current].emit_array_new_fixed(typeidx, count, l);
+    }
     pub(crate) fn emit_u8(&mut self, op: Op, v: u8) {
         let l = self.line;
         self.chunks[self.current].emit_op_u8(op, v, l);

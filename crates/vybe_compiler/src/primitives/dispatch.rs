@@ -25,8 +25,8 @@ use vybe_runtime::opcode::Op;
 
 use crate::primitives::threading as thread_adapter;
 use crate::primitives::{
-    collections, dict, heap, http_cookie, http_form, http_request_env, http_session, io, object,
-    ops, reflection, strings, threading, url, xml,
+    collections, csv, dict, heap, http_cookie, http_form, http_request_env, http_session, io,
+    object, ops, reflection, strings, threading, url, xml,
 };
 
 /// Handle common ops that need only a chunk and line.
@@ -612,6 +612,15 @@ pub fn emit_common(
         // Go `path.Match`, Ruby `File.fnmatch`. Stack: `[name, pattern]`.
         // `_fold` is the case-insensitive spelling; it is the regex `i` flag,
         // not a lower-casing of both sides, so `[A-Z]` keeps its meaning.
+        // Thousands grouping over a formatted numeric string — php
+        // `number_format`, python's `,` format flag, java `%,d`.
+        // Stack: `[formatted, group_sep, dec_point]`.
+        "str_group_digits" => strings::emit_group_digits(chunks, current, line),
+        // CSV — a structured format, so it lives beside `json` and `url`.
+        // Dialect (delimiter, enclosure) is on the STACK because php takes it
+        // as runtime arguments.
+        "csv.parse_line" => csv::emit_parse_line(chunks, current, line),
+        "csv.format_row" => csv::emit_format_row(chunks, current, line),
         "str_glob_match" => {
             strings::emit_glob_match(chunks, current, strings::GlobOptions::exact(), line)
         }

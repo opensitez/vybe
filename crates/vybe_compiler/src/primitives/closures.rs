@@ -48,5 +48,5 @@ pub fn emit_env_new(chunk: &mut Chunk, slots: &[u16], line: u32) {
     for slot in slots {
         chunk.emit_op_u16(Op::LOCAL_GET, *slot, line);
     }
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, slots.len() as u16, line);
+    chunk.emit_array_new_fixed(0, slots.len() as u16, line);
 }

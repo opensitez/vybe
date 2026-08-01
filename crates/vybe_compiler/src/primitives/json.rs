@@ -181,7 +181,7 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
     h.emit_if(line);
     {
-        h.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        h.emit_array_new_fixed(0, 0, line);
         lset(&mut h, out_slot, line);
         lget(&mut h, value_slot, line);
         h.emit_op(Op::ARRAY_LENGTH, line);
@@ -268,7 +268,7 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lset(&mut h, keys_slot, line);
     h.emit_end(line);
 
-    h.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    h.emit_array_new_fixed(0, 0, line);
     lset(&mut h, out_slot, line);
     lget(&mut h, keys_slot, line);
     h.emit_op(Op::ARRAY_LENGTH, line);
@@ -292,7 +292,7 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lget(&mut h, sort_slot, line);
     lget(&mut h, props_slot, line);
     call_ref(&mut h, 4, line);
-    h.emit_op_u16(Op::ARRAY_NEW_FIXED, 2, line);
+    h.emit_array_new_fixed(0, 2, line);
     add_call(&mut h, "ecma:array", "push", 2, line);
     h.emit_op(Op::DROP, line);
     bump(&mut h, i_slot, line);
@@ -389,7 +389,7 @@ fn build_render_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     crate::primitives::ops::emit_dyn_to_bool(&mut h, line);
     h.emit_if(line);
     {
-        h.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        h.emit_array_new_fixed(0, 0, line);
         lset(&mut h, parts_slot, line);
         lget(&mut h, value_slot, line);
         h.emit_op(Op::ARRAY_LENGTH, line);
@@ -428,7 +428,7 @@ fn build_render_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(&mut h, value_slot, line);
         add_call(&mut h, "ecma:object", "keys", 1, line);
         lset(&mut h, keys_slot, line);
-        h.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+        h.emit_array_new_fixed(0, 0, line);
         lset(&mut h, parts_slot, line);
         lget(&mut h, keys_slot, line);
         h.emit_op(Op::ARRAY_LENGTH, line);

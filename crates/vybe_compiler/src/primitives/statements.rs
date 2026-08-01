@@ -5762,7 +5762,7 @@ impl Compiler {
                         self.emit(Op::REF_IS_NULL);
                         let line = self.line;
                         self.chunk().emit_if(line);
-                        self.emit_u16(Op::ARRAY_NEW_FIXED, 0);
+                        self.emit_array_new_fixed(0, 0);
                         self.emit_u16(Op::LOCAL_SET, sub_tmp);
                         self.emit_u16(Op::LOCAL_GET, parent_tmp);
                         self.emit_u16(Op::LOCAL_GET, key_tmp);

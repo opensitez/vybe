@@ -294,7 +294,7 @@ pub fn emit_named_tuple(
         for name in field_names {
             core_wasm::string_const(c, line, name.as_deref().unwrap_or(""));
         }
-        c.emit_op_u16(Op::ARRAY_NEW_FIXED, field_names.len() as u16, line); // [arr, fields]
+        c.emit_array_new_fixed(0, field_names.len() as u16, line); // [arr, fields]
         let k = c.add_constant(Value::String(Arc::from(FIELDS_TAG)));
         c.emit_op_u16(Op::STRUCT_SET, k, line); // [arr, fields]
         c.emit_op(Op::DROP, line); // [arr]

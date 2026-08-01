@@ -63,7 +63,7 @@ fn emit_stack_load(chunk: &mut Chunk, stack_global: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     emit_undefined_test(chunk, line);
     chunk.emit_if(line);
-    chunk.emit_op_u16(Op::ARRAY_NEW_FIXED, 0, line);
+    chunk.emit_array_new_fixed(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op_u16(Op::GLOBAL_SET, global_idx, line);

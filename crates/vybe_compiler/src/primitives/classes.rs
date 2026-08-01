@@ -1261,7 +1261,7 @@ impl Compiler {
                 for _ in 0..env_size {
                     self.emit(Op::NULL);
                 }
-                self.chunks[self.current].emit_op_u16(Op::ARRAY_NEW_FIXED, env_size, line);
+                self.chunks[self.current].emit_array_new_fixed(0, env_size, line);
                 let env_slot = self.define_local("__shared_env");
                 self.emit_u16(Op::LOCAL_SET, env_slot);
                 self.shared_env_slot = Some(env_slot);
@@ -2440,7 +2440,7 @@ impl Compiler {
                     for _ in 0..env_size {
                         cc.emit(Op::NULL);
                     }
-                    cc.chunks[cc.current].emit_op_u16(Op::ARRAY_NEW_FIXED, env_size, line);
+                    cc.chunks[cc.current].emit_array_new_fixed(0, env_size, line);
                     let env_slot = cc.define_local("__shared_env");
                     cc.emit_u16(Op::LOCAL_SET, env_slot);
                     cc.shared_env_slot = Some(env_slot);
@@ -4979,9 +4979,9 @@ pub fn emit_stamp_class_members(
         for param_type in param_types {
             chunks[current].emit_string_const(param_type, line);
         }
-        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, param_types.len() as u16, line);
+        chunks[current].emit_array_new_fixed(0, param_types.len() as u16, line);
         chunks[current].emit_i32_const(modifiers as i32, line);
-        chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, 8, line);
+        chunks[current].emit_array_new_fixed(0, 8, line);
     };
 
     for (name, type_name, modifiers) in fields {
@@ -4996,7 +4996,7 @@ pub fn emit_stamp_class_members(
             *modifiers,
         );
     }
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, fields.len() as u16, line);
+    chunks[current].emit_array_new_fixed(0, fields.len() as u16, line);
     let fields_key =
         chunks[current].add_constant(Value::String(Arc::from(reflection::FIELD_FIELDS)));
     let fields_slot = chunks[current].alloc_scratch(1);
@@ -5018,7 +5018,7 @@ pub fn emit_stamp_class_members(
             *modifiers,
         );
     }
-    chunks[current].emit_op_u16(Op::ARRAY_NEW_FIXED, methods.len() as u16, line);
+    chunks[current].emit_array_new_fixed(0, methods.len() as u16, line);
     let methods_key =
         chunks[current].add_constant(Value::String(Arc::from(reflection::FIELD_METHODS)));
     let methods_slot = chunks[current].alloc_scratch(1);
