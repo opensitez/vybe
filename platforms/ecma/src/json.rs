@@ -1053,6 +1053,12 @@ impl<'a> Parser<'a> {
         s.parse::<f64>().ok().map(Value::F64)
     }
 
+    /// The four hex digits of a `\uXXXX` escape starting at `at`.
+    fn hex4_at(&self, at: usize) -> Option<u32> {
+        let digits = self.src.get(at..at + 4)?;
+        u32::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()
+    }
+
     fn parse_string(&mut self) -> Option<String> {
         if self.peek()? != b'"' {
             return None;
@@ -1080,16 +1086,31 @@ impl<'a> Parser<'a> {
                         b'b' => out.push('\x08'),
                         b'f' => out.push('\x0C'),
                         b'u' => {
-                            if self.pos + 4 > self.src.len() {
-                                return None;
-                            }
-                            let hex =
-                                std::str::from_utf8(&self.src[self.pos..self.pos + 4]).ok()?;
-                            let code = u32::from_str_radix(hex, 16).ok()?;
+                            let code = self.hex4_at(self.pos)?;
                             self.pos += 4;
-                            if let Some(ch) = char::from_u32(code) {
-                                out.push(ch);
-                            }
+                            // §25.5.1: a `\u` escape is a UTF-16 CODE UNIT, so a
+                            // high surrogate combines with the `\u` escape that
+                            // follows into one supplementary code point.
+                            // `char::from_u32` rejects either half on its own —
+                            // which silently dropped both, parsing
+                            // `"😀"` to the empty string.
+                            let code = match self.hex4_at(self.pos + 2) {
+                                Some(low)
+                                    if (0xD800..0xDC00).contains(&code)
+                                        && (0xDC00..=0xDFFF).contains(&low)
+                                        && self.src.get(self.pos) == Some(&b'\\')
+                                        && self.src.get(self.pos + 1) == Some(&b'u') =>
+                                {
+                                    self.pos += 6;
+                                    0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                                }
+                                _ => code,
+                            };
+                            // An unpaired surrogate is a code unit no `char` can
+                            // hold; `wasm:js-string.fromCharCode` already renders
+                            // one as U+FFFD via `from_utf16_lossy`, so match that
+                            // rather than dropping the escape entirely.
+                            out.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
                         }
                         _ => return None,
                     }
