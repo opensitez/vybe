@@ -1,0 +1,16 @@
+// vybe-test: go/hash_crc32_adler32/fnv_new64a_write_sum
+// origin: languages/go/tests/go/test_hash_crc32_adler32.rs
+
+package main
+import "fmt"
+import "hash/fnv"
+func __check(got string, want string) {
+	if got != want {
+		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+		panic("assertion failed")
+	}
+}
+
+func main() { h := fnv.New64a()
+h.Write([]byte("go"))
+__check(fmt.Sprint(h.Sum64()), "618463229101696779") }

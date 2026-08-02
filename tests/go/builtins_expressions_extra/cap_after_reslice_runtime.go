@@ -1,0 +1,16 @@
+// vybe-test: go/builtins_expressions_extra/cap_after_reslice_runtime
+// origin: languages/go/tests/go/test_builtins_expressions_extra.rs
+
+package main
+import "fmt"
+func __check(got string, want string) {
+	if got != want {
+		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+		panic("assertion failed")
+	}
+}
+
+func main() { values := []int{1, 2, 3, 4}
+part := values[1:2]
+__check(fmt.Sprint(cap(part)), "3")
+}

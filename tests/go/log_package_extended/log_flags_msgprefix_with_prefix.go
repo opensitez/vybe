@@ -1,0 +1,20 @@
+// vybe-test: go/log_package_extended/log_flags_msgprefix_with_prefix
+// origin: languages/go/tests/go/test_log_package_extended.rs
+
+package main
+import "fmt"
+import "log"
+import "bytes"
+func __check(got string, want string) {
+	if got != want {
+		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+		panic("assertion failed")
+	}
+}
+
+func main() { var buf bytes.Buffer
+log.SetOutput(&buf)
+log.SetPrefix("pre")
+log.SetFlags(log.Lmsgprefix)
+log.Print("m")
+__check(fmt.Sprint(len(buf.String()) > 1), "true") }

@@ -1,0 +1,19 @@
+// vybe-test: go/bytes_buffer_extended/equal_differs_after_partial_read
+// origin: languages/go/tests/go/test_bytes_buffer_extended.rs
+
+package main
+import "fmt"
+import "bytes"
+func __check(got string, want string) {
+	if got != want {
+		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+		panic("assertion failed")
+	}
+}
+
+func main() { var a bytes.Buffer
+var b bytes.Buffer
+a.WriteString("go")
+b.WriteString("go")
+a.ReadByte()
+__check(fmt.Sprint(a.Equal(b)), "false") }

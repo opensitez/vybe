@@ -1,0 +1,16 @@
+// vybe-test: go/time_location_zone/time_date_leap_year_feb
+// origin: languages/go/tests/go/test_time_location_zone.rs
+
+package main
+import "fmt"
+import "time"
+func __check(got string, want string) {
+	if got != want {
+		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+		panic("assertion failed")
+	}
+}
+
+func main() { t := time.Date(2024, time.February, 29, 12, 0, 0, 0, time.UTC)
+__check(fmt.Sprint(t.Month()), "February")
+__check(fmt.Sprint(t.Day()), "29") }

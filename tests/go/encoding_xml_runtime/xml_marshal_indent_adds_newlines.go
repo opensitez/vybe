@@ -1,0 +1,16 @@
+// vybe-test: go/encoding_xml_runtime/xml_marshal_indent_adds_newlines
+// origin: languages/go/tests/go/test_encoding_xml_runtime.rs
+
+package main
+import "fmt"
+import "encoding/xml"
+type T struct { N int `xml:"n"` }
+func __check(got string, want string) {
+	if got != want {
+		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+		panic("assertion failed")
+	}
+}
+
+func main() { b, _ := xml.MarshalIndent(T{N: 1}, "", "  ")
+__check(fmt.Sprint(len(b) > len([]byte("<T><n>1</n></T>"))), "true") }

@@ -1,0 +1,15 @@
+// vybe-test: go/regexp_advanced_runtime/regexp_num_subexp_nested_parens
+// origin: languages/go/tests/go/test_regexp_advanced_runtime.rs
+
+package main
+import "fmt"
+import "regexp"
+func __check(got string, want string) {
+	if got != want {
+		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+		panic("assertion failed")
+	}
+}
+
+func main() { re := regexp.MustCompile(`((a)(b))`)
+__check(fmt.Sprint(re.NumSubexp()), "3") }
