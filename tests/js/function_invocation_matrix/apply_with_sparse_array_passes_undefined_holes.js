@@ -1,0 +1,23 @@
+// vybe-test: js/function_invocation_matrix/apply_with_sparse_array_passes_undefined_holes
+// origin: languages/js/tests/js/test_function_invocation_matrix.rs
+
+function __line(...args) {
+    // console.log joins its arguments with a single space. String() is the
+    // coercion Vybe's logging host applies to each one.
+    return args.map(String).join(" ");
+}
+
+function __check(got, want) {
+    if (got !== want) {
+        console.log("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Error("assertion failed");
+    }
+}
+
+function pick(a, b) {
+    __check(__line(a === undefined), "true");
+    __check(__line(b), "x");
+}
+const args = [];
+args[1] = "x";
+pick.apply(null, args);

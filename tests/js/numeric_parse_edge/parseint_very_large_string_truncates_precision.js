@@ -1,0 +1,17 @@
+// vybe-test: js/numeric_parse_edge/parseint_very_large_string_truncates_precision
+// origin: languages/js/tests/js/test_numeric_parse_edge.rs
+
+function __line(...args) {
+    // console.log joins its arguments with a single space. String() is the
+    // coercion Vybe's logging host applies to each one.
+    return args.map(String).join(" ");
+}
+
+function __check(got, want) {
+    if (got !== want) {
+        console.log("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Error("assertion failed");
+    }
+}
+
+__check(__line(parseInt("9007199254740999")), "9007199254741000");

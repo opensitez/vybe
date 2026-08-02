@@ -1,0 +1,17 @@
+// vybe-test: js/math_imul_fround_clz32_trunc/test_js_math_imul_coercion_to_32bit_int
+// origin: languages/js/tests/js/test_js_math_imul_fround_clz32_trunc.rs
+
+function __line(...args) {
+    // console.log joins its arguments with a single space. String() is the
+    // coercion Vybe's logging host applies to each one.
+    return args.map(String).join(" ");
+}
+
+function __check(got, want) {
+    if (got !== want) {
+        console.log("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Error("assertion failed");
+    }
+}
+
+__check(__line(Math.imul("10", "20") + "|" + Math.imul(true, false)), "200|0");

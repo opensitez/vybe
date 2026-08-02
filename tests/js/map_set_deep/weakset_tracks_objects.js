@@ -1,0 +1,25 @@
+// vybe-test: js/map_set_deep/weakset_tracks_objects
+// origin: languages/js/tests/js/test_map_set_deep.rs
+
+function __line(...args) {
+    // console.log joins its arguments with a single space. String() is the
+    // coercion Vybe's logging host applies to each one.
+    return args.map(String).join(" ");
+}
+
+function __check(got, want) {
+    if (got !== want) {
+        console.log("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Error("assertion failed");
+    }
+}
+
+const seen = new WeakSet();
+const a = {};
+const b = {};
+seen.add(a);
+__check(__line(seen.has(a)), "true");
+__check(__line(seen.has(b)), "false");
+seen.add(b);
+seen.delete(a);
+__check(__line(seen.has(a)), "false");

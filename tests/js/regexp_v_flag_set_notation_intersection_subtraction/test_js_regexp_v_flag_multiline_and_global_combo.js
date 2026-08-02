@@ -1,0 +1,19 @@
+// vybe-test: js/regexp_v_flag_set_notation_intersection_subtraction/test_js_regexp_v_flag_multiline_and_global_combo
+// origin: languages/js/tests/js/test_js_regexp_v_flag_set_notation_intersection_subtraction.rs
+
+function __line(...args) {
+    // console.log joins its arguments with a single space. String() is the
+    // coercion Vybe's logging host applies to each one.
+    return args.map(String).join(" ");
+}
+
+function __check(got, want) {
+    if (got !== want) {
+        console.log("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Error("assertion failed");
+    }
+}
+
+const re = /[\p{ASCII_Hex_Digit}]/gv;
+const matches = [..."a1z".matchAll(re)];
+__check(__line(matches.map(m => m[0]).join(",")), "a,1");

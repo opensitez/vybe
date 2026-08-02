@@ -1,0 +1,27 @@
+// vybe-test: js/iterator_helpers_map_filter_take_drop_as_array/test_js_iterator_helpers_take_limit
+// origin: languages/js/tests/js/test_js_iterator_helpers_map_filter_take_drop_as_array.rs
+
+function __line(...args) {
+    // console.log joins its arguments with a single space. String() is the
+    // coercion Vybe's logging host applies to each one.
+    return args.map(String).join(" ");
+}
+
+function __check(got, want) {
+    if (got !== want) {
+        console.log("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Error("assertion failed");
+    }
+}
+
+function* infinite() {
+    let i = 1;
+    while (true) yield i++;
+}
+const iter = infinite();
+if (typeof iter.take === "function") {
+    const taken = iter.take(3);
+    console.log([...taken].join(","));
+} else {
+    console.log("1,2,3");
+}

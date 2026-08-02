@@ -1,0 +1,17 @@
+// vybe-test: js/async_await_error_recovery/async_catch_return_from_async_loop
+// origin: languages/js/tests/js/test_async_await_error_recovery.rs
+
+function __line(...args) {
+    // console.log joins its arguments with a single space. String() is the
+    // coercion Vybe's logging host applies to each one.
+    return args.map(String).join(" ");
+}
+
+function __check(got, want) {
+    if (got !== want) {
+        console.log("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Error("assertion failed");
+    }
+}
+
+async function main(){async function run(){for(let i=0;i<3;i++){try{await Promise.reject(i);}catch(e){if(e===1)return "stop";}}return "end";}console.log(await run());}main();

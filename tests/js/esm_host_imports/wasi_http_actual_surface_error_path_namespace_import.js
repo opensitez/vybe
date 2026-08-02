@@ -1,0 +1,26 @@
+// vybe-test: js/esm_host_imports/wasi_http_actual_surface_error_path_namespace_import
+// origin: languages/js/tests/js/test_esm_host_imports.rs
+
+function __line(...args) {
+    // console.log joins its arguments with a single space. String() is the
+    // coercion Vybe's logging host applies to each one.
+    return args.map(String).join(" ");
+}
+
+function __check(got, want) {
+    if (got !== want) {
+        console.log("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Error("assertion failed");
+    }
+}
+
+import * as httpTypes from "wasi:http/types";
+import * as outgoingHandler from "wasi:http/outgoing-handler";
+const headers = httpTypes["[constructor]fields"]();
+const request = httpTypes["[constructor]outgoing-request"](headers);
+httpTypes["[method]outgoing-request.set-scheme"](request, "http");
+httpTypes["[method]outgoing-request.set-authority"](request, "127.0.0.1:1");
+httpTypes["[method]outgoing-request.set-path-with-query"](request, "/");
+const future = outgoingHandler.handle(request, null);
+const result = httpTypes["[method]future-incoming-response.get"](future);
+__check(__line(result.__wasi_error === "connection-refused" || result.__wasi_error === "internal-error"), "true");

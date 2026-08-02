@@ -1,0 +1,20 @@
+// vybe-test: js/object_assign_edge/assign_basic_merge
+// origin: languages/js/tests/js/test_object_assign_edge.rs
+
+function __line(...args) {
+    // console.log joins its arguments with a single space. String() is the
+    // coercion Vybe's logging host applies to each one.
+    return args.map(String).join(" ");
+}
+
+function __check(got, want) {
+    if (got !== want) {
+        console.log("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Error("assertion failed");
+    }
+}
+
+const result = Object.assign({}, { a: 1 }, { b: 2 }, { c: 3 });
+__check(__line(result.a), "1");
+__check(__line(result.b), "2");
+__check(__line(result.c), "3");

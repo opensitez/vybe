@@ -1,0 +1,21 @@
+// vybe-test: js/generators_advanced/generator_implements_iterator_protocol
+// origin: languages/js/tests/js/test_generators_advanced.rs
+
+function __line(...args) {
+    // console.log joins its arguments with a single space. String() is the
+    // coercion Vybe's logging host applies to each one.
+    return args.map(String).join(" ");
+}
+
+function __check(got, want) {
+    if (got !== want) {
+        console.log("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Error("assertion failed");
+    }
+}
+
+function* counter() { let n = 0; while (true) yield n++; }
+const it = counter();
+console.log(it.next().value);
+console.log(it.next().value);
+console.log(it.next().value);
