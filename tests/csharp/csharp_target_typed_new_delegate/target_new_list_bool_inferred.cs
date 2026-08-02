@@ -1,0 +1,13 @@
+// vybe-test: csharp/csharp_target_typed_new_delegate/target_new_list_bool_inferred
+// origin: languages/csharp/tests/csharp/test_csharp_target_typed_new_delegate.rs
+
+void __Check(string got, string want) {
+    if (got != want) {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+System.Collections.Generic.List<bool> flags = new();
+flags.Add(true); flags.Add(false);
+__Check((flags[0]).ToString(), "True"); __Check((flags[1]).ToString(), "False");

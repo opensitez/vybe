@@ -1,0 +1,11 @@
+// vybe-test: csharp/csharp_custom_event_accessors/custom_event_add_two_remove_one
+// origin: languages/csharp/tests/csharp/test_csharp_custom_event_accessors.rs
+
+void __Check(string got, string want) {
+    if (got != want) {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+class Btn{System.Action _c; public event System.Action Click{add{_c+=value;} remove{_c-=value;}} public int Count=>_c==null?0:_c.GetInvocationList().Length;} System.Action a=()=>{}; System.Action b=()=>{}; var btn=new Btn(); btn.Click+=a; btn.Click+=b; btn.Click-=a; __Check((btn.Count).ToString(), "1");

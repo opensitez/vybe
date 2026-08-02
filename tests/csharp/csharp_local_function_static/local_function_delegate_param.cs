@@ -1,0 +1,11 @@
+// vybe-test: csharp/csharp_local_function_static/local_function_delegate_param
+// origin: languages/csharp/tests/csharp/test_csharp_local_function_static.rs
+
+void __Check(string got, string want) {
+    if (got != want) {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+int Apply(int n,System.Func<int,int> op){int Wrap(int x)=>op(x)+1; return Wrap(n);} __Check((Apply(4,x=>x*2)).ToString(), "9");

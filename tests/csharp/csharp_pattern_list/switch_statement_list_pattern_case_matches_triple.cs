@@ -1,0 +1,11 @@
+// vybe-test: csharp/csharp_pattern_list/switch_statement_list_pattern_case_matches_triple
+// origin: languages/csharp/tests/csharp/test_csharp_pattern_list.rs
+
+void __Check(string got, string want) {
+    if (got != want) {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+int[] data=new[]{2,4,6}; string tag=""; switch(data){case[2,4,6]:tag="hit";break;default:tag="miss";break;} __Check((tag).ToString(), "hit");

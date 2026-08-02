@@ -1,0 +1,11 @@
+// vybe-test: csharp/csharp_utf8_string_literals/utf8_literal_sequence_equal_different_literal
+// origin: languages/csharp/tests/csharp/test_csharp_utf8_string_literals.rs
+
+void __Check(string got, string want) {
+    if (got != want) {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+var a=u8"one"; var b=u8"two"; __Check((a.SequenceEqual(b)).ToString(), "False");

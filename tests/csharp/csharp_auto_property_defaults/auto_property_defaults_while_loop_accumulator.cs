@@ -1,0 +1,5 @@
+// vybe-test: csharp/csharp_auto_property_defaults/auto_property_defaults_while_loop_accumulator
+// origin: languages/csharp/tests/csharp/test_csharp_auto_property_defaults.rs
+
+// auto_property_defaults
+int sum = 1; int n = 0; while (n < 4) { sum += 1; n += 1; } Console.WriteLine(sum == 5);

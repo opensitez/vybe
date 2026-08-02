@@ -1,0 +1,11 @@
+// vybe-test: csharp/csharp_list_dictionary/list_addrange_from_sibling_list_merges_items
+// origin: languages/csharp/tests/csharp/test_csharp_list_dictionary.rs
+
+void __Check(string got, string want) {
+    if (got != want) {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+using System.Collections.Generic; var list = new List<int> { 1 }; var extra = new List<int> { 2, 3 }; list.AddRange(extra); __Check((list.Count).ToString(), "3");

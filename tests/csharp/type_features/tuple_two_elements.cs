@@ -1,0 +1,13 @@
+// vybe-test: csharp/type_features/tuple_two_elements
+// origin: languages/csharp/tests/csharp/test_type_features.rs
+
+void __Check(string got, string want) {
+    if (got != want) {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+var pair = (10, 20);
+        var sum = pair[0] + pair[1];
+        __Check((sum).ToString(), "30");

@@ -1,0 +1,12 @@
+// vybe-test: csharp/csharp_decimal_math_matrix/decimal_math_matrix_hashset_uniqueness
+// origin: languages/csharp/tests/csharp/test_csharp_decimal_math_matrix.rs
+
+void __Check(string got, string want) {
+    if (got != want) {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+// decimal_math_matrix
+var set = new System.Collections.Generic.HashSet<int>(); set.Add(17); set.Add(17); __Check((set.Count == 1).ToString(), "True");

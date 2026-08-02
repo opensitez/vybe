@@ -1,0 +1,12 @@
+// vybe-test: csharp/csharp_queue_stack_surface/queue_stack_surface_tuple_ordering
+// origin: languages/csharp/tests/csharp/test_csharp_queue_stack_surface.rs
+
+void __Check(string got, string want) {
+    if (got != want) {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+// queue_stack_surface
+var tuple = (left: 32, right: 33); __Check((tuple.left < tuple.right).ToString(), "True");

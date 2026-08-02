@@ -1,0 +1,18 @@
+// vybe-test: csharp/interfaces_generics/generic_multiple_type_params
+// origin: languages/csharp/tests/csharp/test_interfaces_generics.rs
+
+void __Check(string got, string want) {
+    if (got != want) {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+class Pair<TFirst, TSecond> {
+    public TFirst First;
+    public TSecond Second;
+    public Pair(TFirst f, TSecond s) { First = f; Second = s; }
+    public override string ToString() { return First + ":" + Second; }
+}
+var p = new Pair<string, int>("age", 30);
+__Check((p).ToString(), "age:30");

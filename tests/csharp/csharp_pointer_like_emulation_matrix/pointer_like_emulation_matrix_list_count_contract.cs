@@ -1,0 +1,12 @@
+// vybe-test: csharp/csharp_pointer_like_emulation_matrix/pointer_like_emulation_matrix_list_count_contract
+// origin: languages/csharp/tests/csharp/test_csharp_pointer_like_emulation_matrix.rs
+
+void __Check(string got, string want) {
+    if (got != want) {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+// pointer_like_emulation_matrix
+var values = new System.Collections.Generic.List<int> { 114, 115, 114 }; __Check((values.Count == 3).ToString(), "True");

@@ -1,0 +1,11 @@
+// vybe-test: csharp/csharp_ref_readonly_semantics/memory_is_empty_false_for_non_empty_buffer
+// origin: languages/csharp/tests/csharp/test_csharp_ref_readonly_semantics.rs
+
+void __Check(string got, string want) {
+    if (got != want) {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+var memory=new System.Memory<int>(new int[]{1}); __Check((memory.IsEmpty).ToString(), "False");

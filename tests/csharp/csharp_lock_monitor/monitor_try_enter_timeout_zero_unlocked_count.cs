@@ -1,0 +1,15 @@
+// vybe-test: csharp/csharp_lock_monitor/monitor_try_enter_timeout_zero_unlocked_count
+// origin: languages/csharp/tests/csharp/test_csharp_lock_monitor.rs
+
+void __Check(string got, string want) {
+    if (got != want) {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+object gate = new object();
+bool got = System.Threading.Monitor.TryEnter(gate);
+int count = got ? 1 : 0;
+if (got) System.Threading.Monitor.Exit(gate);
+__Check((count).ToString(), "1");
