@@ -1,0 +1,19 @@
+;; vybe-test: wast/wat_ref_cast/test_ref_test_null
+;; origin: languages/wast/tests/wast/test_wat_ref_cast.rs
+
+(module
+  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "wasi:logging/logging" "log" (func $log_i64 (param i64)))
+  (import "wasi:logging/logging" "log" (func $log_f32 (param f32)))
+  (import "wasi:logging/logging" "log" (func $log_f64 (param f64)))
+  (type $Base (struct (field i32)))
+(type $Sub (struct_subtype (field i32) (field i32) $Base))
+(func (export "_start") (local $s (ref null $Base))
+  ref.null $Base
+  local.set $s
+  
+  local.get $s
+  ref.test $Sub
+  call $log
+)
+)
