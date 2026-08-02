@@ -1,0 +1,13 @@
+' vybe-test: vb/vb_do_while_loops/do_until_bottom_variable_mutation
+' origin: languages/vb/tests/vb/test_vb_do_while_loops.rs
+
+Module M
+Sub Main()
+Dim x = 0
+Do
+x += 1
+If x = 2 Then x = 5
+Loop Until x >= 3
+Console.WriteLine(x)
+End Sub
+End Module
