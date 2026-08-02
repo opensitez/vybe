@@ -25,6 +25,10 @@ pub enum Mode {
     Run,
     Compile,
     CompileFail,
+    /// Execute it; a NON-zero exit is the pass. `must_fail(script)` asserts a
+    /// wrong result really is caught — distinct from `CompileFail`, which
+    /// asserts the front-end rejects the source before it ever runs.
+    RunFail,
 }
 
 impl Mode {
@@ -35,6 +39,7 @@ impl Mode {
                 return match rest.trim() {
                     "compile" => Mode::Compile,
                     "compile-fail" => Mode::CompileFail,
+                    "run-fail" => Mode::RunFail,
                     _ => Mode::Run,
                 };
             }
@@ -49,15 +54,21 @@ pub struct Outcome {
     pub duration_ms: u128,
 }
 
-pub fn run_case(vybex: &Path, file: &Path, mode: Mode, timeout_secs: u64) -> Outcome {
+pub fn run_case(
+    vybex: &Path,
+    file: &Path,
+    mode: Mode,
+    timeout_secs: u64,
+    slow: &dyn Fn(u64),
+) -> Outcome {
     let mut cmd = Command::new(vybex);
-    if mode != Mode::Run {
+    if matches!(mode, Mode::Compile | Mode::CompileFail) {
         // `-d` disassembles without running: the frontend must accept the
         // program, nothing more. That is exactly what `compile_ok` asserted.
         cmd.arg("-d");
     }
     cmd.arg(file);
-    execute(cmd, mode, timeout_secs)
+    execute(cmd, mode, timeout_secs, slow)
 }
 
 /// Run the same file under a foreign runtime — `go run`, `python3`, `node`,
@@ -70,13 +81,14 @@ pub fn run_foreign(
     file: &Path,
     mode: Mode,
     timeout_secs: u64,
+    slow: &dyn Fn(u64),
 ) -> Outcome {
     let mut cmd = Command::new(program);
     cmd.args(args).arg(file);
-    execute(cmd, mode, timeout_secs)
+    execute(cmd, mode, timeout_secs, slow)
 }
 
-fn execute(mut cmd: Command, mode: Mode, timeout_secs: u64) -> Outcome {
+fn execute(mut cmd: Command, mode: Mode, timeout_secs: u64, slow: &dyn Fn(u64)) -> Outcome {
     let started = Instant::now();
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
@@ -98,9 +110,15 @@ fn execute(mut cmd: Command, mode: Mode, timeout_secs: u64) -> Outcome {
     let out_reader = child.stdout.take().map(|s| std::thread::spawn(move || drain(s)));
     let err_reader = child.stderr.take().map(|s| std::thread::spawn(move || drain(s)));
 
-    let status = match child.wait_timeout(Duration::from_secs(timeout_secs)) {
-        Ok(Some(status)) => status,
-        Ok(None) => {
+    // Wait in slices rather than one blocking call, so a test that is still
+    // running can say so. The warm pool does the same with `recv_timeout`; the
+    // cold and foreign paths need it MORE, because `go run`/`node` hanging
+    // gives no other signal at all.
+    let deadline = Duration::from_secs(timeout_secs);
+    let mut warned = false;
+    let status = loop {
+        let elapsed = started.elapsed();
+        let Some(remaining) = deadline.checked_sub(elapsed) else {
             let _ = child.kill();
             let _ = child.wait();
             return Outcome {
@@ -108,14 +126,30 @@ fn execute(mut cmd: Command, mode: Mode, timeout_secs: u64) -> Outcome {
                 message: format!("timeout after {timeout_secs}s"),
                 duration_ms: started.elapsed().as_millis(),
             };
-        }
-        Err(e) => {
-            let _ = child.kill();
-            return Outcome {
-                result: TestResult::Error,
-                message: format!("wait failed: {e}"),
-                duration_ms: started.elapsed().as_millis(),
-            };
+        };
+        let wait = if warned {
+            remaining
+        } else {
+            remaining.min(
+                crate::pool::SLOW_AFTER.saturating_sub(elapsed).max(Duration::from_millis(1)),
+            )
+        };
+        match child.wait_timeout(wait) {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if started.elapsed() < deadline {
+                    slow(crate::pool::SLOW_AFTER.as_secs());
+                    warned = true;
+                }
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Outcome {
+                    result: TestResult::Error,
+                    message: format!("wait failed: {e}"),
+                    duration_ms: started.elapsed().as_millis(),
+                };
+            }
         }
     };
 
@@ -127,7 +161,7 @@ fn execute(mut cmd: Command, mode: Mode, timeout_secs: u64) -> Outcome {
     }
 
     let clean = status.success();
-    let pass = if mode == Mode::CompileFail { !clean } else { clean };
+    let pass = if matches!(mode, Mode::CompileFail | Mode::RunFail) { !clean } else { clean };
     Outcome {
         result: if pass { TestResult::Pass } else { TestResult::Fail },
         message: if pass { String::new() } else { failure_line(&text) },
@@ -158,4 +192,41 @@ pub fn failure_line(output: &str) -> String {
         .chars()
         .take(200)
         .collect()
+}
+
+/// Cold path: one fresh process per test, `threads` at a time. Used for
+/// `--cold` and for foreign runtimes, which have no warm protocol.
+pub fn run_each(
+    files: &[std::path::PathBuf],
+    threads: usize,
+    exec: impl Fn(&Path, Mode) -> Outcome + Sync,
+    note: impl Fn(&crate::model::TestExecution) + Sync,
+) -> Vec<crate::model::TestExecution> {
+    use rayon::prelude::*;
+    let pool = match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
+        Ok(pool) => pool,
+        Err(_) => return Vec::new(),
+    };
+    pool.install(|| {
+        files
+            .par_iter()
+            .map(|file| {
+                let text = std::fs::read_to_string(file).unwrap_or_default();
+                let mode = Mode::of(&text);
+                let outcome = exec(file, mode);
+                let (language, category, name) = crate::model::identify(file);
+                let execution = crate::model::TestExecution {
+                    path: file.clone(),
+                    language,
+                    category,
+                    name,
+                    result: outcome.result,
+                    message: outcome.message,
+                    duration_ms: outcome.duration_ms,
+                };
+                note(&execution);
+                execution
+            })
+            .collect()
+    })
 }

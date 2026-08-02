@@ -43,15 +43,21 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
         };
     }
 
+    // The i-th expected LINE belongs to the print that runs i-th, which is not
+    // the i-th print in the source once `defer` is involved.
+    let order = runtime_order(&case.source, &prints);
+
     // Rewrite back-to-front so the earlier spans keep their byte offsets.
+    let mut pairing: Vec<Option<&String>> = vec![None; prints.len()];
+    for (line, &print_index) in order.iter().enumerate() {
+        pairing[print_index] = expected.get(line);
+    }
     let mut body = case.source.clone();
     for (i, span) in prints.iter().enumerate().rev() {
+        let Some(want) = pairing[i] else { continue };
         let args = &case.source[span.args_start..span.args_end];
-        let replacement = format!(
-            "__check({}, {})",
-            render_println_args(args),
-            go_string(&expected[i])
-        );
+        let replacement =
+            format!("__check({}, {})", render_println_args(args), go_string(want));
         body.replace_range(span.start..span.end, &replacement);
     }
 
@@ -74,6 +80,28 @@ fn unpairable_reason(src: &str, prints: &[Span], expected: usize) -> Option<Stri
     if has_keyword(src, "for") || has_keyword(src, "range") {
         return Some("loop — print count is not static".into());
     }
+    // A goroutine's output order is genuinely not knowable from the source.
+    // `defer` is — but only in `main`; see below.
+    if has_keyword(src, "go") {
+        return Some("goroutine — output order is not source order".into());
+    }
+    // A `defer` runs when ITS function returns, not when the program ends. In
+    // `main` those are the same moment, so the LIFO reordering in
+    // `runtime_order` is exact. Anywhere else the deferred output lands
+    // mid-stream at a point only real control-flow analysis would find.
+    if !defer_spans(src).is_empty() {
+        if !defers_are_all_top_level_in_main(src) {
+            return Some("defer outside main — output lands mid-stream".into());
+        }
+        // `defer f()` where `f` is a named function that prints: the print sits
+        // in `f`'s body, lexically outside any defer, so the reordering below
+        // cannot see that it runs late.
+        if let Some(body) = main_body_span(src) {
+            if prints.iter().any(|p| p.start < body.0 || p.start >= body.1) {
+                return Some("defer plus a printing helper — order needs call analysis".into());
+            }
+        }
+    }
     if has_call(src, "fmt.Printf") || has_call(src, "fmt.Print") {
         return Some("Printf/Print — output is not one line per call".into());
     }
@@ -94,6 +122,179 @@ fn unpairable_reason(src: &str, prints: &[Span], expected: usize) -> Option<Stri
             .any(|p| p.ends_with("..."))
     }) {
         return Some("variadic spread — Println's spacing is not static".into());
+    }
+    None
+}
+
+/// Print indices in the order they actually produce output.
+///
+/// `defer` runs its statements LIFO when the function returns, so
+/// `defer Println(3); defer Println(2); defer Println(1)` prints `1, 2, 3` —
+/// the reverse of the source. Pairing the i-th print with the i-th expected
+/// line without accounting for that mis-assigned 37 Go tests.
+///
+/// Deferred calls run in reverse registration order, and the prints *within*
+/// one deferred closure still run in source order — so the result is: every
+/// non-deferred print in source order, then each `defer` group in reverse
+/// registration order.
+fn runtime_order(src: &str, prints: &[Span]) -> Vec<usize> {
+    let defers = defer_spans(src);
+    let group_of = |span: &Span| -> Option<usize> {
+        defers
+            .iter()
+            .position(|(start, end)| span.start >= *start && span.start < *end)
+    };
+
+    let mut immediate = Vec::new();
+    let mut deferred: Vec<(usize, usize)> = Vec::new(); // (defer index, print index)
+    for (i, span) in prints.iter().enumerate() {
+        match group_of(span) {
+            Some(group) => deferred.push((group, i)),
+            None => immediate.push(i),
+        }
+    }
+    // Later `defer`s run first; inside one, source order holds.
+    deferred.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    immediate.extend(deferred.into_iter().map(|(_, i)| i));
+    immediate
+}
+
+/// Whether every `defer` sits directly in `main`'s body.
+///
+/// Directly: not inside a nested `func` literal that `main` *calls*, whose
+/// defers would fire at that call rather than at exit. The deferred expression
+/// itself may of course be a closure — that is `defer func() { … }()`.
+fn defers_are_all_top_level_in_main(src: &str) -> bool {
+    let bytes = src.as_bytes();
+    let Some((body, _)) = main_body_span(src) else {
+        return false;
+    };
+
+    let defers = defer_spans(src);
+    let mut depth = 0i32;
+    let mut i = body;
+    let mut next_defer = 0usize;
+
+    while i < bytes.len() && next_defer < defers.len() {
+        if let Some(next) = skip_literal(bytes, i) {
+            i = next;
+            continue;
+        }
+        // A defer's own body may nest freely; step over it whole.
+        if i == defers[next_defer].0 {
+            if depth != 1 {
+                return false;
+            }
+            i = defers[next_defer].1;
+            next_defer += 1;
+            continue;
+        }
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    // main closed with defers still unaccounted for.
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    next_defer == defers.len()
+}
+
+/// Byte range of `main`'s body, from its opening brace to its closing one.
+fn main_body_span(src: &str) -> Option<(usize, usize)> {
+    let bytes = src.as_bytes();
+    let main_at = src.find("func main(")?;
+    let open = src[main_at..].find('{').map(|o| main_at + o)?;
+
+    let mut depth = 0i32;
+    let mut i = open;
+    while i < bytes.len() {
+        if let Some(next) = skip_literal(bytes, i) {
+            i = next;
+            continue;
+        }
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((open, i + 1));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Byte range of each `defer` statement, in registration order.
+fn defer_spans(src: &str) -> Vec<(usize, usize)> {
+    let bytes = src.as_bytes();
+    let mut spans = Vec::new();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if let Some(next) = skip_literal(bytes, i) {
+            i = next;
+            continue;
+        }
+        if !src.is_char_boundary(i) || !src[i..].starts_with("defer")
+            || is_ident(if i == 0 { b' ' } else { bytes[i - 1] })
+            || is_ident(bytes.get(i + 5).copied().unwrap_or(b' '))
+        {
+            i += 1;
+            continue;
+        }
+        match defer_end(src, bytes, i + 5) {
+            Some(end) => {
+                spans.push((i, end));
+                i = end;
+            }
+            None => i += 5,
+        }
+    }
+    spans
+}
+
+/// End of the deferred expression starting at `from`.
+///
+/// `defer fmt.Println(x)` ends at the call's `)`. `defer func() { … }()` does
+/// not: the first `)` closes the literal's parameter list, so a `{` or `(`
+/// following it means the expression continues.
+fn defer_end(src: &str, bytes: &[u8], from: usize) -> Option<usize> {
+    let mut paren = 0usize;
+    let mut brace = 0usize;
+    let mut i = from;
+
+    while i < bytes.len() {
+        if let Some(next) = skip_literal(bytes, i) {
+            i = next;
+            continue;
+        }
+        match bytes[i] {
+            b'(' => paren += 1,
+            b'{' => brace += 1,
+            b'}' => brace = brace.saturating_sub(1),
+            b')' => {
+                paren -= 1;
+                if paren == 0 && brace == 0 {
+                    let rest = src[i + 1..].trim_start();
+                    if rest.starts_with('{') || rest.starts_with('(') {
+                        i += 1;
+                        continue;
+                    }
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
     }
     None
 }
@@ -172,6 +373,12 @@ fn find_prints(src: &str) -> Vec<Span> {
     while i < bytes.len() {
         if let Some(next) = skip_literal(bytes, i) {
             i = next;
+            continue;
+        }
+        // Sources contain non-ASCII outside literals (an em dash in a comment,
+        // for one), and slicing into the middle of a code point panics.
+        if !src.is_char_boundary(i) {
+            i += 1;
             continue;
         }
         if src[i..].starts_with(NEEDLE) {
@@ -257,7 +464,7 @@ fn has_keyword(src: &str, word: &str) -> bool {
             i = next;
             continue;
         }
-        if src[i..].starts_with(word) {
+        if src.is_char_boundary(i) && src[i..].starts_with(word) {
             let before = if i == 0 { b' ' } else { bytes[i - 1] };
             let after = bytes.get(i + word.len()).copied().unwrap_or(b' ');
             if !is_ident(before) && !is_ident(after) {
@@ -278,7 +485,7 @@ fn has_call(src: &str, name: &str) -> bool {
             i = next;
             continue;
         }
-        if src[i..].starts_with(&needle) {
+        if src.is_char_boundary(i) && src[i..].starts_with(&needle) {
             return true;
         }
         i += 1;
@@ -343,7 +550,7 @@ fn reflow(src: &str) -> String {
             '{' if in_clause => in_clause = false,
             _ => {}
         }
-        if !in_clause && paren == 0 && starts_control_clause(src, bytes, i) {
+        if !in_clause && paren == 0 && src.is_char_boundary(i) && starts_control_clause(src, bytes, i) {
             in_clause = true;
         }
 
@@ -371,6 +578,9 @@ fn starts_control_clause(src: &str, bytes: &[u8], at: usize) -> bool {
     const KEYWORDS: [&str; 3] = ["for", "if", "switch"];
     let before = if at == 0 { b' ' } else { bytes[at - 1] };
     if is_ident(before) {
+        return false;
+    }
+    if !src.is_char_boundary(at) {
         return false;
     }
     KEYWORDS.iter().any(|kw| {

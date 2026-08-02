@@ -5,7 +5,16 @@
 //! real source under `harness/<lang>/`, so it can be read, formatted and
 //! debugged with that language's own tools.
 
+pub mod csharp;
 pub mod go;
+pub mod java;
+pub mod js;
+pub mod php;
+pub mod kotlin;
+pub mod python;
+pub mod ruby;
+pub mod vb;
+pub mod wast;
 
 use std::path::PathBuf;
 
@@ -49,6 +58,9 @@ pub fn harness_body(lang: &str) -> anyhow::Result<String> {
             continue;
         }
         if t.starts_with("package ") || t.starts_with("import ") {
+            continue;
+        }
+        if t.starts_with("use ") || t.starts_with("#!") || t == "<?php" {
             continue;
         }
         // The file header explains the harness; a test file wants the code.

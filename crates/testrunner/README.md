@@ -74,11 +74,53 @@ assertions.
 ./target/debug/testrunner run tests/go --cold
 ```
 
+```sh
+# a live per-suite table instead of cargo-shaped output
+./target/debug/testrunner run go python wast --progress
+```
+
+Output is `cargo test` shaped by default — `test <slug> ... ok` per line, a
+failures block, then a `test result:` summary — so it greps and diffs. Four
+states, four words:
+
+```
+test go/json_marshal/marshal_bool_true ... ok
+test go/json_marshal/marshal_map_order  ... FAILED
+warning: go/loops/infinite_range still running after 10s
+test go/loops/infinite_range            ... TIMEOUT
+```
+
+`TIMEOUT` is its own verdict: a hang never produced an answer to be wrong. The
+`warning:` is not a verdict — the test is still running and may still pass — and
+fires **once**, at 10 s. The deadline is **60 s** (`--timeout`), after which the
+worker is killed and replaced while the others keep draining.
+
+A target may be a whole suite (`tests/go`, or just `go`), one category
+(`tests/go/json_marshal`) or a single file — and you may pass several, across
+languages. Prefer a category: a suite is minutes, a category is seconds. On a
+terminal `ok` is green and `FAILED` red (orange for a timeout); piped, there are
+no escapes.
+
+Read a saved log back with `testrunner summary <target>` — failures grouped by
+`lang/category`, worst first, with a timeout column when a run had any. It takes
+`php`, `tests/php`, `tests.php`, `php/bcmath` or a path, and with no exact match
+merges every log with that prefix (so `summary php` covers the php categories
+you saved), naming the files it merged.
+
 `--help` lists the rest (`-j`, `--timeout`, `--results`, `--vybex`, `--verbose`).
 
-Reports land in `results/testrunner/run_<stamp>.json`, and each run is diffed
-against the previous run **of the same runtime**, naming regressions and
-newly-passing tests. Runs over different test sets compare only their overlap.
+`--json` writes `results/testrunner/run_<stamp>.json` and diffs it against the
+previous run **of the same runtime**, naming regressions and newly-passing
+tests; runs over different test sets compare only their overlap. It is opt-in —
+a report per run buried `results/` in files nobody opened, and the diff needs
+`--json` on the baseline run too.
+
+`--save` writes the plain test log to `results/testrunner/saved/<target>.txt`
+with `/` turned into `.` (`tests/php` → `tests.php.txt`), never coloured, for the
+same stats scripts that read `<lang>.tests.txt`. **One file per target** —
+`run tests/go tests/js --save` writes two logs, each with its own summary — and
+**written as tests land**, so you can `tail -f` a long run. Works under
+`--progress` too: the terminal shows the table, the file gets the cargo log.
 
 ## Running one file by hand
 

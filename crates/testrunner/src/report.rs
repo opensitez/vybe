@@ -122,6 +122,138 @@ pub fn print_console(report: &TestReport) {
     println!("{rule}");
 }
 
+/// The per-suite summary table, in the shape `run_lang_tests.py` prints.
+pub fn print_summary_table(report: &TestReport, elapsed_secs: f64) {
+    println!("\n=== summary ===");
+    println!(
+        "  {:<8} {:>7} {:>7} {:>7} {:>5} {:>7} {:>6}",
+        "suite", "%ok", "ok", "fail", "t/o", "total", "time"
+    );
+
+    let mut timeouts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for exec in &report.executions {
+        if exec.result == TestResult::Timeout {
+            *timeouts.entry(exec.language.as_str()).or_default() += 1;
+        }
+    }
+
+    let mut rows: Vec<_> = report.by_language.iter().collect();
+    // Worst first — the suite needing attention is the one you read first.
+    rows.sort_by(|a, b| {
+        a.1.pass_rate()
+            .partial_cmp(&b.1.pass_rate())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(b.0))
+    });
+
+    for (lang, stats) in rows {
+        let tos = timeouts.get(lang.as_str()).copied().unwrap_or(0);
+        println!(
+            "  {:<8} {:>7} {:>7} {:>7} {:>5} {:>7} {:>5}s",
+            lang,
+            format!("{:.2}", stats.pass_rate()),
+            stats.passed,
+            stats.failed,
+            tos,
+            stats.total,
+            elapsed_secs.round() as u64,
+        );
+    }
+
+    let fail_pct = if report.total > 0 {
+        100.0 * (report.failed + report.errors) as f64 / report.total as f64
+    } else {
+        0.0
+    };
+    let tos_total: usize = timeouts.values().sum();
+    let tos_str = if tos_total > 0 { format!(" / {tos_total} t/o") } else { String::new() };
+    println!(
+        " total: {} ok / {} fail{tos_str} ({fail_pct:.1}% fail)   {} suite(s)",
+        report.passed,
+        report.failed + report.errors,
+        report.by_language.len(),
+    );
+}
+
+/// The cargo-shaped tail: the failures block, then the `test result:` line.
+///
+/// Returned as lines rather than printed so the same text can go to a terminal
+/// **with** colour and to a `--save` file **without** it. Formatting it twice
+/// would let the two drift, and the saved file is what a stats script parses.
+pub fn cargo_tail(report: &TestReport, elapsed_secs: f64, color: bool) -> Vec<String> {
+    let paint = |kind: TestResult, text: &str| -> String {
+        if !color {
+            return text.to_string();
+        }
+        match kind {
+            TestResult::Pass => crate::style::green(text),
+            TestResult::Timeout => crate::style::orange(text),
+            _ => crate::style::red(text),
+        }
+    };
+
+    let failures: Vec<_> = report
+        .executions
+        .iter()
+        .filter(|e| e.result != TestResult::Pass && e.result != TestResult::Skip)
+        .collect();
+
+    let mut out = Vec::new();
+    if !failures.is_empty() {
+        out.push(String::new());
+        out.push("failures:".into());
+        out.push(String::new());
+        for exec in &failures {
+            out.push(paint(exec.result, &format!("---- {} ----", exec.slug())));
+            out.push(exec.message.clone());
+            out.push(String::new());
+        }
+        out.push("failures:".into());
+        for exec in &failures {
+            out.push(format!("    {}", exec.slug()));
+        }
+    }
+
+    out.push(String::new());
+    out.push(format!(
+        "test result: {}. {} passed; {} failed; {} ignored; 0 measured; 0 filtered out; \
+         finished in {elapsed_secs:.2}s",
+        if failures.is_empty() {
+            paint(TestResult::Pass, "ok")
+        } else {
+            paint(TestResult::Fail, "FAILED")
+        },
+        report.passed,
+        report.failed + report.errors,
+        report.skipped,
+    ));
+    out
+}
+
+/// The per-test line, in cargo's shape. `color` off for a saved file.
+pub fn cargo_verdict_line(exec: &crate::model::TestExecution, color: bool) -> String {
+    // cargo's vocabulary, plus TIMEOUT. A hang is NOT a failure — the test
+    // produced no answer at all — and calling it `FAILED` made the two
+    // indistinguishable in a log. The word carries that; colour reinforces it.
+    let (word, kind) = match exec.result {
+        TestResult::Pass => ("ok", TestResult::Pass),
+        TestResult::Skip => ("ignored", TestResult::Skip),
+        TestResult::Timeout => ("TIMEOUT", TestResult::Timeout),
+        _ => ("FAILED", TestResult::Fail),
+    };
+    let word = if !color {
+        word.to_string()
+    } else {
+        match kind {
+            TestResult::Pass => crate::style::green(word),
+            TestResult::Skip => crate::style::yellow(word),
+            TestResult::Timeout => crate::style::orange(word),
+            _ => crate::style::red(word),
+        }
+    };
+    format!("test {} ... {word}", exec.slug())
+}
+
 pub struct Diff {
     pub prev_timestamp: String,
     /// How many tests the two runs have in common — the only population a
