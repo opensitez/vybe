@@ -1,0 +1,6 @@
+<?php
+// vybe-test: php/host_mapped/php_sapi_name
+// origin: languages/php/tests/php/test_host_mapped.rs
+// vybe-test-mode: compile
+
+echo php_sapi_name();

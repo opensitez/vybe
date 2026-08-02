@@ -1,0 +1,33 @@
+<?php
+// vybe-test: php/cli_arguments/argv_filter_non_dash_args
+// origin: languages/php/tests/php/test_cli_arguments.rs
+
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+$argv = ['f.php', 'in.txt', '-o', 'out.txt'];
+$files = [];
+foreach (array_slice($argv, 1) as $a) {
+    if (!str_starts_with($a, '-')) {
+        $files[] = $a;
+    }
+}
+echo implode('+', $files);
+
+__vybe_check(ob_get_clean(), "in.txt+out.txt");

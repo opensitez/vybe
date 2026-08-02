@@ -1,0 +1,38 @@
+<?php
+// vybe-test: php/method_chaining/chain_array_access_after_dynamic_property_chain
+// origin: languages/php/tests/php/test_method_chaining.rs
+
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+class Store {
+    private array $buckets = [];
+    public function bucket(int $idx): static {
+        if (!isset($this->buckets[$idx])) { $this->buckets[$idx] = []; }
+        return $this;
+    }
+    public function put(int $idx, string $value): static {
+        $this->buckets[$idx][] = $value;
+        return $this;
+    }
+    public function buckets(): array { return $this->buckets; }
+}
+echo (new Store())->bucket(1)->put(1, 'x')->buckets()[1][0];
+
+__vybe_check(ob_get_clean(), "x");

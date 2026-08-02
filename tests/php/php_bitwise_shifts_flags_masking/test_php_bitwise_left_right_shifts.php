@@ -1,0 +1,30 @@
+<?php
+// vybe-test: php/php_bitwise_shifts_flags_masking/test_php_bitwise_left_right_shifts
+// origin: languages/php/tests/php/test_php_bitwise_shifts_flags_masking.rs
+
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+$val = 4;
+$shl = $val << 2; // 16
+$shr = $shl >> 3; // 2
+
+echo "$shl | $shr";
+
+__vybe_check(ob_get_clean(), "16 | 2");

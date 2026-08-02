@@ -1,0 +1,35 @@
+<?php
+// vybe-test: php/scoping/closure_capture_by_value_and_by_reference_runtime
+// origin: languages/php/tests/php/test_scoping.rs
+
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+$base = 5;
+$value_copy = $base;
+$value_ref = &$base;
+$f = function() use ($value_copy) { return $value_copy + 1; };
+$g = function() use (&$value_ref) { return ++$value_ref; };
+echo $base . '|';
+echo $f() . '|';
+$base = 8;
+echo $g() . '|';
+echo $base;
+
+__vybe_check(ob_get_clean(), "5|6|9|9");

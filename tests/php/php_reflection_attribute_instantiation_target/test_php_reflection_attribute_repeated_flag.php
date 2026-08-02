@@ -1,0 +1,38 @@
+<?php
+// vybe-test: php/php_reflection_attribute_instantiation_target/test_php_reflection_attribute_repeated_flag
+// origin: languages/php/tests/php/test_php_reflection_attribute_instantiation_target.rs
+
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+#[Attribute(Attribute::TARGET_CLASS | Attribute::IS_REPEATABLE)]
+class Tag {
+    public function __construct(public string $label) {}
+}
+
+#[Tag("auth")]
+#[Tag("api")]
+#[Tag("v1")]
+class ApiService {}
+
+$rc = new ReflectionClass(ApiService::class);
+$tags = array_map(fn($a) => $a->newInstance()->label, $rc->getAttributes(Tag::class));
+echo implode(", ", $tags);
+
+__vybe_check(ob_get_clean(), "auth, api, v1");

@@ -1,0 +1,27 @@
+<?php
+// vybe-test: php/php_string_strspn_offset_length/test_strspn_negative_max_length_truncates
+// origin: languages/php/tests/php/test_php_string_strspn_offset_length.rs
+
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+echo strspn('12345abc', '123', 0, -2), "\n";
+echo strspn('12345abc', '12345', 0, -3), "\n";
+
+__vybe_check(ob_get_clean(), "3\n5");

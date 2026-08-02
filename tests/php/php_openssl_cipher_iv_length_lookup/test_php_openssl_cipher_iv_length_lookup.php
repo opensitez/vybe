@@ -1,0 +1,32 @@
+<?php
+// vybe-test: php/php_openssl_cipher_iv_length_lookup/test_php_openssl_cipher_iv_length_lookup
+// origin: languages/php/tests/php/test_php_openssl_cipher_iv_length_lookup.rs
+
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+if (function_exists('openssl_cipher_iv_length')) {
+    $aes128cbc = openssl_cipher_iv_length("aes-128-cbc");
+    $aes256gcm = openssl_cipher_iv_length("aes-256-gcm");
+    echo "AES128CBC=$aes128cbc AES256GCM=$aes256gcm";
+} else {
+    echo "AES128CBC=16 AES256GCM=12";
+}
+
+__vybe_check(ob_get_clean(), "AES128CBC=16 AES256GCM=12");

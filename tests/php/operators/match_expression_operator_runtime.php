@@ -1,0 +1,39 @@
+<?php
+// vybe-test: php/operators/match_expression_operator_runtime
+// origin: languages/php/tests/php/test_operators.rs
+
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+$score = 72;
+echo match ($score) {
+    100 => 'A',
+    90 => 'B',
+    80, 70 => 'C',
+    default => 'F',
+};
+echo '|';
+$code = 'x';
+echo match ($code) {
+    'x' => 'ex',
+    'y' => 'why',
+    default => 'other',
+};
+
+__vybe_check(ob_get_clean(), "F|ex");

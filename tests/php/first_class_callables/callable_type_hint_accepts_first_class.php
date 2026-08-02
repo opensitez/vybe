@@ -1,0 +1,30 @@
+<?php
+// vybe-test: php/first_class_callables/callable_type_hint_accepts_first_class
+// origin: languages/php/tests/php/test_first_class_callables.rs
+
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+function applyToAll(callable $fn, array $items): array {
+    return array_map($fn, $items);
+}
+$result = applyToAll(strtoupper(...), ['foo', 'bar', 'baz']);
+echo implode(',', $result) . "\n";
+
+__vybe_check(ob_get_clean(), "FOO,BAR,BAZ");

@@ -1,0 +1,45 @@
+<?php
+// vybe-test: php/magic_methods/magic_set_validation
+// origin: languages/php/tests/php/test_magic_methods.rs
+
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+class Validated {
+    private array $data = [];
+    public function __set($name, $value) {
+        if ($name === "age" && !is_int($value)) {
+            throw new \InvalidArgumentException("age must be int");
+        }
+        $this->data[$name] = $value;
+    }
+    public function __get($name) { return $this->data[$name] ?? null; }
+}
+$v = new Validated();
+$v->name = "Alice";
+$v->age = 30;
+echo $v->name;
+echo $v->age;
+try {
+    $v->age = "thirty";
+} catch (\InvalidArgumentException $e) {
+    echo "caught";
+}
+
+__vybe_check(ob_get_clean(), "Alice30caught");

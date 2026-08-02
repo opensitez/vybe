@@ -1,0 +1,28 @@
+<?php
+// vybe-test: php/array_advanced3/array_key_exists_vs_isset
+// origin: languages/php/tests/php/test_array_advanced3.rs
+
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+$a = ['key' => null];
+echo array_key_exists('key', $a) ? 'key_exists' : 'no_key';
+echo isset($a['key']) ? 'isset' : 'not_isset';
+
+__vybe_check(ob_get_clean(), "key_existsnot_isset");
