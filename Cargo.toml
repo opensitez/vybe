@@ -2,13 +2,12 @@
 resolver = "2"
 members = [
     "crates/code_editor",
-    "crates/vybe_bytecode",
-    "crates/vybe_host",
+    "crates/vybe_runtime",
     "crates/vybe_widgets",
     "crates/vybe_compiler",
     "crates/vybex",
+    "crates/testrunner",
     "crates/vybe_ast",
-    "crates/vybe_plugin",
     "languages/java",
     "languages/cobol",
     "languages/csharp",
@@ -24,12 +23,20 @@ members = [
     "languages/wast",
     "languages/lua",
     "languages/go",
-    "crates/vybe_emitter",
+    "languages/kotlin",
     "platforms/dotnet",
+    "platforms/ecma",
+    "platforms/flutter",
+    "platforms/jvm",
     "platforms/libc",
     "platforms/plib",
     "platforms/wasm",
+    "platforms/web",
+    "platforms/wasi",
+    "platforms/node",
+    "platforms/vybe",
     "ecma/testecma",
+    "crates/testrunner",
 ]
 
 [workspace.package]
@@ -61,6 +68,9 @@ postgres = "0.19"                                           # PostgreSQL: sync w
 mysql = "25"                                                # MySQL: sync, pure Rust
 chrono = "0.4"
 indexmap = "2"
+# Link-time plugin collection: every plugin crate submits itself, and the one
+# registration loop iterates whatever is linked. No plugin list in code.
+inventory = "0.3"
 dashmap = "6"
 
 # Dialog libraries
@@ -86,6 +96,21 @@ sha2 = "0.10"
 sha1 = "0.10"
 md-5 = "0.10"
 hmac = "0.12"
+# The rest of `crypto.getHashes()`. Node delegates to OpenSSL, which offers
+# all of these; without them `createHash` silently fell back to SHA-256.
+# All on `digest` 0.10, matching sha2/sha1/md-5 and `hmac` 0.12.
+sha3 = "0.10"
+blake2 = "0.10"
+ripemd = "0.1"   # 0.2 moves to digest 0.11; stay on 0.10 with the rest
+# OS entropy for `wasi:random/random`, which the spec requires to be
+# CSPRNG-grade and non-blocking. Portable across Unix + Windows, matching the
+# proposal's "portable at least between Unix-family platforms and Windows".
+getrandom = "0.2"
+# Socket options WASI 0.3 `wasi:sockets/types` requires and `std::net` has no
+# API for: keep-alive, send/receive buffer sizes, and binding a socket before
+# deciding whether it listens or connects. Already in the lockfile via tokio.
+socket2 = { version = "0.5", features = ["all"] }
+libc = "0.2"
 
 # WHATWG DOM Parsing & Serialization backing — pull-based XML parser.
 # `web:dom-parser` (the `DOMParser` / `XMLSerializer` host module)
@@ -97,7 +122,7 @@ flate2 = "1"
 brotli = "7"
 
 # Internal crates
-vybe_bytecode = { path = "crates/vybe_bytecode" }
+vybe_runtime = { path = "crates/vybe_runtime" }
 vybe_ast = { path = "crates/vybe_ast" }
 vybe_plugin = { path = "crates/vybe_plugin" }
 vybe_language_java = { path = "languages/java" }
@@ -115,12 +140,18 @@ vybe_language_python = { path = "languages/python" }
 vybe_language_wast = { path = "languages/wast" }
 vybe_language_lua = { path = "languages/lua" }
 vybe_language_go = { path = "languages/go" }
-vybe_emitter = { path = "crates/vybe_emitter" }
+vybe_language_kotlin = { path = "languages/kotlin" }
 vybe_platform_wasm = { path = "platforms/wasm" }
+vybe_platform_ecma = { path = "platforms/ecma" }
+vybe_platform_web = { path = "platforms/web" }
+vybe_platform_wasi = { path = "platforms/wasi" }
+vybe_platform_node = { path = "platforms/node" }
+vybe_platform_vybe = { path = "platforms/vybe" }
 vybe_platform_libc = { path = "platforms/libc" }
 vybe_platform_dotnet = { path = "platforms/dotnet" }
+vybe_platform_flutter = { path = "platforms/flutter" }
+vybe_platform_jvm = { path = "platforms/jvm" }
 vybe_platform_plib = { path = "platforms/plib" }
-vybe_host = { path = "crates/vybe_host" }
 vybe_widgets = { path = "crates/vybe_widgets" }
 vybe_compiler = { path = "crates/vybe_compiler" }
 vybex = { path = "crates/vybex" }

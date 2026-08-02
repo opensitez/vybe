@@ -9,7 +9,7 @@ use crate::extract::Case;
 
 pub enum Pairing {
     /// Every expected line was matched to the print that produces it.
-    Direct { asserts: usize },
+    Direct,
     /// The print-to-line mapping is not static; the case is reported rather
     /// than guessed at.
     Unpairable(String),
@@ -29,7 +29,7 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
         return Emitted {
             text: header + &reflow(&case.source),
             // A compile case never had an expectation to pair.
-            pairing: Pairing::Direct { asserts: 0 },
+            pairing: Pairing::Direct,
         };
     };
     header.push('\n');
@@ -48,8 +48,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     for (i, span) in prints.iter().enumerate().rev() {
         let args = &case.source[span.args_start..span.args_end];
         let replacement = format!(
-            "__check(fmt.Sprint({}), {})",
-            args.trim(),
+            "__check({}, {})",
+            render_println_args(args),
             go_string(&expected[i])
         );
         body.replace_range(span.start..span.end, &replacement);
@@ -57,7 +57,7 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
 
     Emitted {
         text: header + &splice_harness(&reflow(&body), harness),
-        pairing: Pairing::Direct { asserts: prints.len() },
+        pairing: Pairing::Direct,
     }
 }
 
@@ -86,7 +86,73 @@ fn unpairable_reason(src: &str, prints: &[Span], expected: usize) -> Option<Stri
     if prints.is_empty() {
         return Some("no output calls to pair".into());
     }
+    // `fmt.Println(xs...)` spreads a slice: how many values it prints, and
+    // therefore where the spaces fall, is not visible in the source.
+    if prints.iter().any(|span| {
+        split_top_level(&src[span.args_start..span.args_end])
+            .iter()
+            .any(|p| p.ends_with("..."))
+    }) {
+        return Some("variadic spread — Println's spacing is not static".into());
+    }
     None
+}
+
+/// The expression producing exactly the line `fmt.Println(args)` would print.
+///
+/// NOT `fmt.Sprint(args)`. `Println` always puts a space between operands;
+/// `Sprint` inserts one only "between operands when neither is a string", so
+/// `fmt.Println("a", "b")` prints `a b` while `fmt.Sprint("a", "b")` yields
+/// `ab`. Emitting the latter mis-reported 53 passing tests as failures with the
+/// tell-tale `want [a b] got [ab]`.
+///
+/// `fmt.Sprintln` would be the exact counterpart but is not in the Go profile,
+/// so each operand is rendered on its own and joined with a literal space —
+/// which needs no language feature the test didn't already use.
+fn render_println_args(args: &str) -> String {
+    let parts = split_top_level(args);
+    match parts.len() {
+        0 => "\"\"".to_string(),
+        1 => format!("fmt.Sprint({})", parts[0]),
+        _ => parts
+            .iter()
+            .map(|p| format!("fmt.Sprint({p})"))
+            .collect::<Vec<_>>()
+            .join(" + \" \" + "),
+    }
+}
+
+/// Split a call's arguments on the commas that separate them — not on commas
+/// inside a nested call, composite literal, index or string.
+fn split_top_level(args: &str) -> Vec<String> {
+    let bytes = args.as_bytes();
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if let Some(next) = skip_literal(bytes, i) {
+            i = next;
+            continue;
+        }
+        match bytes[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(args[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let tail = args[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail.to_string());
+    }
+    parts.retain(|p| !p.is_empty());
+    parts
 }
 
 struct Span {
@@ -244,14 +310,24 @@ fn go_string(text: &str) -> String {
 
 /// The corpus writes whole programs on one line with `;` separators. Split them
 /// back into statements so a person can read — and debug — the emitted file.
-/// Semicolons inside a `for` clause are the language's own, not separators, and
-/// are left alone.
+///
+/// ONLY on `;`, never on braces. Replacing an explicit semicolon with a newline
+/// is safe by construction in Go: automatic semicolon insertion puts back
+/// exactly the token that was removed. A brace is not safe — `{` opens a block
+/// in `func main() {` and a composite literal in `x := Data{A: 1}`, and telling
+/// those apart is the composite-literal ambiguity the real grammar resolves
+/// with parser context. Guessing at it turned 4,130 of 6,393 emitted files into
+/// syntax errors.
+///
+/// Semicolons inside a control-statement header are the language's own, not
+/// separators: `for a; b; c {`, `if x := f(); ok {`, `switch v := i.(type) {`.
+/// Those run from the keyword to the `{` that opens the body.
 fn reflow(src: &str) -> String {
     let bytes = src.as_bytes();
     let mut lines: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut paren = 0usize;
-    let mut in_for_clause = false;
+    let mut in_clause = false;
     let mut i = 0usize;
 
     while i < bytes.len() {
@@ -264,25 +340,15 @@ fn reflow(src: &str) -> String {
         match ch {
             '(' => paren += 1,
             ')' => paren = paren.saturating_sub(1),
-            '{' if in_for_clause => in_for_clause = false,
+            '{' if in_clause => in_clause = false,
             _ => {}
         }
-        if !in_for_clause && current.trim_start().is_empty() && src[i..].starts_with("for ") {
-            in_for_clause = true;
+        if !in_clause && paren == 0 && starts_control_clause(src, bytes, i) {
+            in_clause = true;
         }
 
-        if (ch == ';' || ch == '{' || ch == '}') && paren == 0 && !in_for_clause {
-            if ch == '{' {
-                current.push(ch);
-                push_line(&mut lines, &mut current);
-            } else {
-                // A closing brace has to stand alone, or `indent` cannot see it
-                // and the block never unwinds.
-                push_line(&mut lines, &mut current);
-                if ch == '}' {
-                    lines.push("}".into());
-                }
-            }
+        if ch == ';' && paren == 0 && !in_clause {
+            push_line(&mut lines, &mut current);
             i += 1;
             continue;
         }
@@ -291,7 +357,26 @@ fn reflow(src: &str) -> String {
     }
     push_line(&mut lines, &mut current);
 
-    indent(&lines)
+    let mut out = String::new();
+    for line in &lines {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Whether a control-statement header opens at `at` — the keyword must stand as
+/// its own token so `format` and `notif` don't trip it.
+fn starts_control_clause(src: &str, bytes: &[u8], at: usize) -> bool {
+    const KEYWORDS: [&str; 3] = ["for", "if", "switch"];
+    let before = if at == 0 { b' ' } else { bytes[at - 1] };
+    if is_ident(before) {
+        return false;
+    }
+    KEYWORDS.iter().any(|kw| {
+        src[at..].starts_with(kw)
+            && !is_ident(bytes.get(at + kw.len()).copied().unwrap_or(b' '))
+    })
 }
 
 fn push_line(lines: &mut Vec<String>, current: &mut String) {
@@ -302,21 +387,3 @@ fn push_line(lines: &mut Vec<String>, current: &mut String) {
     current.clear();
 }
 
-fn indent(lines: &[String]) -> String {
-    let mut out = String::new();
-    let mut depth = 0usize;
-    for line in lines {
-        if line.starts_with('}') {
-            depth = depth.saturating_sub(1);
-        }
-        for _ in 0..depth {
-            out.push('\t');
-        }
-        out.push_str(line);
-        out.push('\n');
-        if line.ends_with('{') {
-            depth += 1;
-        }
-    }
-    out
-}

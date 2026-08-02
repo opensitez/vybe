@@ -13,12 +13,17 @@
 
 mod emit;
 mod extract;
+mod model;
+mod pool;
+mod report;
 mod run;
 mod rustlit;
 
 use anyhow::{Context, Result};
+use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use walkdir::WalkDir;
 
 fn main() -> Result<()> {
@@ -31,7 +36,18 @@ fn main() -> Result<()> {
                 "vybe testrunner\n\n\
                  Usage:\n  \
                  testrunner extract <rust-test-file>... [--out DIR] [--lang NAME]\n  \
-                 testrunner run <path>... [--vybex PATH] [--runtime CMD] [-j N] [--verbose]\n"
+                 testrunner run <path>... [options]\n\n\
+                 run options:\n  \
+                 --vybex PATH    vybex binary to drive      (default target/debug/vybex)\n  \
+                 --runtime CMD   run under something else   (\"go run\", \"node\", \"python3\")\n  \
+                 --cold          one fresh process per test (default: warm workers)\n  \
+                 -j N            parallel workers           (default: CPU count)\n  \
+                 --timeout SECS  per-test deadline          (default 30)\n  \
+                 --results DIR   report directory           (default results/testrunner)\n  \
+                 --verbose       stream every failure as it happens (default: report only)\n\n\
+                 A path may be a directory or a single test file. `run` writes a\n\
+                 timestamped JSON report and diffs it against the previous run of\n\
+                 the same runtime, naming regressions and newly-passing tests.\n"
             );
             std::process::exit(2)
         }
@@ -54,7 +70,7 @@ fn positionals(args: &[String]) -> Vec<&String> {
             continue;
         }
         if arg.starts_with("--") || arg == "-j" {
-            skip_next = !matches!(arg.as_str(), "--verbose");
+            skip_next = !matches!(arg.as_str(), "--verbose" | "--cold");
             continue;
         }
         out.push(arg);
@@ -161,6 +177,11 @@ fn cmd_run(args: &[String]) -> Result<()> {
     let runtime: Option<Vec<String>> = flag(args, "--runtime")
         .map(|cmd| cmd.split_whitespace().map(str::to_string).collect());
     let verbose = args.iter().any(|a| a == "--verbose");
+    // Warm workers are the default; `--cold` forces one fresh process per test,
+    // which is the only way to prove a reset is not leaking state between them.
+    let cold = args.iter().any(|a| a == "--cold");
+    let timeout: u64 = flag(args, "--timeout").and_then(|n| n.parse().ok()).unwrap_or(30);
+    let results_dir = PathBuf::from(flag(args, "--results").unwrap_or("results/testrunner"));
     if let Some(jobs) = flag(args, "-j").and_then(|n| n.parse().ok()) {
         rayon::ThreadPoolBuilder::new().num_threads(jobs).build_global().ok();
     }
@@ -170,45 +191,144 @@ fn cmd_run(args: &[String]) -> Result<()> {
     let files = collect(&roots);
     anyhow::ensure!(!files.is_empty(), "no test files found");
 
+    let threads = rayon::current_num_threads();
+    let under = match &runtime {
+        Some(cmd) => cmd.join(" "),
+        None => vybex.display().to_string(),
+    };
+    eprintln!(
+        "[testrunner] {} test(s) · {threads} {} workers · {timeout}s timeout · under `{under}`",
+        files.len(),
+        if runtime.is_some() || cold { "cold" } else { "warm" },
+    );
+
+    // One process per test, `threads` of them at a time. Without a live bar a
+    // long run is indistinguishable from a hung one.
+    let bar = ProgressBar::new(files.len() as u64);
+    bar.set_style(
+        ProgressStyle::with_template(
+            "{bar:30} {pos}/{len} {msg} [{per_sec}, {elapsed_precise} elapsed, eta {eta}]",
+        )
+        .unwrap_or_else(|_| ProgressStyle::default_bar()),
+    );
+    let passed = AtomicUsize::new(0);
+    let failed = AtomicUsize::new(0);
+
     let started = std::time::Instant::now();
-    let results: Vec<(PathBuf, run::Outcome)> = files
-        .par_iter()
-        .map(|file| {
-            let text = std::fs::read_to_string(file).unwrap_or_default();
-            let mode = run::Mode::of(&text);
-            let outcome = match &runtime {
-                Some(cmd) => run::run_foreign(&cmd[0], &cmd[1..], file, mode),
-                None => run::run_case(&vybex, file, mode),
-            };
-            (file.clone(), outcome)
-        })
-        .collect();
-
-    let mut failed = Vec::new();
-    for (file, outcome) in &results {
-        if !outcome.pass {
-            failed.push((file, outcome));
-        }
-    }
-
-    for (file, outcome) in &failed {
-        println!("FAIL {}", file.display());
-        println!("     {}", run::failure_line(&outcome.output));
-        if verbose {
-            for line in outcome.output.lines() {
-                println!("       | {line}");
+    let note = |exec: &model::TestExecution| {
+        if exec.result == model::TestResult::Pass {
+            passed.fetch_add(1, Ordering::Relaxed);
+        } else {
+            failed.fetch_add(1, Ordering::Relaxed);
+            // Quiet by default. A failure is a data point, not a message: the
+            // live ✗ count says how many, the console report names the first
+            // few, and the JSON holds all of them. Streaming every one turns a
+            // 759-failure run into 1,518 lines of scrollback.
+            if verbose {
+                bar.suspend(|| {
+                    println!("FAIL {}", exec.slug());
+                    println!("     {}", exec.message);
+                    println!("     {}", exec.path.display());
+                });
             }
         }
-    }
+        let ok = passed.load(Ordering::Relaxed);
+        let bad = failed.load(Ordering::Relaxed);
+        bar.set_message(format!("✓{ok} ✗{bad}"));
+        bar.inc(1);
+        // indicatif draws nothing when stderr is not a terminal (piped to a
+        // file, captured by CI). Keep reporting regardless.
+        if bar.is_hidden() && (ok + bad) % 250 == 0 {
+            eprintln!(
+                "[testrunner] {}/{} · ✓{ok} ✗{bad} · {:.0}/s",
+                ok + bad,
+                files.len(),
+                (ok + bad) as f64 / started.elapsed().as_secs_f64().max(0.001),
+            );
+        }
+    };
 
-    let total = results.len();
-    let passed = total - failed.len();
+    let executions: Vec<model::TestExecution> = match &runtime {
+        // A foreign runtime has no warm mode — one process per test is all
+        // `go run` / `python3` / `node` offer.
+        Some(cmd) => files
+            .par_iter()
+            .map(|file| {
+                let text = std::fs::read_to_string(file).unwrap_or_default();
+                let mode = run::Mode::of(&text);
+                let outcome = run::run_foreign(&cmd[0], &cmd[1..], file, mode, timeout);
+                let (language, category, name) = model::identify(file);
+                let exec = model::TestExecution {
+                    path: file.clone(),
+                    language,
+                    category,
+                    name,
+                    result: outcome.result,
+                    message: outcome.message,
+                    duration_ms: outcome.duration_ms,
+                };
+                note(&exec);
+                exec
+            })
+            .collect(),
+        None if cold => files
+            .par_iter()
+            .map(|file| {
+                let text = std::fs::read_to_string(file).unwrap_or_default();
+                let mode = run::Mode::of(&text);
+                let outcome = run::run_case(&vybex, file, mode, timeout);
+                let (language, category, name) = model::identify(file);
+                let exec = model::TestExecution {
+                    path: file.clone(),
+                    language,
+                    category,
+                    name,
+                    result: outcome.result,
+                    message: outcome.message,
+                    duration_ms: outcome.duration_ms,
+                };
+                note(&exec);
+                exec
+            })
+            .collect(),
+        None => pool::run_all(
+            &vybex,
+            &files,
+            threads,
+            std::time::Duration::from_secs(timeout),
+            note,
+        ),
+    };
+    bar.finish_and_clear();
+
+    let mut report = model::TestReport::new(under);
+    for exec in executions {
+        report.add_execution(exec);
+    }
+    report.duration_secs = started.elapsed().as_secs();
+
+    report::print_console(&report);
+
+    // Timestamped JSON, then diff against the newest earlier run of the same
+    // runtime — a pass count on its own can't tell a fix from a regression.
+    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let out = results_dir.join(format!("run_{stamp}.json"));
+    if let Some((prev_path, prev)) = report::latest_previous(&results_dir, &report.runtime, &out) {
+        report::compare(&prev, &report).print();
+        eprintln!("[testrunner] previous: {}", prev_path.display());
+    }
+    report::save_json(&report, &out)?;
+    println!("Report: {}", out.display());
     println!(
-        "\n{passed}/{total} passed, {} failed in {:.1}s",
-        failed.len(),
-        started.elapsed().as_secs_f64()
+        "{}/{} passed ({:.1}%) in {:.1}s — {:.0} tests/s across {threads} workers",
+        report.passed,
+        report.total,
+        report.pass_rate(),
+        started.elapsed().as_secs_f64(),
+        report.total as f64 / started.elapsed().as_secs_f64().max(0.001),
     );
-    if failed.is_empty() { Ok(()) } else { std::process::exit(1) }
+
+    if report.failed == 0 && report.errors == 0 { Ok(()) } else { std::process::exit(1) }
 }
 
 fn collect(roots: &[&String]) -> Vec<PathBuf> {
