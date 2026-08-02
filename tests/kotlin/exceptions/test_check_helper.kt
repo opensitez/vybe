@@ -1,0 +1,17 @@
+// vybe-test: kotlin/exceptions/test_check_helper
+// origin: languages/kotlin/tests/kotlin/test_exceptions.rs
+
+fun __check(got: String, want: String) {
+    if (got != want) {
+        println("FAIL: want [" + want + "] got [" + got + "]")
+        throw Exception("assertion failed")
+    }
+}
+
+fun main() {
+            try {
+                check(false)
+            } catch (e: Exception) {
+                __check(("check failed").toString(), "check failed")
+            }
+        }
