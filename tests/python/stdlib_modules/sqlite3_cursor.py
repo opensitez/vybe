@@ -1,0 +1,9 @@
+# vybe-test: python/stdlib_modules/sqlite3_cursor
+# origin: languages/python/tests/python/test_stdlib_modules.rs
+# vybe-test-mode: compile
+
+import sqlite3
+conn = sqlite3.connect('test.db')
+cur = conn.cursor()
+cur.execute('SELECT 1')
+rows = cur.fetchall()

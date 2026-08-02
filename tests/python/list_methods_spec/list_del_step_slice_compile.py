@@ -1,0 +1,6 @@
+# vybe-test: python/list_methods_spec/list_del_step_slice_compile
+# origin: languages/python/tests/python/test_list_methods_spec.rs
+# vybe-test-mode: compile
+
+x = [1, 2, 3, 4, 5, 6]
+del x[::2]

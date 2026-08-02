@@ -1,0 +1,6 @@
+# vybe-test: python/os_path_extended/os_path_mkdir
+# origin: languages/python/tests/python/test_os_path_extended.rs
+# vybe-test-mode: compile
+
+import os
+os.mkdir('tmp_test_dir', 0o755)
