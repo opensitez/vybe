@@ -3,14 +3,7 @@
 
 package main
 import "fmt"
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
 func main() { value := 1
 func() { defer func(ptr *int) { *ptr = 5 }(&value) }()
-__check(fmt.Sprint(value), "5")
+fmt.Println(value)
 }

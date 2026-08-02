@@ -4,14 +4,7 @@
 package main
 import "fmt"
 type T struct { v int }
-func (t T) show() { __check(fmt.Sprint(t.v), "1") }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
+func (t T) show() { fmt.Println(t.v) }
 func main() { t := T{v: 1}
 defer t.show()
 t.v = 2

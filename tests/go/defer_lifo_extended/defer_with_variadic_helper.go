@@ -3,13 +3,6 @@
 
 package main
 import "fmt"
-func show(parts ...string) { __check(fmt.Sprint(len(parts)), "2") }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
+func show(parts ...string) { fmt.Println(len(parts)) }
 func main() { defer show("a", "b")
 }

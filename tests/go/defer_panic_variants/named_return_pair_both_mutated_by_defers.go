@@ -6,14 +6,7 @@ import "fmt"
 func stats() (total int, count int) { defer func() { count = 4 }()
 defer func() { total = 9 }()
 return 1, 2 }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
 func main() { t, c := stats()
-__check(fmt.Sprint(t), "9")
-__check(fmt.Sprint(c), "4")
+fmt.Println(t)
+fmt.Println(c)
 }

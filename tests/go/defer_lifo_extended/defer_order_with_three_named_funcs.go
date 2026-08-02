@@ -3,16 +3,9 @@
 
 package main
 import "fmt"
-func p1() { __check(fmt.Sprint(1), "3") }
-func p2() { __check(fmt.Sprint(2), "2") }
-func p3() { __check(fmt.Sprint(3), "1") }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
+func p1() { fmt.Println(1) }
+func p2() { fmt.Println(2) }
+func p3() { fmt.Println(3) }
 func main() { defer p1()
 defer p2()
 defer p3()

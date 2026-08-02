@@ -3,14 +3,7 @@
 
 package main
 import "fmt"
-func show(v int) { __check(fmt.Sprint(v), "2") }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
+func show(v int) { fmt.Println(v) }
 func main() { value := 2
 defer show(value)
 value = 9

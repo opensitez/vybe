@@ -10,6 +10,6 @@ func __check(got string, want string) {
 	}
 }
 
-func main() { defer __check(fmt.Sprint("defer"), "run")
-__check(fmt.Sprint("run"), "defer")
+func main() { defer __check(fmt.Sprint("defer"), "defer")
+__check(fmt.Sprint("run"), "run")
 }

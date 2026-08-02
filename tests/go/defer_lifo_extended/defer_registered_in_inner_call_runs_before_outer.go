@@ -3,15 +3,8 @@
 
 package main
 import "fmt"
-func inner() { defer __check(fmt.Sprint("inner"), "inner")
+func inner() { defer fmt.Println("inner")
 }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
-func main() { defer __check(fmt.Sprint("outer"), "outer")
+func main() { defer fmt.Println("outer")
 inner()
 }

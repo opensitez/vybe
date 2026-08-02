@@ -5,12 +5,5 @@ package main
 import "fmt"
 func build() (n int) { defer func() { n = 99 }()
 return 5 }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
-func main() { __check(fmt.Sprint(build()), "99")
+func main() { fmt.Println(build())
 }

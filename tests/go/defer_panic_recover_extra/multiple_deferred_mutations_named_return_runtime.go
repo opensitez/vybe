@@ -7,12 +7,5 @@ func build() (result int) { defer func() { result += 3 }()
 defer func() { result *= 2 }()
 result = 4
 return }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
-func main() { __check(fmt.Sprint(build()), "11")
+func main() { fmt.Println(build())
 }

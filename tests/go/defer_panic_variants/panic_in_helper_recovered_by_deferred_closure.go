@@ -4,13 +4,6 @@
 package main
 import "fmt"
 func boom() { panic("fail") }
-func run() { defer func() { if recover() != nil { __check(fmt.Sprint("saved"), "saved") } }()
+func run() { defer func() { if recover() != nil { fmt.Println("saved") } }()
 boom() }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
 func main() { run() }

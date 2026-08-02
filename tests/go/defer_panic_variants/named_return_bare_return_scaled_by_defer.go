@@ -6,12 +6,5 @@ import "fmt"
 func scale() (n int) { defer func() { n = n * 3 }()
 n = 4
 return }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
-func main() { __check(fmt.Sprint(scale()), "12")
+func main() { fmt.Println(scale())
 }

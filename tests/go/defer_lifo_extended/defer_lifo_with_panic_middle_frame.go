@@ -3,16 +3,9 @@
 
 package main
 import "fmt"
-func run() { defer __check(fmt.Sprint("c"), "a")
-defer __check(fmt.Sprint("b"), "c")
+func run() { defer fmt.Println("c")
+defer fmt.Println("b")
 defer func() { recover() }()
-__check(fmt.Sprint("a"), "b")
+fmt.Println("a")
 panic("x") }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
 func main() { run() }

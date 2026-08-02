@@ -6,11 +6,4 @@ import "fmt"
 func work() (n int) { defer func() { n++ }()
 defer func() { n++ }()
 return 0 }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
-func main() { __check(fmt.Sprint(work()), "2") }
+func main() { fmt.Println(work()) }

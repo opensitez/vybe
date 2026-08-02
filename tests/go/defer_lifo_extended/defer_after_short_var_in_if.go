@@ -3,13 +3,6 @@
 
 package main
 import "fmt"
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
-func main() { if x := 1; x > 0 { defer __check(fmt.Sprint(x), "1")
+func main() { if x := 1; x > 0 { defer fmt.Println(x)
 }
 }

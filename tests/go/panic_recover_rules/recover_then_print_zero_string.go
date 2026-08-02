@@ -5,13 +5,6 @@ package main
 import "fmt"
 func run() { defer func() { recover()
 var s string
-__check(fmt.Sprint(s == ""), "true") }()
+fmt.Println(s == "") }()
 panic(1) }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
 func main() { run() }

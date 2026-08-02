@@ -5,13 +5,6 @@ package main
 import "fmt"
 type err struct { code int }
 func run() { defer func() { e := recover().(err)
-__check(fmt.Sprint(e.code), "5") }()
+fmt.Println(e.code) }()
 panic(err{code: 5}) }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
 func main() { run() }

@@ -9,11 +9,4 @@ func init() { mark("1")
 defer mark("d1") }
 func init() { mark("2")
 defer mark("d2") }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
-func main() { __check(fmt.Sprint(order), "12") }
+func main() { fmt.Println(order) }

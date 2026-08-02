@@ -6,12 +6,5 @@ import "fmt"
 func build(flag bool) (result int) { defer func() { result++ }()
 if flag { return 5 }
 return 2 }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
-func main() { __check(fmt.Sprint(build(true)), "6")
+func main() { fmt.Println(build(true))
 }

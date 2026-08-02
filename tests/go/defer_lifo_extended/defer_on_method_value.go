@@ -4,14 +4,7 @@
 package main
 import "fmt"
 type counter struct { n int }
-func (c counter) val() { __check(fmt.Sprint(c.n), "5") }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
+func (c counter) val() { fmt.Println(c.n) }
 func main() { c := counter{n: 5}
 defer c.val()
 c.n = 9

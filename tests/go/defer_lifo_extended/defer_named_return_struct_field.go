@@ -8,13 +8,6 @@ b int }
 func work() (p pair) { defer func() { p.b = 3 }()
 p.a = 1
 return }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
 func main() { r := work()
-__check(fmt.Sprint(r.a), "1")
-__check(fmt.Sprint(r.b), "3") }
+fmt.Println(r.a)
+fmt.Println(r.b) }

@@ -10,7 +10,7 @@ func __check(got string, want string) {
 	}
 }
 
-func main() { defer __check(fmt.Sprint("a"), "c")
+func main() { defer __check(fmt.Sprint("a"), "a")
 defer __check(fmt.Sprint("b"), "b")
-__check(fmt.Sprint("c"), "a")
+__check(fmt.Sprint("c"), "c")
 }

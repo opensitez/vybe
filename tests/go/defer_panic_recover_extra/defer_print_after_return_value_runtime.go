@@ -3,14 +3,7 @@
 
 package main
 import "fmt"
-func build() int { defer __check(fmt.Sprint("later"), "later")
+func build() int { defer fmt.Println("later")
 return 4 }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
-func main() { __check(fmt.Sprint(build()), "4")
+func main() { fmt.Println(build())
 }

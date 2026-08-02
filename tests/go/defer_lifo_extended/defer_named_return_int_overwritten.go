@@ -5,11 +5,4 @@ package main
 import "fmt"
 func work() (n int) { defer func() { n = 20 }()
 return 5 }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
-func main() { __check(fmt.Sprint(work()), "20") }
+func main() { fmt.Println(work()) }

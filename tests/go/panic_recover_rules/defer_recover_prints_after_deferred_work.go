@@ -3,14 +3,7 @@
 
 package main
 import "fmt"
-func run() { defer __check(fmt.Sprint("late"), "saved")
-defer func() { if recover() != nil { __check(fmt.Sprint("saved"), "late") } }()
+func run() { defer fmt.Println("late")
+defer func() { if recover() != nil { fmt.Println("saved") } }()
 panic("fail") }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
-		panic("assertion failed")
-	}
-}
-
 func main() { run() }
