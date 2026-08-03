@@ -951,9 +951,16 @@ fn i31ref_negative() {
 fn ref_cast_success() {
     let mut chunk = Chunk::new("test");
     let cs = chunk.add_constant(Value::String(Arc::from("hello")));
-    let ct = chunk.add_constant(Value::String(Arc::from("string")));
     chunk.emit_op_u16(Op::CONST, cs, 0);
-    chunk.emit_op_u16(Op::REF_CAST, ct, 0);
+    // Every value in this ABI is an external reference, so `ref.cast extern`
+    // is the cast that must succeed.
+    chunk.emit_ref_type_op(
+        Op::REF_CAST,
+        vybe_runtime::opcode::heaptype::HeapType::Abstract(
+            vybe_runtime::opcode::heaptype::HT_EXTERN,
+        ),
+        0,
+    );
     // Should not trap — the cast value stays on the stack unchanged.
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);

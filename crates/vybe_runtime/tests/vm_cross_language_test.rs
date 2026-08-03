@@ -142,7 +142,7 @@ fn cls_case_resolution_at_link_time() {
     cs_script.types.push(TypeEntry {
         name: "Dog".to_string(),
         kind: vybe_runtime::chunk::CompositeKind::Struct,
-        parent: String::new(),
+        parent_index: 0,
         fields: vec!["Name".to_string(), "Breed".to_string()],
         methods: vec![("Bark".to_string(), 0)],
         is_interface: false,

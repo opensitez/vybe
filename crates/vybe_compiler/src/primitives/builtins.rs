@@ -1275,10 +1275,11 @@ impl Compiler {
         );
     }
 
-    /// Emit a `ref.test`/`ref.cast` against a named heap type. `args[0]` is the
+    /// Emit a `ref.test`/`ref.cast` against a heap type. `args[0]` is the
     /// heap-type reference (bare `$T` → non-null; folded `(ref null $T)` →
-    /// nullable); `args[1..]` is the ref operand. The type NAME is emitted as a
-    /// string constant the VM resolves through the registered hierarchy.
+    /// nullable); `args[1..]` is the ref operand. The name is resolved to a
+    /// heaptype HERE: abstract for the spec's own spellings, otherwise an
+    /// index into the module's type section.
     fn emit_ref_type_op(&mut self, args: &[&Expression], is_cast: bool) -> Result<(), String> {
         let (type_name, nullable) = wasm_heap_type_ref(args.first().copied());
         for a in &args[1..] {
@@ -1290,10 +1291,7 @@ impl Compiler {
             (false, true) => Op::REF_TEST_NULL,
             (true, false) => Op::REF_CAST,
             (true, true) => Op::REF_CAST_NULL };
-        let cidx = self
-            .chunk()
-            .add_constant(Value::String(std::sync::Arc::from(type_name.as_str())));
-        self.chunk().emit_op_u16(op, cidx, l);
+        self.emit_ref_type_test(op, &type_name, l);
         Ok(())
     }
 

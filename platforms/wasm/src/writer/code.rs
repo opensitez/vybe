@@ -1572,22 +1572,21 @@ fn emit_gc_op(
             write_leb128_u32(body, fieldidx);
         }
         _ if op == Op::REF_TEST_NULL => {
-            // ref.test (ref null ht): `0xFB 0x15 <heaptype>`. Our bytecode
-            // operand is a constant-pool index for a type *name*; we emit
-            // a conservative `anyref` heaptype so the module validates on
-            // any GC-capable engine. Precise per-type dispatch still runs
-            // in the VM via `test_type`.
-            *ip += op.operand_format().size_in(&chunk.code, *ip);
+            // `ref.test (ref null ht)`: `0xFB 0x15 <heaptype>`. The bytecode
+            // immediate IS a heaptype now, so it passes straight through —
+            // only a concrete index needs translating into this module's
+            // numbering.
+            let ht_bytes = read_heaptype_operand(chunk, ip, type_ctx);
             body.push(0xFB);
             write_leb128_u32(body, 0x15);
-            body.push(HT_ANY);
+            body.extend_from_slice(&ht_bytes);
             emit_box_i32(body, _rt_idx);
         }
         _ if op == Op::REF_CAST_NULL => {
-            *ip += op.operand_format().size_in(&chunk.code, *ip);
+            let ht_bytes = read_heaptype_operand(chunk, ip, type_ctx);
             body.push(0xFB);
             write_leb128_u32(body, 0x17);
-            body.push(HT_ANY);
+            body.extend_from_slice(&ht_bytes);
         }
         _ if op == Op::ANY_CONVERT_EXTERN => {
             // Our externref is the universal value carrier — the op is a
@@ -1669,15 +1668,8 @@ fn emit_gc_op(
             emit_externalize(body);
         }
         _ if op == Op::REF_TEST || op == Op::REF_CAST => {
-            // ref.test / ref.cast (non-null): `0xFB {0x14|0x16} <heaptype>`.
-            // Our bytecode carries a constant-pool string index (the type
-            // name) rather than a WASM typeidx. We resolve the name via
-            // `type_ctx.struct_type(name)` when available — otherwise fall
-            // back to `anyref` so the module still validates. VM-side the
-            // check runs through `test_type` which handles the precise
-            // name-based lookup regardless of what we encode here.
-            let name_idx = read_u16(&chunk.code, ip) as usize;
-            let ht_bytes = resolve_heaptype_from_name(chunk, name_idx, type_ctx);
+            // `ref.test` / `ref.cast` (non-null): `0xFB {0x14|0x16} <heaptype>`.
+            let ht_bytes = read_heaptype_operand(chunk, ip, type_ctx);
             body.push(0xFB);
             write_leb128_u32(body, op.sub() as u32);
             body.extend_from_slice(&ht_bytes);
@@ -1776,6 +1768,11 @@ fn emit_dyn_binary_cmp(
 /// string type name. We look up the name in `type_ctx.struct_type_indices`
 /// and emit `(signed LEB128) typeidx` when found; otherwise fall back to
 /// the abstract `anyref` single-byte heaptype so the binary still validates.
+/// Resolve a type NAME held in the constant pool to a heaptype.
+///
+/// Still used by `br_on_cast` and the Custom Descriptors casts, whose operands
+/// have not been converted to heaptype immediates yet — they carry a label
+/// depth alongside the type, so their operand format changes with them.
 fn resolve_heaptype_from_name(
     chunk: &Chunk,
     name_idx: usize,
@@ -1789,6 +1786,31 @@ fn resolve_heaptype_from_name(
         }
     }
     vec![HT_ANY]
+}
+
+/// Read a bytecode heaptype immediate and re-encode it for the binary.
+///
+/// The bytecode already carries the spec's signed-LEB heaptype, so an abstract
+/// type passes through byte-for-byte. A concrete one is an index into the
+/// MODULE's type space and has to be translated into the writer's own
+/// numbering (described/descriptor pairs), which `struct_type_by_index` does
+/// without going near a name. An index with no emitted type — a class declared
+/// only so a `ref.test` could name it, and never defined here — widens to
+/// `anyref` so the module still validates; the VM's declared-name fallback is
+/// what answers that test until the platforms allocate typed objects.
+fn read_heaptype_operand(chunk: &Chunk, ip: &mut usize, type_ctx: &WasmTypeContext) -> Vec<u8> {
+    let (value, len) = read_leb128_i32(&chunk.code[*ip..]);
+    *ip += len;
+    let mut buf = Vec::new();
+    match vybe_runtime::opcode::heaptype::HeapType::from_sleb(value) {
+        vybe_runtime::opcode::heaptype::HeapType::Abstract(byte) => buf.push(byte),
+        vybe_runtime::opcode::heaptype::HeapType::Concrete(index) => {
+            match type_ctx.struct_type_by_index(index) {
+                Some(wasm_idx) => write_leb128_i32(&mut buf, wasm_idx as i32),
+                None => buf.push(HT_ANY) }
+        }
+    }
+    buf
 }
 
 /// Emit `any.convert_extern` (0xFB 0x1A): externref → anyref

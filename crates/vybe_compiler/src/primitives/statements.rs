@@ -1396,8 +1396,8 @@ impl Compiler {
                                 for expected in &expected_names {
                                     self.emit_u16(Op::LOCAL_GET, exc_slot);
                                     let line = self.line;
-                                    let idx = self.str_const(expected);
-                                    self.chunks[self.current].emit_op_u16(Op::REF_TEST, idx, line);
+                                    let expected_name = expected.clone();
+                                    self.emit_ref_type_test(Op::REF_TEST, &expected_name, line);
                                     {
                                         let line = self.line;
                                         crate::primitives::ops::emit_dyn_to_bool(
@@ -3822,8 +3822,7 @@ impl Compiler {
                     ExprKind::Ident(class_name) => {
                         let canon = self.canon(class_name);
                         let line = self.line;
-                        let idx = self.str_const(&canon);
-                        self.chunks[self.current].emit_op_u16(Op::REF_TEST, idx, line);
+                        self.emit_ref_type_test(Op::REF_TEST, &canon, line);
                     }
                     _ => {
                         self.compile_expr(cls)?;

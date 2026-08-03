@@ -107,8 +107,17 @@ pub struct TypeEntry {
     /// WASM GC composite shape (struct / array / func). Determines the runtime
     /// rtt kind stamped onto instances so `array.*` ops trap per spec.
     pub kind: CompositeKind,
-    /// Parent type name (for inheritance). Empty = inherits from Object.
-    pub parent: String,
+    /// Declared supertype — `sub $i`, a **1-based index into this same type
+    /// table**; `0` is `sub` with an empty typeidx list, i.e. no declared
+    /// supertype.
+    ///
+    /// This used to be a NAME resolved at load. An index is what the spec
+    /// declares and it removes a bug class outright: a parent spelled slightly
+    /// differently from its declaration used to resolve to nothing and the
+    /// class landed with no supertype at all. A supertype defined elsewhere
+    /// (a host builtin, another component) still gets an entry here — a
+    /// declaration bound at load — so the reference is an index either way.
+    pub parent_index: u16,
     /// Field names in order. Field i is at `fields[i]` in the object's indexed storage.
     pub fields: Vec<String>,
     /// Vtable: method_name → chunk_index. Methods are shared across all instances.
@@ -830,6 +839,14 @@ impl Chunk {
         for b in value.to_le_bytes() {
             self.emit(b, line);
         }
+    }
+
+    /// Emit `ref.test` / `ref.cast` / their `_null` variants with a HEAPTYPE
+    /// immediate, in the spec encoding (one signed LEB; negative = abstract,
+    /// non-negative = module type index).
+    pub fn emit_ref_type_op(&mut self, op: Op, ht: crate::opcode::heaptype::HeapType, line: u32) {
+        self.emit_op(op, line);
+        self.emit_leb_i32(ht.to_sleb(), line);
     }
 
     /// Emit a string constant — js-string-builtins § String constants:

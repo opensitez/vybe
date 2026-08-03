@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 use vybe_runtime::chunk::TypeEntry;
+use vybe_runtime::opcode::heaptype::{HT_ANY, HT_STRUCT, HeapType};
 use vybe_runtime::value::Value;
 use vybe_runtime::{Chunk, Op, VM};
 use vybe_platform_wasm::read_wasm;
@@ -42,7 +43,7 @@ fn type_entry(name: &str, fields: &[&str]) -> TypeEntry {
     TypeEntry {
         name: name.into(),
         kind: vybe_runtime::chunk::CompositeKind::Struct,
-        parent: String::new(),
+        parent_index: 0,
         fields: fields.iter().map(|field| field.to_string()).collect(),
         methods: Vec::new(),
         is_interface: false,
@@ -230,10 +231,10 @@ fn ref_as_non_null_traps_on_null() {
 fn ref_cast_traps_on_type_mismatch() {
     // Push a string, cast to "dog" — won't match → trap
     let e = run_err(|c| {
+        c.types.push(type_entry("Dog", &["legs"]));
         let val = c.add_constant(Value::String(Arc::from("not-a-dog")));
-        let cast = c.add_constant(Value::String(Arc::from("dog")));
         c.emit_op_u16(Op::CONST, val, 0);
-        c.emit_op_u16(Op::REF_CAST, cast, 0);
+        c.emit_ref_type_op(Op::REF_CAST, HeapType::Concrete(1), 0);
     });
     assert!(e.contains("cast") || e.contains("not"));
 }
@@ -242,9 +243,8 @@ fn ref_cast_traps_on_type_mismatch() {
 fn ref_cast_passes_on_null_input() {
     // REF_CAST_NULL always passes (null is a valid reference for any nullable type)
     let mut chunk = Chunk::new("<script>");
-    let cast = chunk.add_constant(Value::String(Arc::from("anything")));
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    chunk.emit_op_u16(Op::REF_CAST_NULL, cast, 0);
+    chunk.emit_ref_type_op(Op::REF_CAST_NULL, HeapType::Abstract(HT_STRUCT), 0);
     chunk.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![chunk]).expect("run failed");
     assert!(matches!(r, Value::Null));
@@ -568,14 +568,22 @@ fn any_convert_extern_is_identity() {
 
 #[test]
 fn ref_test_on_string_value() {
-    let r = run(|c| {
+    // A string is a value, not a struct: `any` accepts it, `struct` does not.
+    // Both directions are pinned — a test that accepts either answer pins
+    // nothing.
+    let any = run(|c| {
         let val = c.add_constant(Value::String(Arc::from("hello")));
-        let type_name = c.add_constant(Value::String(Arc::from("string")));
         c.emit_op_u16(Op::CONST, val, 0);
-        c.emit_op_u16(Op::REF_TEST, type_name, 0);
+        c.emit_ref_type_op(Op::REF_TEST, HeapType::Abstract(HT_ANY), 0);
     });
-    // test_type("hello", "string") should return true
-    assert!(r.as_i32() == 0 || r.as_i32() == 1); // result depends on VM type matching
+    assert_eq!(any.as_i32(), 1, "every non-null value is `any`");
+
+    let structural = run(|c| {
+        let val = c.add_constant(Value::String(Arc::from("hello")));
+        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_ref_type_op(Op::REF_TEST, HeapType::Abstract(HT_STRUCT), 0);
+    });
+    assert_eq!(structural.as_i32(), 0, "a string is not a struct");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -745,7 +753,7 @@ fn array_init_data_copies_into_array() {
     c.types.push(vybe_runtime::chunk::TypeEntry {
         name: "<array i8>".to_string(),
         kind: vybe_runtime::chunk::CompositeKind::Array,
-        parent: String::new(),
+        parent_index: 0,
         fields: vec!["i8".to_string()],
         methods: Vec::new(),
         is_interface: false,
@@ -1288,7 +1296,7 @@ fn emit_three_element_array(c: &mut Chunk) {
     c.types.push(vybe_runtime::chunk::TypeEntry {
         name: "gcarray".into(),
         kind: vybe_runtime::chunk::CompositeKind::Array,
-        parent: String::new(),
+        parent_index: 0,
         fields: Vec::new(),
         methods: Vec::new(),
         is_interface: false,
@@ -1567,13 +1575,13 @@ fn struct_new_with_a_typeidx_stamps_rtt_and_fills_indexed_fields() {
 fn struct_new_with_a_typeidx_answers_ref_test_from_the_registry() {
     let mut chunk = Chunk::new("<script>");
     chunk.types.push(type_entry("Point", &["x", "y"]));
-    let name = chunk.add_constant(Value::String(Arc::from("Point")));
     let a = chunk.add_constant(Value::I32(1));
     let b = chunk.add_constant(Value::I32(2));
     chunk.emit_op_u16(Op::CONST, a, 0);
     chunk.emit_op_u16(Op::CONST, b, 0);
     chunk.emit_struct_new(1, 0, 0);
-    chunk.emit_op_u16(Op::REF_TEST, name, 0);
+    // Same immediate the allocation carried — the test names no type.
+    chunk.emit_ref_type_op(Op::REF_TEST, HeapType::Concrete(1), 0);
     chunk.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![chunk]).expect("run failed");
     assert_eq!(
@@ -1604,9 +1612,8 @@ fn struct_new_default_with_a_typeidx_allocates_the_declared_field_slots() {
     // $t's fields at their defaults, with $t's rtt stamped.
     let mut chunk = Chunk::new("<script>");
     chunk.types.push(type_entry("Pair", &["a", "b"]));
-    let name = chunk.add_constant(Value::String(Arc::from("Pair")));
     chunk.emit_op_u16(Op::STRUCT_NEW_DEFAULT, 1, 0);
-    chunk.emit_op_u16(Op::REF_TEST, name, 0);
+    chunk.emit_ref_type_op(Op::REF_TEST, HeapType::Concrete(1), 0);
     chunk.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![chunk]).expect("run failed");
     assert_eq!(r.as_i32(), 1, "the instance must carry its declared type");

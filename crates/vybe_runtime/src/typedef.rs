@@ -546,22 +546,43 @@ impl TypeRegistry {
     /// Called by VM.run() before execution. Registers user-defined types
     /// and adds their ChunkFn methods to the vtable.
     pub fn load_type_table(&mut self, types: &[super::chunk::TypeEntry]) {
-        // First pass: register all types (so interfaces exist before classes reference them)
+        // First pass: register every type, and record where each entry of THIS
+        // table landed. `local_ids[i]` is the registry id of `types[i]`, which
+        // is what turns the declared `sub $i` links below into id links
+        // without going near a name. An entry whose name is already registered
+        // — a host builtin the module only DECLARED so it could name it —
+        // keeps its existing id, which is exactly the binding an imported type
+        // needs.
+        let mut local_ids: Vec<usize> = Vec::with_capacity(types.len());
         for entry in types {
-            if self.get_id(&entry.name).is_none() {
-                let mut td = TypeDef::new(&entry.name);
-                // Carry the WASM GC composite shape so instances stamped with
-                // this type id trap on `array.*` when it is an `(array …)`.
-                td.kind = entry.kind;
-                if entry.is_interface {
-                    td.is_interface = true;
-                }
-                if !entry.parent.is_empty() {
-                    if let Some(pid) = self.get_id(&entry.parent) {
-                        td.parent = Some(pid);
+            let id = match self.get_id(&entry.name) {
+                Some(existing) => existing,
+                None => {
+                    let mut td = TypeDef::new(&entry.name);
+                    // Carry the WASM GC composite shape so instances stamped
+                    // with this type id trap on `array.*` when it is an
+                    // `(array …)`.
+                    td.kind = entry.kind;
+                    if entry.is_interface {
+                        td.is_interface = true;
                     }
+                    self.register(td)
                 }
-                self.register(td);
+            };
+            local_ids.push(id);
+        }
+
+        // Second pass over the supertype links, now that every id is known.
+        // Forward references are free: a class may declare a supertype that
+        // appears later in the same table, exactly as a WASM rec group allows.
+        for (i, entry) in types.iter().enumerate() {
+            if entry.parent_index == 0 {
+                continue;
+            }
+            if let Some(&parent_id) = local_ids.get(entry.parent_index as usize - 1) {
+                if parent_id != local_ids[i] {
+                    self.types[local_ids[i]].parent = Some(parent_id);
+                }
             }
         }
 
@@ -607,13 +628,6 @@ impl TypeRegistry {
                 // Set constructor
                 if let Some(ctor_idx) = entry.constructor_chunk {
                     typedef.constructor = Some(Method::ChunkFn(ctor_idx));
-                }
-            }
-
-            // Resolve parent (may have been registered in first pass)
-            if !entry.parent.is_empty() {
-                if let Some(pid) = self.get_id(&entry.parent) {
-                    self.types[type_id].parent = Some(pid);
                 }
             }
 

@@ -11,6 +11,26 @@ use std::sync::Arc;
 use vybe_runtime::value::Object;
 use vybe_runtime::{Chunk, Method, Op, TypeDef, VM, Value};
 
+/// Declare `name` as this module's type 1 so a `ref.test` can carry an INDEX.
+/// When the registry already knows the name — a host type, or one another
+/// module registered — the declaration binds to it at load; that binding is
+/// what makes a type reference an index on both sides.
+fn declare_type(chunk: &mut Chunk, name: &str) {
+    chunk.types.push(vybe_runtime::chunk::TypeEntry {
+        name: name.into(),
+        kind: vybe_runtime::chunk::CompositeKind::Struct,
+        parent_index: 0,
+        fields: Vec::new(),
+        methods: Vec::new(),
+        is_interface: false,
+        implements: Vec::new(),
+        constructor_chunk: None,
+        field_descriptors: std::collections::HashMap::new() });
+}
+
+const TYPE_ONE: vybe_runtime::opcode::heaptype::HeapType =
+    vybe_runtime::opcode::heaptype::HeapType::Concrete(1);
+
 fn is_wasm_true(value: &Value) -> bool {
     matches!(value, Value::Bool(true) | Value::I32(1))
 }
@@ -248,8 +268,8 @@ fn test_ref_test_opcode_with_type_string() {
     let const_idx = chunk.add_constant(obj);
     chunk.emit_op_u16(Op::CONST, const_idx, 0);
     // ref_test with "control" type name
-    let type_name_idx = chunk.add_constant(Value::String(Arc::from("control")));
-    chunk.emit_op_u16(Op::REF_TEST, type_name_idx, 0);
+    declare_type(&mut chunk, "control");
+    chunk.emit_ref_type_op(Op::REF_TEST, TYPE_ONE, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
@@ -275,8 +295,8 @@ fn test_ref_test_opcode_with_type_id() {
     let obj = make_typed_object_with_id(button_id, "Button");
     let const_idx = chunk.add_constant(obj);
     chunk.emit_op_u16(Op::CONST, const_idx, 0);
-    let type_name_idx = chunk.add_constant(Value::String(Arc::from("control")));
-    chunk.emit_op_u16(Op::REF_TEST, type_name_idx, 0);
+    declare_type(&mut chunk, "control");
+    chunk.emit_ref_type_op(Op::REF_TEST, TYPE_ONE, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
@@ -305,8 +325,8 @@ fn test_ref_test_opcode_negative() {
     let obj = make_typed_object("List");
     let const_idx = chunk.add_constant(obj);
     chunk.emit_op_u16(Op::CONST, const_idx, 0);
-    let type_name_idx = chunk.add_constant(Value::String(Arc::from("button")));
-    chunk.emit_op_u16(Op::REF_TEST, type_name_idx, 0);
+    declare_type(&mut chunk, "button");
+    chunk.emit_ref_type_op(Op::REF_TEST, TYPE_ONE, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
@@ -338,8 +358,8 @@ fn test_ref_test_with_js_types_array() {
 
     let const_idx = chunk.add_constant(Value::Object(Arc::new(std::sync::Mutex::new(obj))));
     chunk.emit_op_u16(Op::CONST, const_idx, 0);
-    let type_name_idx = chunk.add_constant(Value::String(Arc::from("animal")));
-    chunk.emit_op_u16(Op::REF_TEST, type_name_idx, 0);
+    declare_type(&mut chunk, "animal");
+    chunk.emit_ref_type_op(Op::REF_TEST, TYPE_ONE, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
@@ -358,8 +378,8 @@ fn test_ref_test_primitives() {
     let mut chunk = Chunk::new("<test>");
     let str_idx = chunk.add_constant(Value::String(Arc::from("hello")));
     chunk.emit_op_u16(Op::CONST, str_idx, 0);
-    let type_name_idx = chunk.add_constant(Value::String(Arc::from("string")));
-    chunk.emit_op_u16(Op::REF_TEST, type_name_idx, 0);
+    declare_type(&mut chunk, "string");
+    chunk.emit_ref_type_op(Op::REF_TEST, TYPE_ONE, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();

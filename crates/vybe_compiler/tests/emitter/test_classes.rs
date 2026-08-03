@@ -114,11 +114,25 @@ fn emit_new_typed_object_stamps_type() {
     classes::emit_new_typed_object(&mut chunk, 1, "Dog", 1, 0);
     // Should have emitted struct.new_default $T and the __type stamp
     assert!(chunk.code.len() > 10, "Should emit multiple opcodes");
-    // Check constants contain "Dog" and "__type"
+    // The class name reaches the module as an imported STRING CONSTANT — a
+    // declared global whose field name is its value — so the pool holds the
+    // import's `(module, name)` key, not a bare `"Dog"`.
+    let dog_key = vybe_runtime::chunk::imported_global_key(
+        vybe_runtime::chunk::STRING_CONSTANTS_MODULE,
+        "Dog",
+    );
     let has_dog = chunk
         .constants
         .iter()
-        .any(|c| matches!(c, Value::String(s) if s.as_ref() == "Dog"));
+        .any(|c| matches!(c, Value::String(s) if s.as_ref() == dog_key));
+    assert!(
+        chunk
+            .global_imports
+            .iter()
+            .any(|i| i.module == vybe_runtime::chunk::STRING_CONSTANTS_MODULE
+                && i.name == "Dog"),
+        "the stamp must DECLARE its string constant"
+    );
     let has_type = chunk
         .constants
         .iter()
@@ -193,12 +207,27 @@ fn register_type_adds_entry() {
         Some(2),
         std::collections::HashMap::new(),
     );
-    assert_eq!(chunks[0].types.len(), 1);
+    // Two entries: `Dog`, plus a DECLARATION for the supertype it names.
+    // Declaring the supertype is what lets the subtype link be an index —
+    // `sub $i` — instead of a name resolved at load.
+    let dog = chunks[0]
+        .types
+        .iter()
+        .position(|t| t.name == "Dog")
+        .expect("Dog registered");
+    let animal = chunks[0]
+        .types
+        .iter()
+        .position(|t| t.name == "Animal")
+        .expect("supertype declared");
     // register_type preserves the source-language name verbatim;
     // case-insensitive lookup is the type registry's responsibility.
-    assert_eq!(chunks[0].types[0].name, "Dog");
-    assert_eq!(chunks[0].types[0].parent, "Animal");
-    assert_eq!(chunks[0].types[0].fields, vec!["name"]);
+    assert_eq!(
+        chunks[0].types[dog].parent_index as usize,
+        animal + 1,
+        "the supertype link must point at the declared entry (1-based)"
+    );
+    assert_eq!(chunks[0].types[dog].fields, vec!["name"]);
 }
 
 #[test]

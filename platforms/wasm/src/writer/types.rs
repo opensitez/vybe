@@ -19,6 +19,10 @@ const CD_SUB_FINAL: u8 = 0x4F; // sub final
 pub struct WasmTypeContext {
     /// type_name (lowercased) → WASM type index for the described struct
     pub struct_type_indices: std::collections::HashMap<String, u32>,
+    /// The module's own type index space → WASM type index. Slot `n - 1` is
+    /// the 1-based immediate a `ref.test` / `struct.new` carries, so a type
+    /// reference reaches the binary without passing through a name.
+    pub struct_type_by_module_index: Vec<u32>,
     /// type_name → WASM type index for the descriptor struct (vtable + proto)
     pub desc_type_indices: std::collections::HashMap<String, u32>,
     /// type_name → vec of field names in order (for field index lookup)
@@ -103,6 +107,17 @@ impl WasmTypeContext {
     }
 
     /// Look up the WASM type index for a descriptor type by name.
+    /// The WASM type index for a 1-based module type index — the immediate
+    /// form, no name involved.
+    pub fn struct_type_by_index(&self, module_index: u32) -> Option<u32> {
+        if module_index == 0 {
+            return None;
+        }
+        self.struct_type_by_module_index
+            .get(module_index as usize - 1)
+            .copied()
+    }
+
     pub fn desc_type(&self, name: &str) -> Option<u32> {
         self.desc_type_indices.get(&name.to_lowercase()).copied()
     }
@@ -127,6 +142,7 @@ pub fn build_type_context(
     let mut out = Vec::new();
     let mut ctx = WasmTypeContext {
         struct_type_indices: std::collections::HashMap::new(),
+        struct_type_by_module_index: Vec::new(),
         desc_type_indices: std::collections::HashMap::new(),
         struct_fields: std::collections::HashMap::new(),
         array_type_idx: 0,
@@ -263,14 +279,17 @@ pub fn build_type_context(
         ctx.desc_type_indices
             .insert(name_lower.clone(), descriptor_idx);
         ctx.struct_fields.insert(name_lower, te.fields.clone());
+        ctx.struct_type_by_module_index.push(described_idx);
     }
 
     // Types with children must be left "open" (`sub`) rather than
     // `sub final` so their subtypes can extend them.
-    let mut has_children: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Keyed by the declared supertype INDEX, so two same-named-but-distinct
+    // types can no longer be conflated into one "has children" answer.
+    let mut has_children: std::collections::HashSet<u16> = std::collections::HashSet::new();
     for te in &type_entries {
-        if !te.parent.is_empty() {
-            has_children.insert(te.parent.to_lowercase());
+        if te.parent_index != 0 {
+            has_children.insert(te.parent_index);
         }
     }
 
@@ -302,7 +321,7 @@ pub fn build_type_context(
 
             // Opening byte: `sub final` (0x4F) if no subtype extends this,
             // else `sub` (0x50) leaving the type open for extension.
-            let described_final = !has_children.contains(&name_lower);
+            let described_final = !has_children.contains(&(i as u16 + 1));
             let sub_byte = if described_final { CD_SUB_FINAL } else { 0x50 };
 
             // Described struct subtype. Supertype count = 1 when parent
@@ -310,8 +329,7 @@ pub fn build_type_context(
             // is the supertype link (the descriptor-struct side mirrors
             // by linking to the parent's descriptor).
             out.push(sub_byte);
-            let parent_lower = te.parent.to_lowercase();
-            if let Some(&parent_idx) = ctx.struct_type_indices.get(&parent_lower) {
+            if let Some(parent_idx) = ctx.struct_type_by_index(te.parent_index as u32) {
                 write_leb128_u32(&mut out, 1);
                 write_leb128_u32(&mut out, parent_idx);
             } else {
@@ -329,9 +347,11 @@ pub fn build_type_context(
             // Descriptor struct subtype — same supertype story but keyed
             // off the parent's descriptor index.
             out.push(sub_byte);
-            if let Some(&parent_desc_idx) = ctx.desc_type_indices.get(&parent_lower) {
+            // Each entry emits a described/descriptor PAIR, so the parent's
+            // descriptor sits one index past its described type.
+            if let Some(parent_idx) = ctx.struct_type_by_index(te.parent_index as u32) {
                 write_leb128_u32(&mut out, 1);
-                write_leb128_u32(&mut out, parent_desc_idx);
+                write_leb128_u32(&mut out, parent_idx + 1);
             } else {
                 write_leb128_u32(&mut out, 0);
             }

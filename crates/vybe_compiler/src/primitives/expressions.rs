@@ -1164,11 +1164,7 @@ impl Compiler {
                         // the real `app.http.request` type.
                         let aliased = self.resolve_source_type_alias(type_name);
                         let name_canon = self.canon(&aliased);
-                        let idx = self.chunk().add_constant(vybe_runtime::Value::String(
-                            std::sync::Arc::from(name_canon.as_str()),
-                        ));
-                        self.chunk()
-                            .emit_op_u16(vybe_runtime::Op::REF_TEST, idx, line);
+                        self.emit_ref_type_test(Op::REF_TEST, &name_canon, line);
                         return Ok(());
                     }
                 }
@@ -5451,18 +5447,13 @@ impl Compiler {
                 }
 
                 let line = self.line;
-                let type_idx =
-                    self.chunk()
-                        .add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
-                            canon_type.as_str(),
-                        )));
                 let matched_slot = self.define_local("__type_test_matched");
                 self.emit_const(Value::I32(0));
                 self.emit_u16(Op::LOCAL_SET, matched_slot);
 
                 self.emit_u16(Op::LOCAL_GET, obj_slot);
-                self.chunk()
-                    .emit_op_u16(vybe_runtime::Op::REF_TEST, type_idx, line);
+                let canon_type_name = canon_type.clone();
+                self.emit_ref_type_test(Op::REF_TEST, &canon_type_name, line);
                 crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                 self.chunk().emit_if(line);
                 self.emit_const(Value::I32(1));
@@ -5515,12 +5506,9 @@ impl Compiler {
                     .cloned()
                     .collect();
                 for candidate in &reflection_matches {
-                    let candidate_idx = self.chunk().add_constant(vybe_runtime::Value::String(
-                        std::sync::Arc::from(candidate.as_str()),
-                    ));
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.chunk()
-                        .emit_op_u16(vybe_runtime::Op::REF_TEST, candidate_idx, line);
+                    let candidate_name = candidate.clone();
+                    self.emit_ref_type_test(Op::REF_TEST, &candidate_name, line);
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
@@ -5558,12 +5546,8 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, matched_slot);
                     self.chunk().emit_end(line);
 
-                    let list_idx = self
-                        .chunk()
-                        .add_constant(vybe_runtime::Value::String(std::sync::Arc::from("list")));
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.chunk()
-                        .emit_op_u16(vybe_runtime::Op::REF_TEST, list_idx, line);
+                    self.emit_ref_type_test(Op::REF_TEST, "list", line);
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));

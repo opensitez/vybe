@@ -10,6 +10,7 @@
 //! past every opcode arm.
 
 use crate::error::VMError;
+use crate::opcode::heaptype::HeapType;
 use crate::opcode::{Op, read_leb_u32};
 use crate::value::{Function, Object, ObjectKind, TypedArrayState, TypedElemKind, Upvalue, Value};
 use crate::vm::{
@@ -36,14 +37,15 @@ impl VM {
             .is_some_and(|td| td.is_array())
     }
 
-    /// Resolve an `array.new` type immediate to the instance rtt (registry id).
+    /// Resolve a type immediate (`struct.new`, `array.new`, …) to the
+    /// instance rtt.
     ///
     /// The immediate is a 1-based index into the running module's own type
-    /// table (`module_type_names`, in `chunk.types` order); `0` means a
-    /// dynamic-language array with no GC type (rtt `0` = `Object`). Any named
-    /// type resolves through the registry *by name*, so the host's builtin
-    /// types — registered ahead of the module's — don't skew the mapping the
-    /// way a raw compile-time table position would.
+    /// index space, exactly as the spec addresses types; `0` means "no GC
+    /// type" (rtt `0` = `Object`), which is what dynamic-language allocations
+    /// carry. The mapping to registry ids was bound once at load
+    /// (`bind_module_type_ids`) — no name is looked up here, so two modules
+    /// can define same-named types without colliding at the instruction.
     #[inline]
     /// Materialize the canonical capture-free funcref for function chunk
     /// `func_idx` — the same object `REF_FUNC` produces (interned via
@@ -83,9 +85,17 @@ impl VM {
         if type_imm == 0 {
             return 0;
         }
-        self.module_type_names
-            .get(type_imm - 1)
-            .and_then(|name| self.type_registry.get_id(name))
+        // Relative to the module that emitted the instruction — the executing
+        // chunk names it.
+        let base = self
+            .frames
+            .last()
+            .and_then(|frame| self.chunk_type_base.get(frame.chunk_index))
+            .copied()
+            .unwrap_or(0);
+        self.module_type_ids
+            .get(base + type_imm - 1)
+            .copied()
             .unwrap_or(0)
     }
 }
@@ -3068,27 +3078,19 @@ impl VM {
                 // Our VM already treats null as assignable to externref,
                 // so these short-circuit to true / pass-through on null.
                 _ if op == Op::REF_TEST_NULL => {
-                    let typeidx = self.read_u16();
+                    let ht = HeapType::from_sleb(self.read_leb_i32());
                     let val = self.pop();
-                    let result = if val.is_null_ref() {
-                        true
-                    } else {
-                        let target_name = self.constant_str(typeidx);
-                        self.test_type(&val, &target_name)
-                    };
+                    let result = val.is_null_ref() || self.ref_test_or_declared_name(&val, ht);
                     self.push(Value::I32(if result { 1 } else { 0 }))?;
                 }
                 _ if op == Op::REF_CAST_NULL => {
-                    let typeidx = self.read_u16();
+                    let ht = HeapType::from_sleb(self.read_leb_i32());
                     let val = self.peek(0).clone();
-                    if !val.is_null_ref() {
-                        let target_name = self.constant_str(typeidx);
-                        if !self.test_type(&val, &target_name) {
-                            return Err(VMError::new(&format!(
-                                "ref.cast_null failed: value is not {}",
-                                target_name
-                            )));
-                        }
+                    if !val.is_null_ref() && !self.ref_test_or_declared_name(&val, ht) {
+                        return Err(VMError::new(&format!(
+                            "ref.cast_null failed: value is not {}",
+                            self.heaptype_label(ht)
+                        )));
                     }
                 }
                 // `any.convert_extern` / `extern.convert_any` — identity at
@@ -3170,25 +3172,23 @@ impl VM {
                 }
 
                 // -- Type checks --
-                // ref_test: TypeOf...Is using TypeRegistry hierarchy.
-                // Delegates to test_type() which handles: type_id lookup,
-                // __type string, __types array (JS inheritance), __control_type.
+                // `ref.test ht` / `ref.cast ht` — the immediate is a heaptype,
+                // decoded from the spec's signed LEB. Abstract types answer
+                // from the value's shape; a concrete one is an index walk over
+                // declared supertypes.
                 _ if op == Op::REF_TEST => {
-                    let type_name_idx = self.read_u16();
-                    let target_name = self.constant_str(type_name_idx);
+                    let ht = HeapType::from_sleb(self.read_leb_i32());
                     let val = self.pop();
-                    let result = self.test_type(&val, &target_name);
+                    let result = self.ref_test_or_declared_name(&val, ht);
                     self.push(wasm_bool(result))?;
                 }
                 _ if op == Op::REF_CAST => {
-                    let type_name_idx = self.read_u16();
-                    let target_name = self.constant_str(type_name_idx);
+                    let ht = HeapType::from_sleb(self.read_leb_i32());
                     let val = self.peek(0).clone();
-                    let is_type = self.test_type(&val, &target_name);
-                    if !is_type {
+                    if !self.ref_test_or_declared_name(&val, ht) {
                         return Err(VMError::new(&format!(
                             "ref.cast failed: value is not {}",
-                            target_name
+                            self.heaptype_label(ht)
                         )));
                     }
                     // Value stays on stack (cast is a no-op if it passes)

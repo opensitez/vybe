@@ -150,11 +150,15 @@ opcode_category! {
     [0x11] array_copy         => None,    "array.copy";
     [0x12] array_init_data    => U16_U16, "array.init_data";
     [0x13] array_init_elem    => U16_U16, "array.init_elem";
-    // Reference tests / casts (0x14..=0x19)
-    [0x14] ref_test           => U16,    "ref.test";
-    [0x15] ref_test_null      => U16,    "ref.test_null";
-    [0x16] ref_cast           => U16,    "ref.cast";
-    [0x17] ref_cast_null      => U16,    "ref.cast_null";
+    // Reference tests / casts (0x14..=0x19). The immediate is a HEAPTYPE, in
+    // the spec's own encoding: one signed LEB where a negative value is an
+    // abstract type (`any`, `struct`, `func`, …) and a non-negative value is
+    // an index into the module's type section. Never a name — names live in
+    // the type section, not in code.
+    [0x14] ref_test           => SlI32,  "ref.test";
+    [0x15] ref_test_null      => SlI32,  "ref.test_null";
+    [0x16] ref_cast           => SlI32,  "ref.cast";
+    [0x17] ref_cast_null      => SlI32,  "ref.cast_null";
     // br_on_cast / br_on_cast_fail use a structured label depth (u8)
     // matching core `br`'s encoding — the VM resolves depth via its
     // label_stack, and the WASM emitter writes it as a labelidx.

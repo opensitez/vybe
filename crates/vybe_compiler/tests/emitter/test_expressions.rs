@@ -61,7 +61,19 @@ fn null_safe_access() {
 fn rich_compare_locals_emits_dispatch() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 5;
-    expressions::emit_rich_compare_locals(&mut chunk, 1, 2, "__lt__", ops::emit_dyn_lt, 0);
+    // Takes the whole chunk vector + the current index: the fallback emitter
+    // needs the vector, so a single `&mut Chunk` cannot be held across it.
+    let mut chunks = vec![chunk];
+    expressions::emit_rich_compare_locals(
+        &mut chunks,
+        0,
+        1,
+        2,
+        "__lt__",
+        expressions::RichFallback::Op(ops::emit_dyn_lt),
+        0,
+    );
+    let chunk = chunks.remove(0);
     // Should have: struct_get, dup, ref_is_null, br_if_true, call_ref, br, drop, drop, dyn_lt
     assert!(
         chunk.code.len() > 15,

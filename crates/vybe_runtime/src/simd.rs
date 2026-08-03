@@ -298,73 +298,148 @@ impl VM {
         false
     }
 
+    /// `ref.test` — the WASM operation. Takes a heap type, never a name.
+    pub(crate) fn ref_test(&self, val: &Value, ht: crate::opcode::heaptype::HeapType) -> bool {
+        match ht {
+            crate::opcode::heaptype::HeapType::Abstract(a) => self.test_abstract(val, a),
+            crate::opcode::heaptype::HeapType::Concrete(idx) => self.test_concrete(val, idx) }
+    }
+
+    /// `ref.test` against an ABSTRACT heap type (GC proposal §6.2).
+    ///
+    /// A pure shape test on the value: the abstract hierarchy is fixed by the
+    /// spec, so nothing here consults the type registry, and there is nothing
+    /// to look up by name.
+    pub(crate) fn test_abstract(&self, val: &Value, ht: u8) -> bool {
+        use crate::opcode::heaptype::*;
+        use crate::value::ObjectKind;
+        // Which branch of the internal hierarchy an object sits in. The three
+        // are disjoint, which is what makes `struct` "neither array nor func".
+        let is_array = |val: &Value| {
+            matches!(val, Value::Object(o) if matches!(o.lock().unwrap().kind, ObjectKind::Array(_)))
+        };
+        let is_func = |val: &Value| {
+            matches!(val, Value::Object(o) if matches!(
+                o.lock().unwrap().kind,
+                ObjectKind::Function(_) | ObjectKind::HostFunction(_)))
+        };
+        match ht {
+            // Bottom types: inhabited only by null.
+            HT_NONE | HT_NOFUNC | HT_NOEXTERN => val.is_null_ref(),
+            // `any`: top of the internal hierarchy.
+            HT_ANY => !val.is_null_ref() && !matches!(val, Value::Undefined),
+            // `extern`: external references (all JS values are externref here).
+            HT_EXTERN => !val.is_null_ref(),
+            // `eq`: the types `ref.eq` is allowed on — i31 + struct + array.
+            HT_EQ => matches!(val, Value::I32(_)) || (matches!(val, Value::Object(_)) && !is_func(val)),
+            // `i31`: unboxed 31-bit integers.
+            HT_I31 => matches!(val, Value::I32(_)),
+            // `func`: top of the function hierarchy.
+            HT_FUNC => is_func(val),
+            // `struct`: every non-array, non-func object.
+            HT_STRUCT => matches!(val, Value::Object(_)) && !is_array(val) && !is_func(val),
+            // `array`: top of the array hierarchy.
+            HT_ARRAY => is_array(val),
+            _ => false }
+    }
+
+    /// `ref.test` against a CONCRETE type — a module type index, resolved the
+    /// same way `struct.new`'s immediate is. An index walk over declared
+    /// supertypes; no name, no fallback. A value with no rtt is simply not an
+    /// instance of a declared type.
+    pub(crate) fn test_concrete(&self, val: &Value, type_index: u32) -> bool {
+        let target = self.resolve_gc_rtt(type_index as usize);
+        if target == 0 {
+            return false;
+        }
+        match val {
+            Value::Object(o) => {
+                let type_id = o.lock().unwrap().type_id;
+                type_id > 0 && self.type_registry.is_subtype(type_id, target)
+            }
+            _ => false }
+    }
+
+    /// The name a module declared for a concrete heap type, for diagnostics
+    /// and for the transitional fallback below. Abstract types are spelled by
+    /// the spec.
+    pub(crate) fn heaptype_label(&self, ht: crate::opcode::heaptype::HeapType) -> String {
+        use crate::opcode::heaptype::*;
+        match ht {
+            HeapType::Abstract(byte) => match byte {
+                HT_ANY => "any",
+                HT_EQ => "eq",
+                HT_I31 => "i31",
+                HT_STRUCT => "struct",
+                HT_ARRAY => "array",
+                HT_FUNC => "func",
+                HT_EXTERN => "extern",
+                HT_NONE => "none",
+                HT_NOFUNC => "nofunc",
+                HT_NOEXTERN => "noextern",
+                _ => "?" }
+            .to_string(),
+            HeapType::Concrete(index) => self.declared_type_name(index).unwrap_or_default() }
+    }
+
+    /// The name the module's type section gives a concrete type index.
+    pub(crate) fn declared_type_name(&self, type_index: u32) -> Option<String> {
+        if type_index == 0 {
+            return None;
+        }
+        let base = self
+            .frames
+            .last()
+            .and_then(|frame| self.chunk_type_base.get(frame.chunk_index))
+            .copied()
+            .unwrap_or(0);
+        self.module_type_names
+            .get(base + type_index as usize - 1)
+            .cloned()
+    }
+
+    /// `ref.test`, plus the transitional fallback for objects that never got
+    /// an rtt.
+    ///
+    /// The 184 platform stamps across 59 files still identify their objects
+    /// with a `__type` STRING rather than a typed allocation, so a concrete
+    /// test that finds no rtt has to consult them or those objects become
+    /// untypeable. The name for that comes from the module's **type section** —
+    /// a declaration — never from the instruction, which carries only an index.
+    /// Deleting this is its own step and needs the platforms to gain a typed
+    /// allocation path first.
+    pub(crate) fn ref_test_or_declared_name(
+        &self,
+        val: &Value,
+        ht: crate::opcode::heaptype::HeapType,
+    ) -> bool {
+        if self.ref_test(val, ht) {
+            return true;
+        }
+        match ht {
+            crate::opcode::heaptype::HeapType::Abstract(_) => false,
+            crate::opcode::heaptype::HeapType::Concrete(index) => self
+                .declared_type_name(index)
+                .is_some_and(|name| self.test_type(val, &name)) }
+    }
+
+    /// Type test **by name** — a LANGUAGE operation, not a WASM one.
+    ///
+    /// PHP's `$x instanceof $className` with a runtime string, JS `instanceof`
+    /// against a non-class callable, and every platform object identified only
+    /// by a `__type` stamp land here. Kept deliberately separate from
+    /// [`ref_test`] so that a gap in the type registry cannot be silently
+    /// papered over by a string comparison: if a caller reaches this, it is
+    /// because it genuinely had a name and nothing else.
     pub(crate) fn test_type(&self, val: &Value, target_name: &str) -> bool {
-        // ── WASM GC abstract heap types (spec §6.2) ───────────────
-        // Bottom types: always false for any non-null value.
-        if matches!(target_name, "none" | "nofunc" | "noextern") {
-            return val.is_null_ref();
+        // The spec's own spellings still answer from the abstract hierarchy —
+        // `wast` and the reader both name them this way.
+        if let Some(ht) = crate::opcode::heaptype::HeapType::from_spec_name(target_name) {
+            return self.ref_test(val, ht);
         }
-        // `any`: top of internal hierarchy — true for every non-null value.
-        if target_name == "any" {
-            return !val.is_null_ref() && !matches!(val, Value::Undefined);
-        }
-        // `extern`: external references (all JS values are externref in Vybe).
-        if target_name == "extern" {
-            return !val.is_null_ref();
-        }
-        // `eq`: types on which ref.eq is allowed — i31 + struct + array.
-        if target_name == "eq" {
-            return match val {
-                Value::I32(_) => true,
-                Value::Object(o) => {
-                    let ob = o.lock().unwrap();
-                    !matches!(
-                        ob.kind,
-                        crate::value::ObjectKind::Function(_)
-                            | crate::value::ObjectKind::HostFunction(_)
-                    )
-                }
-                _ => false };
-        }
-        // `i31`: unboxed 31-bit integers.
-        if target_name == "i31" {
-            return matches!(val, Value::I32(_));
-        }
-        // `func`: top of function hierarchy — funcref.
-        if target_name == "func" || target_name == "function" {
-            return match val {
-                Value::Object(o) => {
-                    let ob = o.lock().unwrap();
-                    matches!(
-                        ob.kind,
-                        crate::value::ObjectKind::Function(_)
-                            | crate::value::ObjectKind::HostFunction(_)
-                    )
-                }
-                _ => false };
-        }
-        // `struct`: top of struct hierarchy — all non-array, non-func objects.
-        if target_name == "struct" {
-            return match val {
-                Value::Object(o) => {
-                    let ob = o.lock().unwrap();
-                    !matches!(
-                        ob.kind,
-                        crate::value::ObjectKind::Array(_)
-                            | crate::value::ObjectKind::Function(_)
-                            | crate::value::ObjectKind::HostFunction(_)
-                    )
-                }
-                _ => false };
-        }
-        // `array`: top of array hierarchy.
-        if target_name == "array" {
-            return match val {
-                Value::Object(o) => {
-                    let ob = o.lock().unwrap();
-                    matches!(ob.kind, crate::value::ObjectKind::Array(_))
-                }
-                _ => false };
+        // `function` is JS's spelling of `func`.
+        if target_name == "function" {
+            return self.test_abstract(val, crate::opcode::heaptype::HT_FUNC);
         }
 
         // ── Named / user-defined types ────────────────────────────

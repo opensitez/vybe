@@ -2472,9 +2472,11 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             || op == Op::REF_CAST
             || op == Op::REF_CAST_NULL =>
         {
-            skip_heaptype(wasm, pos);
-            let idx = chunk.add_constant(Value::String(Arc::from("__wasm_heaptype")));
-            chunk.emit_op_u16(op, idx, 0);
+            // The heaptype survives now. It used to be read and thrown away,
+            // replaced with the string `"__wasm_heaptype"` — which made every
+            // decoded cast a test against a type that does not exist.
+            let ht = read_heaptype(wasm, pos);
+            chunk.emit_ref_type_op(op, ht, 0);
         }
         _ if op == Op::BR_ON_CAST
             || op == Op::BR_ON_CAST_FAIL
@@ -3481,6 +3483,22 @@ fn skip_memarg_for_memory_width(data: &[u8], pos: &mut usize, _is_memory64: bool
 /// $x)`, so a leading `HEAPTYPE_EXACT` is followed by a SECOND leb that must
 /// also be consumed. Missing it leaves the type index to be decoded as an
 /// instruction.
+/// Decode a heaptype immediate: a signed LEB where negative is one of the
+/// abstract types and non-negative is a type index. `(exact $t)` — Custom
+/// Descriptors — narrows to the same index; exactness is a property of the
+/// cast, not of the type it names.
+fn read_heaptype(data: &[u8], pos: &mut usize) -> vybe_runtime::opcode::heaptype::HeapType {
+    if data.get(*pos) == Some(&HEAPTYPE_EXACT) {
+        *pos += 1;
+        let (index, read) = read_leb128_u32(&data[*pos..]);
+        *pos += read;
+        return vybe_runtime::opcode::heaptype::HeapType::Concrete(index);
+    }
+    let (value, read) = read_leb128_i32(&data[*pos..]);
+    *pos += read;
+    vybe_runtime::opcode::heaptype::HeapType::from_sleb(value)
+}
+
 fn skip_heaptype(data: &[u8], pos: &mut usize) {
     if data.get(*pos) == Some(&HEAPTYPE_EXACT) {
         *pos += 1;
@@ -3605,13 +3623,9 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
                     .to_string();
                 pos += nlen as usize;
 
-                // Parent type name
-                let (nlen, read) = read_leb128_u32(&data[pos..]);
+                // Declared supertype index (0 = no supertype)
+                let (parent_index, read) = read_leb128_u32(&data[pos..]);
                 pos += read;
-                let parent = std::str::from_utf8(&data[pos..pos + nlen as usize])
-                    .unwrap_or("")
-                    .to_string();
-                pos += nlen as usize;
 
                 // Fields with descriptors
                 let (field_count, read) = read_leb128_u32(&data[pos..]);
@@ -3689,7 +3703,7 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
                     // Array-kind round-tripping is part of the deferred
                     // imported-.wasm stamping work.
                     kind: vybe_runtime::chunk::CompositeKind::Struct,
-                    parent,
+                    parent_index: parent_index as u16,
                     fields,
                     methods,
                     is_interface,

@@ -241,7 +241,8 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
         write_leb128_u32(&mut out, chunk.types.len() as u32);
         for type_entry in &chunk.types {
             write_name(&mut out, &type_entry.name);
-            write_name(&mut out, &type_entry.parent);
+            // Supertype as the declared INDEX (0 = none), not a name.
+            write_leb128_u32(&mut out, type_entry.parent_index as u32);
 
             // Fields with descriptors (WASM Annotations proposal @ecma262 namespace)
             write_leb128_u32(&mut out, type_entry.fields.len() as u32);

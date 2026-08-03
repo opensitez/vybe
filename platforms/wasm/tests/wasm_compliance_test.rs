@@ -3170,7 +3170,11 @@ fn ref_test_null_accepts_null() {
     // rejects it. Verify the former by passing null and expecting 1.
     let mut chunk = Chunk::new("<script>");
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    chunk.emit_op_u16(Op::REF_TEST_NULL, 0, 0);
+    chunk.emit_ref_type_op(
+        Op::REF_TEST_NULL,
+        vybe_runtime::opcode::heaptype::HeapType::Abstract(vybe_runtime::opcode::heaptype::HT_STRUCT),
+        0,
+    );
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
     assert_eq!(vm.run(vec![chunk]).unwrap().as_i32(), 1);

@@ -4703,10 +4703,11 @@ impl Compiler {
         // stamped, `test_type`'s fast path asks `is_subtype(Child, Object)`
         // and gets false: `is_object($x)` — `ref.test object` — returns false
         // for every user instance. Measured, not inferred.
-        let canon_parent = parent
-            .as_ref()
-            .map(|p| self.canon(p))
-            .unwrap_or_else(|| "Object".to_string());
+        // No parent = no declared supertype. It used to default to "Object"
+        // because `is_object` was a registry walk to type 0; that is an
+        // abstract `ref.test struct` now, so a root class can be what the
+        // spec says it is.
+        let canon_parent = parent.as_ref().map(|p| self.canon(p)).unwrap_or_default();
         // The DECLARED interfaces, canonicalised like every other name here.
         // This was `Vec::new()`, which left the runtime `TypeRegistry` with no
         // interface list at all — so `is_subtype` (which checks `implements` on
@@ -5744,10 +5745,23 @@ pub fn register_type(
     // distinct types in case-sensitive languages (`B` and `b`). The VM
     // matches names exactly; case-insensitivity is entirely a
     // compile-time concern via `canon()`.
+    // The supertype is declared as an INDEX. Reserving its slot first is what
+    // makes that possible for a parent this module does not define — a host
+    // builtin, or a class from another component: the entry is a declaration
+    // that binds to whatever is registered under that name at load, and the
+    // subtype's link is an index either way. An empty parent means `sub` with
+    // no supertype — a root — which is now expressible because `is_object` is
+    // an ABSTRACT test (`ref.test struct`) rather than a walk to a type
+    // called `Object`.
+    let parent_index = if parent.is_empty() {
+        0
+    } else {
+        reserve_type_slot(chunks, parent)
+    };
     let entry = vybe_runtime::chunk::TypeEntry {
         name: name.to_string(),
         kind: vybe_runtime::chunk::CompositeKind::Struct,
-        parent: parent.to_string(),
+        parent_index,
         fields,
         methods,
         is_interface,
@@ -5777,9 +5791,36 @@ pub fn register_type(
 /// registered — `register_type` fills this same entry in.
 ///
 /// 1-based, and deliberately NOT the runtime registry id: the host
-/// pre-registers its builtin types ahead of the module's, so the VM recovers
-/// the name via `module_type_names[imm - 1]` and resolves it by name
-/// (`resolve_gc_rtt`). Same convention as `register_gc_array_type`.
+/// pre-registers its builtin types ahead of the module's, so the index is
+/// bound to a registry id once at load (`bind_module_type_ids`) and the
+/// instruction carries only the index. Same convention as
+/// `register_gc_array_type`.
+/// The heaptype a `ref.test` / `ref.cast` against `name` should carry.
+///
+/// The spec's own spellings (`any`, `struct`, `func`, …) are abstract types —
+/// no index, no declaration. Everything else is a CONCRETE type, so it gets a
+/// slot in the module's type section: its own if the class is compiled here,
+/// otherwise a declaration that binds to whatever the host registered under
+/// that name. Either way the instruction ends up carrying an index, and the
+/// name lives in the type section where the spec keeps names.
+///
+/// `object` is not a type. It is the abstract top of the struct hierarchy —
+/// what `is_object` really asks — which is why it maps to `struct` rather than
+/// to a registry entry called "Object".
+pub fn heaptype_for_name(
+    chunks: &mut [Chunk],
+    name: &str,
+) -> vybe_runtime::opcode::heaptype::HeapType {
+    use vybe_runtime::opcode::heaptype::*;
+    if let Some(abstract_ht) = HeapType::from_spec_name(name) {
+        return abstract_ht;
+    }
+    match name {
+        "object" => HeapType::Abstract(HT_STRUCT),
+        "function" => HeapType::Abstract(HT_FUNC),
+        _ => HeapType::Concrete(reserve_type_slot(chunks, name) as u32) }
+}
+
 pub fn reserve_type_slot(chunks: &mut [Chunk], name: &str) -> u16 {
     if let Some(pos) = chunks[0].types.iter().position(|t| t.name == name) {
         return pos as u16 + 1;
@@ -5787,7 +5828,7 @@ pub fn reserve_type_slot(chunks: &mut [Chunk], name: &str) -> u16 {
     chunks[0].types.push(vybe_runtime::chunk::TypeEntry {
         name: name.to_string(),
         kind: vybe_runtime::chunk::CompositeKind::Struct,
-        parent: String::new(),
+        parent_index: 0,
         fields: Vec::new(),
         methods: Vec::new(),
         is_interface: false,
@@ -5823,7 +5864,7 @@ pub fn register_gc_array_type(chunks: &mut [Chunk], name: &str, elem_type: &str)
     chunks[0].types.push(vybe_runtime::chunk::TypeEntry {
         name: name.to_string(),
         kind: vybe_runtime::chunk::CompositeKind::Array,
-        parent: String::new(),
+        parent_index: 0,
         fields,
         methods: Vec::new(),
         is_interface: false,
@@ -5848,7 +5889,7 @@ pub fn register_interface(
     chunks[0].types.push(vybe_runtime::chunk::TypeEntry {
         name: name.to_string(),
         kind: vybe_runtime::chunk::CompositeKind::Struct,
-        parent: String::new(),
+        parent_index: 0,
         fields: Vec::new(),
         methods: method_entries,
         is_interface: true,

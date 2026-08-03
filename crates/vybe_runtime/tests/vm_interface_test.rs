@@ -169,7 +169,7 @@ fn load_type_table_interface() {
         TypeEntry {
             name: "ianimal".into(),
             kind: vybe_runtime::chunk::CompositeKind::Struct,
-            parent: String::new(),
+            parent_index: 0,
             fields: Vec::new(),
             methods: vec![("speak".into(), 0)],
             is_interface: true,
@@ -179,7 +179,7 @@ fn load_type_table_interface() {
         TypeEntry {
             name: "dog".into(),
             kind: vybe_runtime::chunk::CompositeKind::Struct,
-            parent: String::new(),
+            parent_index: 0,
             fields: vec!["name".into()],
             methods: vec![("speak".into(), 1), ("fetch".into(), 2)],
             is_interface: false,
@@ -209,7 +209,7 @@ fn load_type_table_cross_language_inheritance() {
     let vb_types = vec![TypeEntry {
         name: "animal".into(),
         kind: vybe_runtime::chunk::CompositeKind::Struct,
-        parent: String::new(),
+        parent_index: 0,
         fields: vec!["name".into(), "species".into()],
         methods: vec![("speak".into(), 0)],
         is_interface: false,
@@ -217,16 +217,33 @@ fn load_type_table_cross_language_inheritance() {
         constructor_chunk: Some(1),
         field_descriptors: std::collections::HashMap::new() }];
 
-    let cs_types = vec![TypeEntry {
-        name: "dog".into(),
-        kind: vybe_runtime::chunk::CompositeKind::Struct,
-        parent: "animal".into(),
-        fields: vec!["breed".into()],
-        methods: vec![("fetch".into(), 5), ("speak".into(), 6)],
-        is_interface: false,
-        implements: Vec::new(),
-        constructor_chunk: Some(7),
-        field_descriptors: std::collections::HashMap::new() }];
+    // The C# module inherits from a type ANOTHER module defined, so it
+    // declares that supertype in its own table and links to it by index.
+    // The declaration binds to the already-registered `animal` at load —
+    // which is how a supertype crosses a module boundary without either side
+    // resolving a name at run time.
+    let cs_types = vec![
+        TypeEntry {
+            name: "animal".into(),
+            kind: vybe_runtime::chunk::CompositeKind::Struct,
+            parent_index: 0,
+            fields: Vec::new(),
+            methods: Vec::new(),
+            is_interface: false,
+            implements: Vec::new(),
+            constructor_chunk: None,
+            field_descriptors: std::collections::HashMap::new() },
+        TypeEntry {
+            name: "dog".into(),
+            kind: vybe_runtime::chunk::CompositeKind::Struct,
+            parent_index: 1,
+            fields: vec!["breed".into()],
+            methods: vec![("fetch".into(), 5), ("speak".into(), 6)],
+            is_interface: false,
+            implements: Vec::new(),
+            constructor_chunk: Some(7),
+            field_descriptors: std::collections::HashMap::new() },
+    ];
 
     // Load VB types first, then C# types
     reg.load_type_table(&vb_types);

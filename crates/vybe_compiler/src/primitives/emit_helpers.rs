@@ -21,6 +21,17 @@ impl Compiler {
     pub(crate) fn import(&mut self, module: &str, name: &str) -> u16 {
         self.chunks[self.current].add_import(module, name)
     }
+
+    /// Emit `ref.test` / `ref.cast` against the type spelled `name`.
+    ///
+    /// The name is resolved to a HEAPTYPE here, at compile time — abstract for
+    /// the spec's own spellings, otherwise an index into the module's type
+    /// section. The instruction never carries the name; only the type section
+    /// does.
+    pub(crate) fn emit_ref_type_test(&mut self, op: Op, name: &str, line: u32) {
+        let ht = crate::primitives::classes::heaptype_for_name(&mut self.chunks, name);
+        self.chunks[self.current].emit_ref_type_op(op, ht, line);
+    }
     pub(crate) fn emit_host_call(&mut self, idx: u16, argc: u8) {
         let l = self.line;
         self.chunks[self.current].emit_call(idx, argc, l);

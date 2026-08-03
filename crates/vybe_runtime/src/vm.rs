@@ -599,6 +599,14 @@ pub struct VM {
     /// bound once here at load; the running instruction never sees one.
     /// (Kept 1-based at the instruction — `0` means "no GC type", rtt `0`.)
     pub(crate) module_type_ids: Vec<usize>,
+    /// Where each chunk's OWN module starts inside `module_type_ids`, parallel
+    /// to `chunks`. A type immediate is relative to the module that emitted
+    /// it, so several modules — components, a dynamically eval'd program —
+    /// can each number their types from 1 without colliding. Without this the
+    /// second module's `$1` reads the first module's type, and because
+    /// `test_type` early-returns on `type_id > 0`, a WRONG rtt is worse than
+    /// none: it suppresses every fallback.
+    pub(crate) chunk_type_base: Vec<usize>,
     /// Linear memory (WASM MVP) — byte buffer for binary data.
     /// This is memory index 0 for backward compatibility.
     pub memory: SharedMemory,
@@ -838,6 +846,7 @@ pub struct VmSnapshot {
     elem_segments: Vec<Vec<Value>>,
     module_type_names: Vec<String>,
     module_type_ids: Vec<usize>,
+    chunk_type_base: Vec<usize>,
     module_prefix: Option<String>,
     // Coupled with `tag_entities` (maps imported-tag name → index into it). Must
     // restore together: truncating tag_entities without this would leave a
@@ -933,6 +942,7 @@ impl VM {
             type_registry: crate::typedef::TypeRegistry::new(),
             module_type_names: Vec::new(),
             module_type_ids: Vec::new(),
+            chunk_type_base: Vec::new(),
             memory: SharedMemory::default(),
             extra_memories: Vec::new(),
             extra_memory_max_pages: Vec::new(),
@@ -1017,6 +1027,7 @@ impl VM {
             elem_segments: self.elem_segments.clone(),
             module_type_names: self.module_type_names.clone(),
             module_type_ids: self.module_type_ids.clone(),
+            chunk_type_base: self.chunk_type_base.clone(),
             module_prefix: self.module_prefix.clone(),
             imported_tag_registry: self.imported_tag_registry.clone() }
     }
@@ -1071,6 +1082,7 @@ impl VM {
         self.elem_segments = snap.elem_segments.clone();
         self.module_type_names = snap.module_type_names.clone();
         self.module_type_ids = snap.module_type_ids.clone();
+        self.chunk_type_base = snap.chunk_type_base.clone();
         self.module_prefix = snap.module_prefix.clone();
         self.imported_tag_registry = snap.imported_tag_registry.clone();
         // 5. Transient execution state — always empty between top-level runs.
@@ -1303,6 +1315,11 @@ impl VM {
                 let old = self.chunks[i].clone();
                 let relocated = self.chunks.len();
                 self.chunks.push(old);
+                // The relocated copy is the SAME module, so it keeps the same
+                // type index base — `chunk_type_base` is parallel to `chunks`.
+                let base = self.chunk_type_base.get(i).copied().unwrap_or(0);
+                self.chunk_type_base.resize(relocated, 0);
+                self.chunk_type_base.push(base);
                 for f in self.frames.iter_mut() {
                     if f.chunk_index == i {
                         f.chunk_index = relocated;
@@ -2071,14 +2088,26 @@ impl VM {
             let _ = (type_name, typedef);
         }
 
-        // Load type tables from all chunks. Ids are bound AFTER registration —
-        // that is the whole point: the name is consumed once, here, and the
-        // index space is what instructions carry.
-        for chunk in &link_result.chunks {
-            if !chunk.types.is_empty() {
-                self.type_registry.load_type_table(&chunk.types);
-                self.bind_module_type_ids(&chunk.types);
+        // Load type tables, ONE INDEX SPACE PER COMPONENT. Ids are bound AFTER
+        // registration — that is the whole point: the name is consumed once,
+        // here, and the index space is what instructions carry. Two components
+        // may each define a `Point`; each numbers its own from 1, and
+        // `component_offsets` is what tells their chunks apart.
+        for (i, _) in link_result.component_offsets.iter().enumerate() {
+            let first = link_result.component_offsets[i];
+            let last = link_result
+                .component_offsets
+                .get(i + 1)
+                .copied()
+                .unwrap_or(link_result.chunks.len());
+            let type_base = self.module_type_ids.len();
+            for chunk in &link_result.chunks[first..last] {
+                if !chunk.types.is_empty() {
+                    self.type_registry.load_type_table(&chunk.types);
+                    self.bind_module_type_ids(&chunk.types);
+                }
             }
+            self.set_chunk_type_base(base_offset + first, type_base);
         }
 
         // Run each component's script chunk with module isolation
@@ -2314,14 +2343,17 @@ impl VM {
             }
         }
 
-        // Load type table
+        // Load type table. This program is its OWN module — a dynamically
+        // compiled one numbers its types from 1 just like the host program,
+        // so it gets its own base rather than continuing the caller's space.
         {
+            let type_base = self.module_type_ids.len();
+            self.set_chunk_type_base(script_idx, type_base);
             let types = self.chunks[script_idx].types.clone();
             if !types.is_empty() {
                 // `array.new` immediates index the module's own types in this
-                // order, resolved to registry ids by name at run time.
-                self.module_type_names
-                    .extend(types.iter().map(|t| t.name.clone()));
+                // order; `bind_module_type_ids` turns that order into registry
+                // ids once, below, so no name is resolved at run time.
                 let adjusted_types: Vec<_> = types
                     .iter()
                     .map(|t| {
@@ -2338,6 +2370,7 @@ impl VM {
                     })
                     .collect();
                 self.type_registry.load_type_table(&adjusted_types);
+                self.bind_module_type_ids(&adjusted_types);
             }
         }
 
@@ -2580,12 +2613,15 @@ impl VM {
         // Registers user-defined class types and their vtable methods.
         // Sets __tid_<name> globals so constructors can stamp type_id.
         {
+            // This run's chunks are their own module: their type immediates
+            // are numbered from 1 against the table loaded just below.
+            let type_base = self.module_type_ids.len();
+            self.set_chunk_type_base(script_idx, type_base);
             let types = self.chunks[script_idx].types.clone();
             if !types.is_empty() {
                 // `array.new` immediates index the module's own types in this
-                // order, resolved to registry ids by name at run time.
-                self.module_type_names
-                    .extend(types.iter().map(|t| t.name.clone()));
+                // order; `bind_module_type_ids` turns that order into registry
+                // ids once, below, so no name is resolved at run time.
                 // Adjust chunk indices in methods (same offset as ref_func)
                 let adjusted_types: Vec<_> = types
                     .iter()
@@ -2600,6 +2636,7 @@ impl VM {
                     })
                     .collect();
                 self.type_registry.load_type_table(&adjusted_types);
+                self.bind_module_type_ids(&adjusted_types);
                 // Set __tid_<name> globals for each registered type. The
                 // name is what the compiler canonicalised on registration —
                 // the constructor will look up the same `__tid_<canon>`
@@ -2858,6 +2895,39 @@ impl VM {
                 map.push(entity);
             }
             self.chunk_tag_maps.push(map);
+        }
+    }
+
+    /// Record that chunks `first..` belong to a module whose type index space
+    /// starts at `base`.
+    ///
+    /// **Invariant: every site that grows `self.chunks` must call this.** A
+    /// chunk with no entry reads base `0` — right for the first module, wrong
+    /// for every later one, and wrong here means a valid-but-foreign rtt,
+    /// which `test_type` prefers over the fallbacks it would otherwise use.
+    /// The four growth sites are `run`, the dynamic path, `run_components`,
+    /// and hot-reload relocation.
+    pub(crate) fn set_chunk_type_base(&mut self, first: usize, base: usize) {
+        if self.chunk_type_base.len() < self.chunks.len() {
+            self.chunk_type_base.resize(self.chunks.len(), 0);
+        }
+        for slot in self.chunk_type_base.iter_mut().skip(first) {
+            *slot = base;
+        }
+    }
+
+    /// Append `types` to the module's type index space, resolving each name to
+    /// its registry id **once, at load**.
+    ///
+    /// Must run AFTER `load_type_table`, or the lookup finds nothing and the
+    /// slot silently becomes rtt `0`. The registry id is not the compile-time
+    /// table position — the host pre-registers its builtin types ahead of the
+    /// module's — so the mapping is what the index space is FOR.
+    pub(crate) fn bind_module_type_ids(&mut self, types: &[crate::chunk::TypeEntry]) {
+        for entry in types {
+            let id = self.type_registry.get_id(&entry.name).unwrap_or(0);
+            self.module_type_names.push(entry.name.clone());
+            self.module_type_ids.push(id);
         }
     }
 

@@ -44,6 +44,61 @@ pub mod heaptype {
     pub const HT_STRUCT: u8 = 0x6B; // -0x15 (structref)
     pub const HT_ARRAY: u8 = 0x6A; // -0x16 (arrayref)
 
+    /// A heap type, exactly as the spec's immediate encodes one: a single
+    /// signed LEB where a NEGATIVE value is one of the abstract types above
+    /// and a NON-NEGATIVE value is an index into the module's type section.
+    /// There is no third case — in particular there is no name.
+    ///
+    /// `Concrete` carries the 1-based module type index (`chunk_type_base` +
+    /// this - 1 → registry id), the same immediate `struct.new` uses.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum HeapType {
+        /// One of the `HT_*` constants above.
+        Abstract(u8),
+        /// Module type index.
+        Concrete(u32) }
+
+    impl HeapType {
+        /// Decode the spec immediate. Negative is abstract — and the `HT_*`
+        /// constants ARE the low 7 bits of those negative values, which is why
+        /// masking recovers the byte (`-0x12 & 0x7F == 0x6E == HT_ANY`).
+        #[inline]
+        pub const fn from_sleb(value: i32) -> HeapType {
+            if value < 0 {
+                HeapType::Abstract((value & 0x7F) as u8)
+            } else {
+                HeapType::Concrete(value as u32)
+            }
+        }
+
+        /// Encode as the spec immediate — the inverse of [`HeapType::from_sleb`].
+        #[inline]
+        pub const fn to_sleb(self) -> i32 {
+            match self {
+                // Sign-extend the 7-bit abstract encoding back to negative.
+                HeapType::Abstract(byte) => (byte as i32) | !0x7F,
+                HeapType::Concrete(index) => index as i32 }
+        }
+
+        /// The abstract heap type spelled by `name`, if it is one. The spec's
+        /// own spelling only — `"function"`, `"object"`, `"number"` and the
+        /// rest are LANGUAGE type tags and must not resolve here.
+        pub fn from_spec_name(name: &str) -> Option<HeapType> {
+            Some(HeapType::Abstract(match name {
+                "any" => HT_ANY,
+                "eq" => HT_EQ,
+                "i31" => HT_I31,
+                "struct" => HT_STRUCT,
+                "array" => HT_ARRAY,
+                "func" => HT_FUNC,
+                "extern" => HT_EXTERN,
+                "none" => HT_NONE,
+                "nofunc" => HT_NOFUNC,
+                "noextern" => HT_NOEXTERN,
+                _ => return None }))
+        }
+    }
+
     /// Is this heaptype in the GC heap? A `ref.null` of a GC type is a WASM GC
     /// **typed null** — the GC accessors (`struct.get`/`set`, `array.*`) trap
     /// on it per spec — whereas `ref.null extern` / `ref.null func` is the

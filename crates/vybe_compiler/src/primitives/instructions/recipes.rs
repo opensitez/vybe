@@ -1,6 +1,6 @@
-use std::sync::Arc;
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::opcode::heaptype::{HT_FUNC, HT_STRUCT, HeapType};
+use vybe_runtime::Chunk;
 
 use super::host::{EmitRegistry, FunctionRegistry};
 
@@ -10,22 +10,22 @@ pub fn register_all(_fns: &FunctionRegistry, emits: &mut EmitRegistry) {
 }
 
 fn is_object_fn(_fns: &FunctionRegistry, c: &mut Chunk, line: u32) {
-    // WASM GC ref.test with type "object" — single opcode, null-safe
-    let type_idx = c.add_constant(Value::String(Arc::from("object")));
-    c.emit_op_u16(Op::REF_TEST, type_idx, line);
+    is_object(c, line);
 }
 
 fn is_func_fn(_fns: &FunctionRegistry, c: &mut Chunk, line: u32) {
-    let type_idx = c.add_constant(Value::String(Arc::from("func")));
-    c.emit_op_u16(Op::REF_TEST, type_idx, line);
+    is_func(c, line);
 }
 
+/// `ref.test struct` — "is this an object?" is a question about the ABSTRACT
+/// heap hierarchy, not about a type called `Object`. Asking it as a concrete
+/// test is what forced every user class to declare `Object` as its supertype,
+/// because otherwise the registry walk found nothing.
 pub fn is_object(c: &mut Chunk, line: u32) {
-    let type_idx = c.add_constant(Value::String(Arc::from("object")));
-    c.emit_op_u16(Op::REF_TEST, type_idx, line);
+    c.emit_ref_type_op(Op::REF_TEST, HeapType::Abstract(HT_STRUCT), line);
 }
 
+/// `ref.test func` — top of the function hierarchy.
 pub fn is_func(c: &mut Chunk, line: u32) {
-    let type_idx = c.add_constant(Value::String(Arc::from("func")));
-    c.emit_op_u16(Op::REF_TEST, type_idx, line);
+    c.emit_ref_type_op(Op::REF_TEST, HeapType::Abstract(HT_FUNC), line);
 }
