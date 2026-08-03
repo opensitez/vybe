@@ -85,8 +85,7 @@ fn scan_escape(src: &[u8], at: usize) -> anyhow::Result<(Option<char>, usize)> {
             }
             (None, i)
         }
-        other => anyhow::bail!("unknown escape \\{} at byte {at}", other as char),
-    })
+        other => anyhow::bail!("unknown escape \\{} at byte {at}", other as char) })
 }
 
 fn scan_raw(src: &[u8], at: usize) -> anyhow::Result<(String, usize)> {
@@ -127,8 +126,7 @@ pub fn escape(text: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             '\0' => out.push_str("\\0"),
-            _ => out.push(ch),
-        }
+            _ => out.push(ch) }
     }
     out
 }
@@ -138,8 +136,7 @@ fn utf8_len(byte: u8) -> usize {
         0x00..=0x7F => 1,
         0xC0..=0xDF => 2,
         0xE0..=0xEF => 3,
-        _ => 4,
-    }
+        _ => 4 }
 }
 
 /// Skip whitespace and `//` / `/* */` comments starting at `at`.

@@ -39,3 +39,20 @@ pub fn orange(text: &str) -> String {
 pub fn yellow(text: &str) -> String {
     paint("33", text)
 }
+
+/// Dim — for the parts of a row that carry no verdict (rules, units, ages).
+pub fn grey(text: &str) -> String {
+    paint("90", text)
+}
+
+/// Bold composes with a colour: the escapes are zero-width, so a name wrapped
+/// in both still occupies its padded width and the columns stay aligned.
+pub fn bold(text: &str) -> String {
+    paint("1", text)
+}
+
+/// No colour at all — the finished state. Kept as a function so it can sit
+/// beside `green`/`red` wherever a row picks its own paint.
+pub fn plain(text: &str) -> String {
+    text.to_string()
+}

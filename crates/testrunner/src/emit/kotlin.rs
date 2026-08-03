@@ -14,8 +14,7 @@ use crate::extract::Case;
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing,
-}
+    pub pairing: Pairing }
 
 pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let header = format!("// vybe-test: {slug}\n// origin: {origin}\n");
@@ -23,16 +22,14 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let Some(expected) = case.expected.as_ref() else {
         return Emitted {
             text: format!("{header}// vybe-test-mode: compile\n\n{}\n", reflow(&case.source)),
-            pairing: Pairing::Direct,
-        };
+            pairing: Pairing::Direct };
     };
 
     let prints = find_prints(&case.source);
     if let Some(reason) = unpairable(&case.source, &prints, expected.len()) {
         return Emitted {
             text: format!("{header}\n{}\n", reflow(&case.source)),
-            pairing: Pairing::Unpairable(reason),
-        };
+            pairing: Pairing::Unpairable(reason) };
     }
 
     let mut body = case.source.clone();
@@ -44,15 +41,13 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
 
     Emitted {
         text: format!("{header}\n{}", splice_harness(&reflow(&body), harness)),
-        pairing: Pairing::Direct,
-    }
+        pairing: Pairing::Direct }
 }
 
 fn splice_harness(src: &str, harness: &str) -> String {
     match src.find("fun main(") {
         Some(at) => format!("{}{harness}\n\n{}", &src[..at], &src[at..]),
-        None => format!("{src}\n{harness}\n"),
-    }
+        None => format!("{src}\n{harness}\n") }
 }
 
 fn unpairable(src: &str, prints: &[Span], expected: usize) -> Option<String> {
@@ -154,13 +149,11 @@ fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
                 match bytes[i] {
                     b'\\' => i += 2,
                     b'\'' => return Some(i + 1),
-                    _ => i += 1,
-                }
+                    _ => i += 1 }
             }
             Some(bytes.len())
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn has_word(src: &str, word: &str) -> bool {
@@ -219,8 +212,7 @@ fn kt_string(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            _ => out.push(ch),
-        }
+            _ => out.push(ch) }
     }
     out.push('"');
     out

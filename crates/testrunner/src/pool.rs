@@ -35,8 +35,7 @@ pub(crate) const SLOW_AFTER: Duration = Duration::from_secs(10);
 struct Worker {
     child: Child,
     stdin: ChildStdin,
-    lines: Receiver<String>,
-}
+    lines: Receiver<String> }
 
 fn spawn(vybex: &Path) -> Option<Worker> {
     let mut child = Command::new(vybex)
@@ -78,8 +77,7 @@ enum Reply {
     /// process is GONE, not slow. Reporting this as a timeout was a lie with a
     /// number attached — a worker that crashed at 40s was recorded as
     /// "no result within 60s", which reads as a hang that never happened.
-    Died,
-}
+    Died }
 
 /// Send one job and read until the result sentinel. Everything before the
 /// sentinel is the program's own output, which is where the harness prints its
@@ -95,9 +93,15 @@ fn dispatch(
         Mode::Run => "run",
         Mode::Compile => "compile",
         Mode::CompileFail => "compile-fail",
-        Mode::RunFail => "run",
-    };
-    if writeln!(worker.stdin, "{}\t{tag}", file.display()).is_err()
+        Mode::RunFail => "run" };
+    // Third field: the status the test is expected to end with
+    // (`vybe-test-exit:`), so the worker can apply the same rule the cold path
+    // does. Without it a test whose correct behaviour is `exit(1)` can never
+    // pass under the warm pool.
+    let want_exit = std::fs::read_to_string(file)
+        .map(|t| crate::run::expected_exit(&t))
+        .unwrap_or(0);
+    if writeln!(worker.stdin, "{}\t{tag}\t{want_exit}", file.display()).is_err()
         || worker.stdin.flush().is_err()
     {
         return Reply::Died;
@@ -127,7 +131,20 @@ fn dispatch(
         };
         match worker.lines.recv_timeout(wait) {
             Ok(line) => {
-                if let Some(rest) = line.strip_prefix(RESULT) {
+                // The sentinel usually starts the line, but a program whose
+                // output does not end in a newline leaves the cursor mid-line
+                // and the worker's `println!` lands right after it —
+                // `goodbye##vybe-result\tok`. Requiring a prefix match lost the
+                // reply entirely and the job sat until the 60s deadline
+                // (measured on php `die('goodbye')`, whose output has no
+                // trailing newline, like C's `printf` or php `echo`). Split on
+                // the sentinel wherever it appears and keep the prefix as
+                // program output.
+                if let Some(at) = line.find(RESULT) {
+                    if at > 0 {
+                        output.push(line[..at].to_string());
+                    }
+                    let rest = &line[at + RESULT.len()..];
                     let mut parts = rest.trim_start_matches('\t').splitn(2, '\t');
                     let verdict = parts.next().unwrap_or("err");
                     let detail = parts.next().unwrap_or("").to_string();
@@ -154,8 +171,7 @@ fn dispatch(
                 slow(file, SLOW_AFTER.as_secs());
                 warned = true;
             }
-            Err(RecvTimeoutError::Disconnected) => return Reply::Died,
-        }
+            Err(RecvTimeoutError::Disconnected) => return Reply::Died }
     }
 }
 
@@ -254,8 +270,7 @@ pub fn run_all(
                         name,
                         result,
                         message,
-                        duration_ms: started.elapsed().as_millis(),
-                    };
+                        duration_ms: started.elapsed().as_millis() };
                     progress(&exec);
                     done.lock().unwrap().push(exec);
                 }

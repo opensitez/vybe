@@ -34,8 +34,7 @@ pub fn latest_previous(dir: &Path, runtime: &str, skip: &Path) -> Option<(PathBu
         .rev()
         .find_map(|p| match load(&p) {
             Ok(r) if r.runtime == runtime => Some((p, r)),
-            _ => None,
-        })
+            _ => None })
 }
 
 pub fn print_console(report: &TestReport) {
@@ -188,8 +187,7 @@ pub fn cargo_tail(report: &TestReport, elapsed_secs: f64, color: bool) -> Vec<St
         match kind {
             TestResult::Pass => crate::style::green(text),
             TestResult::Timeout => crate::style::orange(text),
-            _ => crate::style::red(text),
-        }
+            _ => crate::style::red(text) }
     };
 
     let failures: Vec<_> = report
@@ -239,8 +237,7 @@ pub fn cargo_verdict_line(exec: &crate::model::TestExecution, color: bool) -> St
         TestResult::Pass => ("ok", TestResult::Pass),
         TestResult::Skip => ("ignored", TestResult::Skip),
         TestResult::Timeout => ("TIMEOUT", TestResult::Timeout),
-        _ => ("FAILED", TestResult::Fail),
-    };
+        _ => ("FAILED", TestResult::Fail) };
     let word = if !color {
         word.to_string()
     } else {
@@ -248,8 +245,7 @@ pub fn cargo_verdict_line(exec: &crate::model::TestExecution, color: bool) -> St
             TestResult::Pass => crate::style::green(word),
             TestResult::Skip => crate::style::yellow(word),
             TestResult::Timeout => crate::style::orange(word),
-            _ => crate::style::red(word),
-        }
+            _ => crate::style::red(word) }
     };
     format!("test {} ... {word}", exec.slug())
 }
@@ -267,8 +263,7 @@ pub struct Diff {
     pub curr_fail: usize,
     /// Passing before, failing now — the only list that should stop a merge.
     pub regressions: Vec<String>,
-    pub fixes: Vec<String>,
-}
+    pub fixes: Vec<String> }
 
 pub fn compare(prev: &TestReport, curr: &TestReport) -> Diff {
     // Only tests present in BOTH runs can have moved. Without this, running the
@@ -305,8 +300,7 @@ pub fn compare(prev: &TestReport, curr: &TestReport) -> Diff {
         prev_fail: prev.failed,
         curr_fail: curr.failed,
         regressions,
-        fixes,
-    }
+        fixes }
 }
 
 impl Diff {

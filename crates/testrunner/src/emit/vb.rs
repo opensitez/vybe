@@ -10,8 +10,7 @@ use crate::extract::Case;
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing,
-}
+    pub pairing: Pairing }
 
 pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let header = format!("' vybe-test: {slug}\n' origin: {origin}\n");
@@ -19,8 +18,7 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let Some(raw) = case.expected.as_ref() else {
         return Emitted {
             text: format!("{header}' vybe-test-mode: compile\n\n{}\n", case.source.trim()),
-            pairing: Pairing::Direct,
-        };
+            pairing: Pairing::Direct };
     };
 
     // The `vb_*_spec!`/`vb_case!` macros pass expectations through
@@ -31,16 +29,14 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
         .map(|e| match e.as_str() {
             "true" => "True".to_string(),
             "false" => "False".to_string(),
-            other => other.to_string(),
-        })
+            other => other.to_string() })
         .collect();
 
     let prints = find_prints(&case.source);
     if let Some(reason) = unpairable(&case.source, &prints, expected.len()) {
         return Emitted {
             text: format!("{header}\n{}\n", case.source.trim()),
-            pairing: Pairing::Unpairable(reason),
-        };
+            pairing: Pairing::Unpairable(reason) };
     }
 
     let mut body = case.source.clone();
@@ -52,8 +48,7 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
 
     Emitted {
         text: format!("{header}\n{harness}\n\n{}\n", body.trim()),
-        pairing: Pairing::Direct,
-    }
+        pairing: Pairing::Direct }
 }
 
 fn unpairable(src: &str, prints: &[Span], expected: usize) -> Option<String> {
@@ -156,8 +151,7 @@ fn skip_atom(_src: &str, bytes: &[u8], at: usize) -> Option<usize> {
             }
             Some(i)
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 /// VB keywords are case-insensitive.

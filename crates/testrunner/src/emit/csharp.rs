@@ -9,8 +9,7 @@ use crate::extract::Case;
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing,
-}
+    pub pairing: Pairing }
 
 pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let header = format!("// vybe-test: {slug}\n// origin: {origin}\n");
@@ -18,16 +17,14 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let Some(expected) = case.expected.as_ref() else {
         return Emitted {
             text: format!("{header}// vybe-test-mode: compile\n\n{}\n", case.source.trim()),
-            pairing: Pairing::Direct,
-        };
+            pairing: Pairing::Direct };
     };
 
     let prints = find_prints(&case.source);
     if let Some(reason) = unpairable(&case.source, &prints, expected.len()) {
         return Emitted {
             text: format!("{header}\n{}\n", case.source.trim()),
-            pairing: Pairing::Unpairable(reason),
-        };
+            pairing: Pairing::Unpairable(reason) };
     }
 
     let mut body = case.source.clone();
@@ -44,8 +41,7 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
 
     Emitted {
         text: format!("{header}\n{harness}\n\n{}\n", body.trim()),
-        pairing: Pairing::Direct,
-    }
+        pairing: Pairing::Direct }
 }
 
 fn unpairable(src: &str, prints: &[Span], expected: usize) -> Option<String> {
@@ -141,8 +137,7 @@ fn skip_atom(src: &str, bytes: &[u8], at: usize) -> Option<usize> {
                 }
                 return Some((i + 2).min(bytes.len()));
             }
-            _ => return None,
-        }
+            _ => return None }
     }
 
     let verbatim = bytes.get(at) == Some(&b'@') && bytes.get(at + 1) == Some(&b'"');
@@ -179,8 +174,7 @@ fn skip_atom(src: &str, bytes: &[u8], at: usize) -> Option<usize> {
                 match bytes[i] {
                     b'\\' => i += 2,
                     b'\'' => return Some(i + 1),
-                    _ => i += 1,
-                }
+                    _ => i += 1 }
             }
             Some(bytes.len())
         }
@@ -231,8 +225,7 @@ fn cs_string(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            _ => out.push(ch),
-        }
+            _ => out.push(ch) }
     }
     out.push('"');
     out

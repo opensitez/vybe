@@ -32,13 +32,15 @@ fn main() -> Result<()> {
         Some("extract") => cmd_extract(&args[1..]),
         Some("run") => cmd_run(&args[1..]),
         Some("summary") => cmd_summary(&args[1..]),
+        Some("dashboard") => cmd_dashboard(&args[1..]),
         _ => {
             eprintln!(
                 "vybe testrunner\n\n\
                  Usage:\n  \
                  testrunner extract <rust-test-file>... [--out DIR] [--lang NAME]\n  \
                  testrunner run <path>... [options]\n  \
-                 testrunner summary <target>... [--results DIR]\n\n\
+                 testrunner summary <target>... [--results DIR]\n  \
+                 testrunner dashboard [--results DIR] [--sort COL] [--desc]\n\n\
                  run options:\n  \
                  --vybex PATH    vybex binary to drive      (default target/debug/vybex)\n  \
                  --runtime CMD   run under something else   (\"go run\", \"node\", \"python3\")\n  \
@@ -51,7 +53,8 @@ fn main() -> Result<()> {
                  --save          write the plain test log to results/<dir>/saved/<target>.txt\n  \
                  --verbose       stream every failure as it happens (default: report only)\n\n\
                  `summary` reads a log written by `run --save` and groups the\n\
-                 failures by category, worst first.\n\n\
+                 failures by category, worst first. `dashboard` totals EVERY\n\
+                 saved log, one row per language.\n\n\
                  A path may be a directory or a single test file. `run` writes a\n\
                  timestamped JSON report and diffs it against the previous run of\n\
                  the same runtime, naming regressions and newly-passing tests.\n"
@@ -155,6 +158,12 @@ fn cmd_extract(args: &[String]) -> Result<()> {
             .to_string();
         let dir = out_root.join(&lang).join(&category);
         std::fs::create_dir_all(&dir)?;
+        // `cobc` rejects a base name longer than 31 characters ("invalid file
+        // base name — length exceeds maximum"), which would leave those cases
+        // untestable against the reference compiler. Measured: 31 passes, 32
+        // does not. The directory is not counted.
+        let max_name = if lang == "cobol" { 31 } else { usize::MAX };
+        let mut used_names: std::collections::HashSet<String> = Default::default();
         // Not every language needs an injected harness — wast asserts by
         // trapping, so its compile-mode cases need no helper at all.
         let harness = emit::harness_body(&lang).unwrap_or_default();
@@ -209,12 +218,36 @@ fn cmd_extract(args: &[String]) -> Result<()> {
                     let e = emit::java::emit(case, input, &slug, &harness);
                     (e.text, e.pairing)
                 }
-                other => anyhow::bail!("no emitter for `{other}` yet"),
-            };
+                "cobol" => {
+                    let e = emit::cobol::emit(case, input, &slug, &harness);
+                    (e.text, e.pairing)
+                }
+                "fortran" => {
+                    let e = emit::fortran::emit(case, input, &slug, &harness);
+                    (e.text, e.pairing)
+                }
+                "dart" => {
+                    let e = emit::dart::emit(case, input, &slug, &harness);
+                    (e.text, e.pairing)
+                }
+                "pascal" => {
+                    let e = emit::pascal::emit(case, input, &slug, &harness);
+                    (e.text, e.pairing)
+                }
+                "c" => {
+                    let e = emit::c::emit(case, input, &slug, &harness);
+                    (e.text, e.pairing)
+                }
+                "lua" => {
+                    let e = emit::lua::emit(case, input, &slug, &harness);
+                    (e.text, e.pairing)
+                }
+                other => anyhow::bail!("no emitter for `{other}` yet") };
             if let emit::go::Pairing::Unpairable(reason) = &pairing {
                 unpairable.push((slug.clone(), reason.clone()));
             }
-            std::fs::write(dir.join(format!("{}.{file_ext}", case.name)), &text)?;
+            let file_name = short_unique_name(&case.name, max_name, &mut used_names);
+            std::fs::write(dir.join(format!("{file_name}.{file_ext}")), &text)?;
             total += 1;
         }
         println!("{input} → {} case(s) in {}", cases.len(), dir.display());
@@ -255,6 +288,334 @@ fn language_of(path: &Path) -> Option<String> {
         }
     }
     None
+}
+
+// ── dashboard ───────────────────────────────────────────────────────────────
+
+/// `testrunner dashboard` — one row per language across every saved log.
+///
+/// The `count_results.sh` equivalent for `run --save` output, with three
+/// differences that matter:
+///
+/// * It counts VERDICTS, not lines containing "FAIL". A grep also matches the
+///   `failures:` block, the `---- slug ----` headers and any harness
+///   `FAIL: want [...]` the program printed, so the same run reads worse than
+///   it is.
+/// * It groups by the LANGUAGE in each slug, not the filename. Three saved
+///   php logs are one `php` row; `${base%%.*}` would have labelled all three
+///   `tests`.
+/// * `TIMEOUT` is a verdict now, so timeouts are counted rather than inferred
+///   from a "has been running" line that no longer exists.
+fn cmd_dashboard(args: &[String]) -> Result<()> {
+    // `watch testrunner dashboard` loses the colour, because `watch` is not a
+    // terminal and `style` correctly refuses to paint a pipe. `--watch` redraws
+    // from inside the process instead, where stdout IS the terminal.
+    if !args.iter().any(|a| a == "--watch") {
+        return render_dashboard(args);
+    }
+    let secs: u64 = flag(args, "--interval").and_then(|v| v.parse().ok()).unwrap_or(2);
+    loop {
+        // Home + erase-below, not erase-all: the screen is overwritten in place
+        // so a redraw does not flash.
+        print!("\x1b[H\x1b[J");
+        render_dashboard(args)?;
+        println!("\n{}", style::grey(&format!("refreshing every {secs}s — ^C to stop")));
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        std::thread::sleep(std::time::Duration::from_secs(secs));
+    }
+}
+
+fn render_dashboard(args: &[String]) -> Result<()> {
+    let results_dir = PathBuf::from(flag(args, "--results").unwrap_or("results/testrunner"));
+    let saved_dir = results_dir.join("saved");
+    let sort_by = flag(args, "--sort").unwrap_or("percent").to_ascii_lowercase();
+    let desc = args.iter().any(|a| a == "--desc");
+
+    #[derive(Default)]
+    struct Row {
+        ok: usize,
+        failed: usize,
+        timeout: usize,
+        files: usize,
+        /// Tests the in-flight log said it would run, when one is running.
+        expected: usize,
+        running: bool,
+        /// The owning process is gone but the log never finished.
+        interrupted: bool,
+        /// Seconds since the newest of this suite's logs was written.
+        age: Option<u64> }
+    let mut rows: std::collections::BTreeMap<String, Row> = Default::default();
+
+    let mut logs: Vec<PathBuf> = std::fs::read_dir(&saved_dir)
+        .with_context(|| format!("reading {}", saved_dir.display()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "txt"))
+        .collect();
+    logs.sort();
+    anyhow::ensure!(
+        !logs.is_empty(),
+        "no saved logs in {} — run `testrunner run <suite> --save` first",
+        saved_dir.display()
+    );
+
+    let now = std::time::SystemTime::now();
+    for log in &logs {
+        let text = std::fs::read_to_string(log)?;
+        // A run in flight has written its `running N tests` header and some
+        // verdicts, but not the closing `test result:` line — `--save` streams
+        // and only appends the tail at the end. No lockfile needed, and two
+        // testrunners writing different suites are distinguished for free.
+        let finished = text.lines().any(|l| l.starts_with("test result:"));
+        let announced: usize = text
+            .lines()
+            .find_map(|l| l.strip_prefix("running ")?.split_whitespace().next()?.parse().ok())
+            .unwrap_or(0);
+        // Ask the owning process, if a sidecar names one.
+        let owner_pid: Option<u32> = std::fs::read_to_string(run_marker(log))
+            .ok()
+            .and_then(|t| t.trim().parse().ok());
+        let live = owner_pid.is_some_and(pid_alive);
+        let orphaned = owner_pid.is_some() && !live;
+        let age = std::fs::metadata(log)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .map(|d| d.as_secs());
+        // The log's NAME already carries its target, and that is the only way
+        // a log with no verdicts YET can appear at all: with `--suites`, the
+        // savers for later waves exist, hold a live PID and are empty for as
+        // long as the earlier waves take. Keyed off verdicts alone those suites
+        // vanished from the table and reappeared under "never saved" — advice
+        // to start a run that was already running.
+        let mut seen_langs: std::collections::BTreeSet<String> = Default::default();
+        if let Some(named) = lang_from_log(log) {
+            seen_langs.insert(named);
+        }
+        for line in text.lines() {
+            let Some(rest) = line.strip_prefix("test ") else { continue };
+            let Some((slug, verdict)) = rest.rsplit_once(" ... ") else { continue };
+            let lang = slug.split('/').next().unwrap_or(slug).to_string();
+            let row = rows.entry(lang.clone()).or_default();
+            match verdict {
+                "ok" => row.ok += 1,
+                "TIMEOUT" => row.timeout += 1,
+                "FAILED" => row.failed += 1,
+                _ => continue }
+            seen_langs.insert(lang);
+        }
+        for lang in seen_langs {
+            let row = rows.entry(lang).or_default();
+            row.files += 1;
+            if !finished {
+                row.expected += announced;
+                if live {
+                    row.running = true;
+                } else {
+                    row.interrupted = true;
+                }
+            } else if orphaned {
+                // Finished writing but the marker survived — the process died
+                // between the last write and its own cleanup.
+                row.interrupted = true;
+            }
+            row.age = match (row.age, age) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b) };
+        }
+    }
+
+    let pct = |r: &Row| -> f64 {
+        let total = r.ok + r.failed + r.timeout;
+        if total == 0 { 0.0 } else { 100.0 * r.ok as f64 / total as f64 }
+    };
+
+    let mut ordered: Vec<(&String, &Row)> = rows.iter().collect();
+    ordered.sort_by(|a, b| {
+        let o = match sort_by.as_str() {
+            "name" | "suite" => a.0.cmp(b.0),
+            "ok" | "pass" => a.1.ok.cmp(&b.1.ok),
+            "fail" | "failed" => a.1.failed.cmp(&b.1.failed),
+            "timeout" => a.1.timeout.cmp(&b.1.timeout),
+            "total" => (a.1.ok + a.1.failed + a.1.timeout).cmp(&(b.1.ok + b.1.failed + b.1.timeout)),
+            _ => pct(a.1).partial_cmp(&pct(b.1)).unwrap_or(std::cmp::Ordering::Equal) };
+        if desc { o.reverse() } else { o }
+    });
+
+    // `run_lang_tests.py`'s columns and vocabulary: a state icon on the left,
+    // then the suite name BOLD and tinted by state. There is no `state` column
+    // — the icon and the colour already say it, and `done` says how much of the
+    // suite the row is speaking for. One format string serves the header and
+    // every row, so the two cannot drift apart.
+    //
+    // EVERY CELL IS PADDED BEFORE IT IS COLOURED, and the macro's slots are
+    // bare `{}`. A width applies to a string's LENGTH, and an escape sequence
+    // is ~9 bytes of it, so `{:>6}` handed an already-coloured cell pads
+    // nothing — the table lines up in a pipe (colour off) and comes apart on a
+    // terminal, which is the one place anybody reads it.
+    macro_rules! row {
+        ($icon:expr, $name:expr, $pct:expr, $ok:expr, $fail:expr, $to:expr, $total:expr,
+         $done:expr, $tail:expr) => {
+            // Trimmed: a row with no tail would otherwise end in two spaces,
+            // and trailing whitespace in a log is noise a diff will find.
+            println!(
+                "{}",
+                format!(
+                    "{} {} {} {} {} {} {} {}  {}",
+                    $icon, $name, $pct, $ok, $fail, $to, $total, $done, $tail
+                )
+                .trim_end()
+            )
+        };
+    }
+    let head = |t: &str, w: usize| style::bold(&format!("{t:>w$}"));
+    // 50 = the width of the columns through `done`; `updated` is free text.
+    let rule = style::grey(&"─".repeat(50));
+    row!(
+        " ",
+        style::bold("suite   "),
+        head("%ok", 6),
+        head("ok", 6),
+        head("fail", 6),
+        head("t/o", 4),
+        head("total", 7),
+        head("done", 5),
+        style::bold("updated")
+    );
+    println!("{rule}");
+
+    let (mut t_ok, mut t_fail, mut t_to, mut t_want) = (0usize, 0usize, 0usize, 0usize);
+    let dash = |w: usize| style::grey(&format!("{:>w$}", "—"));
+    // A suite whose saver exists but has produced no verdict yet has nothing to
+    // rank, so it sorts below the ones that do — with the never-saved rows,
+    // which look the same because they mean the same thing: no data.
+    let (measured, queued): (Vec<_>, Vec<_>) =
+        ordered.iter().partition(|(_, r)| r.ok + r.failed + r.timeout > 0);
+    for (lang, r) in &measured {
+        let total = r.ok + r.failed + r.timeout;
+        // A finished log never announced an expectation, and it does not need
+        // to: what it ran IS the suite.
+        let want = if r.expected > 0 { r.expected } else { total };
+        // GREEN MEANS LIVE. A suite that has finished is not tinted at all —
+        // `run_lang_tests.py` leaves `done` uncoloured for the same reason:
+        // colour on the name answers "is this moving?", and a finished suite
+        // that stayed green answered it wrongly. How it SCORED is the `%ok`
+        // column's job, and it has its own scale.
+        let (icon, paint): (&str, fn(&str) -> String) = if r.running {
+            ("▶", style::green)
+        } else if r.interrupted {
+            ("✖", style::red)
+        } else if r.failed + r.timeout > 0 {
+            ("✗", style::yellow)
+        } else {
+            ("✓", style::plain)
+        };
+        // Score, not liveness: ≥90% green, 80–90% orange, below that grey.
+        let score: fn(&str) -> String = match pct(r) {
+            p if p >= 90.0 => style::green,
+            p if p >= 80.0 => style::orange,
+            _ => style::grey };
+        let done = format!(
+            "{:>5}",
+            format!("{:.0}%", if want == 0 { 0.0 } else { 100.0 * total as f64 / want as f64 })
+        );
+        row!(
+            paint(icon),
+            style::bold(&paint(&format!("{lang:<8}"))),
+            score(&format!("{:>6}", format!("{:.1}%", pct(r)))),
+            format!("{:>6}", r.ok),
+            format!("{:>6}", r.failed),
+            format!("{:>4}", r.timeout),
+            format!("{total:>7}"),
+            // A partial row is the one whose `done` matters, so it is the one
+            // that gets the colour.
+            if total == want { style::grey(&done) } else { paint(&done) },
+            style::grey(&r.age.map(human_age).unwrap_or_else(|| "-".into()))
+        );
+        t_ok += r.ok;
+        t_fail += r.failed;
+        t_to += r.timeout;
+        t_want += want;
+    }
+    // Its saver exists and its PID is alive, but its wave has not come up yet.
+    // Zeros would read as "everything failing"; dashes read as what it is.
+    for (lang, _) in &queued {
+        row!(
+            style::grey("·"),
+            style::grey(&format!("{lang:<8}")),
+            dash(6),
+            dash(6),
+            dash(6),
+            dash(4),
+            dash(7),
+            dash(5),
+            style::grey("queued")
+        );
+    }
+
+    // A suite that was extracted but never saved gets a ROW, not a sentence
+    // trailing the table. `run_lang_tests.py` calls this state `queued` and
+    // draws it grey with a `·`; here it means "no data", and a dashboard that
+    // showed only what was measured would hide what was not.
+    let extracted: std::collections::BTreeSet<String> = std::fs::read_dir("tests")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    for lang in extracted.iter().filter(|l| !rows.contains_key(*l)) {
+        row!(
+            style::grey("·"),
+            style::grey(&format!("{lang:<8}")),
+            dash(6),
+            dash(6),
+            dash(6),
+            dash(4),
+            dash(7),
+            dash(5),
+            // No tail. The grey `·` and the dashes already say there is no
+            // data; spelling it out re-invents the status column.
+            ""
+        );
+    }
+
+    let grand = t_ok + t_fail + t_to;
+    let overall = if grand == 0 { 0.0 } else { 100.0 * t_ok as f64 / grand as f64 };
+    let live = ordered.iter().filter(|(_, r)| r.running).count();
+    let stale = ordered.iter().filter(|(_, r)| r.interrupted).count();
+    let bold_at = |t: String, w: usize| style::bold(&format!("{t:>w$}"));
+    println!("{rule}");
+    row!(
+        " ",
+        style::bold("TOTAL   "),
+        bold_at(format!("{overall:.1}%"), 6),
+        bold_at(t_ok.to_string(), 6),
+        bold_at(t_fail.to_string(), 6),
+        bold_at(t_to.to_string(), 4),
+        bold_at(grand.to_string(), 7),
+        bold_at(
+            format!("{:.0}%", if t_want == 0 { 0.0 } else { 100.0 * grand as f64 / t_want as f64 }),
+            5
+        ),
+        ""
+    );
+    // A status line of its own, not a cell on the TOTAL row: a suite still
+    // running, or one whose process died mid-log, makes its own percentage a
+    // partial population, and that is a sentence, not a column.
+    if live > 0 {
+        println!("{}", style::green(&format!("▶ {live} suite(s) still running")));
+    }
+    if stale > 0 {
+        println!(
+            "{}",
+            style::red(&format!(
+                "✖ {stale} suite(s) interrupted — rerun before trusting those rows"
+            ))
+        );
+    }
+    Ok(())
 }
 
 // ── summary ─────────────────────────────────────────────────────────────────
@@ -374,15 +735,13 @@ fn print_saved_summary(target: &str, paths: &[PathBuf]) -> Result<()> {
                 failed += 1;
                 (1, 0)
             }
-            _ => continue,
-        };
+            _ => continue };
         // The slug is `lang/category/name`; group by `lang/category`, which is
         // the unit you re-run and the unit a fix lands in.
         let mut parts = slug.split('/');
         let category = match (parts.next(), parts.next(), parts.next()) {
             (Some(lang), Some(cat), Some(_)) => format!("{lang}/{cat}"),
-            _ => slug.to_string(),
-        };
+            _ => slug.to_string() };
         let entry = by_category.entry(category).or_default();
         entry.0 += fails;
         entry.1 += tos;
@@ -458,6 +817,15 @@ fn cmd_run(args: &[String]) -> Result<()> {
     // 60s, matching the point at which cargo declares a test worth mentioning.
     let timeout: u64 = flag(args, "--timeout").and_then(|n| n.parse().ok()).unwrap_or(60);
     let results_dir = PathBuf::from(flag(args, "--results").unwrap_or("results/testrunner"));
+    // How many SUITES are in flight at once — `run_lang_tests.py`'s `jobs`, not
+    // `-j`, which is worker threads. Several suites given at once used to be
+    // flattened into one pool, so nothing finished until nearly everything did:
+    // eleven `--save` logs all sat half-written, and the dashboard could only
+    // say "running" about all of them. The cost is a drain-down at each wave
+    // boundary, where one hung test holds the pool open for up to the full
+    // timeout; raise the number to trade per-suite reporting back for it.
+    let suites_at_once: usize =
+        flag(args, "--suites").and_then(|n| n.parse().ok()).unwrap_or(3).max(1);
     if let Some(jobs) = flag(args, "-j").and_then(|n| n.parse().ok()) {
         rayon::ThreadPoolBuilder::new().num_threads(jobs).build_global().ok();
     }
@@ -497,11 +865,48 @@ fn cmd_run(args: &[String]) -> Result<()> {
         .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get() + 2).unwrap_or(8));
     let under = match &runtime {
         Some(cmd) => cmd.join(" "),
-        None => vybex.display().to_string(),
-    };
+        None => vybex.display().to_string() };
+    let waves: Vec<(Vec<usize>, Vec<PathBuf>)> = (0..roots.len())
+        .collect::<Vec<_>>()
+        .chunks(suites_at_once)
+        .map(|group| {
+            let group = group.to_vec();
+            // ROUND-ROBIN across the wave's targets, not sorted path order.
+            // The wave is one flat pool, and a pool fed in path order drains
+            // `tests/java/...` entirely before it reaches `tests/wast/...` —
+            // three suites "at a time" that still ran one at a time, with two
+            // logs sitting empty while the first filled. Interleaving means
+            // every suite in the wave progresses together.
+            let mut lanes: Vec<Vec<PathBuf>> = group
+                .iter()
+                .map(|i| {
+                    files
+                        .iter()
+                        .filter(|f| owner.get(*f) == Some(i))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let mut wave = Vec::new();
+            let deepest = lanes.iter().map(Vec::len).max().unwrap_or(0);
+            for n in 0..deepest {
+                for lane in &mut lanes {
+                    if let Some(file) = lane.get(n) {
+                        wave.push(file.clone());
+                    }
+                }
+            }
+            (group, wave)
+        })
+        .collect();
     eprintln!(
-        "[testrunner] {} test(s) · {threads} {} workers · {timeout}s timeout · under `{under}`",
+        "[testrunner] {} test(s){} · {threads} {} workers · {timeout}s timeout · under `{under}`",
         files.len(),
+        if roots.len() > 1 {
+            format!(" · {} suite(s), {suites_at_once} at a time", roots.len())
+        } else {
+            String::new()
+        },
         if runtime.is_some() || cold { "cold" } else { "warm" },
     );
 
@@ -535,22 +940,41 @@ fn cmd_run(args: &[String]) -> Result<()> {
     // Opened BEFORE the run and written line by line, not buffered to the end:
     // on a suite that takes minutes you want to watch or grep the log while it
     // is still filling.
-    let savers: Vec<(PathBuf, std::sync::Mutex<std::fs::File>)> = if save {
+    let savers: Vec<(PathBuf, std::sync::Mutex<Option<std::fs::File>>)> = if save {
         let mut out = Vec::new();
-        for (i, target) in targets.iter().enumerate() {
+        for target in targets.iter() {
             let path = saved_log_path(&results_dir, target);
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;
             }
-            let count = owner.values().filter(|&&o| o == i).count();
-            let mut file = std::fs::File::create(&path)
-                .with_context(|| format!("creating {}", path.display()))?;
-            writeln!(file, "running {count} tests")?;
-            out.push((path, std::sync::Mutex::new(file)));
+            out.push((path, std::sync::Mutex::new(None)));
         }
         out
     } else {
         Vec::new()
+    };
+    // Each log is CREATED when its wave starts, not when the run starts.
+    // Creating all of them up front truncated the logs of suites that would not
+    // begin for hours, so a dashboard lost every earlier number the moment a
+    // long multi-suite run began — and showed an empty file in its place.
+    // Opened before the wave rather than at its end, and flushed per line, so
+    // `tail -f` and a mid-run `grep` both see it fill.
+    let open_saver = |i: usize| -> Result<()> {
+        let Some((path, slot)) = savers.get(i) else { return Ok(()) };
+        let count = owner.values().filter(|&&o| o == i).count();
+        let mut file =
+            std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
+        writeln!(file, "running {count} tests")?;
+        file.flush()?;
+        // A sidecar naming the PID that owns this log. mtime cannot tell a live
+        // run from an abandoned one — a stalled worker writes nothing for the
+        // whole timeout, and a run killed a second ago still looks fresh. A PID
+        // can be asked. Removed on the way out; if the process is killed it
+        // stays behind and the dashboard sees a dead PID, which is exactly the
+        // "interrupted" it should report.
+        let _ = std::fs::write(run_marker(path), format!("{}\n", std::process::id()));
+        *slot.lock().unwrap() = Some(file);
+        Ok(())
     };
     let note = |exec: &model::TestExecution| {
         table.record(exec);
@@ -566,9 +990,11 @@ fn cmd_run(args: &[String]) -> Result<()> {
             // Always uncoloured: the file exists to be parsed. Flushed per
             // line so `tail -f` and a mid-run `grep` both see it.
             let line = report::cargo_verdict_line(exec, false);
-            if let Ok(mut file) = file.lock() {
-                let _ = writeln!(file, "{line}");
-                let _ = file.flush();
+            if let Ok(mut slot) = file.lock() {
+                if let Some(file) = slot.as_mut() {
+                    let _ = writeln!(file, "{line}");
+                    let _ = file.flush();
+                }
             }
         }
         // Quiet by default. A failure is a data point, not a message: the live
@@ -584,26 +1010,63 @@ fn cmd_run(args: &[String]) -> Result<()> {
         }
     };
 
-    let executions: Vec<model::TestExecution> = match &runtime {
-        // A foreign runtime has no warm mode — one process per test is all
-        // `go run` / `python3` / `node` offer.
-        Some(cmd) => run::run_each(&files, threads, |file, mode| {
-            run::run_foreign(&cmd[0], &cmd[1..], file, mode, timeout, &|secs| {
-                announce(file, secs)
-            })
-        }, &note),
-        None if cold => run::run_each(&files, threads, |file, mode| {
-            run::run_case(&vybex, file, mode, timeout, &|secs| announce(file, secs))
-        }, &note),
-        None => pool::run_all(
-            &vybex,
-            &files,
-            threads,
-            std::time::Duration::from_secs(timeout),
-            note,
-            &announce,
-        ),
+    let run_wave = |files: &[PathBuf]| -> Vec<model::TestExecution> {
+        match &runtime {
+            // A foreign runtime has no warm mode — one process per test is all
+            // `go run` / `python3` / `node` offer.
+            Some(cmd) => run::run_each(files, threads, |file, mode| {
+                run::run_foreign(&cmd[0], &cmd[1..], file, mode, timeout, &|secs| {
+                    announce(file, secs)
+                })
+            }, &note),
+            None if cold => run::run_each(files, threads, |file, mode| {
+                run::run_case(&vybex, file, mode, timeout, &|secs| announce(file, secs))
+            }, &note),
+            None => pool::run_all(
+                &vybex,
+                files,
+                threads,
+                std::time::Duration::from_secs(timeout),
+                &note,
+                &announce,
+            ) }
     };
+    // One wave at a time, each wave being up to `--suites` targets run across
+    // the full worker pool. With a single target there is one wave and this is
+    // exactly the old behaviour.
+    let mut executions: Vec<model::TestExecution> = Vec::with_capacity(files.len());
+    for (group, wave) in &waves {
+        // Each wave times itself. Elapsed-since-run-start made every suite
+        // after the first overstate its duration in the very log a stats
+        // script parses.
+        let wave_started = std::time::Instant::now();
+        for &i in group {
+            open_saver(i)?;
+        }
+        let done = run_wave(wave);
+        // Close each finished target's log HERE, not at the end of the whole
+        // run. Its `test result:` line is what tells the dashboard the suite
+        // completed; deferring it left a finished suite reading "running" for
+        // as long as the remaining waves took.
+        for &i in group {
+            let Some((path, file)) = savers.get(i) else { continue };
+            let mut sub = model::TestReport::new(under.clone());
+            for exec in done.iter().filter(|e| owner.get(&e.path) == Some(&i)) {
+                sub.add_execution(exec.clone());
+            }
+            let mut slot = file.lock().unwrap();
+            let Some(handle) = slot.as_mut() else { continue };
+            for line in report::cargo_tail(&sub, wave_started.elapsed().as_secs_f64(), false) {
+                writeln!(handle, "{line}")?;
+            }
+            handle.flush()?;
+            *slot = None;
+            drop(slot);
+            let _ = std::fs::remove_file(run_marker(path));
+            eprintln!("[testrunner] saved: {}", path.display());
+        }
+        executions.extend(done);
+    }
     table.finish();
 
     let mut report = model::TestReport::new(under.clone());
@@ -620,21 +1083,6 @@ fn cmd_run(args: &[String]) -> Result<()> {
         for line in report::cargo_tail(&report, secs, true) {
             println!("{line}");
         }
-    }
-
-    // Each target's file gets ITS OWN failures block and `test result:` line,
-    // counted over that target's tests only — the file is that target's log.
-    for (i, (path, file)) in savers.iter().enumerate() {
-        let mut sub = model::TestReport::new(under.clone());
-        for exec in report.executions.iter().filter(|e| owner.get(&e.path) == Some(&i)) {
-            sub.add_execution(exec.clone());
-        }
-        let mut file = file.lock().unwrap();
-        for line in report::cargo_tail(&sub, secs, false) {
-            writeln!(file, "{line}")?;
-        }
-        file.flush()?;
-        eprintln!("[testrunner] saved: {}", path.display());
     }
 
     // Timestamped JSON, and the run-over-run diff that rides on it. Opt-in:
@@ -695,6 +1143,34 @@ fn cmd_run(args: &[String]) -> Result<()> {
     if report.failed == 0 && report.errors == 0 { Ok(()) } else { std::process::exit(1) }
 }
 
+/// Shorten a case name to `max` characters, keeping it unique within its
+/// directory. Truncation alone collides (many names share a long prefix), so a
+/// colliding name gets a numeric suffix inside the budget rather than beyond
+/// it.
+fn short_unique_name(
+    name: &str,
+    max: usize,
+    used: &mut std::collections::HashSet<String>,
+) -> String {
+    let mut candidate: String = if name.chars().count() <= max {
+        name.to_string()
+    } else {
+        name.chars().take(max).collect()
+    };
+    if used.insert(candidate.clone()) {
+        return candidate;
+    }
+    for n in 2..1000u32 {
+        let suffix = format!("_{n}");
+        let keep = max.saturating_sub(suffix.chars().count());
+        candidate = name.chars().take(keep).collect::<String>() + &suffix;
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    candidate
+}
+
 /// `tests/php` → `results/testrunner/saved/tests.php.txt`.
 ///
 /// The target with `/` turned into `.`, which is the shape the existing
@@ -705,6 +1181,40 @@ fn saved_log_path(results_dir: &Path, target: &str) -> PathBuf {
     let name = target.trim_matches('/').replace('/', ".");
     let name = if name.is_empty() { "run".to_string() } else { name };
     results_dir.join("saved").join(format!("{name}.txt"))
+}
+
+/// `tests.php.txt` → `php`, `tests.php.arrays.txt` → `php`, `go.txt` → `go`.
+/// The saved name is the target with `/` → `.`, so the suite is the first
+/// component that is not the `tests` root.
+fn lang_from_log(log: &Path) -> Option<String> {
+    let stem = log.file_stem()?.to_str()?;
+    stem.split('.').find(|p| !p.is_empty() && *p != "tests").map(str::to_string)
+}
+
+/// `12s` / `4m` / `2h` — a raw second count is unreadable in a `watch` pane.
+/// `tests.php.txt` → `.tests.php.txt.run`, the sidecar holding the owning PID.
+fn run_marker(log: &Path) -> PathBuf {
+    let name = log.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    log.with_file_name(format!(".{name}.run"))
+}
+
+/// Is that process still alive? `kill -0` is the portable unix probe: it sends
+/// no signal and only reports whether the process exists.
+fn pid_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn human_age(secs: u64) -> String {
+    match secs {
+        0..=99 => format!("{secs}s ago"),
+        100..=5399 => format!("{}m ago", secs / 60),
+        _ => format!("{}h ago", secs / 3600) }
 }
 
 fn collect(roots: &[PathBuf]) -> Vec<PathBuf> {

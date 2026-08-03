@@ -12,13 +12,11 @@ pub enum Pairing {
     Direct,
     /// The print-to-line mapping is not static; the case is reported rather
     /// than guessed at.
-    Unpairable(String),
-}
+    Unpairable(String) }
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing,
-}
+    pub pairing: Pairing }
 
 pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let mut header = format!("// vybe-test: {slug}\n// origin: {origin}\n");
@@ -29,8 +27,7 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
         return Emitted {
             text: header + &reflow(&case.source),
             // A compile case never had an expectation to pair.
-            pairing: Pairing::Direct,
-        };
+            pairing: Pairing::Direct };
     };
     header.push('\n');
 
@@ -39,8 +36,7 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     if let Some(reason) = unpairable_reason(&case.source, &prints, expected.len()) {
         return Emitted {
             text: header + &reflow(&case.source),
-            pairing: Pairing::Unpairable(reason),
-        };
+            pairing: Pairing::Unpairable(reason) };
     }
 
     // The i-th expected LINE belongs to the print that runs i-th, which is not
@@ -63,8 +59,7 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
 
     Emitted {
         text: header + &splice_harness(&reflow(&body), harness),
-        pairing: Pairing::Direct,
-    }
+        pairing: Pairing::Direct }
 }
 
 /// Put the harness in front of `func main`, where a reader looking for the
@@ -72,8 +67,7 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
 fn splice_harness(src: &str, harness: &str) -> String {
     match src.find("func main(") {
         Some(at) => format!("{}{harness}\n\n{}", &src[..at], &src[at..]),
-        None => format!("{src}\n{harness}\n"),
-    }
+        None => format!("{src}\n{harness}\n") }
 }
 
 fn unpairable_reason(src: &str, prints: &[Span], expected: usize) -> Option<String> {
@@ -150,8 +144,7 @@ fn runtime_order(src: &str, prints: &[Span]) -> Vec<usize> {
     for (i, span) in prints.iter().enumerate() {
         match group_of(span) {
             Some(group) => deferred.push((group, i)),
-            None => immediate.push(i),
-        }
+            None => immediate.push(i) }
     }
     // Later `defer`s run first; inside one, source order holds.
     deferred.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
@@ -256,8 +249,7 @@ fn defer_spans(src: &str) -> Vec<(usize, usize)> {
                 spans.push((i, end));
                 i = end;
             }
-            None => i += 5,
-        }
+            None => i += 5 }
     }
     spans
 }
@@ -319,8 +311,7 @@ fn render_println_args(args: &str) -> String {
             .iter()
             .map(|p| format!("fmt.Sprint({p})"))
             .collect::<Vec<_>>()
-            .join(" + \" \" + "),
-    }
+            .join(" + \" \" + ") }
 }
 
 /// Split a call's arguments on the commas that separate them — not on commas
@@ -360,8 +351,7 @@ struct Span {
     start: usize,
     args_start: usize,
     args_end: usize,
-    end: usize,
-}
+    end: usize }
 
 /// Every `fmt.Println(...)` call outside a string literal, in source order.
 fn find_prints(src: &str) -> Vec<Span> {
@@ -429,8 +419,7 @@ fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
                 match bytes[i] {
                     b'\\' => i += 2,
                     b'"' => return Some(i + 1),
-                    _ => i += 1,
-                }
+                    _ => i += 1 }
             }
             Some(bytes.len())
         }
@@ -447,13 +436,11 @@ fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
                 match bytes[i] {
                     b'\\' => i += 2,
                     b'\'' => return Some(i + 1),
-                    _ => i += 1,
-                }
+                    _ => i += 1 }
             }
             Some(bytes.len())
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn has_keyword(src: &str, word: &str) -> bool {
@@ -508,8 +495,7 @@ fn go_string(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            _ => out.push(ch),
-        }
+            _ => out.push(ch) }
     }
     out.push('"');
     out

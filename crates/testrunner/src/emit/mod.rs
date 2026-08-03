@@ -5,10 +5,16 @@
 //! real source under `harness/<lang>/`, so it can be read, formatted and
 //! debugged with that language's own tools.
 
+pub mod c;
+pub mod cobol;
 pub mod csharp;
+pub mod dart;
+pub mod fortran;
 pub mod go;
 pub mod java;
 pub mod js;
+pub mod lua;
+pub mod pascal;
 pub mod php;
 pub mod kotlin;
 pub mod python;

@@ -29,8 +29,7 @@ pub struct Case {
     /// declarations as a local `let types = r#"…"#` rather than inline, so it
     /// has to be resolved from the enclosing test fn or the emitted file is
     /// missing every type it references.
-    pub prelude: Option<String>,
-}
+    pub prelude: Option<String> }
 
 #[derive(Clone, Copy)]
 enum Shape {
@@ -42,16 +41,28 @@ enum Shape {
     CompileFail,
     /// `name => { "src", ["line"] };` — the JS batch spelling.
     RunBraced,
-}
+    /// `name => { includes: [...], declarations: "…", body: "…", expect: [...] }`
+    /// — C's spelling, where the program is assembled from three parts rather
+    /// than given as one source.
+    CFields }
 
 fn shape_of(macro_name: &str) -> Option<Shape> {
     Some(match macro_name {
         "go_run_cases" | "run_cases" | "kotlin_run_cases" => Shape::Run,
-        "js_cases" | "js_import_cases" | "php_cases" | "csharp_cases" | "wat_exec" => Shape::RunBraced,
+        // `dart_cases!` / `fortran_cases!` are `name => { src, [expected] };`
+        // — the same shape, `;`-separated, which the entry loop already takes.
+        // Being absent here is why 91 dart modules (4,134 tests) and 43 fortran
+        // ones (2,070) produced no files at all: an unknown macro name is
+        // skipped silently, so the gap only shows against the cargo log.
+        | "dart_cases" | "fortran_cases"
+        | "js_cases" | "js_import_cases" | "php_cases" | "csharp_cases" | "wat_exec"
+        // `lua_print! { name => { "src", "expected" } }` — same braced shape,
+        // with a bare-string expectation rather than a list.
+        | "lua_print" => Shape::RunBraced,
         "go_compile_cases" | "compile_cases" => Shape::Compile,
         "go_compile_fail_cases" => Shape::CompileFail,
-        _ => return None,
-    })
+        "c_cases" | "c_run_cases" => Shape::CFields,
+        _ => return None })
 }
 
 /// Every case in one `.rs` test module.
@@ -191,6 +202,84 @@ fn parse_entries(
         at = rustlit::skip_trivia(src, at + 2);
 
         let case = match shape {
+            // `{ includes: [...], decls|declarations: "…", body: "…",
+            //    expect: [...] }` — order is not fixed and `includes` is
+            //   optional, so read by KEY rather than by position.
+            Shape::CFields => {
+                if src[at] != b'{' {
+                    anyhow::bail!("expected `{{` in C case `{name}`");
+                }
+                let close = matching_brace(src, at)?;
+                let mut includes: Vec<String> = Vec::new();
+                let mut decls = String::new();
+                let mut body = String::new();
+                let mut expected: Vec<String> = Vec::new();
+                let mut i = rustlit::skip_trivia(src, at + 1);
+                while i < close {
+                    let key_start = i;
+                    while i < close && (src[i].is_ascii_alphanumeric() || src[i] == b'_') {
+                        i += 1;
+                    }
+                    if i == key_start {
+                        i = rustlit::skip_trivia(src, i + 1);
+                        continue;
+                    }
+                    let key = String::from_utf8_lossy(&src[key_start..i]).into_owned();
+                    i = rustlit::skip_trivia(src, i);
+                    if src.get(i) != Some(&b':') {
+                        continue;
+                    }
+                    i = rustlit::skip_trivia(src, i + 1);
+                    match key.as_str() {
+                        "includes" => {
+                            let (list, next) = scan_expected(src, i)?;
+                            includes = list;
+                            i = next;
+                        }
+                        "expect" => {
+                            let (list, next) = scan_expected(src, i)?;
+                            expected = list;
+                            i = next;
+                        }
+                        "decls" | "declarations" => {
+                            let (text, next) = rustlit::scan(src, i)?;
+                            decls = text;
+                            i = next;
+                        }
+                        "body" => {
+                            let (text, next) = rustlit::scan(src, i)?;
+                            body = text;
+                            i = next;
+                        }
+                        _ => {
+                            i = rustlit::skip_trivia(src, i + 1);
+                            continue;
+                        }
+                    }
+                    i = rustlit::skip_trivia(src, i);
+                    if src.get(i) == Some(&b',') {
+                        i = rustlit::skip_trivia(src, i + 1);
+                    }
+                }
+                at = close + 1;
+                // The includes belong above the declarations, and both go
+                // above `main` — so they travel together in `prelude`.
+                let mut head = String::new();
+                for inc in &includes {
+                    head.push_str("#include ");
+                    head.push_str(inc);
+                    head.push('\n');
+                }
+                head.push_str(&decls);
+                Case {
+                    name,
+                    source: body,
+                    expected: Some(expected),
+                    expect_failure: false,
+                    single_line: false,
+                    run_only: false,
+                    prelude: Some(head) }
+            }
             Shape::Run => {
                 if src[at] != b'(' {
                     anyhow::bail!("expected `(` in run case `{name}`");
@@ -239,8 +328,7 @@ fn parse_entries(
                     expect_failure: matches!(shape, Shape::CompileFail),
                     single_line: false,
         run_only: false,
-        prelude: None,
-                }
+        prelude: None }
             }
         };
         cases.push(case);
@@ -377,8 +465,7 @@ fn two_arg_call(name: &str, body: &str) -> Option<Case> {
             expect_failure: false,
             single_line: false,
             run_only: false,
-            prelude: None,
-        });
+            prelude: None });
     }
     None
 }
@@ -431,8 +518,7 @@ fn simd_wrapper_call(name: &str, body: &str) -> Option<Case> {
                 expect_failure: false,
                 single_line: false,
                 run_only: true,
-                prelude: None,
-            });
+                prelude: None });
         }
 
         // Single-result form: the expectation is a literal or a bare number.
@@ -462,8 +548,7 @@ fn simd_wrapper_call(name: &str, body: &str) -> Option<Case> {
             expect_failure: false,
             single_line: false,
             run_only: true,
-            prelude: None,
-        });
+            prelude: None });
     }
     None
 }
@@ -490,7 +575,11 @@ fn indexed_asserts(
 
         let Some(open) = lhs.find('[') else { return None };
         let ident = lhs[..open].trim();
-        let index: usize = lhs[open + 1..lhs.find(']')?].trim().parse().ok()?;
+        // The closing bracket must come AFTER the opening one. Taking the
+        // first `]` in the whole expression could land before `[` and panic
+        // with "byte range starts at 44 but ends at 35".
+        let close = open + 1 + lhs[open + 1..].find(']')?;
+        let index: usize = lhs[open + 1..close].trim().parse().ok()?;
         let run = results.iter().find(|(n, _)| n == ident)?;
         call = Some(run.1.clone());
 
@@ -538,8 +627,7 @@ fn indexed_asserts(
         expect_failure: false,
         single_line: false,
         run_only: false,
-        prelude,
-    })
+        prelude })
 }
 
 /// Whether a Rust string literal starts at `at`.
@@ -552,8 +640,7 @@ fn starts_string_literal(bytes: &[u8], at: usize) -> bool {
     match bytes.get(at) {
         Some(b'"') => true,
         Some(b'r') => matches!(bytes.get(at + 1), Some(b'"') | Some(b'#')),
-        _ => false,
-    }
+        _ => false }
 }
 
 /// Every `#[test] fn` in a module that asserts on a runner helper's output.
@@ -585,6 +672,41 @@ pub fn test_fns_in_file(text: &str) -> Vec<Case> {
         }
     }
     cases
+}
+
+/// `&p(data, body)` — a local two-argument wrapper that builds the program
+/// from two sources. Returns `(first, second)`.
+///
+/// COBOL's `p(working_storage, procedure_division)` is the case that forced
+/// this: without it `two_arg_call` reads `p("01 S PIC X(20).", "ACCEPT …")` as
+/// `helper(source, expected)` and takes the DATA DIVISION as the program, so
+/// every emitted file put its declarations inside the PROCEDURE DIVISION and
+/// no longer compiled.
+fn wrapper_two_sources(text: &str) -> Option<(String, String)> {
+    let t = text.trim().trim_start_matches('&').trim();
+    let open = t.find('(')?;
+    let name = t[..open].trim();
+    if name.is_empty()
+        || name.starts_with("run_")
+        || !name.chars().all(|c| c.is_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+    let close = t.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    let args = t[open + 1..close].trim_start();
+    if !starts_string_literal(args.as_bytes(), 0) {
+        return None;
+    }
+    let (first, end) = rustlit::scan(args.as_bytes(), 0).ok()?;
+    let rest = args[end..].trim_start().trim_start_matches(',').trim_start();
+    if !starts_string_literal(rest.as_bytes(), 0) {
+        return None;
+    }
+    let (second, _) = rustlit::scan(rest.as_bytes(), 0).ok()?;
+    Some((first, second))
 }
 
 fn case_from_body(name: String, body: &str) -> Option<Case> {
@@ -645,6 +767,30 @@ fn case_from_body(name: String, body: &str) -> Option<Case> {
     // `assert_php_output` / `assert_js` defined locally in others. Matching the
     // SHAPE rather than a list of names means a module that rolls its own
     // wrapper still extracts.
+    // BEFORE `two_arg_call`: a compile-mode helper wrapping a two-source
+    // builder — `compile_ok(&p(data, body))` — looks exactly like
+    // `helper(source, expected)` to the generic two-argument matcher.
+    if !body.contains("assert_eq!(") {
+        for helper in ["compile_ok_check", "compile_err", "compile_ok", "parse_ok"] {
+            let Some(at) = body.find(&format!("{helper}(")) else {
+                continue;
+            };
+            let open = at + helper.len() + 1;
+            let close = close_paren(bytes, open)?;
+            let Some((first, second)) = wrapper_two_sources(&body[open..close]) else {
+                break;
+            };
+            return Some(Case {
+                name,
+                source: second,
+                expected: None,
+                expect_failure: helper.ends_with("_err"),
+                single_line: false,
+                run_only: false,
+                prelude: Some(first) });
+        }
+    }
+
     if !body.contains("assert_eq!(") {
         if let Some(case) = two_arg_call(&name, body) {
             return Some(case);
@@ -683,8 +829,7 @@ fn case_from_body(name: String, body: &str) -> Option<Case> {
                         expect_failure: helper.ends_with("_err"),
                         single_line: false,
         run_only: false,
-        prelude: None,
-                    });
+        prelude: None });
                 }
             }
         }
@@ -719,6 +864,42 @@ fn case_from_body(name: String, body: &str) -> Option<Case> {
         return None;
     }
     let inner = call[open + 1..call.rfind(')')?].trim();
+
+    // `run_prints(&p(data, body))` — COBOL builds its program from a local
+    // two-argument wrapper, so the run helper's argument is another CALL, not
+    // a literal. Unwrap one level: first arg is the prelude (WORKING-STORAGE),
+    // second is the source (PROCEDURE DIVISION). Without this only the handful
+    // of cases that pass a bare literal extract at all.
+    let unwrapped = inner.trim_start_matches('&').trim();
+    if let Some(open) = unwrapped.find('(')
+        && unwrapped[..open].trim().chars().all(|c| c.is_alphanumeric() || c == '_')
+        && !unwrapped[..open].trim().is_empty()
+        && !unwrapped[..open].trim().starts_with("run_")
+        && let Some(close) = unwrapped.rfind(')')
+        && close > open
+    {
+        // The wrapper call is usually written across several lines, so the
+        // first argument does not start at index 0.
+        let args = unwrapped[open + 1..close].trim_start();
+        if starts_string_literal(args.as_bytes(), 0)
+            && let Ok((first, end)) = rustlit::scan(args.as_bytes(), 0)
+        {
+            let rest = args[end..].trim_start().trim_start_matches(',').trim_start();
+            if starts_string_literal(rest.as_bytes(), 0)
+                && let Ok((second, _)) = rustlit::scan(rest.as_bytes(), 0)
+            {
+                let expected = parse_expected(expected_expr)?;
+                return Some(Case {
+                    name,
+                    source: second,
+                    expected: Some(expected),
+                    expect_failure: false,
+                    single_line: helper.ends_with("_one"),
+                    run_only: false,
+                    prelude: Some(first) });
+            }
+        }
+    }
 
     let (source, after_first) = if starts_string_literal(inner.as_bytes(), 0) {
         let (text, end) = rustlit::scan(inner.as_bytes(), 0).ok()?;
@@ -756,8 +937,7 @@ fn case_from_body(name: String, body: &str) -> Option<Case> {
         // emitter refuses to pair it unless the program prints exactly once.
         single_line: helper.ends_with("_one"),
         run_only: false,
-        prelude,
-    })
+        prelude })
 }
 
 /// `vec!["a", "b"]`, `["a"]`, or a bare `"a"`.
@@ -917,8 +1097,7 @@ pub fn paren_macros_in_file(text: &str) -> Vec<Case> {
                 expect_failure: false,
                 single_line: false,
         run_only: false,
-        prelude: None,
-            },
+        prelude: None },
             Some(b',') => {
                 let expr_at = rustlit::skip_trivia(bytes, at + 1);
                 if bytes.get(expr_at) == Some(&b')') {

@@ -28,7 +28,24 @@ pub enum Mode {
     /// Execute it; a NON-zero exit is the pass. `must_fail(script)` asserts a
     /// wrong result really is caught — distinct from `CompileFail`, which
     /// asserts the front-end rejects the source before it ever runs.
-    RunFail,
+    RunFail }
+
+/// The exit status a test is expected to end with, from a
+/// `vybe-test-exit: <n>` header. Defaults to 0.
+///
+/// Verdict-is-exit-code has no other way to express a test whose CORRECT
+/// behaviour is a non-zero exit — a PHP script ending in `exit(1)` that real
+/// php also exits 1 on. `run-fail` mode is not the same thing: it accepts ANY
+/// non-zero status, so it cannot tell `exit(1)` from a crash.
+pub fn expected_exit(text: &str) -> i32 {
+    for line in text.lines().take(10) {
+        if let Some((_, rest)) = line.split_once("vybe-test-exit:")
+            && let Ok(code) = rest.trim().parse::<i32>()
+        {
+            return code;
+        }
+    }
+    0
 }
 
 impl Mode {
@@ -40,8 +57,7 @@ impl Mode {
                     "compile" => Mode::Compile,
                     "compile-fail" => Mode::CompileFail,
                     "run-fail" => Mode::RunFail,
-                    _ => Mode::Run,
-                };
+                    _ => Mode::Run };
             }
         }
         Mode::Run
@@ -51,8 +67,7 @@ impl Mode {
 pub struct Outcome {
     pub result: TestResult,
     pub message: String,
-    pub duration_ms: u128,
-}
+    pub duration_ms: u128 }
 
 pub fn run_case(
     vybex: &Path,
@@ -61,6 +76,7 @@ pub fn run_case(
     timeout_secs: u64,
     slow: &dyn Fn(u64),
 ) -> Outcome {
+    let want_exit = std::fs::read_to_string(file).map(|t| expected_exit(&t)).unwrap_or(0);
     let mut cmd = Command::new(vybex);
     if matches!(mode, Mode::Compile | Mode::CompileFail) {
         // `-d` disassembles without running: the frontend must accept the
@@ -68,7 +84,7 @@ pub fn run_case(
         cmd.arg("-d");
     }
     cmd.arg(file);
-    execute(cmd, mode, timeout_secs, slow)
+    execute(cmd, mode, timeout_secs, slow, want_exit)
 }
 
 /// Run the same file under a foreign runtime — `go run`, `python3`, `node`,
@@ -83,12 +99,19 @@ pub fn run_foreign(
     timeout_secs: u64,
     slow: &dyn Fn(u64),
 ) -> Outcome {
+    let want_exit = std::fs::read_to_string(file).map(|t| expected_exit(&t)).unwrap_or(0);
     let mut cmd = Command::new(program);
     cmd.args(args).arg(file);
-    execute(cmd, mode, timeout_secs, slow)
+    execute(cmd, mode, timeout_secs, slow, want_exit)
 }
 
-fn execute(mut cmd: Command, mode: Mode, timeout_secs: u64, slow: &dyn Fn(u64)) -> Outcome {
+fn execute(
+    mut cmd: Command,
+    mode: Mode,
+    timeout_secs: u64,
+    slow: &dyn Fn(u64),
+    want_exit: i32,
+) -> Outcome {
     let started = Instant::now();
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
@@ -98,8 +121,7 @@ fn execute(mut cmd: Command, mode: Mode, timeout_secs: u64, slow: &dyn Fn(u64)) 
             return Outcome {
                 result: TestResult::Error,
                 message: format!("spawn failed: {e}"),
-                duration_ms: started.elapsed().as_millis(),
-            };
+                duration_ms: started.elapsed().as_millis() };
         }
     };
 
@@ -124,8 +146,7 @@ fn execute(mut cmd: Command, mode: Mode, timeout_secs: u64, slow: &dyn Fn(u64)) 
             return Outcome {
                 result: TestResult::Timeout,
                 message: format!("timeout after {timeout_secs}s"),
-                duration_ms: started.elapsed().as_millis(),
-            };
+                duration_ms: started.elapsed().as_millis() };
         };
         let wait = if warned {
             remaining
@@ -147,8 +168,7 @@ fn execute(mut cmd: Command, mode: Mode, timeout_secs: u64, slow: &dyn Fn(u64)) 
                 return Outcome {
                     result: TestResult::Error,
                     message: format!("wait failed: {e}"),
-                    duration_ms: started.elapsed().as_millis(),
-                };
+                    duration_ms: started.elapsed().as_millis() };
             }
         }
     };
@@ -160,13 +180,19 @@ fn execute(mut cmd: Command, mode: Mode, timeout_secs: u64, slow: &dyn Fn(u64)) 
         }
     }
 
-    let clean = status.success();
-    let pass = if matches!(mode, Mode::CompileFail | Mode::RunFail) { !clean } else { clean };
+    // `want_exit` is the whole point of the marker: a test that legitimately
+    // ends in `exit(1)` passes on 1 and FAILS on 0, which is stricter than
+    // `run-fail` (any non-zero) and than the default (must be 0).
+    let clean = status.code().unwrap_or(-1) == want_exit;
+    let pass = if matches!(mode, Mode::CompileFail | Mode::RunFail) {
+        !status.success()
+    } else {
+        clean
+    };
     Outcome {
         result: if pass { TestResult::Pass } else { TestResult::Fail },
         message: if pass { String::new() } else { failure_line(&text) },
-        duration_ms: started.elapsed().as_millis(),
-    }
+        duration_ms: started.elapsed().as_millis() }
 }
 
 fn drain<R: std::io::Read>(mut stream: R) -> String {
@@ -205,8 +231,7 @@ pub fn run_each(
     use rayon::prelude::*;
     let pool = match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
         Ok(pool) => pool,
-        Err(_) => return Vec::new(),
-    };
+        Err(_) => return Vec::new() };
     pool.install(|| {
         files
             .par_iter()
@@ -222,8 +247,7 @@ pub fn run_each(
                     name,
                     result: outcome.result,
                     message: outcome.message,
-                    duration_ms: outcome.duration_ms,
-                };
+                    duration_ms: outcome.duration_ms };
                 note(&execution);
                 execution
             })

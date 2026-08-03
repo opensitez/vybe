@@ -9,8 +9,7 @@ use crate::emit::go::Pairing;
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing,
-}
+    pub pairing: Pairing }
 
 pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let mut header = format!("// vybe-test: {slug}\n// origin: {origin}\n\n");
@@ -24,8 +23,7 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     if let Some(reason) = unpairable(&case.source, &logs, expected.len(), case.single_line) {
         return Emitted {
             text: header + harness + "\n\n" + case.source.trim() + "\n",
-            pairing: Pairing::Unpairable(reason),
-        };
+            pairing: Pairing::Unpairable(reason) };
     }
 
     let mut body = case.source.clone();
@@ -37,8 +35,7 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
 
     Emitted {
         text: header + harness + "\n\n" + body.trim() + "\n",
-        pairing: Pairing::Direct,
-    }
+        pairing: Pairing::Direct }
 }
 
 fn unpairable(src: &str, logs: &[Span], expected: usize, single: bool) -> Option<String> {
@@ -125,15 +122,13 @@ fn close_paren(bytes: &[u8], from: usize) -> Option<usize> {
 fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
     let quote = match bytes.get(at)? {
         c @ (b'"' | b'\'' | b'`') => *c,
-        _ => return None,
-    };
+        _ => return None };
     let mut i = at + 1;
     while i < bytes.len() {
         match bytes[i] {
             b'\\' => i += 2,
             c if c == quote => return Some(i + 1),
-            _ => i += 1,
-        }
+            _ => i += 1 }
     }
     Some(bytes.len())
 }
@@ -170,8 +165,7 @@ fn js_string(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            _ => out.push(ch),
-        }
+            _ => out.push(ch) }
     }
     out.push('"');
     out
