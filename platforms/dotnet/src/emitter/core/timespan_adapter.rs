@@ -43,7 +43,7 @@ fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
 }
 
 fn struct_set_field(chunk: &mut Chunk, key_idx: u16, line: u32) {
-    chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
     chunk.emit_op(Op::DROP, line);
 }
 

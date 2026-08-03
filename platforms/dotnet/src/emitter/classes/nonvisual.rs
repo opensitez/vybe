@@ -16,8 +16,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_Timer"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_module: "vybe:gui" },
         DotnetClass {
             name: "BindingSource",
             parent: Some("Component"),
@@ -52,8 +51,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_BindingSource"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_module: "vybe:gui" },
         DotnetClass {
             name: "ImageList",
             parent: Some("Component"),
@@ -71,8 +69,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_ImageList"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_module: "vybe:gui" },
         DotnetClass {
             name: "ToolTip",
             parent: Some("Component"),
@@ -97,8 +94,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_ToolTip"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_module: "vybe:gui" },
         DotnetClass {
             name: "NotifyIcon",
             parent: Some("Component"),
@@ -115,8 +111,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_NotifyIcon"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_module: "vybe:gui" },
         DotnetClass {
             name: "ErrorProvider",
             parent: Some("Component"),
@@ -133,8 +128,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_ErrorProvider"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_module: "vybe:gui" },
         DotnetClass {
             name: "HelpProvider",
             parent: Some("Component"),
@@ -142,8 +136,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_HelpProvider"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_module: "vybe:gui" },
         DotnetClass {
             name: "BackgroundWorker",
             parent: Some("Component"),
@@ -156,7 +149,6 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_BackgroundWorker"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_module: "vybe:gui" },
     ]
 }

@@ -16,7 +16,7 @@ use vybe_runtime::Chunk;
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 
 fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     chunk.emit_string_const(message, line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, exception_name, line);
@@ -106,7 +106,7 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_if(line);
     core_wasm::i32_const(chunk, line, 0);
     chunk.emit_else(line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_op(Op::ARRAY_SET, line);
@@ -124,7 +124,7 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line); // end block
     chunk.patch_block(block_p);
 
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `Array.Copy(src, dst, count)` — copy first `count` elements from
@@ -153,7 +153,7 @@ pub fn emit_array_copy(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         chunk.emit_op_u16(Op::LOCAL_GET, src_index_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, count_slot, line);
         chunk.emit_op(Op::ARRAY_COPY, line);
-        chunk.emit_op(Op::NULL, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
 
@@ -306,7 +306,7 @@ pub fn emit_array_set_checked(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
     chunk.emit_op(Op::DROP, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `Array.Resize(arr, newSize)` — extend or truncate `arr` to
@@ -352,7 +352,7 @@ pub fn emit_array_sort(chunks: &mut [Chunk], current: usize, line: u32) {
         line,
     );
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `Array.Reverse(arr)` — in-place reverse. Stack: `[arr]` → `[null]`.
@@ -360,7 +360,7 @@ pub fn emit_array_sort(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_array_reverse(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::collections::emit_reverse(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `Array.Reverse(arr[, index, count])` — in-place reverse.
@@ -406,7 +406,7 @@ pub fn emit_array_fill(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
     vybe_compiler::primitives::collections::emit_fill(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `List<T>.RemoveAll(pred)` — remove each matching element in place and
@@ -1108,7 +1108,7 @@ pub fn emit_list_add_range(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line); // discard new length
     vybe_compiler::primitives::loops::emit_for_in_end(chunks, current, idx_slot, state, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `Array.ForEach(arr, action)` → `arr.forEach(action)`. Stack: `[arr, fn]` → `[null]`.

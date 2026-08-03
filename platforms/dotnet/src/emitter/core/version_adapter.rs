@@ -30,7 +30,7 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 }
 
 fn emit_throw_dotnet_exception(chunk: &mut Chunk, exception_name: &str, message: &str, line: u32) {
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const(message, line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, exception_name, line);
@@ -247,37 +247,37 @@ fn emit_build_version_from_slots(
     let major_revision_key = chunk.add_constant(Value::String(Arc::from(MAJOR_REVISION_KEY)));
     let minor_revision_key = chunk.add_constant(Value::String(Arc::from(MINOR_REVISION_KEY)));
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Version")), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Version")), line);
     push_const(chunk, Value::String(Arc::from("Object")), line);
     chunk.emit_array_new_fixed(0, 2, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, types_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, types_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, major_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, major_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, major_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, minor_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, minor_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, minor_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, build_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, build_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, build_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, revision_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, revision_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, revision_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
@@ -286,7 +286,7 @@ fn emit_build_version_from_slots(
     chunk.emit_i32_const(16, line);
     chunk.emit_op(Op::I32_SHR_U, line);
     chunk.emit_op(Op::F64_CONVERT_I32_U, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, major_revision_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, major_revision_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
@@ -295,7 +295,7 @@ fn emit_build_version_from_slots(
     chunk.emit_i32_const(0xffff, line);
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::F64_CONVERT_I32_U, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, minor_revision_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, minor_revision_key, line);
     chunk.emit_op(Op::DROP, line);
 
     let obj_slot = reserve_slot(chunk);
@@ -307,7 +307,7 @@ fn emit_build_version_from_slots(
 fn emit_version_part(chunk: &mut Chunk, obj_slot: u16, key: &str, line: u32) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, key_idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key_idx, line);
 }
 
 fn emit_append_version_part(chunk: &mut Chunk, obj_slot: u16, out_slot: u16, key: &str, line: u32) {
@@ -589,7 +589,7 @@ pub fn emit_version_try_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32
 
     chunk.emit_op_u16(Op::LOCAL_GET, invalid_slot, line);
     chunk.emit_if_value(line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_else(line);
     let _ = chunk;
     emit_build_version_from_slots(

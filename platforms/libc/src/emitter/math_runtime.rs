@@ -25,8 +25,7 @@ pub fn build_math_helper_fn(name: &str, params: &[&str], body: Vec<Statement>) -
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false,
-            })
+                is_nullable: false })
             .collect(),
         body,
         return_type: None,
@@ -37,8 +36,7 @@ pub fn build_math_helper_fn(name: &str, params: &[&str], body: Vec<Statement>) -
             visibility: Visibility::Private,
             ..Default::default()
         },
-        handles: vec![],
-    })
+        handles: vec![] })
 }
 
 /// Stirling approximation for tgamma used in the prelude.
@@ -55,23 +53,20 @@ pub fn stirling_approx() -> Expression {
         expr(ExprKind::Binary {
             op: BinOp::Div,
             left: Box::new(two_pi),
-            right: Box::new(x.clone()),
-        }),
+            right: Box::new(x.clone()) }),
     );
     let x_over_e_pow_x = ecma_math_call2(
         "pow",
         expr(ExprKind::Binary {
             op: BinOp::Div,
             left: Box::new(x.clone()),
-            right: Box::new(e),
-        }),
+            right: Box::new(e) }),
         x.clone(),
     );
     let leading = expr(ExprKind::Binary {
         op: BinOp::Mul,
         left: Box::new(sqrt_2pi_over_x),
-        right: Box::new(x_over_e_pow_x),
-    });
+        right: Box::new(x_over_e_pow_x) });
     // x, x^2, x^3
     let xn = |n: i32| {
         if n == 1 {
@@ -91,9 +86,7 @@ pub fn stirling_approx() -> Expression {
             right: Box::new(expr(ExprKind::Binary {
                 op: BinOp::Mul,
                 left: Box::new(expr(ExprKind::Lit(Literal::Float(den)))),
-                right: Box::new(xn(pow)),
-            })),
-        })
+                right: Box::new(xn(pow)) })) })
     };
     // 1 + 1/(12x) + 1/(288 x^2) - 139/(51840 x^3)
     let correction = expr(ExprKind::Binary {
@@ -103,17 +96,13 @@ pub fn stirling_approx() -> Expression {
             left: Box::new(expr(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))),
-                right: Box::new(term(1.0, 12.0, 1)),
-            })),
-            right: Box::new(term(1.0, 288.0, 2)),
-        })),
-        right: Box::new(term(139.0, 51840.0, 3)),
-    });
+                right: Box::new(term(1.0, 12.0, 1)) })),
+            right: Box::new(term(1.0, 288.0, 2)) })),
+        right: Box::new(term(139.0, 51840.0, 3)) });
     expr(ExprKind::Binary {
         op: BinOp::Mul,
         left: Box::new(leading),
-        right: Box::new(correction),
-    })
+        right: Box::new(correction) })
 }
 
 /// Polynomial part of the erf approximation:
@@ -123,29 +112,25 @@ pub fn poly_erf(t: Expression) -> Expression {
         expr(ExprKind::Binary {
             op: BinOp::Mul,
             left: Box::new(t.clone()),
-            right: Box::new(t.clone()),
-        })
+            right: Box::new(t.clone()) })
     };
     let t3 = || {
         expr(ExprKind::Binary {
             op: BinOp::Mul,
             left: Box::new(t2()),
-            right: Box::new(t.clone()),
-        })
+            right: Box::new(t.clone()) })
     };
     let t4 = || {
         expr(ExprKind::Binary {
             op: BinOp::Mul,
             left: Box::new(t3()),
-            right: Box::new(t.clone()),
-        })
+            right: Box::new(t.clone()) })
     };
     let t5 = || {
         expr(ExprKind::Binary {
             op: BinOp::Mul,
             left: Box::new(t4()),
-            right: Box::new(t.clone()),
-        })
+            right: Box::new(t.clone()) })
     };
     let a1 = expr(ExprKind::Lit(Literal::Float(0.254829592)));
     let a2 = expr(ExprKind::Lit(Literal::Float(0.284496736)));
@@ -155,48 +140,39 @@ pub fn poly_erf(t: Expression) -> Expression {
     let term1 = expr(ExprKind::Binary {
         op: BinOp::Mul,
         left: Box::new(a1),
-        right: Box::new(t.clone()),
-    });
+        right: Box::new(t.clone()) });
     let term2 = expr(ExprKind::Binary {
         op: BinOp::Mul,
         left: Box::new(a2),
-        right: Box::new(t2()),
-    });
+        right: Box::new(t2()) });
     let term3 = expr(ExprKind::Binary {
         op: BinOp::Mul,
         left: Box::new(a3),
-        right: Box::new(t3()),
-    });
+        right: Box::new(t3()) });
     let term4 = expr(ExprKind::Binary {
         op: BinOp::Mul,
         left: Box::new(a4),
-        right: Box::new(t4()),
-    });
+        right: Box::new(t4()) });
     let term5 = expr(ExprKind::Binary {
         op: BinOp::Mul,
         left: Box::new(a5),
-        right: Box::new(t5()),
-    });
+        right: Box::new(t5()) });
     let sum12 = expr(ExprKind::Binary {
         op: BinOp::Sub,
         left: Box::new(term1),
-        right: Box::new(term2),
-    });
+        right: Box::new(term2) });
     let sum123 = expr(ExprKind::Binary {
         op: BinOp::Add,
         left: Box::new(sum12),
-        right: Box::new(term3),
-    });
+        right: Box::new(term3) });
     let sum1234 = expr(ExprKind::Binary {
         op: BinOp::Sub,
         left: Box::new(sum123),
-        right: Box::new(term4),
-    });
+        right: Box::new(term4) });
     expr(ExprKind::Binary {
         op: BinOp::Add,
         left: Box::new(sum1234),
-        right: Box::new(term5),
-    })
+        right: Box::new(term5) })
 }
 
 /// Emit a bare math function call — the C profile routes these to WASM/ecma:math.
@@ -204,8 +180,7 @@ pub fn ecma_math_call(method: &str, arg: Expression) -> Expression {
     expr(ExprKind::Call {
         callee: Box::new(ident(method)),
         args: vec![Argument::positional(arg)],
-        optional: false,
-    })
+        optional: false })
 }
 
 /// Emit a bare two-arg math function call.
@@ -213,6 +188,5 @@ pub fn ecma_math_call2(method: &str, a: Expression, b: Expression) -> Expression
     expr(ExprKind::Call {
         callee: Box::new(ident(method)),
         args: vec![Argument::positional(a), Argument::positional(b)],
-        optional: false,
-    })
+        optional: false })
 }

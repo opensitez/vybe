@@ -151,8 +151,7 @@ mod canvas_impl {
                             FontStyle::Italic
                         } else {
                             FontStyle::Normal
-                        },
-                    };
+                        } };
                     gui.lock().unwrap().find_canvas_mut(&name).set_font(&font);
                     Value::Null
                 }),
@@ -528,8 +527,7 @@ mod canvas_impl {
                         2 => &[2.0, 4.0],
                         3 => &[6.0, 4.0, 2.0, 4.0],
                         4 => &[6.0, 4.0, 2.0, 4.0, 2.0, 4.0],
-                        _ => return Value::Null,
-                    };
+                        _ => return Value::Null };
                     gui.lock()
                         .unwrap()
                         .find_canvas_mut(&h)
@@ -627,16 +625,14 @@ mod canvas_impl {
         match s.to_ascii_lowercase().as_str() {
             "round" => LineCap::Round,
             "square" => LineCap::Square,
-            _ => LineCap::Butt,
-        }
+            _ => LineCap::Butt }
     }
 
     fn parse_line_join(s: &str) -> LineJoin {
         match s.to_ascii_lowercase().as_str() {
             "round" => LineJoin::Round,
             "bevel" => LineJoin::Bevel,
-            _ => LineJoin::Miter,
-        }
+            _ => LineJoin::Miter }
     }
 
     // ─── Bind helpers ──────────────────────────────────────────────────────────

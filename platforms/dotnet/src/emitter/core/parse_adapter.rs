@@ -34,7 +34,7 @@ pub fn emit_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
     // NaN — throw FormatException-shaped object so `e.Message` works.
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("Input string was not in a correct format.", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "FormatException", line);
@@ -69,7 +69,7 @@ pub fn emit_try_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, result, line);
     chunk.emit_op(Op::F64_FLOOR, line);
     chunk.emit_else(line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_end(line);
 }
 
@@ -138,7 +138,7 @@ pub fn emit_parse_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line);
     chunk.patch_block(not_false);
     // Neither — throw a FormatException-shape object.
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("String was not recognized as a valid Boolean.", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "FormatException", line);
@@ -162,7 +162,7 @@ pub fn emit_parse_char(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_br_if(0, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("String must be exactly one character long.", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "FormatException", line);

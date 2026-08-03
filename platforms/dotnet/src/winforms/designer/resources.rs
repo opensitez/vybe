@@ -14,8 +14,7 @@ pub enum ResourceType {
     Icon,
     Audio,
     File,
-    Other,
-}
+    Other }
 
 impl Default for ResourceType {
     fn default() -> Self {
@@ -31,8 +30,7 @@ impl std::fmt::Display for ResourceType {
             ResourceType::Icon => write!(f, "Icons"),
             ResourceType::Audio => write!(f, "Audio"),
             ResourceType::File => write!(f, "Files"),
-            ResourceType::Other => write!(f, "Other"),
-        }
+            ResourceType::Other => write!(f, "Other") }
     }
 }
 
@@ -46,8 +44,7 @@ pub struct ResourceItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mime_type: Option<String>,
-}
+    pub mime_type: Option<String> }
 
 impl ResourceItem {
     pub fn new_string(name: impl Into<String>, value: impl Into<String>) -> Self {
@@ -57,8 +54,7 @@ impl ResourceItem {
             comment: None,
             resource_type: ResourceType::String,
             file_name: None,
-            mime_type: None,
-        }
+            mime_type: None }
     }
 
     pub fn new_file(
@@ -71,16 +67,14 @@ impl ResourceItem {
             ResourceType::Image => guess_image_mime(&fp),
             ResourceType::Icon => Some("image/x-icon".to_string()),
             ResourceType::Audio => Some("audio/wav".to_string()),
-            _ => None,
-        };
+            _ => None };
         Self {
             name: name.into(),
             value: fp.clone(),
             comment: None,
             resource_type,
             file_name: Some(fp),
-            mime_type: mime,
-        }
+            mime_type: mime }
     }
 }
 
@@ -104,8 +98,7 @@ pub struct ResourceManager {
     #[serde(default = "default_resource_name")]
     pub name: String,
     pub resources: Vec<ResourceItem>,
-    pub file_path: Option<PathBuf>,
-}
+    pub file_path: Option<PathBuf> }
 
 fn default_resource_name() -> String {
     "Resources".to_string()
@@ -213,8 +206,7 @@ impl ResourceManager {
                             comment,
                             resource_type: inferred_type,
                             file_name,
-                            mime_type,
-                        });
+                            mime_type });
                     }
                 }
                 Ok(Event::Eof) => break,
@@ -226,8 +218,7 @@ impl ResourceManager {
         Ok(ResourceManager {
             name: "Resources".to_string(),
             resources,
-            file_path: None,
-        })
+            file_path: None })
     }
 
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -353,8 +344,7 @@ fn file_ref_type_string(resource_type: &ResourceType, file_path: &str) -> String
         ResourceType::File => {
             "System.Byte[], mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089".to_string()
         }
-        _ => String::new(),
-    }
+        _ => String::new() }
 }
 
 fn parse_file_ref_value(raw: &str) -> (String, Option<String>, ResourceType, Option<String>) {

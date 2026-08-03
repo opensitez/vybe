@@ -28,14 +28,13 @@ fn set_field(chunk: &mut Chunk, object_slot: u16, field: &str, value_slot: u16, 
     let field_key = key(chunk, field);
     chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, field_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, field_key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
 fn set_string_field(chunk: &mut Chunk, object_slot: u16, field: &str, value: &str, line: u32) {
     let value_slot = chunk.alloc_scratch(1);
-    let value_key = chunk.add_constant(Value::String(value.into()));
-    chunk.emit_op_u16(Op::CONST, value_key, line);
+    chunk.emit_string_const(value, line);
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
     set_field(chunk, object_slot, field, value_slot, line);
 }
@@ -43,7 +42,7 @@ fn set_string_field(chunk: &mut Chunk, object_slot: u16, field: &str, value: &st
 fn get_field(chunk: &mut Chunk, object_slot: u16, field: &str, line: u32) {
     let field_key = key(chunk, field);
     chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, field_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, field_key, line);
 }
 
 fn emit_array_segment_from_slots(
@@ -55,7 +54,7 @@ fn emit_array_segment_from_slots(
     line: u32,
 ) {
     let object_slot = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, object_slot, line);
     set_field(&mut chunks[current], object_slot, "Array", array_slot, line);
     set_field(&mut chunks[current], object_slot, "array", array_slot, line);
@@ -75,7 +74,7 @@ fn emit_array_with_length(chunks: &mut [Chunk], current: usize, count_slot: u16,
 
 pub fn emit_array_pool_shared(chunks: &mut [Chunk], current: usize, line: u32) {
     let pool_slot = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, pool_slot, line);
     set_string_field(
         &mut chunks[current],
@@ -104,12 +103,12 @@ pub fn emit_array_pool_return(chunks: &mut [Chunk], current: usize, argc: u8, li
     for _ in 0..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_memory_pool_shared(chunks: &mut [Chunk], current: usize, line: u32) {
     let pool_slot = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, pool_slot, line);
     set_string_field(
         &mut chunks[current],
@@ -129,7 +128,7 @@ pub fn emit_memory_pool_rent(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     emit_array_with_length(chunks, current, count_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, array_slot, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, owner_slot, line);
     set_string_field(
         &mut chunks[current],
@@ -149,7 +148,7 @@ pub fn emit_memory_pool_rent_static(chunks: &mut [Chunk], current: usize, line: 
     chunks[current].emit_op_u16(Op::LOCAL_SET, count_slot, line);
     emit_array_with_length(chunks, current, count_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, array_slot, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, owner_slot, line);
     set_string_field(
         &mut chunks[current],
@@ -282,7 +281,7 @@ pub fn emit_array_segment_copy_to(chunks: &mut [Chunk], current: usize, line: u3
     emit_array_segment_to_array(chunks, current, line);
     vybe_compiler::primitives::collections::emit_set_range(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `segment.Equals(other)` — value equality over the visible range.
@@ -311,7 +310,7 @@ pub fn emit_buffer_get_byte(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_buffer_set_byte(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `span.IsEmpty` → `span.Length == 0`.
@@ -374,7 +373,7 @@ pub fn emit_span_copy_to(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, src_slot, line);
 
     emit_copy_into(chunks, current, src_slot, dst_slot, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `src.TryCopyTo(dst)` — copy only if `dst` has room, reporting whether it

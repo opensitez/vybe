@@ -49,8 +49,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::String(s) => chunk.emit_string_const(s, line),
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
-    }
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
@@ -58,7 +57,7 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 }
 
 fn emit_throw_object_disposed(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("Cannot read from a closed TextReader.", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -72,7 +71,7 @@ fn emit_throw_object_disposed(chunk: &mut Chunk, line: u32) {
 fn emit_throw_if_disposed(chunk: &mut Chunk, reader_slot: u16, line: u32) {
     let disposed_key = chunk.add_constant(Value::String(Arc::from(DISPOSED_KEY)));
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, disposed_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, disposed_key, line);
     chunk.emit_if_value(line);
     emit_throw_object_disposed(chunk, line);
     chunk.emit_end(line);
@@ -88,8 +87,8 @@ fn bind_string_writer_to_string(
     let builder_key = method.add_constant(Value::String(Arc::from(BUILDER_KEY)));
     let sb_buffer_key = method.add_constant(Value::String(Arc::from(SB_BUFFER_KEY)));
     method.emit_op_u16(Op::LOCAL_GET, 0, line);
-    method.emit_op_u16(Op::STRUCT_GET, builder_key, line);
-    method.emit_op_u16(Op::STRUCT_GET, sb_buffer_key, line);
+    method.emit_struct_field_op(Op::STRUCT_GET, 0, builder_key, line);
+    method.emit_struct_field_op(Op::STRUCT_GET, 0, sb_buffer_key, line);
     method.emit_op(Op::RETURN, line);
     method.local_count = 1;
     chunks.push(method);
@@ -116,11 +115,11 @@ fn emit_set_writer_buffer(chunk: &mut Chunk, writer_slot: u16, new_buf_slot: u16
 
     chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, new_buf_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, buf_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buf_key, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, builder_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, builder_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, builder_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, builder_slot, line);
@@ -129,7 +128,7 @@ fn emit_set_writer_buffer(chunk: &mut Chunk, writer_slot: u16, new_buf_slot: u16
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, builder_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, new_buf_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, sb_buffer_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, sb_buffer_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
 }
@@ -156,29 +155,29 @@ pub fn emit_stream_reader_new(chunks: &mut [Chunk], current: usize, _argc: u8, l
     chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
 
     // STRUCT_NEW → [obj]
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
 
     // __type = "StreamReader"
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from(READER_TYPE)), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // __content = content
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, content_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, content_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // __pos = 0
     core_wasm::dup(chunk, line);
     core_wasm::i32_const(chunk, line, 0);
-    chunk.emit_op_u16(Op::STRUCT_SET, pos_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pos_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_bool_const(false, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, disposed_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, disposed_key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -193,26 +192,26 @@ pub fn emit_string_reader_new(chunks: &mut [Chunk], current: usize, _argc: u8, l
 
     let content_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
 
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from(STRING_READER_TYPE)), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, content_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, content_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     core_wasm::i32_const(chunk, line, 0);
-    chunk.emit_op_u16(Op::STRUCT_SET, pos_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pos_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_bool_const(false, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, disposed_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, disposed_key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -238,12 +237,12 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
 
     // content = reader.__content
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, content_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, content_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
 
     // pos = reader.__pos
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, pos_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pos_key, line);
     chunk.emit_op(Op::I32_FROM_F64, line);
     chunk.emit_op_u16(Op::LOCAL_SET, pos_slot, line);
 
@@ -253,7 +252,7 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     chunk.emit_op_u16(Op::LOCAL_SET, len_slot, line);
 
     // result = null (default for end-of-stream)
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
     let done_block = chunk.emit_block(line);
@@ -330,7 +329,7 @@ pub fn emit_stream_reader_read_line(chunks: &mut [Chunk], current: usize, line: 
     chunk.emit_op_u16(Op::LOCAL_GET, end_slot, line);
     core_wasm::i32_const(chunk, line, 1);
     chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, pos_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pos_key, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);
@@ -353,11 +352,11 @@ pub fn emit_stream_reader_read_to_end(chunks: &mut [Chunk], current: usize, line
 
     // content = reader.__content
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, content_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, content_key, line);
 
     // pos = reader.__pos (i32)
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, pos_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pos_key, line);
     chunk.emit_op(Op::I32_FROM_F64, line);
 
     // end = wasm:js-string.length(content). Need to dup content first since substring consumes it.
@@ -377,7 +376,7 @@ pub fn emit_stream_reader_read_to_end(chunks: &mut [Chunk], current: usize, line
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, pos_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pos_key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -394,10 +393,10 @@ pub fn emit_stream_reader_at_end(chunks: &mut [Chunk], current: usize, line: u32
 
     // pos
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, pos_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pos_key, line);
     // len
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, content_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, content_key, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     // pos < len → DYN_NOT → at-end
     vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
@@ -418,34 +417,34 @@ pub fn emit_stream_writer_new(chunks: &mut [Chunk], current: usize, _argc: u8, l
     let path_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
 
     // __type = "StreamWriter"
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from(WRITER_TYPE)), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // __path = path
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, path_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, path_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // __buf = ""
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("")), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, buf_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buf_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("\n")), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, nl_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, nl_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("\n")), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, nl_lower_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, nl_lower_key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -470,69 +469,69 @@ pub fn emit_string_writer_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
     if argc > 0 {
         chunk.emit_op_u16(Op::LOCAL_SET, builder_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, builder_slot, line);
-        chunk.emit_op_u16(Op::STRUCT_GET, sb_buffer_key, line);
+        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, sb_buffer_key, line);
         chunk.emit_op_u16(Op::LOCAL_SET, initial_slot, line);
     } else {
         push_const(chunk, Value::String(Arc::from("")), line);
         chunk.emit_op_u16(Op::LOCAL_SET, initial_slot, line);
 
-        chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunk.emit_struct_new(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, builder_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, builder_slot, line);
         push_const(chunk, Value::String(Arc::from("StringBuilder")), line);
-        chunk.emit_op_u16(Op::STRUCT_SET, sb_type_key, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, sb_type_key, line);
         chunk.emit_op(Op::DROP, line);
         chunk.emit_op_u16(Op::LOCAL_GET, builder_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, initial_slot, line);
-        chunk.emit_op_u16(Op::STRUCT_SET, sb_buffer_key, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, sb_buffer_key, line);
         chunk.emit_op(Op::DROP, line);
     }
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
 
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from(STRING_WRITER_TYPE)), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, initial_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, buf_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buf_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, builder_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, builder_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, builder_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("\n")), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, nl_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, nl_key, line);
     chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("\n")), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, nl_lower_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, nl_lower_key, line);
     chunk.emit_op(Op::DROP, line);
 
     let encoding_slot = reserve_slot(chunk);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, encoding_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, encoding_slot, line);
     push_const(chunk, Value::String(Arc::from("utf-16")), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, web_name_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, web_name_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, encoding_slot, line);
     push_const(chunk, Value::String(Arc::from("utf-16")), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, web_name_lower_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, web_name_lower_key, line);
     chunk.emit_op(Op::DROP, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, encoding_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, encoding_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, encoding_key, line);
     chunk.emit_op(Op::DROP, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, encoding_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, encoding_lower_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, encoding_lower_key, line);
     chunk.emit_op(Op::DROP, line);
 
     let obj_slot = reserve_slot(chunk);
@@ -556,7 +555,7 @@ pub fn emit_stream_writer_write(chunks: &mut [Chunk], current: usize, line: u32)
     let left_slot = reserve_slot(chunk);
     let right_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
     super::console_adapter::emit_dotnet_stringify(chunk, left_slot, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
@@ -567,7 +566,7 @@ pub fn emit_stream_writer_write(chunks: &mut [Chunk], current: usize, line: u32)
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, new_buf_slot, line);
     emit_set_writer_buffer(chunk, writer_slot, new_buf_slot, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `writer.Write(fmt, a, b)` or `writer.Write(chars, index, count)`.
@@ -629,14 +628,14 @@ pub fn emit_stream_writer_write_line(chunks: &mut [Chunk], current: usize, line:
     let right_slot = reserve_slot(chunk);
     let nl_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, left_slot, line);
     super::console_adapter::emit_dotnet_stringify(chunk, left_slot, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, s_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, right_slot, line);
     super::console_adapter::emit_dotnet_stringify(chunk, right_slot, right_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, nl_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, nl_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, nl_slot, line);
     super::console_adapter::emit_dotnet_stringify(chunk, nl_slot, nl_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
@@ -646,7 +645,7 @@ pub fn emit_stream_writer_write_line(chunks: &mut [Chunk], current: usize, line:
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, new_buf_slot, line);
     emit_set_writer_buffer(chunk, writer_slot, new_buf_slot, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_stream_writer_write_line_async(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -659,20 +658,20 @@ pub fn emit_string_writer_to_string(chunks: &mut [Chunk], current: usize, line: 
     let chunk = &mut chunks[current];
     let builder_key = chunk.add_constant(Value::String(Arc::from(BUILDER_KEY)));
     let sb_buffer_key = chunk.add_constant(Value::String(Arc::from(SB_BUFFER_KEY)));
-    chunk.emit_op_u16(Op::STRUCT_GET, builder_key, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, sb_buffer_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, builder_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, sb_buffer_key, line);
 }
 
 pub fn emit_string_writer_get_string_builder(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let builder_key = chunk.add_constant(Value::String(Arc::from(BUILDER_KEY)));
-    chunk.emit_op_u16(Op::STRUCT_GET, builder_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, builder_key, line);
 }
 
 /// `StringWriter.Flush/Close/Dispose()` — no-op for in-memory writers.
 pub fn emit_string_writer_noop(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `StringReader.Peek()` — next UTF-16 code unit or -1 at end.
@@ -708,11 +707,11 @@ pub fn emit_string_reader_read_buffer(chunks: &mut [Chunk], current: usize, line
     emit_throw_if_disposed(chunk, reader_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, content_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, content_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, pos_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pos_key, line);
     chunk.emit_op(Op::I32_FROM_F64, line);
     chunk.emit_op_u16(Op::LOCAL_SET, pos_slot, line);
 
@@ -769,7 +768,7 @@ pub fn emit_string_reader_read_buffer(chunks: &mut [Chunk], current: usize, line
     chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, read_slot, line);
     chunk.emit_op(Op::I32_ADD, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, pos_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pos_key, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, read_slot, line);
@@ -788,10 +787,10 @@ fn emit_string_reader_read_char(chunks: &mut [Chunk], current: usize, line: u32,
     chunk.emit_op_u16(Op::LOCAL_SET, reader_slot, line);
     emit_throw_if_disposed(chunk, reader_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, content_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, content_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, reader_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, pos_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pos_key, line);
     chunk.emit_op(Op::I32_FROM_F64, line);
     chunk.emit_op_u16(Op::LOCAL_SET, pos_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
@@ -812,7 +811,7 @@ fn emit_string_reader_read_char(chunks: &mut [Chunk], current: usize, line: u32,
         chunk.emit_op_u16(Op::LOCAL_GET, pos_slot, line);
         chunk.emit_i32_const(1, line);
         chunk.emit_op(Op::I32_ADD, line);
-        chunk.emit_op_u16(Op::STRUCT_SET, pos_key, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pos_key, line);
         chunk.emit_op(Op::DROP, line);
     }
     chunk.emit_end(line);
@@ -832,14 +831,14 @@ pub fn emit_stream_writer_flush(chunks: &mut [Chunk], current: usize, line: u32)
 
     // node:fs.writeFileSync(__path, __buf)
     chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, path_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, path_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, writer_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, write_idx, line);
     chunk.emit(2, line);
     chunk.emit_op(Op::DROP, line); // discard writeFileSync result
 
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `reader.Close()` / `writer.Close()` — no-op for readers, flush for writers.
@@ -855,7 +854,7 @@ pub fn emit_stream_close(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, stream_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
     push_const(chunk, Value::String(Arc::from(WRITER_TYPE)), line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
 
@@ -864,16 +863,16 @@ pub fn emit_stream_close(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_br_if(0, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, path_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, path_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
     chunk.emit_op_u16(Op::CALL_IMPORT, write_idx, line);
     chunk.emit(2, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);
     chunk.patch_block(skip_flush);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `reader.Close()` — no-op (no resource to release in load-whole-file model).
@@ -882,7 +881,7 @@ pub fn emit_stream_reader_close(chunks: &mut [Chunk], current: usize, line: u32)
     let chunk = &mut chunks[current];
     let disposed_key = chunk.add_constant(Value::String(Arc::from(DISPOSED_KEY)));
     chunk.emit_bool_const(true, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, disposed_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, disposed_key, line);
     chunk.emit_op(Op::DROP, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }

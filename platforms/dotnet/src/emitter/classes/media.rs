@@ -36,8 +36,7 @@ pub fn classes() -> &'static [DotnetClass] {
             // full `Control` method chain (`Show`, `Hide`,
             // `CreateGraphics`, …) plus an actual paintable surface.
             widget_host_fn: Some("new_Canvas"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_module: "vybe:gui" },
         DotnetClass {
             name: "WebBrowser",
             parent: Some("Control"),
@@ -67,7 +66,6 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: Some("new_WebBrowser"),
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_module: "vybe:gui" },
     ]
 }

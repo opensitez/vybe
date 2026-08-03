@@ -26,7 +26,7 @@ fn set_field(chunk: &mut Chunk, key: &str, val_fn: impl FnOnce(&mut Chunk, u32),
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     core_wasm::dup(chunk, line);
     val_fn(chunk, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -48,7 +48,7 @@ pub fn emit_datatable_new(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let name_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
 
     set_field(chunk, "__type", |c, l| push_str(c, "DataTable", l), line);
     set_field(
@@ -85,7 +85,7 @@ pub fn emit_dataset_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let name_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
 
     set_field(chunk, "__type", |c, l| push_str(c, "DataSet", l), line);
     set_field(
@@ -107,7 +107,7 @@ pub fn emit_dataset_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 /// Stack on entry: `[]` (no args)
 /// Stack on exit:  `[obj]`
 pub fn emit_datarow_new(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     set_field(chunk, "__type", |c, l| push_str(c, "DataRow", l), line);
 }
 
@@ -115,7 +115,7 @@ pub fn emit_datarow_new(chunk: &mut Chunk, line: u32) {
 
 fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_op_u16(Op::STRUCT_GET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
 }
 
 /// `table.NewRow()` — drops the table receiver, returns a fresh DataRow.
@@ -146,7 +146,7 @@ pub fn emit_datatable_add_row(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_op_u16(Op::CALL_IMPORT, push_idx, line);
         chunk.emit(2u8, line);
         chunk.emit_op(Op::DROP, line); // drop new-length return value
-        chunk.emit_op(Op::NULL, line); // void return
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line); // void return
     }
 }
 

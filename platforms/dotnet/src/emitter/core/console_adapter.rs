@@ -101,7 +101,7 @@ fn emit_stream_write(
     chunk.emit_op_u16(Op::LOCAL_GET, text_local, line);
     chunk.emit_call(write_idx, 2, line);
     chunk.emit_op(Op::DROP, line); // discard result<_, stream-error>
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `Console.WriteLine(v)` — stringify, append one `\n`, write to stdout.

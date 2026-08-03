@@ -22,8 +22,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
-    }
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
@@ -32,7 +31,7 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 
 fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -50,7 +49,7 @@ fn set_local_field_from_value(
 
 fn set_count_object(chunk: &mut Chunk, object_slot: u16, field: &str, count: i32, line: u32) {
     let count_slot = reserve_slot(chunk);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, count_slot, line);
     chunk.emit_op(Op::DROP, line);
     set_local_field_from_value(chunk, count_slot, "Count", Value::I32(count), line);
@@ -62,7 +61,7 @@ fn set_count_object(chunk: &mut Chunk, object_slot: u16, field: &str, count: i32
 
 fn set_main_module_object(chunk: &mut Chunk, object_slot: u16, line: u32) {
     let module_slot = reserve_slot(chunk);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, module_slot, line);
     chunk.emit_op(Op::DROP, line);
     set_local_field_from_value(
@@ -120,7 +119,7 @@ fn emit_build_current_process(chunks: &mut Vec<Chunk>, current: usize, line: u32
     let chunk = &mut chunks[current];
     let process_slot = reserve_slot(chunk);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, process_slot, line);
     chunk.emit_op(Op::DROP, line);
     set_local_field_from_value(
@@ -309,14 +308,14 @@ pub fn emit_process_start_info_new(chunks: &mut [Chunk], current: usize, argc: u
     }
 
     // Build the record: {filename: cmd_slot, arguments: args_slot}
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, cmd_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, filename_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, filename_key, line);
     chunk.emit_op(Op::DROP, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, args_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, args_key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -328,13 +327,13 @@ pub fn emit_process_new(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line
     let chunk = &mut chunks[current];
     let type_key = chunk.add_constant(Value::String(Arc::from(TYPE_KEY)));
     let process_slot = reserve_slot(chunk);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, process_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, process_slot, line);
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Process")), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
     chunk.emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, process_slot, line);
 }
@@ -362,7 +361,7 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 
     // Resolve filename: arg.filename if Object; else arg itself.
     chunk.emit_op_u16(Op::LOCAL_GET, arg_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, filename_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, filename_key, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     let filename_fallback = chunk.emit_block(line);
@@ -377,7 +376,7 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     // Resolve arguments: arg.arguments if Object; else "".
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, arg_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, args_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, args_key, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     let args_fallback = chunk.emit_block(line);
@@ -423,24 +422,24 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let ec_key = chunk.add_constant(Value::String(Arc::from("exitcode")));
     let status_key = chunk.add_constant(Value::String(Arc::from("status")));
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
 
     // __type = "Process"
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Process")), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // HasExited = true (spawnSync is synchronous; process is always done)
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::Bool(true), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, he_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, he_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // ExitCode = raw_result.status ?? 0
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, status_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, status_key, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     let status_fallback = chunk.emit_block(line);
@@ -450,7 +449,7 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     push_const(chunk, Value::I32(0), line);
     chunk.emit_end(line);
     chunk.patch_block(status_fallback);
-    chunk.emit_op_u16(Op::STRUCT_SET, ec_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, ec_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, process_slot, line);
     chunk.emit_op(Op::DROP, line);
@@ -474,7 +473,7 @@ pub fn emit_process_get_current(chunks: &mut Vec<Chunk>, current: usize, line: u
 /// Stack on entry: `[process]` ; Stack on exit: `[null]`
 pub fn emit_process_wait_for_exit(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_process_wait_for_exit_timeout(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
@@ -490,7 +489,7 @@ pub fn emit_process_get_by_id(chunks: &mut Vec<Chunk>, current: usize, line: u32
     chunks[current].emit_i32_const(0, line);
     vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Process not found.", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(

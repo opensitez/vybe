@@ -99,8 +99,7 @@ const CONTROL_CREATE_GRAPHICS: &[MethodOp] = &[
     // graphics = New Graphics()
     MethodOp::NewDotnet {
         class: "Graphics",
-        argc: 0,
-    },
+        argc: 0 },
     // Stamp graphics.__control_name = this.__control_name so subsequent
     // canvas calls route to this control's RecordingCanvas.
     MethodOp::Dup,
@@ -129,73 +128,59 @@ const CONTROL_METHODS: &[DotnetMethod] = &[
     DotnetMethod {
         name: "Show",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_show"),
-    },
+        target: MethodTarget::host("vybe:gui", "__ctrl_show") },
     DotnetMethod {
         name: "Hide",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_hide"),
-    },
+        target: MethodTarget::host("vybe:gui", "__ctrl_hide") },
     DotnetMethod {
         name: "Focus",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_focus"),
-    },
+        target: MethodTarget::host("vybe:gui", "__ctrl_focus") },
     DotnetMethod {
         name: "Refresh",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_refresh"),
-    },
+        target: MethodTarget::host("vybe:gui", "__ctrl_refresh") },
     DotnetMethod {
         name: "Invalidate",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_invalidate"),
-    },
+        target: MethodTarget::host("vybe:gui", "__ctrl_invalidate") },
     DotnetMethod {
         name: "Update",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_update"),
-    },
+        target: MethodTarget::host("vybe:gui", "__ctrl_update") },
     DotnetMethod {
         name: "BringToFront",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_bring_to_front"),
-    },
+        target: MethodTarget::host("vybe:gui", "__ctrl_bring_to_front") },
     DotnetMethod {
         name: "SendToBack",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_send_to_back"),
-    },
+        target: MethodTarget::host("vybe:gui", "__ctrl_send_to_back") },
     DotnetMethod {
         name: "Select",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_focus"),
-    },
+        target: MethodTarget::host("vybe:gui", "__ctrl_focus") },
     DotnetMethod {
         name: "Dispose",
         arity: 1,
-        target: MethodTarget::host("vybe:gui", "__ctrl_dispose"),
-    },
+        target: MethodTarget::host("vybe:gui", "__ctrl_dispose") },
     DotnetMethod {
         name: "SuspendLayout",
         arity: 1,
-        target: MethodTarget::body(CONTROL_NOOP),
-    },
+        target: MethodTarget::body(CONTROL_NOOP) },
     DotnetMethod {
         name: "ResumeLayout",
         arity: 2,
-        target: MethodTarget::body(CONTROL_NOOP),
-    },
+        target: MethodTarget::body(CONTROL_NOOP) },
     DotnetMethod {
         name: "PerformLayout",
         arity: 1,
-        target: MethodTarget::body(CONTROL_NOOP),
-    },
+        target: MethodTarget::body(CONTROL_NOOP) },
     DotnetMethod {
         name: "CreateGraphics",
         arity: 1,
-        target: MethodTarget::body(CONTROL_CREATE_GRAPHICS),
-    },
+        target: MethodTarget::body(CONTROL_CREATE_GRAPHICS) },
 ];
 
 pub fn classes() -> &'static [DotnetClass] {
@@ -253,8 +238,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: CONTROL_METHODS,
             ctor_arity: 0,
             widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_module: "vybe:gui" },
         // ── ScrollableControl ──────────────────────────────────────────────
         // Adds the autoscroll surface used by Form, Panel, …
         DotnetClass {
@@ -271,8 +255,7 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_module: "vybe:gui" },
         // ── ContainerControl ───────────────────────────────────────────────
         // Adds the active-control / parent-form tracking used by Form,
         // UserControl, …
@@ -283,7 +266,6 @@ pub fn classes() -> &'static [DotnetClass] {
             methods: &[],
             ctor_arity: 0,
             widget_host_fn: None,
-            widget_host_module: "vybe:gui",
-        },
+            widget_host_module: "vybe:gui" },
     ]
 }

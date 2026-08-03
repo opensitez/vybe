@@ -46,8 +46,7 @@ pub fn register_namespace_tree() {
                     }
                     // Chunk-backed methods are per-compilation artifacts,
                     // not process-global surface.
-                    MethodBody::UserChunk(_) => continue,
-                };
+                    MethodBody::UserChunk(_) => continue };
                 let bucket = if m.is_static {
                     &mut static_overloads
                 } else {
@@ -143,8 +142,7 @@ pub fn register_namespace_tree() {
                 .map(|backing| {
                     Box::new(match backing {
                         ConstructorTarget::Host(t) => namespaces::host_fn(&t.module, &t.name),
-                        ConstructorTarget::Common(emit) => NamespaceNode::CommonEmit(emit.clone()),
-                    })
+                        ConstructorTarget::Common(emit) => NamespaceNode::CommonEmit(emit.clone()) })
                 });
 
             let ty = NamespaceNode::Type {
@@ -152,8 +150,7 @@ pub fn register_namespace_tree() {
                 ctor_call,
                 statics,
                 methods,
-                member_returns,
-            };
+                member_returns };
 
             // "dotnet.System" + "Math" → dotnet.system.math
             let mut segments: Vec<String> =
@@ -243,8 +240,7 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
             ("iscanceled", ro("dotnet.task_is_canceled")),
         ],
         "list" | "arraylist" => vec![("capacity", ro("dotnet.list_capacity"))],
-        _ => vec![],
-    };
+        _ => vec![] };
     entries
         .iter()
         .map(|(n, node)| ((*n).to_string(), node.clone()))
@@ -302,8 +298,7 @@ mod resolve_gap_tests {
                 NamespaceNode::Type {
                     statics, methods, ..
                 } => statics.get(*seg).or_else(|| methods.get(*seg)).cloned()?,
-                _ => return None,
-            };
+                _ => return None };
         }
         Some(node)
     }
@@ -313,8 +308,7 @@ mod resolve_gap_tests {
         super::register_namespace_tree();
         match registered_leaf(&["dotnet", "system", "delegate", "combine"]) {
             Some(NamespaceNode::CommonEmit(name)) => assert_eq!(name, "delegates.combine"),
-            other => panic!("expected CommonEmit(delegates.combine), got {other:?}"),
-        }
+            other => panic!("expected CommonEmit(delegates.combine), got {other:?}") }
     }
 
     #[test]

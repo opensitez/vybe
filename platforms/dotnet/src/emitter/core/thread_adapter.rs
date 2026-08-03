@@ -45,18 +45,17 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
-    }
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
 }
 
 fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_op_u16(Op::STRUCT_GET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
 }
 
 fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_op_u16(Op::STRUCT_SET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -114,7 +113,7 @@ fn emit_nullish(chunk: &mut Chunk, slot: u16, line: u32) {
 /// Stack: [] -> [token_source_or_token]
 pub fn emit_cancellation_token_source_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from(SOURCE_TYPE)), line);
     struct_set_drop(chunk, "__type", line);
@@ -133,7 +132,7 @@ pub fn emit_cancellation_token_source_new(chunks: &mut [Chunk], current: usize, 
 /// Stack: [] -> [token]
 pub fn emit_cancellation_token_none(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("CancellationToken")), line);
     struct_set_drop(chunk, "__type", line);
@@ -154,7 +153,7 @@ fn emit_fire_cancellation_registrations(chunks: &mut [Chunk], current: usize, li
     chunks[current].emit_op_u16(Op::LOCAL_SET, regs_slot, line);
     emit_nullish(&mut chunks[current], regs_slot, line);
     chunks[current].emit_if(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, regs_slot, line);
@@ -167,7 +166,7 @@ fn emit_fire_cancellation_registrations(chunks: &mut [Chunk], current: usize, li
     chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
     chunks[current].emit_op(Op::DROP, line);
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 }
 
@@ -200,7 +199,7 @@ pub fn emit_cancellation_token_cancel_after(chunks: &mut [Chunk], current: usize
     chunks[current].emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
     struct_set_drop(&mut chunks[current], CANCEL_AT_MS_KEY, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `cts.Token` — the source object is the token backing store.
@@ -295,7 +294,7 @@ pub fn emit_cancellation_token_register(chunks: &mut [Chunk], current: usize, li
     chunks[current].emit_op_u16(Op::LOCAL_GET, callback_slot, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
 }
 
 /// `token.CanBeCanceled`.
@@ -319,7 +318,7 @@ pub fn emit_cancellation_token_can_be_canceled(chunks: &mut [Chunk], current: us
 /// Stack: [token] -> [handle]
 pub fn emit_cancellation_token_wait_handle(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
 }
 
 /// `token.IsCancellationRequested` / `cts.IsCancellationRequested`.
@@ -358,7 +357,7 @@ pub fn emit_cancellation_token_throw_if_requested(chunks: &mut [Chunk], current:
     chunks[current].emit_if(line);
     emit_throw_task_cancelled(chunks, current, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 }
 
@@ -368,7 +367,7 @@ fn emit_throw_task_cancelled(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 fn emit_operation_cancelled_exception(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_string_const("The operation was canceled.", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -384,7 +383,7 @@ fn emit_operation_cancelled_exception(chunks: &mut [Chunk], current: usize, line
 }
 
 fn emit_cancelled_task_object(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_string_const("Task", line);
     struct_set_drop(&mut chunks[current], "__type", line);
@@ -401,7 +400,7 @@ fn emit_cancelled_task_object(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_string_const("Canceled", line);
     struct_set_drop(&mut chunks[current], "status", line);
     core_wasm::dup(&mut chunks[current], line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     struct_set_drop(&mut chunks[current], "result", line);
     core_wasm::dup(&mut chunks[current], line);
     emit_operation_cancelled_exception(chunks, current, line);
@@ -431,11 +430,11 @@ fn emit_task_delay_timer_callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     callback_chunks[0].emit_op(Op::DROP, line);
     callback_chunks[0].emit_else(line);
     callback_chunks[0].emit_op_u16(Op::LOCAL_GET, 1, line);
-    callback_chunks[0].emit_op(Op::NULL, line);
+    callback_chunks[0].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     callback_chunks[0].emit_op_u8(Op::CALL_REF, 1, line);
     callback_chunks[0].emit_op(Op::DROP, line);
     callback_chunks[0].emit_end(line);
-    callback_chunks[0].emit_op(Op::NULL, line);
+    callback_chunks[0].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     callback_chunks[0].emit_op(Op::RETURN, line);
 
     chunks.push(callback_chunks.remove(0));
@@ -447,7 +446,7 @@ fn emit_task_delay_timer_callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     if argc < 2 {
         chunks[current].emit_op(Op::DROP, line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         call_import(chunks, current, "ecma:promise", "resolve", 1, line);
         emit_attach_task_members(chunks, current, line);
         return;
@@ -523,7 +522,7 @@ pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
 /// `Task.Yield()` — a completed promise-shaped awaitable that still travels
 /// through the common await/JSPI path.
 pub fn emit_task_yield(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     call_import(chunks, current, "ecma:promise", "resolve", 1, line);
 }
 
@@ -579,7 +578,7 @@ pub fn emit_task_is_completed(chunks: &mut [Chunk], current: usize, line: u32) {
 /// Stack: [task] -> [null] or throws.
 pub fn emit_task_wait(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `Task.FromResult(v)` — a task that is already completed with `v`. Since async

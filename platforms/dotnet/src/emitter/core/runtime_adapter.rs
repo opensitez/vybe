@@ -208,7 +208,7 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     host::emit(chunk, "ecma:value", "typeof", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, ty, line);
 
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
 
     chunk.emit_i32_const(0, line);
@@ -254,7 +254,7 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
 
     // Object: look up its shared `ToString` role member.
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, tostring_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, tostring_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, func, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, func, line);
@@ -263,22 +263,22 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     // No `tostring` member: known .NET-shaped structs/classes render their
     // payload, otherwise fall back to ECMA String().
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
     chunk.emit_string_const("Guid", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
     chunk.emit_string_const("StringWriter", line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, buf_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     vybe_compiler::primitives::strings::emit_to_string(chunk, line);

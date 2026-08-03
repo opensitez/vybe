@@ -21,9 +21,8 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
-        Value::Null => chunk.emit_op(Op::NULL, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
-    }
+        Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
 }
 
 fn lset(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -103,7 +102,7 @@ fn set_handle_map_null(
     let chunk = &mut chunks[current];
     lget(chunk, map_slot, line);
     lget(chunk, handle_slot, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_op(Op::ARRAY_SET, line);
     chunk.emit_op(Op::DROP, line);
 }
@@ -274,7 +273,7 @@ pub fn emit_vb_fileclose(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         let chunk = &mut chunks[current];
         lget(chunk, path_map_slot, line);
         lget(chunk, handle_slot, line);
-        chunk.emit_op(Op::NULL, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunk.emit_op(Op::ARRAY_SET, line);
         chunk.emit_op(Op::DROP, line);
 
@@ -568,7 +567,7 @@ pub fn emit_vb_filedatetime(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     chunks[current].emit_else(line);
     {
         let chunk = &mut chunks[current];
-        chunk.emit_op_u16(Op::STRUCT_GET, modified_key, line);
+        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, modified_key, line);
     }
     crate::emitter::core::datetime_adapter::emit_datetime_from_millis(chunks, current, line);
     chunks[current].emit_end(line);
@@ -617,7 +616,7 @@ pub fn emit_vb_lof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     push_const(&mut chunks[current], Value::I32(0), line);
 
     chunks[current].emit_else(line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, size_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, size_key, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }
@@ -739,7 +738,7 @@ pub fn emit_vb_shell_pid(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         chunk.emit_array_new_fixed(0, 2, line);
         chunk.emit_op_u16(Op::CALL_IMPORT, spawn_sync, line);
         chunk.emit(2, line);
-        chunk.emit_op_u16(Op::STRUCT_GET, pid_key, line);
+        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pid_key, line);
         core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }

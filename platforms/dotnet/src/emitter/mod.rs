@@ -22,18 +22,15 @@ pub use core::dotnet_core_component_descriptor;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use vybe_runtime::component_model::{
-    ComponentDescriptor, ComponentItemKind, ConstructorTarget, MethodBody,
-};
+    ComponentDescriptor, ComponentItemKind, ConstructorTarget, MethodBody };
 use vybe_runtime::component_model::{
-    InstanceMethodTarget, InstancePropertyTarget, StaticPropertyTarget,
-};
+    InstanceMethodTarget, InstancePropertyTarget, StaticPropertyTarget };
 pub use winforms::classes;
 pub use winforms::dotnet_winforms_component_descriptor;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StaticMethodTarget {
     Host { module: String, func: String },
-    Common { emit: String },
-}
+    Common { emit: String } }
 pub struct DotnetSurface {
     default_imports: Vec<String>,
     namespace_roots: HashSet<String>,
@@ -41,8 +38,7 @@ pub struct DotnetSurface {
     known_constants: HashSet<String>,
     runtime_collection_methods: HashSet<String>,
     runtime_collection_method_arities: HashMap<String, HashSet<u8>>,
-    component_descriptor: ComponentDescriptor,
-}
+    component_descriptor: ComponentDescriptor }
 
 #[cfg(test)]
 fn is_real_runtime_interface(interface: &str) -> bool {
@@ -72,8 +68,7 @@ fn normalize_receiver_type_name(name: &str) -> (String, bool) {
         (Some(a), Some(b)) => a.min(b),
         (Some(a), None) => a,
         (None, Some(b)) => b,
-        (None, None) => trimmed.len(),
-    };
+        (None, None) => trimmed.len() };
     let base = trimmed[..end].trim();
     (base.to_string(), false)
 }
@@ -176,8 +171,7 @@ fn build_dotnet_surface() -> DotnetSurface {
             .collect(),
         runtime_collection_methods: collection_runtime_method_names(&component_descriptor),
         runtime_collection_method_arities: collection_runtime_method_arities(&component_descriptor),
-        component_descriptor,
-    }
+        component_descriptor }
 }
 
 pub fn surface() -> &'static DotnetSurface {
@@ -323,16 +317,13 @@ impl DotnetSurface {
                     MethodBody::HostCall(target) => Some(InstanceMethodTarget::Host {
                         module: target.module.clone(),
                         func: target.name.clone(),
-                        arity: method.arity,
-                    }),
+                        arity: method.arity }),
                     MethodBody::Common(name) => Some(InstanceMethodTarget::Common {
                         emit: name.clone(),
-                        arity: method.arity,
-                    }),
+                        arity: method.arity }),
                     // UserChunk paths are compiled by the wrapper builder
                     // (DotnetClass) — not driven through this lookup.
-                    _ => None,
-                };
+                    _ => None };
             }
             current = class.parent.as_deref().and_then(|parent| {
                 self.component_descriptor
@@ -434,12 +425,10 @@ impl DotnetSurface {
                 (false, "capacity") => Some("dotnet.sb_capacity"),
                 (true, "capacity") => Some("dotnet.sb_set_capacity"),
                 (false, "maxcapacity") => Some("dotnet.sb_max_capacity"),
-                _ => None,
-            };
+                _ => None };
             if let Some(emit) = emit {
                 return Some(InstancePropertyTarget::Common {
-                    emit: emit.to_string(),
-                });
+                    emit: emit.to_string() });
             }
         }
         if requested_short.eq_ignore_ascii_case("Stopwatch") && !want_setter {
@@ -448,12 +437,10 @@ impl DotnetSurface {
                 "elapsedticks" => Some("dotnet.stopwatch_elapsed_ticks"),
                 "elapsed" => Some("dotnet.stopwatch_elapsed"),
                 "isrunning" => Some("dotnet.stopwatch_is_running"),
-                _ => None,
-            };
+                _ => None };
             if let Some(emit) = emit {
                 return Some(InstancePropertyTarget::Common {
-                    emit: emit.to_string(),
-                });
+                    emit: emit.to_string() });
             }
         }
         if requested_short.eq_ignore_ascii_case("Task") && !want_setter {
@@ -461,12 +448,10 @@ impl DotnetSurface {
                 "result" => Some("dotnet.task_result"),
                 "iscompleted" => Some("dotnet.task_is_completed"),
                 "iscanceled" => Some("dotnet.task_is_canceled"),
-                _ => None,
-            };
+                _ => None };
             if let Some(emit) = emit {
                 return Some(InstancePropertyTarget::Common {
-                    emit: emit.to_string(),
-                });
+                    emit: emit.to_string() });
             }
         }
         if requested_short.eq_ignore_ascii_case("DateTime") && !want_setter {
@@ -484,12 +469,10 @@ impl DotnetSurface {
                 "kind" => Some("dotnet.datetime_kind"),
                 "date" => Some("dotnet.datetime_date"),
                 "timeofday" => Some("dotnet.datetime_time_of_day"),
-                _ => None,
-            };
+                _ => None };
             if let Some(emit) = emit {
                 return Some(InstancePropertyTarget::Common {
-                    emit: emit.to_string(),
-                });
+                    emit: emit.to_string() });
             }
         }
         if matches!(
@@ -499,8 +482,7 @@ impl DotnetSurface {
             && property_name.eq_ignore_ascii_case("Capacity")
         {
             return Some(InstancePropertyTarget::Common {
-                emit: "dotnet.list_capacity".to_string(),
-            });
+                emit: "dotnet.list_capacity".to_string() });
         }
         let mut current = self.component_descriptor.classes.iter().find(|class| {
             class.name.eq_ignore_ascii_case(requested)
@@ -523,8 +505,7 @@ impl DotnetSurface {
                     InstancePropertyTarget::Host {
                         module: target.module.clone(),
                         func: target.name.clone(),
-                        key: keyed.then(|| property.name.clone()),
-                    }
+                        key: keyed.then(|| property.name.clone()) }
                 });
             }
             current = class.parent.as_deref().and_then(|parent| {
@@ -556,8 +537,7 @@ impl DotnetSurface {
             [type_name, method_name] => {
                 (prefix.to_string(), (*type_name).to_string(), *method_name)
             }
-            _ => return None,
-        };
+            _ => return None };
 
         self.component_descriptor.exports.iter().find_map(|export| {
             let ComponentItemKind::Class(class) = &export.kind else {
@@ -578,13 +558,11 @@ impl DotnetSurface {
                 match &method.body {
                     MethodBody::HostCall(target) => Some(StaticMethodTarget::Host {
                         module: target.module.clone(),
-                        func: target.name.clone(),
-                    }),
+                        func: target.name.clone() }),
                     MethodBody::Common(name) => {
                         Some(StaticMethodTarget::Common { emit: name.clone() })
                     }
-                    _ => None,
-                }
+                    _ => None }
             })
         })
     }
@@ -626,8 +604,7 @@ impl DotnetSurface {
                     .as_ref()
                     .map(|target| StaticPropertyTarget::Host {
                         module: target.module.clone(),
-                        func: target.name.clone(),
-                    })
+                        func: target.name.clone() })
             })
         })
     }
@@ -689,8 +666,7 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
             "tostring" | "toshortdatestring" => Some("string".into()),
             "tobinary" | "tofiletimeutc" => Some("Int64".into()),
             "tooadate" => Some("Double".into()),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("DateTimeOffset") {
         return match method_name.to_ascii_lowercase().as_str() {
@@ -701,8 +677,7 @@ fn dotnet_instance_method_return_type(class_name: &str, method_name: &str) -> Op
             "equals" | "equalsexact" => Some("Boolean".into()),
             "tostring" => Some("string".into()),
             "tounixtimeseconds" | "tounixtimemilliseconds" => Some("Int64".into()),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("XElement") {
         if matches!(method_name.to_ascii_lowercase().as_str(), "element") {
@@ -1060,8 +1035,7 @@ pub fn static_member_constant(prefix: &str, member_name: &str) -> Option<&'stati
         return Some(match member_name.to_ascii_lowercase().as_str() {
             "utc" => "Utc",
             "local" => "Local",
-            _ => "Unspecified",
-        });
+            _ => "Unspecified" });
     }
     if normalized.eq_ignore_ascii_case("DateTimeStyles")
         || normalized.eq_ignore_ascii_case("System.Globalization.DateTimeStyles")
@@ -1072,8 +1046,7 @@ pub fn static_member_constant(prefix: &str, member_name: &str) -> Option<&'stati
             "adjusttouniversal" => Some("AdjustToUniversal"),
             "assumeuniversal" => Some("AssumeUniversal"),
             "roundtripkind" => Some("RoundtripKind"),
-            _ => None,
-        };
+            _ => None };
     }
     if (normalized.eq_ignore_ascii_case("NotifyCollectionChangedAction")
         || normalized
@@ -1089,8 +1062,7 @@ pub fn static_member_constant(prefix: &str, member_name: &str) -> Option<&'stati
             "remove" => "Remove",
             "replace" => "Replace",
             "move" => "Move",
-            _ => "Reset",
-        });
+            _ => "Reset" });
     }
     None
 }
@@ -1179,8 +1151,7 @@ pub fn canonical_type_name(raw: &str) -> String {
         "char" => "Char",
         "object" => "Object",
         "date" | "datetime" => "DateTime",
-        _ => leaf,
-    }
+        _ => leaf }
     .to_string()
 }
 
@@ -1256,8 +1227,7 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
         return match method_name.to_ascii_lowercase().as_str() {
             "compare" => Some("Int32"),
             "equals" | "isleapyear" | "tryparse" | "tryparseexact" => Some("Boolean"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("DateTimeOffset")
         && matches!(
@@ -1271,16 +1241,14 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
         return match method_name.to_ascii_lowercase().as_str() {
             "compare" => Some("Int32"),
             "equals" | "tryparse" => Some("Boolean"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("Stopwatch") {
         return match method_name.to_ascii_lowercase().as_str() {
             "startnew" => Some("Stopwatch"),
             "gettimestamp" | "frequency" => Some("Int64"),
             "ishighresolution" => Some("Boolean"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("BitConverter") {
         return match method_name.to_ascii_lowercase().as_str() {
@@ -1291,8 +1259,7 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
             "toint64" | "touint64" => Some("Int64"),
             "tostring" => Some("String"),
             "getbytes" => Some("Array"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("Convert") && method_name.eq_ignore_ascii_case("ToDateTime") {
         return Some("DateTime");
@@ -1303,16 +1270,14 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
             "readalllines" | "readallbytes" => Some("Array"),
             "create" | "openread" => Some("FileStream"),
             "exists" => Some("Boolean"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("Directory") {
         return match method_name.to_ascii_lowercase().as_str() {
             "getfiles" | "getdirectories" => Some("Array"),
             "exists" => Some("Boolean"),
             "getcurrentdirectory" => Some("String"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("Path") {
         return match method_name.to_ascii_lowercase().as_str() {
@@ -1328,16 +1293,14 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
             | "changeextension"
             | "trimendingdirectoryseparator" => Some("String"),
             "ispathrooted" | "hasextension" | "endsindirectoryseparator" => Some("Boolean"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("Uri") {
         return match method_name.to_ascii_lowercase().as_str() {
             "trycreate" | "makerelativeuri" => Some("Uri"),
             "isbaseof" | "iswellformeduristring" => Some("Boolean"),
             "escapedatastring" | "unescapedatastring" => Some("String"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("Guid")
         && matches!(
@@ -1354,15 +1317,13 @@ pub fn static_method_return_type(class_name: &str, method_name: &str) -> Option<
         return match method_name.to_ascii_lowercase().as_str() {
             "compareto" => Some("Int32"),
             "equals" => Some("Boolean"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("Process") {
         return match method_name.to_ascii_lowercase().as_str() {
             "getcurrentprocess" | "getprocessbyid" | "start" => Some("Process"),
             "getprocesses" | "getprocessesbyname" => Some("Array"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("CancellationToken") && method_name.eq_ignore_ascii_case("None") {
         return Some("CancellationToken");
@@ -1434,8 +1395,7 @@ pub fn static_property_type(class_name: &str, property_name: &str) -> Option<&'s
         return match property_name.to_ascii_lowercase().as_str() {
             "frequency" => Some("Int64"),
             "ishighresolution" => Some("Boolean"),
-            _ => None,
-        };
+            _ => None };
     }
     None
 }
@@ -1445,8 +1405,7 @@ pub fn instance_property_type(class_name: &str, property_name: &str) -> Option<&
     if class.eq_ignore_ascii_case("StringBuilder") {
         return match property_name.to_ascii_lowercase().as_str() {
             "length" | "capacity" | "maxcapacity" => Some("Int32"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("Process") {
         return match property_name.to_ascii_lowercase().as_str() {
@@ -1459,8 +1418,7 @@ pub fn instance_property_type(class_name: &str, property_name: &str) -> Option<&
             "starttime" => Some("DateTime"),
             "totalprocessortime" | "userprocessortime" => Some("TimeSpan"),
             "threads" | "modules" | "mainmodule" => Some("Object"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("TimeSpan") {
         return match property_name.to_ascii_lowercase().as_str() {
@@ -1469,8 +1427,7 @@ pub fn instance_property_type(class_name: &str, property_name: &str) -> Option<&
                 Some("Double")
             }
             "days" | "hours" | "minutes" | "seconds" => Some("Int32"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("DateTime") {
         return match property_name.to_ascii_lowercase().as_str() {
@@ -1480,8 +1437,7 @@ pub fn instance_property_type(class_name: &str, property_name: &str) -> Option<&
             "date" => Some("DateTime"),
             "timeofday" => Some("TimeSpan"),
             "kind" | "dayofweek" => Some("String"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("DateTimeOffset") {
         return match property_name.to_ascii_lowercase().as_str() {
@@ -1490,23 +1446,20 @@ pub fn instance_property_type(class_name: &str, property_name: &str) -> Option<&
             "ticks" => Some("Int64"),
             "offset" => Some("TimeSpan"),
             "datetime" | "utcdatetime" | "date" => Some("DateTime"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("Stopwatch") {
         return match property_name.to_ascii_lowercase().as_str() {
             "isrunning" => Some("Boolean"),
             "elapsedmilliseconds" | "elapsedticks" => Some("Int64"),
             "elapsed" => Some("TimeSpan"),
-            _ => None,
-        };
+            _ => None };
     }
     if class.eq_ignore_ascii_case("Task") {
         return match property_name.to_ascii_lowercase().as_str() {
             "iscompleted" | "iscanceled" => Some("Boolean"),
             "result" => Some("Object"),
-            _ => None,
-        };
+            _ => None };
     }
     None
 }
@@ -1715,8 +1668,7 @@ mod tests {
         assert_eq!(
             binding,
             StaticMethodTarget::Common {
-                emit: "dotnet.console_writeline".to_string(),
-            }
+                emit: "dotnet.console_writeline".to_string() }
         );
     }
 

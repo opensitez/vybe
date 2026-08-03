@@ -30,8 +30,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::String(s) => chunk.emit_string_const(s, line),
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
-    }
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
 }
 
 /// Build a `"host:port"` IP-socket-address string on the stack.
@@ -48,13 +47,13 @@ fn emit_host_port_string(chunk: &mut Chunk, host_slot: u16, port_slot: u16, line
 
 fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
 fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
 }
 
 // ─── Dns ─────────────────────────────────────────────────────────────────
@@ -74,7 +73,7 @@ pub fn emit_dns_get_host_addresses(chunks: &mut Vec<Chunk>, current: usize, line
     chunks[current].emit_op_u16(Op::CALL_IMPORT, resolve_idx, line);
     chunks[current].emit(1, line);
     let addrs_key = chunks[current].add_constant(Value::String(Arc::from("__addresses")));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, addrs_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, addrs_key, line);
 }
 
 /// `Dns.GetHostEntry(host)` — resolves `host` and wraps the result in
@@ -96,7 +95,7 @@ pub fn emit_dns_get_host_entry(chunks: &mut Vec<Chunk>, current: usize, line: u3
     struct_get(chunk, "__addresses", line);
     chunk.emit_op_u16(Op::LOCAL_SET, addresses_slot, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -139,7 +138,7 @@ pub fn emit_ip_address_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32)
 
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -230,7 +229,7 @@ pub fn emit_tcp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 
     // 2. Push args for start-connect: (socket, network=null, "host:port")
     chunk.emit_op_u16(Op::LOCAL_GET, sock_slot, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     emit_host_port_string(chunk, host_slot, port_slot, line);
     // Stack: [socket, null, "host:port"]
 
@@ -268,7 +267,7 @@ pub fn emit_tcp_client_close(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(2, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 // ─── TcpListener ─────────────────────────────────────────────────────────
@@ -300,7 +299,7 @@ pub fn emit_tcp_listener_new(chunks: &mut Vec<Chunk>, current: usize, line: u32)
 
     // start-bind(socket, network=null, addr="0.0.0.0:port")
     chunk.emit_op_u16(Op::LOCAL_GET, sock_slot, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     push_const(chunk, Value::String(Arc::from("0.0.0.0")), line);
     push_const(chunk, Value::String(Arc::from(":")), line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
@@ -353,7 +352,7 @@ pub fn emit_tcp_listener_stop(chunks: &mut Vec<Chunk>, current: usize, line: u32
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(2, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `listener.AcceptTcpClient()` — block until a client connects, return
@@ -408,7 +407,7 @@ pub fn emit_udp_client_new(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 
     // start-bind(socket, network=null, addr="0.0.0.0:port")
     chunk.emit_op_u16(Op::LOCAL_GET, sock_slot, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     push_const(chunk, Value::String(Arc::from("0.0.0.0")), line);
     push_const(chunk, Value::String(Arc::from(":")), line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
@@ -441,7 +440,7 @@ pub fn emit_udp_send(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
     chunks[current].emit(5, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `udp.Receive()` — receive a datagram, returns bytes.
@@ -458,5 +457,5 @@ pub fn emit_udp_receive(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 /// Stack: `[client]` → `[null]`
 pub fn emit_udp_close(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }

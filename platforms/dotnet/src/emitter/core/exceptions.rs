@@ -5,8 +5,7 @@
 
 use vybe_ast::{
     ArrayElement, ClassMember, ClassModifiers, ConstructorInitializerTarget, ExprKind, Expression,
-    Literal, Modifiers, Param, PassBy, Span, Statement, StmtKind, Visibility,
-};
+    Literal, Modifiers, Param, PassBy, Span, Statement, StmtKind, Visibility };
 
 pub const EXCEPTION_HIERARCHY: &[(&str, &str)] = &[
     ("Exception", ""),
@@ -54,12 +53,10 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
                     ExprKind::Member {
                         object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
                         field: field.into(),
-                        null_safe: false,
-                    },
+                        null_safe: false },
                     span.clone(),
                 )],
-                value: Expression::with_span(ExprKind::Ident(ident.into()), span.clone()),
-            },
+                value: Expression::with_span(ExprKind::Ident(ident.into()), span.clone()), by_ref: false },
             span.clone(),
         )
     };
@@ -70,12 +67,10 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
                     ExprKind::Member {
                         object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
                         field: field.into(),
-                        null_safe: false,
-                    },
+                        null_safe: false },
                     span.clone(),
                 )],
-                value,
-            },
+                value, by_ref: false },
             span.clone(),
         )
     };
@@ -88,12 +83,10 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
                 ExprKind::Member {
                     object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
                     field: "__exception_type".into(),
-                    null_safe: false,
-                },
+                    null_safe: false },
                 span.clone(),
             )],
-            value: Expression::with_span(ExprKind::Lit(Literal::Str(canon)), span.clone()),
-        },
+            value: Expression::with_span(ExprKind::Lit(Literal::Str(canon)), span.clone()), by_ref: false },
         span.clone(),
     );
     let assign_types = assign_expr("__types", dotnet_exception_types_expr(name, parent));
@@ -106,8 +99,7 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
         is_rest: false,
         is_kwargs: false,
         is_optional: true,
-        is_nullable: false,
-    };
+        is_nullable: false };
     let mk_obj_param = |pname: &str| Param {
         name: pname.into(),
         type_hint: None,
@@ -116,8 +108,7 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
         is_rest: false,
         is_kwargs: false,
         is_optional: true,
-        is_nullable: true,
-    };
+        is_nullable: true };
 
     let (params, body) = if needs_param_name {
         match name {
@@ -161,8 +152,7 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
                     assign_types.clone(),
                 ],
             ),
-            _ => unreachable!(),
-        }
+            _ => unreachable!() }
     } else {
         let params = if name == "ObjectDisposedException" {
             vec![
@@ -193,8 +183,7 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
         init: None,
         modifiers: Modifiers::default(),
         with_events: false,
-        array_bounds: None,
-    };
+        array_bounds: None };
 
     let mut members = vec![mk_field("Message"), mk_field("InnerException")];
     if needs_param_name {
@@ -213,8 +202,7 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
         body,
         base_args: None,
         initializer_target: ConstructorInitializerTarget::Base,
-        visibility: Visibility::Public,
-    });
+        visibility: Visibility::Public });
 
     Statement::with_span(
         StmtKind::ClassDecl {
@@ -223,8 +211,7 @@ fn synthesize_exception_class(name: &str, parent: &str) -> Statement {
             interfaces: Vec::new(),
             members,
             modifiers: ClassModifiers::default(),
-            decorators: Vec::new(),
-        },
+            decorators: Vec::new() },
         span,
     )
 }
@@ -252,8 +239,7 @@ fn dotnet_exception_types_expr(name: &str, parent: &str) -> Expression {
             key: None,
             value: Expression::string(&name),
             spread: false,
-            by_ref: false,
-        })
+            by_ref: false })
         .collect();
     Expression::new(ExprKind::Array(elements))
 }

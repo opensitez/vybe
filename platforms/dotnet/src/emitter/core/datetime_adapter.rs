@@ -29,8 +29,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::String(s) => chunk.emit_string_const(s, line),
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
-    }
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
 }
 
 fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
@@ -48,7 +47,7 @@ fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
 
 fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
 }
 
 fn struct_set_named_field_drop(chunk: &mut Chunk, key: &str, line: u32) {
@@ -58,7 +57,7 @@ fn struct_set_named_field_drop(chunk: &mut Chunk, key: &str, line: u32) {
 
 fn struct_get_named_field(chunk: &mut Chunk, key: &str, line: u32) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_GET, key_idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key_idx, line);
 }
 
 fn call_import(
@@ -83,7 +82,7 @@ fn bind_value_to_string(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, 
     let mut method = create_function_chunk("__dotnet_value_tostring", 1);
     let value_key = method.add_constant(Value::String(Arc::from("Value")));
     method.emit_op_u16(Op::LOCAL_GET, 0, line);
-    method.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    method.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
     method.emit_op(Op::RETURN, line);
     method.local_count = 1;
     chunks.push(method);
@@ -108,13 +107,13 @@ fn emit_dt_getter(chunks: &mut [Chunk], current: usize, ms_slot: u16, getter: &s
 fn emit_datetime_time_from_obj(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let key = string_key(chunk, TIME_KEY);
-    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
 }
 
 fn emit_named_field_from_obj(chunk: &mut Chunk, obj_slot: u16, field: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let key = string_key(chunk, field);
-    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
 }
 
 fn emit_compare_numeric_slots(chunk: &mut Chunk, left_slot: u16, right_slot: u16, line: u32) {
@@ -439,7 +438,7 @@ pub fn emit_datetime_try_parse(chunks: &mut Vec<Chunk>, current: usize, line: u3
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     chunk.emit_op(Op::F64_NE, line);
     chunk.emit_if(line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     emit_wrap_ms(chunks, current, line);
@@ -572,8 +571,7 @@ pub fn emit_datetime_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line
                 struct_set_named_field_drop(chunk, "kind", line);
             }
         }
-        _ => emit_datetime_now(chunks, current, line),
-    }
+        _ => emit_datetime_now(chunks, current, line) }
 }
 
 pub fn emit_datetime_year(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -766,7 +764,7 @@ pub fn emit_datetime_is_leap_year(chunks: &mut [Chunk], current: usize, line: u3
     push_const(chunk, Value::I32(1), line);
     chunk.emit_op(Op::F64_LT, line);
     chunk.emit_if(line);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("Year must be between 1 and 9999.", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -817,7 +815,7 @@ pub fn emit_datetime_add_timespan(chunks: &mut Vec<Chunk>, current: usize, line:
     chunk.emit_op_u16(Op::LOCAL_SET, date_slot, line);
     emit_datetime_time_from_obj(chunk, date_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, span_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, total_ms_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, total_ms_key, line);
     chunk.emit_op(Op::F64_ADD, line);
     emit_wrap_ms(chunks, current, line);
 }
@@ -971,7 +969,7 @@ fn bind_datetime_to_string(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u1
     let mut method = create_function_chunk("__datetime_tostring", 1);
     let time_key = method.add_constant(Value::String(Arc::from(TIME_KEY)));
     method.emit_op_u16(Op::LOCAL_GET, 0, line);
-    method.emit_op_u16(Op::STRUCT_GET, time_key, line);
+    method.emit_struct_field_op(Op::STRUCT_GET, 0, time_key, line);
     let iso = method.add_import("ecma:date", "toISOString");
     method.emit_call(iso, 1, line);
     method.emit_i32_const(0, line);
@@ -996,7 +994,7 @@ fn bind_datetime_date_to_string(chunks: &mut Vec<Chunk>, current: usize, obj_slo
     let mut method = create_function_chunk("__datetime_date_tostring", 1);
     let time_key = method.add_constant(Value::String(Arc::from(TIME_KEY)));
     method.emit_op_u16(Op::LOCAL_GET, 0, line);
-    method.emit_op_u16(Op::STRUCT_GET, time_key, line);
+    method.emit_struct_field_op(Op::STRUCT_GET, 0, time_key, line);
     let iso = method.add_import("ecma:date", "toISOString");
     method.emit_call(iso, 1, line);
     method.emit_i32_const(0, line);
@@ -1104,7 +1102,7 @@ pub fn emit_datetime_parse_exact(chunks: &mut Vec<Chunk>, current: usize, argc: 
 fn emit_timespan_total_ms_from_obj(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let key = string_key(chunk, "TotalMilliseconds");
-    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
 }
 
 fn bind_datetimeoffset_roles(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line: u32) {
@@ -1116,9 +1114,9 @@ fn bind_datetimeoffset_roles(chunks: &mut Vec<Chunk>, current: usize, obj_slot: 
     eq_method.emit_bool_const(false, line);
     eq_method.emit_else(line);
     eq_method.emit_op_u16(Op::LOCAL_GET, 0, line);
-    eq_method.emit_op_u16(Op::STRUCT_GET, time_key, line);
+    eq_method.emit_struct_field_op(Op::STRUCT_GET, 0, time_key, line);
     eq_method.emit_op_u16(Op::LOCAL_GET, 1, line);
-    eq_method.emit_op_u16(Op::STRUCT_GET, time_key, line);
+    eq_method.emit_struct_field_op(Op::STRUCT_GET, 0, time_key, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut eq_method, line);
     emit_i32_condition_as_bool(&mut eq_method, line);
     eq_method.emit_end(line);
@@ -1139,8 +1137,8 @@ fn bind_datetimeoffset_roles(chunks: &mut Vec<Chunk>, current: usize, obj_slot: 
     let datetime_key = tostring_method.add_constant(Value::String(Arc::from("DateTime")));
     let time_key = tostring_method.add_constant(Value::String(Arc::from(TIME_KEY)));
     tostring_method.emit_op_u16(Op::LOCAL_GET, 0, line);
-    tostring_method.emit_op_u16(Op::STRUCT_GET, datetime_key, line);
-    tostring_method.emit_op_u16(Op::STRUCT_GET, time_key, line);
+    tostring_method.emit_struct_field_op(Op::STRUCT_GET, 0, datetime_key, line);
+    tostring_method.emit_struct_field_op(Op::STRUCT_GET, 0, time_key, line);
     let iso = tostring_method.add_import("ecma:date", "toISOString");
     tostring_method.emit_call(iso, 1, line);
     tostring_method.emit_i32_const(0, line);
@@ -1343,7 +1341,7 @@ pub fn emit_datetimeoffset_try_parse(chunks: &mut Vec<Chunk>, current: usize, li
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     chunk.emit_op(Op::F64_NE, line);
     chunk.emit_if(line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms_slot, line);
     push_const(chunk, Value::F64(0.0), line);

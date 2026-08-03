@@ -25,13 +25,13 @@ fn emit_control_create_graphics(chunk: &mut Chunk, line: u32) {
     let name_slot = chunk.alloc_scratch(1);
     // Stash the control's name (consuming the control), then build a fresh
     // Graphics and copy the name onto it.
-    chunk.emit_op_u16(Op::STRUCT_GET, name_key, line); // [name]
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, name_key, line); // [name]
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line); // []
     chunk.emit_op_u16(Op::CALL_IMPORT, graphics_new, line); // [graphics]
     chunk.emit(0, line); // argc
     core_wasm::dup(chunk, line); // [graphics, graphics]
     chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line); // [graphics, graphics, name]
-    chunk.emit_op_u16(Op::STRUCT_SET, name_key, line); // [graphics, graphics]
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line); // [graphics, graphics]
     chunk.emit_op(Op::DROP, line); // [graphics]
 }
 
@@ -39,7 +39,7 @@ fn emit_control_create_graphics(chunk: &mut Chunk, line: u32) {
 /// Packs the trailing values into an array, then `ARRAY_GET array[idx-1]`.
 fn emit_choose(chunk: &mut Chunk, argc: u8, line: u32) {
     if argc < 2 {
-        chunk.emit_op(Op::NULL, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let n = (argc as u16) - 1;
@@ -67,7 +67,7 @@ fn emit_get_type(chunk: &mut Chunk, line: u32) {
 
     let name_key = chunk.add_constant(Value::String(Arc::from("name")));
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, name_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, name_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
 
     emit_slot_is_nullish(chunk, name_slot, line);
@@ -76,7 +76,7 @@ fn emit_get_type(chunk: &mut Chunk, line: u32) {
     chunk.emit_br_if(0, line);
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, type_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunk.emit_end(line);
     chunk.patch_block(use_name_block);
@@ -98,7 +98,7 @@ fn emit_get_type(chunk: &mut Chunk, line: u32) {
     chunk.emit_if(line);
     let exception_key = chunk.add_constant(Value::String(Arc::from("__exception_type")));
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, exception_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, exception_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunk.emit_end(line);
 
@@ -107,16 +107,16 @@ fn emit_get_type(chunk: &mut Chunk, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, exception_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, exception_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunk.emit_end(line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
     let public_name_key = chunk.add_constant(Value::String(Arc::from("Name")));
-    chunk.emit_op_u16(Op::STRUCT_SET, public_name_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, public_name_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
 }
@@ -144,7 +144,7 @@ fn emit_to_byte(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_GT, line);
     chunk.emit_op(Op::I32_OR, line);
     chunk.emit_if(line);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     chunk.emit_string_const("Arithmetic operation resulted in an overflow.", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "OverflowException", line);
@@ -209,8 +209,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                     argc,
                     line,
                 ),
-                None => return false,
-            }
+                None => return false }
         }
         "dotnet.dns_get_host_addresses" => {
             crate::emitter::core::sockets_adapter::emit_dns_get_host_addresses(
@@ -759,7 +758,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             for _ in 0..argc {
                 chunks[current].emit_op(Op::DROP, line);
             }
-            chunks[current].emit_op(Op::NULL, line);
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         }
         "dotnet.cancellation_token_source_new" => {
             crate::emitter::core::thread_adapter::emit_cancellation_token_source_new(
@@ -2671,7 +2670,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             chunk.emit_op_u16(Op::LOCAL_GET, key_slot, line);
             chunk.emit_call(get, 2, line);
             chunk.emit_else(line);
-            chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+            chunk.emit_struct_new(0, 0, line);
             chunk.emit_dup(line);
             chunk.emit_string_const("The given key was not present in the dictionary.", line);
             vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -2961,7 +2960,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dotnet.system.math.clamp" => {
             vybe_compiler::primitives::math::emit_clamp(&mut chunks[current], line)
         }
-        _ => return false,
-    }
+        _ => return false }
     true
 }

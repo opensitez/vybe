@@ -159,8 +159,7 @@ pub struct DotnetClass {
     /// Defaulted to `"vybe:gui"` in family files via the
     /// [`gui_class!`] / explicit-module convention so the GUI control
     /// families don't have to repeat the module everywhere.
-    pub widget_host_module: &'static str,
-}
+    pub widget_host_module: &'static str }
 
 impl DotnetClass {
     /// `true` for value-type-style classes whose ctor should return
@@ -196,8 +195,7 @@ pub struct DotnetMethod {
     pub arity: u8,
 
     /// Where the method's implementation lives.
-    pub target: MethodTarget,
-}
+    pub target: MethodTarget }
 
 /// What a `DotnetMethod` thunk forwards to.
 ///
@@ -226,13 +224,10 @@ pub struct DotnetMethod {
 pub enum MethodTarget {
     Host {
         module: &'static str,
-        fn_name: &'static str,
-    },
+        fn_name: &'static str },
     DotnetCtor {
-        class: &'static str,
-    },
-    Body(&'static [MethodOp]),
-}
+        class: &'static str },
+    Body(&'static [MethodOp]) }
 
 impl MethodTarget {
     /// Convenience constructor for `Host` variant.
@@ -317,8 +312,7 @@ pub enum MethodOp {
     CallHost {
         module: &'static str,
         fn_name: &'static str,
-        argc: u8,
-    },
+        argc: u8 },
     /// Call the dotnet class `class`'s ctor with `argc` arguments
     /// popped from the stack (no implicit `this`). The class's
     /// constructor global must already be installed by an earlier
@@ -333,8 +327,7 @@ pub enum MethodOp {
     /// Duplicate top of stack.
     Dup,
     /// Return top of stack. If the stack is empty, returns null.
-    Return,
-}
+    Return }
 
 impl DotnetClass {
     /// True if this class has a backing host constructor.

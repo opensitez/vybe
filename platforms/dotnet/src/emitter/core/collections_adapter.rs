@@ -43,8 +43,7 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
 }
 
 fn emit_string_const(chunks: &mut [Chunk], current: usize, value: &str, line: u32) {
-    let idx = chunks[current].add_constant(Value::String(Arc::from(value)));
-    chunks[current].emit_op_u16(Op::CONST, idx, line);
+    chunks[current].emit_string_const(value, line);
 }
 
 fn emit_get_field(chunks: &mut [Chunk], current: usize, object_slot: u16, field: &str, line: u32) {
@@ -207,7 +206,7 @@ pub fn emit_list_add(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_list_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -253,7 +252,7 @@ pub fn emit_list_trim_excess(chunks: &mut [Chunk], current: usize, line: u32) {
     let list_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, list_slot, line);
     emit_list_set_capacity_to_len(chunks, current, list_slot, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_readonly_observable_collection_new(_chunks: &mut [Chunk], _current: usize, _line: u32) {
@@ -264,7 +263,7 @@ pub fn emit_readonly_observable_collection_new(_chunks: &mut [Chunk], _current: 
 pub fn emit_property_changed_event_args_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let property_name = stash_args(chunks, current, 1, line);
     let args = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, args, line);
     emit_set_field(chunks, current, args, "PropertyName", property_name, line);
     emit_set_field(chunks, current, args, "propertyname", property_name, line);
@@ -278,7 +277,7 @@ pub fn emit_notify_collection_changed_event_args_new(
 ) {
     let action = stash_args(chunks, current, 1, line);
     let args = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, args, line);
     emit_set_field(chunks, current, args, "Action", action, line);
     emit_set_field(chunks, current, args, "action", action, line);
@@ -292,7 +291,7 @@ pub fn emit_notify_collection_changed_event_args_new(
     emit_set_field(chunks, current, args, "newstartingindex", minus_one, line);
 
     let null_value = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, null_value, line);
     emit_set_field(chunks, current, args, "OldItems", null_value, line);
     emit_set_field(chunks, current, args, "olditems", null_value, line);
@@ -413,7 +412,7 @@ pub fn emit_dict_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u32
 
 pub fn emit_dict_trim_excess(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 fn emit_blocking_field(
@@ -440,7 +439,7 @@ pub fn emit_blocking_collection_new(chunks: &mut [Chunk], current: usize, argc: 
     let capacity_slot = obj_slot + 2;
     let lifo_slot = obj_slot + 3;
 
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
     if argc > 0 {
@@ -537,7 +536,7 @@ pub fn emit_blocking_collection_try_add(chunks: &mut [Chunk], current: usize, li
 pub fn emit_blocking_collection_add(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_blocking_collection_try_add(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_blocking_collection_take(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -575,7 +574,7 @@ pub fn emit_blocking_collection_complete_adding(chunks: &mut [Chunk], current: u
     core_wasm::bool_const(&mut chunks[current], line, true);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
     emit_set_field(chunks, current, recv, BLOCKING_COMPLETED, value, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_blocking_collection_is_completed(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -612,7 +611,7 @@ fn emit_observable_event_args(
     line: u32,
 ) -> u16 {
     let args = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, args, line);
 
     let action_value = chunks[current].alloc_scratch(1);
@@ -673,7 +672,7 @@ fn emit_observable_event_args(
     if let Some(slot) = old_items {
         emit_array_with_slots(chunks, current, &[slot], line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, old_items_value, line);
     emit_set_field(chunks, current, args, "OldItems", old_items_value, line);
@@ -683,7 +682,7 @@ fn emit_observable_event_args(
     if let Some(slot) = new_items {
         emit_array_with_slots(chunks, current, &[slot], line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, new_items_value, line);
     emit_set_field(chunks, current, args, "NewItems", new_items_value, line);
@@ -699,7 +698,7 @@ fn emit_property_changed_args(
     line: u32,
 ) -> u16 {
     let args = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, args, line);
 
     let value = chunks[current].alloc_scratch(1);
@@ -732,7 +731,7 @@ fn emit_delegate_event(
     chunks[current].emit_op_u16(Op::LOCAL_GET, delegate, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, delegate, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -749,7 +748,7 @@ fn emit_throw_dotnet_exception(
     message: &str,
     line: u32,
 ) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const(message, line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -898,7 +897,7 @@ pub fn emit_observable_collection_add(chunks: &mut [Chunk], current: usize, line
         line,
     );
     emit_observable_collection_changed(chunks, current, recv, args, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_observable_collection_remove(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -973,7 +972,7 @@ pub fn emit_observable_collection_remove_at(chunks: &mut [Chunk], current: usize
         line,
     );
     emit_observable_collection_changed(chunks, current, recv, args, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_observable_collection_insert(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1004,7 +1003,7 @@ pub fn emit_observable_collection_insert(chunks: &mut [Chunk], current: usize, l
         line,
     );
     emit_observable_collection_changed(chunks, current, recv, args, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_observable_collection_set_index(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1041,7 +1040,7 @@ pub fn emit_observable_collection_set_index(chunks: &mut [Chunk], current: usize
         line,
     );
     emit_observable_collection_changed(chunks, current, recv, args, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_observable_collection_move(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1084,7 +1083,7 @@ pub fn emit_observable_collection_move(chunks: &mut [Chunk], current: usize, lin
         line,
     );
     emit_observable_collection_changed(chunks, current, recv, args, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_observable_collection_clear(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1099,7 +1098,7 @@ pub fn emit_observable_collection_clear(chunks: &mut [Chunk], current: usize, li
     emit_observable_count_and_indexer_changed(chunks, current, recv, line);
     let args = emit_observable_event_args(chunks, current, "Reset", None, None, None, None, line);
     emit_observable_collection_changed(chunks, current, recv, args, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_observable_collection_on_changed(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1107,7 +1106,7 @@ pub fn emit_observable_collection_on_changed(chunks: &mut [Chunk], current: usiz
     let recv = base;
     let args = base + 1;
     emit_observable_collection_changed(chunks, current, recv, args, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// Normalize the `IEnumerable<T>` argument in `slot` to an ECMA Set: drain it
@@ -1183,7 +1182,7 @@ fn emit_hashset_mutation(chunks: &mut [Chunk], current: usize, func: &str, line:
     chunks[current].emit_end(line);
     chunks[current].patch_block(block);
 
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_hashset_union_with(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1231,7 +1230,7 @@ pub fn emit_hashset_union_with(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].patch_loop(loop_patch);
     chunks[current].emit_end(line);
     chunks[current].patch_block(block);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_hashset_intersect_with(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1492,7 +1491,7 @@ pub fn emit_linked_list_add_last(chunks: &mut [Chunk], current: usize, line: u32
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 fn emit_linked_list_node_from_index(
@@ -1509,17 +1508,17 @@ fn emit_linked_list_node_from_index(
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
 
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let value_key = chunks[current].add_constant(Value::String(Arc::from("Value")));
-    chunks[current].emit_op_u16(Op::STRUCT_SET, value_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
     chunks[current].emit_op(Op::DROP, line);
 
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let lower_value_key = chunks[current].add_constant(Value::String(Arc::from("value")));
-    chunks[current].emit_op_u16(Op::STRUCT_SET, lower_value_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, lower_value_key, line);
     chunks[current].emit_op(Op::DROP, line);
 
     if include_next {
@@ -1537,10 +1536,10 @@ fn emit_linked_list_node_from_index(
         chunks[current].emit_if(line);
         emit_linked_list_node_from_index(chunks, current, list_slot, next_index_slot, false, line);
         chunks[current].emit_else(line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_end(line);
         let next_key = chunks[current].add_constant(Value::String(Arc::from("Next")));
-        chunks[current].emit_op_u16(Op::STRUCT_SET, next_key, line);
+        chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, next_key, line);
         chunks[current].emit_op(Op::DROP, line);
     }
 }
@@ -1555,7 +1554,7 @@ pub fn emit_linked_list_first(chunks: &mut [Chunk], current: usize, line: u32) {
     core_wasm::i32_const(&mut chunks[current], line, 0);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, index_slot, line);
@@ -1579,18 +1578,18 @@ pub fn emit_linked_list_find(chunks: &mut [Chunk], current: usize, line: u32) {
     core_wasm::i32_const(&mut chunks[current], line, 0);
     vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
 
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let value_key = chunks[current].add_constant(Value::String(Arc::from("value")));
-    chunks[current].emit_op_u16(Op::STRUCT_SET, value_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
 }
@@ -1601,7 +1600,7 @@ pub fn emit_vb_collection_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let items = base + 1;
     let keys = base + 2;
 
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, object, line);
 
     collections::emit_array_new(chunks, current, 0, line);
@@ -1635,7 +1634,7 @@ pub fn emit_vb_collection_add(chunks: &mut [Chunk], current: usize, argc: u8, li
         chunks[current].emit_op(Op::DROP, line);
     }
 
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_vb_collection_item(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1696,5 +1695,5 @@ pub fn emit_vb_collection_remove(chunks: &mut [Chunk], current: usize, line: u32
     chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
     call_import(chunks, current, "ecma:map", "delete", 2, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }

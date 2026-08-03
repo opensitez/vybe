@@ -10,21 +10,18 @@ pub enum StartupObject {
     /// Start with Sub Main in a module
     SubMain,
     /// No startup object specified
-    None,
-}
+    None }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodeFile {
     pub name: String,
-    pub code: String,
-}
+    pub code: String }
 
 impl CodeFile {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            code: String::new(),
-        }
+            code: String::new() }
     }
 }
 
@@ -37,16 +34,13 @@ pub enum FormFormat {
     Classic,
     VbNet {
         designer_code: String,
-        user_code: String,
-    },
-}
+        user_code: String } }
 
 impl Default for FormFormat {
     fn default() -> Self {
         FormFormat::VbNet {
             designer_code: String::new(),
-            user_code: String::new(),
-        }
+            user_code: String::new() }
     }
 }
 
@@ -58,8 +52,7 @@ pub struct FormModule {
     pub format: FormFormat,
     /// Form-specific resources (Form1.resx) — localizable strings, embedded icons, etc.
     #[serde(default)]
-    pub resources: ResourceManager,
-}
+    pub resources: ResourceManager }
 
 impl FormModule {
     pub fn new(form: Form) -> Self {
@@ -73,10 +66,8 @@ impl FormModule {
             code: String::new(),
             format: FormFormat::VbNet {
                 designer_code,
-                user_code,
-            },
-            resources: ResourceManager::new_named(format!("{name}")),
-        }
+                user_code },
+            resources: ResourceManager::new_named(format!("{name}")) }
     }
 
     /// Create a classic (VB6-style) form module
@@ -86,8 +77,7 @@ impl FormModule {
             form,
             code: String::new(),
             format: FormFormat::Classic,
-            resources: ResourceManager::new_named(format!("{name}")),
-        }
+            resources: ResourceManager::new_named(format!("{name}")) }
     }
 
     pub fn new_vbnet(form: Form, designer_code: String, user_code: String) -> Self {
@@ -97,34 +87,29 @@ impl FormModule {
             code: String::new(),
             format: FormFormat::VbNet {
                 designer_code,
-                user_code,
-            },
-            resources: ResourceManager::new_named(format!("{name}")),
-        }
+                user_code },
+            resources: ResourceManager::new_named(format!("{name}")) }
     }
 
     /// Returns the user-editable code (Classic: code field, VbNet: user_code).
     pub fn get_user_code(&self) -> &str {
         match &self.format {
             FormFormat::Classic => &self.code,
-            FormFormat::VbNet { user_code, .. } => user_code,
-        }
+            FormFormat::VbNet { user_code, .. } => user_code }
     }
 
     /// Returns the designer-generated code (Classic: empty, VbNet: designer_code).
     pub fn get_designer_code(&self) -> &str {
         match &self.format {
             FormFormat::Classic => "",
-            FormFormat::VbNet { designer_code, .. } => designer_code,
-        }
+            FormFormat::VbNet { designer_code, .. } => designer_code }
     }
 
     /// Sets the user-editable code.
     pub fn set_user_code(&mut self, code: String) {
         match &mut self.format {
             FormFormat::Classic => self.code = code,
-            FormFormat::VbNet { user_code, .. } => *user_code = code,
-        }
+            FormFormat::VbNet { user_code, .. } => *user_code = code }
     }
 
     /// Regenerates designer_code from the Form object (VbNet only).
@@ -160,8 +145,7 @@ pub struct Project {
     pub project_references: Vec<String>,
     /// Deprecated: single resource manager. Kept for backward compat deserialization.
     #[serde(skip_serializing)]
-    pub resources: ResourceManager,
-}
+    pub resources: ResourceManager }
 
 impl Default for StartupObject {
     fn default() -> Self {
@@ -179,8 +163,7 @@ impl Project {
             code_files: Vec::new(),
             resource_files: Vec::new(),
             project_references: Vec::new(),
-            resources: ResourceManager::new(),
-        }
+            resources: ResourceManager::new() }
     }
 
     pub fn add_form(&mut self, form: Form) {
@@ -229,16 +212,14 @@ impl Project {
             _ => self
                 .startup_form
                 .as_ref()
-                .and_then(|name| self.get_form(name)),
-        }
+                .and_then(|name| self.get_form(name)) }
     }
 
     /// Returns the name of the startup form, if the startup object is a form
     pub fn get_startup_form_name(&self) -> Option<&str> {
         match &self.startup_object {
             StartupObject::Form(name) => Some(name.as_str()),
-            _ => self.startup_form.as_deref(),
-        }
+            _ => self.startup_form.as_deref() }
     }
 
     /// Returns true if the project starts with Sub Main
@@ -272,8 +253,7 @@ impl<'de> Deserialize<'de> for Project {
             #[serde(default)]
             resource_files: Vec<ResourceManager>,
             #[serde(default)]
-            resources: ResourceManager,
-        }
+            resources: ResourceManager }
 
         let helper = ProjectHelper::deserialize(deserializer)?;
 
@@ -309,7 +289,6 @@ impl<'de> Deserialize<'de> for Project {
             code_files,
             resource_files,
             project_references: Vec::new(),
-            resources: helper.resources,
-        })
+            resources: helper.resources })
     }
 }

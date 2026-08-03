@@ -55,7 +55,7 @@ pub fn emit_environment_username(chunks: &mut [Chunk], current: usize, line: u32
     let username_key = chunk.add_constant(Value::String(Arc::from("username")));
     chunk.emit_op_u16(Op::CALL_IMPORT, user_info, line);
     chunk.emit(0, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, username_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, username_key, line);
 }
 
 pub fn emit_environment_version(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
@@ -154,7 +154,7 @@ pub fn emit_environment_get(chunks: &mut [Chunk], current: usize, argc: u8, line
     chunk.emit_op_u16(Op::GLOBAL_GET, global, line);
     chunk.emit_op_u16(Op::LOCAL_SET, object_slot, line);
 
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
@@ -212,7 +212,7 @@ pub fn emit_environment_set(chunks: &mut [Chunk], current: usize, argc: u8, line
     collections::emit_set(chunks, current, line);
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DROP, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_environment_get_all(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

@@ -46,8 +46,7 @@ fn substring(chunk: &mut Chunk, s: u16, start: Src, end: Option<Src>, line: u32)
             e.emit(chunk, line);
             call_import(chunk, "ecma:string", "substring", 3, line);
         }
-        None => call_import(chunk, "ecma:string", "substring", 2, line),
-    }
+        None => call_import(chunk, "ecma:string", "substring", 2, line) }
 }
 
 /// A substring bound: either a constant or a local slot (optionally offset).
@@ -55,8 +54,7 @@ fn substring(chunk: &mut Chunk, s: u16, start: Src, end: Option<Src>, line: u32)
 enum Src {
     Const(i32),
     Local(u16),
-    LocalPlus(u16, i32),
-}
+    LocalPlus(u16, i32) }
 
 impl Src {
     fn emit(self, chunk: &mut Chunk, line: u32) {
@@ -201,10 +199,10 @@ const MAX_BODY_BYTES: i64 = 64 * 1024 * 1024;
 /// construction yields a typed marker. Stack: `[..args]` → `[obj]`.
 pub fn emit_http_client_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("HttpClient", line);
     let idx = chunk.add_constant(Value::String(Arc::from("__type")));
-    chunk.emit_op_u16(Op::STRUCT_SET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
     chunk.emit_op(Op::DROP, line);
 }

@@ -9,8 +9,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::String(s) => chunk.emit_string_const(s, line),
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
-    }
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
@@ -36,7 +35,7 @@ fn emit_random_unit_from_receiver(
     let key = state_key(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, state_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, state_slot, line);
@@ -59,7 +58,7 @@ fn emit_random_unit_from_receiver(
 
     chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, state_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, state_slot, line);
@@ -83,11 +82,11 @@ pub fn emit_random_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
             chunk.emit_op_u16(Op::LOCAL_SET, seed_slot, line);
         }
     }
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, seed_slot, line);
     let key = state_key(chunk);
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -190,5 +189,5 @@ pub fn emit_random_next_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line);
     chunk.emit_end(line);
 
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }

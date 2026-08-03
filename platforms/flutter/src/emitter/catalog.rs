@@ -39,8 +39,7 @@ pub struct FlutterClass {
     /// place instead of creating a Panel that just nests one child — a bare
     /// Panel per wrapper is pure layout noise, since none of the effects
     /// (opacity/clip/transform) are expressible on the backing controls.
-    pub transparent: bool,
-}
+    pub transparent: bool }
 
 impl FlutterClass {
     /// A concrete widget backed by a `vybe:gui` control constructor.
@@ -56,8 +55,7 @@ impl FlutterClass {
             interfaces: NO_INTERFACES,
             fields,
             widget_host_fn: Some(host),
-            transparent: false,
-        }
+            transparent: false }
     }
 
     /// A TRANSPARENT wrapper widget: keeps full type identity and field
@@ -74,8 +72,7 @@ impl FlutterClass {
             interfaces: NO_INTERFACES,
             fields,
             widget_host_fn: Some("Panel"),
-            transparent: true,
-        }
+            transparent: true }
     }
 
     /// An abstract base in the `is`/identity chain (no backing control).
@@ -86,8 +83,7 @@ impl FlutterClass {
             interfaces: NO_INTERFACES,
             fields: NO_FIELDS,
             widget_host_fn: None,
-            transparent: false,
-        }
+            transparent: false }
     }
 
     /// A pure data / value type (no backing control): Color, Offset, FocusNode…
@@ -102,8 +98,7 @@ impl FlutterClass {
             interfaces: NO_INTERFACES,
             fields,
             widget_host_fn: None,
-            transparent: false,
-        }
+            transparent: false }
     }
 
     /// A data type carrying extra `is`-identity names (e.g. `Key` → ValueKey).
@@ -119,8 +114,7 @@ impl FlutterClass {
             interfaces,
             fields,
             widget_host_fn: None,
-            transparent: false,
-        }
+            transparent: false }
     }
 }
 
@@ -137,8 +131,7 @@ pub struct FlutterField {
     /// True when the value is a LIST of child widgets (`Column.children`) —
     /// construction adds each element to the control. Single-child/scalar
     /// fields (`false`) are resolved per-value at construction runtime.
-    pub children: bool,
-}
+    pub children: bool }
 
 impl FlutterField {
     pub(crate) const fn named(name: &'static str) -> Self {

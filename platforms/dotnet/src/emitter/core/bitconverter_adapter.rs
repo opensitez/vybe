@@ -199,7 +199,7 @@ pub fn emit_block_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.patch_loop(loop_pos);
     chunk.emit_end(line);
     chunk.patch_block(block);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_is_little_endian(chunks: &mut [Chunk], current: usize, line: u32) {

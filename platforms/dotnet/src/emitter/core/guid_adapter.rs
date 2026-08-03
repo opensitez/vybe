@@ -27,8 +27,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::String(s) => chunk.emit_string_const(s, line),
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
-    }
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
@@ -45,7 +44,7 @@ fn bind_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, this_slot: u16, 
     let mut method = create_function_chunk("__guid_tostring", 1);
     let value_key = method.add_constant(Value::String(Arc::from(VALUE_KEY)));
     method.emit_op_u16(Op::LOCAL_GET, 0, line);
-    method.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    method.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
     method.emit_op(Op::RETURN, line);
     method.local_count = 1;
     chunks.push(method);
@@ -74,16 +73,16 @@ fn emit_wrap_guid_from_slot(chunks: &mut Vec<Chunk>, current: usize, text_slot: 
     let value_key = chunk.add_constant(Value::String(Arc::from(VALUE_KEY)));
     let obj_slot = reserve_slot(chunk);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Guid")), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
     chunk.emit_op(Op::DROP, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, value_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -104,20 +103,20 @@ fn emit_wrap_guid_with_bytes_from_slots(
     let bytes_key = chunk.add_constant(Value::String(Arc::from(BYTES_KEY)));
     let obj_slot = reserve_slot(chunk);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Guid")), line);
-    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
     chunk.emit_op(Op::DROP, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, value_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
     chunk.emit_op(Op::DROP, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, bytes_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, bytes_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op(Op::DROP, line);
 
@@ -299,13 +298,13 @@ pub fn emit_guid_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
 pub fn emit_guid_to_byte_array(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let bytes_key = chunk.add_constant(Value::String(Arc::from(BYTES_KEY)));
-    chunk.emit_op_u16(Op::STRUCT_GET, bytes_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, bytes_key, line);
 }
 
 pub fn emit_guid_get_hash_code(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let value_key = chunk.add_constant(Value::String(Arc::from(VALUE_KEY)));
-    chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
     push_const(chunk, Value::F64(0.0), line);
     let char_code_idx = chunk.add_import("ecma:string", "charCodeAt");
     chunk.emit_op_u16(Op::CALL_IMPORT, char_code_idx, line);
@@ -323,7 +322,7 @@ pub fn emit_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
     }
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
     if argc > 0 {
         let value_slot = reserve_slot(chunk);
         chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
@@ -373,6 +372,6 @@ pub fn emit_guid_try_parse(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
     }
     emit_wrap_guid_from_slot(chunks, current, text_slot, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 }

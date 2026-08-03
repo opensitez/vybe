@@ -44,8 +44,7 @@ use vybe_compiler::primitives::functions::create_function_chunk;
 /// remap (that collision silently turned every property-setter's
 /// `controlSetProperty` call into a string constant).
 fn push_string_const(chunk: &mut Chunk, s: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(s)));
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    chunk.emit_string_const(s, line);
 }
 
 // ─── Setter chunk ───────────────────────────────────────────────────────────
@@ -97,7 +96,7 @@ pub fn build_setter_chunk(
     // drop the host return value
     chunk.emit_op(Op::DROP, line);
     // return null
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_op(Op::RETURN, line);
 
     chunk.local_count = 2; // this + value
@@ -197,8 +196,7 @@ pub fn build_method_thunk_chunk(
             chunk.emit_op(Op::RETURN, line);
         }
         MethodTarget::DotnetCtor {
-            class: target_class,
-        } => {
+            class: target_class } => {
             // Discard `this` (slot 0) — factory-style methods don't pass
             // it to the target ctor. Push the target class global, then
             // the user args (slots 1..=arity-1), then call.
@@ -294,7 +292,7 @@ fn compile_body_offset(
             MethodOp::PushThisField(field) => {
                 chunk.emit_op_u16(Op::LOCAL_GET, base_slot, line);
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
-                chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+                chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
             }
             MethodOp::PushArgField(n, field) => {
                 debug_assert!(
@@ -305,7 +303,7 @@ fn compile_body_offset(
                 );
                 chunk.emit_op_u16(Op::LOCAL_GET, base_slot + n as u16, line);
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
-                chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+                chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
             }
             MethodOp::PushArgFieldField(n, f1, f2) => {
                 debug_assert!(
@@ -316,9 +314,9 @@ fn compile_body_offset(
                 );
                 chunk.emit_op_u16(Op::LOCAL_GET, base_slot + n as u16, line);
                 let k1 = chunk.add_constant(Value::String(Arc::from(f1)));
-                chunk.emit_op_u16(Op::STRUCT_GET, k1, line);
+                chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k1, line);
                 let k2 = chunk.add_constant(Value::String(Arc::from(f2)));
-                chunk.emit_op_u16(Op::STRUCT_GET, k2, line);
+                chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k2, line);
             }
             MethodOp::PushConstInt(v) => {
                 chunk.emit_f64_const(v as f64, line);
@@ -337,7 +335,7 @@ fn compile_body_offset(
                 }
             }
             MethodOp::PushConstNull => {
-                chunk.emit_op(Op::NULL, line);
+                chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             }
             MethodOp::CallHost { argc, .. } => {
                 debug_assert!(
@@ -412,7 +410,7 @@ fn compile_body_offset(
             }
             MethodOp::SetField(field) => {
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
-                chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+                chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
             }
             MethodOp::Drop => {
                 chunk.emit_op(Op::DROP, line);
@@ -435,7 +433,7 @@ fn compile_body_offset(
     // Safety net: if the body didn't end in `Return`, ensure a result. Inline
     // leaves a null on the stack (the method's value); the thunk path returns.
     if !returned {
-        chunk.emit_op(Op::NULL, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         if !inline {
             chunk.emit_op(Op::RETURN, line);
         }
@@ -469,14 +467,12 @@ pub fn collect_body_call_targets(ops: &[MethodOp]) -> Vec<(&'static str, &'stati
 #[derive(Debug, Clone, Copy)]
 pub struct SetterBinding<'a> {
     pub prop_pascal: &'a str,
-    pub setter_chunk_idx: usize,
-}
+    pub setter_chunk_idx: usize }
 
 #[derive(Debug, Clone, Copy)]
 pub struct GetterBinding<'a> {
     pub prop_pascal: &'a str,
-    pub getter_chunk_idx: usize,
-}
+    pub getter_chunk_idx: usize }
 
 /// Per-method thunk binding info supplied to [`build_constructor_chunk`].
 ///
@@ -486,8 +482,7 @@ pub struct GetterBinding<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct MethodBinding<'a> {
     pub method_name: &'a str,
-    pub thunk_chunk_idx: usize,
-}
+    pub thunk_chunk_idx: usize }
 
 /// The key variants a member is bound under so the exact-matching VM resolves
 /// it for every source language: the **original** declared name (case-sensitive
@@ -583,7 +578,7 @@ pub fn build_constructor_chunk(
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
     } else {
         // Root class (Object): this = struct_new 0
-        chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunk.emit_struct_new(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
     }
 
@@ -592,7 +587,7 @@ pub fn build_constructor_chunk(
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
         push_string_const(&mut chunk, class.name, line);
         let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
-        chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
         chunk.emit_op(Op::DROP, line);
     }
 
@@ -612,7 +607,7 @@ pub fn build_constructor_chunk(
             chunk.emit_op_u16(Op::REF_FUNC, binding.setter_chunk_idx as u16, line);
             chunk.emit(0, line); // 0 upvalues
             let key = chunk.add_constant(Value::String(Arc::from(set_name.as_str())));
-            chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
             chunk.emit_op(Op::DROP, line);
         }
     }
@@ -624,7 +619,7 @@ pub fn build_constructor_chunk(
             chunk.emit_op_u16(Op::REF_FUNC, binding.getter_chunk_idx as u16, line);
             chunk.emit(0, line);
             let key = chunk.add_constant(Value::String(Arc::from(get_name.as_str())));
-            chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
             chunk.emit_op(Op::DROP, line);
         }
     }
@@ -644,7 +639,7 @@ pub fn build_constructor_chunk(
             chunk.emit_op_u16(Op::REF_FUNC, binding.thunk_chunk_idx as u16, line);
             chunk.emit(0, line); // 0 upvalues
             let key = chunk.add_constant(Value::String(Arc::from(name.as_str())));
-            chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
             chunk.emit_op(Op::DROP, line);
         }
     }
@@ -655,7 +650,7 @@ pub fn build_constructor_chunk(
         chunk.emit_op_u16(Op::CALL_IMPORT, new_controls_collection_import_idx, line);
         chunk.emit(1, line);
         let key = chunk.add_constant(Value::String(Arc::from("controls")));
-        chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
         chunk.emit_op(Op::DROP, line);
     }
 
@@ -665,7 +660,7 @@ pub fn build_constructor_chunk(
         chunk.emit_op_u16(Op::CALL_IMPORT, new_components_collection_import_idx, line);
         chunk.emit(1, line);
         let key = chunk.add_constant(Value::String(Arc::from("components")));
-        chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
         chunk.emit_op(Op::DROP, line);
     }
 
@@ -695,8 +690,8 @@ pub fn build_constructor_chunk(
             let key_idx = chunk.add_constant(Value::String(Arc::from(*field)));
             chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, widget_slot, line);
-            chunk.emit_op_u16(Op::STRUCT_GET, key_idx, line);
-            chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
+            chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key_idx, line);
+            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
             chunk.emit_op(Op::DROP, line);
         }
     }

@@ -7,8 +7,7 @@
 
 use crate::emitter::build::*;
 use vybe_ast::{
-    ArrayElement, BinOp, ExprKind, Expression, ObjectProperty, Statement, StmtKind, UnaryOp,
-};
+    ArrayElement, BinOp, ExprKind, Expression, ObjectProperty, Statement, StmtKind, UnaryOp };
 
 // ── call-site lowerings (walker maps `time(...)` etc. through these) ─────────
 
@@ -73,29 +72,24 @@ fn bin(op: BinOp, left: Expression, right: Expression) -> Expression {
     expr(ExprKind::Binary {
         op,
         left: Box::new(left),
-        right: Box::new(right),
-    })
+        right: Box::new(right) })
 }
 
 fn value_from_address_arg(value: Expression) -> Expression {
     match value.kind {
         ExprKind::Unary {
             op: UnaryOp::AddrOf,
-            expr,
-        } => *expr,
+            expr } => *expr,
         kind => Expression {
             kind,
-            span: value.span,
-        },
-    }
+            span: value.span } }
 }
 
 fn ternary(cond: Expression, then_expr: Expression, else_expr: Expression) -> Expression {
     expr(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(then_expr),
-        else_: Box::new(else_expr),
-    })
+        else_: Box::new(else_expr) })
 }
 
 fn ret(value: Expression) -> Statement {
@@ -114,8 +108,7 @@ fn while_stmt(cond: Expression, body: Vec<Statement>) -> Statement {
     stmt(StmtKind::While {
         cond,
         body,
-        else_body: None,
-    })
+        else_body: None })
 }
 
 fn array(values: &[&str]) -> Expression {
@@ -126,8 +119,7 @@ fn array(values: &[&str]) -> Expression {
                 key: None,
                 value: str_lit(value),
                 spread: false,
-                by_ref: false,
-            })
+                by_ref: false })
             .collect(),
     ))
 }
@@ -141,8 +133,7 @@ fn zero_if_missing(value: Expression) -> Expression {
         eq(
             expr(ExprKind::Unary {
                 op: UnaryOp::Typeof,
-                expr: Box::new(value.clone()),
-            }),
+                expr: Box::new(value.clone()) }),
             str_lit("undefined"),
         ),
         int_lit(0),
@@ -354,8 +345,7 @@ fn strftime_value_for_code(code: &str) -> Expression {
         "%g" => strftime_value_for_code("%y"),
         "%n" => str_lit("\n"),
         "%t" => str_lit("\t"),
-        _ => str_lit(""),
-    }
+        _ => str_lit("") }
 }
 
 fn strftime_return(format: &str, value: Expression) -> Statement {
@@ -366,40 +356,31 @@ fn tm_struct_from_locals() -> Expression {
     expr(ExprKind::Object(vec![
         ObjectProperty::KeyValue {
             key: str_lit("tm_year"),
-            value: sub(ident("year"), int_lit(1900)),
-        },
+            value: sub(ident("year"), int_lit(1900)) },
         ObjectProperty::KeyValue {
             key: str_lit("tm_mon"),
-            value: ident("mon"),
-        },
+            value: ident("mon") },
         ObjectProperty::KeyValue {
             key: str_lit("tm_mday"),
-            value: ident("mday"),
-        },
+            value: ident("mday") },
         ObjectProperty::KeyValue {
             key: str_lit("tm_hour"),
-            value: ident("hour"),
-        },
+            value: ident("hour") },
         ObjectProperty::KeyValue {
             key: str_lit("tm_min"),
-            value: ident("min"),
-        },
+            value: ident("min") },
         ObjectProperty::KeyValue {
             key: str_lit("tm_sec"),
-            value: ident("sec"),
-        },
+            value: ident("sec") },
         ObjectProperty::KeyValue {
             key: str_lit("tm_wday"),
-            value: ident("wday"),
-        },
+            value: ident("wday") },
         ObjectProperty::KeyValue {
             key: str_lit("tm_yday"),
-            value: ident("yday"),
-        },
+            value: ident("yday") },
         ObjectProperty::KeyValue {
             key: str_lit("tm_isdst"),
-            value: int_lit(0),
-        },
+            value: int_lit(0) },
     ]))
 }
 

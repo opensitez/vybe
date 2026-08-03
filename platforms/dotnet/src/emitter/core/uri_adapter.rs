@@ -15,12 +15,12 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 
 fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
 }
 
 fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -35,7 +35,7 @@ fn bind_uri_methods(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line
     let mut tostring = create_function_chunk("__dotnet_uri_tostring", 1);
     let href_key = tostring.add_constant(Value::String(Arc::from("href")));
     tostring.emit_op_u16(Op::LOCAL_GET, 0, line);
-    tostring.emit_op_u16(Op::STRUCT_GET, href_key, line);
+    tostring.emit_struct_field_op(Op::STRUCT_GET, 0, href_key, line);
     tostring.emit_op(Op::RETURN, line);
     tostring.local_count = 1;
     chunks.push(tostring);
@@ -45,9 +45,9 @@ fn bind_uri_methods(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line
     let href_key = is_base_of.add_constant(Value::String(Arc::from("href")));
     let starts_with_idx = is_base_of.add_import("ecma:string", "startsWith");
     is_base_of.emit_op_u16(Op::LOCAL_GET, 1, line);
-    is_base_of.emit_op_u16(Op::STRUCT_GET, href_key, line);
+    is_base_of.emit_struct_field_op(Op::STRUCT_GET, 0, href_key, line);
     is_base_of.emit_op_u16(Op::LOCAL_GET, 0, line);
-    is_base_of.emit_op_u16(Op::STRUCT_GET, href_key, line);
+    is_base_of.emit_struct_field_op(Op::STRUCT_GET, 0, href_key, line);
     is_base_of.emit_op_u16(Op::CALL_IMPORT, starts_with_idx, line);
     is_base_of.emit(2, line);
     is_base_of.emit_op(Op::RETURN, line);
@@ -61,18 +61,18 @@ fn bind_uri_methods(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line
     let relative_slot = make_relative.alloc_scratch(2);
     let uri_slot = relative_slot + 1;
     make_relative.emit_op_u16(Op::LOCAL_GET, 1, line);
-    make_relative.emit_op_u16(Op::STRUCT_GET, href_key, line);
+    make_relative.emit_struct_field_op(Op::STRUCT_GET, 0, href_key, line);
     make_relative.emit_op_u16(Op::LOCAL_GET, 0, line);
-    make_relative.emit_op_u16(Op::STRUCT_GET, href_key, line);
+    make_relative.emit_struct_field_op(Op::STRUCT_GET, 0, href_key, line);
     push_str(&mut make_relative, "", line);
     make_relative.emit_op_u16(Op::CALL_IMPORT, replace_idx, line);
     make_relative.emit(3, line);
     make_relative.emit_op_u16(Op::LOCAL_SET, relative_slot, line);
-    make_relative.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    make_relative.emit_struct_new(0, 0, line);
     make_relative.emit_op_u16(Op::LOCAL_SET, uri_slot, line);
     make_relative.emit_op_u16(Op::LOCAL_GET, uri_slot, line);
     make_relative.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
-    make_relative.emit_op_u16(Op::STRUCT_SET, href_key, line);
+    make_relative.emit_struct_field_op(Op::STRUCT_SET, 0, href_key, line);
     make_relative.emit_op(Op::DROP, line);
     emit_bind_method_with_slot(
         &mut make_relative,
@@ -213,7 +213,7 @@ pub fn emit_uri_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
             host::emit(chunk, "node:url", "canParse", 1, line);
             chunk.emit_op(Op::I32_EQZ, line);
             chunk.emit_if(line);
-            chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+            chunk.emit_struct_new(0, 0, line);
             chunk.emit_dup(line);
             chunk.emit_string_const(
                 "Invalid URI: The format of the URI could not be determined.",
@@ -301,7 +301,7 @@ pub fn emit_uri_try_create(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
             chunk.emit(1, line);
             emit_finalize_uri(chunks, current, line);
             chunks[current].emit_else(line);
-            chunks[current].emit_op(Op::NULL, line);
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             chunks[current].emit_end(line);
         }
         _ => {
@@ -337,7 +337,7 @@ fn bind_uri_tostring_only(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16
     let mut tostring = create_function_chunk("__dotnet_uri_relative_tostring", 1);
     let href_key = tostring.add_constant(Value::String(Arc::from("href")));
     tostring.emit_op_u16(Op::LOCAL_GET, 0, line);
-    tostring.emit_op_u16(Op::STRUCT_GET, href_key, line);
+    tostring.emit_struct_field_op(Op::STRUCT_GET, 0, href_key, line);
     tostring.emit_op(Op::RETURN, line);
     tostring.local_count = 1;
     chunks.push(tostring);
@@ -367,7 +367,7 @@ pub fn emit_uri_make_relative(chunks: &mut Vec<Chunk>, current: usize, line: u32
     host::emit(chunk, "ecma:string", "replace", 3, line);
     let relative_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, relative_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     let uri_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, uri_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, uri_slot, line);

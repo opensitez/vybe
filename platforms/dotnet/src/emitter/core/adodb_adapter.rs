@@ -22,8 +22,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
         Value::String(s) => chunk.emit_string_const(s, line),
         Value::F64(f) => chunk.emit_f64_const(*f, line),
         Value::I32(i) => chunk.emit_i32_const(*i, line),
-        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val),
-    }
+        _ => panic!("push_const: no WASM-compliant encoding for {:?}", val) }
 }
 
 fn reserve_slot(chunk: &mut Chunk) -> u16 {
@@ -47,7 +46,7 @@ fn set_const_prop(chunk: &mut Chunk, key: &str, value: Value, line: u32) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     core_wasm::dup(chunk, line);
     push_const(chunk, value, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -55,7 +54,7 @@ fn set_local_prop(chunk: &mut Chunk, key: &str, local: u16, line: u32) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, local, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -63,7 +62,7 @@ fn set_object_local_prop(chunk: &mut Chunk, object_local: u16, key: &str, local:
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::LOCAL_GET, object_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, local, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -71,7 +70,7 @@ fn set_object_const_prop(chunk: &mut Chunk, object_local: u16, key: &str, value:
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::LOCAL_GET, object_local, line);
     push_const(chunk, value, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, key_idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -84,13 +83,13 @@ fn get_prop_to_local(
 ) {
     let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_op_u16(Op::LOCAL_GET, object_local, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, key_idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key_idx, line);
     chunk.emit_op_u16(Op::LOCAL_SET, target_local, line);
 }
 
 fn build_field_object(chunks: &mut [Chunk], current: usize, value_local: u16, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     set_local_prop(chunk, VALUE_KEY, value_local, line);
 }
 
@@ -127,7 +126,7 @@ fn emit_reader_to_adodb_recordset(
         (count_slot, eof_slot)
     };
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     set_local_prop(chunk, ROWS_KEY, rows_slot, line);
     set_local_prop(chunk, COL_NAMES_KEY, cols_slot, line);
     set_const_prop(chunk, POS_KEY, Value::F64(0.0), line);
@@ -194,7 +193,7 @@ pub fn emit_adodb_conn_begin_trans(chunks: &mut [Chunk], current: usize, _argc: 
         line,
     );
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `Connection.CommitTrans` — executes COMMIT on the connection.
@@ -215,7 +214,7 @@ pub fn emit_adodb_conn_commit_trans(chunks: &mut [Chunk], current: usize, _argc:
         line,
     );
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `Connection.RollbackTrans` — executes ROLLBACK on the connection.
@@ -236,7 +235,7 @@ pub fn emit_adodb_conn_rollback_trans(chunks: &mut [Chunk], current: usize, _arg
         line,
     );
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 // ── ADODB.Command ─────────────────────────────────────────────────────────────
@@ -303,7 +302,7 @@ pub fn emit_adodb_command_create_parameter(
 
     chunk.emit_op(Op::DROP, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     set_local_prop(chunk, "name", name_slot, line);
     set_local_prop(chunk, VALUE_KEY, value_slot, line);
 }
@@ -311,7 +310,7 @@ pub fn emit_adodb_command_create_parameter(
 // ── ADODB.Recordset ───────────────────────────────────────────────────────────
 
 pub fn emit_adodb_recordset_new(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     collections::emit_array_new(chunks, current, 0, line);
     let rows_slot = {
         let chunk = &mut chunks[current];
@@ -408,7 +407,7 @@ pub fn emit_adodb_recordset_open(chunks: &mut [Chunk], current: usize, _argc: u8
     let chunk = &mut chunks[current];
     set_object_local_prop(chunk, rs_slot, EOF_KEY, eof_slot, line);
     set_object_const_prop(chunk, rs_slot, ISCLOSED_KEY, Value::Bool(false), line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     let _ = cmd_slot;
 }
 
@@ -448,7 +447,7 @@ pub fn emit_adodb_recordset_move_next(chunks: &mut [Chunk], current: usize, line
     };
     let chunk = &mut chunks[current];
     set_object_local_prop(chunk, rs_slot, EOF_KEY, eof_slot, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     let _ = len_slot;
 }
 
@@ -478,7 +477,7 @@ pub fn emit_adodb_recordset_move_first(chunks: &mut [Chunk], current: usize, lin
     };
     let chunk = &mut chunks[current];
     set_object_local_prop(chunk, rs_slot, EOF_KEY, eof_slot, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `Recordset.Fields(nameOrIndex)` — returns `{ value: row[key] }`.
@@ -504,9 +503,9 @@ pub fn emit_adodb_recordset_fields(chunks: &mut [Chunk], current: usize, line: u
     {
         let chunk = &mut chunks[current];
         chunk.emit_op_u16(Op::LOCAL_GET, rs_slot, line);
-        chunk.emit_op_u16(Op::STRUCT_GET, rows_key, line);
+        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, rows_key, line);
         chunk.emit_op_u16(Op::LOCAL_GET, rs_slot, line);
-        chunk.emit_op_u16(Op::STRUCT_GET, pos_key, line);
+        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pos_key, line);
         chunk.emit_op(Op::I32_FROM_F64, line);
     }
     collections::emit_get(chunks, current, line);
@@ -530,5 +529,5 @@ pub fn emit_adodb_recordset_close(chunks: &mut [Chunk], current: usize, line: u3
     chunk.emit_op_u16(Op::LOCAL_SET, rs_slot, line);
     set_object_const_prop(chunk, rs_slot, ISCLOSED_KEY, Value::Bool(true), line);
     set_object_const_prop(chunk, rs_slot, EOF_KEY, Value::Bool(true), line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }

@@ -14,8 +14,7 @@
 
 use vybe_ast::{
     Argument, BinOp, BindingPattern, ExprKind, Expression, Literal, Modifiers, Param, PassBy,
-    Statement, StmtKind, VarDeclKind, VarDeclarator,
-};
+    Statement, StmtKind, VarDeclKind, VarDeclarator };
 use vybe_compiler::primitives::addressable_storage;
 use vybe_compiler::primitives::pointers;
 
@@ -41,15 +40,13 @@ fn member(o: Expression, f: &str) -> Expression {
     e(ExprKind::Member {
         object: Box::new(o),
         field: f.to_string(),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 fn call(callee: Expression, args: Vec<Expression>) -> Expression {
     e(ExprKind::Call {
         callee: Box::new(callee),
         args: args.into_iter().map(Argument::positional).collect(),
-        optional: false,
-    })
+        optional: false })
 }
 fn call_member(o: Expression, f: &str, args: Vec<Expression>) -> Expression {
     call(member(o, f), args)
@@ -58,21 +55,18 @@ fn bin(op: BinOp, l: Expression, r: Expression) -> Expression {
     e(ExprKind::Binary {
         op,
         left: Box::new(l),
-        right: Box::new(r),
-    })
+        right: Box::new(r) })
 }
 fn index(o: Expression, i: Expression) -> Expression {
     e(ExprKind::Index {
         object: Box::new(o),
         index: Box::new(i),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 fn assign(target: Expression, value: Expression) -> Expression {
     e(ExprKind::Assign {
         target: Box::new(target),
-        value: Box::new(value),
-    })
+        value: Box::new(value) })
 }
 fn var_decl(name: &str, init: Expression) -> Statement {
     s(StmtKind::VarDecl {
@@ -81,17 +75,14 @@ fn var_decl(name: &str, init: Expression) -> Statement {
             type_hint: None,
             init: Some(init),
             array_bounds: None,
-            with_events: false,
-        }],
-        kind: VarDeclKind::Var,
-    })
+            with_events: false }],
+        kind: VarDeclKind::Var })
 }
 fn while_stmt(cond: Expression, body: Vec<Statement>) -> Statement {
     s(StmtKind::While {
         cond,
         body,
-        else_body: None,
-    })
+        else_body: None })
 }
 fn if_stmt(
     cond: Expression,
@@ -102,8 +93,7 @@ fn if_stmt(
         cond,
         then_body,
         elifs: Vec::new(),
-        else_body,
-    })
+        else_body })
 }
 fn ret(v: Expression) -> Statement {
     s(StmtKind::Return(Some(v)))
@@ -124,8 +114,7 @@ fn function(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Statement {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false,
-            })
+                is_nullable: false })
             .collect(),
         return_type: None,
         body,
@@ -133,8 +122,7 @@ fn function(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Statement {
         handles: Vec::new(),
         is_async: false,
         is_generator: false,
-        is_sub: false,
-    })
+        is_sub: false })
 }
 
 /// `L"hello"` → flat NUL-terminated code-point array `[104,101,108,108,111,0]`.
@@ -152,8 +140,7 @@ fn nul_index(arr: Expression) -> Expression {
     e(ExprKind::Ternary {
         cond: Box::new(bin(BinOp::Lt, idx.clone(), lit_int(0))),
         then: Box::new(member(arr, "length")),
-        else_: Box::new(idx),
-    })
+        else_: Box::new(idx) })
 }
 
 /// `wcslen(s)`: number of wide chars up to the NUL.
@@ -179,9 +166,7 @@ pub fn wcscmp(a: Expression, b: Expression) -> Expression {
         else_: Box::new(e(ExprKind::Ternary {
             cond: Box::new(bin(BinOp::Gt, sa, sb)),
             then: Box::new(lit_int(1)),
-            else_: Box::new(lit_int(0)),
-        })),
-    })
+            else_: Box::new(lit_int(0)) })) })
 }
 
 /// Convert a wide array to a JS string up to the NUL (boundary conversion).
@@ -245,16 +230,14 @@ fn min_expr(a: Expression, b: Expression) -> Expression {
     e(ExprKind::Ternary {
         cond: Box::new(bin(BinOp::Lt, a.clone(), b.clone())),
         then: Box::new(a),
-        else_: Box::new(b),
-    })
+        else_: Box::new(b) })
 }
 
 fn ptr_or_null(base: Expression, idx: Expression) -> Expression {
     e(ExprKind::Ternary {
         cond: Box::new(bin(BinOp::Lt, idx.clone(), lit_int(0))),
         then: Box::new(null_lit()),
-        else_: Box::new(pointers::make_carray_ptr(base, idx)),
-    })
+        else_: Box::new(pointers::make_carray_ptr(base, idx)) })
 }
 
 pub fn wcsnlen(arr: Expression, n: Expression) -> Expression {
@@ -487,8 +470,7 @@ pub fn runtime_helpers() -> Vec<Statement> {
                             index(ident("b"), ident("i")),
                         )),
                         then: Box::new(lit_int(-1)),
-                        else_: Box::new(lit_int(1)),
-                    }))],
+                        else_: Box::new(lit_int(1)) }))],
                     None,
                 ),
                 incr("i"),

@@ -21,12 +21,12 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
 
 fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_op_u16(Op::STRUCT_GET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
 }
 
 fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_op_u16(Op::STRUCT_SET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -64,7 +64,7 @@ fn emit_stopwatch_elapsed_ns_value(chunks: &mut [Chunk], current: usize, line: u
 /// Create a stopped Stopwatch object. Stack: `[]` → `[sw]`.
 pub fn emit_stopwatch_new(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Stopwatch")), line);
     struct_set_drop(chunk, "__type", line);
@@ -214,7 +214,7 @@ pub fn emit_stopwatch_elapsed(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_stopwatch_is_running(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let key = chunk.add_constant(Value::String(Arc::from("isrunning")));
-    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
 }
 
 /// `Stopwatch.Frequency` — nanosecond source expressed as ticks per second.

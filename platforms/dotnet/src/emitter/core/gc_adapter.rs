@@ -5,7 +5,7 @@ pub fn emit_gc_noop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     for _ in 0..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_gc_zero(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

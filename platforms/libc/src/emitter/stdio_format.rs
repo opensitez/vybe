@@ -134,7 +134,7 @@ pub fn emit_sscanf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32)
         for _ in 0..argc {
             chunks[current].emit_op(Op::DROP, line);
         }
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     // Drop any extra reference args, leaving [string, format].
@@ -938,7 +938,7 @@ fn conv_s(c: &mut Chunk, str_tostr: u16, str_slice: u16, str_test: u16) {
     c.emit_op(Op::I32_NE, 0);
     c.emit_br_if(0, 0);
     lg(c, ARG);
-    c.emit_op(Op::NULL, 0);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     c.emit_op(Op::REF_EQ, 0);
     lg(c, ARG);
     hc(c, str_test, 1);
@@ -991,7 +991,7 @@ fn conv_d(c: &mut Chunk, math_trunc: u16, math_abs: u16, num_radix: u16, str_cat
         let exact_key = c.add_constant(Value::String(Arc::from("__c_exact_int")));
         let exact = c.emit_block(0);
         lg(c, ARG);
-        c.emit_op_u16(Op::STRUCT_GET, exact_key, 0);
+        c.emit_struct_field_op(Op::STRUCT_GET, 0, exact_key, 0);
         ls(c, RAW);
         lg(c, RAW);
         c.emit_op(Op::REF_IS_NULL, 0);

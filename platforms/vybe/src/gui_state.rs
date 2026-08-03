@@ -12,8 +12,7 @@ use vybe_widgets::{
     DataGrid, DateTimePicker, FlowLayoutPanel, Form as WidgetForm, GroupBox, Label, ListBox,
     ListView, MaskedTextBox, MenuStrip, MonthCalendar, NumericUpDown, Panel, PanelWidget,
     PictureBox, ProgressBar, Radio, ScrollBar, Select, Slider, SplitContainer, StatusStrip,
-    TableLayoutPanel, Tabs, TextInput, ToolStrip, TreeView, WidgetCommand,
-};
+    TableLayoutPanel, Tabs, TextInput, ToolStrip, TreeView, WidgetCommand };
 
 /// Holds the live widget form + event callbacks.
 /// Created before VM runs, shared with host fns via `Arc<Mutex<>>`.
@@ -68,8 +67,7 @@ pub struct GuiState {
     /// entry here. The host bridge looks at the form's child widgets
     /// FIRST, falls back to this overlay map only when no Canvas widget
     /// matches the requested control name.
-    pub overlay_canvases: HashMap<String, RecordingCanvas>,
-}
+    pub overlay_canvases: HashMap<String, RecordingCanvas> }
 
 impl GuiState {
     pub fn new() -> Self {
@@ -87,8 +85,7 @@ impl GuiState {
             properties: Default::default(),
             needs_repaint: false,
             front_requested: false,
-            overlay_canvases: HashMap::new(),
-        }
+            overlay_canvases: HashMap::new() }
     }
 
     /// VM hot-reset (bucket D): drop all script-created GUI state — controls,
@@ -507,8 +504,7 @@ impl GuiState {
                 let cmd = format!("Set{}", capitalize_first(&prop_lower));
                 let payload = match value.trim().parse::<f64>() {
                     Ok(n) => CommandValue::Number(n),
-                    Err(_) => CommandValue::Text(value.to_string()),
-                };
+                    Err(_) => CommandValue::Text(value.to_string()) };
                 self.form
                     .send_command(&name, &WidgetCommand::Custom(cmd, payload));
             }
@@ -558,8 +554,7 @@ impl GuiState {
                 let result = self.form.send_command(&name, &WidgetCommand::GetText);
                 match result {
                     CommandValue::Text(s) => s,
-                    _ => String::new(),
-                }
+                    _ => String::new() }
             }
             _ => {
                 let result = self.form.send_command(
@@ -571,8 +566,7 @@ impl GuiState {
                 );
                 match result {
                     CommandValue::Text(s) => s,
-                    _ => String::new(),
-                }
+                    _ => String::new() }
             }
         }
     }
@@ -582,8 +576,7 @@ fn capitalize_first(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
         None => String::new(),
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-    }
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str() }
 }
 
 /// Create a boxed PanelWidget from a type name string.
@@ -767,8 +760,7 @@ mod adapter_tests {
             kind: MouseEventKind::Press(MouseButton::Left),
             cmd: false,
             shift: false,
-            alt: false,
-        };
+            alt: false };
         gui.form.handle_mouse(&click);
         let events = gui.form.drain_events();
         assert!(
@@ -782,8 +774,7 @@ mod adapter_tests {
     fn slider_actual(gui: &mut GuiState, name: &str) -> f64 {
         match gui.form.send_command(name, &WidgetCommand::GetValue) {
             CommandValue::Number(n) => n,
-            other => panic!("slider GetValue returned {other:?}"),
-        }
+            other => panic!("slider GetValue returned {other:?}") }
     }
 
     /// Slider, fully wired: `Slider(value:, min:, max:)` positions the real
@@ -838,8 +829,7 @@ mod adapter_tests {
         gui.set_property("tf1", "text", "hello");
         match gui.form.send_command("tf1", &WidgetCommand::GetText) {
             CommandValue::Text(s) => assert_eq!(s, "hello"),
-            other => panic!("TextField GetText returned {other:?}"),
-        }
+            other => panic!("TextField GetText returned {other:?}") }
     }
 
     /// Radio, control side: the adapter reflects `value == groupValue` as a
